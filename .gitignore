@@ -1,0 +1,25 @@
+.DS_Store
+
+# Local environment and secrets
+.env
+.env.*
+config.json
+
+# Go build output
+bin/
+
+# Xcode and Swift build output
+DerivedData/
+.build/
+build/
+*.xcresult
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+ios/CodexAgentPad/build/
+ios/CodexAgentPad/build-test/
+
+# Logs and temporary files
+*.log
+*.tmp

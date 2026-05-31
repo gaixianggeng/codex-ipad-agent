@@ -1,0 +1,26 @@
+{
+  "listen": "127.0.0.1:8787",
+  "auth": {
+    "token": "change-me-to-a-long-random-token"
+  },
+  "codex": {
+    "bin": "codex",
+    "default_args": ["--no-alt-screen"],
+    "env": {
+      "TERM": "xterm-256color"
+    }
+  },
+  "session": {
+    "output_buffer_bytes": 131072
+  },
+  "scan_roots": [
+    "/Users/gaixiaotongxue/code"
+  ],
+  "projects": [
+    {
+      "id": "code",
+      "name": "code",
+      "path": "/Users/gaixiaotongxue/code"
+    }
+  ]
+}
