@@ -50,14 +50,16 @@ type Session struct {
 	cancel context.CancelFunc
 	buffer *ring.Buffer
 
-	mu       sync.Mutex
-	attached bool
-	termCols int
-	termRows int
-	output   chan []byte
-	exit     ExitResult
-	done     chan struct{}
+	mu          sync.Mutex
+	writeMu     sync.Mutex
+	termCols    int
+	termRows    int
+	subscribers map[chan []byte]struct{}
+	exit        ExitResult
+	done        chan struct{}
 }
+
+const promptSubmitDelay = 180 * time.Millisecond
 
 type ExitResult struct {
 	Code   int    `json:"code"`
@@ -96,6 +98,13 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		id = "codex_" + req.ResumeID
 		if existing, ok := m.Get(id); ok {
 			if existing.Snapshot().Status == "running" {
+				if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+					// 旧的 iPad 状态可能还把这个线程当成 history；如果服务端已经有运行中的
+					// resume session，继续复用它，但必须把本次输入写进 PTY，避免请求被静默吞掉。
+					if err := existing.Write(prompt + "\r"); err != nil {
+						return nil, err
+					}
+				}
 				return existing, nil
 			}
 			m.remove(id)
@@ -129,24 +138,24 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 
 	now := time.Now()
 	s := &Session{
-		ID:        id,
-		ProjectID: req.Project.ID,
-		Project:   req.Project.Name,
-		Dir:       req.Project.Path,
-		Title:     title,
-		Status:    "running",
-		Source:    sessionSource(req.ResumeID),
-		ResumeID:  req.ResumeID,
-		CreatedAt: now,
-		UpdatedAt: now,
-		cmd:       cmd,
-		ptmx:      ptmx,
-		cancel:    cancel,
-		buffer:    ring.New(m.options.OutputBuffer),
-		termCols:  req.Cols,
-		termRows:  req.Rows,
-		output:    make(chan []byte, 128),
-		done:      make(chan struct{}),
+		ID:          id,
+		ProjectID:   req.Project.ID,
+		Project:     req.Project.Name,
+		Dir:         req.Project.Path,
+		Title:       title,
+		Status:      "running",
+		Source:      sessionSource(req.ResumeID),
+		ResumeID:    req.ResumeID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		cmd:         cmd,
+		ptmx:        ptmx,
+		cancel:      cancel,
+		buffer:      ring.New(m.options.OutputBuffer),
+		termCols:    req.Cols,
+		termRows:    req.Rows,
+		subscribers: make(map[chan []byte]struct{}),
+		done:        make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -260,7 +269,7 @@ func (s *Session) Snapshot() Session {
 	cp.ptmx = nil
 	cp.cancel = nil
 	cp.buffer = nil
-	cp.output = nil
+	cp.subscribers = nil
 	cp.done = nil
 	return cp
 }
@@ -280,8 +289,34 @@ func (s *Session) Write(input string) error {
 	if closed || ptmx == nil {
 		return fmt.Errorf("session 已结束")
 	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if body, ok := splitSubmittedPrompt(input); ok {
+		// Codex TUI 会把快速连续字符识别成 paste burst，并在短窗口内把 Enter
+		// 当作粘贴里的换行。把正文和提交键分开发，可以避免“文字进入输入框但没提交”。
+		if _, err := ptmx.Write([]byte(body)); err != nil {
+			return err
+		}
+		time.Sleep(promptSubmitDelay)
+		_, err := ptmx.Write([]byte("\r"))
+		return err
+	}
+
 	_, err := ptmx.Write([]byte(input))
 	return err
+}
+
+func splitSubmittedPrompt(input string) (string, bool) {
+	if len(input) <= 1 || !strings.HasSuffix(input, "\r") {
+		return input, false
+	}
+	body := strings.TrimSuffix(input, "\r")
+	if body == "" {
+		return input, false
+	}
+	return body, true
 }
 
 func (s *Session) Resize(cols, rows int) error {
@@ -339,15 +374,36 @@ func (s *Session) Stop() error {
 func (s *Session) Attach() (<-chan []byte, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.attached {
-		return nil, nil, fmt.Errorf("当前 session 已有客户端连接")
+	if s.Status != "running" {
+		return nil, nil, fmt.Errorf("session 已结束")
 	}
-	s.attached = true
-	return s.output, func() {
+	if s.subscribers == nil {
+		s.subscribers = make(map[chan []byte]struct{})
+	}
+	ch := make(chan []byte, 128)
+	s.subscribers[ch] = struct{}{}
+	detached := false
+	return ch, func() {
 		s.mu.Lock()
-		s.attached = false
+		if !detached {
+			delete(s.subscribers, ch)
+			close(ch)
+			detached = true
+		}
 		s.mu.Unlock()
 	}, nil
+}
+
+func (s *Session) broadcastOutput(chunk []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch := range s.subscribers {
+		select {
+		case ch <- chunk:
+		default:
+			// 前端太慢时丢弃实时块；最近输出仍在 ring buffer 中，刷新可追回。
+		}
+	}
 }
 
 func (s *Session) Done() <-chan struct{} {
@@ -367,11 +423,7 @@ func (s *Session) readLoop() {
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			s.buffer.Write(chunk)
-			select {
-			case s.output <- chunk:
-			default:
-				// 前端太慢时丢弃实时块；最近输出仍在 ring buffer 中，刷新可追回。
-			}
+			s.broadcastOutput(chunk)
 		}
 		if err != nil {
 			if err != io.EOF {

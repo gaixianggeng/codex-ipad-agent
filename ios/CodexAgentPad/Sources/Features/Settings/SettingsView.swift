@@ -58,6 +58,14 @@ struct SettingsView: View {
                 } header: {
                     Text("状态")
                 }
+
+                Section {
+                    NavigationLink {
+                        DoctorView()
+                    } label: {
+                        Label("诊断", systemImage: "stethoscope")
+                    }
+                }
             }
             .navigationTitle(isInitialSetup ? "连接 agentd" : "设置")
             .toolbar {

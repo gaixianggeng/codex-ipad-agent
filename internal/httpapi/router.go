@@ -1,9 +1,13 @@
 package httpapi
 
 import (
+	"bufio"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
+	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +58,7 @@ func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.
 	mux.Handle("/api/readyz", r.auth.Middleware(http.HandlerFunc(r.readyz)))
 	mux.Handle("/api/version", r.auth.Middleware(http.HandlerFunc(r.versionHandler)))
 	mux.Handle("/api/doctor", r.auth.Middleware(http.HandlerFunc(r.doctorHandler)))
+	mux.Handle("/api/debug/codex-history", r.auth.Middleware(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	mux.Handle("/api/projects", r.auth.Middleware(http.HandlerFunc(r.projectsHandler)))
 	mux.Handle("/api/sessions", r.auth.Middleware(http.HandlerFunc(r.sessionsHandler)))
 	mux.HandleFunc("/api/sessions/", r.sessionByIDHandler)
@@ -69,9 +74,48 @@ func (r *Router) staticHandler() http.Handler {
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		_ = start
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			log.Printf("%s %s status=%d bytes=%d duration=%s", r.Method, r.URL.RequestURI(), rec.status, rec.bytes, time.Since(start).Round(time.Millisecond))
+		}
 	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(data []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(data)
+	r.bytes += n
+	return n, err
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer 不支持 hijack")
+	}
+	r.status = http.StatusSwitchingProtocols
+	return hijacker.Hijack()
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func (r *Router) healthz(w http.ResponseWriter, req *http.Request) {
@@ -89,6 +133,19 @@ func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, r.doctor.Run(req.Context(), false))
+}
+
+func (r *Router) codexHistoryDebugHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	limit := positiveLimit(req.URL.Query().Get("limit"))
+	if limit == 0 {
+		limit = 80
+	}
+	projectID := strings.TrimSpace(req.URL.Query().Get("project_id"))
+	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, r.sessions.List(), projectID, limit))
 }
 
 func (r *Router) projectsHandler(w http.ResponseWriter, req *http.Request) {
@@ -109,7 +166,11 @@ func (r *Router) sessionsHandler(w http.ResponseWriter, req *http.Request) {
 		for _, item := range list {
 			out = append(out, item.Snapshot())
 		}
-		out = append(out, codexhistory.Load(r.projects, list)...)
+		if projectID != "" {
+			out = append(out, codexhistory.LoadForProject(r.projects, list, projectID, limit)...)
+		} else {
+			out = append(out, codexhistory.Load(r.projects, list)...)
+		}
 		out = filterSessions(out, projectID)
 		if limit > 0 && len(out) > limit {
 			out = out[:limit]
@@ -133,11 +194,14 @@ func (r *Router) sessionsHandler(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusBadRequest, "项目不存在")
 			return
 		}
+		log.Printf("create session project=%s resume=%s prompt_bytes=%d", body.ProjectID, body.ResumeID, len(body.Prompt))
 		s, err := r.sessions.Create(session.CreateRequest{Project: project, Prompt: body.Prompt, ResumeID: body.ResumeID, Title: body.Title, Cols: body.Cols, Rows: body.Rows})
 		if err != nil {
+			log.Printf("create session failed project=%s resume=%s err=%v", body.ProjectID, body.ResumeID, err)
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		log.Printf("created session id=%s source=%s status=%s resume=%s", s.ID, s.Source, s.Status, s.ResumeID)
 		writeJSON(w, http.StatusCreated, map[string]any{"session": s.Snapshot(), "ws_url": "/api/sessions/" + s.ID + "/ws"})
 	default:
 		methodNotAllowed(w)
@@ -234,10 +298,16 @@ func (r *Router) sessionMessages(w http.ResponseWriter, req *http.Request, id st
 		methodNotAllowed(w)
 		return
 	}
-	if strings.HasPrefix(id, "codex_") {
-		messages, err := codexhistory.Messages(strings.TrimPrefix(id, "codex_"))
+	limit := positiveLimit(req.URL.Query().Get("limit"))
+	resumeID := ""
+	if s, ok := r.sessions.Get(id); ok {
+		resumeID = s.Snapshot().ResumeID
+	}
+	if threadID := codexhistory.ThreadIDForSession(id, resumeID); threadID != "" {
+		messages, err := codexhistory.MessagesWithLimit(threadID, limit)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "读取 Codex 历史失败")
+			// 历史 rollout 可能被 Codex 清理或还未落盘；列表详情不应因为缺历史文件而中断。
+			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"messages": messages})

@@ -482,6 +482,60 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(conversationStore.hasLoadedHistory(sessionID: selectedHistory.id))
     }
 
+    func testSelectingHistorySessionKeepsSelectionWhenMessages404() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_missing", projectID: project.id, title: "缺失 rollout", status: "history", source: "codex", resumeID: "missing")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            messagesError: AgentAPIError.server(status: 404, message: "读取 Codex 历史失败")
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+
+        XCTAssertEqual(client.requestedMessageSessionIDs, [history.id])
+        XCTAssertEqual(store.selectedSessionID, history.id)
+        XCTAssertFalse(conversationStore.hasLoadedHistory(sessionID: history.id))
+        XCTAssertTrue(store.statusMessage?.contains("HTTP 404") == true)
+    }
+
+    func testSendingPromptToCodexHistoryResumesAndKeepsLocalHiMessage() async throws {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            createSessionResponse: try makeCreateSessionResponse(session: history)
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        await store.sendPrompt("hi")
+
+        XCTAssertEqual(client.createPayloads.count, 1)
+        XCTAssertEqual(client.createPayloads.first?.resumeID, history.resumeID)
+        XCTAssertEqual(client.createPayloads.first?.prompt, "hi")
+        let messages = conversationStore.messages(for: history.id)
+        XCTAssertTrue(messages.contains { $0.role == .user && $0.content == "历史问题" })
+        XCTAssertTrue(messages.contains { $0.role == .assistant && $0.content == "历史回答" })
+        XCTAssertTrue(messages.contains { $0.role == .user && $0.content == "hi" && $0.sendStatus == .sent })
+    }
+
     func testSessionStoreProjectSelectionRefreshesProjectHistoryWithoutSelectingLatest() async {
         let firstProject = makeProject(id: "proj_1")
         let freshHistory = makeSession(id: "codex_fresh", projectID: firstProject.id, title: "刷新后的历史", status: "history", source: "codex", resumeID: "fresh")
@@ -568,22 +622,130 @@ final class ConversationDataFlowTests: XCTestCase {
         store.toggleSessionListExpansion(projectID: project.id)
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 5)
     }
+
+    func testRefreshCurrentContextReloadsSelectedHistoryMessages() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = MockSessionStoreClient(projects: [project], sessions: [history])
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        await store.refreshCurrentContext()
+
+        XCTAssertEqual(client.requestedMessageSessionIDs, [history.id, history.id])
+        XCTAssertFalse(store.isRefreshingSelectedSession)
+        XCTAssertTrue(conversationStore.messages(for: history.id).contains { $0.content == "历史回答" })
+    }
+
+    func testRefreshCurrentContextConsumesRunningRecentOutput() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            sessionResponses: [
+                running.id: try makeSessionResponse(session: running, recentOutput: "│ • 从 Mac 回来的回复\n")
+            ]
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = running.id
+        await store.refreshCurrentContext()
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertTrue(conversationStore.messages(for: running.id).contains { $0.role == .assistant && $0.content == "从 Mac 回来的回复" })
+    }
+
+    func testRunningSessionAloneDoesNotShowForegroundActivity() async {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = running.id
+
+        XCTAssertNil(store.selectedForegroundActivity)
+    }
+
+    func testSendingPromptCreatesWaitingForegroundActivity() async throws {
+        let project = makeProject(id: "proj_1")
+        let created = makeSession(id: "sess_created", projectID: project.id, title: "新会话", status: "running", source: "agentd")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            createSessionResponse: try makeCreateSessionResponse(session: created)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        let accepted = await store.sendPrompt("帮我检查项目")
+
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(store.selectedForegroundActivity, .waitingForAssistant)
+    }
 }
 
 private final class MockSessionStoreClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let sessionsResult: [AgentSession]
     let projectSessions: [String: [AgentSession]]
+    let createSessionResponse: CreateSessionResponse?
+    let sessionResponses: [String: SessionResponse]
+    let messagesResult: [CodexHistoryMessage]
+    let messagesError: Error?
     var requestedProjectIDs: [String?] = []
+    var requestedSessionIDs: [String] = []
+    var requestedMessageSessionIDs: [String] = []
+    var createPayloads: [CreateSessionRequest] = []
 
     init(
         projects: [AgentProject],
         sessions: [AgentSession],
-        projectSessions: [String: [AgentSession]] = [:]
+        projectSessions: [String: [AgentSession]] = [:],
+        createSessionResponse: CreateSessionResponse? = nil,
+        sessionResponses: [String: SessionResponse] = [:],
+        messagesResult: [CodexHistoryMessage]? = nil,
+        messagesError: Error? = nil
     ) {
         self.projectsResult = projects
         self.sessionsResult = sessions
         self.projectSessions = projectSessions
+        self.createSessionResponse = createSessionResponse
+        self.sessionResponses = sessionResponses
+        self.messagesResult = messagesResult ?? [
+            CodexHistoryMessage(role: "user", content: "历史问题", createdAt: Date(timeIntervalSince1970: 1)),
+            CodexHistoryMessage(role: "assistant", content: "历史回答", createdAt: Date(timeIntervalSince1970: 2))
+        ]
+        self.messagesError = messagesError
     }
 
     func projects() async throws -> [AgentProject] {
@@ -598,8 +760,20 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         return sessionsResult
     }
 
+    func session(id: String) async throws -> SessionResponse {
+        requestedSessionIDs.append(id)
+        guard let response = sessionResponses[id] else {
+            throw MockError.unimplemented
+        }
+        return response
+    }
+
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
-        throw MockError.unimplemented
+        createPayloads.append(payload)
+        guard let createSessionResponse else {
+            throw MockError.unimplemented
+        }
+        return createSessionResponse
     }
 
     func stopSession(id: String) async throws {
@@ -607,10 +781,11 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
-        [
-            CodexHistoryMessage(role: "user", content: "历史问题", createdAt: Date(timeIntervalSince1970: 1)),
-            CodexHistoryMessage(role: "assistant", content: "历史回答", createdAt: Date(timeIntervalSince1970: 2))
-        ]
+        requestedMessageSessionIDs.append(sessionID)
+        if let messagesError {
+            throw messagesError
+        }
+        return messagesResult
     }
 
     func websocketURL(sessionID: String) throws -> URL {
@@ -624,6 +799,55 @@ private enum MockError: Error {
 
 private func makeProject(id: String) -> AgentProject {
     AgentProject(id: id, name: id, path: "/tmp/\(id)")
+}
+
+private func makeCreateSessionResponse(session: AgentSession) throws -> CreateSessionResponse {
+    let json = """
+    {
+      "session": {
+        "id": "\(session.id)",
+        "project_id": "\(session.projectID)",
+        "project": "\(session.project)",
+        "dir": "\(session.dir)",
+        "title": "\(session.title)",
+        "status": "\(session.status)",
+        "source": "\(session.source)",
+        "resume_id": "\(session.resumeID ?? "")",
+        "created_at": "2026-06-01T10:00:00Z",
+        "updated_at": "2026-06-01T10:00:01Z"
+      },
+      "ws_url": "/api/sessions/\(session.id)/ws"
+    }
+    """
+    return try AgentAPIClient.decoder.decode(CreateSessionResponse.self, from: Data(json.utf8))
+}
+
+private func makeSessionResponse(session: AgentSession, recentOutput: String?) throws -> SessionResponse {
+    let escapedRecentOutput: String
+    if let recentOutput {
+        let data = try JSONEncoder().encode(recentOutput)
+        escapedRecentOutput = String(decoding: data, as: UTF8.self)
+    } else {
+        escapedRecentOutput = "null"
+    }
+    let json = """
+    {
+      "session": {
+        "id": "\(session.id)",
+        "project_id": "\(session.projectID)",
+        "project": "\(session.project)",
+        "dir": "\(session.dir)",
+        "title": "\(session.title)",
+        "status": "\(session.status)",
+        "source": "\(session.source)",
+        "resume_id": "\(session.resumeID ?? "")",
+        "created_at": "2026-06-01T10:00:00Z",
+        "updated_at": "2026-06-01T10:00:01Z"
+      },
+      "recent_output": \(escapedRecentOutput)
+    }
+    """
+    return try AgentAPIClient.decoder.decode(SessionResponse.self, from: Data(json.utf8))
 }
 
 private func makeSession(

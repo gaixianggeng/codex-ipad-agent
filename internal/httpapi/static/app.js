@@ -1,5 +1,7 @@
 const state = {
   token: sessionStorage.getItem("agentd_token") || "",
+  apiReady: false,
+  apiError: "",
   projects: [],
   sessions: [],
   selectedProject: "",
@@ -106,9 +108,17 @@ function render() {
   const active = currentSession();
   state.running = active?.status === "running" || active?.status === "stopping";
 
-  el.apiStatus.textContent = state.token ? "已连接" : "未认证";
-  el.apiStatus.className = state.token ? "pill ok" : "pill warn";
-  el.sessionStatus.textContent = active ? active.status : "无会话";
+  if (!state.token) {
+    el.apiStatus.textContent = "未认证";
+    el.apiStatus.className = "pill warn";
+  } else if (state.apiReady) {
+    el.apiStatus.textContent = "已连接";
+    el.apiStatus.className = "pill ok";
+  } else {
+    el.apiStatus.textContent = state.apiError ? "连接失败" : "未验证";
+    el.apiStatus.className = "pill warn";
+  }
+  el.sessionStatus.textContent = active ? displayStatus(active.status) : "无会话";
   el.sessionStatus.className = state.running ? "pill ok" : "pill";
   el.autoScroll.textContent = state.autoScroll ? "跟随开启" : "跟随关闭";
   el.autoScroll.className = state.autoScroll ? "log-toggle active" : "log-toggle";
@@ -122,7 +132,7 @@ function render() {
   el.sendEnter.disabled = !state.running;
   el.sendCtrlC.disabled = !state.running;
 
-  el.activeTitle.textContent = active ? active.title : "新任务";
+  el.activeTitle.textContent = active ? active.title : state.projects.length ? "新任务" : "暂无项目";
   el.sessionId.textContent = `Session: ${state.sessionId || "-"}`;
   const project = currentProject();
   el.projectPath.textContent = project ? project.path : "暂无项目";
@@ -132,6 +142,13 @@ function render() {
 function renderSessions() {
   const sessions = projectSessions();
   el.sessionsList.innerHTML = "";
+  if (state.projects.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "session-empty";
+    empty.textContent = "没有项目，请检查 AGENTD_SCAN_ROOTS 或配置文件";
+    el.sessionsList.appendChild(empty);
+    return;
+  }
   if (sessions.length === 0) {
     const empty = document.createElement("div");
     empty.className = "session-empty";
@@ -150,11 +167,39 @@ function renderSessions() {
 
     const meta = document.createElement("div");
     meta.className = "session-meta";
-    meta.innerHTML = `<span>${item.source === "codex" ? "codex history" : item.status}</span><span>${formatTime(item.updated_at || item.created_at)}</span>`;
+    const source = document.createElement("span");
+    source.textContent = item.source === "codex" ? "Codex 历史" : displayStatus(item.status);
+    const time = document.createElement("span");
+    time.textContent = formatTime(item.updated_at || item.created_at);
+    meta.appendChild(source);
+    meta.appendChild(time);
 
     button.appendChild(title);
     button.appendChild(meta);
     el.sessionsList.appendChild(button);
+  }
+}
+
+function displayStatus(status) {
+  switch (status) {
+    case "running":
+      return "运行中";
+    case "history":
+      return "历史";
+    case "waiting_for_input":
+      return "待输入";
+    case "waiting_for_approval":
+      return "待审批";
+    case "completed":
+      return "完成";
+    case "failed":
+      return "失败";
+    case "closed":
+      return "已结束";
+    case "idle":
+      return "空闲";
+    default:
+      return String(status || "").replaceAll("_", " ");
   }
 }
 
@@ -206,7 +251,7 @@ async function loadSessionMessages(session) {
 
   if (session.source === "codex" || session.resume_id) {
     try {
-      const data = await api(`/api/sessions/${session.id}/messages`);
+      const data = await api(`/api/sessions/${session.id}/messages?limit=120`);
       for (const item of data.messages || []) {
         const kind = item.role === "assistant" ? "assistant" : "user";
         const key = `${kind}:${item.content}`;
@@ -254,8 +299,27 @@ function textInputFocused() {
 
 function scheduleTerminalFit() {
   window.clearTimeout(state.terminalResizeTimer);
-  if (textInputFocused()) return;
+  if (textInputFocused()) {
+    ensureFocusedInputVisible();
+    return;
+  }
   state.terminalResizeTimer = window.setTimeout(fitTerminal, 120);
+}
+
+function updateViewportHeight() {
+  const viewport = window.visualViewport;
+  const height = viewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+  if (textInputFocused()) ensureFocusedInputVisible();
+}
+
+function ensureFocusedInputVisible() {
+  window.setTimeout(() => {
+    const active = document.activeElement;
+    if (active === el.promptInput || active === el.tokenInput) {
+      active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, 80);
 }
 
 function resetTerminal() {
@@ -303,7 +367,7 @@ function latestAssistantBlock(text) {
     .filter(Boolean);
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (/[•●]\s+/.test(lines[i])) {
+    if (isAssistantStartLine(lines[i])) {
       start = i;
       break;
     }
@@ -311,15 +375,46 @@ function latestAssistantBlock(text) {
   if (start < 0) return "";
   const parts = [];
   for (let i = start; i < Math.min(lines.length, start + 16); i++) {
+    if (parts.length && shouldStopAfterAssistantStart(lines[i])) break;
     let line = lines[i].replace(/^.*?[•●]\s+/, "").trim();
     if (!line) continue;
-    if (/^(›|>|model:|directory:|permissions:|Run |Starting MCP|Tip:|\[agentd\])/.test(line)) break;
-    if (/^(OpenAI Codex|Under-development features enabled)/.test(line)) break;
+    if (isTerminalChrome(line) || isStatusLine(line) || isStatusFragment(line)) break;
     parts.push(line);
   }
   const textOut = parts.join("\n").trim();
   if (textOut.length < 2) return "";
   return textOut.slice(0, 4000);
+}
+
+function isAssistantStartLine(line) {
+  const trimmed = line.trim();
+  if (!/^[•●]\s+/.test(trimmed)) return false;
+  const content = trimmed.replace(/^[•●]\s+/, "").trim();
+  return Boolean(content) && !isTerminalChrome(content) && !isStatusLine(trimmed) && !isStatusLine(content) && !isStatusFragment(content);
+}
+
+function shouldStopAfterAssistantStart(line) {
+  const trimmed = line.trim();
+  if (isTerminalChrome(trimmed) || isStatusLine(trimmed) || isStatusFragment(trimmed)) return true;
+  return /^[•●]\s+/.test(trimmed);
+}
+
+function isTerminalChrome(line) {
+  return /^(›|>|model:|directory:|permissions:|Run |Starting MCP|Tip:|\[agentd\])/.test(line) ||
+    /^(OpenAI Codex|Under-development features enabled)/.test(line);
+}
+
+function isStatusLine(line) {
+  return line.includes("esc to interrupt") ||
+    /^Working/.test(line) ||
+    /^[◦⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line);
+}
+
+function isStatusFragment(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  if ("Working".startsWith(trimmed)) return true;
+  return trimmed.length <= 3 && /^\d+$/.test(trimmed);
 }
 
 function addOrUpdateAssistant(text) {
@@ -341,6 +436,8 @@ function addOrUpdateAssistant(text) {
 async function loadProjects(keepSelection = false) {
   const previous = state.selectedProject;
   const data = await api("/api/projects");
+  state.apiReady = true;
+  state.apiError = "";
   state.projects = data.projects || [];
   el.projectSelect.innerHTML = "";
   for (const project of state.projects) {
@@ -496,6 +593,8 @@ function sendComposer() {
 
 el.saveToken.onclick = async () => {
   state.token = el.tokenInput.value.trim();
+  state.apiReady = false;
+  state.apiError = "";
   sessionStorage.setItem("agentd_token", state.token);
   render();
   try {
@@ -503,11 +602,20 @@ el.saveToken.onclick = async () => {
     await loadSessions(true);
     writeLog("项目和会话已加载");
   } catch (err) {
+    state.apiReady = false;
+    state.apiError = err.message;
+    render();
     writeLog(`认证或加载失败：${err.message}`);
   }
 };
 
-el.refreshProjects.onclick = () => loadProjects(true).catch((err) => writeLog(err.message));
+el.refreshProjects.onclick = () =>
+  loadProjects(true).catch((err) => {
+    state.apiReady = false;
+    state.apiError = err.message;
+    render();
+    writeLog(err.message);
+  });
 el.projectSelect.onchange = async () => {
   state.selectedProject = el.projectSelect.value;
   state.sessionId = "";
@@ -550,7 +658,19 @@ el.promptInput.addEventListener("keydown", (event) => {
 });
 el.promptInput.addEventListener("blur", scheduleTerminalFit);
 el.tokenInput.addEventListener("blur", scheduleTerminalFit);
+el.promptInput.addEventListener("focus", ensureFocusedInputVisible);
+el.tokenInput.addEventListener("focus", ensureFocusedInputVisible);
 window.addEventListener("resize", scheduleTerminalFit);
+window.addEventListener("resize", updateViewportHeight);
+window.visualViewport?.addEventListener("resize", () => {
+  updateViewportHeight();
+  scheduleTerminalFit();
+});
+window.visualViewport?.addEventListener("scroll", updateViewportHeight);
+
+if ("ResizeObserver" in window) {
+  new ResizeObserver(scheduleTerminalFit).observe(el.terminal);
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -562,9 +682,15 @@ if ("serviceWorker" in navigator) {
 }
 
 render();
+updateViewportHeight();
 writeLog("等待连接");
 if (state.token) {
   loadProjects()
     .then(() => loadSessions(true))
-    .catch((err) => writeLog(`自动连接失败：${err.message}`));
+    .catch((err) => {
+      state.apiReady = false;
+      state.apiError = err.message;
+      render();
+      writeLog(`自动连接失败：${err.message}`);
+    });
 }

@@ -6,80 +6,132 @@ struct ConversationView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            topStatusStrip
             messageList
-            ComposerView()
+            HStack {
+                Spacer(minLength: 0)
+                ComposerView()
+                    .frame(maxWidth: 920)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 14)
         }
-        .background(Color(.systemBackground))
+        .background(workbenchBackground.ignoresSafeArea())
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(sessionStore.selectedSession?.title ?? "选择或新建会话")
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    @ViewBuilder
+    private var topStatusStrip: some View {
+        if sessionStore.errorMessage != nil || sessionStore.selectedForegroundActivity != nil {
+            HStack {
+                Spacer(minLength: 0)
+                foregroundStatus
+                Spacer(minLength: 0)
             }
-            Spacer()
-            if let message = sessionStore.errorMessage {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
-            } else if let message = sessionStore.statusMessage {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            .padding(.horizontal, 24)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
     }
 
-    private var subtitle: String {
-        if let session = sessionStore.selectedSession {
-            return "\(session.project) · \(session.id)"
+    @ViewBuilder
+    private var foregroundStatus: some View {
+        if let message = sessionStore.errorMessage {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(statusChipBackground)
+                .clipShape(Capsule())
+        } else if let activity = sessionStore.selectedForegroundActivity {
+            HStack(spacing: 7) {
+                if activity.showsSpinner {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.green)
+                } else {
+                    Circle()
+                        .fill(.green)
+                        .frame(width: 7, height: 7)
+                }
+                Text(activity.title)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(workbenchSecondaryText)
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(statusChipBackground)
+            .clipShape(Capsule())
         }
-        if let project = sessionStore.selectedProject {
-            return project.path
-        }
-        return "请先配置 agentd 并选择项目"
     }
 
     private var messageList: some View {
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
-        return ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    if messages.isEmpty {
-                        ContentUnavailableView(
-                            "还没有对话",
-                            systemImage: "message",
-                            description: Text("选择历史会话会加载 Codex 上下文；输入任务会启动或继续当前会话。")
-                        )
-                        .padding(.top, 80)
-                    } else {
-                        ForEach(messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
+        return GeometryReader { geometry in
+            let contentWidth = max(0, geometry.size.width - 48)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if messages.isEmpty {
+                            emptyState
+                            .padding(.top, 80)
+                        } else {
+                            ForEach(messages) { message in
+                                MessageRow(message: message, rowWidth: contentWidth)
+                                    .id(message.id)
+                            }
                         }
                     }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
+                    .frame(width: geometry.size.width, alignment: .topLeading)
                 }
-                .padding(18)
-            }
-            .onChange(of: messages.count) { _, _ in
-                scrollToBottom(messages: messages, proxy: proxy)
-            }
-            .onChange(of: messages.last?.content) { _, _ in
-                scrollToBottom(messages: messages, proxy: proxy)
+                .onChange(of: messages.count) { _, _ in
+                    scrollToBottom(messages: messages, proxy: proxy)
+                }
+                .onChange(of: messages.last?.content) { _, _ in
+                    scrollToBottom(messages: messages, proxy: proxy)
+                }
             }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "message")
+                .font(.title2)
+                .foregroundStyle(workbenchSecondaryText)
+            Text("还没有对话")
+                .font(.headline)
+                .foregroundStyle(workbenchPrimaryText)
+            Text("选择历史会话会加载 Codex 上下文；输入任务会启动或继续当前会话。")
+                .font(.callout)
+                .foregroundStyle(workbenchSecondaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+        }
+        .padding(.vertical, 40)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var workbenchBackground: Color {
+        Color(red: 0.10, green: 0.13, blue: 0.18)
+    }
+
+    private var statusChipBackground: Color {
+        Color.white.opacity(0.07)
+    }
+
+    private var workbenchPrimaryText: Color {
+        Color.white.opacity(0.90)
+    }
+
+    private var workbenchSecondaryText: Color {
+        Color.white.opacity(0.62)
     }
 
     private func scrollToBottom(messages: [ConversationMessage], proxy: ScrollViewProxy) {
@@ -92,35 +144,63 @@ struct ConversationView: View {
     }
 }
 
-private struct MessageBubble: View {
+private struct MessageRow: View {
     let message: ConversationMessage
+    let rowWidth: CGFloat
 
     var body: some View {
         HStack {
             if message.role == .user {
-                Spacer(minLength: 80)
+                Spacer(minLength: 24)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            MessageBubble(message: message)
+            if message.role != .user {
+                Spacer(minLength: 24)
+            }
+        }
+        .frame(width: rowWidth, alignment: rowAlignment)
+    }
+
+    private var rowAlignment: Alignment {
+        message.role == .user ? .trailing : .leading
+    }
+}
+
+private struct MessageBubble: View {
+    let message: ConversationMessage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if message.role == .system {
                 Text(roleTitle)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text(message.content)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(Color.white.opacity(0.56))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(background)
-            .foregroundStyle(foreground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(border, lineWidth: 1)
-            )
-            if message.role != .user {
-                Spacer(minLength: 80)
-            }
+            Text(message.content)
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(background)
+        .foregroundStyle(foreground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(border, lineWidth: 1)
+        )
+        .frame(maxWidth: maxBubbleWidth, alignment: .leading)
+    }
+
+    private var maxBubbleWidth: CGFloat {
+        switch message.role {
+        case .user:
+            return 560
+        case .assistant:
+            return 720
+        case .system:
+            return 640
         }
     }
 
@@ -138,24 +218,31 @@ private struct MessageBubble: View {
     private var background: Color {
         switch message.role {
         case .user:
-            return Color.primary
+            return Color(red: 0.42, green: 0.28, blue: 0.08)
         case .assistant:
-            return Color(.secondarySystemBackground)
+            return Color.clear
         case .system:
             return Color.orange.opacity(0.12)
         }
     }
 
     private var foreground: Color {
-        message.role == .user ? Color(.systemBackground) : Color.primary
+        switch message.role {
+        case .user:
+            return .white
+        case .assistant:
+            return Color.white.opacity(0.88)
+        case .system:
+            return Color.white.opacity(0.80)
+        }
     }
 
     private var border: Color {
         switch message.role {
         case .user:
-            return Color.clear
+            return Color.orange.opacity(0.35)
         case .assistant:
-            return Color.secondary.opacity(0.18)
+            return Color.clear
         case .system:
             return Color.orange.opacity(0.25)
         }

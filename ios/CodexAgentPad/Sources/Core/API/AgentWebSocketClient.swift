@@ -1,13 +1,18 @@
 import Foundation
 
-final class AgentWebSocketClient {
+final class AgentWebSocketClient: NSObject {
     var onEvent: ((AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
+    var onSendFailure: ((ClientMessageID?, String) -> Void)?
 
     private var task: URLSessionWebSocketTask?
+    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
     private let encoder = JSONEncoder()
     private let decoder = AgentAPIClient.decoder
     private var isConnected = false
+    private var isConnecting = false
+    private var isDisconnecting = false
+    private var pendingMessages: [ClientWebSocketMessage] = []
 
     func connect(url: URL, token: String) {
         disconnect()
@@ -17,12 +22,11 @@ final class AgentWebSocketClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         onStatus?(.connecting)
-        let task = URLSession.shared.webSocketTask(with: request)
+        isConnecting = true
+        isDisconnecting = false
+        let task = session.webSocketTask(with: request)
         self.task = task
-        self.isConnected = true
         task.resume()
-        onStatus?(.connected)
-        receiveLoop()
     }
 
     @discardableResult
@@ -51,7 +55,10 @@ final class AgentWebSocketClient {
     }
 
     func disconnect() {
+        isDisconnecting = true
+        isConnecting = false
         isConnected = false
+        pendingMessages.removeAll()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         onStatus?(.disconnected)
@@ -59,30 +66,60 @@ final class AgentWebSocketClient {
 
     @discardableResult
     private func send(_ message: ClientWebSocketMessage) -> Bool {
-        guard let task, isConnected else {
+        guard let task else {
             onStatus?(.failed("WebSocket 未连接"))
             return false
         }
+        guard isConnected else {
+            if isConnecting {
+                // 移动端重连期间允许先接住用户输入，等 didOpen 后再统一发给 agentd。
+                pendingMessages.append(message)
+                onStatus?(.connecting)
+                return true
+            }
+            onStatus?(.failed("WebSocket 未连接"))
+            return false
+        }
+        return sendNow(message, task: task)
+    }
+
+    @discardableResult
+    private func sendNow(_ message: ClientWebSocketMessage, task: URLSessionWebSocketTask) -> Bool {
         do {
             let data = try encoder.encode(message)
             let text = String(decoding: data, as: UTF8.self)
             task.send(.string(text)) { [weak self] error in
                 if let error {
                     self?.isConnected = false
+                    self?.isConnecting = false
+                    self?.onSendFailure?(message.clientMessageID, error.localizedDescription)
                     self?.onStatus?(.failed(error.localizedDescription))
                 }
             }
             return true
         } catch {
             isConnected = false
+            isConnecting = false
+            onSendFailure?(message.clientMessageID, error.localizedDescription)
             onStatus?(.failed(error.localizedDescription))
             return false
         }
     }
 
+    private func flushPendingMessages() {
+        guard let task, isConnected else {
+            return
+        }
+        let messages = pendingMessages
+        pendingMessages.removeAll()
+        for message in messages {
+            _ = sendNow(message, task: task)
+        }
+    }
+
     private func receiveLoop() {
         task?.receive { [weak self] result in
-            guard let self, self.isConnected else {
+            guard let self, self.task != nil else {
                 return
             }
             switch result {
@@ -91,6 +128,10 @@ final class AgentWebSocketClient {
                 self.receiveLoop()
             case .failure(let error):
                 self.isConnected = false
+                self.isConnecting = false
+                guard !self.isDisconnecting else {
+                    return
+                }
                 self.onStatus?(.failed(error.localizedDescription))
             }
         }
@@ -111,6 +152,40 @@ final class AgentWebSocketClient {
             onEvent?(event)
         } catch {
             onStatus?(.failed("WebSocket 消息解析失败：\(error.localizedDescription)"))
+        }
+    }
+}
+
+extension AgentWebSocketClient: URLSessionWebSocketDelegate {
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol selectedProtocol: String?
+    ) {
+        guard webSocketTask == task else {
+            return
+        }
+        isConnecting = false
+        isConnected = true
+        onStatus?(.connected)
+        receiveLoop()
+        flushPendingMessages()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        guard webSocketTask == task else {
+            return
+        }
+        isConnecting = false
+        isConnected = false
+        task = nil
+        if !isDisconnecting {
+            onStatus?(.disconnected)
         }
     }
 }

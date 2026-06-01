@@ -40,6 +40,30 @@ struct AgentSession: Identifiable, Codable, Hashable {
         status == "running"
     }
 
+    var displayStatusText: String {
+        // UI 只展示短状态，避免 iPad 侧栏里出现 waiting_for_approval 这类长英文撑破布局。
+        switch status {
+        case "running":
+            return "运行中"
+        case "history":
+            return "历史"
+        case "waiting_for_input":
+            return "待输入"
+        case "waiting_for_approval":
+            return "待审批"
+        case "completed":
+            return "完成"
+        case "failed":
+            return "失败"
+        case "closed":
+            return "已结束"
+        case "idle":
+            return "空闲"
+        default:
+            return status.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
     init(
         id: SessionID,
         projectID: String,

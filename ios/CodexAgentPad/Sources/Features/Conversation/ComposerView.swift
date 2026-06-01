@@ -6,84 +6,152 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Divider()
+            if let activity = sessionStore.selectedForegroundActivity {
+                composerActivity(activity)
+            }
             TextEditor(text: $draft)
                 .font(.body)
+                .foregroundStyle(Color.white.opacity(0.90))
                 .frame(minHeight: 72, maxHeight: 130)
                 .onKeyPress { keyPress in
                     guard keyPress.key == .return else {
                         return .ignored
                     }
-                    if keyPress.modifiers.contains(.shift) {
+                    // 普通回车交给 TextEditor 换行；只有 Command + 回车才提交消息。
+                    guard keyPress.modifiers.contains(.command) else {
                         return .ignored
                     }
-                    submitDraft()
-                    return .handled
+                    return submitDraft() ? .handled : .ignored
                 }
                 .padding(10)
-                .background(Color(.secondarySystemBackground))
+                .scrollContentBackground(.hidden)
+                .background(Color.white.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(0.18))
+                        .strokeBorder(Color.white.opacity(0.12))
                 )
                 .overlay(alignment: .topLeading) {
                     if draft.isEmpty {
                         Text("输入任务或后续指令")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.white.opacity(0.42))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 18)
                             .allowsHitTesting(false)
                     }
                 }
 
-            HStack(spacing: 10) {
-                Button {
-                    sessionStore.sendCtrlC()
-                } label: {
-                    Label("Ctrl-C", systemImage: "stop.circle")
-                }
-                .buttonStyle(.bordered)
-                .disabled(sessionStore.selectedSession?.isRunning != true)
-
-                Button {
-                    sessionStore.sendEnter()
-                } label: {
-                    Label("Enter", systemImage: "return")
-                }
-                .buttonStyle(.bordered)
-                .disabled(sessionStore.selectedSession?.isRunning != true)
-
-                Button(role: .destructive) {
-                    Task { await sessionStore.stopSelectedSession() }
-                } label: {
-                    Label("停止", systemImage: "xmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .disabled(sessionStore.selectedSession?.isRunning != true)
-
-                Spacer()
-
-                Button {
-                    submitDraft()
-                } label: {
-                    Label("发送", systemImage: "paperplane.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sessionStore.isLoading)
+            ViewThatFits(in: .horizontal) {
+                horizontalActions
+                compactActions
             }
             .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(14)
-        .background(Color(.systemBackground))
+        .padding(12)
+        .background(Color.black.opacity(0.16))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08))
+        )
     }
 
-    private func submitDraft() {
+    @discardableResult
+    private func submitDraft() -> Bool {
         let text = draft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !sessionStore.isLoading else {
-            return
+            return false
         }
         draft = ""
-        Task { await sessionStore.sendPrompt(text) }
+        Task {
+            let accepted = await sessionStore.sendPrompt(text)
+            if !accepted {
+                await MainActor.run {
+                    draft = text
+                }
+            }
+        }
+        return true
+    }
+
+    private var canSubmitDraft: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sessionStore.isLoading
+    }
+
+    private var horizontalActions: some View {
+        HStack(spacing: 10) {
+            terminalControls
+            Spacer(minLength: 12)
+            sendButton
+        }
+    }
+
+    private var compactActions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            terminalControls
+            HStack {
+                Spacer()
+                sendButton
+            }
+        }
+    }
+
+    private var terminalControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                sessionStore.sendCtrlC()
+            } label: {
+                Label("Ctrl-C", systemImage: "stop.circle")
+            }
+            .buttonStyle(.bordered)
+            .disabled(sessionStore.selectedSession?.isRunning != true)
+
+            Button {
+                submitDraft()
+            } label: {
+                Label("Enter", systemImage: "return")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canSubmitDraft)
+
+            Button(role: .destructive) {
+                Task { await sessionStore.stopSelectedSession() }
+            } label: {
+                Label("停止", systemImage: "xmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .disabled(sessionStore.selectedSession?.isRunning != true)
+        }
+    }
+
+    private var sendButton: some View {
+        Button {
+            submitDraft()
+        } label: {
+            Label("发送", systemImage: "paperplane.fill")
+        }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(!canSubmitDraft)
+    }
+
+    private func composerActivity(_ activity: SessionForegroundActivity) -> some View {
+        HStack(spacing: 7) {
+            if activity.showsSpinner {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.green)
+            } else {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 7, height: 7)
+            }
+            Text(activity.title)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(Color.white.opacity(0.62))
     }
 }

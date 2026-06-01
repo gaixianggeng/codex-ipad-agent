@@ -228,3 +228,19 @@ func TestSessionMessagesReturnsEmptyPageForLiveSession(t *testing.T) {
 		t.Fatalf("期望 live session 消息页为空：%v", body)
 	}
 }
+
+func TestSessionMessagesDoesNot404ForMissingCodexHistory(t *testing.T) {
+	server := newTestServer(t)
+	msgRec := httptest.NewRecorder()
+
+	server.handler.ServeHTTP(msgRec, authedRequest(t, http.MethodGet, "/api/sessions/codex_missing-thread/messages", nil))
+
+	if msgRec.Code != http.StatusOK {
+		t.Fatalf("缺失 Codex rollout 不应让详情页 404，实际 %d body=%s", msgRec.Code, msgRec.Body.String())
+	}
+	body := decodeJSON(t, msgRec)
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 0 {
+		t.Fatalf("期望缺失历史返回空消息页：%v", body)
+	}
+}

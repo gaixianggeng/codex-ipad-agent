@@ -1,8 +1,8 @@
-const CACHE_NAME = "codex-ipad-agent-v11";
+const CACHE_NAME = "codex-ipad-agent-v13";
 const APP_SHELL = [
-  "/app.css?v=11",
-  "/terminal-log.js?v=11",
-  "/app.js?v=11",
+  "/app.css?v=13",
+  "/terminal-log.js?v=13",
+  "/app.js?v=13",
   "/manifest.webmanifest",
   "/icons/icon.svg",
   "/vendor/xterm/xterm.css",

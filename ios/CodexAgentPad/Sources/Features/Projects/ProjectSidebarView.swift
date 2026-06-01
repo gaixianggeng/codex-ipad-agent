@@ -109,6 +109,7 @@ private struct ProjectRow: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
+                    .layoutPriority(1)
                     Spacer(minLength: 8)
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption.weight(.semibold))
@@ -142,8 +143,10 @@ private struct SessionRow: View {
                 Text(session.title)
                     .font(.subheadline.weight(isSelected ? .semibold : .regular))
                     .lineLimit(2)
+                    .layoutPriority(1)
                 Spacer(minLength: 8)
-                StatusPill(text: statusText, kind: session.status == "running" ? .success : .neutral)
+                StatusPill(text: statusText, kind: statusKind)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             HStack {
                 Text(session.source == "codex" ? "Codex" : "agentd")
@@ -162,13 +165,17 @@ private struct SessionRow: View {
     }
 
     private var statusText: String {
+        session.displayStatusText
+    }
+
+    private var statusKind: StatusPill.Kind {
         switch session.status {
         case "running":
-            return "运行中"
-        case "history":
-            return "历史"
+            return .success
+        case "failed", "waiting_for_approval":
+            return .warning
         default:
-            return session.status
+            return .neutral
         }
     }
 }

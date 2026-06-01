@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 	}
 	output, detach, err := s.Attach()
 	if err != nil {
+		log.Printf("ws attach failed session=%s err=%v", id, err)
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -33,9 +35,11 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 
 	conn, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
+		log.Printf("ws upgrade failed session=%s err=%v", id, err)
 		return
 	}
 	defer conn.Close()
+	log.Printf("ws connected session=%s", id)
 
 	var writeMu sync.Mutex
 	send := func(msg wsMessage) bool {
@@ -62,15 +66,19 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 			}
 			switch msg.Type {
 			case "input":
+				log.Printf("ws input session=%s bytes=%d", id, len(msg.Data))
 				if err := s.Write(msg.Data); err != nil {
+					log.Printf("ws input failed session=%s err=%v", id, err)
 					send(wsMessage{Type: "error", Error: err.Error()})
 				}
 			case "resize":
 				if err := s.Resize(msg.Cols, msg.Rows); err != nil {
+					log.Printf("ws resize failed session=%s cols=%d rows=%d err=%v", id, msg.Cols, msg.Rows, err)
 					send(wsMessage{Type: "error", Error: err.Error()})
 				}
 			case "signal":
 				if msg.Data == "ctrl_c" {
+					log.Printf("ws signal session=%s data=ctrl_c", id)
 					_ = s.Write("\x03")
 				}
 			case "ping":
@@ -91,6 +99,7 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 			send(wsMessage{Type: "exit", Exit: s.ExitResult()})
 			return
 		case <-done:
+			log.Printf("ws disconnected session=%s", id)
 			return
 		case <-req.Context().Done():
 			return

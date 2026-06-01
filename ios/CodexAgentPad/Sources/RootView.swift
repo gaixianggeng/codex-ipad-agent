@@ -5,6 +5,7 @@ struct RootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingSettings = false
+    @State private var showingLogInspector = false
 
     var body: some View {
         Group {
@@ -35,10 +36,17 @@ struct RootView: View {
             ProjectSidebarView()
                 .navigationTitle("Codex")
                 .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
-        } content: {
+        } detail: {
             ConversationView()
                 .navigationTitle(sessionStore.selectedSession?.title ?? sessionStore.selectedProject?.name ?? "会话")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(workbenchBackground, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        AgentWorkbenchTitle()
+                    }
                     ToolbarItem(placement: .topBarLeading) {
                         if sessionStore.selectedSessionID != nil {
                             Button {
@@ -52,26 +60,55 @@ struct RootView: View {
                         if let badgeTitle = sessionStore.connectionBadgeTitle {
                             StatusPill(text: badgeTitle, kind: connectionBadgeKind)
                         }
-                        Button {
-                            Task { await sessionStore.refreshAll(autoAttach: false) }
-                        } label: {
-                            Label("刷新", systemImage: "arrow.clockwise")
+                        if sessionStore.selectedSessionID != nil {
+                            Button {
+                                showingLogInspector.toggle()
+                            } label: {
+                                Label("日志", systemImage: "sidebar.right")
+                            }
+                            .labelStyle(.iconOnly)
+                            .accessibilityLabel(showingLogInspector ? "隐藏日志" : "显示日志")
+                        }
+                        if sessionStore.isLoading || sessionStore.isRefreshingSelectedSession {
+                            ToolbarIconFrame {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(.orange)
+                            }
+                            .accessibilityLabel("正在刷新")
+                        } else {
+                            Button {
+                                Task { await sessionStore.refreshCurrentContext() }
+                            } label: {
+                                ToolbarIconFrame {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            .accessibilityLabel(sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话")
                         }
                         Button {
                             showingSettings = true
                         } label: {
                             Label("设置", systemImage: "gearshape")
                         }
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel("设置")
                     }
                 }
-        } detail: {
-            LogPanelView()
-                .navigationTitle("日志")
-                .navigationBarTitleDisplayMode(.inline)
-                // 终端只是辅助观察区，默认压到窄栏，把主空间留给对话。
-                .navigationSplitViewColumnWidth(min: 160, ideal: 210, max: 260)
+                .inspector(isPresented: $showingLogInspector) {
+                    LogPanelView()
+                        // 日志作为辅助 inspector，不参与主 split 的空间分配。
+                        .inspectorColumnWidth(min: 220, ideal: 260, max: 320)
+                }
         }
         .navigationSplitViewStyle(.balanced)
+        .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
+            if sessionID == nil {
+                showingLogInspector = false
+            }
+        }
     }
 
     private var connectionBadgeKind: StatusPill.Kind {
@@ -82,6 +119,85 @@ struct RootView: View {
             return .warning
         }
         return .neutral
+    }
+
+    private var workbenchBackground: Color {
+        Color(red: 0.10, green: 0.13, blue: 0.18)
+    }
+}
+
+private struct AgentWorkbenchTitle: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+
+    var body: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 6) {
+                statusDot
+                Text(primaryText)
+                    .font(.subheadline.monospaced().weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            Text(secondaryText)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
+        }
+        .frame(maxWidth: 360)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var statusDot: some View {
+        if sessionStore.selectedForegroundActivity != nil {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.green)
+        } else {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 7, height: 7)
+        }
+    }
+
+    private var dotColor: Color {
+        if sessionStore.selectedSession?.isRunning == true, sessionStore.webSocketStatus == .connected {
+            return .green
+        }
+        if case .failed = sessionStore.webSocketStatus {
+            return .orange
+        }
+        return .secondary.opacity(0.65)
+    }
+
+    private var primaryText: String {
+        if let session = sessionStore.selectedSession {
+            return session.project.isEmpty ? "Codex" : session.project
+        }
+        return sessionStore.selectedProject?.name ?? "Codex"
+    }
+
+    private var secondaryText: String {
+        if let session = sessionStore.selectedSession {
+            return session.title.isEmpty ? session.dir : session.title
+        }
+        return sessionStore.selectedProject?.path ?? "请选择项目"
+    }
+}
+
+private struct ToolbarIconFrame<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(width: 34, height: 30)
+            .background(Color.secondary.opacity(0.12))
+            .clipShape(Capsule())
     }
 }
 
@@ -98,6 +214,8 @@ struct StatusPill: View {
     var body: some View {
         Text(text)
             .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .minimumScaleFactor(0.86)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(background)

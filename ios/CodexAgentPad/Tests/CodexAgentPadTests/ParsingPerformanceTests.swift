@@ -27,6 +27,38 @@ final class ParsingPerformanceTests: XCTestCase {
         XCTAssertFalse(parsed.contains("第一条回复"))
     }
 
+    func testParserIgnoresWorkingStatusAfterAssistantBubble() {
+        let transcript = """
+        › hi
+        • Working (3s • esc to interrupt)
+        │ • Hi，我在。测试会话继续正常。
+        ◦ Working (4s • esc to interrupt)
+        W
+        › Implement {feature}
+        """
+
+        let parsed = CodexOutputParser().latestAssistantBlock(from: transcript)
+
+        XCTAssertEqual(parsed, "Hi，我在。测试会话继续正常。")
+    }
+
+    func testParserSkipsRedrawnStatusFragmentsAfterAssistantBubble() {
+        let transcript = """
+        › 测试
+        │ • 测试正常，我这边在线。
+        │ • 6
+        ◦ Working
+        W
+        Wo
+        Wor
+        › Summarize recent commits
+        """
+
+        let parsed = CodexOutputParser().latestAssistantBlock(from: transcript)
+
+        XCTAssertEqual(parsed, "测试正常，我这边在线。")
+    }
+
     func testParserPerformanceWithLargeTerminalTranscript() {
         let chunk = """
         model: gpt-5
