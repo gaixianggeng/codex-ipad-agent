@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -69,10 +70,16 @@ func TestSessionSnapshotIfProjectFiltersBeforeCopy(t *testing.T) {
 		t.Fatal("目标项目应返回 active session 快照")
 	}
 	if snapshot.ID != "sess_demo" || snapshot.ProjectID != "demo" {
-		t.Fatalf("快照基础字段异常：%+v", snapshot)
+		t.Fatalf("快照基础字段异常：id=%q project_id=%q", snapshot.ID, snapshot.ProjectID)
 	}
-	if snapshot.buffer != nil || snapshot.subscribers != nil || snapshot.trace != nil || snapshot.done != nil {
-		t.Fatalf("快照不应暴露运行态字段：%+v", snapshot)
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"buffer", "subscribers", "trace", "done"} {
+		if strings.Contains(string(data), field) {
+			t.Fatalf("快照 JSON 不应暴露运行态字段 %q：%s", field, data)
+		}
 	}
 }
 
@@ -94,8 +101,8 @@ func TestSessionSnapshotIfProjectBeforeCursorFiltersInLock(t *testing.T) {
 	if !ok {
 		t.Fatal("同一 updated_at 下 id 小于 cursor 的运行会话应返回")
 	}
-	if snapshot.ID != "sess_beta" || snapshot.buffer != nil {
-		t.Fatalf("cursor 过滤后的快照异常：%+v", snapshot)
+	if snapshot.ID != "sess_beta" {
+		t.Fatalf("cursor 过滤后的快照 ID 异常：%q", snapshot.ID)
 	}
 }
 
@@ -156,7 +163,7 @@ func TestCreateWithFakeCodexUsesProjectDirAndBoundsTerminalSize(t *testing.T) {
 
 	snapshot := session.Snapshot()
 	if snapshot.ProjectID != "demo" || snapshot.Dir != projectDir {
-		t.Fatalf("session 未保存 allowlist 项目信息：%+v", snapshot)
+		t.Fatalf("session 未保存 allowlist 项目信息：project_id=%q dir=%q", snapshot.ProjectID, snapshot.Dir)
 	}
 	if snapshot.Title != "hello world" {
 		t.Fatalf("标题应来自 prompt：%q", snapshot.Title)

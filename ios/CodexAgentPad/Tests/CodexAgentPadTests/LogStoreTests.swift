@@ -188,4 +188,27 @@ final class LogStoreTests: XCTestCase {
         XCTAssertEqual(lines.last?.id, 464)
         XCTAssertEqual(lines.last?.text, "line 364")
     }
+
+    func testLogFormatterCollapsesInlineRepeatedSentences() {
+        // Codex TUI 在同一行里把整句重画两遍，旧逻辑会原样展示重复内容。
+        let log = "● 他说：\"那你得放松。\" 他说：\"那你得放松。\"\n"
+
+        let lines = LogPanelFormatter().renderedLines(from: log)
+
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines.first?.text, "他说：\"那你得放松。\"")
+    }
+
+    func testLogFormatterDedupsAdjacentRedrawWithPromptChrome() {
+        // 相邻两行只差尾部输入框占位符（"… ›Implement {feature} …"），应被视为同一行。
+        let log = [
+            "● 数据库管理员去看病。",
+            "● 数据库管理员去看病。 ›Implement {feature} gpt-5.5 xhigh fast · ~/code",
+        ].joined(separator: "\n")
+
+        let lines = LogPanelFormatter().renderedLines(from: log)
+
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines.first?.text, "数据库管理员去看病。")
+    }
 }

@@ -175,16 +175,20 @@ struct LogPanelFormatter {
             .map { normalizeTerminalLine(String($0)) }
 
         var result: [LogDisplayLine] = []
-        var lastText = ""
+        var lastKey = ""
         for (rawIndex, rawLine) in normalizedLines.enumerated() {
             guard let line = makeDisplayLine(from: rawLine, id: startLineID + rawIndex) else {
                 continue
             }
-            guard line.text != lastText else {
+            // 按归一化后的语义文本去重：TUI 流式重绘常常只差尾部输入框占位符或空白，
+            // 原来的“严格相邻相等”挡不住，这里用压缩后的 key 把这些近似重复行合并掉。
+            let dedupKey = AssistantTextNormalizer.normalizedAssistantTextForDedup(line.text)
+            let effectiveKey = dedupKey.isEmpty ? line.text : dedupKey
+            guard effectiveKey != lastKey else {
                 continue
             }
             result.append(line)
-            lastText = line.text
+            lastKey = effectiveKey
         }
         return Array(result.suffix(maxRenderedLogLines))
     }
@@ -205,9 +209,20 @@ struct LogPanelFormatter {
             return LogDisplayLine(id: id, text: stripPromptPrefix(trimmed), kind: .command)
         }
         if trimmed.hasPrefix("•") || trimmed.hasPrefix("●") {
-            return LogDisplayLine(id: id, text: stripBulletPrefix(trimmed), kind: .assistant)
+            return LogDisplayLine(id: id, text: cleanDisplayText(stripBulletPrefix(trimmed)), kind: .assistant)
         }
-        return LogDisplayLine(id: id, text: trimmed, kind: .output)
+        return LogDisplayLine(id: id, text: cleanDisplayText(trimmed), kind: .output)
+    }
+
+    private func cleanDisplayText(_ text: String) -> String {
+        // 1) 去掉被 TUI 重绘拼到行尾的输入框占位符（"… ›Implement {feature} …"）；
+        // 2) 合并同一行里被重画两遍的句子（"他说X。他说X。" → "他说X。"）。
+        // 失败时回退原文，保证日志不会因为清洗把正常内容清空。
+        let stripped = AssistantTextNormalizer.stripTerminalPromptFragment(text, dropPromptOnlyLine: false)
+        let collapsed = AssistantTextNormalizer
+            .collapseAdjacentRepeatedSentenceSegments(stripped)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? text : collapsed
     }
 
     private func normalizeTerminalLine(_ line: String) -> String {

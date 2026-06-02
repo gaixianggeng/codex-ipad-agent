@@ -34,16 +34,20 @@ type Manager struct {
 }
 
 type Session struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"project_id"`
-	Project   string    `json:"project"`
-	Dir       string    `json:"dir"`
-	Title     string    `json:"title"`
-	Status    string    `json:"status"`
-	Source    string    `json:"source"`
-	ResumeID  string    `json:"resume_id,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Project   string `json:"project"`
+	Dir       string `json:"dir"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	Source    string `json:"source"`
+	ResumeID  string `json:"resume_id,omitempty"`
+	// HistoryThreadID 是运行态 session 与 Codex SQLite/rollout thread 的内存映射。
+	// 新建会话没有 resume_id，Codex 进程启动后才会生成真实 thread id；Go 发现后写到这里，
+	// 让结构化消息读取继续走后端，iOS 只消费 message_completed。
+	HistoryThreadID string    `json:"history_thread_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 
 	cmd    *exec.Cmd
 	ptmx   *os.File
@@ -58,14 +62,32 @@ type Session struct {
 	outputSeq         int64
 	outputReplay      []OutputChunk
 	outputReplayBytes int
+	submittedMessages []SubmittedMessage
 	trace             []TraceEvent
 	exit              ExitResult
 	done              chan struct{}
 }
 
+// SessionSnapshot 是对外返回的会话数据视图，不包含 mutex、PTY、buffer 等运行态字段。
+// 这样快照可以按值传递和 JSON 序列化，同时不会复制正在使用的锁。
+type SessionSnapshot struct {
+	ID              string    `json:"id"`
+	ProjectID       string    `json:"project_id"`
+	Project         string    `json:"project"`
+	Dir             string    `json:"dir"`
+	Title           string    `json:"title"`
+	Status          string    `json:"status"`
+	Source          string    `json:"source"`
+	ResumeID        string    `json:"resume_id,omitempty"`
+	HistoryThreadID string    `json:"history_thread_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 const promptSubmitDelay = 180 * time.Millisecond
 const maxOutputReplayBytes = 256 * 1024
 const maxOutputReplayChunks = 256
+const maxSubmittedMessages = 128
 const maxTraceEvents = 256
 
 // OutputChunk 是实时 PTY 输出块；Seq 只用于客户端去重和回放水位，不改变原始终端内容。
@@ -77,6 +99,15 @@ type OutputChunk struct {
 type OutputSnapshot struct {
 	Data    string
 	LastSeq int64
+}
+
+// SubmittedMessage 记录移动端提交过、带 client_message_id 的用户消息。
+// 它只服务当前内存会话的 history/live 对齐：rollout 落盘后，后端可以把同一条用户消息
+// 标回 client id，避免 iOS 在刷新历史时看到 client:* 和 rollout:* 两条重复用户气泡。
+type SubmittedMessage struct {
+	ClientMessageID string
+	Content         string
+	CreatedAt       time.Time
 }
 
 // TraceEvent 是会话内存里的轻量诊断事件，只记录水位和体积，不复制完整终端输出。
@@ -100,12 +131,13 @@ type ExitResult struct {
 }
 
 type CreateRequest struct {
-	Project  projects.Project
-	Prompt   string
-	ResumeID string
-	Title    string
-	Cols     int
-	Rows     int
+	Project         projects.Project
+	Prompt          string
+	ResumeID        string
+	Title           string
+	Cols            int
+	Rows            int
+	ClientMessageID string
 }
 
 func NewManager(options Options) *Manager {
@@ -306,47 +338,51 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-func (s *Session) Snapshot() Session {
+func (s *Session) Snapshot() SessionSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.snapshotLocked()
 }
 
-func (s *Session) SnapshotIfProject(projectID string) (Session, bool) {
+func (s *Session) SnapshotIfProject(projectID string) (SessionSnapshot, bool) {
 	return s.SnapshotIfProjectBeforeCursor(projectID, "", 0)
 }
 
-func (s *Session) SnapshotIfProjectBeforeCursor(projectID, cursorID string, cursorUpdatedAtMS int64) (Session, bool) {
+func (s *Session) SnapshotIfProjectBeforeCursor(projectID, cursorID string, cursorUpdatedAtMS int64) (SessionSnapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// 项目列表刷新是热路径：先在锁内做轻量 project 判断，避免无关 active session
 	// 继续复制 buffer/subscriber/trace 等运行态字段再被 HTTP 层丢弃。
 	if projectID != "" && s.ProjectID != projectID {
-		return Session{}, false
+		return SessionSnapshot{}, false
 	}
 	if cursorID != "" && cursorUpdatedAtMS > 0 {
 		updatedAtMS := s.updatedAtMSLocked()
 		if updatedAtMS != cursorUpdatedAtMS {
 			if updatedAtMS >= cursorUpdatedAtMS {
-				return Session{}, false
+				return SessionSnapshot{}, false
 			}
 		} else if s.ID >= cursorID {
-			return Session{}, false
+			return SessionSnapshot{}, false
 		}
 	}
 	return s.snapshotLocked(), true
 }
 
-func (s *Session) snapshotLocked() Session {
-	cp := *s
-	cp.cmd = nil
-	cp.ptmx = nil
-	cp.cancel = nil
-	cp.buffer = nil
-	cp.subscribers = nil
-	cp.trace = nil
-	cp.done = nil
-	return cp
+func (s *Session) snapshotLocked() SessionSnapshot {
+	return SessionSnapshot{
+		ID:              s.ID,
+		ProjectID:       s.ProjectID,
+		Project:         s.Project,
+		Dir:             s.Dir,
+		Title:           s.Title,
+		Status:          s.Status,
+		Source:          s.Source,
+		ResumeID:        s.ResumeID,
+		HistoryThreadID: s.HistoryThreadID,
+		CreatedAt:       s.CreatedAt,
+		UpdatedAt:       s.UpdatedAt,
+	}
 }
 
 func (s *Session) updatedAtMSLocked() int64 {
@@ -403,6 +439,44 @@ func (s *Session) RecordTrace(event TraceEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.appendTraceLocked(event)
+}
+
+func (s *Session) RecordSubmittedMessage(message SubmittedMessage) {
+	if strings.TrimSpace(message.ClientMessageID) == "" || strings.TrimSpace(message.Content) == "" {
+		return
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.submittedMessages = append(s.submittedMessages, message)
+	if len(s.submittedMessages) <= maxSubmittedMessages {
+		return
+	}
+	copy(s.submittedMessages, s.submittedMessages[len(s.submittedMessages)-maxSubmittedMessages:])
+	s.submittedMessages = s.submittedMessages[:maxSubmittedMessages]
+}
+
+func (s *Session) SubmittedMessages() []SubmittedMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]SubmittedMessage(nil), s.submittedMessages...)
+}
+
+func (s *Session) SetHistoryThreadID(threadID string) bool {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.HistoryThreadID == threadID {
+		return false
+	}
+	s.HistoryThreadID = threadID
+	s.UpdatedAt = time.Now()
+	return true
 }
 
 func (s *Session) Write(input string) error {

@@ -34,10 +34,13 @@ type row struct {
 }
 
 type Message struct {
-	ID        string    `json:"id,omitempty"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ID              string    `json:"id,omitempty"`
+	Role            string    `json:"role"`
+	Content         string    `json:"content"`
+	CreatedAt       time.Time `json:"created_at"`
+	ClientMessageID string    `json:"client_message_id,omitempty"`
+	Revision        int       `json:"revision,omitempty"`
+	SendStatus      string    `json:"send_status,omitempty"`
 }
 
 type MessagePage struct {
@@ -216,17 +219,17 @@ var messageIndexCache = struct {
 	access cacheAccessTracker
 }{items: map[string]messageIndexCacheEntry{}, access: newCacheAccessTracker()}
 
-func Load(registry *projects.Registry, active []*session.Session) []session.Session {
+func Load(registry *projects.Registry, active []*session.Session) []session.SessionSnapshot {
 	sessions, _ := load(registry, active, "", defaultQueryLimit, PageCursor{})
 	return sessions
 }
 
-func LoadForProject(registry *projects.Registry, active []*session.Session, projectID string, limit int) []session.Session {
+func LoadForProject(registry *projects.Registry, active []*session.Session, projectID string, limit int) []session.SessionSnapshot {
 	sessions, _ := load(registry, active, projectID, limit, PageCursor{})
 	return sessions
 }
 
-func LoadPage(registry *projects.Registry, active []*session.Session, projectID string, limit int, cursor PageCursor) []session.Session {
+func LoadPage(registry *projects.Registry, active []*session.Session, projectID string, limit int, cursor PageCursor) []session.SessionSnapshot {
 	sessions, _ := load(registry, active, projectID, limit, cursor)
 	return sessions
 }
@@ -280,7 +283,7 @@ func Diagnose(registry *projects.Registry, active []*session.Session, projectID 
 	return result
 }
 
-func load(registry *projects.Registry, active []*session.Session, projectID string, limit int, cursor PageCursor) ([]session.Session, error) {
+func load(registry *projects.Registry, active []*session.Session, projectID string, limit int, cursor PageCursor) ([]session.SessionSnapshot, error) {
 	store := defaultThreadStore()
 	if _, err := os.Stat(store.databasePath()); err != nil {
 		return nil, err
@@ -303,21 +306,61 @@ func load(registry *projects.Registry, active []*session.Session, projectID stri
 	return sessions, nil
 }
 
+func LatestThreadIDForProjectSince(project projects.Project, since time.Time) (string, error) {
+	store := defaultThreadStore()
+	return store.LatestThreadIDForProjectSince(project, since)
+}
+
+func (s ThreadStore) LatestThreadIDForProjectSince(project projects.Project, since time.Time) (string, error) {
+	db := s.databasePath()
+	signature, err := readDBSignature(db)
+	if err != nil {
+		return "", err
+	}
+	columns, edgeColumns, err := historyColumns(db, signature)
+	if err != nil {
+		return "", err
+	}
+	// -3s 回看窗口容忍 session 记录时间与 Codex 写库时间之间的时钟偏差。
+	minMS := since.Add(-3 * time.Second).UnixMilli()
+	rows, err := queryRowsSince(db, &project, minMS, 20, columns, edgeColumns)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range rows {
+		if item.ID == "" || isSubagentThread(item, nil) || !isInteractiveSource(item.Source) || isMissingRollout(item) {
+			continue
+		}
+		// 只认“会话开始之后才新建”的 thread：新建会话的真实 thread，或 resume 被 Codex
+		// fork 出来的新 thread。resume 沿用同一 thread 时它的 created_at 在会话开始之前，
+		// 会被这里排除，于是上层回退到 baseline（resume thread），不改变既有 resume 行为。
+		if item.CreatedAtMS > 0 && item.CreatedAtMS < minMS {
+			continue
+		}
+		return item.ID, nil
+	}
+	return "", os.ErrNotExist
+}
+
 func activeThreadIDs(active []*session.Session) map[string]bool {
 	seen := map[string]bool{}
 	for _, s := range active {
-		if s.ResumeID != "" {
-			seen[s.ResumeID] = true
+		snapshot := s.Snapshot()
+		if snapshot.HistoryThreadID != "" {
+			seen[snapshot.HistoryThreadID] = true
 		}
-		if strings.HasPrefix(s.ID, "codex_") {
-			seen[strings.TrimPrefix(s.ID, "codex_")] = true
+		if snapshot.ResumeID != "" {
+			seen[snapshot.ResumeID] = true
+		}
+		if strings.HasPrefix(snapshot.ID, "codex_") {
+			seen[strings.TrimPrefix(snapshot.ID, "codex_")] = true
 		}
 	}
 	return seen
 }
 
-func rowsToSessions(rows []row, registry *projects.Registry, seen map[string]bool, projectID string, childThreadIDs map[string]bool) ([]session.Session, []DiagnosticRow) {
-	var sessions []session.Session
+func rowsToSessions(rows []row, registry *projects.Registry, seen map[string]bool, projectID string, childThreadIDs map[string]bool) ([]session.SessionSnapshot, []DiagnosticRow) {
+	var sessions []session.SessionSnapshot
 	var diagnostics []DiagnosticRow
 	projectPathCache := make(map[string]projectPathMatch, minInt(len(rows), 128))
 	for _, item := range rows {
@@ -367,7 +410,7 @@ func rowsToSessions(rows []row, registry *projects.Registry, seen map[string]boo
 		if title == "" {
 			title = "Codex 历史会话"
 		}
-		sessions = append(sessions, session.Session{
+		sessions = append(sessions, session.SessionSnapshot{
 			ID:        "codex_" + item.ID,
 			ProjectID: project.ID,
 			Project:   project.Name,
@@ -631,6 +674,43 @@ func queryRows(db string, project *projects.Project, limit int, includeSubagents
 		// 否则同毫秒多条历史时，SQLite 的返回顺序会让下一页漏项或重复。
 		where + " order by updated_at_ms desc, id desc limit " + strconv.Itoa(limit)
 	out, err := exec.Command("sqlite3", "-json", db, sql).Output()
+	if err != nil {
+		return nil, err
+	}
+	var rows []row
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func queryRowsSince(db string, project *projects.Project, minUpdatedAtMS int64, limit int, columns map[string]bool, edgeColumns map[string]bool) ([]row, error) {
+	where := "archived=0 and " + topLevelHistoryPredicate(columns, edgeColumns)
+	if project != nil {
+		where += " and (" + pathPredicate(project.Path)
+		if project.RealPath != "" && project.RealPath != project.Path {
+			where += " or " + pathPredicate(project.RealPath)
+		}
+		where += ")"
+	}
+	if minUpdatedAtMS > 0 {
+		where += " and updated_at_ms >= " + strconv.FormatInt(minUpdatedAtMS, 10)
+	}
+	sourceExpr := optionalColumnExpr(columns, "source")
+	threadSourceExpr := optionalColumnExpr(columns, "thread_source")
+	previewExpr := optionalColumnExpr(columns, "preview")
+	rolloutPathExpr := optionalColumnExpr(columns, "rollout_path")
+	hasRolloutPathExpr := "0 as has_rollout_path"
+	if columns["rollout_path"] {
+		hasRolloutPathExpr = "1 as has_rollout_path"
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	sql := "select id,title,cwd," + sourceExpr + "," + threadSourceExpr + "," + previewExpr + "," +
+		rolloutPathExpr + "," + hasRolloutPathExpr + ",created_at_ms,updated_at_ms from threads where " +
+		where + " order by updated_at_ms desc, id desc limit " + strconv.Itoa(limit)
+	out, err := sqliteQueryFunc(db, sql)
 	if err != nil {
 		return nil, err
 	}

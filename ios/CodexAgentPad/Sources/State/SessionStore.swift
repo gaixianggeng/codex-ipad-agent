@@ -689,9 +689,8 @@ final class SessionStore: ObservableObject {
                         clearForegroundActivity(sessionID: session.id)
                     }
                     if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
-                        // 运行中的 Codex 可能还没把最新 turn 写入 rollout，补消费 PTY 尾部用于实时 UI。
+                        // PTY 尾部只作为日志补洞；对话消息由 Go 的结构化 message_completed/assistant_delta 驱动。
                         logStore.append(recentOutput, sessionID: session.id, seq: response.lastSeq)
-                        conversationStore.ingestTerminalOutput(recentOutput, sessionID: session.id)
                     }
                 } catch {
                     // 运行态详情只存在于 agentd 内存。重启后可能 404，这时列表刷新会把它拉回历史态。
@@ -1327,9 +1326,8 @@ final class SessionStore: ObservableObject {
                 sessionID: id,
                 autoClearAfter: foregroundOutputIdleClearDelay
             )
-            // WebSocket 输出在 Store 层分发：日志和对话解析互不依赖。
+            // output 是旧协议的原始 PTY 日志；新协议下不再从 TUI 文本猜 assistant 气泡。
             logStore.append(data, sessionID: id, seq: metadata.seq)
-            conversationStore.ingestTerminalOutput(data, sessionID: id)
         case .exit(let result):
             updateSession(sessionID) { item in
                 item.status = "closed"

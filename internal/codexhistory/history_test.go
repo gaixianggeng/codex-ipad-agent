@@ -330,7 +330,7 @@ func TestRowsToSessionsFiltersSubagentThreads(t *testing.T) {
 		t.Fatalf("期望只保留 1 条顶层会话，实际 %d：%+v", len(sessions), sessions)
 	}
 	if sessions[0].ID != "codex_main" {
-		t.Fatalf("顶层会话 ID 异常：%+v", sessions[0])
+		t.Fatalf("顶层会话 ID 异常：%q", sessions[0].ID)
 	}
 
 	reasons := map[string]string{}

@@ -392,8 +392,8 @@ func TestWebSocketInputReturnsOutputForHi(t *testing.T) {
 		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
 	}
 	var created struct {
-		Session session.Session `json:"session"`
-		WSURL   string          `json:"ws_url"`
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -448,6 +448,527 @@ func TestWebSocketInputReturnsOutputForHi(t *testing.T) {
 	}
 }
 
+func TestWebSocketInputWithClientMessageIDReturnsUserConfirmation(t *testing.T) {
+	projectDir := t.TempDir()
+	handler, manager := newAcceptanceRouter(t, projectDir, "/bin/cat")
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id": "demo",
+		"cols":       120,
+		"rows":       32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{"type": "input", "data": "hello\r\n", "client_message_id": "client-ws-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("未收到 message_completed 用户确认：%v", err)
+		}
+		if event["type"] != "message_completed" {
+			continue
+		}
+		if event["session_id"] != created.Session.ID || event["client_message_id"] != "client-ws-1" {
+			t.Fatalf("message_completed 顶层元数据异常：%v", event)
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok {
+			t.Fatalf("message_completed 缺少 message：%v", event)
+		}
+		if message["id"] != "client:client-ws-1" ||
+			message["session_id"] != created.Session.ID ||
+			message["client_message_id"] != "client-ws-1" ||
+			message["role"] != "user" ||
+			message["kind"] != "message" ||
+			message["content"] != "hello" ||
+			message["send_status"] != "confirmed" {
+			t.Fatalf("用户确认消息字段异常：%v", message)
+		}
+		if revision, _ := message["revision"].(float64); revision != 1 {
+			t.Fatalf("用户确认 revision 应为 1：%v", message)
+		}
+		if createdAt, _ := message["created_at"].(string); createdAt == "" {
+			t.Fatalf("用户确认应带 created_at：%v", message)
+		}
+		break
+	}
+}
+
+func TestWebSocketInputWithoutClientMessageIDOnlyWritesPTY(t *testing.T) {
+	projectDir := t.TempDir()
+	handler, manager := newAcceptanceRouter(t, projectDir, "/bin/cat")
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id": "demo",
+		"cols":       120,
+		"rows":       32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{"type": "input", "data": "legacy\r"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	sawPTYOutput := false
+	for {
+		var event map[string]any
+		err := conn.ReadJSON(&event)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			t.Fatalf("读取 WebSocket 事件失败：%v", err)
+		}
+		if event["type"] == "message_completed" {
+			t.Fatalf("无 client_message_id 的旧协议输入不应生成用户确认：%v", event)
+		}
+		data, _ := event["data"].(string)
+		if event["type"] == "output" && strings.Contains(data, "legacy") {
+			sawPTYOutput = true
+		}
+	}
+	if !sawPTYOutput {
+		t.Fatal("无 client_message_id 的旧协议输入仍应写入 PTY")
+	}
+
+	trace := sessionTraceEvents(t, server.URL, created.Session.ID)
+	if traceEventExists(trace, "rollout_assistant_poll_started") {
+		t.Fatalf("无 client_message_id 的旧协议输入不应启动 rollout poller：%+v", trace)
+	}
+}
+
+func TestWebSocketForwardsNewRolloutAssistantMessage(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-live.jsonl")
+	writeFile(t, rolloutPath, strings.Join([]string{
+		`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"旧问题"}}`,
+		`{"timestamp":"2026-06-01T10:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"旧回答"}}`,
+		"",
+	}, "\n"))
+	writeCodexState(t, home, "thread-live", projectDir, rolloutPath)
+
+	fakeCodex := writeFakeCodex(t)
+	handler, manager := newAcceptanceRouter(t, projectDir, fakeCodex)
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id": "demo",
+		"resume_id":  "thread-live",
+		"cols":       120,
+		"rows":       32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建 resume 会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{"type": "input", "data": "继续\r", "client_message_id": "client-live-1"}); err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, rolloutPath, `{"timestamp":"`+time.Now().UTC().Add(2*time.Second).Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"agent_message","message":"新的结构化回答"}}`+"\n")
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("未收到 rollout assistant message_completed：%v trace=%+v", err, sessionTraceEvents(t, server.URL, created.Session.ID))
+		}
+		if event["type"] != "message_completed" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			continue
+		}
+		if message["session_id"] != created.Session.ID ||
+			message["content"] != "新的结构化回答" ||
+			message["send_status"] != "confirmed" {
+			t.Fatalf("assistant message_completed 字段异常：%v", message)
+		}
+		if id, _ := message["id"].(string); !strings.HasPrefix(id, "rollout:") {
+			t.Fatalf("assistant 应保留 rollout 稳定 id：%v", message)
+		}
+		break
+	}
+}
+
+func TestWebSocketAttachForwardsAssistantForInitialPrompt(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-initial-prompt.jsonl")
+	writeFile(t, rolloutPath, strings.Join([]string{
+		`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"旧问题"}}`,
+		`{"timestamp":"2026-06-01T10:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"旧回答"}}`,
+		"",
+	}, "\n"))
+	writeCodexState(t, home, "thread-initial-prompt", projectDir, rolloutPath)
+
+	fakeCodex := writeFakeCodex(t)
+	handler, manager := newAcceptanceRouter(t, projectDir, fakeCodex)
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id":        "demo",
+		"resume_id":         "thread-initial-prompt",
+		"prompt":            "继续",
+		"client_message_id": "client-initial-1",
+		"cols":              120,
+		"rows":              32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建带 prompt 的 resume 会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session      session.SessionSnapshot `json:"session"`
+		WSURL        string                  `json:"ws_url"`
+		FirstMessage agentMessage            `json:"first_message"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.FirstMessage.ID != "client:client-initial-1" ||
+		created.FirstMessage.ClientMessageID != "client-initial-1" ||
+		created.FirstMessage.Role != "user" ||
+		created.FirstMessage.Content != "继续" {
+		t.Fatalf("POST first_message 用户确认异常：%+v", created.FirstMessage)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	appendFile(t, rolloutPath, `{"timestamp":"`+time.Now().UTC().Add(2*time.Second).Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"agent_message","message":"首条 prompt 的结构化回答"}}`+"\n")
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("WS attach 后未收到首条 prompt 的 assistant message_completed：%v trace=%+v", err, sessionTraceEvents(t, server.URL, created.Session.ID))
+		}
+		if event["type"] != "message_completed" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			continue
+		}
+		if message["session_id"] != created.Session.ID ||
+			message["content"] != "首条 prompt 的结构化回答" ||
+			message["send_status"] != "confirmed" {
+			t.Fatalf("首条 prompt assistant message_completed 字段异常：%v", message)
+		}
+		if id, _ := message["id"].(string); !strings.HasPrefix(id, "rollout:") {
+			t.Fatalf("assistant 应保留 rollout 稳定 id：%v", message)
+		}
+		break
+	}
+}
+
+func TestWebSocketAttachMapsNewSessionThreadAndForwardsAssistant(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+
+	oldRolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-old-new-session.jsonl")
+	writeFile(t, oldRolloutPath, `{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"旧回答"}}`+"\n")
+	writeCodexState(t, home, "old-thread-before-new-session", projectDir, oldRolloutPath)
+
+	fakeCodex := writeFakeCodex(t)
+	handler, manager := newAcceptanceRouter(t, projectDir, fakeCodex)
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id":        "demo",
+		"prompt":            "新会话问题",
+		"client_message_id": "client-new-session-1",
+		"cols":              120,
+		"rows":              32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建新会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session      session.SessionSnapshot `json:"session"`
+		WSURL        string                  `json:"ws_url"`
+		FirstMessage agentMessage            `json:"first_message"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Session.ResumeID != "" || created.FirstMessage.ClientMessageID != "client-new-session-1" {
+		t.Fatalf("新会话 fixture 异常：resume_id=%q first_client_message_id=%q", created.Session.ResumeID, created.FirstMessage.ClientMessageID)
+	}
+
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-new-session.jsonl")
+	writeFile(t, rolloutPath, `{"timestamp":"`+time.Now().UTC().Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"user_message","message":"新会话问题"}}`+"\n")
+	insertCodexStateRow(t, home, codexThreadFixture{
+		ID:          "thread-new-session",
+		Title:       "New Session",
+		CWD:         projectDir,
+		RolloutPath: rolloutPath,
+		UpdatedAt:   time.Now().UTC().Add(time.Second).UnixMilli(),
+	})
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	appendFile(t, rolloutPath, `{"timestamp":"`+time.Now().UTC().Add(2*time.Second).Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"agent_message","message":"新会话结构化回答"}}`+"\n")
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("新会话未通过 thread 映射收到 assistant message_completed：%v trace=%+v", err, sessionTraceEvents(t, server.URL, created.Session.ID))
+		}
+		if event["type"] != "message_completed" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			continue
+		}
+		if message["session_id"] != created.Session.ID ||
+			message["content"] != "新会话结构化回答" ||
+			message["send_status"] != "confirmed" {
+			t.Fatalf("新会话 assistant message_completed 字段异常：%v", message)
+		}
+		break
+	}
+
+	trace := sessionTraceEvents(t, server.URL, created.Session.ID)
+	if !traceEventExists(trace, "history_thread_mapped") {
+		t.Fatalf("新会话应记录 history_thread_mapped trace：%+v", trace)
+	}
+}
+
+func TestWebSocketResumeForkRemapsToNewThreadAndForwardsAssistant(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+	now := time.Now().UTC()
+
+	// 父 thread：会话开始前很久就创建（created_at 旧），但 resume 时被 Codex 触碰过（updated_at 新）。
+	parentRolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-fork-parent.jsonl")
+	writeFile(t, parentRolloutPath, `{"timestamp":"2026-05-01T10:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"父 thread 旧回答"}}`+"\n")
+	writeCodexStateRows(t, home, []codexThreadFixture{{
+		ID:          "resume-fork-parent",
+		Title:       "Fork Parent",
+		CWD:         projectDir,
+		RolloutPath: parentRolloutPath,
+		CreatedAt:   now.Add(-time.Hour).UnixMilli(),
+		UpdatedAt:   now.UnixMilli(),
+	}})
+
+	fakeCodex := writeFakeCodex(t)
+	handler, manager := newAcceptanceRouter(t, projectDir, fakeCodex)
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id":        "demo",
+		"resume_id":         "resume-fork-parent",
+		"prompt":            "继续",
+		"client_message_id": "client-fork-1",
+		"cols":              120,
+		"rows":              32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建 resume 会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Session.ResumeID != "resume-fork-parent" {
+		t.Fatalf("resume 会话 fixture 异常：resume_id=%q", created.Session.ResumeID)
+	}
+
+	// 会话开始之后，Codex 把对话 fork 成了新 thread（created_at 在会话开始之后）。
+	childRolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-fork-child.jsonl")
+	writeFile(t, childRolloutPath, `{"timestamp":"`+now.Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"user_message","message":"继续"}}`+"\n")
+	insertCodexStateRow(t, home, codexThreadFixture{
+		ID:          "resume-fork-child",
+		Title:       "Fork Child",
+		CWD:         projectDir,
+		RolloutPath: childRolloutPath,
+		CreatedAt:   now.UnixMilli(),
+		UpdatedAt:   now.Add(2 * time.Second).UnixMilli(),
+	})
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	appendFile(t, childRolloutPath, `{"timestamp":"`+now.Add(3*time.Second).Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"agent_message","message":"fork 后的结构化回答"}}`+"\n")
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("resume fork 未通过 thread 重映射收到 assistant message_completed：%v trace=%+v", err, sessionTraceEvents(t, server.URL, created.Session.ID))
+		}
+		if event["type"] != "message_completed" {
+			continue
+		}
+		message, ok := event["message"].(map[string]any)
+		if !ok || message["role"] != "assistant" {
+			continue
+		}
+		// 旧 resume thread 的“父 thread 旧回答”不能被转发；只接受 fork 后的新回答。
+		if message["content"] == "父 thread 旧回答" {
+			t.Fatalf("不应转发旧 resume thread 的历史回答：%v", message)
+		}
+		if message["session_id"] != created.Session.ID ||
+			message["content"] != "fork 后的结构化回答" ||
+			message["send_status"] != "confirmed" {
+			t.Fatalf("resume fork assistant message_completed 字段异常：%v", message)
+		}
+		break
+	}
+
+	trace := sessionTraceEvents(t, server.URL, created.Session.ID)
+	if !traceEventExists(trace, "history_thread_mapped") {
+		t.Fatalf("resume fork 应记录 history_thread_mapped trace：%+v", trace)
+	}
+}
+
 func TestWebSocketAllowsSecondClientForSameSession(t *testing.T) {
 	fakeCodex := writeFakeCodex(t)
 	projectDir := t.TempDir()
@@ -471,8 +992,8 @@ func TestWebSocketAllowsSecondClientForSameSession(t *testing.T) {
 		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
 	}
 	var created struct {
-		Session session.Session `json:"session"`
-		WSURL   string          `json:"ws_url"`
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -524,8 +1045,8 @@ func TestWebSocketAfterSeqSkipsAlreadySeenOutput(t *testing.T) {
 		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
 	}
 	var created struct {
-		Session session.Session `json:"session"`
-		WSURL   string          `json:"ws_url"`
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -643,6 +1164,26 @@ func sessionLastSeq(t *testing.T, serverURL string, sessionID string) int64 {
 	return body.LastSeq
 }
 
+func sessionTraceEvents(t *testing.T, serverURL string, sessionID string) []session.TraceEvent {
+	t.Helper()
+	req := authedHTTPClientRequest(t, http.MethodGet, serverURL+"/api/sessions/"+sessionID+"/trace", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("期望 trace 返回 200，实际 %d", resp.StatusCode)
+	}
+	var body struct {
+		Trace []session.TraceEvent `json:"trace"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Trace
+}
+
 func traceEventExists(events []session.TraceEvent, eventType string) bool {
 	for _, event := range events {
 		if event.Type == eventType {
@@ -704,6 +1245,7 @@ type codexThreadFixture struct {
 	Source       string
 	ThreadSource string
 	Preview      string
+	CreatedAt    int64
 	UpdatedAt    int64
 }
 
@@ -746,6 +1288,10 @@ create table threads (
 		if updatedAt == 0 {
 			updatedAt = 1780308001000
 		}
+		createdAt := row.CreatedAt
+		if createdAt == 0 {
+			createdAt = updatedAt - 1000
+		}
 		rolloutPath := fixtureRolloutPath(t, home, row)
 		builder.WriteString("insert into threads (id, title, cwd, rollout_path, created_at_ms, updated_at_ms, archived) values (")
 		builder.WriteString(quoteSQL(row.ID))
@@ -756,12 +1302,41 @@ create table threads (
 		builder.WriteString(", ")
 		builder.WriteString(quoteSQL(rolloutPath))
 		builder.WriteString(", ")
-		builder.WriteString(fmt.Sprintf("%d, %d, 0", updatedAt-1000, updatedAt))
+		builder.WriteString(fmt.Sprintf("%d, %d, 0", createdAt, updatedAt))
 		builder.WriteString(");\n")
 	}
 	cmd := exec.Command("sqlite3", db, builder.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("创建 Codex state fixture 失败：%v output=%s", err, out)
+	}
+}
+
+func insertCodexStateRow(t *testing.T, home string, row codexThreadFixture) {
+	t.Helper()
+	db := filepath.Join(home, ".codex", "state_5.sqlite")
+	title := row.Title
+	if title == "" {
+		title = row.ID
+	}
+	updatedAt := row.UpdatedAt
+	if updatedAt == 0 {
+		updatedAt = time.Now().UTC().UnixMilli()
+	}
+	createdAt := row.CreatedAt
+	if createdAt == 0 {
+		createdAt = updatedAt - 1000
+	}
+	rolloutPath := fixtureRolloutPath(t, home, row)
+	sql := "insert into threads (id, title, cwd, rollout_path, created_at_ms, updated_at_ms, archived) values (" +
+		quoteSQL(row.ID) + ", " +
+		quoteSQL(title) + ", " +
+		quoteSQL(row.CWD) + ", " +
+		quoteSQL(rolloutPath) + ", " +
+		fmt.Sprintf("%d, %d, 0", createdAt, updatedAt) +
+		");"
+	cmd := exec.Command("sqlite3", db, sql)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("追加 Codex state fixture 失败：%v output=%s", err, out)
 	}
 }
 
@@ -879,6 +1454,18 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendFile(t *testing.T, path, content string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(content); err != nil {
 		t.Fatal(err)
 	}
 }

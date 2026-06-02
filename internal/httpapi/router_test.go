@@ -249,7 +249,7 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-func sessionSnapshotIDs(items []session.Session) []string {
+func sessionSnapshotIDs(items []session.SessionSnapshot) []string {
 	ids := make([]string, 0, len(items))
 	for _, item := range items {
 		ids = append(ids, item.ID)
@@ -329,10 +329,11 @@ func TestCreateSessionAndListSessions(t *testing.T) {
 	createRec := httptest.NewRecorder()
 
 	server.handler.ServeHTTP(createRec, authedRequest(t, http.MethodPost, "/api/sessions", map[string]any{
-		"project_id": "demo",
-		"prompt":     "帮我测试",
-		"cols":       120,
-		"rows":       32,
+		"project_id":        "demo",
+		"prompt":            "帮我测试",
+		"cols":              120,
+		"rows":              32,
+		"client_message_id": "client-create-1",
 	}))
 
 	if createRec.Code != http.StatusCreated {
@@ -349,6 +350,25 @@ func TestCreateSessionAndListSessions(t *testing.T) {
 	}
 	if created["ws_url"] != "/api/sessions/"+sessionID+"/ws" {
 		t.Fatalf("ws_url 异常：%v", created)
+	}
+	if created["client_message_id"] != "client-create-1" {
+		t.Fatalf("创建响应应回传 client_message_id：%v", created)
+	}
+	firstMessage, ok := created["first_message"].(map[string]any)
+	if !ok {
+		t.Fatalf("带 client_message_id 的创建响应应返回 first_message：%v", created)
+	}
+	if firstMessage["id"] != "client:client-create-1" ||
+		firstMessage["session_id"] != sessionID ||
+		firstMessage["client_message_id"] != "client-create-1" ||
+		firstMessage["role"] != "user" ||
+		firstMessage["kind"] != "message" ||
+		firstMessage["content"] != "帮我测试" ||
+		firstMessage["send_status"] != "confirmed" {
+		t.Fatalf("first_message 字段异常：%v", firstMessage)
+	}
+	if revision, _ := firstMessage["revision"].(float64); revision != 1 {
+		t.Fatalf("first_message revision 应为 1：%v", firstMessage)
 	}
 
 	listRec := httptest.NewRecorder()

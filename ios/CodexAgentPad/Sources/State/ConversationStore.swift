@@ -183,6 +183,9 @@ final class ConversationStore: ObservableObject {
             return
         }
 
+        // 旧协议/测试兜底入口：生产路径已经由结构化 AgentEvent.messageCompleted /
+        // assistantDelta 驱动消息气泡，PTY 文本只进入日志。这里保留给老 WebSocket
+        // transcript 和 parser 回归测试，避免把旧兼容逻辑误当成主链路继续扩展。
         // WebSocket 输出先进入独立原始缓冲区，ANSI 清洗放到后台任务做，避免拖慢输入。
         pendingRawOutput[sessionID] = appendBoundedWindow(raw, to: pendingRawOutput[sessionID], maxCharacters: 16_000)
         scheduleClean(sessionID: sessionID)
@@ -510,8 +513,39 @@ final class ConversationStore: ObservableObject {
         guard !candidate.isEmpty, candidate != lastAssistantBySessionID[sessionID] else {
             return
         }
+        if shouldIgnoreAssistantCandidateAsDuplicate(candidate, sessionID: sessionID) {
+            lastAssistantBySessionID[sessionID] = candidate
+            return
+        }
         lastAssistantBySessionID[sessionID] = candidate
         addOrUpdateAssistant(candidate, sessionID: sessionID)
+    }
+
+    private func shouldIgnoreAssistantCandidateAsDuplicate(_ candidate: String, sessionID: String) -> Bool {
+        let normalizedCandidate = normalizedAssistantTextForDedup(candidate)
+        guard normalizedCandidate.count >= 12 else {
+            return false
+        }
+
+        // 刷新运行中历史会话时，Go rollout 已经能返回干净的 agent_message，
+        // recent_output 仍可能包含同一段 PTY 尾部。这里只过滤“内容已经存在”的兜底解析，
+        // 不阻断 rollout 还没落盘时靠 PTY 先显示的新回复。
+        for message in (messagesBySessionID[sessionID] ?? []).reversed() where message.role == .assistant {
+            let normalizedExisting = normalizedAssistantTextForDedup(message.content)
+            guard normalizedExisting.count >= 12 else {
+                continue
+            }
+            if normalizedCandidate == normalizedExisting ||
+                normalizedCandidate.contains(normalizedExisting) ||
+                normalizedExisting.contains(normalizedCandidate) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func normalizedAssistantTextForDedup(_ text: String) -> String {
+        AssistantTextNormalizer.normalizedAssistantTextForDedup(text)
     }
 
     private func markStructuredAssistant(sessionID: String) {
@@ -829,12 +863,13 @@ final class ConversationStore: ObservableObject {
             guard seenUUIDs.insert(item.id).inserted else {
                 continue
             }
+            if shouldMergeAsLegacyEcho(item, candidates: legacyEchoCandidates) {
+                continue
+            }
             if let key = primaryMergeKey(for: item) {
                 guard seenPrimaryKeys.insert(key).inserted else {
                     continue
                 }
-            } else if shouldMergeAsLegacyEcho(item, candidates: legacyEchoCandidates) {
-                continue
             }
             merged.append(item)
         }
@@ -1096,9 +1131,30 @@ final class ConversationStore: ObservableObject {
         // 旧 rollout 缺稳定 id，本地回显也可能没有 client_message_id。这里仅把“未确认本地消息”
         // 和时间接近的同文历史合并；历史页里的两条相同文本不能再被 role+content 误删。
         return candidates.contains { candidate in
-            candidate.role == item.role &&
-                candidate.content == item.content &&
-                abs(candidate.createdAt.timeIntervalSince(item.createdAt)) <= legacyEchoMergeWindow
+            guard candidate.role == item.role,
+                  abs(candidate.createdAt.timeIntervalSince(item.createdAt)) <= legacyEchoMergeWindow else {
+                return false
+            }
+            if candidate.content == item.content {
+                return true
+            }
+            guard item.role == .assistant else {
+                return false
+            }
+            return shouldMergeAssistantLegacyEcho(localContent: item.content, historyContent: candidate.content)
         }
+    }
+
+    private func shouldMergeAssistantLegacyEcho(localContent: String, historyContent: String) -> Bool {
+        let localKey = normalizedAssistantTextForDedup(localContent)
+        let historyKey = normalizedAssistantTextForDedup(historyContent)
+        guard localKey.count >= 12, historyKey.count >= 12 else {
+            return false
+        }
+        // PTY 兜底可能把同一句重绘内容连在一个气泡里；history 返回干净 assistant 后，
+        // 用压缩后的语义文本合并，刷新时让干净历史替换旧脏气泡。
+        return localKey == historyKey ||
+            localKey.contains(historyKey) ||
+            historyKey.contains(localKey)
     }
 }

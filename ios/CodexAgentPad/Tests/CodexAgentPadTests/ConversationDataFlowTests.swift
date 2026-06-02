@@ -67,6 +67,22 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.revision, 1)
     }
 
+    func testLegacyHistoryDeduplicatesClientMessageEcho() {
+        let store = ConversationStore()
+        let sessionID = "sess_client_echo_legacy_history"
+        let now = Date()
+
+        store.appendLocalUser("讲个笑话", sessionID: sessionID, clientMessageID: "client-joke", sendStatus: .sent)
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "讲个笑话", createdAt: now)
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.role, .user)
+        XCTAssertEqual(messages.first?.content, "讲个笑话")
+    }
+
     func testRepeatedLegacyHistoryProjectionKeepsMessageIdentity() {
         let store = ConversationStore()
         let sessionID = "sess_legacy_history_projection"
@@ -331,6 +347,124 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages.first?.role, .assistant)
         XCTAssertEqual(messages.first?.content, "可重放的回复")
+    }
+
+    func testHistoryAssistantSuppressesDuplicateRecentOutputFallback() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_history_recent_output_dedup"
+        let answer = """
+        一个程序员去买菜。
+
+        老板说：“黄瓜 3 块一斤，西红柿 4 块一斤。”
+
+        程序员沉思片刻：“你这个接口不太 RESTful，建议统一资源定价。”
+        """
+
+        store.setHistory([
+            CodexHistoryMessage(id: "rollout:100", role: "user", content: "讲个笑话", createdAt: Date(timeIntervalSince1970: 10)),
+            CodexHistoryMessage(id: "rollout:200", role: "assistant", content: answer, createdAt: Date(timeIntervalSince1970: 11))
+        ], sessionID: sessionID)
+
+        // 手动刷新运行中会话时，rollout 已经有干净历史；recent_output 里仍可能残留同一段 PTY 尾部。
+        store.ingestTerminalOutput(
+            """
+            │ • 一个程序员去买菜。 ›Implement {feature}gpt-5.5 xhigh fast · ~/code
+            老板说：“黄瓜 3 块一斤，西红柿 4 块一斤。”
+            程序员沉思片刻：“你这个接口不太 RESTful，建议统一资源定价。”
+            """,
+            sessionID: sessionID
+        )
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(messages.last?.content, answer)
+    }
+
+    func testTerminalParserStripsInlinePromptFragment() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_inline_prompt_clean"
+
+        store.ingestTerminalOutput(
+            """
+            │ • 一个程序员去买菜。 ›Implement {feature}gpt-5.5 xhigh fast · ~/code
+            老板说：“黄瓜 3 块一斤，西红柿 4 块一斤。”
+            """,
+            sessionID: sessionID
+        )
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        let message = try XCTUnwrap(store.messages(for: sessionID).first)
+        XCTAssertEqual(message.role, .assistant)
+        XCTAssertTrue(message.content.contains("一个程序员去买菜。"))
+        XCTAssertFalse(message.content.contains("Implement"))
+    }
+
+    func testTerminalParserCollapsesRepeatedSentenceRedraws() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_sentence_redraw_collapse"
+
+        store.ingestTerminalOutput(
+            """
+            │ • 产品经理问程序员：“这个需求多久能做完？” 产品经理问程序员：“这个需求多久能做完？” 产品经理问程序员：“这个需求多久能做完？”
+            程序员：“如果不改需求，三天。” 程序员：“如果不改需求，三天。” 程序员：“如果不改需求，三天。”
+            产品经理：“那要是中途改呢？” 产品经理：“那要是中途改呢？” 产品经理：“那要是中途改呢？”
+            程序员：“那就一直很新鲜，永远在开发中。”
+            程序员：“那就一直很新鲜，永远在开发中。”
+            程序员：“那就一直很新鲜，永远在开发中。”
+            """,
+            sessionID: sessionID
+        )
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        let message = try XCTUnwrap(store.messages(for: sessionID).first)
+        XCTAssertEqual(message.role, .assistant)
+        XCTAssertEqual(occurrenceCount(of: "产品经理问程序员", in: message.content), 1)
+        XCTAssertEqual(occurrenceCount(of: "如果不改需求", in: message.content), 1)
+        XCTAssertEqual(occurrenceCount(of: "那要是中途改呢", in: message.content), 1)
+        XCTAssertEqual(occurrenceCount(of: "永远在开发中", in: message.content), 1)
+    }
+
+    func testHistoryRefreshRemovesDirtyRepeatedTerminalAssistant() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_refresh_removes_dirty_terminal_assistant"
+        let answer = """
+        产品经理问程序员：“这个需求多久能做完？”
+
+        程序员：“如果不改需求，三天。”
+
+        产品经理：“那要是中途改呢？”
+
+        程序员：“那就一直很新鲜，永远在开发中。”
+        """
+
+        store.appendLocalUser("继续", sessionID: sessionID, clientMessageID: "client-continue", sendStatus: .sent)
+        store.ingestTerminalOutput(
+            """
+            │ • 产品经理问程序员：“这个需求多久能做完？” 产品经理问程序员：“这个需求多久能做完？” 产品经理问程序员：“这个需求多久能做完？”
+            程序员：“如果不改需求，三天。” 程序员：“如果不改需求，三天。” 程序员：“如果不改需求，三天。”
+            产品经理：“那要是中途改呢？” 产品经理：“那要是中途改呢？” 产品经理：“那要是中途改呢？”
+            程序员：“那就一直很新鲜，永远在开发中。”
+            程序员：“那就一直很新鲜，永远在开发中。”
+            程序员：“那就一直很新鲜，永远在开发中。”
+            """,
+            sessionID: sessionID
+        )
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        XCTAssertEqual(store.messages(for: sessionID).filter { $0.role == .assistant }.count, 1)
+
+        let now = Date()
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "继续", createdAt: now),
+            CodexHistoryMessage(role: "assistant", content: answer, createdAt: now.addingTimeInterval(1))
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(messages.map(\.content), ["继续", answer])
+        XCTAssertEqual(messages.filter { $0.role == .assistant }.count, 1)
     }
 
     func testTerminalOutputBoundedWindowKeepsLatestTail() async throws {
@@ -794,7 +928,7 @@ final class ConversationDataFlowTests: XCTestCase {
             AgentMessage.self,
             from: Data("""
             {
-              "id": "msg_server_1",
+              "id": "client:\(clientMessageID)",
               "session_id": "\(sessionID)",
               "client_message_id": "\(clientMessageID)",
               "role": "user",
@@ -810,7 +944,7 @@ final class ConversationDataFlowTests: XCTestCase {
         let messages = store.messages(for: sessionID)
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages.first?.clientMessageID, clientMessageID)
-        XCTAssertEqual(messages.first?.stableID, "msg_server_1")
+        XCTAssertEqual(messages.first?.stableID, "client:\(clientMessageID)")
         XCTAssertEqual(messages.first?.content, "帮我跑测试")
         XCTAssertEqual(messages.first?.sendStatus, .confirmed)
         XCTAssertEqual(messages.first?.revision, 1)
@@ -819,7 +953,7 @@ final class ConversationDataFlowTests: XCTestCase {
             AgentMessage.self,
             from: Data("""
             {
-              "id": "msg_server_1",
+              "id": "client:\(clientMessageID)",
               "session_id": "\(sessionID)",
               "role": "user",
               "content": "帮我跑测试",
@@ -832,7 +966,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
         let replayedMessages = store.messages(for: sessionID)
         XCTAssertEqual(replayedMessages.count, 1)
-        XCTAssertEqual(replayedMessages.first?.stableID, "msg_server_1")
+        XCTAssertEqual(replayedMessages.first?.stableID, "client:\(clientMessageID)")
         XCTAssertEqual(replayedMessages.first?.revision, 2)
     }
 
@@ -1686,7 +1820,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
     }
 
-    func testRefreshCurrentContextConsumesRunningRecentOutput() async throws {
+    func testRefreshCurrentContextWritesRunningRecentOutputToLogOnly() async throws {
         let project = makeProject(id: "proj_1")
         let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "agentd")
         let client = MockSessionStoreClient(
@@ -1713,7 +1847,152 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(client.requestedSessionIDs, [running.id])
         XCTAssertTrue(logStore.log(for: running.id).contains("从 Mac 回来的回复"))
-        XCTAssertTrue(conversationStore.messages(for: running.id).contains { $0.role == .assistant && $0.content == "从 Mac 回来的回复" })
+        XCTAssertTrue(conversationStore.messages(for: running.id).isEmpty)
+    }
+
+    func testWebSocketOutputWritesLogWithoutCreatingAssistantBubble() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_ws_output", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let conversationStore = ConversationStore()
+        let logStore = LogStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: logStore,
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+
+        sockets[0].emitEvent(.output(
+            "│ • 来自 PTY 的回复\n",
+            AgentEventMetadata(
+                seq: 1,
+                sessionID: running.id,
+                turnID: nil,
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )
+        ))
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertTrue(logStore.log(for: running.id).contains("来自 PTY 的回复"))
+        XCTAssertTrue(conversationStore.messages(for: running.id).isEmpty)
+    }
+
+    func testWebSocketOutputAndLogDeltaWithSameSeqDoNotDuplicateLog() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_ws_log_dedupe", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let conversationStore = ConversationStore()
+        let logStore = LogStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: logStore,
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+
+        let metadata = AgentEventMetadata(
+            seq: 7,
+            sessionID: running.id,
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )
+        sockets[0].emitEvent(.output("同一个 seq 的日志块\n", metadata))
+        sockets[0].emitEvent(.logDelta(LogDelta(text: "同一个 seq 的日志块\n", stream: nil), metadata))
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let log = logStore.log(for: running.id)
+        XCTAssertEqual(occurrenceCount(of: "同一个 seq 的日志块", in: log), 1)
+        XCTAssertEqual(logStore.lastSeq(for: running.id), 7)
+        XCTAssertTrue(conversationStore.messages(for: running.id).isEmpty)
+    }
+
+    func testStructuredAssistantMessageCreatesBubbleWhileOutputStaysLogOnly() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_structured_assistant_live", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let conversationStore = ConversationStore()
+        let logStore = LogStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: logStore,
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+
+        sockets[0].emitEvent(.output(
+            "│ • 这只是 PTY 日志\n",
+            AgentEventMetadata(seq: 1, sessionID: running.id, turnID: nil, itemID: nil, messageID: nil, clientMessageID: nil, revision: nil, createdAt: nil)
+        ))
+        let assistant = try AgentAPIClient.decoder.decode(
+            AgentMessage.self,
+            from: Data("""
+            {
+              "id": "rollout:200",
+              "session_id": "\(running.id)",
+              "role": "assistant",
+              "kind": "message",
+              "content": "结构化助手回复",
+              "created_at": "2026-06-02T10:00:00Z",
+              "revision": 1,
+              "send_status": "confirmed"
+            }
+            """.utf8)
+        )
+        sockets[0].emitEvent(.messageCompleted(
+            assistant,
+            AgentEventMetadata(seq: 2, sessionID: running.id, turnID: nil, itemID: nil, messageID: "rollout:200", clientMessageID: nil, revision: 1, createdAt: nil)
+        ))
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let messages = conversationStore.messages(for: running.id)
+        XCTAssertTrue(logStore.log(for: running.id).contains("这只是 PTY 日志"))
+        XCTAssertFalse(messages.contains { $0.content.contains("PTY 日志") })
+        XCTAssertTrue(messages.contains { $0.role == .assistant && $0.content == "结构化助手回复" })
     }
 
     func testRefreshCurrentContextRequestsRunningDetailAfterLocalLogSeq() async throws {
@@ -2010,6 +2289,10 @@ private final class MockWebSocketClient: SessionWebSocketClient {
 
     func emitStatus(_ status: WebSocketStatus) {
         onStatus?(status)
+    }
+
+    func emitEvent(_ event: AgentEvent) {
+        onEvent?(event)
     }
 }
 
@@ -2359,6 +2642,10 @@ private final class FlakyBootstrapClient: SessionStoreAPIClient {
 
 private enum MockError: Error {
     case unimplemented
+}
+
+private func occurrenceCount(of needle: String, in haystack: String) -> Int {
+    haystack.components(separatedBy: needle).count - 1
 }
 
 private func makeProject(id: String) -> AgentProject {
