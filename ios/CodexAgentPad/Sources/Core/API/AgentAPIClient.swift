@@ -42,6 +42,10 @@ struct AgentAPIClient {
     }
 
     func sessions(projectID: String? = nil, cursor: String? = nil, limit: Int? = nil) async throws -> [AgentSession] {
+        try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit).sessions
+    }
+
+    func sessionsPage(projectID: String? = nil, cursor: String? = nil, limit: Int? = nil) async throws -> SessionsPage {
         let response: SessionsResponse = try await request(
             path: makePath("/api/sessions", query: [
                 "project_id": projectID,
@@ -51,11 +55,17 @@ struct AgentAPIClient {
             method: "GET",
             body: Optional<Data>.none
         )
-        return response.sessions
+        return SessionsPage(response: response)
     }
 
-    func session(id: String) async throws -> SessionResponse {
-        try await request(path: "/api/sessions/\(id)", method: "GET", body: Optional<Data>.none)
+    func session(id: String, afterSeq: EventSequence? = nil) async throws -> SessionResponse {
+        try await request(
+            path: makePath("/api/sessions/\(id)", query: [
+                "after_seq": afterSeq.map(String.init)
+            ]),
+            method: "GET",
+            body: Optional<Data>.none
+        )
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
@@ -68,6 +78,10 @@ struct AgentAPIClient {
     }
 
     func messages(sessionID: String, before: String? = nil, limit: Int? = nil) async throws -> [CodexHistoryMessage] {
+        try await messagesPage(sessionID: sessionID, before: before, limit: limit).messages
+    }
+
+    func messagesPage(sessionID: String, before: String? = nil, limit: Int? = nil) async throws -> HistoryMessagesPage {
         let response: MessagesResponse = try await request(
             path: makePath("/api/sessions/\(sessionID)/messages", query: [
                 "before": before,
@@ -76,7 +90,7 @@ struct AgentAPIClient {
             method: "GET",
             body: Optional<Data>.none
         )
-        return response.messages
+        return HistoryMessagesPage(response: response)
     }
 
     func websocketURL(sessionID: String) throws -> URL {

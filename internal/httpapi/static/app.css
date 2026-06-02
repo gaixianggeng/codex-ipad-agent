@@ -1,7 +1,14 @@
 :root {
   color-scheme: light;
   --bg: #f7f7f5;
-  --sidebar: #f0f0ed;
+  --sidebar: rgba(22, 24, 29, 0.58);
+  --sidebar-line: rgba(255, 255, 255, 0.16);
+  --sidebar-surface: rgba(255, 255, 255, 0.08);
+  --sidebar-surface-strong: rgba(255, 255, 255, 0.18);
+  --sidebar-text: rgba(250, 250, 250, 0.92);
+  --sidebar-muted: rgba(232, 232, 232, 0.58);
+  --sidebar-faint: rgba(232, 232, 232, 0.38);
+  --sidebar-focus: rgba(255, 255, 255, 0.22);
   --panel: #ffffff;
   --soft: #ededeb;
   --line: #deded8;
@@ -73,12 +80,30 @@ button:disabled {
   background: transparent;
 }
 
+.sidebar button {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.10);
+  color: var(--sidebar-text);
+}
+
+.sidebar button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
 .text-button {
   min-height: 28px;
   border: 0;
   color: var(--muted);
   padding: 0 2px;
   font-size: 13px;
+}
+
+.sidebar .text-button {
+  color: var(--sidebar-muted);
+}
+
+.sidebar .text-button:hover {
+  color: var(--sidebar-text);
 }
 
 .app {
@@ -89,13 +114,53 @@ button:disabled {
 }
 
 .sidebar {
+  position: relative;
   min-height: 0;
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   gap: 12px;
   padding: calc(14px + env(safe-area-inset-top)) 14px 14px calc(14px + env(safe-area-inset-left));
-  border-right: 1px solid var(--line);
-  background: var(--sidebar);
+  overflow: hidden;
+  border-right: 1px solid var(--sidebar-line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.04) 42%, rgba(0, 0, 0, 0.12)),
+    linear-gradient(145deg, rgba(42, 44, 50, 0.52) 0%, rgba(30, 32, 38, 0.44) 46%, rgba(18, 20, 25, 0.52) 100%),
+    var(--sidebar);
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    18px 0 50px rgba(10, 8, 30, 0.16);
+  backdrop-filter: blur(42px) saturate(190%);
+  -webkit-backdrop-filter: blur(42px) saturate(190%);
+  color: var(--sidebar-text);
+  isolation: isolate;
+}
+
+.sidebar::before,
+.sidebar::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+}
+
+.sidebar::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05) 40%, rgba(0, 0, 0, 0.14) 100%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.03) 46%, rgba(0, 0, 0, 0.10));
+  z-index: 0;
+}
+
+.sidebar::after {
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 7px),
+    rgba(0, 0, 0, 0.10);
+  z-index: 0;
+}
+
+.sidebar > * {
+  position: relative;
+  z-index: 1;
 }
 
 .brand {
@@ -115,9 +180,10 @@ button:disabled {
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  background: #171717;
-  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--sidebar-text);
   font-weight: 800;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
 
 h1,
@@ -138,6 +204,11 @@ h1 {
   font-size: 12px;
 }
 
+.sidebar #endpoint,
+.sidebar .hint {
+  color: var(--sidebar-muted);
+}
+
 #endpoint {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -150,6 +221,18 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.sidebar .auth-card,
+.sidebar .project-card,
+.sidebar .session-card {
+  border-color: var(--sidebar-line);
+  background: var(--sidebar-surface);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 10px 28px rgba(8, 7, 24, 0.14);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
 }
 
 .auth-card {
@@ -181,6 +264,10 @@ h1 {
   font-weight: 720;
 }
 
+.sidebar .section-row {
+  color: var(--sidebar-faint);
+}
+
 input,
 select,
 textarea {
@@ -192,6 +279,24 @@ textarea {
   padding: 9px 10px;
 }
 
+.sidebar input,
+.sidebar select {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(18, 20, 24, 0.32);
+  color: var(--sidebar-text);
+}
+
+.sidebar input::placeholder {
+  color: var(--sidebar-faint);
+}
+
+.sidebar input:focus,
+.sidebar select:focus {
+  border-color: var(--sidebar-focus);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.10);
+}
+
 #project-path {
   margin-top: 8px;
   color: var(--muted);
@@ -199,6 +304,10 @@ textarea {
   font-size: 11px;
   line-height: 1.35;
   word-break: break-all;
+}
+
+.sidebar #project-path {
+  color: var(--sidebar-muted);
 }
 
 .sessions-list {
@@ -224,11 +333,33 @@ textarea {
   background: #fff;
 }
 
+.sidebar .session-item {
+  color: var(--sidebar-text);
+}
+
+.sidebar .session-item:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.sidebar .session-item.active {
+  border-color: rgba(255, 255, 255, 0.20);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.04)),
+    var(--sidebar-surface-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 9px 24px rgba(8, 7, 24, 0.16);
+}
+
 .session-empty {
   padding: 12px 8px;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.sidebar .session-empty {
+  color: var(--sidebar-muted);
 }
 
 .session-title {
@@ -238,6 +369,10 @@ textarea {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 650;
+}
+
+.sidebar .session-title {
+  color: var(--sidebar-text);
 }
 
 .session-meta {
@@ -250,11 +385,36 @@ textarea {
   font-size: 11px;
 }
 
+.sidebar .session-meta {
+  color: var(--sidebar-muted);
+}
+
 .session-meta span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-load-more {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--muted);
+  padding: 9px 10px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sidebar .session-load-more {
+  border-color: var(--sidebar-line);
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--sidebar-muted);
+}
+
+.session-load-more:disabled {
+  opacity: 0.62;
 }
 
 .workspace {
@@ -365,6 +525,23 @@ textarea {
   max-width: 790px;
   margin: 0 auto 14px;
   display: flex;
+}
+
+.history-load-more-row {
+  max-width: 790px;
+  margin: 0 auto 14px;
+  display: flex;
+  justify-content: center;
+}
+
+.history-load-more {
+  min-height: 32px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  padding: 0 13px;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .message.user {

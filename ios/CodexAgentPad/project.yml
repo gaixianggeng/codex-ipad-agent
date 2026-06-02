@@ -9,6 +9,10 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     SDKROOT: iphoneos
     SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+packages:
+  SnapshotTesting:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    from: "1.17.0"
 targets:
   CodexAgentPad:
     type: application
@@ -35,6 +39,8 @@ targets:
       - path: Tests
     dependencies:
       - target: CodexAgentPad
+      - package: SnapshotTesting
+        product: SnapshotTesting
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gaixiaotongxue.CodexAgentPadTests

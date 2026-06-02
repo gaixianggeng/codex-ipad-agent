@@ -8,13 +8,16 @@
 
 /* Begin PBXBuildFile section */
 		05B3DDB3F20566A864AE2B81 /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70E016E422ECC27016A2031 /* LogStore.swift */; };
+		0D452BF0841FF30B721010EA /* ConversationDataFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AAC34BDA22A12BFF01F4760 /* ConversationDataFlowTests.swift */; };
 		1058623ED9F2696E79653AAB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4A0BFC46BCC1556CD7C551C /* RootView.swift */; };
+		1262AEF77BB5376272E87190 /* ConversationSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7670896AFF4A5B1B627EC19C /* ConversationSnapshotTests.swift */; };
 		2694E88922019164F973D4BE /* CodexOutputParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E123D0954AC40B8703C8AFF6 /* CodexOutputParser.swift */; };
 		2A65BADDB9EB30F3D5A60B6A /* DoctorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98EB996462DE9F04E33638D8 /* DoctorView.swift */; };
 		2C8D9BBBA88E484D035766B8 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D76C3E2FAB9872CFAA738CF /* TokenStore.swift */; };
 		325121AD782F4E7CF79E0254 /* AgentWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A501D9F97EBF6D737961DD9 /* AgentWebSocketClient.swift */; };
 		34C1FB7890A11FBA6B13F390 /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7561F90CF01AAC7A4C6FA3A /* ConversationStore.swift */; };
 		36C475D7AF534E638A05A66E /* AnsiCleaner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BEEBD0E51093C8751D38A87 /* AnsiCleaner.swift */; };
+		38EAB1B0FC433C6A09E20B91 /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = 5AA664AE3B55F3D0366F8CB8 /* SnapshotTesting */; };
 		391EE96A208B182312D6F0C5 /* APIResponses.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17D07F045185B50C3B902584 /* APIResponses.swift */; };
 		3F838D138B4E471C8C493861 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95AF6FF1270F9700FF999E2B /* AppStore.swift */; };
 		48A1E9482ECC50F5E51C86DB /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 368F5024CC51BCFD41D95D99 /* SessionListView.swift */; };
@@ -22,7 +25,6 @@
 		5B278A998D63FF1CA900DC6F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 290B7A5AC69DF8B358B4DE27 /* SettingsView.swift */; };
 		5CEC1A78B36B55118353C89B /* LogStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15115216BE08F4A4CE030BF0 /* LogStoreTests.swift */; };
 		61B83694926CC2E8C597CF65 /* AgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F58CEDA3867A417BA3D154F2 /* AgentModels.swift */; };
-		8E1A536BA02146E1A3F2F0A1 /* ConversationDataFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1A536BA02146E1A3F2F0A1 /* ConversationDataFlowTests.swift */; };
 		A7A1BC4FB40AA60C27140832 /* AgentAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA09AF7F84AF95256BE81DB /* AgentAPIClient.swift */; };
 		B67EAB01CC429A0BC617854E /* LogPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C9D536844479E6AA2EBD58 /* LogPanelView.swift */; };
 		C02B77567B5932E6EDD67810 /* AgentEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF61887CD387C60719C6E7F2 /* AgentEvent.swift */; };
@@ -44,7 +46,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		0E1A536BA02146E1A3F2F0A1 /* ConversationDataFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDataFlowTests.swift; sourceTree = "<group>"; };
+		0AAC34BDA22A12BFF01F4760 /* ConversationDataFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDataFlowTests.swift; sourceTree = "<group>"; };
 		15115216BE08F4A4CE030BF0 /* LogStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStoreTests.swift; sourceTree = "<group>"; };
 		17D07F045185B50C3B902584 /* APIResponses.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIResponses.swift; sourceTree = "<group>"; };
 		1BEEBD0E51093C8751D38A87 /* AnsiCleaner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnsiCleaner.swift; sourceTree = "<group>"; };
@@ -55,6 +57,7 @@
 		5B8D226D98D17D8C7C8D96EE /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		5B9987B4175D880D0A03CC81 /* CodexAgentPadApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAgentPadApp.swift; sourceTree = "<group>"; };
 		5BA09AF7F84AF95256BE81DB /* AgentAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIClient.swift; sourceTree = "<group>"; };
+		7670896AFF4A5B1B627EC19C /* ConversationSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSnapshotTests.swift; sourceTree = "<group>"; };
 		888FE78890133F864839FC52 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
 		8D76C3E2FAB9872CFAA738CF /* TokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenStore.swift; sourceTree = "<group>"; };
 		95AF6FF1270F9700FF999E2B /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
@@ -64,13 +67,24 @@
 		B7561F90CF01AAC7A4C6FA3A /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
 		B7C9D536844479E6AA2EBD58 /* LogPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogPanelView.swift; sourceTree = "<group>"; };
 		C70E016E422ECC27016A2031 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
-		DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CodexAgentPadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper; path = CodexAgentPadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DF61887CD387C60719C6E7F2 /* AgentEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEvent.swift; sourceTree = "<group>"; };
 		E123D0954AC40B8703C8AFF6 /* CodexOutputParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexOutputParser.swift; sourceTree = "<group>"; };
 		F4A0BFC46BCC1556CD7C551C /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		F58CEDA3867A417BA3D154F2 /* AgentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModels.swift; sourceTree = "<group>"; };
 		FCBEFCD9F35465FCB15DEE32 /* ProjectSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSidebarView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D76E0B92B304C1BE57CC3ECC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				38EAB1B0FC433C6A09E20B91 /* SnapshotTesting in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		137C370EBDAFDB707CBE8C9E /* Parsing */ = {
@@ -120,7 +134,8 @@
 		5BCF06D960363C74E45FFD78 /* CodexAgentPadTests */ = {
 			isa = PBXGroup;
 			children = (
-				0E1A536BA02146E1A3F2F0A1 /* ConversationDataFlowTests.swift */,
+				0AAC34BDA22A12BFF01F4760 /* ConversationDataFlowTests.swift */,
+				7670896AFF4A5B1B627EC19C /* ConversationSnapshotTests.swift */,
 				15115216BE08F4A4CE030BF0 /* LogStoreTests.swift */,
 				99DFCC4A092011F6E76FBFBA /* ParsingPerformanceTests.swift */,
 			);
@@ -249,6 +264,7 @@
 			buildConfigurationList = BAEC1AF0BD6C9F8812C423A4 /* Build configuration list for PBXNativeTarget "CodexAgentPadTests" */;
 			buildPhases = (
 				3835052EF893F5424520D549 /* Sources */,
+				D76E0B92B304C1BE57CC3ECC /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -257,6 +273,7 @@
 			);
 			name = CodexAgentPadTests;
 			packageProductDependencies = (
+				5AA664AE3B55F3D0366F8CB8 /* SnapshotTesting */,
 			);
 			productName = CodexAgentPadTests;
 			productReference = DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */;
@@ -297,6 +314,9 @@
 			);
 			mainGroup = 77B4367916507A4F464465AE;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B19E037EA21B9B1CE55BEAA4 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 5588B3A078969BDF8A89B5F6 /* Products */;
 			projectDirPath = "";
@@ -341,7 +361,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8E1A536BA02146E1A3F2F0A1 /* ConversationDataFlowTests.swift in Sources */,
+				0D452BF0841FF30B721010EA /* ConversationDataFlowTests.swift in Sources */,
+				1262AEF77BB5376272E87190 /* ConversationSnapshotTests.swift in Sources */,
 				5CEC1A78B36B55118353C89B /* LogStoreTests.swift in Sources */,
 				FDAB499A2F67AF0B28173C76 /* ParsingPerformanceTests.swift in Sources */,
 			);
@@ -590,6 +611,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B19E037EA21B9B1CE55BEAA4 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-snapshot-testing";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.17.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5AA664AE3B55F3D0366F8CB8 /* SnapshotTesting */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B19E037EA21B9B1CE55BEAA4 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */;
+			productName = SnapshotTesting;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 86A11B2E1FCB8E58266A339F /* Project object */;
 }

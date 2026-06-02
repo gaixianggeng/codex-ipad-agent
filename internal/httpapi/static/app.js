@@ -3,7 +3,17 @@ const state = {
   apiReady: false,
   apiError: "",
   projects: [],
+  projectsByID: new Map(),
+  projectIDsSignature: "",
   sessions: [],
+  sessionsByID: new Map(),
+  sessionsByProjectID: new Map(),
+  sessionsCursor: "",
+  sessionsHasMore: false,
+  sessionsLoading: false,
+  sessionsRequestToken: 0,
+  sessionsRenderSignature: "",
+  historyPaging: {},
   selectedProject: "",
   sessionId: "",
   running: false,
@@ -15,7 +25,13 @@ const state = {
   assistantTimer: null,
   assistantPending: "",
   terminalResizeTimer: null,
+  messagesSaveTimer: null,
+  messagesDirty: false,
+  outputSeqBySession: {},
 };
+
+const SESSION_PAGE_LIMIT = 80;
+const STORED_MESSAGES_SAVE_DELAY = 250;
 
 const el = {
   endpoint: document.getElementById("endpoint"),
@@ -79,15 +95,68 @@ async function api(path, options = {}) {
 }
 
 function currentProject() {
-  return state.projects.find((p) => p.id === state.selectedProject);
+  return state.projectsByID.get(state.selectedProject);
 }
 
 function currentSession() {
-  return state.sessions.find((s) => s.id === state.sessionId);
+  return state.sessionsByID.get(state.sessionId);
 }
 
 function projectSessions() {
-  return state.sessions.filter((s) => s.project_id === state.selectedProject);
+  return state.sessionsByProjectID.get(state.selectedProject) || [];
+}
+
+function sessionSortValue(session) {
+  const parsed = Date.parse(session.updated_at || session.created_at || "");
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function sortSessions(sessions) {
+  return sessions.slice().sort((a, b) => {
+    const byTime = sessionSortValue(b) - sessionSortValue(a);
+    if (byTime !== 0) return byTime;
+    return String(b.id || "").localeCompare(String(a.id || ""));
+  });
+}
+
+function setProjects(projects) {
+  state.projects = projects || [];
+  const byID = new Map();
+  const ids = [];
+  for (const project of state.projects) {
+    if (!project?.id) continue;
+    byID.set(project.id, project);
+    ids.push(project.id);
+  }
+  state.projectsByID = byID;
+  state.projectIDsSignature = ids.join("\u001f");
+}
+
+function setSessions(sessions) {
+  state.sessions = sortSessions(sessions || []);
+  rebuildSessionIndexes();
+}
+
+function rebuildSessionIndexes() {
+  const byID = new Map();
+  const byProjectID = new Map();
+
+  // Web 端保持一个 sessions 源数组，同时维护按 id / project 的派生索引。
+  // 渲染和 WebSocket 事件会高频读取当前会话，避免在这些路径里反复 find/filter。
+  for (const session of state.sessions) {
+    if (!session?.id) continue;
+    byID.set(session.id, session);
+    const projectID = session.project_id || "";
+    let projectSessions = byProjectID.get(projectID);
+    if (!projectSessions) {
+      projectSessions = [];
+      byProjectID.set(projectID, projectSessions);
+    }
+    projectSessions.push(session);
+  }
+
+  state.sessionsByID = byID;
+  state.sessionsByProjectID = byProjectID;
 }
 
 function loadStoredMessages() {
@@ -99,6 +168,20 @@ function loadStoredMessages() {
 }
 
 function saveStoredMessages() {
+  state.messagesDirty = true;
+  window.clearTimeout(state.messagesSaveTimer);
+  // Litter 的本地状态写入会做短 debounce；这里同样把流式回复期间的多次
+  // JSON 序列化和 localStorage 同步写合并成一批，降低主线程抖动。
+  state.messagesSaveTimer = window.setTimeout(flushStoredMessages, STORED_MESSAGES_SAVE_DELAY);
+}
+
+function flushStoredMessages() {
+  if (state.messagesSaveTimer) {
+    window.clearTimeout(state.messagesSaveTimer);
+    state.messagesSaveTimer = null;
+  }
+  if (!state.messagesDirty) return;
+  state.messagesDirty = false;
   try {
     localStorage.setItem("agentd_messages_v1", JSON.stringify(state.messages));
   } catch (_) {}
@@ -141,6 +224,10 @@ function render() {
 
 function renderSessions() {
   const sessions = projectSessions();
+  const signature = sessionListSignature(sessions);
+  if (state.sessionsRenderSignature === signature) return;
+  state.sessionsRenderSignature = signature;
+
   el.sessionsList.innerHTML = "";
   if (state.projects.length === 0) {
     const empty = document.createElement("div");
@@ -152,7 +239,7 @@ function renderSessions() {
   if (sessions.length === 0) {
     const empty = document.createElement("div");
     empty.className = "session-empty";
-    empty.textContent = "这个项目还没有会话";
+    empty.textContent = state.sessionsLoading ? "正在加载会话..." : "这个项目还没有会话";
     el.sessionsList.appendChild(empty);
     return;
   }
@@ -178,6 +265,39 @@ function renderSessions() {
     button.appendChild(meta);
     el.sessionsList.appendChild(button);
   }
+  if (state.sessionsHasMore || state.sessionsLoading) {
+    const loadMore = document.createElement("button");
+    loadMore.className = "session-load-more";
+    loadMore.disabled = state.sessionsLoading;
+    loadMore.textContent = state.sessionsLoading ? "正在加载..." : "加载更早会话";
+    loadMore.onclick = loadMoreSessions;
+    el.sessionsList.appendChild(loadMore);
+  }
+}
+
+function sessionListSignature(sessions) {
+  // 参考 Codex/Litter 的 projection no-op：先把会话列表投影成稳定签名。
+  // 只要可见内容、选中态和加载态没变，就跳过整棵 DOM 重建。
+  let signature = [
+    state.selectedProject,
+    state.sessionId,
+    state.projectIDsSignature,
+    state.sessionsLoading ? "1" : "0",
+    state.sessionsHasMore ? "1" : "0",
+  ].join("\u001e");
+  for (const session of sessions) {
+    signature += "\u001d";
+    signature += [
+      session.id,
+      session.project_id,
+      session.title,
+      session.status,
+      session.source,
+      session.updated_at,
+      session.created_at,
+    ].join("\u001f");
+  }
+  return signature;
 }
 
 function displayStatus(status) {
@@ -224,7 +344,47 @@ function clearWelcome() {
   if (empty) empty.remove();
 }
 
-function addMessage(kind, text, persist = true) {
+function localMessageKey(kind, text) {
+  return `${kind}:${text}`;
+}
+
+function historyItemKind(item) {
+  return item.role === "assistant" ? "assistant" : "user";
+}
+
+function historyItemKey(item) {
+  const kind = historyItemKind(item);
+  return item.id ? `${kind}:id:${item.id}` : `${kind}:content:${item.content}`;
+}
+
+function historyPaging(sessionID) {
+  state.historyPaging[sessionID] ||= {
+    previousCursor: "",
+    hasMoreBefore: false,
+    loading: false,
+    requestToken: 0,
+    loadedKeys: new Set(),
+  };
+  return state.historyPaging[sessionID];
+}
+
+function renderHistoryLoadMoreButton(sessionID) {
+  el.messages.querySelector(".history-load-more-row")?.remove();
+  const paging = state.historyPaging[sessionID];
+  if (!paging?.hasMoreBefore && !paging?.loading) return;
+
+  const row = document.createElement("div");
+  row.className = "history-load-more-row";
+  const button = document.createElement("button");
+  button.className = "history-load-more";
+  button.disabled = paging.loading;
+  button.textContent = paging.loading ? "正在加载..." : "加载更早消息";
+  button.onclick = () => loadEarlierHistoryMessages(sessionID);
+  row.appendChild(button);
+  el.messages.prepend(row);
+}
+
+function addMessage(kind, text, persist = true, options = {}) {
   clearWelcome();
   const row = document.createElement("div");
   row.className = `message ${kind}`;
@@ -232,8 +392,15 @@ function addMessage(kind, text, persist = true) {
   bubble.className = "bubble";
   bubble.textContent = text;
   row.appendChild(bubble);
-  el.messages.appendChild(row);
-  el.messages.scrollTop = el.messages.scrollHeight;
+  if (options.prepend) {
+    const loadMoreRow = el.messages.querySelector(".history-load-more-row");
+    el.messages.insertBefore(row, loadMoreRow?.nextSibling || el.messages.firstChild);
+  } else {
+    el.messages.appendChild(row);
+  }
+  if (options.scroll !== false) {
+    el.messages.scrollTop = el.messages.scrollHeight;
+  }
   if (persist && state.sessionId) {
     const list = state.messages[state.sessionId] || [];
     list.push({ kind, text, at: Date.now() });
@@ -243,29 +410,59 @@ function addMessage(kind, text, persist = true) {
   return bubble;
 }
 
+function renderHistoryMessages(items, sessionID, options = {}) {
+  const paging = historyPaging(sessionID);
+  let rendered = 0;
+  for (const item of items) {
+    const text = item.content || "";
+    if (!text) continue;
+    const key = historyItemKey(item);
+    if (paging.loadedKeys.has(key)) continue;
+    paging.loadedKeys.add(key);
+    addMessage(historyItemKind(item), text, false, options);
+    rendered++;
+  }
+  return rendered;
+}
+
 async function loadSessionMessages(session) {
   const list = state.messages[session.id] || [];
   const seen = new Set();
   let rendered = false;
   el.messages.innerHTML = "";
+  const requestToken = (state.historyPaging[session.id]?.requestToken || 0) + 1;
+  state.historyPaging[session.id] = {
+    previousCursor: "",
+    hasMoreBefore: false,
+    loading: false,
+    requestToken,
+    loadedKeys: new Set(),
+  };
 
   if (session.source === "codex" || session.resume_id) {
     try {
       const data = await api(`/api/sessions/${session.id}/messages?limit=120`);
+      const paging = historyPaging(session.id);
+      if (state.sessionId !== session.id || paging.requestToken !== requestToken) return;
+      paging.previousCursor = data.previous_cursor || "";
+      paging.hasMoreBefore = Boolean(data.has_more_before && paging.previousCursor);
+      renderHistoryLoadMoreButton(session.id);
       for (const item of data.messages || []) {
-        const kind = item.role === "assistant" ? "assistant" : "user";
-        const key = `${kind}:${item.content}`;
-        seen.add(key);
-        addMessage(kind, item.content, false);
-        rendered = true;
+        seen.add(localMessageKey(historyItemKind(item), item.content));
       }
+      rendered = renderHistoryMessages(data.messages || [], session.id, { scroll: false }) > 0;
+      if (rendered) el.messages.scrollTop = el.messages.scrollHeight;
     } catch (err) {
-      writeLog(`历史消息读取失败：${err.message}`);
+      if (state.sessionId === session.id) {
+        writeLog(`历史消息读取失败：${err.message}`);
+      }
     }
   }
 
+  if (state.sessionId !== session.id || historyPaging(session.id).requestToken !== requestToken) return;
+
   for (const item of list) {
-    const key = `${item.kind}:${item.text}`;
+    const key = localMessageKey(item.kind, item.text);
     if (seen.has(key)) continue;
     addMessage(item.kind, item.text, false);
     rendered = true;
@@ -278,6 +475,43 @@ async function loadSessionMessages(session) {
     }
     resetMessages(session.title || "已选择会话", "已重新接入该会话。右侧会回放最近终端输出。");
     return;
+  }
+}
+
+async function loadEarlierHistoryMessages(sessionID) {
+  const paging = historyPaging(sessionID);
+  if (!paging.hasMoreBefore || paging.loading || !paging.previousCursor) return;
+
+  const requestToken = paging.requestToken + 1;
+  paging.requestToken = requestToken;
+  paging.loading = true;
+  renderHistoryLoadMoreButton(sessionID);
+
+  const previousHeight = el.messages.scrollHeight;
+  const previousTop = el.messages.scrollTop;
+  try {
+    const params = new URLSearchParams({
+      limit: "120",
+      before: paging.previousCursor,
+    });
+    const data = await api(`/api/sessions/${sessionID}/messages?${params.toString()}`);
+    if (state.sessionId !== sessionID || paging.requestToken !== requestToken) return;
+
+    paging.previousCursor = data.previous_cursor || "";
+    paging.hasMoreBefore = Boolean(data.has_more_before && paging.previousCursor);
+    paging.loading = false;
+    renderHistoryLoadMoreButton(sessionID);
+    renderHistoryMessages(data.messages || [], sessionID, { prepend: true, scroll: false });
+    el.messages.scrollTop = previousTop + (el.messages.scrollHeight - previousHeight);
+  } catch (err) {
+    if (state.sessionId === sessionID) {
+      writeLog(`更早历史消息读取失败：${err.message}`);
+    }
+  } finally {
+    if (paging.requestToken === requestToken && paging.loading) {
+      paging.loading = false;
+      if (state.sessionId === sessionID) renderHistoryLoadMoreButton(sessionID);
+    }
   }
 }
 
@@ -322,14 +556,26 @@ function ensureFocusedInputVisible() {
   }, 80);
 }
 
-function resetTerminal() {
+function resetTerminal(options = {}) {
   state.assistantTranscript = "";
   state.assistantPending = "";
   state.assistantLast = "";
+  if (state.sessionId && !options.preserveSeq) delete state.outputSeqBySession[state.sessionId];
   terminalLog.reset();
 }
 
-function queueTerminalOutput(text) {
+function sessionAfterSeq(sessionID) {
+  return state.outputSeqBySession[sessionID] || 0;
+}
+
+function queueTerminalOutput(text, seq, sessionID = state.sessionId) {
+  if (sessionID && Number.isFinite(seq) && seq > 0) {
+    const lastSeq = state.outputSeqBySession[sessionID] || 0;
+    if (seq <= lastSeq) return;
+    // 服务端的 recent_output 和实时块共享同一条单调水位；Web 端只在有 seq 时去重，
+    // 保持旧 agentd/旧浏览器路径兼容。
+    state.outputSeqBySession[sessionID] = seq;
+  }
   observeAssistantText(text);
   terminalLog.append(text);
 }
@@ -433,12 +679,12 @@ function addOrUpdateAssistant(text) {
   addMessage("assistant", text);
 }
 
-async function loadProjects(keepSelection = false) {
+async function loadProjects(keepSelection = false, autoAttachLatest = false) {
   const previous = state.selectedProject;
   const data = await api("/api/projects");
   state.apiReady = true;
   state.apiError = "";
-  state.projects = data.projects || [];
+  setProjects(data.projects || []);
   el.projectSelect.innerHTML = "";
   for (const project of state.projects) {
     const option = document.createElement("option");
@@ -446,26 +692,89 @@ async function loadProjects(keepSelection = false) {
     option.textContent = project.name;
     el.projectSelect.appendChild(option);
   }
-  if (keepSelection && state.projects.some((p) => p.id === previous)) {
+  if (keepSelection && state.projectsByID.has(previous)) {
     state.selectedProject = previous;
   } else {
     state.selectedProject = state.projects[0]?.id || "";
   }
   el.projectSelect.value = state.selectedProject;
-  await loadSessions(false);
+  await loadSessions(autoAttachLatest);
   render();
 }
 
-async function loadSessions(autoAttachLatest = false) {
-  const data = await api("/api/sessions");
-  state.sessions = data.sessions || [];
-  if (state.sessionId && !state.sessions.some((s) => s.id === state.sessionId)) {
+function mergeSessionPage(page, projectID, append) {
+  const selected = currentSession();
+  if (append) {
+    const byID = new Map(state.sessionsByID);
+    for (const item of page) {
+      if (item?.id) byID.set(item.id, item);
+    }
+    setSessions(Array.from(byID.values()));
+    return;
+  }
+
+  const pageIDs = new Set(page.map((item) => item.id));
+  const scopedPage = page.slice();
+  if (selected && selected.project_id === projectID && !pageIDs.has(selected.id)) {
+    scopedPage.push(selected);
+  }
+  if (!projectID) {
+    setSessions(scopedPage);
+    return;
+  }
+  const merged = [];
+  for (const item of state.sessions) {
+    if (item.project_id !== projectID) merged.push(item);
+  }
+  merged.push(...scopedPage);
+  setSessions(merged);
+}
+
+async function loadSessions(autoAttachLatest = false, options = {}) {
+  const append = Boolean(options.append);
+  if (append && (!state.sessionsHasMore || state.sessionsLoading)) return;
+
+  const projectID = state.selectedProject;
+  const cursor = append ? state.sessionsCursor : "";
+  const requestToken = state.sessionsRequestToken + 1;
+  state.sessionsRequestToken = requestToken;
+  state.sessionsLoading = true;
+  renderSessions();
+
+  if (!append) {
+    state.sessionsCursor = "";
+    state.sessionsHasMore = false;
+  }
+
+  try {
+    const params = new URLSearchParams({ limit: String(SESSION_PAGE_LIMIT) });
+    if (projectID) params.set("project_id", projectID);
+    if (cursor) params.set("cursor", cursor);
+    const data = await api(`/api/sessions?${params.toString()}`);
+    if (requestToken !== state.sessionsRequestToken) return;
+
+    mergeSessionPage(data.sessions || [], projectID, append);
+    state.sessionsCursor = data.next_cursor || "";
+    state.sessionsHasMore = Boolean(data.has_more && state.sessionsCursor);
+  } finally {
+    if (requestToken === state.sessionsRequestToken) {
+      state.sessionsLoading = false;
+    }
+  }
+
+  if (state.sessionId && !state.sessionsByID.has(state.sessionId)) {
     state.sessionId = "";
   }
   if (autoAttachLatest) {
     const latest = projectSessions().find((s) => s.status === "running");
     if (latest) await attachSession(latest.id);
   }
+}
+
+function loadMoreSessions() {
+  loadSessions(false, { append: true })
+    .then(render)
+    .catch((err) => writeLog(`加载更多会话失败：${err.message}`));
 }
 
 async function startSession(options = {}) {
@@ -485,7 +794,7 @@ async function startSession(options = {}) {
       rows: size.rows,
     }),
   });
-  state.sessions = [data.session, ...state.sessions.filter((s) => s.id !== data.session.id)];
+  upsertSession(data.session);
   state.sessionId = data.session.id;
   resetTerminal();
   if (resume) {
@@ -508,7 +817,7 @@ async function attachSession(id) {
     state.ws = null;
   }
   state.sessionId = id;
-  resetTerminal();
+  resetTerminal({ preserveSeq: true });
   const session = currentSession();
   if (!session) return;
   await loadSessionMessages(session);
@@ -521,7 +830,10 @@ async function attachSession(id) {
 
 function connectWS(id) {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${protocol}://${location.host}/api/sessions/${id}/ws?token=${encodeURIComponent(state.token)}`;
+  const params = new URLSearchParams({ token: state.token });
+  const afterSeq = sessionAfterSeq(id);
+  if (afterSeq > 0) params.set("after_seq", String(afterSeq));
+  const url = `${protocol}://${location.host}/api/sessions/${id}/ws?${params.toString()}`;
   const ws = new WebSocket(url);
   state.ws = ws;
 
@@ -536,7 +848,7 @@ function connectWS(id) {
       upsertSession(msg.session);
       render();
     } else if (msg.type === "output") {
-      queueTerminalOutput(msg.data || "");
+      queueTerminalOutput(msg.data || "", Number(msg.seq), msg.session_id || id);
     } else if (msg.type === "exit") {
       const active = currentSession();
       if (active) active.status = "closed";
@@ -556,9 +868,10 @@ function connectWS(id) {
 }
 
 function upsertSession(session) {
-  const idx = state.sessions.findIndex((s) => s.id === session.id);
-  if (idx >= 0) state.sessions[idx] = session;
-  else state.sessions.unshift(session);
+  if (!session?.id) return;
+  const byID = new Map(state.sessionsByID);
+  byID.set(session.id, session);
+  setSessions(Array.from(byID.values()));
 }
 
 function wsSend(payload) {
@@ -598,8 +911,7 @@ el.saveToken.onclick = async () => {
   sessionStorage.setItem("agentd_token", state.token);
   render();
   try {
-    await loadProjects();
-    await loadSessions(true);
+    await loadProjects(false, true);
     writeLog("项目和会话已加载");
   } catch (err) {
     state.apiReady = false;
@@ -660,8 +972,17 @@ el.promptInput.addEventListener("blur", scheduleTerminalFit);
 el.tokenInput.addEventListener("blur", scheduleTerminalFit);
 el.promptInput.addEventListener("focus", ensureFocusedInputVisible);
 el.tokenInput.addEventListener("focus", ensureFocusedInputVisible);
+el.sessionsList.addEventListener("scroll", () => {
+  const remaining = el.sessionsList.scrollHeight - el.sessionsList.scrollTop - el.sessionsList.clientHeight;
+  if (remaining < 140) loadMoreSessions();
+});
 window.addEventListener("resize", scheduleTerminalFit);
 window.addEventListener("resize", updateViewportHeight);
+window.addEventListener("pagehide", flushStoredMessages);
+window.addEventListener("beforeunload", flushStoredMessages);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushStoredMessages();
+});
 window.visualViewport?.addEventListener("resize", () => {
   updateViewportHeight();
   scheduleTerminalFit();
@@ -685,8 +1006,7 @@ render();
 updateViewportHeight();
 writeLog("等待连接");
 if (state.token) {
-  loadProjects()
-    .then(() => loadSessions(true))
+  loadProjects(false, true)
     .catch((err) => {
       state.apiReady = false;
       state.apiError = err.message;

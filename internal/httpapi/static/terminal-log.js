@@ -1,4 +1,7 @@
 (function () {
+  const maxPendingOutputChars = 512 * 1024;
+  const outputFlushChunkChars = 32 * 1024;
+
   function createTerminalLog(options) {
     const term = new Terminal({
       convertEol: true,
@@ -59,10 +62,7 @@
 
     function append(text) {
       if (!text) return;
-      if (outputQueue.length > 512 * 1024) {
-        outputQueue = outputQueue.slice(-256 * 1024);
-      }
-      outputQueue += text;
+      outputQueue = appendBoundedOutput(outputQueue, text);
       if (outputFlushScheduled) return;
       outputFlushScheduled = true;
       scheduleFlush();
@@ -74,8 +74,7 @@
     }
 
     function flush() {
-      const chunkSize = 32 * 1024;
-      const chunk = outputQueue.slice(0, chunkSize);
+      const chunk = outputQueue.slice(0, outputFlushChunkChars);
       outputQueue = outputQueue.slice(chunk.length);
       outputFlushScheduled = outputQueue.length > 0;
       if (!chunk) return;
@@ -106,6 +105,17 @@
       setAutoScroll,
       scrollToBottom: () => term.scrollToBottom(),
     };
+  }
+
+  function appendBoundedOutput(current, addition) {
+    if (!addition) return current;
+    if (addition.length >= maxPendingOutputChars) {
+      // 超大输出块只保留尾部窗口，避免 current + addition 构造出巨大的临时字符串。
+      return addition.slice(-maxPendingOutputChars);
+    }
+    const currentBudget = maxPendingOutputChars - addition.length;
+    const boundedCurrent = current.length > currentBudget ? current.slice(-currentBudget) : current;
+    return boundedCurrent + addition;
   }
 
   window.createTerminalLog = createTerminalLog;

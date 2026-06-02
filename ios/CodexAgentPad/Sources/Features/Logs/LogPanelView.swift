@@ -3,7 +3,6 @@ import SwiftUI
 struct LogPanelView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var logStore: LogStore
-    private let formatter = LogPanelFormatter()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,8 +42,8 @@ struct LogPanelView: View {
     }
 
     private var logContent: some View {
-        let log = logStore.log(for: sessionStore.selectedSessionID)
-        let lines = formatter.renderedLines(from: log)
+        // 行已在 LogStore 后台算好，这里只读缓存，body 不再做重活。
+        let lines = logStore.lines(for: sessionStore.selectedSessionID)
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
@@ -68,13 +67,20 @@ struct LogPanelView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(8)
             }
-            .onChange(of: log) { _, _ in
-                guard logStore.autoScroll else {
-                    return
-                }
-                proxy.scrollTo("bottom", anchor: .bottom)
+            .onChange(of: lines.count) { _, _ in
+                scrollToBottom(proxy)
+            }
+            .onChange(of: lines.last?.text) { _, _ in
+                scrollToBottom(proxy)
             }
         }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        guard logStore.autoScroll else {
+            return
+        }
+        proxy.scrollTo("bottom", anchor: .bottom)
     }
 
     private var sessionSubtitle: String {
@@ -157,7 +163,7 @@ struct LogDisplayLine: Identifiable, Hashable {
 struct LogPanelFormatter {
     private let maxRenderedLogLines = 360
 
-    func renderedLines(from log: String) -> [LogDisplayLine] {
+    func renderedLines(from log: String, startLineID: Int = 0) -> [LogDisplayLine] {
         guard !log.isEmpty else {
             return []
         }
@@ -170,8 +176,8 @@ struct LogPanelFormatter {
 
         var result: [LogDisplayLine] = []
         var lastText = ""
-        for rawLine in normalizedLines {
-            guard let line = makeDisplayLine(from: rawLine, id: result.count) else {
+        for (rawIndex, rawLine) in normalizedLines.enumerated() {
+            guard let line = makeDisplayLine(from: rawLine, id: startLineID + rawIndex) else {
                 continue
             }
             guard line.text != lastText else {
@@ -180,9 +186,7 @@ struct LogPanelFormatter {
             result.append(line)
             lastText = line.text
         }
-        return Array(result.suffix(maxRenderedLogLines).enumerated()).map { offset, line in
-            LogDisplayLine(id: offset, text: line.text, kind: line.kind)
-        }
+        return Array(result.suffix(maxRenderedLogLines))
     }
 
     private func makeDisplayLine(from line: String, id: Int) -> LogDisplayLine? {

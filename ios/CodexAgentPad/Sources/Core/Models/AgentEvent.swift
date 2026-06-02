@@ -12,7 +12,7 @@ enum AgentEvent {
     case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
     case turnCompleted(AgentEventMetadata)
     case warning(AgentErrorPayload, AgentEventMetadata)
-    case output(String)
+    case output(String, AgentEventMetadata)
     case exit(ExitResult)
     case error(String)
     case pong
@@ -81,7 +81,7 @@ extension AgentEvent: Decodable {
         case "warning":
             self = .warning(try Self.decodePayload(from: container, key: .warning, fallback: "未知警告"), metadata)
         case "output":
-            self = .output(try container.decodeIfPresent(String.self, forKey: .data) ?? "")
+            self = .output(try container.decodeIfPresent(String.self, forKey: .data) ?? "", metadata)
         case "exit":
             self = .exit(try container.decodeIfPresent(ExitResult.self, forKey: .exit) ?? ExitResult(code: nil, reason: nil))
         case "error":

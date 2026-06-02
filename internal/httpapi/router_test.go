@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/doctor"
@@ -58,6 +61,163 @@ func newTestServer(t *testing.T) testServer {
 	}
 }
 
+func TestPositiveSeqParsesOnlyPositiveIntegers(t *testing.T) {
+	cases := map[string]int64{
+		"":    0,
+		"0":   0,
+		"-1":  0,
+		"bad": 0,
+		"42":  42,
+	}
+	for raw, want := range cases {
+		if got := positiveSeq(raw); got != want {
+			t.Fatalf("positiveSeq(%q)=%d, want %d", raw, got, want)
+		}
+	}
+}
+
+func TestActiveSessionSnapshotsFiltersByProjectBeforePagination(t *testing.T) {
+	now := time.Unix(100, 0)
+	list := []*session.Session{
+		{ID: "sess_demo", ProjectID: "demo", Title: "demo", Status: "running", UpdatedAt: now},
+		{ID: "sess_other", ProjectID: "other", Title: "other", Status: "running", UpdatedAt: now},
+	}
+
+	all := activeSessionSnapshots(list, "")
+	if len(all) != 2 {
+		t.Fatalf("全局列表应保留所有运行会话，got=%v", all)
+	}
+
+	demo := activeSessionSnapshots(list, "demo")
+	if len(demo) != 1 || demo[0].ID != "sess_demo" {
+		t.Fatalf("项目列表应在 snapshot 阶段排除无关运行会话，got=%v", demo)
+	}
+
+	missing := activeSessionSnapshots(list, "missing")
+	if len(missing) != 0 {
+		t.Fatalf("未知项目不应保留运行会话，got=%v", missing)
+	}
+}
+
+func TestActiveSessionSnapshotWindowUsesCursorAndBoundedTopK(t *testing.T) {
+	now := time.UnixMilli(1_780_308_003_000)
+	list := []*session.Session{
+		{ID: "sess_alpha", ProjectID: "demo", Title: "alpha", Status: "running", UpdatedAt: now},
+		{ID: "sess_delta", ProjectID: "demo", Title: "delta", Status: "running", UpdatedAt: now},
+		{ID: "sess_beta", ProjectID: "demo", Title: "beta", Status: "running", UpdatedAt: now},
+		{ID: "sess_gamma", ProjectID: "demo", Title: "gamma", Status: "running", UpdatedAt: now},
+		{ID: "sess_other", ProjectID: "other", Title: "other", Status: "running", UpdatedAt: now.Add(time.Second)},
+	}
+
+	firstWindow := activeSessionSnapshotWindow(list, "demo", sessionPageCursor{}, false, 2)
+	if got := sessionSnapshotIDs(firstWindow); len(got) != 2 || got[0] != "sess_gamma" || got[1] != "sess_delta" {
+		t.Fatalf("active window 应只保留按 updated_at/id 排序后的 top K，got=%v", got)
+	}
+
+	cursor := sessionPageCursor{ID: "sess_delta", UpdatedAtMS: now.UnixMilli()}
+	secondWindow := activeSessionSnapshotWindow(list, "demo", cursor, true, 2)
+	if got := sessionSnapshotIDs(secondWindow); len(got) != 2 || got[0] != "sess_beta" || got[1] != "sess_alpha" {
+		t.Fatalf("active window 应在 cursor 后继续并保持稳定 id tie-breaker，got=%v", got)
+	}
+}
+
+func TestDecodeSessionCursorRejectsMalformedNonEmptyCursor(t *testing.T) {
+	if _, hasCursor, err := decodeSessionCursor(""); err != nil || hasCursor {
+		t.Fatalf("空 cursor 应被视为未分页，has=%v err=%v", hasCursor, err)
+	}
+
+	invalidJSON := base64.RawURLEncoding.EncodeToString([]byte("{"))
+	missingFields := base64.RawURLEncoding.EncodeToString([]byte(`{"id":"sess_1"}`))
+	for _, raw := range []string{"not-base64!", invalidJSON, missingFields} {
+		if _, hasCursor, err := decodeSessionCursor(raw); err == nil || hasCursor {
+			t.Fatalf("非空无效 cursor 应返回错误且不启用分页，raw=%q has=%v err=%v", raw, hasCursor, err)
+		}
+	}
+}
+
+func TestSessionsRejectsMalformedCursor(t *testing.T) {
+	server := newTestServer(t)
+	rec := httptest.NewRecorder()
+
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/sessions?cursor=not-base64!", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("坏 cursor 应返回 400，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSessionTraceEndpointReturnsRecentTraceEvents(t *testing.T) {
+	server := newTestServer(t)
+	dir := t.TempDir()
+	s, err := server.manager.Create(session.CreateRequest{
+		Project: projects.Project{ID: "demo", Name: "Demo", Path: dir, RealPath: dir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/sessions/"+s.ID+"/trace", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 trace 返回 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	trace, ok := body["trace"].([]any)
+	if !ok || len(trace) == 0 {
+		t.Fatalf("trace 响应应包含最近事件：%v", body)
+	}
+	first := trace[0].(map[string]any)
+	if first["type"] != "session_created" {
+		t.Fatalf("首个 trace 事件应记录 session_created：%v", trace)
+	}
+}
+
+func TestSessionDetailAfterSeqOmitsAlreadySeenRecentOutput(t *testing.T) {
+	server := newTestServer(t)
+	dir := t.TempDir()
+	s, err := server.manager.Create(session.CreateRequest{
+		Project: projects.Project{ID: "demo", Name: "Demo", Path: dir, RealPath: dir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	if err := s.Write("hello\n"); err != nil {
+		t.Fatal(err)
+	}
+	lastSeq := waitForSessionSeq(t, s)
+
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/sessions/"+s.ID+"/?after_seq="+strconv.FormatInt(lastSeq, 10), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 session detail 返回 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if body["recent_output"] != "" {
+		t.Fatalf("after_seq 已到最新水位时不应重复返回 recent_output：%v", body)
+	}
+	if got := int64(body["last_seq"].(float64)); got != lastSeq {
+		t.Fatalf("last_seq 应仍返回当前水位，got=%d want=%d", got, lastSeq)
+	}
+}
+
+func waitForSessionSeq(t *testing.T, s *session.Session) int64 {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := s.RecentOutputSnapshot()
+		if snapshot.LastSeq > 0 {
+			return snapshot.LastSeq
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("等待 session 输出超时")
+	return 0
+}
+
 func authedRequest(t *testing.T, method, path string, body any) *http.Request {
 	t.Helper()
 
@@ -87,6 +247,14 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 		t.Fatalf("响应不是合法 JSON：%v body=%q", err, rec.Body.String())
 	}
 	return out
+}
+
+func sessionSnapshotIDs(items []session.Session) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }
 
 func TestHealthzDoesNotRequireAuth(t *testing.T) {
@@ -184,7 +352,7 @@ func TestCreateSessionAndListSessions(t *testing.T) {
 	}
 
 	listRec := httptest.NewRecorder()
-	server.handler.ServeHTTP(listRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&cursor=next&limit=20", nil))
+	server.handler.ServeHTTP(listRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&limit=20", nil))
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("期望会话列表返回 200，实际 %d body=%s", listRec.Code, listRec.Body.String())
 	}

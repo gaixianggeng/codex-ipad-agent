@@ -1,8 +1,27 @@
 import XCTest
+import Combine
 @testable import CodexAgentPad
 
 @MainActor
 final class ConversationDataFlowTests: XCTestCase {
+    func testConversationMessageRenderFingerprintTracksContentRevision() {
+        var message = ConversationMessage(
+            role: .assistant,
+            content: String(repeating: "长消息", count: 4_000),
+            sendStatus: .sending
+        )
+        let initial = message.renderFingerprint
+
+        message.sendStatus = .confirmed
+        XCTAssertEqual(message.renderFingerprint, initial)
+        XCTAssertEqual(message.contentRevision, 0)
+
+        message.content += "尾部增量"
+        XCTAssertNotEqual(message.renderFingerprint, initial)
+        XCTAssertEqual(message.contentRevision, 1)
+        XCTAssertGreaterThan(message.contentByteCount, initial.contentByteCount)
+    }
+
     func testHistoryMergeDeduplicatesLocalEchoByRoleAndContent() {
         let store = ConversationStore()
         let sessionID = "sess_data_flow"
@@ -48,6 +67,229 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.revision, 1)
     }
 
+    func testRepeatedLegacyHistoryProjectionKeepsMessageIdentity() {
+        let store = ConversationStore()
+        let sessionID = "sess_legacy_history_projection"
+        let createdAt = Date(timeIntervalSince1970: 100)
+
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "旧历史问题", createdAt: createdAt),
+            CodexHistoryMessage(role: "assistant", content: "旧历史回答", createdAt: createdAt.addingTimeInterval(1))
+        ], sessionID: sessionID)
+        let firstIDs = store.messages(for: sessionID).map(\.id)
+
+        // legacy rollout 没有稳定 id，解码时会补随机 UUID；语义相同的历史页重复绑定时，
+        // 投影缓存应复用上一批 ConversationMessage，避免 SwiftUI 把整页当成新消息重绘。
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "旧历史问题", createdAt: createdAt),
+            CodexHistoryMessage(role: "assistant", content: "旧历史回答", createdAt: createdAt.addingTimeInterval(1))
+        ], sessionID: sessionID)
+        let replayed = store.messages(for: sessionID)
+
+        XCTAssertEqual(replayed.map(\.id), firstIDs)
+        XCTAssertEqual(replayed.map(\.content), ["旧历史问题", "旧历史回答"])
+    }
+
+    func testRepeatedIdenticalHistorySkipsMergeWork() {
+        let store = ConversationStore()
+        let sessionID = "sess_identical_history_fast_path"
+        let createdAt = Date(timeIntervalSince1970: 150)
+        let history = [
+            CodexHistoryMessage(role: "user", content: "刷新问题", createdAt: createdAt),
+            CodexHistoryMessage(role: "assistant", content: "刷新回答", createdAt: createdAt.addingTimeInterval(1))
+        ]
+
+        store.setHistory(history, sessionID: sessionID)
+        XCTAssertEqual(store.historyMergeInvocationCountForTesting, 1)
+
+        // 同一页历史重复刷新时，projection 已经能证明没有变化，不需要再次 merge/sort。
+        store.setHistory(history, sessionID: sessionID)
+
+        XCTAssertEqual(store.historyMergeInvocationCountForTesting, 1)
+        XCTAssertTrue(store.hasLoadedHistory(sessionID: sessionID))
+        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["刷新问题", "刷新回答"])
+    }
+
+    func testRepeatedLongHistoryProjectionSkipsMergeWork() {
+        let store = ConversationStore()
+        let sessionID = "sess_long_history_fast_path"
+        let createdAt = Date(timeIntervalSince1970: 175)
+        let longAnswer = String(repeating: "长回答内容", count: 8_000)
+        let history = [
+            CodexHistoryMessage(role: "user", content: "生成长回答", createdAt: createdAt),
+            CodexHistoryMessage(role: "assistant", content: longAnswer, createdAt: createdAt.addingTimeInterval(1))
+        ]
+
+        store.setHistory(history, sessionID: sessionID)
+        XCTAssertEqual(store.historyMergeInvocationCountForTesting, 1)
+
+        // 长消息重复刷新时，Store 使用 content digest 判断等价，避免完整 content 参与热路径比较。
+        store.setHistory(history, sessionID: sessionID)
+
+        XCTAssertEqual(store.historyMergeInvocationCountForTesting, 1)
+        XCTAssertEqual(store.messages(for: sessionID).last?.contentByteCount, longAnswer.utf8.count)
+        XCTAssertEqual(store.messages(for: sessionID).last?.content, longAnswer)
+    }
+
+    func testGrowingLegacyHistoryProjectionReusesExistingRows() {
+        let store = ConversationStore()
+        let sessionID = "sess_growing_legacy_history"
+        let createdAt = Date(timeIntervalSince1970: 200)
+        let firstPage = [
+            CodexHistoryMessage(role: "user", content: "第一轮问题", createdAt: createdAt),
+            CodexHistoryMessage(role: "assistant", content: "第一轮回答", createdAt: createdAt.addingTimeInterval(1))
+        ]
+
+        store.setHistory(firstPage, sessionID: sessionID)
+        let firstIDs = store.messages(for: sessionID).map(\.id)
+
+        store.setHistory(firstPage + [
+            CodexHistoryMessage(role: "assistant", content: "第二轮回答", createdAt: createdAt.addingTimeInterval(2))
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 3)
+        XCTAssertEqual(Array(messages.prefix(2)).map(\.id), firstIDs)
+        XCTAssertEqual(messages.map(\.content), ["第一轮问题", "第一轮回答", "第二轮回答"])
+    }
+
+    func testPrependingUndatedHistoryReusesExistingSuffixRows() {
+        let store = ConversationStore()
+        let sessionID = "sess_prepend_undated_history"
+
+        store.setHistory([
+            CodexHistoryMessage(role: "assistant", content: "现有回答", createdAt: nil)
+        ], sessionID: sessionID)
+        guard let existing = store.messages(for: sessionID).first else {
+            return XCTFail("首屏历史应生成一条消息")
+        }
+
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "更早问题", createdAt: nil),
+            CodexHistoryMessage(role: "assistant", content: "现有回答", createdAt: nil)
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        let reused = messages.first { $0.content == "现有回答" }
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(reused?.id, existing.id)
+        XCTAssertEqual(reused?.createdAt, existing.createdAt)
+        XCTAssertTrue(messages.contains { $0.content == "更早问题" })
+    }
+
+    func testConversationStoreTrimsLeastRecentlyUsedSessionCaches() {
+        let store = ConversationStore()
+        let retainedLimit = ConversationStore.retainedSessionLimit
+        let createdAt = Date(timeIntervalSince1970: 300)
+
+        for index in 0..<retainedLimit {
+            store.setHistory([
+                CodexHistoryMessage(role: "assistant", content: "历史 \(index)", createdAt: createdAt.addingTimeInterval(TimeInterval(index)))
+            ], sessionID: "sess_\(index)")
+        }
+        store.setHistory([
+            CodexHistoryMessage(role: "assistant", content: "历史 0", createdAt: createdAt)
+        ], sessionID: "sess_0")
+
+        store.setHistory([
+            CodexHistoryMessage(role: "assistant", content: "新历史", createdAt: createdAt.addingTimeInterval(TimeInterval(retainedLimit)))
+        ], sessionID: "sess_new")
+
+        XCTAssertEqual(store.messagesBySessionID.count, retainedLimit)
+        XCTAssertEqual(store.messages(for: "sess_0").first?.content, "历史 0")
+        XCTAssertTrue(store.messages(for: "sess_1").isEmpty)
+        XCTAssertFalse(store.hasLoadedHistory(sessionID: "sess_1"))
+        XCTAssertEqual(store.messages(for: "sess_new").first?.content, "新历史")
+    }
+
+    func testConversationStoreLRUTouchKeepsStreamingSessionHotAcrossEvictions() {
+        let store = ConversationStore()
+        let retainedLimit = ConversationStore.retainedSessionLimit
+        let createdAt = Date(timeIntervalSince1970: 350)
+
+        for index in 0..<retainedLimit {
+            store.setHistory([
+                CodexHistoryMessage(role: "assistant", content: "历史 \(index)", createdAt: createdAt.addingTimeInterval(TimeInterval(index)))
+            ], sessionID: "sess_\(index)")
+        }
+
+        for index in 0..<5 {
+            store.appendSystem("流式片段 \(index)", sessionID: "sess_0")
+        }
+        store.setHistory([
+            CodexHistoryMessage(role: "assistant", content: "新历史 1", createdAt: createdAt.addingTimeInterval(TimeInterval(retainedLimit)))
+        ], sessionID: "sess_new_1")
+        store.setHistory([
+            CodexHistoryMessage(role: "assistant", content: "新历史 2", createdAt: createdAt.addingTimeInterval(TimeInterval(retainedLimit + 1)))
+        ], sessionID: "sess_new_2")
+
+        XCTAssertEqual(store.messagesBySessionID.count, retainedLimit)
+        XCTAssertTrue(store.messages(for: "sess_0").contains { $0.content == "流式片段 4" })
+        XCTAssertTrue(store.messages(for: "sess_1").isEmpty)
+        XCTAssertTrue(store.messages(for: "sess_2").isEmpty)
+        XCTAssertEqual(store.messages(for: "sess_new_1").first?.content, "新历史 1")
+        XCTAssertEqual(store.messages(for: "sess_new_2").first?.content, "新历史 2")
+    }
+
+    func testSelectingLoadedSessionRetainsConversationCache() async {
+        let conversationStore = ConversationStore()
+        let retainedLimit = ConversationStore.retainedSessionLimit
+        let createdAt = Date(timeIntervalSince1970: 400)
+        let project = makeProject(id: "proj_lru")
+        let selectedHistory = makeSession(id: "sess_0", projectID: project.id, title: "已加载历史", status: "history", source: "codex", resumeID: "sess_0")
+
+        for index in 0..<retainedLimit {
+            conversationStore.setHistory([
+                CodexHistoryMessage(role: "assistant", content: "历史 \(index)", createdAt: createdAt.addingTimeInterval(TimeInterval(index)))
+            ], sessionID: "sess_\(index)")
+        }
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [selectedHistory]) }
+        )
+
+        await store.selectSession(selectedHistory)
+        conversationStore.setHistory([
+            CodexHistoryMessage(role: "assistant", content: "新历史", createdAt: createdAt.addingTimeInterval(TimeInterval(retainedLimit)))
+        ], sessionID: "sess_new")
+
+        XCTAssertEqual(conversationStore.messagesBySessionID.count, retainedLimit)
+        XCTAssertEqual(conversationStore.messages(for: selectedHistory.id).first?.content, "历史 0")
+        XCTAssertTrue(conversationStore.messages(for: "sess_1").isEmpty)
+        XCTAssertEqual(conversationStore.messages(for: "sess_new").first?.content, "新历史")
+    }
+
+    func testHistoryMergePreservesRepeatedLegacyMessagesWithSameText() {
+        let store = ConversationStore()
+        let sessionID = "sess_repeated_legacy_text"
+
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "继续", createdAt: Date(timeIntervalSince1970: 10)),
+            CodexHistoryMessage(role: "user", content: "继续", createdAt: Date(timeIntervalSince1970: 20))
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.map(\.content), ["继续", "继续"])
+        XCTAssertNotEqual(messages[0].id, messages[1].id)
+    }
+
+    func testLegacyEchoMergeRequiresNearbyHistoryTimestamp() {
+        let store = ConversationStore()
+        let sessionID = "sess_legacy_echo_window"
+
+        store.appendUser("继续", sessionID: sessionID)
+        store.setHistory([
+            CodexHistoryMessage(role: "user", content: "继续", createdAt: Date(timeIntervalSince1970: 10))
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.filter { $0.role == .user && $0.content == "继续" }.count, 2)
+    }
+
     func testAssistantStreamUpdatesExistingAssistantRow() async throws {
         let store = ConversationStore()
         let sessionID = "sess_stream_merge"
@@ -91,12 +333,30 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.content, "可重放的回复")
     }
 
+    func testTerminalOutputBoundedWindowKeepsLatestTail() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_terminal_tail_window"
+        let oldPrefix = "│ • 旧回复不应保留\n"
+        let filler = String(repeating: "x", count: 18_000)
+
+        store.ingestTerminalOutput(oldPrefix + filler + "\n│ • 最新尾部回复\n", sessionID: sessionID)
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.role, .assistant)
+        XCTAssertTrue(messages.first?.content.contains("最新尾部回复") == true)
+        XCTAssertFalse(messages.first?.content.contains("旧回复不应保留") == true)
+    }
+
     func testAgentEventDecodesLegacyAndStructuredAssistantDelta() throws {
         let decoder = JSONDecoder()
 
-        let output = try decoder.decode(AgentEvent.self, from: Data(#"{"type":"output","data":"hello"}"#.utf8))
-        if case .output(let data) = output {
+        let output = try decoder.decode(AgentEvent.self, from: Data(#"{"type":"output","data":"hello","seq":6,"session_id":"sess_output"}"#.utf8))
+        if case .output(let data, let meta) = output {
             XCTAssertEqual(data, "hello")
+            XCTAssertEqual(meta.seq, 6)
+            XCTAssertEqual(meta.sessionID, "sess_output")
         } else {
             XCTFail("Expected output event")
         }
@@ -262,6 +522,10 @@ final class ConversationDataFlowTests: XCTestCase {
             ),
             fallbackSessionID: sessionID
         )
+        var messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.content, "Hel")
+
         store.applyAssistantDelta(
             AgentDelta(text: "lo", role: .assistant, kind: .message),
             metadata: AgentEventMetadata(
@@ -276,6 +540,10 @@ final class ConversationDataFlowTests: XCTestCase {
             ),
             fallbackSessionID: sessionID
         )
+        // 后续 delta 会先进入合并缓冲区，避免每个分片都触发 UI 刷新。
+        messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.first?.content, "Hel")
+
         store.applyAssistantDelta(
             AgentDelta(text: "lo", role: .assistant, kind: .message),
             metadata: AgentEventMetadata(
@@ -283,6 +551,86 @@ final class ConversationDataFlowTests: XCTestCase {
                 sessionID: sessionID,
                 turnID: "turn_1",
                 itemID: "item_1",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 2,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        store.markCurrentAssistantCompleted(
+            metadata: AgentEventMetadata(
+                seq: 3,
+                sessionID: sessionID,
+                turnID: "turn_1",
+                itemID: "item_1",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 3,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.role, .assistant)
+        XCTAssertEqual(messages.first?.content, "Hello")
+        XCTAssertEqual(messages.first?.stableID, "item_1")
+        XCTAssertEqual(messages.first?.sendStatus, .confirmed)
+    }
+
+    func testStructuredAssistantDeltaFlushesBufferedTextOnTimer() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_delta_timer"
+
+        store.applyAssistantDelta(
+            AgentDelta(text: "A", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn_1",
+                itemID: "item_1",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        store.applyAssistantDelta(
+            AgentDelta(text: "B", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 2,
+                sessionID: sessionID,
+                turnID: "turn_1",
+                itemID: "item_1",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 2,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        XCTAssertEqual(store.messages(for: sessionID).first?.content, "A")
+
+        try await Task.sleep(nanoseconds: 160_000_000)
+
+        XCTAssertEqual(store.messages(for: sessionID).first?.content, "AB")
+        XCTAssertEqual(store.messages(for: sessionID).first?.revision, 2)
+    }
+
+    func testEmptyAssistantDeltaDoesNotCreateBubbleOrReserveRevision() throws {
+        let store = ConversationStore()
+        let sessionID = "sess_empty_delta"
+
+        store.applyAssistantDelta(
+            AgentDelta(text: "", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn_1",
+                itemID: "item_empty",
                 messageID: nil,
                 clientMessageID: nil,
                 revision: 2,
@@ -291,11 +639,29 @@ final class ConversationDataFlowTests: XCTestCase {
             fallbackSessionID: sessionID
         )
 
+        XCTAssertTrue(store.messages(for: sessionID).isEmpty)
+
+        let completed = try JSONDecoder().decode(
+            AgentMessage.self,
+            from: Data("""
+            {
+              "id": "item_empty",
+              "session_id": "\(sessionID)",
+              "role": "assistant",
+              "content": "最终回复",
+              "revision": 2,
+              "send_status": "confirmed"
+            }
+            """.utf8)
+        )
+
+        store.completeMessage(completed, metadata: .empty, fallbackSessionID: sessionID)
+
         let messages = store.messages(for: sessionID)
         XCTAssertEqual(messages.count, 1)
-        XCTAssertEqual(messages.first?.role, .assistant)
-        XCTAssertEqual(messages.first?.content, "Hello")
-        XCTAssertEqual(messages.first?.stableID, "item_1")
+        XCTAssertEqual(messages.first?.content, "最终回复")
+        XCTAssertEqual(messages.first?.revision, 2)
+        XCTAssertEqual(messages.first?.sendStatus, .confirmed)
     }
 
     func testAssistantDeltaIgnoresOlderRevisionForSameStableItem() {
@@ -337,6 +703,45 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.revision, 2)
     }
 
+    func testAssistantRevisionCacheIsScopedBySession() {
+        let store = ConversationStore()
+
+        store.applyAssistantDelta(
+            AgentDelta(text: "A 会话", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: nil,
+                sessionID: "sess_a",
+                turnID: "turn_a",
+                itemID: "item_shared",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 2,
+                createdAt: nil
+            ),
+            fallbackSessionID: "sess_a"
+        )
+        store.applyAssistantDelta(
+            AgentDelta(text: "B 会话", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: nil,
+                sessionID: "sess_b",
+                turnID: "turn_b",
+                itemID: "item_shared",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: "sess_b"
+        )
+
+        let first = store.messages(for: "sess_a").first
+        let second = store.messages(for: "sess_b").first
+        XCTAssertEqual(first?.content, "A 会话")
+        XCTAssertEqual(second?.content, "B 会话")
+        XCTAssertNotEqual(first?.id, second?.id)
+    }
+
     func testLocalEchoCanBeConfirmedByClientMessageID() {
         let store = ConversationStore()
         let sessionID = "sess_echo"
@@ -349,6 +754,34 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages.first?.clientMessageID, clientMessageID)
         XCTAssertEqual(messages.first?.sendStatus, .sent)
+    }
+
+    func testAssistantDeltaAppendMaintainsStableMessageIndex() {
+        let store = ConversationStore()
+        let sessionID = "sess_assistant_index"
+        let metadata = AgentEventMetadata(
+            seq: nil,
+            sessionID: sessionID,
+            turnID: "turn_1",
+            itemID: "item_1",
+            messageID: "msg_assistant_1",
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: nil
+        )
+
+        store.applyAssistantDelta(
+            AgentDelta(text: "第一段回复", role: .assistant, kind: .message),
+            metadata: metadata,
+            fallbackSessionID: sessionID
+        )
+        store.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.stableID, "msg_assistant_1")
+        XCTAssertEqual(messages.first?.sendStatus, .confirmed)
+        XCTAssertEqual(messages.first?.content, "第一段回复")
     }
 
     func testCompletedMessageConfirmsLocalEchoByClientMessageIDWithoutDuplicate() throws {
@@ -482,6 +915,56 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(conversationStore.hasLoadedHistory(sessionID: selectedHistory.id))
     }
 
+    func testSessionStoreReturnToListDoesNotPublishWhenAlreadyCleared() {
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        var publishCount = 0
+        var cancellables: Set<AnyCancellable> = []
+
+        store.objectWillChange
+            .sink { _ in publishCount += 1 }
+            .store(in: &cancellables)
+
+        // 已经处于会话列表页时再次返回，不应重复写入 nil/disconnected 状态刷新整棵侧栏 UI。
+        store.returnToSessionList()
+
+        XCTAssertEqual(publishCount, 0)
+    }
+
+    func testSelectingAlreadySelectedHistoryDoesNotPublishWhenHistoryLoaded() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory([
+            CodexHistoryMessage(id: "rollout:1", role: "assistant", content: "已加载", createdAt: Date(timeIntervalSince1970: 1))
+        ], sessionID: history.id)
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [history]) }
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = history.id
+        var publishCount = 0
+        var cancellables: Set<AnyCancellable> = []
+
+        store.objectWillChange
+            .sink { _ in publishCount += 1 }
+            .store(in: &cancellables)
+
+        // Codex/litter 都避免 no-op diff 继续下发事件；重复点当前历史行也不应刷新侧栏。
+        await store.selectSession(history)
+
+        XCTAssertEqual(publishCount, 0)
+        XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertEqual(store.selectedSessionID, history.id)
+    }
+
     func testSelectingHistorySessionKeepsSelectionWhenMessages404() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_missing", projectID: project.id, title: "缺失 rollout", status: "history", source: "codex", resumeID: "missing")
@@ -558,6 +1041,50 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(store.selectedSessionID)
     }
 
+    func testSessionStoreProjectIndexKeepsPreviousSelectionAfterRefresh() async {
+        let firstProject = makeProject(id: "proj_1")
+        let secondProject = makeProject(id: "proj_2")
+        let client = MockSessionStoreClient(projects: [firstProject, secondProject], sessions: [])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = secondProject.id
+        await store.refreshAll(autoAttach: false)
+
+        XCTAssertEqual(store.selectedProject?.id, secondProject.id)
+        XCTAssertEqual(store.selectedProjectID, secondProject.id)
+    }
+
+    func testRepeatedProjectRefreshDoesNotPublishUnchangedProjections() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = MockSessionStoreClient(projects: [project], sessions: [history])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        var publishCount = 0
+        var cancellables: Set<AnyCancellable> = []
+        store.objectWillChange
+            .sink { _ in publishCount += 1 }
+            .store(in: &cancellables)
+
+        await store.refreshAll(autoAttach: false)
+
+        // 相同 projects/sessions/status 不应重复下发；这里只保留 loading true/false 两次真实状态变化。
+        XCTAssertEqual(publishCount, 2)
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [history.id])
+    }
+
     func testSessionStoreProjectRefreshKeepsOtherProjectSessions() {
         let firstProject = makeProject(id: "proj_1")
         let secondProject = makeProject(id: "proj_2")
@@ -618,9 +1145,306 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2"])
         XCTAssertEqual(store.hiddenSessionCount(forProjectID: project.id), 2)
+        var snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertFalse(snapshot.isShowingAll)
+        XCTAssertEqual(snapshot.visibleSessions.map(\.id), ["codex_0", "codex_1", "codex_2"])
+        XCTAssertEqual(snapshot.allSessionCount, 5)
+        XCTAssertEqual(snapshot.hiddenCount, 2)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.actionTitle, "展开显示")
 
-        store.toggleSessionListExpansion(projectID: project.id)
+        await store.toggleSessionListExpansion(projectID: project.id)
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 5)
+        XCTAssertEqual(store.hiddenSessionCount(forProjectID: project.id), 2)
+        snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertTrue(snapshot.isShowingAll)
+        XCTAssertEqual(snapshot.visibleSessions.count, 5)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.actionTitle, "收起显示")
+
+        await store.toggleSessionListExpansion(projectID: project.id)
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2"])
+        snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertFalse(snapshot.isShowingAll)
+        XCTAssertEqual(snapshot.visibleSessions.map(\.id), ["codex_0", "codex_1", "codex_2"])
+    }
+
+    func testSessionStoreLoadsNextSessionPageWhenExpanded() async {
+        let project = makeProject(id: "proj_1")
+        let firstPage = (0..<3).map { index in
+            makeSession(
+                id: "codex_first_\(index)",
+                projectID: project.id,
+                title: "第一页 \(index)",
+                status: "history",
+                source: "codex",
+                resumeID: "first_\(index)",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(20 - index))
+            )
+        }
+        let secondPage = (0..<2).map { index in
+            makeSession(
+                id: "codex_second_\(index)",
+                projectID: project.id,
+                title: "第二页 \(index)",
+                status: "history",
+                source: "codex",
+                resumeID: "second_\(index)",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(10 - index))
+            )
+        }
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            projectPages: [
+                project.id: SessionsPage(sessions: firstPage, nextCursor: "cursor_1", hasMore: true)
+            ],
+            cursorPages: [
+                "cursor_1": SessionsPage(sessions: secondPage, hasMore: false)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        XCTAssertTrue(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), firstPage.map(\.id))
+        var snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertFalse(snapshot.isShowingAll)
+        XCTAssertTrue(snapshot.canLoadMore)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.actionTitle, "展开显示")
+
+        await store.toggleSessionListExpansion(projectID: project.id)
+
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (firstPage + secondPage).map(\.id))
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 5)
+        snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertTrue(snapshot.isShowingAll)
+        XCTAssertFalse(snapshot.canLoadMore)
+        XCTAssertEqual(snapshot.allSessionCount, 5)
+        XCTAssertEqual(snapshot.visibleSessions.count, 5)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.actionTitle, "收起显示")
+    }
+
+    func testSessionListSnapshotUpdatesWhenPaginationStateChangesWithoutSessionDiff() async {
+        let project = makeProject(id: "proj_1")
+        let firstPage = (0..<3).map { index in
+            makeSession(
+                id: "codex_first_\(index)",
+                projectID: project.id,
+                title: "第一页 \(index)",
+                status: "history",
+                source: "codex",
+                resumeID: "first_\(index)",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(20 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: firstPage, nextCursor: "cursor_1", hasMore: true)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        var snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertTrue(snapshot.canLoadMore)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.actionTitle, "展开显示")
+
+        client.page = SessionsPage(sessions: firstPage, hasMore: false)
+        await store.refreshAll(autoAttach: false)
+
+        snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertFalse(snapshot.canLoadMore)
+        XCTAssertFalse(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.visibleSessions.map(\.id), firstPage.map(\.id))
+    }
+
+    func testSessionStoreDerivedSessionIndexesStaySortedAfterUpsert() async throws {
+        let project = makeProject(id: "proj_1")
+        let older = makeSession(
+            id: "codex_older",
+            projectID: project.id,
+            title: "旧历史",
+            status: "history",
+            source: "codex",
+            resumeID: "older",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let newer = makeSession(
+            id: "codex_newer",
+            projectID: project.id,
+            title: "新历史",
+            status: "history",
+            source: "codex",
+            resumeID: "newer",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let created = makeSession(id: "sess_created", projectID: project.id, title: "刚创建", status: "closed", source: "agentd")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            projectSessions: [project.id: [older, newer]],
+            createSessionResponse: try makeCreateSessionResponse(session: created)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), [newer.id, older.id])
+
+        // upsert 只发布一次 sessions，同时必须重建派生索引；否则侧栏会继续显示旧排序。
+        await store.startNewSession(in: project)
+
+        XCTAssertEqual(store.selectedSession?.id, created.id)
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), [created.id, newer.id, older.id])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [created.id, newer.id, older.id])
+    }
+
+    func testSessionStoreUsesIDTieBreakerForMatchingBackendCursorOrder() async {
+        let project = makeProject(id: "proj_1")
+        let sameUpdatedAt = Date(timeIntervalSince1970: 20)
+        let sessions = [
+            makeSession(id: "codex_alpha", projectID: project.id, title: "Z Title", status: "history", source: "codex", resumeID: "alpha", updatedAt: sameUpdatedAt),
+            makeSession(id: "codex_beta", projectID: project.id, title: "A Title", status: "history", source: "codex", resumeID: "beta", updatedAt: sameUpdatedAt),
+            makeSession(id: "codex_gamma", projectID: project.id, title: "M Title", status: "history", source: "codex", resumeID: "gamma", updatedAt: sameUpdatedAt)
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            projectSessions: [project.id: sessions]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+
+        // Go 后端 cursor 按 updated_at desc + id desc；Swift 派生索引必须保持同序，
+        // 否则分页合并后本地会按标题重排，出现侧栏跳动。
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), ["codex_gamma", "codex_beta", "codex_alpha"])
+    }
+
+    func testSessionStoreFreezesProjectOrderWhileSessionIsRunning() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(
+            id: "codex_history",
+            projectID: project.id,
+            title: "历史",
+            status: "history",
+            source: "codex",
+            resumeID: "history",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let running = makeSession(
+            id: "sess_running",
+            projectID: project.id,
+            title: "运行中",
+            status: "running",
+            source: "agentd",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [history, running]))
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [history.id, running.id])
+
+        client.page = SessionsPage(sessions: [
+            history,
+            makeSession(
+                id: running.id,
+                projectID: project.id,
+                title: running.title,
+                status: "running",
+                source: running.source,
+                updatedAt: Date(timeIntervalSince1970: 30)
+            )
+        ])
+        await store.refreshSelectedProjectSessions()
+
+        // running 输出刷新会更新 updatedAt；侧栏保持用户正在看的相对顺序，避免列表来回跳。
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [history.id, running.id])
+
+        client.page = SessionsPage(sessions: [
+            history,
+            makeSession(
+                id: running.id,
+                projectID: project.id,
+                title: running.title,
+                status: "closed",
+                source: running.source,
+                updatedAt: Date(timeIntervalSince1970: 30)
+            )
+        ])
+        await store.refreshSelectedProjectSessions()
+
+        // 没有 running session 后释放冻结顺序，恢复 updatedAt 排序。
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [running.id, history.id])
+    }
+
+    func testSessionStoreIndexedUpsertReplacesExistingSessionWithoutDuplicate() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(
+            id: "sess_running",
+            projectID: project.id,
+            title: "运行中",
+            status: "running",
+            source: "agentd"
+        )
+        let closed = makeSession(
+            id: running.id,
+            projectID: project.id,
+            title: running.title,
+            status: "closed",
+            source: running.source,
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            sessionResponses: [
+                running.id: try makeSessionResponse(session: closed, recentOutput: nil)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        await store.refreshCurrentContext()
+
+        // session 高频状态更新走 ID->index 投影替换，不能退化成重复追加。
+        XCTAssertEqual(store.sessions.filter { $0.id == running.id }.count, 1)
+        XCTAssertEqual(store.selectedSession?.status, "closed")
     }
 
     func testRefreshCurrentContextReloadsSelectedHistoryMessages() async {
@@ -644,14 +1468,57 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(conversationStore.messages(for: history.id).contains { $0.content == "历史回答" })
     }
 
-    func testRefreshCurrentContextConsumesRunningRecentOutput() async throws {
+    func testSelectingHistoryWhileInitialPageLoadingDoesNotDuplicateRequest() async {
         let project = makeProject(id: "proj_1")
-        let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let firstSelectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        await store.selectSession(history)
+
+        XCTAssertEqual(client.requestedMessageCursors, [nil])
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:100", role: "assistant", content: "首屏历史", createdAt: Date(timeIntervalSince1970: 10))
+                ]
+            )
+        )
+        await firstSelectTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["首屏历史"])
+    }
+
+    func testLoadEarlierHistoryMergesOlderMessagePage() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let newer = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "较新的问题", createdAt: Date(timeIntervalSince1970: 20)),
+            CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "较新的回答", createdAt: Date(timeIntervalSince1970: 30))
+        ]
+        let older = [
+            CodexHistoryMessage(id: "rollout:10", role: "user", content: "更早的问题", createdAt: Date(timeIntervalSince1970: 10))
+        ]
         let client = MockSessionStoreClient(
             projects: [project],
-            sessions: [running],
-            sessionResponses: [
-                running.id: try makeSessionResponse(session: running, recentOutput: "│ • 从 Mac 回来的回复\n")
+            sessions: [history],
+            historyPages: [
+                history.id: HistoryMessagesPage(messages: newer, previousCursor: "older_cursor", hasMoreBefore: true)
+            ],
+            historyCursorPages: [
+                "older_cursor": HistoryMessagesPage(messages: older, hasMoreBefore: false)
             ]
         )
         let conversationStore = ConversationStore()
@@ -663,13 +1530,321 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["较新的问题", "较新的回答"])
+
+        await store.loadEarlierHistoryForSelectedSession()
+
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id))
+        XCTAssertEqual(client.requestedMessageCursors, [nil, "older_cursor"])
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["更早的问题", "较新的问题", "较新的回答"])
+    }
+
+    func testHistoryPagingStatePrunesWhenSessionLeavesList() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history]),
+            historyPages: [
+                history.id: HistoryMessagesPage(
+                    messages: [
+                        CodexHistoryMessage(id: "rollout:200", role: "assistant", content: "较新的回答", createdAt: Date(timeIntervalSince1970: 20))
+                    ],
+                    previousCursor: "older_cursor",
+                    hasMoreBefore: true
+                )
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+
+        store.returnToSessionList()
+        client.page = SessionsPage(sessions: [])
+        await store.refreshSelectedProjectSessions()
+
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id))
+        XCTAssertTrue(store.sessions.isEmpty)
+    }
+
+    func testEmptyHistoryRefreshPreservesEarlierCursorUntilLoadEarlierReturnsEmpty() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let newer = [
+            CodexHistoryMessage(id: "rollout:200", role: "user", content: "较新的问题", createdAt: Date(timeIntervalSince1970: 20))
+        ]
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history]),
+            historyPages: [
+                history.id: HistoryMessagesPage(messages: newer, previousCursor: "older_cursor", hasMoreBefore: true)
+            ],
+            historyCursorPages: [
+                "older_cursor": HistoryMessagesPage(messages: [], hasMoreBefore: false)
+            ]
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+
+        client.historyPages[history.id] = HistoryMessagesPage(messages: [], hasMoreBefore: false)
+        await store.refreshCurrentContext()
+
+        // 首屏刷新偶发空页时，不能把已有 older cursor 清掉，否则用户无法继续加载更早历史。
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["较新的问题"])
+
+        await store.loadEarlierHistoryForSelectedSession()
+
+        XCTAssertFalse(store.canLoadEarlierHistory(sessionID: history.id))
+        XCTAssertEqual(client.requestedMessageCursors, [nil, nil, "older_cursor"])
+    }
+
+    func testStaleHistoryFirstPageResponseDoesNotOverwriteNewerRefresh() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        let refreshTask = Task { await store.refreshCurrentContext() }
+        await client.waitForHistoryRequestCount(2)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:200", role: "assistant", content: "新历史", createdAt: Date(timeIntervalSince1970: 20))
+                ],
+                previousCursor: "fresh_cursor",
+                hasMoreBefore: true
+            )
+        )
+        await refreshTask.value
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史"])
+
+        let secondRefreshTask = Task { await store.refreshCurrentContext() }
+        await client.waitForHistoryRequestCount(3)
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:100", role: "assistant", content: "旧历史", createdAt: Date(timeIntervalSince1970: 10))
+                ],
+                previousCursor: "stale_cursor",
+                hasMoreBefore: true
+            )
+        )
+        await selectTask.value
+
+        // 旧的 before=nil 响应晚到后必须丢弃，不能把较新的手动刷新结果和 cursor 覆盖掉。
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史"])
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+
+        client.resolveHistoryRequest(
+            at: 2,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "最新历史", createdAt: Date(timeIntervalSince1970: 30))
+                ],
+                previousCursor: "latest_cursor",
+                hasMoreBefore: true
+            )
+        )
+        await secondRefreshTask.value
+
+        XCTAssertEqual(client.requestedMessageCursors, [nil, nil, nil])
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史", "最新历史"])
+        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+    }
+
+    func testRefreshCurrentContextConsumesRunningRecentOutput() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            sessionResponses: [
+                running.id: try makeSessionResponse(session: running, recentOutput: "│ • 从 Mac 回来的回复\n", lastSeq: 12)
+            ]
+        )
+        let conversationStore = ConversationStore()
+        let logStore = LogStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: logStore,
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
         store.selectedProjectID = project.id
         store.selectedSessionID = running.id
         await store.refreshCurrentContext()
         try await Task.sleep(nanoseconds: 1_100_000_000)
 
         XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertTrue(logStore.log(for: running.id).contains("从 Mac 回来的回复"))
         XCTAssertTrue(conversationStore.messages(for: running.id).contains { $0.role == .assistant && $0.content == "从 Mac 回来的回复" })
+    }
+
+    func testRefreshCurrentContextRequestsRunningDetailAfterLocalLogSeq() async throws {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "sess_running", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            sessionResponses: [
+                running.id: try makeSessionResponse(session: running, recentOutput: nil, lastSeq: 12)
+            ]
+        )
+        let conversationStore = ConversationStore()
+        let logStore = LogStore()
+        logStore.append("本地已有输出", sessionID: running.id, seq: 12)
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: logStore,
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = running.id
+        await store.refreshCurrentContext()
+
+        XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertEqual(client.requestedSessionAfterSeqs, [12])
+        XCTAssertTrue(conversationStore.messages(for: running.id).isEmpty)
+    }
+
+    func testWebSocketURLIncludesReplayWatermark() throws {
+        let client = MockSessionStoreClient(projects: [], sessions: [])
+
+        let url = try client.websocketURL(sessionID: "sess_1", afterSeq: 42)
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+
+        XCTAssertEqual(components?.queryItems?.first { $0.name == "after_seq" }?.value, "42")
+    }
+
+    func testPendingWebSocketMessageQueueRejectsOverflowAndDrainsInOrder() {
+        var queue = PendingWebSocketMessageQueue(maxMessages: 2)
+        let first = ClientWebSocketMessage(type: "input", data: "第一条", clientMessageID: "client_1")
+        let second = ClientWebSocketMessage(type: "input", data: "第二条", clientMessageID: "client_2")
+        let overflow = ClientWebSocketMessage(type: "input", data: "第三条", clientMessageID: "client_3")
+
+        XCTAssertTrue(queue.append(first))
+        XCTAssertTrue(queue.append(second))
+        XCTAssertFalse(queue.append(overflow))
+        XCTAssertEqual(queue.count, 2)
+
+        let drained = queue.drain()
+        XCTAssertEqual(drained.map(\.clientMessageID), ["client_1", "client_2"])
+        XCTAssertTrue(queue.isEmpty)
+        XCTAssertTrue(queue.drain().isEmpty)
+    }
+
+    func testWebSocketFailureAutoReconnectsWithLatestReplayWatermark() async throws {
+        let project = makeProject(id: "proj_ws_reconnect")
+        let running = makeSession(id: "sess_ws_reconnect", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let logStore = LogStore()
+        logStore.append("旧输出", sessionID: running.id, seq: 5)
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: logStore,
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(queryValue("after_seq", in: sockets[0].connectedURLs.first), "5")
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        logStore.append("新输出", sessionID: running.id, seq: 7)
+        sockets[0].emitStatus(.failed("network dropped"))
+        for _ in 0..<50 where sockets.count < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertEqual(queryValue("after_seq", in: sockets[1].connectedURLs.first), "7")
+        sockets[1].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+    }
+
+    func testReturningToSessionListCancelsQueuedWebSocketReconnect() async throws {
+        let project = makeProject(id: "proj_ws_cancel")
+        let running = makeSession(id: "sess_ws_cancel", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 120_000_000 }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        sockets[0].emitStatus(.failed("network dropped"))
+        try await waitForWebSocketStatus(.connecting, store: store)
+
+        store.returnToSessionList()
+        try await Task.sleep(nanoseconds: 180_000_000)
+
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(store.webSocketStatus, .disconnected)
     }
 
     func testRunningSessionAloneDoesNotShowForegroundActivity() async {
@@ -712,39 +1887,177 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(accepted)
         XCTAssertEqual(store.selectedForegroundActivity, .waitingForAssistant)
     }
+
+    func testStructuredAssistantSuppressesTerminalParserDuplicate() async throws {
+        let store = ConversationStore()
+        let sessionID = "sess_dedup"
+
+        // 先来一段 PTY 输出，解析兜底生成一条 assistant 气泡。
+        store.ingestTerminalOutput("│ • 来自终端的回复\n", sessionID: sessionID)
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        XCTAssertEqual(store.messages(for: sessionID).count, 1)
+        XCTAssertNil(store.messages(for: sessionID).first?.stableID)
+
+        // 结构化助手消息到达：应清掉解析兜底气泡，只保留结构化这条。
+        store.applyAssistantDelta(
+            AgentDelta(text: "结构化回复", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn_1",
+                itemID: "item_1",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        var messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.content, "结构化回复")
+        XCTAssertEqual(messages.first?.stableID, "item_1")
+
+        // 之后即便再来带终端装饰的 PTY 输出，也不应追加重复气泡。
+        store.ingestTerminalOutput("│ • 来自终端的回复\n›Improve documentation in @file\n", sessionID: sessionID)
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.content, "结构化回复")
+    }
+
+    func testBootstrapRetriesUntilProjectsLoadAfterTransientFailures() async {
+        let project = makeProject(id: "proj_1")
+        let session = makeSession(id: "codex_1", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = FlakyBootstrapClient(failuresBeforeSuccess: 2, projects: [project], sessions: [session])
+        let appStore = AppStore()
+        appStore.token = "test-token" // 让 isConfigured 为真，否则 bootstrap 直接返回。
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.projectsCallCount, 3) // 失败 2 次 + 成功 1 次
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testBootstrapDoesNotRetryWhenBackendHasNoProjects() async {
+        let client = FlakyBootstrapClient(failuresBeforeSuccess: 0, projects: [], sessions: [])
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.bootstrap()
+
+        // 成功但后端确实没有项目时不应空转重试。
+        XCTAssertEqual(client.projectsCallCount, 1)
+        XCTAssertTrue(store.projects.isEmpty)
+        XCTAssertNil(store.errorMessage)
+    }
+}
+
+private final class MockWebSocketClient: SessionWebSocketClient {
+    var onEvent: ((AgentEvent) -> Void)?
+    var onStatus: ((WebSocketStatus) -> Void)?
+    var onSendFailure: ((ClientMessageID?, String) -> Void)?
+
+    private(set) var connectedURLs: [URL] = []
+    private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
+    private(set) var sentResizes: [(cols: Int, rows: Int)] = []
+    private(set) var disconnectCallCount = 0
+
+    func connect(url: URL, token: String) {
+        connectedURLs.append(url)
+        onStatus?(.connecting)
+    }
+
+    func disconnect() {
+        disconnectCallCount += 1
+        onStatus?(.disconnected)
+    }
+
+    func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {
+        sentInputs.append((text, clientMessageID))
+        return true
+    }
+
+    func sendEnter() -> Bool {
+        true
+    }
+
+    func sendCtrlC() -> Bool {
+        true
+    }
+
+    func sendResize(cols: Int, rows: Int) -> Bool {
+        sentResizes.append((cols, rows))
+        return true
+    }
+
+    func ping() -> Bool {
+        true
+    }
+
+    func emitStatus(_ status: WebSocketStatus) {
+        onStatus?(status)
+    }
 }
 
 private final class MockSessionStoreClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let sessionsResult: [AgentSession]
     let projectSessions: [String: [AgentSession]]
+    let projectPages: [String: SessionsPage]
+    let cursorPages: [String: SessionsPage]
     let createSessionResponse: CreateSessionResponse?
     let sessionResponses: [String: SessionResponse]
     let messagesResult: [CodexHistoryMessage]
+    let historyPages: [String: HistoryMessagesPage]
+    let historyCursorPages: [String: HistoryMessagesPage]
     let messagesError: Error?
     var requestedProjectIDs: [String?] = []
     var requestedSessionIDs: [String] = []
+    var requestedSessionAfterSeqs: [EventSequence?] = []
     var requestedMessageSessionIDs: [String] = []
+    var requestedMessageCursors: [String?] = []
     var createPayloads: [CreateSessionRequest] = []
 
     init(
         projects: [AgentProject],
         sessions: [AgentSession],
         projectSessions: [String: [AgentSession]] = [:],
+        projectPages: [String: SessionsPage] = [:],
+        cursorPages: [String: SessionsPage] = [:],
         createSessionResponse: CreateSessionResponse? = nil,
         sessionResponses: [String: SessionResponse] = [:],
         messagesResult: [CodexHistoryMessage]? = nil,
+        historyPages: [String: HistoryMessagesPage] = [:],
+        historyCursorPages: [String: HistoryMessagesPage] = [:],
         messagesError: Error? = nil
     ) {
         self.projectsResult = projects
         self.sessionsResult = sessions
         self.projectSessions = projectSessions
+        self.projectPages = projectPages
+        self.cursorPages = cursorPages
         self.createSessionResponse = createSessionResponse
         self.sessionResponses = sessionResponses
         self.messagesResult = messagesResult ?? [
             CodexHistoryMessage(role: "user", content: "历史问题", createdAt: Date(timeIntervalSince1970: 1)),
             CodexHistoryMessage(role: "assistant", content: "历史回答", createdAt: Date(timeIntervalSince1970: 2))
         ]
+        self.historyPages = historyPages
+        self.historyCursorPages = historyCursorPages
         self.messagesError = messagesError
     }
 
@@ -760,8 +2073,23 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         return sessionsResult
     }
 
-    func session(id: String) async throws -> SessionResponse {
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        requestedProjectIDs.append(projectID)
+        if let cursor, let page = cursorPages[cursor] {
+            return page
+        }
+        if let projectID, let page = projectPages[projectID] {
+            return page
+        }
+        if let projectID, let sessions = projectSessions[projectID] {
+            return SessionsPage(sessions: sessions)
+        }
+        return SessionsPage(sessions: sessionsResult)
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
         requestedSessionIDs.append(id)
+        requestedSessionAfterSeqs.append(afterSeq)
         guard let response = sessionResponses[id] else {
             throw MockError.unimplemented
         }
@@ -782,10 +2110,246 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
         requestedMessageSessionIDs.append(sessionID)
+        requestedMessageCursors.append(before)
+        if let before, let page = historyCursorPages[before] {
+            return page.messages
+        }
+        if let page = historyPages[sessionID] {
+            return page.messages
+        }
         if let messagesError {
             throw messagesError
         }
         return messagesResult
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        requestedMessageSessionIDs.append(sessionID)
+        requestedMessageCursors.append(before)
+        if let before, let page = historyCursorPages[before] {
+            return page
+        }
+        if let page = historyPages[sessionID] {
+            return page
+        }
+        if let messagesError {
+            throw messagesError
+        }
+        return HistoryMessagesPage(messages: messagesResult)
+    }
+
+    func websocketURL(sessionID: String) throws -> URL {
+        URL(string: "ws://127.0.0.1/\(sessionID)")!
+    }
+}
+
+private final class MutableSessionPageClient: SessionStoreAPIClient {
+    let projectsResult: [AgentProject]
+    var page: SessionsPage
+    var historyPages: [SessionID: HistoryMessagesPage]
+    var historyCursorPages: [String: HistoryMessagesPage]
+    var requestedMessageCursors: [String?] = []
+
+    init(
+        projects: [AgentProject],
+        page: SessionsPage,
+        historyPages: [SessionID: HistoryMessagesPage] = [:],
+        historyCursorPages: [String: HistoryMessagesPage] = [:]
+    ) {
+        self.projectsResult = projects
+        self.page = page
+        self.historyPages = historyPages
+        self.historyCursorPages = historyCursorPages
+    }
+
+    func projects() async throws -> [AgentProject] {
+        projectsResult
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        page.sessions
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        page
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        let page = try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+        return page.messages
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        requestedMessageCursors.append(before)
+        if let before, let page = historyCursorPages[before] {
+            return page
+        }
+        if let page = historyPages[sessionID] {
+            return page
+        }
+        return HistoryMessagesPage(messages: [])
+    }
+
+    func websocketURL(sessionID: String) throws -> URL {
+        URL(string: "ws://127.0.0.1/\(sessionID)")!
+    }
+}
+
+private final class OrderedHistoryPageClient: SessionStoreAPIClient {
+    let projectsResult: [AgentProject]
+    let page: SessionsPage
+    var requestedMessageCursors: [String?] = []
+    private var historyContinuations: [CheckedContinuation<HistoryMessagesPage, Never>] = []
+    private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    init(projects: [AgentProject], page: SessionsPage) {
+        self.projectsResult = projects
+        self.page = page
+    }
+
+    func projects() async throws -> [AgentProject] {
+        projectsResult
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        page.sessions
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        page
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        let page = try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+        return page.messages
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        await withCheckedContinuation { continuation in
+            historyContinuations.append(continuation)
+            requestedMessageCursors.append(before)
+            notifyRequestCountWaiters()
+        }
+    }
+
+    func waitForHistoryRequestCount(_ count: Int) async {
+        guard historyContinuations.count < count else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            guard historyContinuations.count < count else {
+                continuation.resume()
+                return
+            }
+            requestCountWaiters.append((count, continuation))
+        }
+    }
+
+    func resolveHistoryRequest(at index: Int, with page: HistoryMessagesPage) {
+        historyContinuations[index].resume(returning: page)
+    }
+
+    func websocketURL(sessionID: String) throws -> URL {
+        URL(string: "ws://127.0.0.1/\(sessionID)")!
+    }
+
+    private func notifyRequestCountWaiters() {
+        var pending: [(Int, CheckedContinuation<Void, Never>)] = []
+        for waiter in requestCountWaiters {
+            if historyContinuations.count >= waiter.0 {
+                waiter.1.resume()
+            } else {
+                pending.append(waiter)
+            }
+        }
+        requestCountWaiters = pending
+    }
+}
+
+private func queryValue(_ name: String, in url: URL?) -> String? {
+    guard let url else {
+        return nil
+    }
+    return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?
+        .first { $0.name == name }?
+        .value
+}
+
+@MainActor
+private func waitForWebSocketStatus(_ expected: WebSocketStatus, store: SessionStore) async throws {
+    for _ in 0..<80 {
+        if store.webSocketStatus == expected {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("WebSocket 状态未变为 \(expected)，当前为 \(store.webSocketStatus)")
+}
+
+// 冷启动重试用的客户端：前 N 次 projects() 抛错模拟隧道未就绪，之后成功返回。
+private final class FlakyBootstrapClient: SessionStoreAPIClient {
+    private let failuresBeforeSuccess: Int
+    private let projectsResult: [AgentProject]
+    private let sessionsResult: [AgentSession]
+    private(set) var projectsCallCount = 0
+
+    init(failuresBeforeSuccess: Int, projects: [AgentProject], sessions: [AgentSession]) {
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+        self.projectsResult = projects
+        self.sessionsResult = sessions
+    }
+
+    func projects() async throws -> [AgentProject] {
+        projectsCallCount += 1
+        if projectsCallCount <= failuresBeforeSuccess {
+            throw AgentAPIError.server(status: 503, message: "tunnel not ready")
+        }
+        return projectsResult
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        sessionsResult
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        []
     }
 
     func websocketURL(sessionID: String) throws -> URL {
@@ -822,7 +2386,7 @@ private func makeCreateSessionResponse(session: AgentSession) throws -> CreateSe
     return try AgentAPIClient.decoder.decode(CreateSessionResponse.self, from: Data(json.utf8))
 }
 
-private func makeSessionResponse(session: AgentSession, recentOutput: String?) throws -> SessionResponse {
+private func makeSessionResponse(session: AgentSession, recentOutput: String?, lastSeq: EventSequence? = nil) throws -> SessionResponse {
     let escapedRecentOutput: String
     if let recentOutput {
         let data = try JSONEncoder().encode(recentOutput)
@@ -830,6 +2394,7 @@ private func makeSessionResponse(session: AgentSession, recentOutput: String?) t
     } else {
         escapedRecentOutput = "null"
     }
+    let encodedLastSeq = lastSeq.map(String.init) ?? "null"
     let json = """
     {
       "session": {
@@ -844,7 +2409,8 @@ private func makeSessionResponse(session: AgentSession, recentOutput: String?) t
         "created_at": "2026-06-01T10:00:00Z",
         "updated_at": "2026-06-01T10:00:01Z"
       },
-      "recent_output": \(escapedRecentOutput)
+      "recent_output": \(escapedRecentOutput),
+      "last_seq": \(encodedLastSeq)
     }
     """
     return try AgentAPIClient.decoder.decode(SessionResponse.self, from: Data(json.utf8))

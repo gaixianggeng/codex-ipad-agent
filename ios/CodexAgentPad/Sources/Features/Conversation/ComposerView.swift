@@ -11,7 +11,7 @@ struct ComposerView: View {
             }
             TextEditor(text: $draft)
                 .font(.body)
-                .foregroundStyle(Color.white.opacity(0.90))
+                .foregroundStyle(.primary)
                 .frame(minHeight: 72, maxHeight: 130)
                 .onKeyPress { keyPress in
                     guard keyPress.key == .return else {
@@ -25,16 +25,16 @@ struct ComposerView: View {
                 }
                 .padding(10)
                 .scrollContentBackground(.hidden)
-                .background(Color.white.opacity(0.06))
+                .background(Color(.tertiarySystemBackground))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12))
+                        .strokeBorder(Color(.separator))
                 )
                 .overlay(alignment: .topLeading) {
                     if draft.isEmpty {
                         Text("输入任务或后续指令")
-                            .foregroundStyle(Color.white.opacity(0.42))
+                            .foregroundStyle(Color(.placeholderText))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 18)
                             .allowsHitTesting(false)
@@ -49,11 +49,11 @@ struct ComposerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        .background(Color.black.opacity(0.16))
+        .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08))
+                .strokeBorder(Color(.separator))
         )
     }
 
@@ -152,6 +152,6 @@ struct ComposerView: View {
             Spacer(minLength: 0)
         }
         .font(.caption.weight(.medium))
-        .foregroundStyle(Color.white.opacity(0.62))
+        .foregroundStyle(.secondary)
     }
 }

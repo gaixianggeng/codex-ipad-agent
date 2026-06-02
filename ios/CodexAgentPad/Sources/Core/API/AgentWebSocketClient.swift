@@ -1,6 +1,22 @@
 import Foundation
 
-final class AgentWebSocketClient: NSObject {
+protocol SessionWebSocketClient: AnyObject {
+    var onEvent: ((AgentEvent) -> Void)? { get set }
+    var onStatus: ((WebSocketStatus) -> Void)? { get set }
+    var onSendFailure: ((ClientMessageID?, String) -> Void)? { get set }
+
+    func connect(url: URL, token: String)
+    func disconnect()
+    func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
+    func sendEnter() -> Bool
+    func sendCtrlC() -> Bool
+    func sendResize(cols: Int, rows: Int) -> Bool
+    func ping() -> Bool
+}
+
+final class AgentWebSocketClient: NSObject, SessionWebSocketClient {
+    private static let pendingMessageLimit = 32
+
     var onEvent: ((AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
@@ -12,7 +28,7 @@ final class AgentWebSocketClient: NSObject {
     private var isConnected = false
     private var isConnecting = false
     private var isDisconnecting = false
-    private var pendingMessages: [ClientWebSocketMessage] = []
+    private var pendingMessages = PendingWebSocketMessageQueue(maxMessages: pendingMessageLimit)
 
     func connect(url: URL, token: String) {
         disconnect()
@@ -72,8 +88,14 @@ final class AgentWebSocketClient: NSObject {
         }
         guard isConnected else {
             if isConnecting {
-                // 移动端重连期间允许先接住用户输入，等 didOpen 后再统一发给 agentd。
-                pendingMessages.append(message)
+                // 移动端重连期间允许先接住少量用户输入，等 didOpen 后再统一发给 agentd。
+                // 队列必须有上限，否则弱网/服务端卡住时会把输入和 resize/ping 一直堆在内存里。
+                guard pendingMessages.append(message) else {
+                    let reason = "WebSocket 正在连接，待发送队列已满"
+                    onSendFailure?(message.clientMessageID, reason)
+                    onStatus?(.failed(reason))
+                    return false
+                }
                 onStatus?(.connecting)
                 return true
             }
@@ -110,8 +132,7 @@ final class AgentWebSocketClient: NSObject {
         guard let task, isConnected else {
             return
         }
-        let messages = pendingMessages
-        pendingMessages.removeAll()
+        let messages = pendingMessages.drain()
         for message in messages {
             _ = sendNow(message, task: task)
         }
@@ -153,6 +174,42 @@ final class AgentWebSocketClient: NSObject {
         } catch {
             onStatus?(.failed("WebSocket 消息解析失败：\(error.localizedDescription)"))
         }
+    }
+}
+
+struct PendingWebSocketMessageQueue {
+    private let maxMessages: Int
+    private var messages: [ClientWebSocketMessage] = []
+
+    init(maxMessages: Int) {
+        self.maxMessages = max(1, maxMessages)
+    }
+
+    var count: Int {
+        messages.count
+    }
+
+    var isEmpty: Bool {
+        messages.isEmpty
+    }
+
+    @discardableResult
+    mutating func append(_ message: ClientWebSocketMessage) -> Bool {
+        guard messages.count < maxMessages else {
+            return false
+        }
+        messages.append(message)
+        return true
+    }
+
+    mutating func drain() -> [ClientWebSocketMessage] {
+        let snapshot = messages
+        messages.removeAll(keepingCapacity: true)
+        return snapshot
+    }
+
+    mutating func removeAll() {
+        messages.removeAll(keepingCapacity: false)
     }
 }
 

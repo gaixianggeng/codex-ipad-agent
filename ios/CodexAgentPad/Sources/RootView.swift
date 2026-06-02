@@ -6,6 +6,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingSettings = false
     @State private var showingLogInspector = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
         Group {
@@ -32,7 +33,7 @@ struct RootView: View {
     }
 
     private var mainLayout: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             ProjectSidebarView()
                 .navigationTitle("Codex")
                 .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
@@ -40,12 +41,25 @@ struct RootView: View {
             ConversationView()
                 .navigationTitle(sessionStore.selectedSession?.title ?? sessionStore.selectedProject?.name ?? "会话")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(workbenchBackground, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-                .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .principal) {
-                        AgentWorkbenchTitle()
+                        HStack(spacing: 12) {
+                            AgentWorkbenchTitle()
+                            refreshControl
+                        }
+                    }
+                    ToolbarItem(placement: .topBarLeading) {
+                        // 仅在侧栏收起时，在主界面提供展开按钮；展开时由侧栏自带的开关负责收起，避免两个图标同时出现。
+                        if columnVisibility == .detailOnly {
+                            Button {
+                                withAnimation {
+                                    columnVisibility = .doubleColumn
+                                }
+                            } label: {
+                                Label("显示项目栏", systemImage: "sidebar.left")
+                            }
+                            .accessibilityLabel("显示项目栏")
+                        }
                     }
                     ToolbarItem(placement: .topBarLeading) {
                         if sessionStore.selectedSessionID != nil {
@@ -57,36 +71,20 @@ struct RootView: View {
                         }
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        if let badgeTitle = sessionStore.connectionBadgeTitle {
-                            StatusPill(text: badgeTitle, kind: connectionBadgeKind)
+                        if let symbol = connectionBadgeSymbol {
+                            Image(systemName: symbol)
+                                .foregroundStyle(connectionBadgeColor)
+                                .symbolRenderingMode(.hierarchical)
+                                .accessibilityLabel(sessionStore.connectionBadgeTitle ?? "连接状态")
                         }
                         if sessionStore.selectedSessionID != nil {
                             Button {
                                 showingLogInspector.toggle()
                             } label: {
-                                Label("日志", systemImage: "sidebar.right")
+                                Label("日志", systemImage: "terminal")
                             }
                             .labelStyle(.iconOnly)
                             .accessibilityLabel(showingLogInspector ? "隐藏日志" : "显示日志")
-                        }
-                        if sessionStore.isLoading || sessionStore.isRefreshingSelectedSession {
-                            ToolbarIconFrame {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .tint(.orange)
-                            }
-                            .accessibilityLabel("正在刷新")
-                        } else {
-                            Button {
-                                Task { await sessionStore.refreshCurrentContext() }
-                            } label: {
-                                ToolbarIconFrame {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.body.weight(.semibold))
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                            .accessibilityLabel(sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话")
                         }
                         Button {
                             showingSettings = true
@@ -111,6 +109,27 @@ struct RootView: View {
         }
     }
 
+    // 刷新挪到标题旁，与右侧的日志/设置图标分开，避免功能与视觉都挤在右上角。
+    @ViewBuilder
+    private var refreshControl: some View {
+        if sessionStore.isLoading || sessionStore.isRefreshingSelectedSession {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.orange)
+                .accessibilityLabel("正在刷新")
+        } else {
+            Button {
+                Task { await sessionStore.refreshCurrentContext() }
+            } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话")
+        }
+    }
+
     private var connectionBadgeKind: StatusPill.Kind {
         if sessionStore.selectedSession?.isRunning == true, sessionStore.webSocketStatus == .connected {
             return .success
@@ -121,8 +140,38 @@ struct RootView: View {
         return .neutral
     }
 
-    private var workbenchBackground: Color {
-        Color(red: 0.10, green: 0.13, blue: 0.18)
+    // 连接状态以图标呈现，避免在工具栏里塞中文文字。
+    private var connectionBadgeSymbol: String? {
+        guard let session = sessionStore.selectedSession else {
+            return nil
+        }
+        guard session.isRunning else {
+            if session.isCodexHistory {
+                return "clock"
+            }
+            return session.status == "closed" ? "checkmark.circle" : "circle.dashed"
+        }
+        switch sessionStore.webSocketStatus {
+        case .connected:
+            return "dot.radiowaves.left.and.right"
+        case .connecting:
+            return "dot.radiowaves.left.and.right"
+        case .disconnected:
+            return "wifi.slash"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var connectionBadgeColor: Color {
+        switch connectionBadgeKind {
+        case .success:
+            return .green
+        case .warning:
+            return .orange
+        case .neutral:
+            return .secondary
+        }
     }
 }
 
@@ -183,21 +232,6 @@ private struct AgentWorkbenchTitle: View {
             return session.title.isEmpty ? session.dir : session.title
         }
         return sessionStore.selectedProject?.path ?? "请选择项目"
-    }
-}
-
-private struct ToolbarIconFrame<Content: View>: View {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    var body: some View {
-        content
-            .frame(width: 34, height: 30)
-            .background(Color.secondary.opacity(0.12))
-            .clipShape(Capsule())
     }
 }
 

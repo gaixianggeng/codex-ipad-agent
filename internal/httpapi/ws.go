@@ -4,19 +4,24 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
+
+	sessionpkg "github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
 )
 
 type wsMessage struct {
-	Type    string          `json:"type"`
-	Data    string          `json:"data,omitempty"`
-	Cols    int             `json:"cols,omitempty"`
-	Rows    int             `json:"rows,omitempty"`
-	Session any             `json:"session,omitempty"`
-	Exit    any             `json:"exit,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Raw     json.RawMessage `json:"-"`
+	Type      string          `json:"type"`
+	Data      string          `json:"data,omitempty"`
+	Seq       int64           `json:"seq,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+	Cols      int             `json:"cols,omitempty"`
+	Rows      int             `json:"rows,omitempty"`
+	Session   any             `json:"session,omitempty"`
+	Exit      any             `json:"exit,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Raw       json.RawMessage `json:"-"`
 }
 
 func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) {
@@ -25,7 +30,8 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 		writeError(w, http.StatusNotFound, "session 不存在")
 		return
 	}
-	output, detach, err := s.Attach()
+	afterSeq := positiveSeq(req.URL.Query().Get("after_seq"))
+	output, initialReplay, initialSnapshot, detach, err := s.AttachAfter(afterSeq)
 	if err != nil {
 		log.Printf("ws attach failed session=%s err=%v", id, err)
 		writeError(w, http.StatusConflict, err.Error())
@@ -40,6 +46,7 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 	}
 	defer conn.Close()
 	log.Printf("ws connected session=%s", id)
+	s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_connected", AfterSeq: afterSeq})
 
 	var writeMu sync.Mutex
 	send := func(msg wsMessage) bool {
@@ -50,10 +57,19 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 	}
 
 	send(wsMessage{Type: "session", Session: s.Snapshot()})
-	if recent := s.RecentOutput(); recent != "" {
-		if !send(wsMessage{Type: "output", Data: recent}) {
+	for _, chunk := range initialReplay {
+		if !send(wsMessage{Type: "output", Data: string(chunk.Data), Seq: chunk.Seq, SessionID: id}) {
 			return
 		}
+	}
+	if len(initialReplay) > 0 {
+		s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_replay_sent", AfterSeq: afterSeq, Chunks: len(initialReplay)})
+	}
+	if initialSnapshot != nil && initialSnapshot.Data != "" {
+		if !send(wsMessage{Type: "output", Data: initialSnapshot.Data, Seq: initialSnapshot.LastSeq, SessionID: id}) {
+			return
+		}
+		s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_snapshot_sent", AfterSeq: afterSeq, Seq: initialSnapshot.LastSeq, Bytes: len(initialSnapshot.Data)})
 	}
 
 	done := make(chan struct{})
@@ -67,6 +83,7 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 			switch msg.Type {
 			case "input":
 				log.Printf("ws input session=%s bytes=%d", id, len(msg.Data))
+				s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_input", Bytes: len(msg.Data)})
 				if err := s.Write(msg.Data); err != nil {
 					log.Printf("ws input failed session=%s err=%v", id, err)
 					send(wsMessage{Type: "error", Error: err.Error()})
@@ -92,17 +109,31 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 	for {
 		select {
 		case chunk := <-output:
-			if !send(wsMessage{Type: "output", Data: string(chunk)}) {
+			if !send(wsMessage{Type: "output", Data: string(chunk.Data), Seq: chunk.Seq, SessionID: id}) {
 				return
 			}
 		case <-s.Done():
+			s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_exit_sent"})
 			send(wsMessage{Type: "exit", Exit: s.ExitResult()})
 			return
 		case <-done:
 			log.Printf("ws disconnected session=%s", id)
+			s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_disconnected"})
 			return
 		case <-req.Context().Done():
+			s.RecordTrace(sessionpkg.TraceEvent{Type: "ws_context_done"})
 			return
 		}
 	}
+}
+
+func positiveSeq(raw string) int64 {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }

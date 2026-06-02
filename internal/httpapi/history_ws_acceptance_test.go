@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -85,6 +86,7 @@ func TestCodexHistoryMessagesEndpointHonorsLimit(t *testing.T) {
 		`{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"one"}}`,
 		`{"timestamp":"2026-06-01T10:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"two"}}`,
 		`{"timestamp":"2026-06-01T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"three"}}`,
+		`{"timestamp":"2026-06-01T10:00:03Z","type":"event_msg","payload":{"type":"agent_message","message":"four"}}`,
 		"",
 	}, "\n"))
 	writeCodexState(t, home, "thread-history-limit", projectDir, rolloutPath)
@@ -102,8 +104,32 @@ func TestCodexHistoryMessagesEndpointHonorsLimit(t *testing.T) {
 	if !ok || len(messages) != 2 {
 		t.Fatalf("期望按 limit 返回 2 条历史消息：%v", msgBody)
 	}
-	if messages[0].(map[string]any)["content"] != "two" || messages[1].(map[string]any)["content"] != "three" {
+	if messages[0].(map[string]any)["content"] != "three" || messages[1].(map[string]any)["content"] != "four" {
 		t.Fatalf("limit 应返回最近消息窗口：%v", messages)
+	}
+	if msgBody["has_more_before"] != true {
+		t.Fatalf("第一页应标记还有更早消息：%v", msgBody)
+	}
+	cursor, ok := msgBody["previous_cursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("第一页应返回 previous_cursor：%v", msgBody)
+	}
+
+	olderRec := httptest.NewRecorder()
+	handler.ServeHTTP(olderRec, authedRequest(t, http.MethodGet, "/api/sessions/codex_thread-history-limit/messages?limit=2&before="+cursor, nil))
+	if olderRec.Code != http.StatusOK {
+		t.Fatalf("期望更早 messages 返回 200，实际 %d body=%s", olderRec.Code, olderRec.Body.String())
+	}
+	olderBody := decodeJSON(t, olderRec)
+	olderMessages, ok := olderBody["messages"].([]any)
+	if !ok || len(olderMessages) != 2 {
+		t.Fatalf("期望按 cursor 返回更早 2 条历史消息：%v", olderBody)
+	}
+	if olderMessages[0].(map[string]any)["content"] != "one" || olderMessages[1].(map[string]any)["content"] != "two" {
+		t.Fatalf("cursor 应返回更早消息窗口：%v", olderMessages)
+	}
+	if olderBody["has_more_before"] != false {
+		t.Fatalf("第二页已到开头，不应标记更多：%v", olderBody)
 	}
 }
 
@@ -147,6 +173,113 @@ func TestProjectScopedSessionsFindHistoryBeyondGlobalLimit(t *testing.T) {
 	}
 	if got := items[0].(map[string]any)["id"]; got != "codex_target-old-thread" {
 		t.Fatalf("期望查到目标项目旧会话，实际 %v", got)
+	}
+}
+
+func TestProjectSessionsReturnCursorPage(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeCodexStateRows(t, home, []codexThreadFixture{
+		{ID: "thread-new", Title: "New Thread", CWD: projectDir, UpdatedAt: 1780308003000},
+		{ID: "thread-mid", Title: "Mid Thread", CWD: projectDir, UpdatedAt: 1780308002000},
+		{ID: "thread-old", Title: "Old Thread", CWD: projectDir, UpdatedAt: 1780308001000},
+	})
+
+	handler, manager := newAcceptanceRouter(t, projectDir, "/bin/cat")
+	t.Cleanup(manager.Shutdown)
+
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&limit=2", nil))
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("期望第一页返回 200，实际 %d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+	firstBody := decodeJSON(t, firstRec)
+	firstItems, ok := firstBody["sessions"].([]any)
+	if !ok || len(firstItems) != 2 {
+		t.Fatalf("第一页应返回 2 条会话：%v", firstBody)
+	}
+	if got := firstItems[0].(map[string]any)["id"]; got != "codex_thread-new" {
+		t.Fatalf("第一页应按 updated_at 倒序返回 newest，实际 %v", got)
+	}
+	if got := firstItems[1].(map[string]any)["id"]; got != "codex_thread-mid" {
+		t.Fatalf("第一页第二条异常：%v", got)
+	}
+	if firstBody["has_more"] != true {
+		t.Fatalf("第一页应标记还有更多：%v", firstBody)
+	}
+	cursor, ok := firstBody["next_cursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("第一页应返回 next_cursor：%v", firstBody)
+	}
+
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&limit=2&cursor="+cursor, nil))
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("期望第二页返回 200，实际 %d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	secondBody := decodeJSON(t, secondRec)
+	secondItems, ok := secondBody["sessions"].([]any)
+	if !ok || len(secondItems) != 1 {
+		t.Fatalf("第二页应只返回剩余 1 条会话：%v", secondBody)
+	}
+	if got := secondItems[0].(map[string]any)["id"]; got != "codex_thread-old" {
+		t.Fatalf("第二页应从 cursor 后继续，实际 %v", got)
+	}
+	if secondBody["has_more"] != false {
+		t.Fatalf("第二页应标记没有更多：%v", secondBody)
+	}
+}
+
+func TestProjectSessionsCursorPageUsesStableIDTieBreaker(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeCodexStateRows(t, home, []codexThreadFixture{
+		{ID: "alpha", Title: "Alpha", CWD: projectDir, UpdatedAt: 1780308003000},
+		{ID: "beta", Title: "Beta", CWD: projectDir, UpdatedAt: 1780308003000},
+		{ID: "gamma", Title: "Gamma", CWD: projectDir, UpdatedAt: 1780308003000},
+	})
+
+	handler, manager := newAcceptanceRouter(t, projectDir, "/bin/cat")
+	t.Cleanup(manager.Shutdown)
+
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&limit=2", nil))
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("期望第一页返回 200，实际 %d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+	firstBody := decodeJSON(t, firstRec)
+	firstItems, ok := firstBody["sessions"].([]any)
+	if !ok || len(firstItems) != 2 {
+		t.Fatalf("第一页应返回 2 条会话：%v", firstBody)
+	}
+	if got := sessionIDs(firstItems); strings.Join(got, ",") != "codex_gamma,codex_beta" {
+		t.Fatalf("相同 updated_at 应按 id desc 稳定排序，实际：%v", got)
+	}
+	cursor, ok := firstBody["next_cursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("第一页应返回 next_cursor：%v", firstBody)
+	}
+
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&limit=2&cursor="+cursor, nil))
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("期望第二页返回 200，实际 %d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	secondBody := decodeJSON(t, secondRec)
+	secondItems, ok := secondBody["sessions"].([]any)
+	if !ok || len(secondItems) != 1 {
+		t.Fatalf("第二页应只返回剩余 1 条会话：%v", secondBody)
+	}
+	if got := sessionIDs(secondItems); strings.Join(got, ",") != "codex_alpha" {
+		t.Fatalf("cursor 后一页应继续返回 beta 之前的记录，实际：%v", got)
 	}
 }
 
@@ -218,6 +351,13 @@ func TestCodexHistoryDebugEndpointExplainsProjectRows(t *testing.T) {
 	if body["database_exists"] != true || body["query_mode"] != "project_path" {
 		t.Fatalf("诊断基础字段异常：%v", body)
 	}
+	scan := body["scan"].(map[string]any)
+	if scan["requested_limit"] != float64(20) ||
+		scan["row_scan_limit"] != float64(20) ||
+		scan["rows_returned"] != float64(1) ||
+		scan["project_filtered"] != true {
+		t.Fatalf("诊断应暴露轻量扫描统计：%v", body)
+	}
 	counts := body["counts"].(map[string]any)
 	included, ok := counts["included"].(float64)
 	if !ok || included != 1 {
@@ -281,8 +421,30 @@ func TestWebSocketInputReturnsOutputForHi(t *testing.T) {
 		}
 		data, _ := event["data"].(string)
 		if event["type"] == "output" && strings.Contains(data, "hello from fake codex") {
-			return
+			if seq, _ := event["seq"].(float64); seq <= 0 {
+				t.Fatalf("实时 output 应带正数 seq：%v", event)
+			}
+			break
 		}
+	}
+
+	traceReq := authedHTTPClientRequest(t, http.MethodGet, server.URL+"/api/sessions/"+created.Session.ID+"/trace", nil)
+	traceResp, err := http.DefaultClient.Do(traceReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer traceResp.Body.Close()
+	if traceResp.StatusCode != http.StatusOK {
+		t.Fatalf("期望 trace 返回 200，实际 %d", traceResp.StatusCode)
+	}
+	var traceBody struct {
+		Trace []session.TraceEvent `json:"trace"`
+	}
+	if err := json.NewDecoder(traceResp.Body).Decode(&traceBody); err != nil {
+		t.Fatal(err)
+	}
+	if !traceEventExists(traceBody.Trace, "ws_connected") || !traceEventExists(traceBody.Trace, "ws_input") {
+		t.Fatalf("trace 应记录 WebSocket 连接和输入：%+v", traceBody.Trace)
 	}
 }
 
@@ -309,7 +471,8 @@ func TestWebSocketAllowsSecondClientForSameSession(t *testing.T) {
 		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
 	}
 	var created struct {
-		WSURL string `json:"ws_url"`
+		Session session.Session `json:"session"`
+		WSURL   string          `json:"ws_url"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -339,7 +502,74 @@ func TestWebSocketAllowsSecondClientForSameSession(t *testing.T) {
 	readOutputContains(t, second, "hello from fake codex")
 }
 
-func readOutputContains(t *testing.T, conn *websocket.Conn, want string) {
+func TestWebSocketAfterSeqSkipsAlreadySeenOutput(t *testing.T) {
+	projectDir := t.TempDir()
+	handler, manager := newAcceptanceRouter(t, projectDir, "/bin/cat")
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id": "demo",
+		"cols":       120,
+		"rows":       32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session session.Session `json:"session"`
+		WSURL   string          `json:"ws_url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	first, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.WriteJSON(map[string]any{"type": "input", "data": "hi\r"}); err != nil {
+		t.Fatal(err)
+	}
+	lastSeq := readOutputContainsAndDrainQuiet(t, first, "hi")
+	_ = first.Close()
+
+	secondURL := wsURL + "?after_seq=" + fmt.Sprintf("%d", lastSeq)
+	second, _, err := websocket.DefaultDialer.Dial(secondURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	_ = second.SetReadDeadline(time.Now().Add(time.Second))
+	var event map[string]any
+	if err := second.ReadJSON(&event); err != nil {
+		t.Fatalf("after_seq 连接应先收到 session 元数据：%v", err)
+	}
+	if event["type"] != "session" {
+		t.Fatalf("after_seq 连接首条消息应是 session，实际 %v", event)
+	}
+
+	_ = second.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	if err := second.ReadJSON(&event); err == nil {
+		if event["type"] == "output" {
+			t.Fatalf("after_seq 已到最新水位时不应 replay 旧 output：%v", event)
+		}
+		t.Fatalf("after_seq 连接不应收到额外事件：%v", event)
+	}
+}
+
+func readOutputContains(t *testing.T, conn *websocket.Conn, want string) int64 {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {
@@ -349,9 +579,90 @@ func readOutputContains(t *testing.T, conn *websocket.Conn, want string) {
 		}
 		data, _ := event["data"].(string)
 		if event["type"] == "output" && strings.Contains(data, want) {
-			return
+			if seq, _ := event["seq"].(float64); seq <= 0 {
+				t.Fatalf("实时 output 应带正数 seq：%v", event)
+			} else {
+				return int64(seq)
+			}
 		}
 	}
+}
+
+func readOutputContainsAndDrainQuiet(t *testing.T, conn *websocket.Conn, want string) int64 {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var maxSeq int64
+	found := false
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			if found {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					return maxSeq
+				}
+			}
+			t.Fatalf("未收到包含 %q 的 output：%v", want, err)
+		}
+		if event["type"] != "output" {
+			continue
+		}
+		seq := int64(event["seq"].(float64))
+		if seq > maxSeq {
+			maxSeq = seq
+		}
+		data, _ := event["data"].(string)
+		if strings.Contains(data, want) {
+			found = true
+			// PTY 输出可能把正文和换行拆成多个 chunk；找到目标输出后继续读一个短窗口，
+			// 用真正最新的 seq 模拟浏览器本地水位。
+			_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		}
+	}
+}
+
+func sessionLastSeq(t *testing.T, serverURL string, sessionID string) int64 {
+	t.Helper()
+	req := authedHTTPClientRequest(t, http.MethodGet, serverURL+"/api/sessions/"+sessionID, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("期望 session detail 返回 200，实际 %d", resp.StatusCode)
+	}
+	var body struct {
+		LastSeq int64 `json:"last_seq"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.LastSeq <= 0 {
+		t.Fatalf("session detail 应返回正数 last_seq：%+v", body)
+	}
+	return body.LastSeq
+}
+
+func traceEventExists(events []session.TraceEvent, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionIDs(items []any) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		row, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := row["id"].(string)
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func newAcceptanceRouter(t *testing.T, projectDir, codexBin string) (http.Handler, *session.Manager) {
@@ -435,6 +746,7 @@ create table threads (
 		if updatedAt == 0 {
 			updatedAt = 1780308001000
 		}
+		rolloutPath := fixtureRolloutPath(t, home, row)
 		builder.WriteString("insert into threads (id, title, cwd, rollout_path, created_at_ms, updated_at_ms, archived) values (")
 		builder.WriteString(quoteSQL(row.ID))
 		builder.WriteString(", ")
@@ -442,7 +754,7 @@ create table threads (
 		builder.WriteString(", ")
 		builder.WriteString(quoteSQL(row.CWD))
 		builder.WriteString(", ")
-		builder.WriteString(quoteSQL(row.RolloutPath))
+		builder.WriteString(quoteSQL(rolloutPath))
 		builder.WriteString(", ")
 		builder.WriteString(fmt.Sprintf("%d, %d, 0", updatedAt-1000, updatedAt))
 		builder.WriteString(");\n")
@@ -497,6 +809,7 @@ create table thread_spawn_edges (
 		if updatedAt == 0 {
 			updatedAt = 1780308001000
 		}
+		rolloutPath := fixtureRolloutPath(t, home, row)
 		builder.WriteString("insert into threads (id, title, cwd, rollout_path, source, thread_source, preview, created_at_ms, updated_at_ms, archived) values (")
 		builder.WriteString(quoteSQL(row.ID))
 		builder.WriteString(", ")
@@ -504,7 +817,7 @@ create table thread_spawn_edges (
 		builder.WriteString(", ")
 		builder.WriteString(quoteSQL(row.CWD))
 		builder.WriteString(", ")
-		builder.WriteString(quoteSQL(row.RolloutPath))
+		builder.WriteString(quoteSQL(rolloutPath))
 		builder.WriteString(", ")
 		builder.WriteString(quoteSQL(source))
 		builder.WriteString(", ")
@@ -526,6 +839,20 @@ create table thread_spawn_edges (
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("创建现代 Codex state fixture 失败：%v output=%s", err, out)
 	}
+}
+
+func fixtureRolloutPath(t *testing.T, home string, row codexThreadFixture) string {
+	t.Helper()
+	if row.RolloutPath != "" {
+		return row.RolloutPath
+	}
+	path := filepath.Join(home, ".codex", "sessions", row.ID+".jsonl")
+	message, err := json.Marshal(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, `{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"user_message","message":`+string(message)+`}}`+"\n")
+	return path
 }
 
 func writeFakeCodex(t *testing.T) string {

@@ -59,6 +59,25 @@ final class ParsingPerformanceTests: XCTestCase {
         XCTAssertEqual(parsed, "测试正常，我这边在线。")
     }
 
+    func testParserFindsLatestAssistantWithoutNormalizingOldPrefix() {
+        let oldPrefix = String(repeating: """
+        model: gpt-5
+        │ • 旧回复
+        › 下一轮
+
+        """, count: 240)
+        let transcript = oldPrefix + """
+        directory: ~/code
+        │ • 最新回复第一行
+        最新回复第二行
+        ◦ Working
+        """
+
+        let parsed = CodexOutputParser().latestAssistantBlock(from: transcript)
+
+        XCTAssertEqual(parsed, "最新回复第一行\n最新回复第二行")
+    }
+
     func testParserPerformanceWithLargeTerminalTranscript() {
         let chunk = """
         model: gpt-5

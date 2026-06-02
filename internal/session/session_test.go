@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/ring"
 )
 
 func TestManagerCodexArgsForPromptAndResume(t *testing.T) {
@@ -45,6 +46,74 @@ func TestSessionTitleAndSourceDefaults(t *testing.T) {
 	}
 	if got := sessionSource("thread_1"); got != "codex" {
 		t.Fatalf("恢复会话 source 异常：%q", got)
+	}
+}
+
+func TestSessionSnapshotIfProjectFiltersBeforeCopy(t *testing.T) {
+	session := &Session{
+		ID:          "sess_demo",
+		ProjectID:   "demo",
+		Status:      "running",
+		buffer:      ring.New(1024),
+		subscribers: map[chan OutputChunk]struct{}{},
+		trace:       []TraceEvent{{Type: "created"}},
+		done:        make(chan struct{}),
+	}
+
+	if _, ok := session.SnapshotIfProject("other"); ok {
+		t.Fatal("非目标项目不应返回 active session 快照")
+	}
+
+	snapshot, ok := session.SnapshotIfProject("demo")
+	if !ok {
+		t.Fatal("目标项目应返回 active session 快照")
+	}
+	if snapshot.ID != "sess_demo" || snapshot.ProjectID != "demo" {
+		t.Fatalf("快照基础字段异常：%+v", snapshot)
+	}
+	if snapshot.buffer != nil || snapshot.subscribers != nil || snapshot.trace != nil || snapshot.done != nil {
+		t.Fatalf("快照不应暴露运行态字段：%+v", snapshot)
+	}
+}
+
+func TestSessionSnapshotIfProjectBeforeCursorFiltersInLock(t *testing.T) {
+	updatedAt := time.UnixMilli(1_780_308_003_000)
+	session := &Session{
+		ID:        "sess_beta",
+		ProjectID: "demo",
+		Status:    "running",
+		UpdatedAt: updatedAt,
+		buffer:    ring.New(1024),
+	}
+
+	if _, ok := session.SnapshotIfProjectBeforeCursor("demo", "sess_alpha", updatedAt.UnixMilli()); ok {
+		t.Fatal("同一 updated_at 下 id 大于等于 cursor 的运行会话不应返回")
+	}
+
+	snapshot, ok := session.SnapshotIfProjectBeforeCursor("demo", "sess_gamma", updatedAt.UnixMilli())
+	if !ok {
+		t.Fatal("同一 updated_at 下 id 小于 cursor 的运行会话应返回")
+	}
+	if snapshot.ID != "sess_beta" || snapshot.buffer != nil {
+		t.Fatalf("cursor 过滤后的快照异常：%+v", snapshot)
+	}
+}
+
+func TestManagerListUnsortedKeepsListOrderingCompatible(t *testing.T) {
+	manager := NewManager(Options{})
+	older := &Session{ID: "sess_old", CreatedAt: time.Unix(10, 0)}
+	newer := &Session{ID: "sess_new", CreatedAt: time.Unix(20, 0)}
+	manager.sessions[older.ID] = older
+	manager.sessions[newer.ID] = newer
+
+	sorted := manager.List()
+	if len(sorted) != 2 || sorted[0].ID != newer.ID || sorted[1].ID != older.ID {
+		t.Fatalf("List 应继续按 CreatedAt 降序兼容旧行为，got=%v", sessionIDs(sorted))
+	}
+
+	unsorted := manager.ListUnsorted()
+	if len(unsorted) != 2 {
+		t.Fatalf("ListUnsorted 应返回完整快照，got=%v", sessionIDs(unsorted))
 	}
 }
 
@@ -263,7 +332,7 @@ func TestSessionWriteSubmittedPromptSeparatesEnter(t *testing.T) {
 func TestAttachAllowsMultipleClientsReceiveBroadcast(t *testing.T) {
 	session := &Session{
 		Status:      "running",
-		subscribers: make(map[chan []byte]struct{}),
+		subscribers: make(map[chan OutputChunk]struct{}),
 		done:        make(chan struct{}),
 	}
 
@@ -279,16 +348,241 @@ func TestAttachAllowsMultipleClientsReceiveBroadcast(t *testing.T) {
 	defer detachSecond()
 
 	session.broadcastOutput([]byte("hello"))
-	for name, ch := range map[string]<-chan []byte{"first": first, "second": second} {
+	for name, ch := range map[string]<-chan OutputChunk{"first": first, "second": second} {
 		select {
 		case got := <-ch:
-			if string(got) != "hello" {
-				t.Fatalf("%s 收到的输出异常：%q", name, string(got))
+			if string(got.Data) != "hello" {
+				t.Fatalf("%s 收到的输出异常：%q", name, string(got.Data))
+			}
+			if got.Seq != 1 {
+				t.Fatalf("%s 收到的输出 seq 异常：%d", name, got.Seq)
 			}
 		case <-time.After(time.Second):
 			t.Fatalf("%s 没有收到广播输出", name)
 		}
 	}
+}
+
+func TestRecentOutputSnapshotIncludesLastSeq(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(1024),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+
+	session.broadcastOutput([]byte("one"))
+	session.broadcastOutput([]byte("-two"))
+
+	snapshot := session.RecentOutputSnapshot()
+	if snapshot.Data != "one-two" {
+		t.Fatalf("最近输出内容异常：%q", snapshot.Data)
+	}
+	if snapshot.LastSeq != 2 {
+		t.Fatalf("最近输出水位异常：%d", snapshot.LastSeq)
+	}
+}
+
+func TestOutputSinceUsesReplayWindow(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(1024),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+	session.broadcastOutput([]byte("one"))
+	session.broadcastOutput([]byte("-two"))
+	session.broadcastOutput([]byte("-three"))
+
+	delta := session.OutputSince(1)
+	if delta.Data != "-two-three" {
+		t.Fatalf("after_seq 可 replay 时应只返回增量，实际 %q", delta.Data)
+	}
+	if delta.LastSeq != 3 {
+		t.Fatalf("增量水位异常：%d", delta.LastSeq)
+	}
+
+	empty := session.OutputSince(3)
+	if empty.Data != "" || empty.LastSeq != 3 {
+		t.Fatalf("客户端已到最新水位时不应返回旧输出：%+v", empty)
+	}
+}
+
+func TestAttachAfterReplaysChunksAfterSequence(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(1024),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+	session.broadcastOutput([]byte("one"))
+	session.broadcastOutput([]byte("two"))
+	session.broadcastOutput([]byte("three"))
+
+	_, replay, snapshot, detach, err := session.AttachAfter(1)
+	if err != nil {
+		t.Fatalf("AttachAfter 失败：%v", err)
+	}
+	defer detach()
+	if snapshot != nil {
+		t.Fatalf("可完整 replay 时不应退回快照：%+v", snapshot)
+	}
+	if len(replay) != 2 || replay[0].Seq != 2 || replay[1].Seq != 3 {
+		t.Fatalf("replay 序列异常：%+v", replay)
+	}
+	if string(replay[0].Data)+string(replay[1].Data) != "twothree" {
+		t.Fatalf("replay 内容异常：%q/%q", string(replay[0].Data), string(replay[1].Data))
+	}
+}
+
+func TestAttachAfterFallsBackToSnapshotWhenReplayWindowHasGap(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(8192),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+	for i := 0; i < maxOutputReplayChunks+2; i++ {
+		session.broadcastOutput([]byte("x"))
+	}
+
+	_, replay, snapshot, detach, err := session.AttachAfter(1)
+	if err != nil {
+		t.Fatalf("AttachAfter 失败：%v", err)
+	}
+	defer detach()
+	if len(replay) != 0 {
+		t.Fatalf("replay 缺口时应退回快照，实际 replay=%+v", replay)
+	}
+	if snapshot == nil || snapshot.LastSeq != int64(maxOutputReplayChunks+2) {
+		t.Fatalf("快照水位异常：%+v", snapshot)
+	}
+	if len(snapshot.Data) != maxOutputReplayChunks+2 {
+		t.Fatalf("快照内容长度异常：%d", len(snapshot.Data))
+	}
+}
+
+func TestReplayWindowTrimsByBytesAndKeepsNewestChunks(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(maxOutputReplayBytes * 2),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+	chunkSize := maxOutputReplayBytes / 4
+	for _, marker := range []string{"a", "b", "c", "d", "e"} {
+		session.broadcastOutput([]byte(strings.Repeat(marker, chunkSize)))
+	}
+
+	if len(session.outputReplay) != 4 {
+		t.Fatalf("replay 应按字节上限保留最新 4 块，got=%d", len(session.outputReplay))
+	}
+	if session.outputReplayBytes != maxOutputReplayBytes {
+		t.Fatalf("replay 字节水位异常：got=%d want=%d", session.outputReplayBytes, maxOutputReplayBytes)
+	}
+	if session.outputReplay[0].Seq != 2 || session.outputReplay[3].Seq != 5 {
+		t.Fatalf("replay 应保留 seq 2..5，got=%+v", session.outputReplay)
+	}
+
+	_, replay, snapshot, detach, err := session.AttachAfter(1)
+	if err != nil {
+		t.Fatalf("AttachAfter 失败：%v", err)
+	}
+	defer detach()
+	if snapshot != nil {
+		t.Fatalf("字节裁剪后仍连续的窗口不应退回快照：%+v", snapshot)
+	}
+	if len(replay) != 4 || replay[0].Seq != 2 || string(replay[0].Data[:1]) != "b" {
+		t.Fatalf("replay 应从最新尾部窗口继续：%+v", replay)
+	}
+}
+
+func TestReplayWindowSkipsOversizedChunkAndKeepsLaterContinuity(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(maxOutputReplayBytes * 2),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+	session.broadcastOutput([]byte("before"))
+	session.broadcastOutput([]byte(strings.Repeat("x", maxOutputReplayBytes+1)))
+
+	if len(session.outputReplay) != 0 || session.outputReplayBytes != 0 {
+		t.Fatalf("超大块应直接清空 replay 窗口，replay=%+v bytes=%d", session.outputReplay, session.outputReplayBytes)
+	}
+
+	_, replay, snapshot, detach, err := session.AttachAfter(1)
+	if err != nil {
+		t.Fatalf("AttachAfter 失败：%v", err)
+	}
+	defer detach()
+	if len(replay) != 0 || snapshot == nil || snapshot.LastSeq != 2 {
+		t.Fatalf("超大块造成缺口时应退回快照：replay=%+v snapshot=%+v", replay, snapshot)
+	}
+
+	session.broadcastOutput([]byte("after"))
+	_, replay, snapshot, detach, err = session.AttachAfter(2)
+	if err != nil {
+		t.Fatalf("AttachAfter 失败：%v", err)
+	}
+	defer detach()
+	if snapshot != nil || len(replay) != 1 || replay[0].Seq != 3 || string(replay[0].Data) != "after" {
+		t.Fatalf("超大块之后的新连续输出应可 replay：replay=%+v snapshot=%+v", replay, snapshot)
+	}
+}
+
+func TestTraceEventsRecordReplayDecisionsAndAreBounded(t *testing.T) {
+	session := &Session{
+		Status:      "running",
+		buffer:      ring.New(8192),
+		subscribers: make(map[chan OutputChunk]struct{}),
+		done:        make(chan struct{}),
+	}
+	session.broadcastOutput([]byte("one"))
+	session.broadcastOutput([]byte("two"))
+
+	_, replay, snapshot, detach, err := session.AttachAfter(1)
+	if err != nil {
+		t.Fatalf("AttachAfter 失败：%v", err)
+	}
+	defer detach()
+	if snapshot != nil || len(replay) != 1 || replay[0].Seq != 2 {
+		t.Fatalf("应按 seq 补 replay：replay=%+v snapshot=%+v", replay, snapshot)
+	}
+
+	events := session.TraceEvents()
+	if !traceHas(events, "output_chunk") || !traceHas(events, "attach_replay") {
+		t.Fatalf("trace 应记录输出和 replay 决策：%+v", events)
+	}
+	events[0].Type = "mutated"
+	if session.TraceEvents()[0].Type == "mutated" {
+		t.Fatal("TraceEvents 必须返回副本，不能让调用方污染内部窗口")
+	}
+
+	for i := 0; i < maxTraceEvents+5; i++ {
+		session.RecordTrace(TraceEvent{Type: "manual"})
+	}
+	events = session.TraceEvents()
+	if len(events) != maxTraceEvents {
+		t.Fatalf("trace 窗口应保持固定上限，实际 %d", len(events))
+	}
+}
+
+func sessionIDs(items []*Session) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func traceHas(events []TraceEvent, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func writeFakeCodex(t *testing.T, path string) {

@@ -3,12 +3,14 @@ package httpapi
 import (
 	"bufio"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,7 +147,7 @@ func (r *Router) codexHistoryDebugHandler(w http.ResponseWriter, req *http.Reque
 		limit = 80
 	}
 	projectID := strings.TrimSpace(req.URL.Query().Get("project_id"))
-	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, r.sessions.List(), projectID, limit))
+	writeJSON(w, http.StatusOK, codexhistory.Diagnose(r.projects, r.sessions.ListUnsorted(), projectID, limit))
 }
 
 func (r *Router) projectsHandler(w http.ResponseWriter, req *http.Request) {
@@ -161,21 +163,39 @@ func (r *Router) sessionsHandler(w http.ResponseWriter, req *http.Request) {
 	case http.MethodGet:
 		projectID := strings.TrimSpace(req.URL.Query().Get("project_id"))
 		limit := positiveLimit(req.URL.Query().Get("limit"))
-		list := r.sessions.List()
-		out := make([]session.Session, 0, len(list))
-		for _, item := range list {
-			out = append(out, item.Snapshot())
+		cursor, hasCursor, err := decodeSessionCursor(req.URL.Query().Get("cursor"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "cursor 无效")
+			return
+		}
+		list := r.sessions.ListUnsorted()
+		activeLimit := limit
+		if activeLimit > 0 {
+			activeLimit++
+		}
+		out := activeSessionSnapshotWindow(list, projectID, cursor, hasCursor, activeLimit)
+		historyLimit := limit
+		if historyLimit > 0 {
+			historyLimit++
+		}
+		historyCursor := codexhistory.PageCursor{}
+		if hasCursor {
+			historyCursor = codexhistory.PageCursor{ID: cursor.ID, UpdatedAtMS: cursor.UpdatedAtMS}
 		}
 		if projectID != "" {
-			out = append(out, codexhistory.LoadForProject(r.projects, list, projectID, limit)...)
+			out = append(out, codexhistory.LoadPage(r.projects, list, projectID, historyLimit, historyCursor)...)
 		} else {
-			out = append(out, codexhistory.Load(r.projects, list)...)
+			out = append(out, codexhistory.LoadPage(r.projects, list, "", historyLimit, historyCursor)...)
 		}
-		out = filterSessions(out, projectID)
-		if limit > 0 && len(out) > limit {
-			out = out[:limit]
+		page, nextCursor, hasMore := paginateSessions(out, cursor, hasCursor, limit)
+		response := map[string]any{
+			"sessions": page,
+			"has_more": hasMore,
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+		if nextCursor != "" {
+			response["next_cursor"] = nextCursor
+		}
+		writeJSON(w, http.StatusOK, response)
 	case http.MethodPost:
 		var body struct {
 			ProjectID string `json:"project_id"`
@@ -208,17 +228,141 @@ func (r *Router) sessionsHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func filterSessions(items []session.Session, projectID string) []session.Session {
-	if projectID == "" {
-		return items
+type sessionPageCursor struct {
+	ID          string `json:"id"`
+	UpdatedAtMS int64  `json:"updated_at_ms"`
+}
+
+func decodeSessionCursor(raw string) (sessionPageCursor, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return sessionPageCursor{}, false, nil
 	}
-	out := make([]session.Session, 0, len(items))
-	for _, item := range items {
-		if item.ProjectID == projectID {
-			out = append(out, item)
+	data, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return sessionPageCursor{}, false, err
+	}
+	var cursor sessionPageCursor
+	if err := json.Unmarshal(data, &cursor); err != nil {
+		return sessionPageCursor{}, false, err
+	}
+	if cursor.ID == "" || cursor.UpdatedAtMS <= 0 {
+		return sessionPageCursor{}, false, fmt.Errorf("invalid session cursor")
+	}
+	return cursor, true, nil
+}
+
+func encodeSessionCursor(item session.Session) string {
+	cursor := sessionPageCursor{ID: item.ID, UpdatedAtMS: sessionUpdatedAtMS(item)}
+	if cursor.ID == "" || cursor.UpdatedAtMS <= 0 {
+		return ""
+	}
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func activeSessionSnapshots(list []*session.Session, projectID string) []session.Session {
+	return activeSessionSnapshotWindow(list, projectID, sessionPageCursor{}, false, 0)
+}
+
+func activeSessionSnapshotWindow(list []*session.Session, projectID string, cursor sessionPageCursor, hasCursor bool, limit int) []session.Session {
+	capacity := len(list)
+	if limit > 0 && limit < capacity {
+		capacity = limit
+	}
+	out := make([]session.Session, 0, capacity)
+	cursorID := ""
+	cursorUpdatedAtMS := int64(0)
+	if hasCursor {
+		cursorID = cursor.ID
+		cursorUpdatedAtMS = cursor.UpdatedAtMS
+	}
+	for _, item := range list {
+		// 项目会话列表是 iPad 高频轮询入口，先按项目收窄再排序/分页，避免无关运行会话
+		// 参与后续投影；全局列表仍保留所有 active session。
+		if snapshot, ok := item.SnapshotIfProjectBeforeCursor(projectID, cursorID, cursorUpdatedAtMS); ok {
+			out = appendSessionWindowCandidate(out, snapshot, limit)
 		}
 	}
 	return out
+}
+
+func paginateSessions(items []session.Session, cursor sessionPageCursor, hasCursor bool, limit int) ([]session.Session, string, bool) {
+	sortSessionsByUpdated(items)
+	if hasCursor {
+		filtered := items[:0]
+		for _, item := range items {
+			if sessionBeforeCursor(item, cursor) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	if limit <= 0 || len(items) <= limit {
+		return items, "", false
+	}
+	page := append([]session.Session(nil), items[:limit]...)
+	return page, encodeSessionCursor(page[len(page)-1]), true
+}
+
+func sortSessionsByUpdated(items []session.Session) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return sessionSortBefore(items[i], items[j])
+	})
+}
+
+func appendSessionWindowCandidate(items []session.Session, candidate session.Session, limit int) []session.Session {
+	if limit <= 0 {
+		return append(items, candidate)
+	}
+	insertAt := len(items)
+	for index, item := range items {
+		if sessionSortBefore(candidate, item) {
+			insertAt = index
+			break
+		}
+	}
+	if insertAt == len(items) && len(items) >= limit {
+		return items
+	}
+	items = append(items, candidate)
+	if insertAt < len(items)-1 {
+		copy(items[insertAt+1:], items[insertAt:len(items)-1])
+		items[insertAt] = candidate
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
+func sessionSortBefore(left, right session.Session) bool {
+	leftUpdatedAt := sessionUpdatedAtMS(left)
+	rightUpdatedAt := sessionUpdatedAtMS(right)
+	if leftUpdatedAt == rightUpdatedAt {
+		return left.ID > right.ID
+	}
+	return leftUpdatedAt > rightUpdatedAt
+}
+
+func sessionBeforeCursor(item session.Session, cursor sessionPageCursor) bool {
+	updatedAtMS := sessionUpdatedAtMS(item)
+	if updatedAtMS != cursor.UpdatedAtMS {
+		return updatedAtMS < cursor.UpdatedAtMS
+	}
+	return item.ID < cursor.ID
+}
+
+func sessionUpdatedAtMS(item session.Session) int64 {
+	if !item.UpdatedAt.IsZero() {
+		return item.UpdatedAt.UnixMilli()
+	}
+	if !item.CreatedAt.IsZero() {
+		return item.CreatedAt.UnixMilli()
+	}
+	return 0
 }
 
 func positiveLimit(raw string) int {
@@ -252,6 +396,10 @@ func (r *Router) sessionByIDHandler(w http.ResponseWriter, req *http.Request) {
 		r.sessionMessages(w, req, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "trace" {
+		r.sessionTrace(w, req, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "ws" {
 		r.sessionWS(w, req, id)
 		return
@@ -267,7 +415,13 @@ func (r *Router) sessionByIDHandler(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusNotFound, "session 不存在")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"session": s.Snapshot(), "recent_output": s.RecentOutput()})
+		afterSeq := positiveSeq(req.URL.Query().Get("after_seq"))
+		output := s.OutputSince(afterSeq)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"session":       s.Snapshot(),
+			"recent_output": output.Data,
+			"last_seq":      output.LastSeq,
+		})
 	case http.MethodDelete:
 		if err := r.sessions.Stop(id); err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -293,24 +447,42 @@ func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 
+func (r *Router) sessionTrace(w http.ResponseWriter, req *http.Request, id string) {
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	s, ok := r.sessions.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "session 不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"trace": s.TraceEvents()})
+}
+
 func (r *Router) sessionMessages(w http.ResponseWriter, req *http.Request, id string) {
 	if req.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
 	limit := positiveLimit(req.URL.Query().Get("limit"))
+	before := strings.TrimSpace(req.URL.Query().Get("before"))
 	resumeID := ""
 	if s, ok := r.sessions.Get(id); ok {
 		resumeID = s.Snapshot().ResumeID
 	}
 	if threadID := codexhistory.ThreadIDForSession(id, resumeID); threadID != "" {
-		messages, err := codexhistory.MessagesWithLimit(threadID, limit)
+		page, err := codexhistory.MessagesPageWithLimit(threadID, before, limit)
 		if err != nil {
 			// 历史 rollout 可能被 Codex 清理或还未落盘；列表详情不应因为缺历史文件而中断。
 			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"messages":        page.Messages,
+			"previous_cursor": page.PreviousCursor,
+			"has_more_before": page.HasMoreBefore,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})

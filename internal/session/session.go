@@ -50,16 +50,49 @@ type Session struct {
 	cancel context.CancelFunc
 	buffer *ring.Buffer
 
-	mu          sync.Mutex
-	writeMu     sync.Mutex
-	termCols    int
-	termRows    int
-	subscribers map[chan []byte]struct{}
-	exit        ExitResult
-	done        chan struct{}
+	mu                sync.Mutex
+	writeMu           sync.Mutex
+	termCols          int
+	termRows          int
+	subscribers       map[chan OutputChunk]struct{}
+	outputSeq         int64
+	outputReplay      []OutputChunk
+	outputReplayBytes int
+	trace             []TraceEvent
+	exit              ExitResult
+	done              chan struct{}
 }
 
 const promptSubmitDelay = 180 * time.Millisecond
+const maxOutputReplayBytes = 256 * 1024
+const maxOutputReplayChunks = 256
+const maxTraceEvents = 256
+
+// OutputChunk 是实时 PTY 输出块；Seq 只用于客户端去重和回放水位，不改变原始终端内容。
+type OutputChunk struct {
+	Seq  int64
+	Data []byte
+}
+
+type OutputSnapshot struct {
+	Data    string
+	LastSeq int64
+}
+
+// TraceEvent 是会话内存里的轻量诊断事件，只记录水位和体积，不复制完整终端输出。
+// 它借鉴 Codex rollout trace 的“热路径先记原始事实，排障时再还原”的思路，但保持 MVP：只保留最近窗口。
+type TraceEvent struct {
+	Time        time.Time `json:"time"`
+	Type        string    `json:"type"`
+	Seq         int64     `json:"seq,omitempty"`
+	AfterSeq    int64     `json:"after_seq,omitempty"`
+	Bytes       int       `json:"bytes,omitempty"`
+	Chunks      int       `json:"chunks,omitempty"`
+	Subscribers int       `json:"subscribers,omitempty"`
+	Sent        int       `json:"sent,omitempty"`
+	Dropped     int       `json:"dropped,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+}
 
 type ExitResult struct {
 	Code   int    `json:"code"`
@@ -154,13 +187,14 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		buffer:      ring.New(m.options.OutputBuffer),
 		termCols:    req.Cols,
 		termRows:    req.Rows,
-		subscribers: make(map[chan []byte]struct{}),
+		subscribers: make(map[chan OutputChunk]struct{}),
 		done:        make(chan struct{}),
 	}
 
 	m.mu.Lock()
 	m.sessions[id] = s
 	m.mu.Unlock()
+	s.RecordTrace(TraceEvent{Type: "session_created"})
 
 	go s.readLoop()
 	go s.waitLoop()
@@ -235,15 +269,26 @@ func (m *Manager) Get(id string) (*Session, bool) {
 }
 
 func (m *Manager) List() []*Session {
+	out := m.listSnapshot()
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out
+}
+
+func (m *Manager) ListUnsorted() []*Session {
+	// HTTP sessions API 自己会按 updated_at/id 做最终排序；热路径用无序快照，
+	// 避免 Manager 先按 created_at 排一次，分页前又重排一次。
+	return m.listSnapshot()
+}
+
+func (m *Manager) listSnapshot() []*Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
-	})
 	return out
 }
 
@@ -264,18 +309,100 @@ func (m *Manager) Shutdown() {
 func (s *Session) Snapshot() Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+func (s *Session) SnapshotIfProject(projectID string) (Session, bool) {
+	return s.SnapshotIfProjectBeforeCursor(projectID, "", 0)
+}
+
+func (s *Session) SnapshotIfProjectBeforeCursor(projectID, cursorID string, cursorUpdatedAtMS int64) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 项目列表刷新是热路径：先在锁内做轻量 project 判断，避免无关 active session
+	// 继续复制 buffer/subscriber/trace 等运行态字段再被 HTTP 层丢弃。
+	if projectID != "" && s.ProjectID != projectID {
+		return Session{}, false
+	}
+	if cursorID != "" && cursorUpdatedAtMS > 0 {
+		updatedAtMS := s.updatedAtMSLocked()
+		if updatedAtMS != cursorUpdatedAtMS {
+			if updatedAtMS >= cursorUpdatedAtMS {
+				return Session{}, false
+			}
+		} else if s.ID >= cursorID {
+			return Session{}, false
+		}
+	}
+	return s.snapshotLocked(), true
+}
+
+func (s *Session) snapshotLocked() Session {
 	cp := *s
 	cp.cmd = nil
 	cp.ptmx = nil
 	cp.cancel = nil
 	cp.buffer = nil
 	cp.subscribers = nil
+	cp.trace = nil
 	cp.done = nil
 	return cp
 }
 
+func (s *Session) updatedAtMSLocked() int64 {
+	if !s.UpdatedAt.IsZero() {
+		return s.UpdatedAt.UnixMilli()
+	}
+	if !s.CreatedAt.IsZero() {
+		return s.CreatedAt.UnixMilli()
+	}
+	return 0
+}
+
 func (s *Session) RecentOutput() string {
-	return s.buffer.String()
+	return s.RecentOutputSnapshot().Data
+}
+
+func (s *Session) RecentOutputSnapshot() OutputSnapshot {
+	return s.OutputSince(0)
+}
+
+func (s *Session) OutputSince(afterSeq int64) OutputSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if afterSeq > 0 {
+		if afterSeq >= s.outputSeq {
+			return OutputSnapshot{LastSeq: s.outputSeq}
+		}
+		if replay, ok := s.replayAfterLocked(afterSeq); ok {
+			var builder strings.Builder
+			for _, chunk := range replay {
+				builder.Write(chunk.Data)
+			}
+			s.appendTraceLocked(TraceEvent{
+				Type:     "output_since_replay",
+				Seq:      s.outputSeq,
+				AfterSeq: afterSeq,
+				Chunks:   len(replay),
+				Bytes:    builder.Len(),
+			})
+			return OutputSnapshot{Data: builder.String(), LastSeq: s.outputSeq}
+		}
+		s.appendTraceLocked(TraceEvent{Type: "output_since_snapshot", Seq: s.outputSeq, AfterSeq: afterSeq})
+	}
+	return s.recentOutputSnapshotLocked()
+}
+
+func (s *Session) TraceEvents() []TraceEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]TraceEvent(nil), s.trace...)
+}
+
+func (s *Session) RecordTrace(event TraceEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendTraceLocked(event)
 }
 
 func (s *Session) Write(input string) error {
@@ -351,6 +478,7 @@ func (s *Session) Stop() error {
 	}
 	s.Status = "stopping"
 	s.UpdatedAt = time.Now()
+	s.appendTraceLocked(TraceEvent{Type: "stop_requested", Seq: s.outputSeq})
 	cmd := s.cmd
 	cancel := s.cancel
 	s.mu.Unlock()
@@ -371,19 +499,24 @@ func (s *Session) Stop() error {
 	return nil
 }
 
-func (s *Session) Attach() (<-chan []byte, func(), error) {
+func (s *Session) Attach() (<-chan OutputChunk, func(), error) {
+	ch, _, _, detach, err := s.AttachAfter(0)
+	return ch, detach, err
+}
+
+func (s *Session) AttachAfter(afterSeq int64) (<-chan OutputChunk, []OutputChunk, *OutputSnapshot, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Status != "running" {
-		return nil, nil, fmt.Errorf("session 已结束")
+		return nil, nil, nil, nil, fmt.Errorf("session 已结束")
 	}
 	if s.subscribers == nil {
-		s.subscribers = make(map[chan []byte]struct{})
+		s.subscribers = make(map[chan OutputChunk]struct{})
 	}
-	ch := make(chan []byte, 128)
+	ch := make(chan OutputChunk, 128)
 	s.subscribers[ch] = struct{}{}
 	detached := false
-	return ch, func() {
+	detach := func() {
 		s.mu.Lock()
 		if !detached {
 			delete(s.subscribers, ch)
@@ -391,19 +524,159 @@ func (s *Session) Attach() (<-chan []byte, func(), error) {
 			detached = true
 		}
 		s.mu.Unlock()
-	}, nil
+	}
+	if afterSeq > 0 {
+		if replay, ok := s.replayAfterLocked(afterSeq); ok {
+			s.appendTraceLocked(TraceEvent{
+				Type:        "attach_replay",
+				Seq:         s.outputSeq,
+				AfterSeq:    afterSeq,
+				Chunks:      len(replay),
+				Subscribers: len(s.subscribers),
+			})
+			return ch, replay, nil, detach, nil
+		}
+	}
+	snapshot := s.recentOutputSnapshotLocked()
+	eventType := "attach_snapshot"
+	if afterSeq > 0 {
+		eventType = "attach_snapshot_fallback"
+	}
+	s.appendTraceLocked(TraceEvent{
+		Type:        eventType,
+		Seq:         s.outputSeq,
+		AfterSeq:    afterSeq,
+		Bytes:       len(snapshot.Data),
+		Subscribers: len(s.subscribers),
+	})
+	return ch, nil, &snapshot, detach, nil
 }
 
 func (s *Session) broadcastOutput(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.buffer != nil {
+		// 输出内容和水位必须在同一把锁下推进；否则 recent_output 可能拿到旧内容、
+		// 新 last_seq，客户端就会误丢后续实时块。
+		s.buffer.Write(chunk)
+	}
+	s.outputSeq++
+	output := OutputChunk{Seq: s.outputSeq, Data: append([]byte(nil), chunk...)}
+	s.appendReplayLocked(output)
+	sent := 0
+	dropped := 0
 	for ch := range s.subscribers {
 		select {
-		case ch <- chunk:
+		case ch <- output:
+			sent++
 		default:
+			dropped++
 			// 前端太慢时丢弃实时块；最近输出仍在 ring buffer 中，刷新可追回。
+			// seq 让客户端能识别重连/回放里的重复实时块，避免日志面板重复渲染。
 		}
 	}
+	s.appendTraceLocked(TraceEvent{
+		Type:        "output_chunk",
+		Seq:         output.Seq,
+		Bytes:       len(output.Data),
+		Subscribers: len(s.subscribers),
+		Sent:        sent,
+		Dropped:     dropped,
+	})
+}
+
+func (s *Session) recentOutputSnapshotLocked() OutputSnapshot {
+	data := ""
+	if s.buffer != nil {
+		data = s.buffer.String()
+	}
+	return OutputSnapshot{Data: data, LastSeq: s.outputSeq}
+}
+
+func (s *Session) replayAfterLocked(afterSeq int64) ([]OutputChunk, bool) {
+	if afterSeq >= s.outputSeq {
+		return []OutputChunk{}, true
+	}
+	if len(s.outputReplay) == 0 {
+		return nil, false
+	}
+	idx := -1
+	for i, chunk := range s.outputReplay {
+		if chunk.Seq > afterSeq {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return []OutputChunk{}, true
+	}
+	if s.outputReplay[idx].Seq != afterSeq+1 {
+		return nil, false
+	}
+	replay := make([]OutputChunk, 0, len(s.outputReplay)-idx)
+	for _, chunk := range s.outputReplay[idx:] {
+		replay = append(replay, OutputChunk{Seq: chunk.Seq, Data: append([]byte(nil), chunk.Data...)})
+	}
+	return replay, true
+}
+
+func (s *Session) appendReplayLocked(chunk OutputChunk) {
+	if len(chunk.Data) == 0 {
+		return
+	}
+	if len(chunk.Data) > maxOutputReplayBytes {
+		// 单块输出已经超过短线 replay 窗口，存进去也会立刻被裁掉。
+		// 直接清空旧窗口，明确制造 replay 缺口：断线客户端会走 recent_output 快照兜底。
+		s.outputReplay = nil
+		s.outputReplayBytes = 0
+		return
+	}
+	s.outputReplay = append(s.outputReplay, OutputChunk{Seq: chunk.Seq, Data: append([]byte(nil), chunk.Data...)})
+	s.outputReplayBytes += len(chunk.Data)
+	s.trimReplayLocked()
+}
+
+func (s *Session) trimReplayLocked() {
+	if len(s.outputReplay) <= maxOutputReplayChunks && s.outputReplayBytes <= maxOutputReplayBytes {
+		return
+	}
+
+	keepStart := len(s.outputReplay)
+	keptBytes := 0
+	// replay 是给短线重连补洞用的，不承担长期日志存储；从尾部一次算出可保留窗口，
+	// 避免高频输出超限时反复从头 slice，也释放旧 chunk 持有的底层字节数组。
+	for keepStart > 0 && len(s.outputReplay)-keepStart < maxOutputReplayChunks {
+		candidate := s.outputReplay[keepStart-1]
+		candidateBytes := len(candidate.Data)
+		if keptBytes+candidateBytes > maxOutputReplayBytes {
+			break
+		}
+		keepStart--
+		keptBytes += candidateBytes
+	}
+	for index := 0; index < keepStart; index++ {
+		s.outputReplay[index] = OutputChunk{}
+	}
+	kept := s.outputReplay[keepStart:]
+	next := make([]OutputChunk, len(kept))
+	copy(next, kept)
+	s.outputReplay = next
+	s.outputReplayBytes = keptBytes
+}
+
+func (s *Session) appendTraceLocked(event TraceEvent) {
+	if event.Type == "" {
+		return
+	}
+	if event.Time.IsZero() {
+		event.Time = time.Now()
+	}
+	s.trace = append(s.trace, event)
+	if len(s.trace) <= maxTraceEvents {
+		return
+	}
+	copy(s.trace, s.trace[len(s.trace)-maxTraceEvents:])
+	s.trace = s.trace[:maxTraceEvents]
 }
 
 func (s *Session) Done() <-chan struct{} {
@@ -422,12 +695,11 @@ func (s *Session) readLoop() {
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
-			s.buffer.Write(chunk)
 			s.broadcastOutput(chunk)
 		}
 		if err != nil {
 			if err != io.EOF {
-				s.buffer.Write([]byte("\r\n[agentd] PTY 读取结束：" + err.Error() + "\r\n"))
+				s.broadcastOutput([]byte("\r\n[agentd] PTY 读取结束：" + err.Error() + "\r\n"))
 			}
 			return
 		}
@@ -447,6 +719,7 @@ func (s *Session) waitLoop() {
 	s.Status = "closed"
 	s.UpdatedAt = time.Now()
 	s.exit = exit
+	s.appendTraceLocked(TraceEvent{Type: "session_exit", Seq: s.outputSeq, Reason: exit.Reason})
 	s.mu.Unlock()
 	close(s.done)
 }

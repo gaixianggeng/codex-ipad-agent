@@ -37,6 +37,24 @@ struct SessionsResponse: Codable {
     }
 }
 
+struct SessionsPage: Equatable {
+    let sessions: [AgentSession]
+    let nextCursor: String?
+    let hasMore: Bool
+
+    init(response: SessionsResponse) {
+        self.sessions = response.sessions
+        self.nextCursor = response.nextCursor
+        self.hasMore = response.hasMore ?? false
+    }
+
+    init(sessions: [AgentSession], nextCursor: String? = nil, hasMore: Bool = false) {
+        self.sessions = sessions
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+    }
+}
+
 struct SessionResponse: Codable {
     let session: AgentSession
     let row: DataFlowSessionRow?
@@ -143,6 +161,24 @@ struct MessagesResponse: Codable {
             self.previousCursor = try container.decodeIfPresent(String.self, forKey: .previousCursor)
             self.hasMoreBefore = try container.decodeIfPresent(Bool.self, forKey: .hasMoreBefore)
         }
+    }
+}
+
+struct HistoryMessagesPage: Equatable {
+    let messages: [CodexHistoryMessage]
+    let previousCursor: String?
+    let hasMoreBefore: Bool
+
+    init(response: MessagesResponse) {
+        self.messages = response.messages
+        self.previousCursor = response.previousCursor
+        self.hasMoreBefore = response.hasMoreBefore ?? false
+    }
+
+    init(messages: [CodexHistoryMessage], previousCursor: String? = nil, hasMoreBefore: Bool = false) {
+        self.messages = messages
+        self.previousCursor = previousCursor
+        self.hasMoreBefore = hasMoreBefore
     }
 }
 

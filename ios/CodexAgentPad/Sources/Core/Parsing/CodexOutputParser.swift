@@ -2,17 +2,13 @@ import Foundation
 
 struct CodexOutputParser {
     func latestAssistantBlock(from transcript: String) -> String {
-        let lines = transcript
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { normalizeLine(String($0)) }
-            .filter { !$0.isEmpty }
-
-        guard let start = lines.indices.reversed().first(where: { isAssistantStartLine(lines[$0]) }) else {
+        let lines = latestAssistantTailLines(from: transcript)
+        guard !lines.isEmpty else {
             return ""
         }
 
         var parts: [String] = []
-        for line in lines[start..<min(lines.count, start + 18)] {
+        for line in lines.prefix(18) {
             if parts.isEmpty == false && shouldStopAfterAssistantStart(line) {
                 break
             }
@@ -31,6 +27,23 @@ struct CodexOutputParser {
             return ""
         }
         return String(text.prefix(4000))
+    }
+
+    private func latestAssistantTailLines(from transcript: String) -> [String] {
+        var reversedTail: [String] = []
+        for rawLine in transcript.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            let line = normalizeLine(String(rawLine))
+            guard !line.isEmpty else {
+                continue
+            }
+            reversedTail.append(line)
+            if isAssistantStartLine(line) {
+                // 解析只需要最近 assistant 起点后的尾部窗口。像 Litter 的 streaming render cache
+                // 一样复用“稳定前缀不参与热路径”的思路，避免每次流式刷新都规范化整段 transcript。
+                return Array(reversedTail.reversed())
+            }
+        }
+        return []
     }
 
     private func normalizeLine(_ line: String) -> String {

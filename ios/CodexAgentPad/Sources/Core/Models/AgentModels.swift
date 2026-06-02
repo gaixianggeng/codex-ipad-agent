@@ -212,6 +212,12 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     }
 }
 
+struct ConversationMessageRenderFingerprint: Hashable {
+    let contentRevision: UInt64
+    let contentDigest: UInt64
+    let contentByteCount: Int
+}
+
 struct ConversationMessage: Identifiable, Hashable {
     enum Role: String {
         case user
@@ -225,10 +231,25 @@ struct ConversationMessage: Identifiable, Hashable {
     let turnID: TurnID?
     let itemID: AgentItemID?
     let role: Role
-    var content: String
+    var content: String {
+        didSet {
+            updateRenderFingerprint()
+        }
+    }
     let createdAt: Date
     var sendStatus: MessageSendStatus
     var revision: ModelRevision?
+    private(set) var contentRevision: UInt64
+    private(set) var contentDigest: UInt64
+    private(set) var contentByteCount: Int
+
+    var renderFingerprint: ConversationMessageRenderFingerprint {
+        ConversationMessageRenderFingerprint(
+            contentRevision: contentRevision,
+            contentDigest: contentDigest,
+            contentByteCount: contentByteCount
+        )
+    }
 
     init(
         id: UUID = UUID(),
@@ -252,6 +273,30 @@ struct ConversationMessage: Identifiable, Hashable {
         self.createdAt = createdAt
         self.sendStatus = sendStatus
         self.revision = revision
+        let fingerprint = Self.makeRenderFingerprint(for: content)
+        self.contentRevision = 0
+        self.contentDigest = fingerprint.digest
+        self.contentByteCount = fingerprint.byteCount
+    }
+
+    private mutating func updateRenderFingerprint() {
+        let fingerprint = Self.makeRenderFingerprint(for: content)
+        contentRevision &+= 1
+        contentDigest = fingerprint.digest
+        contentByteCount = fingerprint.byteCount
+    }
+
+    private static func makeRenderFingerprint(for content: String) -> (digest: UInt64, byteCount: Int) {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        var count = 0
+        // 内容变化时生成固定大小 fingerprint，供 SwiftUI row diff 使用；
+        // 避免长消息在每次 Equatable 比较里反复扫描整段 content。
+        for byte in content.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+            count += 1
+        }
+        return (hash, count)
     }
 }
 

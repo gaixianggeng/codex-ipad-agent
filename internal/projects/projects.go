@@ -7,11 +7,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
 )
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+const maxPathMatchCacheEntries = 2048
 
 type Project struct {
 	ID       string `json:"id"`
@@ -21,12 +24,30 @@ type Project struct {
 }
 
 type Registry struct {
-	projects map[string]Project
-	list     []Project
+	projects       map[string]Project
+	list           []Project
+	pathCandidates []projectPathCandidate
+	cacheMu        sync.Mutex
+	pathMatchCache map[string]projectPathMatchCacheEntry
+	pathMatchOrder []string
+}
+
+type projectPathCandidate struct {
+	project Project
+	path    string
+	depth   int
+}
+
+type projectPathMatchCacheEntry struct {
+	project Project
+	ok      bool
 }
 
 func NewRegistry(configs []config.ProjectConfig) (*Registry, error) {
-	registry := &Registry{projects: map[string]Project{}}
+	registry := &Registry{
+		projects:       map[string]Project{},
+		pathMatchCache: map[string]projectPathMatchCacheEntry{},
+	}
 	for _, item := range configs {
 		project, err := normalize(item)
 		if err != nil {
@@ -41,6 +62,7 @@ func NewRegistry(configs []config.ProjectConfig) (*Registry, error) {
 	sort.Slice(registry.list, func(i, j int) bool {
 		return registry.list[i].Name < registry.list[j].Name
 	})
+	registry.pathCandidates = buildProjectPathCandidates(registry.list)
 	return registry, nil
 }
 
@@ -84,32 +106,121 @@ func (r *Registry) Get(id string) (Project, bool) {
 }
 
 func (r *Registry) FindByPath(path string) (Project, bool) {
+	cacheKey := ""
+	absPath, err := filepath.Abs(path)
+	if err == nil {
+		cacheKey = filepath.Clean(absPath)
+		if project, ok, hit := r.cachedPathMatch(cacheKey); hit {
+			return project, ok
+		}
+		if project, ok := r.findByCleanPath(cacheKey); ok {
+			// Codex history 里的 cwd 通常是项目绝对路径或子路径。直接字符串命中时立即缓存，
+			// 后续侧栏刷新不再重复遍历候选项目。
+			r.storePathMatch(cacheKey, project, true)
+			return project, true
+		}
+	}
+
 	realPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		realPath, _ = filepath.Abs(path)
+		realPath = absPath
 	}
-	realPath = filepath.Clean(realPath)
+	cleanRealPath := filepath.Clean(realPath)
+	project, ok := r.findByCleanPath(cleanRealPath)
+	if cacheKey != "" {
+		// Registry 创建后项目集合不会变；把最终结果按原始绝对路径缓存起来，
+		// 包含“未匹配”结果，避免频繁轮询时对无关 cwd 做重复 EvalSymlinks/Rel。
+		r.storePathMatch(cacheKey, project, ok)
+	}
+	if cleanRealPath != "" && cleanRealPath != "." && cleanRealPath != cacheKey {
+		r.storePathMatch(cleanRealPath, project, ok)
+	}
+	return project, ok
+}
 
-	// Codex 历史里的 cwd 经常是项目的子目录；这里选“最深的父级项目”，
-	// 这样配置 scan root 和具体项目同时存在时，会优先归到具体项目。
-	var (
-		best      Project
-		bestDepth = -1
-	)
-	for _, project := range r.list {
-		projectPath := filepath.Clean(project.RealPath)
-		rel, err := filepath.Rel(projectPath, realPath)
+func (r *Registry) findByCleanPath(cleanPath string) (Project, bool) {
+	for _, candidate := range r.pathCandidates {
+		rel, err := filepath.Rel(candidate.path, cleanPath)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			continue
 		}
-		depth := len(strings.Split(projectPath, string(os.PathSeparator)))
-		if depth > bestDepth {
-			best = project
-			bestDepth = depth
-		}
-	}
-	if bestDepth >= 0 {
-		return best, true
+		return candidate.project, true
 	}
 	return Project{}, false
+}
+
+func (r *Registry) cachedPathMatch(cleanPath string) (Project, bool, bool) {
+	if cleanPath == "" || cleanPath == "." {
+		return Project{}, false, false
+	}
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+
+	entry, hit := r.pathMatchCache[cleanPath]
+	if !hit {
+		return Project{}, false, false
+	}
+	r.pathMatchOrder = touchPathMatchCacheKey(r.pathMatchOrder, cleanPath)
+	return entry.project, entry.ok, true
+}
+
+func (r *Registry) storePathMatch(cleanPath string, project Project, ok bool) {
+	if cleanPath == "" || cleanPath == "." {
+		return
+	}
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+
+	r.pathMatchCache[cleanPath] = projectPathMatchCacheEntry{project: project, ok: ok}
+	r.pathMatchOrder = touchPathMatchCacheKey(r.pathMatchOrder, cleanPath)
+	for len(r.pathMatchCache) > maxPathMatchCacheEntries && len(r.pathMatchOrder) > 0 {
+		oldest := r.pathMatchOrder[0]
+		r.pathMatchOrder = r.pathMatchOrder[1:]
+		delete(r.pathMatchCache, oldest)
+	}
+}
+
+func touchPathMatchCacheKey(order []string, key string) []string {
+	writeIndex := 0
+	for _, value := range order {
+		if value == key {
+			continue
+		}
+		order[writeIndex] = value
+		writeIndex++
+	}
+	order = order[:writeIndex]
+	return append(order, key)
+}
+
+func buildProjectPathCandidates(projects []Project) []projectPathCandidate {
+	candidates := make([]projectPathCandidate, 0, len(projects)*2)
+	for _, project := range projects {
+		candidates = appendProjectPathCandidate(candidates, project, project.RealPath)
+		if project.Path != "" && project.Path != project.RealPath {
+			candidates = appendProjectPathCandidate(candidates, project, project.Path)
+		}
+	}
+	// Codex 历史里的 cwd 经常是项目子目录；候选路径预先按深度排序，
+	// FindByPath 就可以直接返回第一个匹配项，避免每条历史都重新 Clean/Split。
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].depth > candidates[j].depth
+	})
+	return candidates
+}
+
+func appendProjectPathCandidate(candidates []projectPathCandidate, project Project, path string) []projectPathCandidate {
+	clean := filepath.Clean(path)
+	return append(candidates, projectPathCandidate{
+		project: project,
+		path:    clean,
+		depth:   pathDepth(clean),
+	})
+}
+
+func pathDepth(path string) int {
+	if path == string(os.PathSeparator) {
+		return 0
+	}
+	return len(strings.Split(strings.Trim(path, string(os.PathSeparator)), string(os.PathSeparator)))
 }
