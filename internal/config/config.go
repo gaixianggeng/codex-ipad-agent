@@ -40,9 +40,10 @@ type RuntimeConfig struct {
 }
 
 type AppServerConfig struct {
-	Transport string `json:"transport"`
-	Managed   bool   `json:"managed"`
-	Listen    string `json:"listen,omitempty"`
+	Transport   string `json:"transport"`
+	Managed     bool   `json:"managed"`
+	Listen      string `json:"listen,omitempty"`
+	WSTokenFile string `json:"ws_token_file,omitempty"`
 }
 
 type SessionConfig struct {
@@ -153,6 +154,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_LISTEN"); v != "" {
 		cfg.AppServer.Listen = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("AGENTD_APP_SERVER_WS_TOKEN_FILE"); v != "" {
+		cfg.AppServer.WSTokenFile = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_MANAGED"); v != "" {
 		cfg.AppServer.Managed = truthy(v)

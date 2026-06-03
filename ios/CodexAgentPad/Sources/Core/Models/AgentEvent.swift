@@ -292,3 +292,239 @@ struct ClientWebSocketMessage: Encodable {
         self.clientMessageID = clientMessageID
     }
 }
+
+struct CodexAppServerEventProjector {
+    private var nextSeqBySessionID: [SessionID: EventSequence] = [:]
+
+    mutating func project(_ notification: CodexAppServerNotification) -> AgentEvent? {
+        let params = notification.params?.objectValue ?? [:]
+        let metadata = makeMetadata(from: params)
+
+        switch notification.method {
+        case "turn/started":
+            return .turnStarted(metadata)
+        case "item/agentMessage/delta":
+            guard let text = firstString(in: params, keys: ["delta", "text"]), !text.isEmpty else {
+                return nil
+            }
+            return .assistantDelta(AgentDelta(text: text, role: .assistant, kind: .message), metadata)
+        case "item/completed":
+            return completedAgentMessageEvent(params: params, metadata: metadata)
+        case "item/commandExecution/outputDelta",
+             "command/exec/outputDelta",
+             "commandExecution/outputDelta",
+             "command/execution/outputDelta",
+             "process/outputDelta":
+            guard let text = firstString(in: params, keys: ["delta", "data", "text", "chunk"]), !text.isEmpty else {
+                return nil
+            }
+            return .logDelta(LogDelta(text: text, stream: firstString(in: params, keys: ["stream", "fd"])), metadata)
+        case "item/fileChange/patchUpdated",
+             "fileChange/patchUpdated",
+             "turn/diff/updated":
+            return .diffUpdated(fileChangeSummary(from: params), metadata)
+        case "turn/completed":
+            return .turnCompleted(metadata)
+        case "warning":
+            return .warning(errorPayload(from: params, fallback: "app-server warning"), metadata)
+        case "error":
+            return .error(firstString(in: params, keys: ["message", "error"]) ?? nestedString(in: params, key: "error", nestedKey: "message") ?? "app-server error")
+        default:
+            return nil
+        }
+    }
+
+    mutating func project(_ request: CodexAppServerServerRequest) -> AgentEvent? {
+        guard isApprovalLike(method: request.method) else {
+            return nil
+        }
+        let params = request.params?.objectValue ?? [:]
+        let metadata = makeMetadata(from: params)
+        let kind = approvalKind(method: request.method)
+        let itemID = metadata.itemID ?? request.id.description
+        return .approvalRequest(
+            AgentApprovalRequest(
+                id: firstString(in: params, keys: ["approvalId"]) ?? itemID,
+                title: approvalTitle(kind: kind, params: params),
+                body: approvalBody(kind: kind, params: params),
+                kind: kind,
+                risk: "high"
+            ),
+            metadata
+        )
+    }
+
+    private mutating func makeMetadata(from params: [String: CodexAppServerJSONValue]) -> AgentEventMetadata {
+        let sessionID = firstString(in: params, keys: ["threadId", "conversationId", "sessionId", "session_id"])
+            ?? nestedString(in: params, key: "thread", nestedKey: "id")
+        let turnID = firstString(in: params, keys: ["turnId", "turn_id"]) ?? nestedString(in: params, key: "turn", nestedKey: "id")
+        let item = params["item"]?.objectValue
+        let itemID = firstString(in: params, keys: ["itemId", "item_id", "callId", "approvalId"]) ?? item?["id"]?.stringValue
+        let messageID = firstString(in: params, keys: ["messageId", "message_id"]) ?? appServerMessageID(turnID: turnID, itemID: itemID)
+        let seq = nextSeq(for: sessionID)
+        return AgentEventMetadata(
+            seq: seq,
+            sessionID: sessionID,
+            turnID: turnID,
+            itemID: itemID,
+            messageID: messageID,
+            clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"]),
+            revision: Int(seq),
+            createdAt: nil
+        )
+    }
+
+    private mutating func nextSeq(for sessionID: SessionID?) -> EventSequence {
+        let key = sessionID ?? "__appserver_global__"
+        let next = (nextSeqBySessionID[key] ?? 0) + 1
+        nextSeqBySessionID[key] = next
+        return next
+    }
+
+    private func completedAgentMessageEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue,
+              item["type"]?.stringValue == "agentMessage" else {
+            return nil
+        }
+        let text = firstString(in: item, keys: ["text", "content"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            return nil
+        }
+        // completed item 是 app-server 的权威最终内容，用稳定 message id 覆盖同一条 streaming 气泡。
+        let itemID = metadata.itemID ?? item["id"]?.stringValue
+        let messageID = metadata.messageID ?? appServerMessageID(turnID: metadata.turnID, itemID: itemID) ?? itemID ?? UUID().uuidString
+        let sessionID = metadata.sessionID ?? ""
+        let message = AgentMessage(
+            id: messageID,
+            sessionID: sessionID,
+            turnID: metadata.turnID,
+            itemID: itemID,
+            role: .assistant,
+            kind: .message,
+            content: text,
+            createdAt: Date(),
+            seq: metadata.seq,
+            revision: metadata.revision ?? 0,
+            sendStatus: .confirmed
+        )
+        return .messageCompleted(message, metadata)
+    }
+
+    private func fileChangeSummary(from params: [String: CodexAppServerJSONValue]) -> FileChangeSummary {
+        let source = params["fileChange"]?.objectValue
+            ?? params["change"]?.objectValue
+            ?? params["diff"]?.objectValue
+            ?? params["item"]?.objectValue
+            ?? params
+        return FileChangeSummary(
+            path: firstString(in: source, keys: ["path", "filePath", "relativePath", "filename"]) ?? "workspace",
+            status: firstString(in: source, keys: ["status", "kind", "type"]) ?? "modified",
+            additions: firstInt(in: source, keys: ["additions", "added"]),
+            deletions: firstInt(in: source, keys: ["deletions", "removed"])
+        )
+    }
+
+    private func errorPayload(from params: [String: CodexAppServerJSONValue], fallback: String) -> AgentErrorPayload {
+        AgentErrorPayload(
+            message: firstString(in: params, keys: ["message", "warning", "error"])
+                ?? nestedString(in: params, key: "error", nestedKey: "message")
+                ?? fallback,
+            code: firstString(in: params, keys: ["code"])
+                ?? nestedString(in: params, key: "error", nestedKey: "code"),
+            retryable: params["retryable"]?.boolValue
+        )
+    }
+
+    private func appServerMessageID(turnID: TurnID?, itemID: AgentItemID?) -> MessageID? {
+        guard let itemID, !itemID.isEmpty else {
+            return nil
+        }
+        guard let turnID, !turnID.isEmpty else {
+            return itemID
+        }
+        return "appserver:\(turnID):\(itemID)"
+    }
+
+    private func firstString(in params: [String: CodexAppServerJSONValue], keys: [String]) -> String? {
+        for key in keys {
+            if let value = params[key]?.stringValue {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func firstInt(in params: [String: CodexAppServerJSONValue], keys: [String]) -> Int? {
+        for key in keys {
+            if let value = params[key]?.intValue {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func nestedString(
+        in params: [String: CodexAppServerJSONValue],
+        key: String,
+        nestedKey: String
+    ) -> String? {
+        params[key]?.objectValue?[nestedKey]?.stringValue
+    }
+
+    private func isApprovalLike(method: String) -> Bool {
+        let lower = method.lowercased()
+        return lower.contains("approval") || lower.contains("requestuserinput")
+    }
+
+    private func approvalKind(method: String) -> String {
+        let lower = method.lowercased()
+        if lower.contains("filechange") || lower.contains("applypatch") {
+            return "file_change"
+        }
+        if lower.contains("permission") {
+            return "permission"
+        }
+        if lower.contains("requestuserinput") {
+            return "user_input"
+        }
+        return "command"
+    }
+
+    private func approvalTitle(kind: String, params: [String: CodexAppServerJSONValue]) -> String {
+        switch kind {
+        case "file_change":
+            return "Codex 请求修改文件"
+        case "permission":
+            return "Codex 请求提升权限"
+        case "user_input":
+            return "Codex 请求补充输入"
+        default:
+            if let command = commandSummary(params: params) {
+                return "Codex 请求执行命令：\(command)"
+            }
+            return "Codex 请求执行命令"
+        }
+    }
+
+    private func approvalBody(kind: String, params: [String: CodexAppServerJSONValue]) -> String? {
+        if kind == "command" {
+            let command = commandSummary(params: params)
+            let reason = firstString(in: params, keys: ["reason", "message"])
+            return [command, reason].compactMap { $0 }.joined(separator: "\n\n")
+        }
+        return firstString(in: params, keys: ["reason", "message", "diff", "path", "prompt"])
+    }
+
+    private func commandSummary(params: [String: CodexAppServerJSONValue]) -> String? {
+        if let command = params["command"]?.stringValue {
+            return command
+        }
+        if let parts = params["command"]?.arrayValue?.compactMap(\.stringValue), !parts.isEmpty {
+            return parts.joined(separator: " ")
+        }
+        return nil
+    }
+}

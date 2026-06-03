@@ -62,6 +62,18 @@ func (r *CodexAppServerRuntime) SetClient(client AppServerRPC) {
 	r.client = client
 }
 
+func (r *CodexAppServerRuntime) AppServerDiagnostics() appserver.Diagnostics {
+	r.mu.Lock()
+	client := r.client
+	r.mu.Unlock()
+	source, ok := client.(interface{ Diagnostics() appserver.Diagnostics })
+	if !ok || source == nil {
+		return appserver.Diagnostics{}
+	}
+	// control-plane 只读取运行态计数；敏感诊断仍留在 doctor/日志的脱敏路径中。
+	return source.Diagnostics()
+}
+
 func (r *CodexAppServerRuntime) ListSessions(ctx context.Context, projectID string, limit int, cursor sessionPageCursor, hasCursor bool) (SessionListPage, error) {
 	project, hasProject, err := r.projectFilter(projectID)
 	if err != nil {

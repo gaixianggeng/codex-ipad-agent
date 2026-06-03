@@ -26,7 +26,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let createdAt: Date?
     let updatedAt: Date?
     let preview: String?
-    let activeTurnID: TurnID?
+    var activeTurnID: TurnID?
     let lastSeq: EventSequence?
     let revision: ModelRevision?
     let usage: UsageSummary?
@@ -729,6 +729,38 @@ struct AgentMessage: Identifiable, Codable, Hashable {
         case seq
         case revision
         case sendStatus = "send_status"
+    }
+
+    init(
+        id: MessageID,
+        sessionID: SessionID,
+        clientMessageID: ClientMessageID? = nil,
+        turnID: TurnID? = nil,
+        itemID: AgentItemID? = nil,
+        role: MessageRole,
+        kind: MessageKind = .message,
+        content: String,
+        summary: String? = nil,
+        createdAt: Date? = nil,
+        updatedAt: Date? = nil,
+        seq: EventSequence? = nil,
+        revision: ModelRevision = 0,
+        sendStatus: MessageSendStatus = .confirmed
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.clientMessageID = clientMessageID
+        self.turnID = turnID
+        self.itemID = itemID
+        self.role = role
+        self.kind = kind
+        self.content = content
+        self.summary = summary
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.seq = seq
+        self.revision = revision
+        self.sendStatus = sendStatus
     }
 
     init(from decoder: Decoder) throws {

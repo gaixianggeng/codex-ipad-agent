@@ -11,6 +11,7 @@ struct SettingsView: View {
     @StateObject private var themeStore = ThemeStore()
     @State private var endpoint = ""
     @State private var token = ""
+    @State private var connectionMode: ConnectionMode = .compat
     @State private var localError: String?
 
     var body: some View {
@@ -24,15 +25,21 @@ struct SettingsView: View {
                     SecureField("agentd Token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    Picker("模式", selection: $connectionMode) {
+                        ForEach(ConnectionMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 } header: {
                     Text("连接")
                 } footer: {
-                    Text("Token 存入 Keychain，Endpoint 存入 UserDefaults。MVP 只建议在本机或 Tailscale 网络中使用。")
+                    Text("直连模式使用 Codex app-server JSON-RPC；兼容模式保留旧 REST/WS 会话接口。MVP 只建议在本机或 Tailscale 网络中使用。")
                 }
 
                 Section {
                     Button {
-                        Task { await appStore.testConnection(endpoint: endpoint, token: token) }
+                        Task { await appStore.testConnection(endpoint: endpoint, token: token, connectionMode: connectionMode) }
                     } label: {
                         Label("测试连接", systemImage: "bolt.horizontal.circle")
                     }
@@ -86,6 +93,7 @@ struct SettingsView: View {
             .onAppear {
                 endpoint = appStore.endpoint
                 token = appStore.token
+                connectionMode = appStore.connectionMode
             }
             .tint(themeStore.tokens(for: colorScheme).accent)
         }
@@ -106,7 +114,8 @@ struct SettingsView: View {
 
     private func save() {
         do {
-            try appStore.save(endpoint: endpoint, token: token)
+            try appStore.save(endpoint: endpoint, token: token, connectionMode: connectionMode)
+            sessionStore.resetConnectionForSettingsChange()
             localError = nil
             Task {
                 await sessionStore.refreshAll(autoAttach: true)

@@ -3334,6 +3334,548 @@ private func waitForWebSocketStatus(_ expected: WebSocketStatus, store: SessionS
     XCTFail("WebSocket 状态未变为 \(expected)，当前为 \(store.webSocketStatus)")
 }
 
+@MainActor
+extension ConversationDataFlowTests {
+    func testCodexAppServerConnectionMatchesResponsesByRequestID() async throws {
+        let transport = FakeCodexAppServerTransport()
+        let connection = CodexAppServerConnection(transport: transport, requestTimeout: 2)
+        let connectTask = Task {
+            try await connection.connect(url: try XCTUnwrap(URL(string: "ws://127.0.0.1:7777/api/app-server/ws")), token: "test-token")
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+        try await connectTask.value
+
+        let connectedMessages = try await waitForFakeAppServerMessages(transport, count: 2)
+        let initialized = try AgentAPIClient.decoder.decode(
+            CodexAppServerNotification.self,
+            from: Data(connectedMessages[1].utf8)
+        )
+        XCTAssertEqual(initialized.method, "initialized")
+
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [
+            AgentProject(id: "proj_rpc", name: "RPC", path: "/tmp/rpc")
+        ])
+        let listTask = Task {
+            try await connection.send(try builder.threadList(cwd: "/tmp/rpc", limit: 1))
+        }
+        let readTask = Task {
+            try await connection.send(builder.threadRead(threadID: "thr_out_of_order"))
+        }
+
+        let sentMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let requests = try sentMessages.dropFirst(2).map(decodeAppServerRequest)
+        let listRequest = try XCTUnwrap(requests.first { $0.method == "thread/list" })
+        let readRequest = try XCTUnwrap(requests.first { $0.method == "thread/read" })
+
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: readRequest.id)),"result":{"name":"read-first"}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"name":"list-second"}}"#)
+
+        let listResult = try await listTask.value?.objectValue
+        let readResult = try await readTask.value?.objectValue
+        XCTAssertEqual(listResult?["name"]?.stringValue, "list-second")
+        XCTAssertEqual(readResult?["name"]?.stringValue, "read-first")
+
+        await connection.disconnect()
+    }
+
+    func testCodexAppServerConnectionRoutesNotificationsAndServerRequests() async throws {
+        let connection = CodexAppServerConnection(transport: FakeCodexAppServerTransport(), requestTimeout: 2)
+        let notificationStream = await connection.notifications()
+        let serverRequestStream = await connection.serverRequests()
+        var notificationIterator = notificationStream.makeAsyncIterator()
+        var serverRequestIterator = serverRequestStream.makeAsyncIterator()
+
+        await connection.ingestTextForTesting(#"{"method":"turn/started","params":{"threadId":"thr_stream","turn":{"id":"turn_stream"}}}"#)
+        let notification = await notificationIterator.next()
+        XCTAssertEqual(notification?.method, "turn/started")
+        XCTAssertEqual(notification?.params?["threadId"]?.stringValue, "thr_stream")
+
+        await connection.ingestTextForTesting(#"{"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_stream","turnId":"turn_stream","itemId":"cmd_1","command":"go test ./..."}}"#)
+        let request = await serverRequestIterator.next()
+        XCTAssertEqual(request?.id, .int(99))
+        XCTAssertEqual(request?.method, "item/commandExecution/requestApproval")
+        XCTAssertEqual(request?.params?["command"]?.stringValue, "go test ./...")
+    }
+
+    func testCodexAppServerConnectionMapsAppServerErrors() async throws {
+        let transport = FakeCodexAppServerTransport()
+        let connection = CodexAppServerConnection(transport: transport, requestTimeout: 2)
+        try await connectFakeAppServer(connection, transport: transport)
+
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [
+            AgentProject(id: "proj_error", name: "Error", path: "/tmp/error")
+        ])
+        let requestTask = Task {
+            try await connection.send(try builder.threadList(cwd: "/tmp/error", limit: 1))
+        }
+
+        let sentMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let request = try decodeAppServerRequest(sentMessages[2])
+        XCTAssertEqual(request.method, "thread/list")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: request.id)),"error":{"code":-32000,"message":"Not initialized"}}"#)
+
+        do {
+            _ = try await requestTask.value
+            XCTFail("Expected app-server error")
+        } catch CodexAppServerConnectionError.appServer(let error) {
+            XCTAssertEqual(error.code, -32000)
+            XCTAssertEqual(error.message, "Not initialized")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        await connection.disconnect()
+    }
+
+    func testCodexAppServerConnectionSkipsMalformedFrameWithoutFailingPendingRequests() async throws {
+        let transport = FakeCodexAppServerTransport()
+        let connection = CodexAppServerConnection(transport: transport, requestTimeout: 2)
+        try await connectFakeAppServer(connection, transport: transport)
+
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [
+            AgentProject(id: "proj_bad_frame", name: "Bad Frame", path: "/tmp/bad-frame")
+        ])
+        let requestTask = Task {
+            try await connection.send(try builder.threadList(cwd: "/tmp/bad-frame", limit: 1))
+        }
+
+        let sentMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let request = try decodeAppServerRequest(sentMessages[2])
+        XCTAssertEqual(request.method, "thread/list")
+
+        transport.enqueue(#"{"id": "#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: request.id)),"result":{"name":"still-ok"}}"#)
+
+        let result = try await requestTask.value?.objectValue
+        XCTAssertEqual(result?["name"]?.stringValue, "still-ok")
+
+        await connection.disconnect()
+    }
+
+    func testCodexAppServerFakeSmokeCoversThreadTurnAndApproval() async throws {
+        let transport = FakeCodexAppServerTransport()
+        let connection = CodexAppServerConnection(transport: transport, requestTimeout: 2)
+        let notificationStream = await connection.notifications()
+        let serverRequestStream = await connection.serverRequests()
+        var notificationIterator = notificationStream.makeAsyncIterator()
+        var serverRequestIterator = serverRequestStream.makeAsyncIterator()
+        var projector = CodexAppServerEventProjector()
+
+        try await connectFakeAppServer(connection, transport: transport)
+
+        let project = AgentProject(id: "proj_smoke", name: "Smoke", path: "/tmp/smoke")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        let threadTask = Task {
+            try await connection.send(builder.threadStart(projectID: project.id))
+        }
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thread-smoke","title":"Smoke"}}}"#)
+        _ = try await threadTask.value
+
+        transport.enqueue(#"{"method":"thread/started","params":{"thread":{"id":"thread-smoke","title":"Smoke","cwd":"/tmp/smoke"}}}"#)
+        let threadStarted = await notificationIterator.next()
+        XCTAssertEqual(threadStarted?.method, "thread/started")
+        XCTAssertEqual(threadStarted?.params?["thread"]?.objectValue?["id"]?.stringValue, "thread-smoke")
+
+        let turnTask = Task {
+            try await connection.send(builder.turnStart(
+                threadID: "thread-smoke",
+                projectID: project.id,
+                prompt: "帮我验收",
+                clientMessageID: "client-smoke"
+            ))
+        }
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let turnStart = try decodeAppServerRequest(turnMessages[3])
+        XCTAssertEqual(turnStart.method, "turn/start")
+        let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
+        XCTAssertEqual(turnParams["threadId"]?.stringValue, "thread-smoke")
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn-smoke","status":"inProgress"}}}"#)
+        _ = try await turnTask.value
+
+        transport.enqueue(#"{"method":"turn/started","params":{"threadId":"thread-smoke","turn":{"id":"turn-smoke"}}}"#)
+        let nextNotification = await notificationIterator.next()
+        let turnStarted = try XCTUnwrap(nextNotification)
+        if case .turnStarted(let meta) = try XCTUnwrap(projector.project(turnStarted)) {
+            XCTAssertEqual(meta.sessionID, "thread-smoke")
+            XCTAssertEqual(meta.turnID, "turn-smoke")
+        } else {
+            XCTFail("Expected turnStarted")
+        }
+
+        transport.enqueue(#"{"id":77,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-smoke","turnId":"turn-smoke","itemId":"cmd-smoke","command":"go test ./...","reason":"验收直连链路"}}"#)
+        let nextServerRequest = await serverRequestIterator.next()
+        let approvalRequest = try XCTUnwrap(nextServerRequest)
+        if case .approvalRequest(let approval, let meta) = try XCTUnwrap(projector.project(approvalRequest)) {
+            XCTAssertEqual(meta.sessionID, "thread-smoke")
+            XCTAssertEqual(approval.id, "cmd-smoke")
+            XCTAssertEqual(approval.kind, "command")
+            XCTAssertTrue(approval.body?.contains("验收直连链路") == true)
+        } else {
+            XCTFail("Expected approvalRequest")
+        }
+
+        await connection.disconnect()
+    }
+
+    func testCodexAppServerSessionRuntimeDrivesDirectClientAndSocket() async throws {
+        let project = AgentProject(id: "proj_direct", name: "Direct", path: "/tmp/direct")
+        let config = CodexAppServerConfigResponse(
+            gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+            runtime: CodexAppServerRuntimeMetadata(
+                type: "pty",
+                transport: "ws",
+                managed: true,
+                gatewayAvailable: true,
+                upstreamConfigured: true,
+                running: true,
+                initialized: false,
+                pendingRequests: 0,
+                compatibilityURL: "/api/sessions"
+            ),
+            projects: [project],
+            policy: CodexAppServerPolicyMetadata(
+                allowedMethods: ["initialize", "initialized", "thread/start", "turn/start"],
+                projectsSource: "agentd_allowlist"
+            )
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { config }
+        )
+        let client = CodexAppServerSessionAPIClient(endpoint: "http://127.0.0.1:8787", runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "帮我验收",
+                resumeID: "",
+                title: "",
+                cols: 120,
+                rows: 32,
+                clientMessageID: "client_direct_1"
+            ))
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_direct","sessionId":"thr_direct","preview":"帮我验收","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"直连验收","turns":[]}}}"#)
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let firstTurnStart = try decodeAppServerRequest(turnMessages[3])
+        XCTAssertEqual(firstTurnStart.method, "turn/start")
+        let firstTurnParams = try XCTUnwrap(firstTurnStart.params?.objectValue)
+        XCTAssertEqual(firstTurnParams["threadId"]?.stringValue, "thr_direct")
+        XCTAssertEqual(firstTurnParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(firstTurnParams["clientUserMessageId"]?.stringValue, "client_direct_1")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnStart.id)),"result":{"turn":{"id":"turn_direct_1","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490002,"completedAt":null,"durationMs":null}}}"#)
+
+        let created = try await createTask.value
+        XCTAssertEqual(created.session.id, "thr_direct")
+        XCTAssertEqual(created.session.status, "running")
+        XCTAssertEqual(created.session.activeTurnID, "turn_direct_1")
+        XCTAssertEqual(try client.websocketURL(sessionID: "thr_direct").path, "/api/app-server/ws")
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+        socket.connect(url: try client.websocketURL(sessionID: "thr_direct"), token: "outer-token")
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        transport.enqueue(#"{"method":"item/agentMessage/delta","params":{"threadId":"thr_direct","turnId":"turn_direct_1","itemId":"assistant_1","delta":"收到"}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .assistantDelta(let delta, _) = $0 {
+                return delta.text == "收到"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .assistantDelta(let delta, _) = $0 {
+                return delta.text == "收到"
+            }
+            return false
+        })
+
+        XCTAssertTrue(socket.sendInput("继续\r", clientMessageID: "client_direct_2"))
+        let followUpMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let followUpTurnStart = try decodeAppServerRequest(followUpMessages[4])
+        XCTAssertEqual(followUpTurnStart.method, "turn/start")
+        let followUpParams = try XCTUnwrap(followUpTurnStart.params?.objectValue)
+        XCTAssertEqual(followUpParams["input"]?.arrayValue?.first?.objectValue?["text"]?.stringValue, "继续")
+        XCTAssertEqual(followUpParams["clientUserMessageId"]?.stringValue, "client_direct_2")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: followUpTurnStart.id)),"result":{"turn":{"id":"turn_direct_2","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490003,"completedAt":null,"durationMs":null}}}"#)
+
+        transport.enqueue(#"{"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_direct","turnId":"turn_direct_2","itemId":"cmd_direct","command":"go test ./..."}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .approvalRequest(let approval, _) = $0 {
+                return approval.id == "cmd_direct"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(socket.sendApprovalDecision(approvalID: "cmd_direct", decision: "accept", message: nil))
+        let approvalResponse = try await waitForFakeAppServerResponse(transport, id: .int(99))
+        XCTAssertEqual(approvalResponse.id, .int(99))
+        XCTAssertEqual(approvalResponse.result?["decision"]?.stringValue, "accept")
+
+        socket.disconnect()
+    }
+
+    func testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion() async throws {
+        let project = AgentProject(id: "proj_store_direct", name: "Store Direct", path: "/tmp/store-direct")
+        let config = makeDirectAppServerConfig(project: project)
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { config }
+        )
+        let client = CodexAppServerSessionAPIClient(endpoint: "http://127.0.0.1:8787", runtime: runtime)
+        let appStore = AppStore()
+        let conversationStore = ConversationStore()
+        let logStore = LogStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: logStore,
+            clientFactory: { client },
+            webSocketFactory: { CodexAppServerSessionWebSocketClient(runtime: runtime) },
+            webSocketReconnectDelayNanoseconds: { _ in 1_000_000 }
+        )
+
+        let refreshTask = Task { await store.refreshAll(autoAttach: false) }
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+        let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let listRequest = try decodeAppServerRequest(listMessages[2])
+        XCTAssertEqual(listRequest.method, "thread/list")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[],"nextCursor":null,"backwardsCursor":null}}"#)
+        await refreshTask.value
+        XCTAssertEqual(store.selectedProjectID, project.id)
+
+        let sendTask = Task { await store.sendPrompt("帮我验收 direct Store") }
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let threadStart = try decodeAppServerRequest(threadMessages[3])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let turnStart = try decodeAppServerRequest(turnMessages[4])
+        XCTAssertEqual(turnStart.method, "turn/start")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_store_direct","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490102,"completedAt":null,"durationMs":null}}}"#)
+        let historyMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let historyRead = try decodeAppServerRequest(historyMessages[5])
+        XCTAssertEqual(historyRead.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: historyRead.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490102,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
+        let didSend = await sendTask.value
+        XCTAssertTrue(didSend)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertEqual(store.selectedSessionID, "thr_store_direct")
+
+        transport.enqueue(#"{"method":"item/agentMessage/delta","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","itemId":"assistant_store","delta":"阶段一"}}"#)
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
+            $0.contains { $0.role == .assistant && $0.content.contains("阶段一") }
+        }
+
+        transport.enqueue(#"{"method":"item/completed","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","item":{"type":"agentMessage","id":"assistant_store","text":"最终回答"}}}"#)
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
+            $0.contains { $0.role == .assistant && $0.content == "最终回答" }
+        }
+
+        transport.enqueue(#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","itemId":"cmd_store","delta":"go test ok\n","stream":"stdout"}}"#)
+        for _ in 0..<300 where !logStore.log(for: "thr_store_direct").contains("go test ok") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(logStore.log(for: "thr_store_direct").contains("go test ok"))
+
+        transport.enqueue(#"{"method":"turn/diff/updated","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","path":"Sources/App.swift","status":"modified"}}"#)
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
+            $0.contains { $0.kind == .fileChangeSummary && $0.content.contains("Sources/App.swift") }
+        }
+
+        transport.enqueue(#"{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","itemId":"cmd_store","command":"go test ./..."}}"#)
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
+            $0.contains { $0.kind == .approval && $0.content.contains("等待审批") }
+        }
+        store.decideApproval(ApprovalSummary(id: "cmd_store", title: "运行 go test", kind: "command", count: 1), accept: true)
+        let approvalResponse = try await waitForFakeAppServerResponse(transport, id: .int(101))
+        XCTAssertEqual(approvalResponse.id, .int(101))
+        XCTAssertEqual(approvalResponse.result?["decision"]?.stringValue, "accept")
+
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct"}}"#)
+        for _ in 0..<200 where store.selectedForegroundActivity != nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertNil(store.selectedForegroundActivity)
+    }
+
+    func testCodexAppServerSessionRuntimeRequiresProjectForThreadList() async throws {
+        let project = AgentProject(id: "proj_direct_required", name: "Direct Required", path: "/tmp/direct-required")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "agent-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+
+        do {
+            _ = try await runtime.sessionsPage(projectID: nil, cursor: nil, limit: 20)
+            XCTFail("direct thread/list 必须绑定 allowlist project")
+        } catch CodexAppServerSessionRuntimeError.projectRequired {
+            let sentMessages = await transport.sentMessages()
+            XCTAssertTrue(sentMessages.isEmpty)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testCodexAppServerProjectorMapsCommonNotifications() throws {
+        var projector = CodexAppServerEventProjector()
+
+        let started = try decodeAppServerNotification(#"{"method":"turn/started","params":{"threadId":"thr_demo","turn":{"id":"turn_demo"}}}"#)
+        if case .turnStarted(let meta) = try XCTUnwrap(projector.project(started)) {
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+            XCTAssertEqual(meta.turnID, "turn_demo")
+        } else {
+            XCTFail("Expected turnStarted")
+        }
+
+        let delta = try decodeAppServerNotification(#"{"method":"item/agentMessage/delta","params":{"threadId":"thr_demo","turnId":"turn_demo","itemId":"assistant_1","delta":"hello"}}"#)
+        if case .assistantDelta(let payload, let meta) = try XCTUnwrap(projector.project(delta)) {
+            XCTAssertEqual(payload.text, "hello")
+            XCTAssertEqual(payload.role, .assistant)
+            XCTAssertEqual(meta.messageID, "appserver:turn_demo:assistant_1")
+        } else {
+            XCTFail("Expected assistantDelta")
+        }
+
+        let completed = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"agentMessage","id":"assistant_1","text":"hello world"}}}"#)
+        if case .messageCompleted(let message, let meta) = try XCTUnwrap(projector.project(completed)) {
+            XCTAssertEqual(message.id, "appserver:turn_demo:assistant_1")
+            XCTAssertEqual(message.sessionID, "thr_demo")
+            XCTAssertEqual(message.content, "hello world")
+            XCTAssertEqual(message.sendStatus, .confirmed)
+            XCTAssertEqual(meta.itemID, "assistant_1")
+        } else {
+            XCTFail("Expected messageCompleted")
+        }
+
+        let log = try decodeAppServerNotification(#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"thr_demo","turnId":"turn_demo","itemId":"cmd_1","delta":"go test output","stream":"stdout"}}"#)
+        if case .logDelta(let payload, _) = try XCTUnwrap(projector.project(log)) {
+            XCTAssertEqual(payload.text, "go test output")
+            XCTAssertEqual(payload.stream, "stdout")
+        } else {
+            XCTFail("Expected logDelta")
+        }
+
+        let diff = try decodeAppServerNotification(#"{"method":"turn/diff/updated","params":{"threadId":"thr_demo","turnId":"turn_demo","path":"Sources/App.swift","status":"modified","additions":2,"deletions":1}}"#)
+        if case .diffUpdated(let summary, _) = try XCTUnwrap(projector.project(diff)) {
+            XCTAssertEqual(summary.path, "Sources/App.swift")
+            XCTAssertEqual(summary.status, "modified")
+            XCTAssertEqual(summary.additions, 2)
+            XCTAssertEqual(summary.deletions, 1)
+        } else {
+            XCTFail("Expected diffUpdated")
+        }
+
+        let turnCompleted = try decodeAppServerNotification(#"{"method":"turn/completed","params":{"threadId":"thr_demo","turnId":"turn_demo"}}"#)
+        if case .turnCompleted(let meta) = try XCTUnwrap(projector.project(turnCompleted)) {
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+            XCTAssertEqual(meta.turnID, "turn_demo")
+        } else {
+            XCTFail("Expected turnCompleted")
+        }
+
+        let warning = try decodeAppServerNotification(#"{"method":"warning","params":{"threadId":"thr_demo","message":"rate limit soon","code":"rate_limit"}}"#)
+        if case .warning(let payload, let meta) = try XCTUnwrap(projector.project(warning)) {
+            XCTAssertEqual(payload.message, "rate limit soon")
+            XCTAssertEqual(payload.code, "rate_limit")
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+        } else {
+            XCTFail("Expected warning")
+        }
+
+        let error = try decodeAppServerNotification(#"{"method":"error","params":{"message":"boom"}}"#)
+        if case .error(let message) = try XCTUnwrap(projector.project(error)) {
+            XCTAssertEqual(message, "boom")
+        } else {
+            XCTFail("Expected error")
+        }
+    }
+
+    func testCodexAppServerRequestBuildersUseRemoteSafeDefaults() throws {
+        let project = AgentProject(id: "proj_safe", name: "Safe", path: "/tmp/safe-project")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let threadStart = try builder.threadStart(projectID: project.id)
+        XCTAssertEqual(threadStart.method, "thread/start")
+        let threadParams = try XCTUnwrap(threadStart.params?.objectValue)
+        XCTAssertEqual(threadParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(threadParams["approvalsReviewer"]?.stringValue, "user")
+        XCTAssertEqual(threadParams["sandbox"]?.stringValue, "workspace-write")
+        XCTAssertNil(threadParams["runtimeWorkspaceRoots"])
+
+        let turnStart = try builder.turnStart(
+            threadID: "thr_safe",
+            projectID: project.id,
+            prompt: "只回复 ok",
+            clientMessageID: "client_safe"
+        )
+        XCTAssertEqual(turnStart.method, "turn/start")
+        let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
+        XCTAssertEqual(turnParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(turnParams["approvalsReviewer"]?.stringValue, "user")
+        XCTAssertEqual(turnParams["clientUserMessageId"]?.stringValue, "client_safe")
+        let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)
+        XCTAssertEqual(sandbox["type"]?.stringValue, "workspaceWrite")
+        XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
+        XCTAssertEqual(sandbox["writableRoots"]?.arrayValue?.compactMap(\.stringValue), [project.path])
+
+        XCTAssertThrowsError(try builder.threadStart(cwd: "/tmp/not-allowlisted"))
+        XCTAssertThrowsError(try builder.turnStart(threadID: "thr_safe", cwd: "/tmp/not-allowlisted", prompt: "hi"))
+        XCTAssertThrowsError(try builder.validateRemoteSafeParams(
+            .object(["cwd": .string(project.path), "approvalPolicy": .string("never")]),
+            projectPath: project.path
+        ))
+        XCTAssertThrowsError(try builder.validateRemoteSafeParams(
+            .object(["cwd": .string(project.path), "sandbox": .string("danger-full-access")]),
+            projectPath: project.path
+        ))
+    }
+}
+
 // 冷启动重试用的客户端：前 N 次 projects() 抛错模拟隧道未就绪，之后成功返回。
 private final class FlakyBootstrapClient: SessionStoreAPIClient {
     private let failuresBeforeSuccess: Int
@@ -3386,6 +3928,155 @@ private enum MockError: Error {
 
 private func occurrenceCount(of needle: String, in haystack: String) -> Int {
     haystack.components(separatedBy: needle).count - 1
+}
+
+private final class FakeCodexAppServerTransport: CodexAppServerTransport {
+    private let sentStore = FakeCodexAppServerSentStore()
+    private var receiveContinuation: AsyncStream<String>.Continuation?
+    private var receiveIterator: AsyncStream<String>.Iterator
+
+    init() {
+        var continuation: AsyncStream<String>.Continuation?
+        let stream = AsyncStream<String> {
+            continuation = $0
+        }
+        self.receiveContinuation = continuation
+        self.receiveIterator = stream.makeAsyncIterator()
+    }
+
+    func connect(url: URL, token: String) async throws {}
+
+    func send(_ text: String) async throws {
+        await sentStore.append(text)
+    }
+
+    func receive() async throws -> String? {
+        await receiveIterator.next()
+    }
+
+    func close() async {
+        receiveContinuation?.finish()
+    }
+
+    func enqueue(_ text: String) {
+        receiveContinuation?.yield(text)
+    }
+
+    func sentMessages() async -> [String] {
+        await sentStore.snapshot()
+    }
+}
+
+private actor FakeCodexAppServerSentStore {
+    private var messages: [String] = []
+
+    func append(_ text: String) {
+        messages.append(text)
+    }
+
+    func snapshot() -> [String] {
+        messages
+    }
+}
+
+private func waitForFakeAppServerMessages(
+    _ transport: FakeCodexAppServerTransport,
+    count: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws -> [String] {
+    for _ in 0..<200 {
+        let messages = await transport.sentMessages()
+        if messages.count >= count {
+            return messages
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("Timed out waiting for \(count) app-server messages", file: file, line: line)
+    return await transport.sentMessages()
+}
+
+private func waitForFakeAppServerResponse(
+    _ transport: FakeCodexAppServerTransport,
+    id: CodexAppServerRequestID,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws -> CodexAppServerResponse {
+    for _ in 0..<200 {
+        let messages = await transport.sentMessages()
+        for text in messages {
+            guard
+                let response = try? AgentAPIClient.decoder.decode(
+                    CodexAppServerResponse.self,
+                    from: Data(text.utf8)
+                ),
+                response.id == id,
+                response.result != nil || response.error != nil
+            else {
+                continue
+            }
+            return response
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("Timed out waiting for app-server response \(id)", file: file, line: line)
+    throw MockError.unimplemented
+}
+
+private func connectFakeAppServer(
+    _ connection: CodexAppServerConnection,
+    transport: FakeCodexAppServerTransport
+) async throws {
+    let connectTask = Task {
+        try await connection.connect(url: try XCTUnwrap(URL(string: "ws://127.0.0.1:7777/api/app-server/ws")), token: "test-token")
+    }
+    let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+    let initialize = try decodeAppServerRequest(initializeMessages[0])
+    XCTAssertEqual(initialize.method, "initialize")
+    transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+    try await connectTask.value
+
+    let connectedMessages = try await waitForFakeAppServerMessages(transport, count: 2)
+    let initialized = try AgentAPIClient.decoder.decode(
+        CodexAppServerNotification.self,
+        from: Data(connectedMessages[1].utf8)
+    )
+    XCTAssertEqual(initialized.method, "initialized")
+}
+
+private func makeDirectAppServerConfig(project: AgentProject) -> CodexAppServerConfigResponse {
+    CodexAppServerConfigResponse(
+        gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+        runtime: CodexAppServerRuntimeMetadata(
+            type: "pty",
+            transport: "ws",
+            managed: true,
+            gatewayAvailable: true,
+            upstreamConfigured: true,
+            running: true,
+            initialized: false,
+            pendingRequests: 0,
+            compatibilityURL: "/api/sessions"
+        ),
+        projects: [project],
+        policy: CodexAppServerPolicyMetadata(
+            allowedMethods: ["initialize", "initialized", "thread/list", "thread/start", "thread/read", "turn/start", "turn/interrupt"],
+            projectsSource: "agentd_allowlist"
+        )
+    )
+}
+
+private func decodeAppServerRequest(_ text: String) throws -> CodexAppServerRequest {
+    try AgentAPIClient.decoder.decode(CodexAppServerRequest.self, from: Data(text.utf8))
+}
+
+private func decodeAppServerNotification(_ text: String) throws -> CodexAppServerNotification {
+    try AgentAPIClient.decoder.decode(CodexAppServerNotification.self, from: Data(text.utf8))
+}
+
+private func jsonFragment(for id: CodexAppServerRequestID) throws -> String {
+    let data = try JSONEncoder().encode(id)
+    return String(decoding: data, as: UTF8.self)
 }
 
 private func makeProject(id: String) -> AgentProject {

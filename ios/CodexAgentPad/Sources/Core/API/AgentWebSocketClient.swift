@@ -423,3 +423,332 @@ extension AgentWebSocketClient: URLSessionWebSocketDelegate {
         }
     }
 }
+
+protocol CodexAppServerTransport: AnyObject {
+    func connect(url: URL, token: String) async throws
+    func send(_ text: String) async throws
+    func receive() async throws -> String?
+    func close() async
+}
+
+final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
+    private let session: URLSession
+    private var task: URLSessionWebSocketTask?
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func connect(url: URL, token: String) async throws {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let nextTask = session.webSocketTask(with: request)
+        task = nextTask
+        nextTask.resume()
+    }
+
+    func send(_ text: String) async throws {
+        guard let task else {
+            throw CodexAppServerConnectionError.disconnected
+        }
+        try await task.send(.string(text))
+    }
+
+    func receive() async throws -> String? {
+        guard let task else {
+            throw CodexAppServerConnectionError.disconnected
+        }
+        let message = try await task.receive()
+        switch message {
+        case .string(let text):
+            return text
+        case .data(let data):
+            return String(data: data, encoding: .utf8)
+        @unknown default:
+            return nil
+        }
+    }
+
+    func close() async {
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+    }
+}
+
+enum CodexAppServerConnectionError: LocalizedError {
+    case disconnected
+    case notInitialized
+    case duplicateRequestID(CodexAppServerRequestID)
+    case timeout(method: String, id: CodexAppServerRequestID)
+    case appServer(CodexAppServerError)
+    case decoding(Error)
+    case transport(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .disconnected:
+            return "app-server WebSocket 未连接"
+        case .notInitialized:
+            return "app-server 尚未完成 initialize/initialized"
+        case .duplicateRequestID(let id):
+            return "JSON-RPC request id 重复：\(id)"
+        case .timeout(let method, let id):
+            return "app-server 请求超时：\(method)#\(id)"
+        case .appServer(let error):
+            return error.localizedDescription
+        case .decoding(let error):
+            return "app-server 消息解析失败：\(error.localizedDescription)"
+        case .transport(let error):
+            return "app-server WebSocket 传输失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct PendingCodexAppServerResponse {
+    let method: String
+    let continuation: CheckedContinuation<CodexAppServerJSONValue?, Error>
+    let timeoutTask: Task<Void, Never>
+}
+
+actor CodexAppServerConnection {
+    private let transport: CodexAppServerTransport
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+    private let requestTimeoutNanoseconds: UInt64
+    private var nextRequestNumber: Int64 = 1
+    private var pendingResponses: [CodexAppServerRequestID: PendingCodexAppServerResponse] = [:]
+    private var receiveTask: Task<Void, Never>?
+    private var isConnected = false
+    private var isInitialized = false
+    private var notificationContinuation: AsyncStream<CodexAppServerNotification>.Continuation?
+    private var serverRequestContinuation: AsyncStream<CodexAppServerServerRequest>.Continuation?
+
+    init(
+        transport: CodexAppServerTransport = URLSessionCodexAppServerTransport(),
+        encoder: JSONEncoder = JSONEncoder(),
+        decoder: JSONDecoder = AgentAPIClient.decoder,
+        requestTimeout: TimeInterval = 20
+    ) {
+        self.transport = transport
+        self.encoder = encoder
+        self.decoder = decoder
+        self.requestTimeoutNanoseconds = UInt64(max(0.1, requestTimeout) * 1_000_000_000)
+    }
+
+    deinit {
+        receiveTask?.cancel()
+    }
+
+    func notifications() -> AsyncStream<CodexAppServerNotification> {
+        var continuation: AsyncStream<CodexAppServerNotification>.Continuation?
+        let stream = AsyncStream<CodexAppServerNotification>(bufferingPolicy: .bufferingNewest(512)) {
+            continuation = $0
+        }
+        notificationContinuation = continuation
+        return stream
+    }
+
+    func serverRequests() -> AsyncStream<CodexAppServerServerRequest> {
+        var continuation: AsyncStream<CodexAppServerServerRequest>.Continuation?
+        let stream = AsyncStream<CodexAppServerServerRequest>(bufferingPolicy: .bufferingNewest(128)) {
+            continuation = $0
+        }
+        serverRequestContinuation = continuation
+        return stream
+    }
+
+    func connect(url: URL, token: String) async throws {
+        receiveTask?.cancel()
+        try await transport.connect(url: url, token: token)
+        isConnected = true
+        isInitialized = false
+        receiveTask = Task { [weak self] in
+            await self?.receiveLoop()
+        }
+
+        let initializeParams = CodexAppServerJSONValue.objectValue([
+            "clientInfo": .object([
+                "name": .string("codex_ipad_agent"),
+                "title": .string("Codex iPad Agent"),
+                "version": .string("0.1.0")
+            ]),
+            // app-server 要求客户端声明能力；这里保持最小能力集，避免移动端误触实验外的鉴权路径。
+            "capabilities": .object([
+                "experimentalApi": .bool(true),
+                "requestAttestation": .bool(false)
+            ])
+        ])
+        _ = try await sendRequestEnvelope(
+            CodexAppServerRequest(id: nextRequestID(), method: "initialize", params: initializeParams),
+            allowBeforeInitialized: true
+        )
+        try await sendNotification(CodexAppServerNotification(method: "initialized", params: .object([:])))
+        isInitialized = true
+    }
+
+    func disconnect() async {
+        receiveTask?.cancel()
+        receiveTask = nil
+        isConnected = false
+        isInitialized = false
+        await transport.close()
+        failAllPending(with: CodexAppServerConnectionError.disconnected)
+    }
+
+    func send(_ request: CodexAppServerRequestSpec) async throws -> CodexAppServerJSONValue? {
+        guard isConnected else {
+            throw CodexAppServerConnectionError.disconnected
+        }
+        guard isInitialized else {
+            throw CodexAppServerConnectionError.notInitialized
+        }
+        return try await sendRequestEnvelope(request.request(id: nextRequestID()), allowBeforeInitialized: false)
+    }
+
+    func sendNotification(_ notification: CodexAppServerNotification) async throws {
+        guard isConnected else {
+            throw CodexAppServerConnectionError.disconnected
+        }
+        let data = try encoder.encode(notification)
+        try await transport.send(String(decoding: data, as: UTF8.self))
+    }
+
+    func respond(to request: CodexAppServerServerRequest, result: CodexAppServerJSONValue? = .object([:])) async throws {
+        try await sendResponse(CodexAppServerResponse(id: request.id, result: result, error: nil))
+    }
+
+    func respond(to request: CodexAppServerServerRequest, error: CodexAppServerError) async throws {
+        try await sendResponse(CodexAppServerResponse(id: request.id, result: nil, error: error))
+    }
+
+    func ingestTextForTesting(_ text: String) {
+        handleInboundText(text)
+    }
+
+    private func receiveLoop() async {
+        while !Task.isCancelled {
+            do {
+                guard let text = try await transport.receive() else {
+                    return
+                }
+                handleInboundText(text)
+            } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
+                isConnected = false
+                isInitialized = false
+                failAllPending(with: CodexAppServerConnectionError.transport(error))
+                return
+            }
+        }
+    }
+
+    private func sendRequestEnvelope(
+        _ request: CodexAppServerRequest,
+        allowBeforeInitialized: Bool
+    ) async throws -> CodexAppServerJSONValue? {
+        guard isConnected else {
+            throw CodexAppServerConnectionError.disconnected
+        }
+        guard allowBeforeInitialized || isInitialized else {
+            throw CodexAppServerConnectionError.notInitialized
+        }
+        guard pendingResponses[request.id] == nil else {
+            throw CodexAppServerConnectionError.duplicateRequestID(request.id)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let timeoutTask = Task { [requestTimeoutNanoseconds] in
+                try? await Task.sleep(nanoseconds: requestTimeoutNanoseconds)
+                self.timeoutRequest(id: request.id)
+            }
+            pendingResponses[request.id] = PendingCodexAppServerResponse(
+                method: request.method,
+                continuation: continuation,
+                timeoutTask: timeoutTask
+            )
+            Task {
+                do {
+                    try await self.sendEncodedRequest(request)
+                } catch {
+                    self.failPendingRequest(id: request.id, error: CodexAppServerConnectionError.transport(error))
+                }
+            }
+        }
+    }
+
+    private func sendEncodedRequest(_ request: CodexAppServerRequest) async throws {
+        let data = try encoder.encode(request)
+        try await transport.send(String(decoding: data, as: UTF8.self))
+    }
+
+    private func sendResponse(_ response: CodexAppServerResponse) async throws {
+        guard isConnected else {
+            throw CodexAppServerConnectionError.disconnected
+        }
+        let data = try encoder.encode(response)
+        try await transport.send(String(decoding: data, as: UTF8.self))
+    }
+
+    private func handleInboundText(_ text: String) {
+        do {
+            let message = try decoder.decode(CodexAppServerMessage.self, from: Data(text.utf8))
+            switch message {
+            case .response(let response):
+                resolve(response)
+            case .notification(let notification):
+                notificationContinuation?.yield(notification)
+            case .serverRequest(let request):
+                serverRequestContinuation?.yield(request)
+            }
+        } catch {
+            // 单个坏帧不能拖垮整条 JSON-RPC 连接；真正丢失的响应会由对应请求的超时兜底。
+            return
+        }
+    }
+
+    private func resolve(_ response: CodexAppServerResponse) {
+        guard let pending = pendingResponses.removeValue(forKey: response.id) else {
+            return
+        }
+        pending.timeoutTask.cancel()
+        if let error = response.error {
+            pending.continuation.resume(throwing: CodexAppServerConnectionError.appServer(error))
+        } else {
+            pending.continuation.resume(returning: response.result)
+        }
+    }
+
+    private func timeoutRequest(id: CodexAppServerRequestID) {
+        guard let pending = pendingResponses.removeValue(forKey: id) else {
+            return
+        }
+        pending.continuation.resume(throwing: CodexAppServerConnectionError.timeout(method: pending.method, id: id))
+    }
+
+    private func failPendingRequest(id: CodexAppServerRequestID, error: Error) {
+        guard let pending = pendingResponses.removeValue(forKey: id) else {
+            return
+        }
+        pending.timeoutTask.cancel()
+        pending.continuation.resume(throwing: error)
+    }
+
+    private func failAllPending(with error: Error) {
+        let pending = pendingResponses
+        pendingResponses.removeAll(keepingCapacity: false)
+        for item in pending.values {
+            item.timeoutTask.cancel()
+            item.continuation.resume(throwing: error)
+        }
+    }
+
+    private func nextRequestID() -> CodexAppServerRequestID {
+        defer {
+            nextRequestNumber += 1
+        }
+        return .int(nextRequestNumber)
+    }
+}

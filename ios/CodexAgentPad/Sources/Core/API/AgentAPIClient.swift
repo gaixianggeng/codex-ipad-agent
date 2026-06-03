@@ -36,6 +36,10 @@ struct AgentAPIClient {
         try await request(path: "/api/version", method: "GET", body: Optional<Data>.none)
     }
 
+    func appServerConfig() async throws -> CodexAppServerConfigResponse {
+        try await request(path: "/api/app-server/config", method: "GET", body: Optional<Data>.none)
+    }
+
     func projects() async throws -> [AgentProject] {
         let response: ProjectsResponse = try await request(path: "/api/projects", method: "GET", body: Optional<Data>.none)
         return response.projects

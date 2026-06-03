@@ -203,8 +203,8 @@ final class SessionStore: ObservableObject {
         self.conversationStore = conversationStore
         self.logStore = logStore
         self.eventReducer = EventReducer()
-        self.clientFactory = clientFactory ?? { try appStore.client() }
-        self.webSocketFactory = webSocketFactory ?? { AgentWebSocketClient() }
+        self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
+        self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
     }
 
@@ -498,6 +498,12 @@ final class SessionStore: ObservableObject {
         setSelectedSessionID(nil)
         setErrorMessage(nil)
         disconnectWebSocket()
+    }
+
+    func resetConnectionForSettingsChange() {
+        disconnectWebSocket()
+        setErrorMessage(nil)
+        setStatusMessage(nil)
     }
 
     func selectSession(_ session: AgentSession) async {

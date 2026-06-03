@@ -72,6 +72,7 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_RUNTIME", "app_server")
 	t.Setenv("AGENTD_APP_SERVER_TRANSPORT", "stdio")
 	t.Setenv("AGENTD_APP_SERVER_MANAGED", "true")
+	t.Setenv("AGENTD_APP_SERVER_WS_TOKEN_FILE", "/tmp/codex-app-server-ws-token")
 	t.Setenv("AGENTD_APP_SERVER_FALLBACK_PTY", "false")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
@@ -91,7 +92,7 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	if cfg.Runtime.Type != "codex_app_server" || cfg.Runtime.FallbackPTY {
 		t.Fatalf("runtime 环境变量解析异常：%+v", cfg.Runtime)
 	}
-	if cfg.AppServer.Transport != "stdio" || !cfg.AppServer.Managed {
+	if cfg.AppServer.Transport != "stdio" || !cfg.AppServer.Managed || cfg.AppServer.WSTokenFile != "/tmp/codex-app-server-ws-token" {
 		t.Fatalf("app_server 环境变量解析异常：%+v", cfg.AppServer)
 	}
 	if len(cfg.Projects) != 1 || cfg.Projects[0].Path != projectDir {
@@ -150,6 +151,7 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_RUNTIME",
 		"AGENTD_APP_SERVER_TRANSPORT",
 		"AGENTD_APP_SERVER_LISTEN",
+		"AGENTD_APP_SERVER_WS_TOKEN_FILE",
 		"AGENTD_APP_SERVER_MANAGED",
 		"AGENTD_APP_SERVER_FALLBACK_PTY",
 		"AGENTD_DEV_INSECURE",
