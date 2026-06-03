@@ -1,0 +1,646 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/appserver"
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
+)
+
+func TestCodexAppServerRuntimeListSessionsMapsThreadList(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "account/rateLimits/read":
+			*(result.(*map[string]any)) = map[string]any{
+				"rateLimits": map[string]any{
+					"limitId":   "codex",
+					"limitName": "Codex",
+					"primary": map[string]any{
+						"usedPercent": 42.5,
+						"resetsAt":    1_780_301_000,
+					},
+					"credits": map[string]any{
+						"hasCredits": true,
+						"unlimited":  false,
+					},
+				},
+			}
+		case "thread/list":
+			if params["cwd"] != project.RealPath {
+				t.Fatalf("thread/list 必须使用 allowlist cwd 过滤：%v", params)
+			}
+			*(result.(*appServerThreadListResponse)) = appServerThreadListResponse{
+				Data: []appServerThread{{
+					ID:        "thread-1",
+					Preview:   "hello",
+					CWD:       project.RealPath,
+					CreatedAt: 1_780_300_000,
+					UpdatedAt: 1_780_300_010,
+					Status:    appServerThreadStatus{Type: "idle"},
+				}},
+			}
+		default:
+			t.Fatalf("期望调用 thread/list 或 account/rateLimits/read，实际 %s", method)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	page, err := runtime.ListSessions(context.Background(), "demo", 20, sessionPageCursor{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 {
+		t.Fatalf("期望 1 条 session，got=%+v", page)
+	}
+	got := page.Sessions[0]
+	if got.ID != "codex_thread-1" || got.ProjectID != "demo" || got.HistoryThreadID != "thread-1" {
+		t.Fatalf("thread/list 映射异常：%+v", got)
+	}
+	if got.Title != "hello" || got.Status != "running" {
+		t.Fatalf("session title/status 映射异常：%+v", got)
+	}
+	if got.Preview != "hello" || got.RateLimit == nil || got.RateLimit.LimitID != "codex" {
+		t.Fatalf("session row 应包含 preview/rate-limit 摘要：%+v", got)
+	}
+}
+
+func TestCodexAppServerRuntimeListSessionsReturnsUnknownProjectError(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+
+	if _, err := runtime.ListSessions(context.Background(), "missing", 20, sessionPageCursor{}, false); err == nil {
+		t.Fatal("非法 project_id 不能被吞成空列表")
+	}
+}
+
+func TestCodexAppServerRuntimeCreateSessionStartsThreadWithAllowlistedCWD(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "thread/start":
+			if params["cwd"] != project.RealPath {
+				t.Fatalf("thread/start 只能使用 allowlist cwd：%v", params)
+			}
+			if _, ok := params["runtimeWorkspaceRoots"]; ok {
+				t.Fatalf("thread/start 不能发送需要 experimentalApi 的 runtimeWorkspaceRoots：%v", params)
+			}
+			if params["approvalPolicy"] == "never" || params["sandbox"] == "danger-full-access" {
+				t.Fatalf("移动端入口不能启用高危 policy：%v", params)
+			}
+			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
+				ID:        "thread-new",
+				Preview:   "first prompt",
+				CWD:       project.RealPath,
+				CreatedAt: 1_780_300_000,
+				UpdatedAt: 1_780_300_000,
+				Status:    appServerThreadStatus{Type: "active"},
+			}}
+		case "turn/start":
+			if params["threadId"] != "thread-new" || params["cwd"] != project.RealPath {
+				t.Fatalf("turn/start thread/cwd 异常：%v", params)
+			}
+			input := params["input"].([]any)
+			text := input[0].(map[string]any)["text"]
+			if text != "first prompt" || params["clientUserMessageId"] != "client-1" {
+				t.Fatalf("turn/start 输入或 client id 丢失：%v", params)
+			}
+			*(result.(*appServerTurnEnvelope)) = appServerTurnEnvelope{Turn: appServerTurn{ID: "turn-1", Status: "inProgress"}}
+		default:
+			t.Fatalf("不期望调用 method=%s", method)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	result, err := runtime.CreateSession(context.Background(), RuntimeCreateRequest{
+		Project:         project,
+		Prompt:          "first prompt",
+		ClientMessageID: "client-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Snapshot.ID != "codex_thread-new" || result.Snapshot.ProjectID != "demo" {
+		t.Fatalf("create session snapshot 异常：%+v", result.Snapshot)
+	}
+	if result.Snapshot.ActiveTurnID != "turn-1" {
+		t.Fatalf("create session 应返回 active_turn_id：%+v", result.Snapshot)
+	}
+	if got := fake.methods(); len(got) != 2 || got[0] != "thread/start" || got[1] != "turn/start" {
+		t.Fatalf("调用顺序异常：%v", got)
+	}
+}
+
+func TestCodexAppServerRuntimeResumeSessionUsesThreadResumeThenTurnStart(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "thread/resume":
+			if params["threadId"] != "thread-old" || params["cwd"] != project.RealPath {
+				t.Fatalf("thread/resume 参数异常：%v", params)
+			}
+			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
+				ID:        "thread-old",
+				Name:      "resumed",
+				CWD:       project.RealPath,
+				CreatedAt: 1_780_300_000,
+				UpdatedAt: 1_780_300_020,
+				Status:    appServerThreadStatus{Type: "idle"},
+			}}
+		case "turn/start":
+			if params["threadId"] != "thread-old" {
+				t.Fatalf("resume 后 prompt 必须发到同一 thread：%v", params)
+			}
+			*(result.(*appServerTurnEnvelope)) = appServerTurnEnvelope{Turn: appServerTurn{ID: "turn-resume", Status: "inProgress"}}
+		default:
+			t.Fatalf("不期望调用 method=%s", method)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	result, err := runtime.CreateSession(context.Background(), RuntimeCreateRequest{
+		Project:  project,
+		ResumeID: "thread-old",
+		Prompt:   "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Snapshot.ID != "codex_thread-old" || result.Snapshot.Title != "resumed" {
+		t.Fatalf("resume snapshot 异常：%+v", result.Snapshot)
+	}
+	if got := fake.methods(); len(got) != 2 || got[0] != "thread/resume" || got[1] != "turn/start" {
+		t.Fatalf("调用顺序异常：%v", got)
+	}
+}
+
+func TestCodexAppServerRuntimeMessagesPaginatesThreadReadTurns(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	startedAt := int64(1_780_300_000)
+	completedAt := int64(1_780_300_002)
+	fake.handler = func(method string, params map[string]any, result any) error {
+		if method != "thread/read" || params["threadId"] != "thread-msg" || params["includeTurns"] != true {
+			t.Fatalf("messages 必须通过 thread/read(includeTurns=true) 读取：method=%s params=%v", method, params)
+		}
+		*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
+			ID:        "thread-msg",
+			CWD:       project.RealPath,
+			CreatedAt: startedAt,
+			UpdatedAt: completedAt,
+			Status:    appServerThreadStatus{Type: "idle"},
+			Turns: []appServerTurn{{
+				ID:          "turn-msg",
+				Status:      "completed",
+				StartedAt:   &startedAt,
+				CompletedAt: &completedAt,
+				Items: []appServerThreadItem{
+					{Type: "userMessage", ID: "user-1", ClientID: "client-1", Content: []appServerUserInput{{Type: "text", Text: "hi"}}},
+					{Type: "agentMessage", ID: "assistant-1", Text: "hello"},
+				},
+			}},
+		}}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	first, err := runtime.SessionMessages(context.Background(), "codex_thread-msg", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Messages) != 1 || first.Messages[0].Role != "assistant" || first.Messages[0].Content != "hello" {
+		t.Fatalf("第一页应返回最近 assistant 消息：%+v", first)
+	}
+	if !first.HasMoreBefore || first.PreviousCursor == "" {
+		t.Fatalf("第一页应给出 previous cursor：%+v", first)
+	}
+
+	second, err := runtime.SessionMessages(context.Background(), "codex_thread-msg", first.PreviousCursor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Messages) != 1 || second.Messages[0].Role != "user" || second.Messages[0].ClientMessageID != "client-1" {
+		t.Fatalf("第二页应返回更早 user 消息并保留 client id：%+v", second)
+	}
+}
+
+func TestCodexAppServerRuntimeTokenUsageNotificationUpdatesSessionRow(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{notifications: make(chan appserver.Notification, 4)}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "account/rateLimits/read":
+			*(result.(*map[string]any)) = map[string]any{
+				"rateLimits": map[string]any{
+					"limitId": "codex",
+					"primary": map[string]any{"usedPercent": 12.5},
+				},
+			}
+		case "thread/list":
+			*(result.(*appServerThreadListResponse)) = appServerThreadListResponse{
+				Data: []appServerThread{{
+					ID:        "thread-usage",
+					Preview:   "usage",
+					CWD:       project.RealPath,
+					CreatedAt: 1_780_300_000,
+					UpdatedAt: 1_780_300_000,
+					Status:    appServerThreadStatus{Type: "active"},
+				}},
+			}
+		case "thread/read":
+			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
+				ID:        "thread-usage",
+				Preview:   "usage",
+				CWD:       project.RealPath,
+				CreatedAt: 1_780_300_000,
+				UpdatedAt: 1_780_300_010,
+				Status:    appServerThreadStatus{Type: "active"},
+			}}
+		default:
+			t.Fatalf("不期望调用 method=%s params=%v", method, params)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	if _, err := runtime.ListSessions(context.Background(), "demo", 20, sessionPageCursor{}, false); err != nil {
+		t.Fatal(err)
+	}
+	events, detach, err := runtime.Subscribe(context.Background(), "codex_thread-usage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+
+	fake.notifications <- appserver.Notification{
+		Method: "thread/tokenUsage/updated",
+		Params: []byte(`{"threadId":"thread-usage","turnId":"turn-usage","tokenUsage":{"total":{"totalTokens":123,"inputTokens":45,"outputTokens":78,"cachedInputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":123,"inputTokens":45,"outputTokens":78,"cachedInputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":200000}}`),
+	}
+
+	select {
+	case event := <-events:
+		if event.Type != "session_status" || event.Usage == nil || event.Usage.TotalTokens != 123 {
+			t.Fatalf("usage notification 应转成 session_status usage：%+v", event)
+		}
+		if event.Row == nil || event.Row.Usage == nil || event.Row.RateLimit == nil {
+			t.Fatalf("usage event 应携带可归并的 session row：%+v", event.Row)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 token usage 事件")
+	}
+
+	detail, err := runtime.SessionDetail(context.Background(), "codex_thread-usage", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Snapshot.Usage == nil || detail.Snapshot.Usage.OutputTokens != 78 || detail.Snapshot.RateLimit == nil {
+		t.Fatalf("detail snapshot 应保留 usage/rate-limit：%+v", detail.Snapshot)
+	}
+}
+
+func TestCodexAppServerRuntimeRejectsDisallowedMethods(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	runtime := NewCodexAppServerRuntime(registry, fake)
+
+	disallowed := []string{
+		"fs/readFile",
+		"command/exec",
+		"process/kill",
+		"config/write",
+		"plugin/install",
+		"marketplace/list",
+		"remoteControl/start",
+		"thread/shellCommand",
+	}
+	for _, method := range disallowed {
+		if err := runtime.call(context.Background(), method, map[string]any{"path": "/etc/passwd"}, nil); err == nil {
+			t.Fatalf("runtime 必须拒绝高风险 method=%s", method)
+		}
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("被拒绝方法不能透传到 app-server：%+v", fake.calls)
+	}
+
+	allowed := []string{
+		"thread/list",
+		"thread/start",
+		"thread/resume",
+		"thread/read",
+		"turn/start",
+		"turn/interrupt",
+		"account/rateLimits/read",
+	}
+	for _, method := range allowed {
+		if err := runtime.call(context.Background(), method, map[string]any{}, nil); err != nil {
+			t.Fatalf("allowlist method=%s 不应被拒绝：%v", method, err)
+		}
+	}
+	if got := fake.methods(); len(got) != len(allowed) {
+		t.Fatalf("允许方法应全部透传，got=%v", got)
+	}
+}
+
+func TestCodexAppServerRuntimeSafeParamsNeverExposeDangerousPolicies(t *testing.T) {
+	_, project := appServerRuntimeFixture(t)
+
+	start := safeThreadStartParams(project)
+	if start["approvalPolicy"] == "never" || start["sandbox"] == "danger-full-access" {
+		t.Fatalf("thread/start 不能暴露危险策略：%v", start)
+	}
+	if start["cwd"] != project.RealPath {
+		t.Fatalf("thread/start 必须使用 allowlist cwd：%v", start)
+	}
+	if _, ok := start["runtimeWorkspaceRoots"]; ok {
+		t.Fatalf("thread/start 不能发送需要 experimentalApi 的 runtimeWorkspaceRoots：%v", start)
+	}
+
+	turn := safeTurnStartParams("thread-1", project, "hello", "client-1")
+	if turn["approvalPolicy"] == "never" {
+		t.Fatalf("turn/start 不能暴露 approvalPolicy=never：%v", turn)
+	}
+	sandbox, ok := turn["sandboxPolicy"].(map[string]any)
+	if !ok {
+		t.Fatalf("turn/start 必须包含 workspaceWrite sandboxPolicy：%v", turn)
+	}
+	if sandbox["type"] != "workspaceWrite" || sandbox["networkAccess"] != false {
+		t.Fatalf("turn/start sandbox 必须限制为 workspaceWrite 且默认禁网：%v", sandbox)
+	}
+	roots, ok := sandbox["writableRoots"].([]string)
+	if !ok || len(roots) != 1 || roots[0] != project.RealPath {
+		t.Fatalf("writableRoots 必须只包含 allowlist 项目路径：%v", sandbox)
+	}
+}
+
+func TestCodexAppServerRuntimeApprovalRequestBroadcastsAndDeclines(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{notifications: make(chan appserver.Notification, 1)}
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	events, detach, err := runtime.Subscribe(context.Background(), "codex_thread-approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resultCh := make(chan any, 1)
+	errCh := make(chan *appserver.RPCError, 1)
+	go func() {
+		result, rpcErr := runtime.HandleServerRequest(ctx, appserver.ServerRequest{
+			Method: "item/commandExecution/requestApproval",
+			Params: []byte(`{"threadId":"thread-approval","turnId":"turn-1","itemId":"cmd-1","command":"rm -rf tmp","reason":"needs write"}`),
+		})
+		resultCh <- result
+		errCh <- rpcErr
+	}()
+
+	select {
+	case event := <-events:
+		if event.Type != "approval_request" || event.SessionID != "codex_thread-approval" || event.TurnID != "turn-1" || event.ItemID != "cmd-1" {
+			t.Fatalf("approval event 元数据异常：%+v", event)
+		}
+		if event.Approval["kind"] != "command" || !strings.Contains(event.Approval["title"].(string), "rm -rf tmp") {
+			t.Fatalf("approval payload 异常：%+v", event.Approval)
+		}
+		if err := runtime.ResolveApproval("codex_thread-approval", "cmd-1", "decline", "no"); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到 approval_request 事件")
+	}
+	var rpcErr *appserver.RPCError
+	select {
+	case rpcErr = <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("审批决定后 HandleServerRequest 未返回")
+	}
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	result := readApprovalResult(t, resultCh).(map[string]any)
+	if decision := result["decision"]; decision != "decline" {
+		t.Fatalf("新版审批默认应 decline，got=%v", result)
+	}
+	if _, hasMessage := result["message"]; hasMessage {
+		t.Fatalf("新版审批默认响应必须匹配 app-server 协议，不能携带额外 message 字段：%v", result)
+	}
+}
+
+func TestCodexAppServerRuntimeApprovalTimeoutFailsClosed(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	result, rpcErr := runtime.HandleServerRequest(ctx, appserver.ServerRequest{
+		Method: "item/fileChange/requestApproval",
+		Params: []byte(`{"threadId":"thread-timeout","turnId":"turn-1","itemId":"patch-1"}`),
+	})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	typed := result.(map[string]any)
+	if typed["decision"] != "decline" {
+		t.Fatalf("审批超时必须 fail-closed decline：%+v", typed)
+	}
+	if _, hasMessage := typed["message"]; hasMessage {
+		t.Fatalf("超时拒绝响应不能携带 app-server 协议外字段：%+v", typed)
+	}
+}
+
+func TestCodexAppServerRuntimePermissionsApprovalDeclinesWithEmptyGrant(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resultCh := make(chan any, 1)
+	errCh := make(chan *appserver.RPCError, 1)
+	go func() {
+		result, rpcErr := runtime.HandleServerRequest(ctx, appserver.ServerRequest{
+			Method: "item/permissions/requestApproval",
+			Params: []byte(`{"threadId":"thread-permission","turnId":"turn-1","itemId":"perm-1","reason":"need more access"}`),
+		})
+		resultCh <- result
+		errCh <- rpcErr
+	}()
+	waitFor(t, func() bool {
+		return runtime.ResolveApproval("codex_thread-permission", "perm-1", "accept", "") == nil
+	}, "等待 permissions approval 注册")
+	var rpcErr *appserver.RPCError
+	select {
+	case rpcErr = <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permissions 审批决定后 HandleServerRequest 未返回")
+	}
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	typed := readApprovalResult(t, resultCh).(map[string]any)
+	if _, ok := typed["permissions"].(map[string]any); !ok || typed["scope"] != "turn" {
+		t.Fatalf("permissions 默认拒绝应返回空权限和 turn scope：%+v", typed)
+	}
+	if _, hasDecision := typed["decision"]; hasDecision {
+		t.Fatalf("permissions 响应不能包含 decision 字段：%+v", typed)
+	}
+}
+
+func TestCodexAppServerRuntimeLegacyApprovalDeclinesWithDenied(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resultCh := make(chan any, 1)
+	errCh := make(chan *appserver.RPCError, 1)
+	go func() {
+		result, rpcErr := runtime.HandleServerRequest(ctx, appserver.ServerRequest{
+			Method: "execCommandApproval",
+			Params: []byte(`{"conversationId":"thread-legacy","callId":"call-1","command":["rm","tmp"]}`),
+		})
+		resultCh <- result
+		errCh <- rpcErr
+	}()
+	waitFor(t, func() bool {
+		return runtime.ResolveApproval("codex_thread-legacy", "call-1", "decline", "") == nil
+	}, "等待 legacy approval 注册")
+	var rpcErr *appserver.RPCError
+	select {
+	case rpcErr = <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("legacy 审批决定后 HandleServerRequest 未返回")
+	}
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	if result := readApprovalResult(t, resultCh); result.(map[string]any)["decision"] != "denied" {
+		t.Fatalf("旧审批协议默认应 denied，got=%v", result)
+	}
+}
+
+func TestCodexAppServerRuntimeMapsCommandExecutionOutputDelta(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+
+	events := runtime.eventsFromNotification(appserver.Notification{
+		Method: "item/commandExecution/outputDelta",
+		Params: []byte(`{"threadId":"thread-log","turnId":"turn-1","itemId":"cmd-1","delta":"go test output\n"}`),
+	})
+	if len(events) != 1 || events[0].Type != "log_delta" || events[0].Data != "go test output\n" {
+		t.Fatalf("命令输出应映射为 log_delta：%+v", events)
+	}
+}
+
+func TestCodexAppServerRuntimeDiffUpdatedUsesChangesArray(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+
+	events := runtime.eventsFromNotification(appserver.Notification{
+		Method: "item/fileChange/patchUpdated",
+		Params: []byte(`{"threadId":"thread-diff","turnId":"turn-1","itemId":"patch-1","changes":[{"path":"internal/httpapi/appserver_runtime.go","kind":"update","diff":"---"}]}`),
+	})
+	if len(events) != 1 || events[0].Type != "diff_updated" {
+		t.Fatalf("patchUpdated 应映射为 diff_updated：%+v", events)
+	}
+	if events[0].Diff["path"] != "internal/httpapi/appserver_runtime.go" || events[0].Diff["status"] != "update" {
+		t.Fatalf("diff_updated 应保留真实文件路径和变更类型：%+v", events[0].Diff)
+	}
+	files, ok := events[0].Diff["files"].([]map[string]any)
+	if !ok || len(files) != 1 {
+		t.Fatalf("diff_updated 应包含 files 摘要：%+v", events[0].Diff)
+	}
+}
+
+func readApprovalResult(t *testing.T, resultCh <-chan any) any {
+	t.Helper()
+	select {
+	case result := <-resultCh:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("未收到审批处理结果")
+		return nil
+	}
+}
+
+func appServerRuntimeFixture(t *testing.T) (*projects.Registry, projects.Project) {
+	t.Helper()
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, ok := registry.Get("demo")
+	if !ok {
+		t.Fatal("测试项目不存在")
+	}
+	return registry, project
+}
+
+type fakeAppServerCall struct {
+	Method string
+	Params map[string]any
+}
+
+type fakeAppServerRPC struct {
+	calls         []fakeAppServerCall
+	notifications chan appserver.Notification
+	handler       func(method string, params map[string]any, result any) error
+}
+
+func (f *fakeAppServerRPC) Call(ctx context.Context, method string, params any, result any) error {
+	paramMap := map[string]any{}
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(data, &paramMap); err != nil {
+			return err
+		}
+	}
+	f.calls = append(f.calls, fakeAppServerCall{Method: method, Params: paramMap})
+	if f.handler != nil {
+		return f.handler(method, paramMap, result)
+	}
+	return nil
+}
+
+func (f *fakeAppServerRPC) methods() []string {
+	out := make([]string, 0, len(f.calls))
+	for _, call := range f.calls {
+		out = append(out, call.Method)
+	}
+	return out
+}
+
+func (f *fakeAppServerRPC) Notifications() <-chan appserver.Notification {
+	return f.notifications
+}
+
+func TestUnixTimeUsesUTC(t *testing.T) {
+	if got := unixTime(1).Location(); got != time.UTC {
+		t.Fatalf("unixTime 应返回 UTC 时间，got=%v", got)
+	}
+}
+
+func waitFor(t *testing.T, condition func() bool, reason string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(reason)
+}

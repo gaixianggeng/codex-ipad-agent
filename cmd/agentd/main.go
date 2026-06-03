@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/appserver"
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/doctor"
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/httpapi"
@@ -82,10 +83,27 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		Env:          cfg.Codex.Env,
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
+	var runtime httpapi.SessionRuntime = httpapi.NewPTYSessionRuntime(registry, manager)
+	var appServerProcess *appserver.ManagedProcess
+	if cfg.Runtime.Type == "codex_app_server" {
+		process, appRuntime, err := startAppServerRuntime(cfg, registry)
+		if err != nil {
+			if !cfg.Runtime.FallbackPTY {
+				return err
+			}
+			log.Printf("codex app-server runtime 不可用，回退到 PTY runtime：%v", err)
+		} else {
+			appServerProcess = process
+			runtime = appRuntime
+			log.Printf("agentd runtime=codex_app_server transport=stdio managed=true")
+		}
+	} else {
+		log.Printf("agentd runtime=pty fallback=true")
+	}
 
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httpapi.NewRouter(cfg, registry, manager, checker, version),
+		Handler:           httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, runtime),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -102,6 +120,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	case sig := <-stopCh:
 		log.Printf("收到退出信号 %s，正在关闭会话和 HTTP 服务", sig)
 		manager.Shutdown()
+		if appServerProcess != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = appServerProcess.Shutdown(ctx)
+			cancel()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return server.Shutdown(ctx)
@@ -111,4 +134,32 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}
 		return err
 	}
+}
+
+func startAppServerRuntime(cfg config.Config, registry *projects.Registry) (*appserver.ManagedProcess, *httpapi.CodexAppServerRuntime, error) {
+	if cfg.AppServer.Transport != "stdio" || !cfg.AppServer.Managed {
+		return nil, nil, fmt.Errorf("当前 MVP 只支持 managed stdio app-server runtime")
+	}
+	runtime := httpapi.NewCodexAppServerRuntime(registry, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	process, _, err := appserver.StartManaged(ctx, appserver.ManagedOptions{
+		CodexBin: cfg.Codex.Bin,
+		Env:      cfg.Codex.Env,
+		ClientInfo: appserver.ClientInfo{
+			Name:    "codex_ipad_agent",
+			Title:   "Codex iPad Agent",
+			Version: version,
+		},
+		NotificationBuffer:   1024,
+		ServerRequestTimeout: 45 * time.Second,
+		OverloadRetries:      2,
+		OverloadBackoff:      80 * time.Millisecond,
+		ServerRequestHandler: runtime.HandleServerRequest,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	runtime.SetClient(process.Client())
+	return process, runtime, nil
 }

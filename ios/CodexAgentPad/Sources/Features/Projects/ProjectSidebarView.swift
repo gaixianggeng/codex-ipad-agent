@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProjectSidebarView: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    var showsSessions = true
 
     var body: some View {
         List {
@@ -14,7 +15,13 @@ struct ProjectSidebarView: View {
                         isSelected: project.id == sessionStore.selectedProjectID,
                         isExpanded: snapshot.isExpanded,
                         onToggle: {
-                            Task { await sessionStore.toggleProjectExpansion(project) }
+                            Task {
+                                if showsSessions {
+                                    await sessionStore.toggleProjectExpansion(project)
+                                } else {
+                                    await sessionStore.selectProject(project)
+                                }
+                            }
                         },
                         onNewSession: {
                             Task { await sessionStore.startNewSession(in: project) }
@@ -22,7 +29,7 @@ struct ProjectSidebarView: View {
                     )
                     .sidebarListRow()
 
-                    if snapshot.isExpanded {
+                    if showsSessions && snapshot.isExpanded {
                         ProjectSessionRows(project: project, snapshot: snapshot)
                     }
                 }
@@ -182,6 +189,27 @@ private struct SessionRow: View {
             }
             .font(.caption)
             .foregroundStyle(SidebarTheme.mutedText)
+
+            if let preview = session.preview, !preview.isEmpty {
+                Text(preview)
+                    .font(.caption)
+                    .foregroundStyle(SidebarTheme.secondaryText)
+                    .lineLimit(2)
+            }
+
+            if !runtimeChips.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(runtimeChips, id: \.text) { chip in
+                        Label(chip.text, systemImage: chip.symbol)
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(chip.tint.opacity(0.12), in: Capsule())
+                            .foregroundStyle(chip.tint)
+                    }
+                }
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -208,6 +236,23 @@ private struct SessionRow: View {
         default:
             return .neutral
         }
+    }
+
+    private var runtimeChips: [(text: String, symbol: String, tint: Color)] {
+        var chips: [(text: String, symbol: String, tint: Color)] = []
+        if session.activeTurnID != nil {
+            chips.append(("active turn", "bolt.fill", .green))
+        }
+        if let approval = session.pendingApproval {
+            chips.append(("审批 \(approval.title)", "checkmark.seal", .orange))
+        }
+        if let usage = session.usage?.compactText {
+            chips.append((usage, "gauge.with.dots.needle.33percent", .secondary))
+        }
+        if let rateLimit = session.rateLimit?.compactText {
+            chips.append((rateLimit, "speedometer", .secondary))
+        }
+        return chips
     }
 }
 

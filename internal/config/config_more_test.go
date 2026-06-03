@@ -68,6 +68,11 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_PORT", "9999")
 	t.Setenv("AGENTD_LISTEN", "127.0.0.1:7777")
 	t.Setenv("AGENTD_OUTPUT_BUFFER_BYTES", "4096")
+	t.Setenv("AGENTD_ALLOW_QUERY_TOKEN", "1")
+	t.Setenv("AGENTD_RUNTIME", "app_server")
+	t.Setenv("AGENTD_APP_SERVER_TRANSPORT", "stdio")
+	t.Setenv("AGENTD_APP_SERVER_MANAGED", "true")
+	t.Setenv("AGENTD_APP_SERVER_FALLBACK_PTY", "false")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -79,6 +84,15 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	}
 	if cfg.Session.OutputBufferBytes != 4096 {
 		t.Fatalf("输出缓冲区环境变量未生效：%d", cfg.Session.OutputBufferBytes)
+	}
+	if !cfg.Auth.AllowQueryToken {
+		t.Fatal("AGENTD_ALLOW_QUERY_TOKEN=1 应启用 query token 兼容模式")
+	}
+	if cfg.Runtime.Type != "codex_app_server" || cfg.Runtime.FallbackPTY {
+		t.Fatalf("runtime 环境变量解析异常：%+v", cfg.Runtime)
+	}
+	if cfg.AppServer.Transport != "stdio" || !cfg.AppServer.Managed {
+		t.Fatalf("app_server 环境变量解析异常：%+v", cfg.AppServer)
 	}
 	if len(cfg.Projects) != 1 || cfg.Projects[0].Path != projectDir {
 		t.Fatalf("项目环境变量解析异常：%+v", cfg.Projects)
@@ -105,6 +119,24 @@ func TestValidateRejectsShortToken(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsafeAppServerListen(t *testing.T) {
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Runtime.Type = "codex_app_server"
+	cfg.AppServer.Transport = "ws"
+	cfg.AppServer.Listen = "0.0.0.0:8390"
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("非 loopback app-server ws 监听应被拒绝")
+	}
+
+	cfg.AppServer.Listen = "127.0.0.1:8390"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("loopback app-server ws 监听应允许用于本机调试：%v", err)
+	}
+}
+
 func clearAgentdEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -112,8 +144,14 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_BIND",
 		"AGENTD_PORT",
 		"AGENTD_TOKEN",
+		"AGENTD_ALLOW_QUERY_TOKEN",
 		"AGENTD_CODEX_BIN",
 		"AGENTD_CODEX_ARGS",
+		"AGENTD_RUNTIME",
+		"AGENTD_APP_SERVER_TRANSPORT",
+		"AGENTD_APP_SERVER_LISTEN",
+		"AGENTD_APP_SERVER_MANAGED",
+		"AGENTD_APP_SERVER_FALLBACK_PTY",
 		"AGENTD_DEV_INSECURE",
 		"AGENTD_OUTPUT_BUFFER_BYTES",
 		"AGENTD_PROJECTS",

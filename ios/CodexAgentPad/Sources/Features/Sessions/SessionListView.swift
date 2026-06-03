@@ -55,6 +55,9 @@ private struct SessionListRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
+                Circle()
+                    .fill(statusDotColor)
+                    .frame(width: 7, height: 7)
                 Text(session.title)
                     .font(.subheadline.weight(isSelected ? .semibold : .regular))
                     .lineLimit(2)
@@ -72,7 +75,7 @@ private struct SessionListRow: View {
             }
 
             HStack {
-                Text(session.source == "codex" ? "Codex 历史" : "agentd")
+                Text(sourceText)
                 Spacer()
                 if let updatedAt = session.updatedAt {
                     Text(updatedAt, style: .relative)
@@ -80,6 +83,20 @@ private struct SessionListRow: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+
+            if !metricChips.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(metricChips, id: \.text) { chip in
+                        Label(chip.text, systemImage: chip.symbol)
+                            .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(chip.tint.opacity(0.12), in: Capsule())
+                            .foregroundStyle(chip.tint)
+                    }
+                }
+            }
         }
         .padding(.vertical, 6)
     }
@@ -97,5 +114,44 @@ private struct SessionListRow: View {
         default:
             return .neutral
         }
+    }
+
+    private var statusDotColor: Color {
+        switch statusKind {
+        case .success:
+            return .green
+        case .warning:
+            return .orange
+        case .neutral:
+            return .secondary.opacity(0.55)
+        }
+    }
+
+    private var sourceText: String {
+        switch session.source {
+        case "codex":
+            return session.isRunning ? "Codex app-server" : "Codex 历史"
+        case "local":
+            return "本地回显"
+        default:
+            return "PTY fallback"
+        }
+    }
+
+    private var metricChips: [(text: String, symbol: String, tint: Color)] {
+        var chips: [(text: String, symbol: String, tint: Color)] = []
+        if session.activeTurnID != nil {
+            chips.append(("active turn", "bolt.fill", .green))
+        }
+        if let approval = session.pendingApproval {
+            chips.append(("审批 \(approval.title)", "checkmark.seal", .orange))
+        }
+        if let usage = session.usage?.compactText {
+            chips.append((usage, "gauge.with.dots.needle.33percent", .secondary))
+        }
+        if let rateLimit = session.rateLimit?.compactText {
+            chips.append((rateLimit, "speedometer", .secondary))
+        }
+        return chips
     }
 }

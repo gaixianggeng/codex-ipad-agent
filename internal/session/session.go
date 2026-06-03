@@ -82,6 +82,15 @@ type SessionSnapshot struct {
 	HistoryThreadID string    `json:"history_thread_id,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// 以下字段来自 app-server 结构化运行时；PTY fallback 会尽量填充水位字段。
+	// 全部保持 omitempty，旧 iOS 客户端忽略即可，不破坏迁移前协议。
+	Preview         string            `json:"preview,omitempty"`
+	ActiveTurnID    string            `json:"active_turn_id,omitempty"`
+	LastSeq         int64             `json:"last_seq,omitempty"`
+	Revision        int64             `json:"revision,omitempty"`
+	Usage           *UsageSummary     `json:"usage,omitempty"`
+	PendingApproval *ApprovalSummary  `json:"pending_approval,omitempty"`
+	RateLimit       *RateLimitSummary `json:"rate_limit,omitempty"`
 }
 
 const promptSubmitDelay = 180 * time.Millisecond
@@ -99,6 +108,37 @@ type OutputChunk struct {
 type OutputSnapshot struct {
 	Data    string
 	LastSeq int64
+}
+
+// UsageSummary 是移动端展示用的轻量 token/cost 视图，不暴露 provider 内部细节。
+type UsageSummary struct {
+	InputTokens  int64    `json:"input_tokens,omitempty"`
+	OutputTokens int64    `json:"output_tokens,omitempty"`
+	TotalTokens  int64    `json:"total_tokens,omitempty"`
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
+}
+
+// ApprovalSummary 只放列表/详情需要的审批摘要；完整审批上下文走 WebSocket approval_request。
+type ApprovalSummary struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Kind  string `json:"kind"`
+	Count int    `json:"count,omitempty"`
+}
+
+// RateLimitSummary 是账号级限额信号的移动端摘要，供列表 chip/诊断展示。
+type RateLimitSummary struct {
+	LimitID              string   `json:"limit_id,omitempty"`
+	LimitName            string   `json:"limit_name,omitempty"`
+	PlanType             string   `json:"plan_type,omitempty"`
+	ReachedType          string   `json:"reached_type,omitempty"`
+	PrimaryUsedPercent   *float64 `json:"primary_used_percent,omitempty"`
+	SecondaryUsedPercent *float64 `json:"secondary_used_percent,omitempty"`
+	PrimaryResetsAt      *int64   `json:"primary_resets_at,omitempty"`
+	SecondaryResetsAt    *int64   `json:"secondary_resets_at,omitempty"`
+	HasCredits           *bool    `json:"has_credits,omitempty"`
+	CreditsUnlimited     *bool    `json:"credits_unlimited,omitempty"`
+	CreditBalance        string   `json:"credit_balance,omitempty"`
 }
 
 // SubmittedMessage 记录移动端提交过、带 client_message_id 的用户消息。
@@ -382,7 +422,22 @@ func (s *Session) snapshotLocked() SessionSnapshot {
 		HistoryThreadID: s.HistoryThreadID,
 		CreatedAt:       s.CreatedAt,
 		UpdatedAt:       s.UpdatedAt,
+		Preview:         trimPreviewLocked(s.Title),
+		LastSeq:         s.outputSeq,
+		Revision:        s.outputSeq,
 	}
+}
+
+func trimPreviewLocked(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= 96 {
+		return value
+	}
+	return string(runes[:96]) + "..."
 }
 
 func (s *Session) updatedAtMSLocked() int64 {

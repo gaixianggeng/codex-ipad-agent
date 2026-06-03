@@ -12,8 +12,16 @@ type Authenticator struct {
 	allowQuery bool
 }
 
+type Options struct {
+	AllowQueryToken bool
+}
+
 func New(token string, devNoAuth bool) Authenticator {
-	return Authenticator{token: token, devNoAuth: devNoAuth, allowQuery: true}
+	return NewWithOptions(token, devNoAuth, Options{})
+}
+
+func NewWithOptions(token string, devNoAuth bool, options Options) Authenticator {
+	return Authenticator{token: token, devNoAuth: devNoAuth, allowQuery: options.AllowQueryToken}
 }
 
 func (a Authenticator) Middleware(next http.Handler) http.Handler {

@@ -34,11 +34,15 @@ struct RootView: View {
 
     private var mainLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            ProjectSidebarView()
+            ProjectSidebarView(showsSessions: false)
                 .navigationTitle("Codex")
-                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+        } content: {
+            SessionListView()
+                .navigationTitle(sessionStore.selectedProject?.name ?? "会话")
+                .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 420)
         } detail: {
-            ConversationView()
+            WorkspaceView()
                 .navigationTitle(sessionStore.selectedSession?.title ?? sessionStore.selectedProject?.name ?? "会话")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -53,7 +57,7 @@ struct RootView: View {
                         if columnVisibility == .detailOnly {
                             Button {
                                 withAnimation {
-                                    columnVisibility = .doubleColumn
+                                    columnVisibility = .all
                                 }
                             } label: {
                                 Label("显示项目栏", systemImage: "sidebar.left")
@@ -96,9 +100,9 @@ struct RootView: View {
                     }
                 }
                 .inspector(isPresented: $showingLogInspector) {
-                    LogPanelView()
-                        // 日志作为辅助 inspector，不参与主 split 的空间分配。
-                        .inspectorColumnWidth(min: 220, ideal: 260, max: 320)
+                    SessionInspectorView()
+                        // Inspector 作为辅助诊断面板，不参与主 split 的空间分配。
+                        .inspectorColumnWidth(min: 240, ideal: 300, max: 360)
                 }
         }
         .navigationSplitViewStyle(.balanced)

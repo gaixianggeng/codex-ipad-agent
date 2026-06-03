@@ -13,10 +13,11 @@ iPad SwiftUI App
   -> REST: /api/projects /api/sessions /api/sessions/{id}/messages
   -> WebSocket: /api/sessions/{id}/ws
 Mac agentd
-  -> Codex CLI / codex resume / PTY
+  -> Codex app-server stdio runtime
+  -> PTY fallback
 ```
 
-MVP 不在 iPad 上运行 Codex，也不做 Mac 自动发现。用户在设置页手动输入：
+目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex、不直连 Codex app-server，也不做 Mac 自动发现。用户在设置页手动输入：
 
 - Endpoint，例如 `http://100.127.16.9:8787`
 - Token，也就是 `AGENTD_TOKEN`
@@ -33,16 +34,16 @@ Sources/
   Core/Models           agentd JSON 模型
   Core/Parsing          ANSI 清理和 Codex 输出解析
   Core/Security         Keychain TokenStore
-  State                 AppStore / SessionStore / ConversationStore / LogStore
+  State                 AppStore / SessionStore / SessionIndexStore / MessageStore / EventReducer / LogStore
   Features              设置、项目、会话、对话、日志、诊断视图
 ```
 
 关键性能约束：
 
-- 输入框只维护本地 `@State`，不触发日志刷新。
-- WebSocket output 在 `SessionStore` 分发给 `LogStore` 和 `ConversationStore`。
+- 输入框只维护本地 `ComposerState`，不触发日志刷新。
+- WebSocket 事件由 `EventReducer` 分发给消息层和日志层；`SessionStore` 只协调低频 session 状态。
 - `LogStore` 先批量合并 output，再以 120ms 节流刷新 UI；内部保留 120000 字符，界面渲染最近 80000 字符。
-- 第一版固定终端尺寸 `120x32`，不跟随 iPad 键盘或布局变化频繁发送 resize。
+- app-server runtime 不依赖终端尺寸；PTY fallback 固定 `120x32`，不跟随 iPad 键盘或布局变化频繁发送 resize。
 - ANSI 清洗和 parser 放在后台任务；对话解析延迟 700ms 合并输出，避免每个 output chunk 都刷新消息气泡。
 
 ## 构建
@@ -113,7 +114,7 @@ xcodebuild \
 
 - 只支持单个后端配置。
 - 同一个 session 后端只允许一个 WebSocket attach。
-- 对话解析仍基于 Codex TUI 输出文本启发式提取，不是结构化事件。
+- app-server runtime 走结构化事件；PTY fallback 仍保留 TUI 文本启发式解析。
 - 当前后端是 HTTP，App 通过 ATS 例外访问，仅建议本机或 Tailscale 使用。
 
 后续优化：
@@ -121,5 +122,4 @@ xcodebuild \
 - 多 Mac 配置。
 - 会话搜索。
 - 日志导出。
-- 真正结构化 assistant message API。
 - Instruments 基准脚本和 XCTest UI 自动化。

@@ -1,7 +1,16 @@
 {
   "listen": "127.0.0.1:8787",
   "auth": {
-    "token": "change-me-to-a-long-random-token"
+    "token": "change-me-to-a-long-random-token",
+    "allow_query_token": false
+  },
+  "runtime": {
+    "type": "pty",
+    "fallback_pty": true
+  },
+  "app_server": {
+    "transport": "stdio",
+    "managed": true
   },
   "codex": {
     "bin": "codex",

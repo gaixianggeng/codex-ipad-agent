@@ -6,6 +6,7 @@ import SnapshotTesting
 @MainActor
 final class ConversationSnapshotTests: XCTestCase {
     // 固定尺寸 + 固定内容，专门锁住气泡对齐这类纯视觉回归（user 贴右、assistant/system 贴左）。
+    // 使用模拟器默认外观，避免 snapshot 基准图和真实首屏默认 UI 不一致。
     // 首次运行会自动录制参考图到 __Snapshots__/，之后逐像素对比。
     private func makeSeededConversation() -> some View {
         let sessionID = "snapshot_session"
@@ -76,5 +77,172 @@ final class ConversationSnapshotTests: XCTestCase {
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
         )
+    }
+
+    func testProjectSessionDashboard() async {
+        let project = AgentProject(id: "codex-ipad-agent", name: "codex-ipad-agent", path: "/Users/me/code/codex-ipad-agent")
+        let sessions = [
+            makeSnapshotSession(
+                id: "running",
+                project: project,
+                title: "接入 Codex app-server runtime",
+                status: "running",
+                preview: "正在把 assistant_delta 合并到稳定消息气泡里。",
+                activeTurnID: "turn-running",
+                usage: UsageSummary(inputTokens: 4_200, outputTokens: 960, totalTokens: 5_160, costUSD: Decimal(string: "0.0312")),
+                rateLimit: RateLimitSummary(remainingRequests: 18, remainingTokens: nil, resetAt: nil)
+            ),
+            makeSnapshotSession(
+                id: "approval",
+                project: project,
+                title: "确认文件变更审批",
+                status: "waiting_for_approval",
+                preview: "agentd 捕获到 patchUpdated，需要在 iPad 上明确批准。",
+                pendingApproval: ApprovalSummary(id: "approval-1", title: "写入 diff", kind: "file_change", count: 2)
+            ),
+            makeSnapshotSession(
+                id: "history",
+                project: project,
+                title: "历史会话分页加载",
+                status: "history",
+                preview: "只加载最近消息，向上滚动时再按 cursor 补旧内容。"
+            ),
+            makeSnapshotSession(
+                id: "done",
+                project: project,
+                title: "README 迁移说明",
+                status: "completed",
+                preview: "记录 Tailscale、Token、app-server 本机监听和 PTY fallback。"
+            )
+        ]
+        let sessionStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: {
+                SnapshotSessionAPIClient(projects: [project], sessions: sessions)
+            }
+        )
+        await sessionStore.refreshAll(autoAttach: false)
+
+        let view = HStack(spacing: 0) {
+            NavigationStack {
+                ProjectSidebarView(showsSessions: false)
+                    .navigationTitle("Codex")
+            }
+            .frame(width: 340)
+
+            NavigationStack {
+                SessionListView()
+                    .navigationTitle("会话")
+            }
+        }
+        .environmentObject(sessionStore)
+        .frame(width: 1024, height: 768)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+        )
+    }
+
+    func testAppearancePreview() {
+        let defaults = UserDefaults(suiteName: "ConversationSnapshotTests.Appearance.\(UUID().uuidString)")!
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = .dark
+        themeStore.accent = .teal
+        themeStore.setFontScale(1.1)
+
+        let view = NavigationStack {
+            AppearanceView(themeStore: themeStore)
+        }
+        .environment(\.colorScheme, .dark)
+        .frame(width: 560, height: 1180)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 560, height: 1180))
+        )
+    }
+
+    private func makeSnapshotSession(
+        id: String,
+        project: AgentProject,
+        title: String,
+        status: String,
+        preview: String,
+        activeTurnID: TurnID? = nil,
+        usage: UsageSummary? = nil,
+        rateLimit: RateLimitSummary? = nil,
+        pendingApproval: ApprovalSummary? = nil
+    ) -> AgentSession {
+        AgentSession(
+            id: id,
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: title,
+            status: status,
+            source: "codex",
+            resumeID: "thread-\(id)",
+            createdAt: nil,
+            updatedAt: nil,
+            preview: preview,
+            activeTurnID: activeTurnID,
+            lastSeq: 42,
+            revision: 3,
+            usage: usage,
+            rateLimit: rateLimit,
+            pendingApproval: pendingApproval
+        )
+    }
+}
+
+private enum SnapshotAPIError: Error {
+    case unimplemented
+}
+
+private struct SnapshotSessionAPIClient: SessionStoreAPIClient {
+    let projects: [AgentProject]
+    let sessions: [AgentSession]
+
+    func projects() async throws -> [AgentProject] {
+        projects
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        let filtered = projectID.map { id in sessions.filter { $0.projectID == id } } ?? sessions
+        guard let limit else {
+            return filtered
+        }
+        return Array(filtered.prefix(limit))
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        SessionsPage(sessions: try await sessions(projectID: projectID, cursor: cursor, limit: limit))
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw SnapshotAPIError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw SnapshotAPIError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw SnapshotAPIError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        throw SnapshotAPIError.unimplemented
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        throw SnapshotAPIError.unimplemented
+    }
+
+    func websocketURL(sessionID: String) throws -> URL {
+        throw SnapshotAPIError.unimplemented
     }
 }

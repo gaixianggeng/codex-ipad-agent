@@ -67,6 +67,30 @@ enum SessionForegroundActivity: Equatable, Sendable {
     }
 }
 
+actor TerminalStreamStore {
+    private let maxBatchSize: Int
+    private var eventsBySessionID: [SessionID: [AgentEvent]] = [:]
+
+    init(maxBatchSize: Int = 64) {
+        self.maxBatchSize = max(1, maxBatchSize)
+    }
+
+    func append(_ event: AgentEvent, sessionID: SessionID) -> Bool {
+        eventsBySessionID[sessionID, default: []].append(event)
+        return eventsBySessionID[sessionID, default: []].count >= maxBatchSize
+    }
+
+    func drain(sessionID: SessionID) -> [AgentEvent] {
+        let events = eventsBySessionID[sessionID] ?? []
+        eventsBySessionID[sessionID] = []
+        return events
+    }
+
+    func removeAll(sessionID: SessionID) {
+        eventsBySessionID.removeValue(forKey: sessionID)
+    }
+}
+
 struct ProjectSessionListSnapshot: Equatable {
     let projectID: String
     let isExpanded: Bool
@@ -124,6 +148,8 @@ final class SessionStore: ObservableObject {
     private let appStore: AppStore
     private let conversationStore: ConversationStore
     private let logStore: LogStore
+    private let eventReducer: EventReducer
+    private let terminalStreamStore = TerminalStreamStore()
     private let clientFactory: () throws -> any SessionStoreAPIClient
     private let webSocketFactory: () -> any SessionWebSocketClient
     private let webSocketReconnectDelayNanoseconds: (Int) -> UInt64
@@ -131,6 +157,8 @@ final class SessionStore: ObservableObject {
     private var connectedSessionID: String?
     private var webSocketReconnectTask: Task<Void, Never>?
     private var webSocketReconnectAttemptBySessionID: [SessionID: Int] = [:]
+    private var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
+    private var runtimeEventFlushTasks: [SessionID: Task<Void, Never>] = [:]
     private var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
     private var projectsByID: [String: AgentProject] = [:]
     private var sessionsByID: [SessionID: AgentSession] = [:]
@@ -155,8 +183,10 @@ final class SessionStore: ObservableObject {
     private let fixedCols = 120
     private let fixedRows = 32
     private let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
+    private let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
     private let historyPageLimit = 120
     private static let webSocketReconnectMaxAttempts = 5
+    private static let optimisticSessionSource = "local"
     static let sessionPreviewLimit = 3
     private static let initialSessionPageLimit = 80
     private static let expandedSessionPageLimit = 120
@@ -172,6 +202,7 @@ final class SessionStore: ObservableObject {
         self.appStore = appStore
         self.conversationStore = conversationStore
         self.logStore = logStore
+        self.eventReducer = EventReducer()
         self.clientFactory = clientFactory ?? { try appStore.client() }
         self.webSocketFactory = webSocketFactory ?? { AgentWebSocketClient() }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
@@ -555,6 +586,50 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    func decideApproval(_ approval: ApprovalSummary, accept: Bool) {
+        guard let session = selectedSession, session.isRunning, let socket = readyWebSocket(for: session) else {
+            setErrorMessage("审批失败：WebSocket 未连接")
+            return
+        }
+        let decision = accept ? "accept" : "decline"
+        guard socket.sendApprovalDecision(approvalID: approval.id, decision: decision, message: nil) else {
+            setErrorMessage("审批发送失败：WebSocket 未连接")
+            return
+        }
+        setStatusMessage(accept ? "已批准请求" : "已拒绝请求")
+    }
+
+    @discardableResult
+    func retryFailedUserMessage(_ message: ConversationMessage) async -> Bool {
+        guard message.role == .user, message.sendStatus == .failed else {
+            return false
+        }
+        let prompt = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            return false
+        }
+
+        if let session = selectedSession,
+           session.isRunning,
+           let clientMessageID = message.clientMessageID,
+           let socket = readyWebSocket(for: session) {
+            // 失败消息有 client_message_id 时直接复用原 row 重发，避免 timeline 里出现重复用户气泡。
+            conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
+            setForegroundActivity(.waitingForAssistant, sessionID: session.id)
+            guard socket.sendInput(prompt + "\r", clientMessageID: clientMessageID) else {
+                conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
+                clearForegroundActivity(sessionID: session.id)
+                setErrorMessage("重试失败：WebSocket 未连接")
+                return false
+            }
+            conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sent)
+            return true
+        }
+
+        // 会话已经结束或失败时，沿用普通发送路径重新创建/恢复 Codex thread。
+        return await sendPrompt(prompt)
+    }
+
     func resumeFromForeground() async {
         guard appStore.isConfigured else {
             return
@@ -585,6 +660,21 @@ final class SessionStore: ObservableObject {
     private func createSession(projectID: String, prompt: String, resume: AgentSession?, clientMessageID: ClientMessageID? = nil) async -> Bool {
         isLoading = true
         defer { isLoading = false }
+        let optimisticSessionID = optimisticSessionID(projectID: projectID, resume: resume, clientMessageID: clientMessageID, prompt: prompt)
+        if let optimisticSessionID,
+           let clientMessageID {
+            // 先做本地回显，网络慢或 create 失败时用户输入仍留在时间线；
+            // 服务端确认后再用 client_message_id 合并到真实会话。
+            if resume == nil {
+                upsert(makeOptimisticSession(id: optimisticSessionID, projectID: projectID, prompt: prompt))
+            }
+            setSelectedProjectID(projectID)
+            setSelectedSessionID(optimisticSessionID)
+            insertExpandedProjectID(projectID)
+            conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending)
+            setForegroundActivity(.waitingForAssistant, sessionID: optimisticSessionID)
+        }
+
         do {
             let client = try clientFactory()
             let response = try await client.createSession(CreateSessionRequest(
@@ -597,6 +687,17 @@ final class SessionStore: ObservableObject {
                 clientMessageID: clientMessageID
             ))
 
+            if let optimisticSessionID,
+               let clientMessageID,
+               optimisticSessionID != response.session.id {
+                // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
+                // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
+                conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: response.session.id)
+                migrateForegroundActivity(from: optimisticSessionID, to: response.session.id)
+                if resume == nil {
+                    removeSession(optimisticSessionID)
+                }
+            }
             upsert(response.session)
             setSelectedProjectID(response.session.projectID)
             setSelectedSessionID(response.session.id)
@@ -607,7 +708,11 @@ final class SessionStore: ObservableObject {
                 await loadHistoryIfNeeded(for: response.session)
             }
             if !prompt.isEmpty {
-                conversationStore.appendLocalUser(prompt, sessionID: response.session.id, clientMessageID: clientMessageID, sendStatus: .sent)
+                if let clientMessageID {
+                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: response.session.id, status: .sent)
+                } else {
+                    conversationStore.appendLocalUser(prompt, sessionID: response.session.id, clientMessageID: nil, sendStatus: .sent)
+                }
                 setForegroundActivity(.waitingForAssistant, sessionID: response.session.id)
             } else {
                 conversationStore.appendSystem("Codex 交互式会话已启动。", sessionID: response.session.id)
@@ -626,6 +731,14 @@ final class SessionStore: ObservableObject {
             setErrorMessage(nil)
             return true
         } catch {
+            if let optimisticSessionID,
+               let clientMessageID {
+                conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: optimisticSessionID, status: .failed)
+                updateSession(optimisticSessionID) { item in
+                    item.status = "failed"
+                }
+                clearForegroundActivity(sessionID: optimisticSessionID)
+            }
             setErrorMessage(error.localizedDescription)
             return false
         }
@@ -689,8 +802,10 @@ final class SessionStore: ObservableObject {
                         clearForegroundActivity(sessionID: session.id)
                     }
                     if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
-                        // PTY 尾部只作为日志补洞；对话消息由 Go 的结构化 message_completed/assistant_delta 驱动。
+                        // PTY 尾部先补日志，同时作为结构化消息未落地时的对话兜底。
+                        // 后续 history/message_completed 到达时，ConversationStore 会用稳定消息替换这条临时气泡。
                         logStore.append(recentOutput, sessionID: session.id, seq: response.lastSeq)
+                        conversationStore.ingestTerminalOutput(recentOutput, sessionID: session.id)
                     }
                 } catch {
                     // 运行态详情只存在于 agentd 内存。重启后可能 404，这时列表刷新会把它拉回历史态。
@@ -751,27 +866,7 @@ final class SessionStore: ObservableObject {
     }
 
     static func replacingSessions(_ current: [AgentSession], with fresh: [AgentSession], projectID: String?) -> [AgentSession] {
-        let scopedFresh: [AgentSession]
-        if let projectID {
-            scopedFresh = fresh.filter { $0.projectID == projectID }
-        } else {
-            scopedFresh = fresh
-        }
-        var freshIDs: Set<SessionID> = []
-        freshIDs.reserveCapacity(scopedFresh.count)
-        for session in scopedFresh {
-            freshIDs.insert(session.id)
-        }
-        let kept = current.filter { session in
-            if freshIDs.contains(session.id) {
-                return false
-            }
-            guard let projectID else {
-                return false
-            }
-            return session.projectID != projectID
-        }
-        return scopedFresh + kept
+        SessionIndexStore.replacingSessions(current, with: fresh, projectID: projectID)
     }
 
     private func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?) {
@@ -844,6 +939,73 @@ final class SessionStore: ObservableObject {
             historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
             historyHasMoreBeforeBySessionID[sessionID] = false
         }
+    }
+
+    private func optimisticSessionID(
+        projectID: String,
+        resume: AgentSession?,
+        clientMessageID: ClientMessageID?,
+        prompt: String
+    ) -> SessionID? {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let clientMessageID else {
+            return nil
+        }
+        if let resume {
+            return resume.id
+        }
+        return "local:\(projectID):\(clientMessageID)"
+    }
+
+    private func makeOptimisticSession(id: SessionID, projectID: String, prompt: String) -> AgentSession {
+        let project = projectsByID[projectID]
+        let title = Self.promptTitle(prompt)
+        return AgentSession(
+            id: id,
+            projectID: projectID,
+            project: project?.name ?? projectID,
+            dir: project?.path ?? "",
+            title: title,
+            status: "running",
+            source: Self.optimisticSessionSource,
+            resumeID: nil,
+            createdAt: Date(),
+            updatedAt: Date(),
+            preview: prompt
+        )
+    }
+
+    private static func promptTitle(_ prompt: String) -> String {
+        let collapsed = prompt
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else {
+            return "新 Codex 会话"
+        }
+        if collapsed.count <= 42 {
+            return collapsed
+        }
+        return String(collapsed.prefix(42)) + "..."
+    }
+
+    private func removeSession(_ id: SessionID) {
+        guard let index = sessionIndexByID[id] else {
+            return
+        }
+        var next = sessions
+        next.remove(at: index)
+        sessions = next
+    }
+
+    private func migrateForegroundActivity(from sourceSessionID: SessionID, to targetSessionID: SessionID) {
+        guard sourceSessionID != targetSessionID,
+              let activity = foregroundActivityBySessionID[sourceSessionID] else {
+            return
+        }
+        foregroundActivityBySessionID.removeValue(forKey: sourceSessionID)
+        foregroundActivityBySessionID[targetSessionID] = activity
+        foregroundActivityClearTasks[targetSessionID]?.cancel()
+        foregroundActivityClearTasks[targetSessionID] = foregroundActivityClearTasks.removeValue(forKey: sourceSessionID)
     }
 
     // 会话列表请求是按 project 并发的：用户快速切项目、刷新、展开加载更多时，
@@ -1025,6 +1187,7 @@ final class SessionStore: ObservableObject {
             foregroundActivityClearTasks[sessionID]?.cancel()
             foregroundActivityClearTasks.removeValue(forKey: sessionID)
         }
+        lastSeenEventSeqBySessionID = lastSeenEventSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         let foregroundActivities = foregroundActivityBySessionID.filter { validSessionIDs.contains($0.key) }
         if foregroundActivities != foregroundActivityBySessionID {
             foregroundActivityBySessionID = foregroundActivities
@@ -1032,16 +1195,7 @@ final class SessionStore: ObservableObject {
     }
 
     private static func sortedSessions(_ items: [AgentSession]) -> [AgentSession] {
-        items.sorted { lhs, rhs in
-            let left = lhs.updatedAt ?? lhs.createdAt ?? .distantPast
-            let right = rhs.updatedAt ?? rhs.createdAt ?? .distantPast
-            if left == right {
-                // 后端 session cursor 使用 updated_at + id 做 keyset 分页；前端合并分页后也用
-                // 同一个全序，避免相同时间戳的历史会话在本地重新排序导致列表跳动。
-                return lhs.id > rhs.id
-            }
-            return left > right
-        }
+        SessionIndexStore.sortedSessions(items)
     }
 
     private static func applyFrozenOrder(to items: [AgentSession], previousOrder: [SessionID]) -> [AgentSession] {
@@ -1101,16 +1255,30 @@ final class SessionStore: ObservableObject {
 
         do {
             let client = try clientFactory()
-            let url = try client.websocketURL(sessionID: session.id, afterSeq: logStore.lastSeq(for: session.id))
+            let url = try client.websocketURL(sessionID: session.id, afterSeq: replayWatermark(for: session.id))
             let socket = webSocketFactory()
             socket.onStatus = { [weak self] status in
                 Task { @MainActor in
+                    switch status {
+                    case .failed, .disconnected:
+                        await self?.flushRuntimeEvents(sessionID: session.id)
+                    default:
+                        break
+                    }
                     self?.applyWebSocketStatus(status, sessionID: session.id)
                 }
             }
-            socket.onEvent = { [weak self] event in
-                Task { @MainActor in
-                    self?.handle(event, sessionID: session.id)
+            let terminalStreamStore = terminalStreamStore
+            socket.onEvent = { [weak self, terminalStreamStore] event in
+                Task {
+                    let shouldFlushImmediately = await terminalStreamStore.append(event, sessionID: session.id)
+                    if shouldFlushImmediately {
+                        await self?.flushRuntimeEvents(sessionID: session.id)
+                    } else {
+                        await MainActor.run {
+                            self?.scheduleRuntimeEventFlush(sessionID: session.id)
+                        }
+                    }
                 }
             }
             socket.onSendFailure = { [weak self] clientMessageID, message in
@@ -1125,11 +1293,28 @@ final class SessionStore: ObservableObject {
             webSocket = socket
             connectedSessionID = session.id
             conversationStore.resetLiveTranscript(sessionID: session.id)
+            runtimeEventFlushTasks[session.id]?.cancel()
+            runtimeEventFlushTasks[session.id] = nil
+            Task { [terminalStreamStore] in
+                await terminalStreamStore.removeAll(sessionID: session.id)
+            }
             socket.connect(url: url, token: appStore.token)
         } catch {
             setWebSocketStatus(.failed(error.localizedDescription))
             setErrorMessage(error.localizedDescription)
         }
+    }
+
+    private func replayWatermark(for sessionID: SessionID) -> EventSequence? {
+        // WS/REST 的 last_seen_seq 取三处最大值：结构化事件、对话投影和日志，
+        // 避免某一侧 store 清理或重置后造成事件重放/漏拉。
+        [
+            lastSeenEventSeqBySessionID[sessionID],
+            conversationStore.lastSeenSeq(for: sessionID),
+            logStore.lastSeq(for: sessionID)
+        ]
+        .compactMap { $0 }
+        .max()
     }
 
     private func readyWebSocket(for session: AgentSession) -> (any SessionWebSocketClient)? {
@@ -1197,6 +1382,10 @@ final class SessionStore: ObservableObject {
         webSocket = nil
         connectedSessionID = nil
         socket?.disconnect()
+        for task in runtimeEventFlushTasks.values {
+            task.cancel()
+        }
+        runtimeEventFlushTasks.removeAll()
         setWebSocketStatus(.disconnected)
     }
 
@@ -1249,16 +1438,9 @@ final class SessionStore: ObservableObject {
             }
 
             await MainActor.run { [weak self] in
-                guard let self,
-                      self.selectedSessionID == sessionID,
-                      self.webSocketReconnectAttemptBySessionID[sessionID] == attempt,
-                      let latestSession = self.sessionsByID[sessionID],
-                      latestSession.isRunning else {
-                    return
-                }
-                self.webSocketReconnectTask = nil
-                self.connectWebSocket(latestSession, isReconnectAttempt: true)
+                self?.webSocketReconnectTask = nil
             }
+            await self?.runScheduledWebSocketReconnect(sessionID: sessionID, attempt: attempt)
         }
     }
 
@@ -1270,81 +1452,162 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func handle(_ event: AgentEvent, sessionID: String) {
-        switch event {
-        case .session(let session):
-            upsert(session)
-        case .sessionRow(let row, _):
-            upsert(AgentSession(row: row))
-        case .sessionStatus(let status, let metadata):
-            guard let id = metadata.sessionID, let status else {
+    private func runScheduledWebSocketReconnect(sessionID: SessionID, attempt: Int) async {
+        guard selectedSessionID == sessionID,
+              webSocketReconnectAttemptBySessionID[sessionID] == attempt,
+              let latestSession = sessionsByID[sessionID],
+              latestSession.isRunning else {
+            return
+        }
+        let refreshedSession = await refreshSessionSnapshotBeforeReconnect(sessionID: sessionID) ?? latestSession
+        guard selectedSessionID == sessionID,
+              refreshedSession.isRunning else {
+            return
+        }
+        connectWebSocket(refreshedSession, isReconnectAttempt: true)
+    }
+
+    private func refreshSessionSnapshotBeforeReconnect(sessionID: SessionID) async -> AgentSession? {
+        guard let current = sessionsByID[sessionID] else {
+            return nil
+        }
+        do {
+            let client = try clientFactory()
+            let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
+            upsert(response.session)
+            if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
+                // 重连前先补一次 snapshot/recent_output；Codex runtime 再补 history，
+                // 这样 WS 断线期间的结构化消息不会只出现在日志里。
+                logStore.append(recentOutput, sessionID: sessionID, seq: response.lastSeq)
+                conversationStore.ingestTerminalOutput(recentOutput, sessionID: sessionID)
+            }
+            if response.session.source == "codex" {
+                // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
+                await loadHistory(for: response.session)
+            }
+            return response.session
+        } catch {
+            setStatusMessage("重连前快照刷新失败：\(error.localizedDescription)")
+            return current
+        }
+    }
+
+    private func scheduleRuntimeEventFlush(sessionID: SessionID) {
+        guard runtimeEventFlushTasks[sessionID] == nil else {
+            return
+        }
+        let delay = runtimeEventFlushDelayNanoseconds
+        runtimeEventFlushTasks[sessionID] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
                 return
             }
+            await self?.flushRuntimeEvents(sessionID: sessionID)
+        }
+    }
+
+    private func flushRuntimeEvents(sessionID: SessionID) async {
+        runtimeEventFlushTasks[sessionID]?.cancel()
+        runtimeEventFlushTasks[sessionID] = nil
+        let events = await terminalStreamStore.drain(sessionID: sessionID)
+        guard !events.isEmpty else {
+            return
+        }
+        for event in events {
+            await applyRuntimeEvent(event, sessionID: sessionID)
+        }
+    }
+
+    private func applyRuntimeEvent(_ event: AgentEvent, sessionID: String) async {
+        if let metadata = metadata(for: event) {
+            recordEventWatermark(metadata, fallbackSessionID: sessionID)
+        }
+        let output = await eventReducer.reduce(
+            event,
+            fallbackSessionID: sessionID,
+            outputIdleClearDelay: foregroundOutputIdleClearDelay
+        )
+        applyEventReducerOutput(output)
+    }
+
+    private func applyEventReducerOutput(_ output: EventReducerOutput) {
+        for session in output.upsertSessions {
+            upsert(session)
+        }
+        for (id, status) in output.statusUpdates {
             updateSession(id) { item in
                 item.status = status
             }
-            if status != "running" {
-                clearForegroundActivity(sessionID: id)
-            }
-        case .turnStarted(let metadata):
-            guard let id = metadata.sessionID else {
-                return
-            }
-            updateSession(id) { item in
-                item.status = "running"
-            }
-            setForegroundActivity(.waitingForAssistant, sessionID: id)
-        case .assistantDelta(let delta, let metadata):
-            setForegroundActivity(
-                .receivingAssistant,
-                sessionID: metadata.sessionID ?? sessionID,
-                autoClearAfter: foregroundOutputIdleClearDelay
-            )
-            conversationStore.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: sessionID)
-        case .messageCompleted(let message, let metadata):
-            conversationStore.completeMessage(message, metadata: metadata, fallbackSessionID: sessionID)
-            if message.role == .assistant {
-                clearForegroundActivity(sessionID: metadata.sessionID ?? message.sessionID)
-            }
-        case .logDelta(let delta, let metadata):
-            logStore.append(delta.text, sessionID: metadata.sessionID ?? sessionID, seq: metadata.seq)
-        case .diffUpdated(let change, _):
-            let summary = "文件变更：\(change.path) \(change.status)"
-            conversationStore.appendSystem(summary, sessionID: sessionID)
-        case .approvalRequest(let request, _):
-            conversationStore.appendSystem("等待审批：\(request.title)", sessionID: sessionID)
-        case .turnCompleted(let metadata):
-            conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: sessionID)
-            clearForegroundActivity(sessionID: metadata.sessionID ?? sessionID)
-        case .warning(let payload, _):
-            logStore.append("\n[agentd] warning: \(payload.message)\n", sessionID: sessionID)
-        case .output(let data, let metadata):
-            let id = metadata.sessionID ?? sessionID
-            // PTY 输出代表当前会话有前台活动，但不等同于后端 session 生命周期。
-            setForegroundActivity(
-                .receivingAssistant,
-                sessionID: id,
-                autoClearAfter: foregroundOutputIdleClearDelay
-            )
-            // output 是旧协议的原始 PTY 日志；新协议下不再从 TUI 文本猜 assistant 气泡。
-            logStore.append(data, sessionID: id, seq: metadata.seq)
-        case .exit(let result):
-            updateSession(sessionID) { item in
-                item.status = "closed"
-            }
-            clearForegroundActivity(sessionID: sessionID)
-            let reason = result.reason ?? "code=\(result.code ?? 0)"
-            conversationStore.appendSystem("Codex 会话已结束：\(reason)", sessionID: sessionID)
-            disconnectWebSocket()
-        case .error(let message):
-            clearForegroundActivity(sessionID: sessionID)
-            setErrorMessage(message)
-            logStore.append("\n[agentd] \(message)\n", sessionID: sessionID)
-        case .pong:
-            setStatusMessage("WebSocket 心跳正常")
-        case .unknown(let type):
-            logStore.append("\n[agentd] 未知消息类型：\(type)\n", sessionID: sessionID)
         }
+        for (id, activity, delay) in output.foregroundUpdates {
+            setForegroundActivity(activity, sessionID: id, autoClearAfter: delay)
+        }
+        for id in output.foregroundClears {
+            clearForegroundActivity(sessionID: id)
+        }
+        for append in output.logAppends {
+            logStore.append(append.text, sessionID: append.sessionID, seq: append.seq)
+        }
+        for mutation in output.messageMutations {
+            applyMessageMutation(mutation)
+        }
+        if let statusMessage = output.statusMessage {
+            setStatusMessage(statusMessage)
+        }
+        if let errorMessage = output.errorMessage {
+            setErrorMessage(errorMessage)
+        }
+        if output.disconnectWebSocket {
+            disconnectWebSocket()
+        }
+    }
+
+    private func applyMessageMutation(_ mutation: EventReducerMessageMutation) {
+        switch mutation {
+        case .assistantDelta(let delta, let metadata, let fallbackSessionID):
+            conversationStore.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: fallbackSessionID)
+        case .completed(let message, let metadata, let fallbackSessionID):
+            conversationStore.completeMessage(message, metadata: metadata, fallbackSessionID: fallbackSessionID)
+        case .system(let text, let sessionID, let kind):
+            conversationStore.appendSystem(text, sessionID: sessionID, kind: kind)
+        case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):
+            conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID)
+        case .ingestTerminalOutput(let data, let sessionID):
+            conversationStore.ingestTerminalOutput(data, sessionID: sessionID)
+        }
+    }
+
+    private func metadata(for event: AgentEvent) -> AgentEventMetadata? {
+        switch event {
+        case .session:
+            return nil
+        case .sessionRow(_, let metadata),
+             .sessionStatus(_, let metadata),
+             .turnStarted(let metadata),
+             .assistantDelta(_, let metadata),
+             .messageCompleted(_, let metadata),
+             .logDelta(_, let metadata),
+             .diffUpdated(_, let metadata),
+             .approvalRequest(_, let metadata),
+             .turnCompleted(let metadata),
+             .warning(_, let metadata),
+             .output(_, let metadata):
+            return metadata
+        case .exit, .error, .pong, .unknown:
+            return nil
+        }
+    }
+
+    private func recordEventWatermark(_ metadata: AgentEventMetadata, fallbackSessionID: SessionID) {
+        guard let seq = metadata.seq else {
+            return
+        }
+        let sessionID = metadata.sessionID ?? fallbackSessionID
+        if let last = lastSeenEventSeqBySessionID[sessionID], seq <= last {
+            return
+        }
+        lastSeenEventSeqBySessionID[sessionID] = seq
     }
 
     private func setProjectsIfChanged(_ value: [AgentProject]) {

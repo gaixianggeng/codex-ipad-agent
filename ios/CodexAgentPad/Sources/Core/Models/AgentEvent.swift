@@ -260,6 +260,8 @@ struct ClientWebSocketMessage: Encodable {
     let data: String?
     let cols: Int?
     let rows: Int?
+    let approvalID: String?
+    let decision: String?
     let clientMessageID: ClientMessageID?
 
     enum CodingKeys: String, CodingKey {
@@ -267,14 +269,26 @@ struct ClientWebSocketMessage: Encodable {
         case data
         case cols
         case rows
+        case approvalID = "approval_id"
+        case decision
         case clientMessageID = "client_message_id"
     }
 
-    init(type: String, data: String? = nil, cols: Int? = nil, rows: Int? = nil, clientMessageID: ClientMessageID? = nil) {
+    init(
+        type: String,
+        data: String? = nil,
+        cols: Int? = nil,
+        rows: Int? = nil,
+        approvalID: String? = nil,
+        decision: String? = nil,
+        clientMessageID: ClientMessageID? = nil
+    ) {
         self.type = type
         self.data = data
         self.cols = cols
         self.rows = rows
+        self.approvalID = approvalID
+        self.decision = decision
         self.clientMessageID = clientMessageID
     }
 }

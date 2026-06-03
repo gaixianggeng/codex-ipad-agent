@@ -14,6 +14,8 @@ import (
 type Config struct {
 	Listen      string          `json:"listen"`
 	Auth        AuthConfig      `json:"auth"`
+	Runtime     RuntimeConfig   `json:"runtime"`
+	AppServer   AppServerConfig `json:"app_server"`
 	Codex       CodexConfig     `json:"codex"`
 	Session     SessionConfig   `json:"session"`
 	Projects    []ProjectConfig `json:"projects"`
@@ -22,13 +24,25 @@ type Config struct {
 }
 
 type AuthConfig struct {
-	Token string `json:"token"`
+	Token           string `json:"token"`
+	AllowQueryToken bool   `json:"allow_query_token"`
 }
 
 type CodexConfig struct {
 	Bin         string            `json:"bin"`
 	DefaultArgs []string          `json:"default_args"`
 	Env         map[string]string `json:"env"`
+}
+
+type RuntimeConfig struct {
+	Type        string `json:"type"`
+	FallbackPTY bool   `json:"fallback_pty"`
+}
+
+type AppServerConfig struct {
+	Transport string `json:"transport"`
+	Managed   bool   `json:"managed"`
+	Listen    string `json:"listen,omitempty"`
 }
 
 type SessionConfig struct {
@@ -69,6 +83,8 @@ func load(path string) (Config, error) {
 	}
 
 	applyEnv(&cfg)
+	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
+	cfg.AppServer.Transport = strings.TrimSpace(strings.ToLower(cfg.AppServer.Transport))
 	scanned, err := discoverProjects(cfg.ScanRoots)
 	if err != nil {
 		return Config{}, err
@@ -80,6 +96,14 @@ func load(path string) (Config, error) {
 func defaults() Config {
 	return Config{
 		Listen: "127.0.0.1:8787",
+		Runtime: RuntimeConfig{
+			Type:        "pty",
+			FallbackPTY: true,
+		},
+		AppServer: AppServerConfig{
+			Transport: "stdio",
+			Managed:   true,
+		},
 		Codex: CodexConfig{
 			Bin:         "codex",
 			DefaultArgs: []string{"--no-alt-screen"},
@@ -112,11 +136,29 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("AGENTD_TOKEN"); v != "" {
 		cfg.Auth.Token = v
 	}
+	if v := os.Getenv("AGENTD_ALLOW_QUERY_TOKEN"); v == "1" || strings.EqualFold(v, "true") {
+		cfg.Auth.AllowQueryToken = true
+	}
 	if v := os.Getenv("AGENTD_CODEX_BIN"); v != "" {
 		cfg.Codex.Bin = v
 	}
 	if v := os.Getenv("AGENTD_CODEX_ARGS"); v != "" {
 		cfg.Codex.DefaultArgs = strings.Fields(v)
+	}
+	if v := os.Getenv("AGENTD_RUNTIME"); v != "" {
+		cfg.Runtime.Type = normalizeRuntimeType(v)
+	}
+	if v := os.Getenv("AGENTD_APP_SERVER_TRANSPORT"); v != "" {
+		cfg.AppServer.Transport = strings.TrimSpace(strings.ToLower(v))
+	}
+	if v := os.Getenv("AGENTD_APP_SERVER_LISTEN"); v != "" {
+		cfg.AppServer.Listen = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("AGENTD_APP_SERVER_MANAGED"); v != "" {
+		cfg.AppServer.Managed = truthy(v)
+	}
+	if v := os.Getenv("AGENTD_APP_SERVER_FALLBACK_PTY"); v != "" {
+		cfg.Runtime.FallbackPTY = truthy(v)
 	}
 	if v := os.Getenv("AGENTD_DEV_INSECURE"); v == "1" || strings.EqualFold(v, "true") {
 		cfg.DevInsecure = true
@@ -131,6 +173,20 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_SCAN_ROOTS"); v != "" {
 		cfg.ScanRoots = splitCSV(v)
+	}
+}
+
+func truthy(raw string) bool {
+	return raw == "1" || strings.EqualFold(raw, "true") || strings.EqualFold(raw, "yes")
+}
+
+func normalizeRuntimeType(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "app_server", "app-server", "codex-app-server":
+		return "codex_app_server"
+	default:
+		return value
 	}
 }
 
@@ -275,6 +331,19 @@ func (c Config) Validate() error {
 	if c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
+	switch normalizeRuntimeType(c.Runtime.Type) {
+	case "pty", "codex_app_server":
+	default:
+		return fmt.Errorf("runtime.type 只支持 pty 或 codex_app_server")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
+	case "stdio", "unix", "ws", "off":
+	default:
+		return fmt.Errorf("app_server.transport 只支持 stdio、unix、ws 或 off")
+	}
+	if strings.EqualFold(c.AppServer.Transport, "ws") && c.AppServer.Listen != "" && !isLoopbackListen(c.AppServer.Listen) {
+		return fmt.Errorf("app_server.listen 只允许 loopback；iPad 应连接 agentd，不应直连 Codex app-server")
+	}
 	if c.Session.OutputBufferBytes <= 0 {
 		return fmt.Errorf("session.output_buffer_bytes 必须大于 0")
 	}
@@ -282,4 +351,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("projects 不能为空；可在 config.json 配置，或设置 AGENTD_PROJECTS=/path/a,/path/b 或 AGENTD_SCAN_ROOTS=/workspace")
 	}
 	return nil
+}
+
+func isLoopbackListen(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return true
+	}
+	if strings.HasPrefix(value, "127.") || strings.HasPrefix(value, "localhost:") || strings.HasPrefix(value, "[::1]:") || strings.HasPrefix(value, "::1:") {
+		return true
+	}
+	host, _, err := net.SplitHostPort(value)
+	if err != nil {
+		return value == "localhost" || value == "::1"
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -2,17 +2,18 @@ import SwiftUI
 
 struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
-    @State private var draft = ""
+    @State private var composerState = ComposerState()
 
     var body: some View {
         VStack(spacing: 8) {
             if let activity = sessionStore.selectedForegroundActivity {
                 composerActivity(activity)
             }
-            TextEditor(text: $draft)
+            runtimeChips
+            TextEditor(text: $composerState.draft)
                 .font(.body)
                 .foregroundStyle(.primary)
-                .frame(minHeight: 72, maxHeight: 130)
+                .frame(minHeight: composerMinHeight, maxHeight: composerMaxHeight)
                 .onKeyPress { keyPress in
                     guard keyPress.key == .return else {
                         return .ignored
@@ -32,7 +33,7 @@ struct ComposerView: View {
                         .strokeBorder(Color(.separator))
                 )
                 .overlay(alignment: .topLeading) {
-                    if draft.isEmpty {
+                    if composerState.isEmpty {
                         Text("输入任务或后续指令")
                             .foregroundStyle(Color(.placeholderText))
                             .padding(.horizontal, 16)
@@ -59,16 +60,14 @@ struct ComposerView: View {
 
     @discardableResult
     private func submitDraft() -> Bool {
-        let text = draft
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !sessionStore.isLoading else {
+        guard let text = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading) else {
             return false
         }
-        draft = ""
         Task {
             let accepted = await sessionStore.sendPrompt(text)
             if !accepted {
                 await MainActor.run {
-                    draft = text
+                    composerState.restore(text)
                 }
             }
         }
@@ -76,7 +75,7 @@ struct ComposerView: View {
     }
 
     private var canSubmitDraft: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sessionStore.isLoading
+        composerState.canSubmit(isLoading: sessionStore.isLoading)
     }
 
     private var horizontalActions: some View {
@@ -99,6 +98,13 @@ struct ComposerView: View {
 
     private var terminalControls: some View {
         HStack(spacing: 8) {
+            Button {
+                composerState.toggleExpanded()
+            } label: {
+                Label(composerState.isExpanded ? "收起" : "展开", systemImage: composerState.isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.bordered)
+
             Button {
                 sessionStore.sendCtrlC()
             } label: {
@@ -125,6 +131,52 @@ struct ComposerView: View {
         }
     }
 
+    @ViewBuilder
+    private var runtimeChips: some View {
+        if !runtimeChipItems.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(runtimeChipItems, id: \.text) { item in
+                        Label(item.text, systemImage: item.symbol)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(item.tint.opacity(0.12), in: Capsule())
+                            .foregroundStyle(item.tint)
+                    }
+                }
+            }
+        }
+    }
+
+    private var runtimeChipItems: [(text: String, symbol: String, tint: Color)] {
+        guard let session = sessionStore.selectedSession else {
+            return []
+        }
+        var items: [(text: String, symbol: String, tint: Color)] = []
+        if session.activeTurnID != nil {
+            items.append(("active turn", "bolt.fill", .green))
+        }
+        if let lastSeq = session.lastSeq {
+            items.append(("seq \(lastSeq)", "number", .secondary))
+        }
+        if let approval = session.pendingApproval {
+            let count = approval.count.map { " ×\($0)" } ?? ""
+            items.append(("待审批 \(approval.title)\(count)", "checkmark.seal", .orange))
+        }
+        if let usage = session.usage?.compactText {
+            items.append((usage, "gauge.with.dots.needle.33percent", .secondary))
+        }
+        if let rateLimit = session.rateLimit?.compactText {
+            items.append((rateLimit, "speedometer", .secondary))
+        }
+        if session.source == "agentd" {
+            items.append(("PTY fallback", "terminal", .secondary))
+        }
+        return items
+    }
+
     private var sendButton: some View {
         Button {
             submitDraft()
@@ -134,6 +186,14 @@ struct ComposerView: View {
         .buttonStyle(.borderedProminent)
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!canSubmitDraft)
+    }
+
+    private var composerMinHeight: CGFloat {
+        composerState.isExpanded ? 150 : 72
+    }
+
+    private var composerMaxHeight: CGFloat {
+        composerState.isExpanded ? 260 : 130
     }
 
     private func composerActivity(_ activity: SessionForegroundActivity) -> some View {

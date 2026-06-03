@@ -30,6 +30,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let lastSeq: EventSequence?
     let revision: ModelRevision?
     let usage: UsageSummary?
+    let rateLimit: RateLimitSummary?
     let pendingApproval: ApprovalSummary?
 
     var isCodexHistory: Bool {
@@ -37,7 +38,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     }
 
     var isRunning: Bool {
-        status == "running"
+        status == "running" || status == "waiting_for_approval" || status == "waiting_for_input"
     }
 
     var displayStatusText: String {
@@ -80,6 +81,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         lastSeq: EventSequence? = nil,
         revision: ModelRevision? = nil,
         usage: UsageSummary? = nil,
+        rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil
     ) {
         self.id = id
@@ -97,6 +99,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.lastSeq = lastSeq
         self.revision = revision
         self.usage = usage
+        self.rateLimit = rateLimit
         self.pendingApproval = pendingApproval
     }
 
@@ -118,6 +121,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
             lastSeq: row.lastSeq,
             revision: row.revision,
             usage: row.usage,
+            rateLimit: row.rateLimit,
             pendingApproval: row.pendingApproval
         )
     }
@@ -138,6 +142,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case lastSeq = "last_seq"
         case revision
         case usage
+        case rateLimit = "rate_limit"
         case pendingApproval = "pending_approval"
     }
 }
@@ -218,6 +223,207 @@ struct ConversationMessageRenderFingerprint: Hashable {
     let contentByteCount: Int
 }
 
+enum MessageRenderSegmentKind: Hashable {
+    case text
+    case code
+}
+
+struct MessageRenderSegment: Identifiable, Hashable {
+    let id: Int
+    let kind: MessageRenderSegmentKind
+    let text: String
+    let language: String?
+}
+
+struct MessageRenderPlan: Hashable {
+    let messageKey: String
+    let content: String
+    let contentDigest: UInt64
+    let contentByteCount: Int
+    let segments: [MessageRenderSegment]
+    let openCodeFenceLanguage: String?
+
+    var isSinglePlainText: Bool {
+        segments.count == 1 && segments.first?.kind == .text
+    }
+}
+
+@MainActor
+final class MessageRenderPlanCache {
+    static let shared = MessageRenderPlanCache()
+
+    private let limit: Int
+    private var plansByMessageKey: [String: MessageRenderPlan] = [:]
+    private var accessOrder: [String] = []
+
+#if DEBUG
+    private(set) var incrementalReuseCountForTesting = 0
+#endif
+
+    init(limit: Int = 256) {
+        self.limit = max(1, limit)
+    }
+
+    func plan(for message: ConversationMessage) -> MessageRenderPlan {
+        let messageKey = message.stableID ?? message.clientMessageID ?? message.id.uuidString
+        return plan(
+            messageKey: messageKey,
+            content: message.content,
+            contentDigest: message.contentDigest,
+            contentByteCount: message.contentByteCount
+        )
+    }
+
+    func plan(messageKey: String, content: String, contentDigest: UInt64, contentByteCount: Int) -> MessageRenderPlan {
+        if let cached = plansByMessageKey[messageKey],
+           cached.contentDigest == contentDigest,
+           cached.contentByteCount == contentByteCount {
+            touch(messageKey)
+            return cached
+        }
+
+        let plan: MessageRenderPlan
+        if let cached = plansByMessageKey[messageKey],
+           content.hasPrefix(cached.content),
+           content.count >= cached.content.count {
+            let suffix = String(content.dropFirst(cached.content.count))
+            plan = extend(cached, suffix: suffix, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
+#if DEBUG
+            incrementalReuseCountForTesting += 1
+#endif
+        } else {
+            plan = parse(messageKey: messageKey, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
+        }
+
+        plansByMessageKey[messageKey] = plan
+        touch(messageKey)
+        trimIfNeeded()
+        return plan
+    }
+
+    private func extend(
+        _ cached: MessageRenderPlan,
+        suffix: String,
+        content: String,
+        contentDigest: UInt64,
+        contentByteCount: Int
+    ) -> MessageRenderPlan {
+        guard !suffix.isEmpty else {
+            return MessageRenderPlan(
+                messageKey: cached.messageKey,
+                content: content,
+                contentDigest: contentDigest,
+                contentByteCount: contentByteCount,
+                segments: cached.segments,
+                openCodeFenceLanguage: cached.openCodeFenceLanguage
+            )
+        }
+
+        let parsedSuffix = parseSegments(in: suffix, startingInCodeLanguage: cached.openCodeFenceLanguage)
+        let merged = merge(cached.segments, with: parsedSuffix.segments)
+        return MessageRenderPlan(
+            messageKey: cached.messageKey,
+            content: content,
+            contentDigest: contentDigest,
+            contentByteCount: contentByteCount,
+            segments: renumber(merged),
+            openCodeFenceLanguage: parsedSuffix.openCodeFenceLanguage
+        )
+    }
+
+    private func parse(messageKey: String, content: String, contentDigest: UInt64, contentByteCount: Int) -> MessageRenderPlan {
+        let parsed = parseSegments(in: content, startingInCodeLanguage: nil)
+        return MessageRenderPlan(
+            messageKey: messageKey,
+            content: content,
+            contentDigest: contentDigest,
+            contentByteCount: contentByteCount,
+            segments: parsed.segments,
+            openCodeFenceLanguage: parsed.openCodeFenceLanguage
+        )
+    }
+
+    private func parseSegments(
+        in content: String,
+        startingInCodeLanguage: String?
+    ) -> (segments: [MessageRenderSegment], openCodeFenceLanguage: String?) {
+        var segments: [MessageRenderSegment] = []
+        var buffer = ""
+        var codeLanguage = startingInCodeLanguage
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        func flush() {
+            guard !buffer.isEmpty else {
+                return
+            }
+            segments.append(MessageRenderSegment(
+                id: segments.count,
+                kind: codeLanguage == nil ? .text : .code,
+                text: buffer,
+                language: codeLanguage
+            ))
+            buffer = ""
+        }
+
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                flush()
+                if codeLanguage == nil {
+                    let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    codeLanguage = language.isEmpty ? nil : language
+                    if codeLanguage == nil {
+                        codeLanguage = "plain"
+                    }
+                } else {
+                    codeLanguage = nil
+                }
+                continue
+            }
+
+            buffer += line
+            if index < lines.count - 1 {
+                buffer += "\n"
+            }
+        }
+        flush()
+
+        if segments.isEmpty {
+            segments.append(MessageRenderSegment(id: 0, kind: .text, text: "", language: nil))
+        }
+        return (segments, codeLanguage)
+    }
+
+    private func merge(_ prefix: [MessageRenderSegment], with suffix: [MessageRenderSegment]) -> [MessageRenderSegment] {
+        guard var last = prefix.last, let first = suffix.first else {
+            return prefix + suffix
+        }
+        guard last.kind == first.kind, last.language == first.language else {
+            return prefix + suffix
+        }
+        last = MessageRenderSegment(id: last.id, kind: last.kind, text: last.text + first.text, language: last.language)
+        return prefix.dropLast() + [last] + suffix.dropFirst()
+    }
+
+    private func renumber(_ segments: [MessageRenderSegment]) -> [MessageRenderSegment] {
+        segments.enumerated().map { index, segment in
+            MessageRenderSegment(id: index, kind: segment.kind, text: segment.text, language: segment.language)
+        }
+    }
+
+    private func touch(_ messageKey: String) {
+        accessOrder.removeAll { $0 == messageKey }
+        accessOrder.append(messageKey)
+    }
+
+    private func trimIfNeeded() {
+        while accessOrder.count > limit, let oldest = accessOrder.first {
+            accessOrder.removeFirst()
+            plansByMessageKey.removeValue(forKey: oldest)
+        }
+    }
+}
+
 struct ConversationMessage: Identifiable, Hashable {
     enum Role: String {
         case user
@@ -231,6 +437,7 @@ struct ConversationMessage: Identifiable, Hashable {
     let turnID: TurnID?
     let itemID: AgentItemID?
     let role: Role
+    var kind: MessageKind
     var content: String {
         didSet {
             updateRenderFingerprint()
@@ -258,6 +465,7 @@ struct ConversationMessage: Identifiable, Hashable {
         turnID: TurnID? = nil,
         itemID: AgentItemID? = nil,
         role: Role,
+        kind: MessageKind = .message,
         content: String,
         createdAt: Date = Date(),
         sendStatus: MessageSendStatus = .sent,
@@ -269,6 +477,7 @@ struct ConversationMessage: Identifiable, Hashable {
         self.turnID = turnID
         self.itemID = itemID
         self.role = role
+        self.kind = kind
         self.content = content
         self.createdAt = createdAt
         self.sendStatus = sendStatus
@@ -348,6 +557,42 @@ struct UsageSummary: Codable, Hashable {
         case totalTokens = "total_tokens"
         case costUSD = "cost_usd"
     }
+
+    var compactText: String? {
+        if let costUSD {
+            let value = NSDecimalNumber(decimal: costUSD).doubleValue
+            return String(format: "$%.4f", value)
+        }
+        if let totalTokens {
+            return "\(totalTokens) tok"
+        }
+        if let outputTokens {
+            return "\(outputTokens) out"
+        }
+        return nil
+    }
+}
+
+struct RateLimitSummary: Codable, Hashable {
+    let remainingRequests: Int?
+    let remainingTokens: Int?
+    let resetAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case remainingRequests = "remaining_requests"
+        case remainingTokens = "remaining_tokens"
+        case resetAt = "reset_at"
+    }
+
+    var compactText: String? {
+        if let remainingRequests {
+            return "剩余 \(remainingRequests) 次"
+        }
+        if let remainingTokens {
+            return "剩余 \(remainingTokens) tok"
+        }
+        return nil
+    }
 }
 
 struct ApprovalSummary: Codable, Hashable {
@@ -377,6 +622,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
     let lastSeq: EventSequence?
     let revision: ModelRevision
     let usage: UsageSummary?
+    let rateLimit: RateLimitSummary?
     let pendingApproval: ApprovalSummary?
 
     enum CodingKeys: String, CodingKey {
@@ -395,6 +641,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
         case lastSeq = "last_seq"
         case revision
         case usage
+        case rateLimit = "rate_limit"
         case pendingApproval = "pending_approval"
     }
 
@@ -415,6 +662,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
         self.lastSeq = try container.decodeIfPresent(EventSequence.self, forKey: .lastSeq)
         self.revision = try container.decodeIfPresent(ModelRevision.self, forKey: .revision) ?? 0
         self.usage = try container.decodeIfPresent(UsageSummary.self, forKey: .usage)
+        self.rateLimit = try container.decodeIfPresent(RateLimitSummary.self, forKey: .rateLimit)
         self.pendingApproval = try container.decodeIfPresent(ApprovalSummary.self, forKey: .pendingApproval)
     }
 }

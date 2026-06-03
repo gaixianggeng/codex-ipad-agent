@@ -42,6 +42,7 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		{Name: "token", OK: c.cfg.DevInsecure || c.cfg.Auth.Token != "", Message: "Token 已配置", Fix: `export AGENTD_TOKEN="$(openssl rand -hex 32)"`},
 		{Name: "projects", OK: len(c.registry.List()) > 0, Message: fmt.Sprintf("已加载 %d 个项目", len(c.registry.List())), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
 		{Name: "codex", OK: commandExists(c.cfg.Codex.Bin), Message: "Codex CLI 可执行", Fix: "安装 Codex CLI 并确认 codex 在 PATH 中"},
+		c.runtimeCheck(),
 		{Name: "tailscale", OK: commandExists("tailscale"), Message: "检测到 Tailscale 命令", Fix: "安装并登录 Tailscale：https://tailscale.com/download"},
 	}
 	if checkPort {
@@ -59,6 +60,50 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		}
 	}
 	return Results{OK: ok, Version: c.version, Listen: c.cfg.Listen, Checks: checks}
+}
+
+func (c *Checker) runtimeCheck() Check {
+	runtimeType := c.cfg.Runtime.Type
+	if runtimeType == "" {
+		runtimeType = "pty"
+	}
+	if runtimeType != "codex_app_server" {
+		return Check{Name: "runtime", OK: true, Message: fmt.Sprintf("当前运行时：%s", runtimeType)}
+	}
+	transport := c.cfg.AppServer.Transport
+	if transport == "" {
+		transport = "stdio"
+	}
+	switch transport {
+	case "stdio":
+		return Check{Name: "app-server", OK: true, Message: "Codex app-server 将通过 stdio 子进程访问"}
+	case "unix":
+		return Check{Name: "app-server", OK: true, Message: "Codex app-server 将通过 unix socket 本机访问"}
+	case "ws":
+		if c.cfg.AppServer.Listen == "" || isLoopbackListen(c.cfg.AppServer.Listen) {
+			return Check{Name: "app-server", OK: true, Message: "Codex app-server ws 仅限 loopback 本机调试"}
+		}
+		return Check{
+			Name:    "app-server",
+			OK:      false,
+			Message: "Codex app-server 不应暴露到非 loopback 网络",
+			Fix:     "使用 stdio://，或将 app_server.listen 改为 127.0.0.1，仅让 iPad 连接 agentd",
+		}
+	default:
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=stdio"}
+	}
+}
+
+func isLoopbackListen(raw string) bool {
+	host, _, err := net.SplitHostPort(raw)
+	if err != nil {
+		return raw == "localhost" || raw == "::1"
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c *Checker) portCheck(ctx context.Context) Check {

@@ -14,6 +14,8 @@ type agentMessage struct {
 	ID              string    `json:"id"`
 	SessionID       string    `json:"session_id"`
 	ClientMessageID string    `json:"client_message_id,omitempty"`
+	TurnID          string    `json:"turn_id,omitempty"`
+	ItemID          string    `json:"item_id,omitempty"`
 	Role            string    `json:"role"`
 	Kind            string    `json:"kind"`
 	Content         string    `json:"content"`

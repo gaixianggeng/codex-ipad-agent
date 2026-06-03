@@ -1,6 +1,12 @@
 import SwiftUI
 
 struct LogPanelView: View {
+    var body: some View {
+        LogTailView()
+    }
+}
+
+struct LogTailView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var logStore: LogStore
 

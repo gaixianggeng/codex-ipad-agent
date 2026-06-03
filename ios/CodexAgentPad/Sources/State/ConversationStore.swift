@@ -111,6 +111,13 @@ final class ConversationStore: ObservableObject {
         loadedHistorySessionIDs.contains(sessionID)
     }
 
+    func lastSeenSeq(for sessionID: String?) -> EventSequence? {
+        guard let sessionID else {
+            return nil
+        }
+        return lastSeenSeqBySessionID[sessionID]
+    }
+
     func retainSessionCache(sessionID: String) {
         guard messagesBySessionID[sessionID] != nil else {
             return
@@ -152,6 +159,16 @@ final class ConversationStore: ObservableObject {
         clientMessageID: ClientMessageID?,
         sendStatus: MessageSendStatus = .sending
     ) {
+        if let clientMessageID,
+           var list = messagesBySessionID[sessionID],
+           let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) {
+            list[index].content = text
+            list[index].sendStatus = sendStatus
+            setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+            sawStructuredAssistant.remove(sessionID)
+            lastAssistantBySessionID[sessionID] = ""
+            return
+        }
         append(
             ConversationMessage(
                 stableID: clientMessageID,
@@ -162,6 +179,9 @@ final class ConversationStore: ObservableObject {
             ),
             sessionID: sessionID
         )
+        // 新一轮用户输入开始后，结构化 assistant 可能还没从 rollout 落盘/转发；
+        // 重新允许 PTY 输出先生成临时气泡，避免右侧日志有回复但中间对话空白。
+        sawStructuredAssistant.remove(sessionID)
         lastAssistantBySessionID[sessionID] = ""
     }
 
@@ -174,8 +194,40 @@ final class ConversationStore: ObservableObject {
         setMessages(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
-    func appendSystem(_ text: String, sessionID: String) {
-        append(ConversationMessage(role: .system, content: text), sessionID: sessionID)
+    func appendSystem(_ text: String, sessionID: String, kind: MessageKind = .message) {
+        append(ConversationMessage(role: .system, kind: kind, content: text), sessionID: sessionID)
+    }
+
+    func moveLocalEcho(clientMessageID: ClientMessageID, from sourceSessionID: String, to targetSessionID: String) {
+        guard sourceSessionID != targetSessionID,
+              var source = messagesBySessionID[sourceSessionID],
+              let sourceIndex = messageIndex(clientMessageID: clientMessageID, sessionID: sourceSessionID) else {
+            return
+        }
+
+        // 新建会话时先挂在本地临时 session；服务端返回真实 session_id 后，
+        // 只迁移同一个 client_message_id，避免用户气泡被复制两份。
+        var message = source.remove(at: sourceIndex)
+        message.sendStatus = .sent
+
+        var target = messagesBySessionID[targetSessionID] ?? []
+        if let targetIndex = messageIndex(clientMessageID: clientMessageID, sessionID: targetSessionID) {
+            target[targetIndex].content = message.content
+            target[targetIndex].sendStatus = message.sendStatus
+            setMessages(target, sessionID: targetSessionID)
+        } else {
+            target.append(message)
+            setMessages(target, sessionID: targetSessionID)
+        }
+
+        if source.isEmpty {
+            clearConversationSessionState(sessionID: sourceSessionID, messages: source)
+            var next = messagesBySessionID
+            next.removeValue(forKey: sourceSessionID)
+            messagesBySessionID = next
+        } else {
+            setMessages(source, sessionID: sourceSessionID)
+        }
     }
 
     func ingestTerminalOutput(_ raw: String, sessionID: String) {
@@ -197,7 +249,6 @@ final class ConversationStore: ObservableObject {
         pendingOutput[sessionID] = ""
         transcripts[sessionID] = ""
         lastAssistantBySessionID[sessionID] = ""
-        lastSeenSeqBySessionID[sessionID] = nil
         cleanTasks[sessionID]?.cancel()
         cleanTasks[sessionID] = nil
         parseTasks[sessionID]?.cancel()
@@ -297,11 +348,13 @@ final class ConversationStore: ObservableObject {
         switch message.role {
         case .user:
             role = .user
+            sawStructuredAssistant.remove(sessionID)
         case .assistant:
             role = .assistant
         default:
             role = .system
         }
+        let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
         if role == .assistant {
             markStructuredAssistant(sessionID: sessionID)
         }
@@ -312,6 +365,7 @@ final class ConversationStore: ObservableObject {
         messageUUIDByStableMessageID[key] = uuid
         if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? message.clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
             list[index].stableID = stableID
+            list[index].kind = displayKind
             list[index].content = message.content
             list[index].sendStatus = message.sendStatus == .failed ? .failed : .confirmed
             list[index].revision = message.revision
@@ -323,6 +377,7 @@ final class ConversationStore: ObservableObject {
                 turnID: message.turnID,
                 itemID: message.itemID,
                 role: role,
+                kind: displayKind,
                 content: message.content,
                 createdAt: message.createdAt ?? Date(),
                 sendStatus: message.sendStatus,
@@ -552,10 +607,22 @@ final class ConversationStore: ObservableObject {
         guard sawStructuredAssistant.insert(sessionID).inserted else {
             return
         }
-        // 第一次收到结构化助手消息：把此前 PTY 解析兜底生成的助手气泡（stableID == nil）清掉，
-        // 避免“干净的结构化消息”和“带装饰的解析消息”同时出现在记录里。
+        // 第一次收到本轮结构化助手消息：把本轮 PTY 解析兜底生成的助手气泡（stableID == nil）清掉，
+        // 避免“干净的结构化消息”和“带装饰的解析消息”同时出现在记录里；更早轮次的临时气泡保留。
         if let list = messagesBySessionID[sessionID] {
-            let filtered = list.filter { !($0.role == .assistant && $0.stableID == nil) }
+            let lastUserIndex = list.lastIndex { $0.role == .user }
+            let filtered = list.enumerated().compactMap { index, message -> ConversationMessage? in
+                let isCurrentTurnFallback: Bool
+                if let lastUserIndex {
+                    isCurrentTurnFallback = index > lastUserIndex
+                } else {
+                    isCurrentTurnFallback = true
+                }
+                if message.role == .assistant && message.stableID == nil && isCurrentTurnFallback {
+                    return nil
+                }
+                return message
+            }
             if filtered.count != list.count {
                 setMessages(filtered, sessionID: sessionID)
             }
@@ -743,6 +810,7 @@ final class ConversationStore: ObservableObject {
             && lhs.turnID == rhs.turnID
             && lhs.itemID == rhs.itemID
             && lhs.role == rhs.role
+            && lhs.kind == rhs.kind
             && lhs.createdAt == rhs.createdAt
             && lhs.sendStatus == rhs.sendStatus
             && lhs.revision == rhs.revision
@@ -979,6 +1047,7 @@ final class ConversationStore: ObservableObject {
             turnID: item.turnID,
             itemID: item.itemID,
             role: role,
+            kind: .message,
             content: item.content,
             createdAt: createdAt,
             sendStatus: sendStatus,

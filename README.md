@@ -18,7 +18,8 @@ Mac agentd
   +-- Web UI
   +-- REST API
   +-- WebSocket
-  +-- PTY -> codex --no-alt-screen
+  +-- codex app-server --listen stdio://
+  +-- PTY fallback -> codex --no-alt-screen
 ```
 
 安全边界：
@@ -26,6 +27,7 @@ Mac agentd
 - `agentd` 运行在开发机本地，Codex 凭证不离开开发机。
 - Web 端只能选择配置中的项目 ID，不能传任意路径。
 - API 和 WebSocket 都需要 Bearer Token。
+- 默认不接受 URL query token，避免 token 出现在浏览器历史、日志或 Referer 里。
 - MVP 不建议公网暴露，只建议本机或 Tailscale 使用。
 
 ## 实现
@@ -44,6 +46,8 @@ go build -o bin/agentd ./cmd/agentd
 ```text
 ios/CodexAgentPad
 ```
+
+目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。iPad 仍然只连接 `agentd`，不会直接连接 Codex app-server。
 
 先用 XcodeGen 生成 Xcode 工程：
 
@@ -104,11 +108,11 @@ Token 使用 iOS Keychain 保存，Endpoint 使用 UserDefaults 保存。MVP 为
 App 端设计边界：
 
 - SwiftUI 原生实现，不使用 WebView。
-- 输入框、会话状态、对话解析、终端日志四块分离。
-- WebSocket output 在 Store 层同时分发给 `ConversationStore` 和 `LogStore`。
+- 输入框、会话索引、消息、事件归并、终端日志四块分离。
+- WebSocket 结构化事件通过 `EventReducer` 分发给 `MessageStore`/`ConversationStore` 和 `LogStore`。
 - 日志有节流和最大缓冲，输入框连续输入不会触发日志刷新。
 - ANSI 清洗和对话 parser 放在后台任务，主线程只做轻量状态更新。
-- 第一版固定终端尺寸 `120x32`，不跟随键盘或布局变化频繁发送 resize。
+- app-server runtime 不依赖终端尺寸；PTY fallback 仍固定 `120x32`，不跟随键盘或布局变化频繁发送 resize。
 
 ### 2. 本机启动
 
@@ -128,6 +132,14 @@ http://127.0.0.1:8787
 ```
 
 页面里输入 `AGENTD_TOKEN` 后连接。
+
+注意：原生 iPad App 会在 REST 和 WebSocket 握手里使用 `Authorization: Bearer <token>`。浏览器 WebSocket 不能设置 Authorization header；如果仍要使用内置 Web/PWA 调试入口，需要显式开启兼容模式：
+
+```bash
+export AGENTD_ALLOW_QUERY_TOKEN=1
+```
+
+这个模式会把 token 放进 WebSocket URL query，只建议本机或可信 Tailscale 网络内临时使用。
 
 ### 3. Tailscale 启动
 
@@ -201,8 +213,14 @@ AGENTD_LISTEN
 AGENTD_BIND
 AGENTD_PORT
 AGENTD_TOKEN
+AGENTD_ALLOW_QUERY_TOKEN
 AGENTD_CODEX_BIN
 AGENTD_CODEX_ARGS
+AGENTD_RUNTIME
+AGENTD_APP_SERVER_TRANSPORT
+AGENTD_APP_SERVER_LISTEN
+AGENTD_APP_SERVER_MANAGED
+AGENTD_APP_SERVER_FALLBACK_PTY
 AGENTD_PROJECTS
 AGENTD_SCAN_ROOTS
 AGENTD_OUTPUT_BUFFER_BYTES
@@ -251,6 +269,16 @@ curl -X POST \
 ```
 
 ## 风险与优化
+
+### 安全与成本控制
+
+- 推荐只通过 Tailscale 暴露 `agentd`，不要开放到公网。
+- Tailscale ACL 建议只允许可信 iPad 访问 Mac 的 `8787` 端口。
+- Token 使用 32 字节以上随机值，例如 `openssl rand -hex 32`。
+- `codex app-server` 迁移后仍由 `agentd` 以 `stdio://` 子进程管理，不直接暴露给 iPad。
+- 审批请求默认应 fail closed：超时、断线、未知类型都拒绝。
+- 不允许移动端启用 `dangerFullAccess` 或 `approvalPolicy=never`。
+- 后续结构化 runtime 会展示 token usage / rate limit，便于控制成本和排查配额。
 
 当前 MVP 限制：
 

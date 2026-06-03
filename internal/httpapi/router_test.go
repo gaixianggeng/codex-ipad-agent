@@ -76,6 +76,28 @@ func TestPositiveSeqParsesOnlyPositiveIntegers(t *testing.T) {
 	}
 }
 
+func TestSameOriginOrNoOrigin(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://agentd.local/api/sessions/sess/ws", nil)
+	req.Host = "agentd.local"
+	if !sameOriginOrNoOrigin(req) {
+		t.Fatal("没有 Origin 的原生客户端/WebSocket 请求应允许")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://agentd.local/api/sessions/sess/ws", nil)
+	req.Host = "agentd.local"
+	req.Header.Set("Origin", "http://agentd.local")
+	if !sameOriginOrNoOrigin(req) {
+		t.Fatal("同源浏览器 WebSocket 应允许")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://agentd.local/api/sessions/sess/ws", nil)
+	req.Host = "agentd.local"
+	req.Header.Set("Origin", "http://evil.local")
+	if sameOriginOrNoOrigin(req) {
+		t.Fatal("跨源 WebSocket 不应通过 Origin 校验")
+	}
+}
+
 func TestActiveSessionSnapshotsFiltersByProjectBeforePagination(t *testing.T) {
 	now := time.Unix(100, 0)
 	list := []*session.Session{

@@ -22,11 +22,26 @@ type wsMessage struct {
 	Data            string          `json:"data,omitempty"`
 	Seq             int64           `json:"seq,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`
+	TurnID          string          `json:"turn_id,omitempty"`
+	ItemID          string          `json:"item_id,omitempty"`
+	MessageID       string          `json:"message_id,omitempty"`
+	ApprovalID      string          `json:"approval_id,omitempty"`
+	Decision        string          `json:"decision,omitempty"`
 	ClientMessageID string          `json:"client_message_id,omitempty"`
+	Revision        int64           `json:"revision,omitempty"`
 	Cols            int             `json:"cols,omitempty"`
 	Rows            int             `json:"rows,omitempty"`
 	Session         any             `json:"session,omitempty"`
+	Row             any             `json:"row,omitempty"`
 	Message         *agentMessage   `json:"message,omitempty"`
+	Delta           any             `json:"delta,omitempty"`
+	Log             any             `json:"log,omitempty"`
+	Diff            any             `json:"diff,omitempty"`
+	Approval        any             `json:"approval,omitempty"`
+	Usage           any             `json:"usage,omitempty"`
+	RateLimit       any             `json:"rate_limit,omitempty"`
+	Warning         any             `json:"warning,omitempty"`
+	Status          string          `json:"status,omitempty"`
 	Exit            any             `json:"exit,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	Raw             json.RawMessage `json:"-"`
@@ -34,10 +49,18 @@ type wsMessage struct {
 
 func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) {
 	s, ok := r.sessions.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "session 不存在")
+	if ok {
+		r.ptySessionWS(w, req, id, s)
 		return
 	}
+	if appRuntime, ok := r.runtime.(*CodexAppServerRuntime); ok {
+		r.appServerSessionWS(w, req, id, appRuntime)
+		return
+	}
+	writeError(w, http.StatusNotFound, "session 不存在")
+}
+
+func (r *Router) ptySessionWS(w http.ResponseWriter, req *http.Request, id string, s *sessionpkg.Session) {
 	afterSeq := positiveSeq(req.URL.Query().Get("after_seq"))
 	output, initialReplay, initialSnapshot, detach, err := s.AttachAfter(afterSeq)
 	if err != nil {
@@ -164,6 +187,140 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 			return
 		}
 	}
+}
+
+func (r *Router) appServerSessionWS(w http.ResponseWriter, req *http.Request, id string, runtime *CodexAppServerRuntime) {
+	detail, err := runtime.SessionDetail(req.Context(), id, 0)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "session 不存在")
+		return
+	}
+	events, detach, err := runtime.Subscribe(req.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	defer detach()
+
+	conn, err := r.upgrader.Upgrade(w, req, nil)
+	if err != nil {
+		log.Printf("app-server ws upgrade failed session=%s err=%v", id, err)
+		return
+	}
+	defer conn.Close()
+	log.Printf("app-server ws connected session=%s", id)
+	runtime.appendTrace(id, sessionpkg.TraceEvent{Type: "app_server_ws_connected"})
+
+	var writeMu sync.Mutex
+	send := func(msg wsMessage) bool {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return conn.WriteJSON(msg) == nil
+	}
+	send(wsMessage{Type: "session", SessionID: id, Session: detail.Snapshot})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			var msg wsMessage
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			switch msg.Type {
+			case "input":
+				log.Printf("app-server ws input session=%s bytes=%d", id, len(msg.Data))
+				result, err := runtime.StartTurnForSession(req.Context(), id, msg.Data, msg.ClientMessageID)
+				if err != nil {
+					log.Printf("app-server ws input failed session=%s err=%v", id, err)
+					send(wsMessage{Type: "error", Error: err.Error()})
+					continue
+				}
+				if result.Message != nil {
+					seq := runtime.nextEventSeq(id)
+					send(wsMessage{
+						Type:            "message_completed",
+						SessionID:       id,
+						TurnID:          result.TurnID,
+						ClientMessageID: msg.ClientMessageID,
+						Seq:             seq,
+						Revision:        seq,
+						Message:         result.Message,
+					})
+				}
+			case "signal":
+				if msg.Data == "ctrl_c" {
+					_ = runtime.StopSession(req.Context(), id)
+				}
+			case "approval_decision":
+				approvalID := firstNonEmpty(msg.ApprovalID, msg.ItemID, msg.MessageID)
+				if err := runtime.ResolveApproval(id, approvalID, msg.Decision, msg.Data); err != nil {
+					send(wsMessage{Type: "error", Error: err.Error()})
+					continue
+				}
+				send(wsMessage{Type: "session_status", SessionID: id, Status: "running"})
+			case "resize":
+				send(wsMessage{
+					Type:      "warning",
+					SessionID: id,
+					Warning:   map[string]any{"message": "app-server runtime 暂不需要终端 resize"},
+				})
+			case "ping":
+				send(wsMessage{Type: "pong"})
+			default:
+				send(wsMessage{Type: "error", Error: "未知 WebSocket 消息类型"})
+			}
+		}
+	}()
+
+	for {
+		select {
+		case event := <-events:
+			if !send(runtimeEventToWSMessage(event)) {
+				return
+			}
+		case <-done:
+			log.Printf("app-server ws disconnected session=%s", id)
+			runtime.appendTrace(id, sessionpkg.TraceEvent{Type: "app_server_ws_disconnected"})
+			return
+		case <-req.Context().Done():
+			runtime.appendTrace(id, sessionpkg.TraceEvent{Type: "app_server_ws_context_done"})
+			return
+		}
+	}
+}
+
+func runtimeEventToWSMessage(event runtimeStreamEvent) wsMessage {
+	msg := wsMessage{
+		Type:      event.Type,
+		Data:      event.Data,
+		Seq:       event.Seq,
+		SessionID: event.SessionID,
+		TurnID:    event.TurnID,
+		ItemID:    event.ItemID,
+		MessageID: event.MessageID,
+		Revision:  event.Revision,
+		Status:    event.Status,
+		Row:       event.Row,
+		Usage:     event.Usage,
+		RateLimit: event.RateLimit,
+		Message:   event.Message,
+		Error:     event.Error,
+	}
+	switch event.Type {
+	case "assistant_delta":
+		msg.Delta = map[string]any{"text": event.Data, "role": "assistant", "kind": "message"}
+	case "log_delta":
+		msg.Log = map[string]any{"text": event.Data}
+	case "diff_updated":
+		msg.Diff = event.Diff
+	case "approval_request":
+		msg.Approval = event.Approval
+	case "warning":
+		msg.Warning = event.Warning
+	}
+	return msg
 }
 
 type structuredMessageTracker struct {

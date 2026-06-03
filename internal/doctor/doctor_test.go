@@ -81,6 +81,66 @@ func TestCheckerFailsOnMissingCodexButIgnoresMissingTailscale(t *testing.T) {
 	}
 }
 
+func TestCheckerReportsAppServerRuntimeSafely(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeExecutable(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server", FallbackPTY: true},
+		AppServer: config.AppServerConfig{Transport: "stdio", Managed: true},
+		Codex:     config.CodexConfig{Bin: "codex"},
+		Projects: []config.ProjectConfig{{
+			ID:   "demo",
+			Name: "Demo",
+			Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), false)
+	if !results.OK {
+		t.Fatalf("stdio app-server runtime 应通过 doctor：%+v", results)
+	}
+	if !hasCheck(results, "app-server") {
+		t.Fatalf("doctor 应包含 app-server runtime 检查：%+v", results.Checks)
+	}
+}
+
+func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeExecutable(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server", FallbackPTY: true},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "0.0.0.0:8390"},
+		Codex:     config.CodexConfig{Bin: "codex"},
+		Projects: []config.ProjectConfig{{
+			ID:   "demo",
+			Name: "Demo",
+			Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), false)
+	if results.OK {
+		t.Fatalf("非 loopback app-server ws 不应通过 doctor：%+v", results)
+	}
+}
+
+func hasCheck(results Results, name string) bool {
+	for _, check := range results.Checks {
+		if check.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func newTestChecker(t *testing.T, cfg config.Config) *Checker {
 	t.Helper()
 	registry, err := projects.NewRegistry(cfg.Projects)
