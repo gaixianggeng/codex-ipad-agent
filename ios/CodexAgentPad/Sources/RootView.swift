@@ -96,9 +96,9 @@ struct RootView: View {
                     }
                 }
                 .inspector(isPresented: $showingLogInspector) {
-                    TerminalPanelView()
-                        // 终端作为辅助 inspector，不参与主 split 的空间分配。宽一点便于 TUI 排版。
-                        .inspectorColumnWidth(min: 280, ideal: 380, max: 560)
+                    LogPanelView()
+                        // 日志作为辅助 inspector，不参与主 split 的空间分配。
+                        .inspectorColumnWidth(min: 220, ideal: 260, max: 320)
                 }
         }
         .navigationSplitViewStyle(.balanced)
