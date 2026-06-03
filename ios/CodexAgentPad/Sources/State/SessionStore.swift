@@ -124,6 +124,8 @@ final class SessionStore: ObservableObject {
     private let appStore: AppStore
     private let conversationStore: ConversationStore
     private let logStore: LogStore
+    private let terminalStore: TerminalSurfaceStore?
+    private var lastTerminalSizeBySessionID: [SessionID: TerminalSize] = [:]
     private let clientFactory: () throws -> any SessionStoreAPIClient
     private let webSocketFactory: () -> any SessionWebSocketClient
     private let webSocketReconnectDelayNanoseconds: (Int) -> UInt64
@@ -165,6 +167,7 @@ final class SessionStore: ObservableObject {
         appStore: AppStore,
         conversationStore: ConversationStore,
         logStore: LogStore,
+        terminalStore: TerminalSurfaceStore? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         webSocketReconnectDelayNanoseconds: ((Int) -> UInt64)? = nil
@@ -172,9 +175,25 @@ final class SessionStore: ObservableObject {
         self.appStore = appStore
         self.conversationStore = conversationStore
         self.logStore = logStore
+        self.terminalStore = terminalStore
         self.clientFactory = clientFactory ?? { try appStore.client() }
         self.webSocketFactory = webSocketFactory ?? { AgentWebSocketClient() }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
+        // 终端按面板宽度自动算出列/行后，把 PTY resize 过去，让 codex TUI 按面板宽度重绘。
+        terminalStore?.onResize = { [weak self] sessionID, cols, rows in
+            self?.handleTerminalResize(sessionID: sessionID, cols: cols, rows: rows)
+        }
+    }
+
+    private func handleTerminalResize(sessionID: String, cols: Int, rows: Int) {
+        guard cols > 0, rows > 0, connectedSessionID == sessionID else {
+            return
+        }
+        if let last = lastTerminalSizeBySessionID[sessionID], last == TerminalSize(cols: cols, rows: rows) {
+            return
+        }
+        lastTerminalSizeBySessionID[sessionID] = TerminalSize(cols: cols, rows: rows)
+        _ = webSocket?.sendResize(cols: cols, rows: rows)
     }
 
     private static func defaultWebSocketReconnectDelayNanoseconds(attempt: Int) -> UInt64 {
@@ -1326,8 +1345,10 @@ final class SessionStore: ObservableObject {
                 sessionID: id,
                 autoClearAfter: foregroundOutputIdleClearDelay
             )
-            // output 是旧协议的原始 PTY 日志；新协议下不再从 TUI 文本猜 assistant 气泡。
+            // output 是原始 PTY 字节（含 ANSI 转义）。喂给终端模拟器忠实渲染屏幕；
+            // 同时保留 logStore（暂时仍在维护，便于回退/调试），但 UI 已切到终端面板。
             logStore.append(data, sessionID: id, seq: metadata.seq)
+            terminalStore?.feed(data, sessionID: id, seq: metadata.seq)
         case .exit(let result):
             updateSession(sessionID) { item in
                 item.status = "closed"
