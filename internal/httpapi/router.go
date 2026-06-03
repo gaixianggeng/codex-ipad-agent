@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -38,6 +39,9 @@ type Router struct {
 	auth     auth.Authenticator
 	version  string
 	upgrader websocket.Upgrader
+
+	gatewayThreadsMu sync.Mutex
+	gatewayThreads   map[string]appServerGatewayAllowedThread
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
@@ -61,6 +65,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 		upgrader: websocket.Upgrader{
 			CheckOrigin: sameOriginOrNoOrigin,
 		},
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
 	}
 
 	mux := http.NewServeMux()

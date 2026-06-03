@@ -81,6 +81,34 @@ type appServerGatewayPolicyError struct {
 	message string
 }
 
+type appServerGatewayPolicy struct {
+	router *Router
+	mu     sync.Mutex
+
+	pendingThreads map[string]appServerGatewayPendingThreadRequest
+	allowedThreads map[string]appServerGatewayAllowedThread
+}
+
+type appServerGatewayPendingThreadRequest struct {
+	method    string
+	cwd       string
+	projectID string
+}
+
+type appServerGatewayAllowedThread struct {
+	id        string
+	cwd       string
+	projectID string
+}
+
+type appServerGatewayThreadWire struct {
+	ID        string `json:"id"`
+	ThreadID  string `json:"threadId"`
+	SessionID string `json:"sessionId"`
+	CWD       string `json:"cwd"`
+	Path      string `json:"path"`
+}
+
 func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -244,14 +272,19 @@ func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
 func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn) {
 	done := make(chan struct{}, 2)
 	var clientWriteMu sync.Mutex
+	policy := &appServerGatewayPolicy{
+		router:         r,
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		r.copyClientFramesToAppServer(client, upstream, &clientWriteMu)
+		r.copyClientFramesToAppServer(client, upstream, &clientWriteMu, policy)
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		copyWebSocketFrames(ctx, upstream, client, &clientWriteMu)
+		copyWebSocketFrames(ctx, upstream, client, &clientWriteMu, policy)
 	}()
 
 	<-done
@@ -259,13 +292,13 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	_ = upstream.Close()
 }
 
-func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex) {
+func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, policy *appServerGatewayPolicy) {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
 			return
 		}
-		if policyErr := r.validateAppServerGatewayFrame(messageType, payload); policyErr != nil {
+		if policyErr := policy.validateClientFrame(messageType, payload); policyErr != nil {
 			// 非法请求只回 JSON-RPC error，不把高危帧送到 app-server。
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 				return
@@ -278,7 +311,7 @@ func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *w
 	}
 }
 
-func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, toWriteMu *sync.Mutex) {
+func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, toWriteMu *sync.Mutex, policy *appServerGatewayPolicy) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -290,6 +323,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 			return
 		}
 		// app-server 响应和通知是业务协议，gateway 只做原样转发。
+		policy.observeUpstreamFrame(messageType, payload)
 		if err := writeWebSocketFrame(to, toWriteMu, messageType, payload); err != nil {
 			return
 		}
@@ -305,7 +339,7 @@ func writeWebSocketFrame(conn *websocket.Conn, mu *sync.Mutex, messageType int, 
 	return conn.WriteMessage(messageType, payload)
 }
 
-func (r *Router) validateAppServerGatewayFrame(messageType int, payload []byte) *appServerGatewayPolicyError {
+func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []byte) *appServerGatewayPolicyError {
 	if messageType != websocket.TextMessage {
 		return &appServerGatewayPolicyError{message: "app-server gateway 只允许 JSON text frame"}
 	}
@@ -320,6 +354,9 @@ func (r *Router) validateAppServerGatewayFrame(messageType int, payload []byte) 
 		}
 		return &appServerGatewayPolicyError{id: frame.ID, message: "JSON-RPC frame 缺少 method"}
 	}
+	if method != "initialized" && frame.ID == nil {
+		return &appServerGatewayPolicyError{message: "app-server request 必须包含 id"}
+	}
 	if _, ok := appServerAllowedMethods[method]; !ok {
 		return &appServerGatewayPolicyError{id: frame.ID, message: "app-server method 不允许：" + method}
 	}
@@ -327,10 +364,220 @@ func (r *Router) validateAppServerGatewayFrame(messageType int, payload []byte) 
 	if err != nil {
 		return &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if err := r.validateGatewayPolicyParams(method, params); err != nil {
+	if err := p.router.validateGatewayPolicyParams(method, params); err != nil {
+		return &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+	}
+	if err := p.validateThreadCapability(&frame, method, params); err != nil {
 		return &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
 	return nil
+}
+
+func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any) error {
+	cwd, hasCWD := gatewayStringParam(params, "cwd")
+	project := projects.Project{}
+	projectOK := false
+	if hasCWD {
+		project, projectOK = p.router.projectForGatewayPath(cwd)
+		if !projectOK {
+			return fmt.Errorf("%s.cwd 必须来自 projects allowlist", method)
+		}
+	}
+
+	switch method {
+	case "thread/list", "thread/start":
+		p.rememberPendingThreadResponse(frame.ID, method, cwd, project.ID)
+	case "thread/resume":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		if _, ok := p.allowedThread(threadID); !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		p.rememberPendingThreadResponse(frame.ID, method, cwd, project.ID)
+	case "thread/read":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		if _, ok := p.allowedThread(threadID); !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		p.rememberPendingThreadResponse(frame.ID, method, "", "")
+	case "turn/start":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if !projectOK || project.ID != thread.projectID {
+			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的项目", method)
+		}
+	case "turn/interrupt":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		if _, ok := p.allowedThread(threadID); !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+	}
+	return nil
+}
+
+func (p *appServerGatewayPolicy) rememberPendingThreadResponse(id *json.RawMessage, method string, cwd string, projectID string) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	p.pendingThreads[key] = appServerGatewayPendingThreadRequest{method: method, cwd: cwd, projectID: projectID}
+	p.mu.Unlock()
+}
+
+func (p *appServerGatewayPolicy) allowedThread(threadID string) (appServerGatewayAllowedThread, bool) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return appServerGatewayAllowedThread{}, false
+	}
+	p.mu.Lock()
+	thread, ok := p.allowedThreads[threadID]
+	p.mu.Unlock()
+	if ok {
+		return thread, true
+	}
+	return p.router.gatewayThread(threadID)
+}
+
+func (r *Router) gatewayThread(threadID string) (appServerGatewayAllowedThread, bool) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return appServerGatewayAllowedThread{}, false
+	}
+	r.gatewayThreadsMu.Lock()
+	defer r.gatewayThreadsMu.Unlock()
+	thread, ok := r.gatewayThreads[threadID]
+	return thread, ok
+}
+
+func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload []byte) {
+	if messageType != websocket.TextMessage {
+		return
+	}
+	var frame appServerGatewayFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return
+	}
+	if frame.ID == nil || len(frame.Result) == 0 || len(frame.Error) > 0 {
+		p.forgetPending(frame.ID)
+		return
+	}
+	key := gatewayRequestIDKey(frame.ID)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	pending, ok := p.pendingThreads[key]
+	if ok {
+		delete(p.pendingThreads, key)
+	}
+	p.mu.Unlock()
+	if !ok {
+		return
+	}
+	for _, thread := range p.threadsFromResult(frame.Result, pending) {
+		p.allowThread(thread)
+	}
+}
+
+func (p *appServerGatewayPolicy) forgetPending(id *json.RawMessage) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return
+	}
+	p.mu.Lock()
+	delete(p.pendingThreads, key)
+	p.mu.Unlock()
+}
+
+func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending appServerGatewayPendingThreadRequest) []appServerGatewayAllowedThread {
+	var threads []appServerGatewayThreadWire
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err == nil {
+		appendThreadWire := func(value json.RawMessage) {
+			var thread appServerGatewayThreadWire
+			if len(value) > 0 && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) && json.Unmarshal(value, &thread) == nil {
+				threads = append(threads, thread)
+			}
+		}
+		appendThreadWire(object["thread"])
+		for _, key := range []string{"data", "threads"} {
+			if value := object[key]; len(value) > 0 {
+				var list []appServerGatewayThreadWire
+				if err := json.Unmarshal(value, &list); err == nil {
+					threads = append(threads, list...)
+				}
+			}
+		}
+	}
+	if len(threads) == 0 {
+		var list []appServerGatewayThreadWire
+		if err := json.Unmarshal(raw, &list); err == nil {
+			threads = append(threads, list...)
+		}
+	}
+
+	out := make([]appServerGatewayAllowedThread, 0, len(threads))
+	for _, item := range threads {
+		id := firstNonEmpty(item.ID, item.ThreadID, item.SessionID)
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		cwd := firstNonEmpty(item.CWD, item.Path, pending.cwd)
+		project, ok := p.router.projectForGatewayPath(cwd)
+		if !ok {
+			continue
+		}
+		if pending.projectID != "" && project.ID != pending.projectID {
+			continue
+		}
+		out = append(out, appServerGatewayAllowedThread{
+			id:        strings.TrimSpace(id),
+			cwd:       strings.TrimSpace(cwd),
+			projectID: project.ID,
+		})
+	}
+	return out
+}
+
+func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThread) {
+	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.projectID) == "" {
+		return
+	}
+	p.mu.Lock()
+	p.allowedThreads[thread.id] = thread
+	p.mu.Unlock()
+	p.router.allowGatewayThread(thread)
+}
+
+func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
+	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.projectID) == "" {
+		return
+	}
+	r.gatewayThreadsMu.Lock()
+	r.gatewayThreads[thread.id] = thread
+	r.gatewayThreadsMu.Unlock()
+}
+
+func gatewayRequestIDKey(id *json.RawMessage) string {
+	if id == nil || len(bytes.TrimSpace(*id)) == 0 {
+		return ""
+	}
+	return string(bytes.TrimSpace(*id))
 }
 
 func decodeGatewayParams(raw json.RawMessage) (map[string]any, error) {
@@ -396,20 +643,24 @@ func gatewayStringParam(params map[string]any, key string) (string, bool) {
 }
 
 func (r *Router) pathInProjectAllowlist(raw string) bool {
+	_, ok := r.projectForGatewayPath(raw)
+	return ok
+}
+
+func (r *Router) projectForGatewayPath(raw string) (projects.Project, bool) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
-		return false
+		return projects.Project{}, false
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return false
+		return projects.Project{}, false
 	}
 	realPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return false
+		return projects.Project{}, false
 	}
-	_, ok := r.projects.FindByPath(realPath)
-	return ok
+	return r.projects.FindByPath(realPath)
 }
 
 func collectWritableRoots(value any) ([]string, error) {

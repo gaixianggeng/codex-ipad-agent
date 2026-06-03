@@ -35,6 +35,12 @@ private struct CodexAppServerSessionContext {
     var activeTurnID: TurnID?
 }
 
+private struct CodexAppServerPreparedConnection {
+    let connection: CodexAppServerConnection
+    let notifications: AsyncStream<CodexAppServerNotification>
+    let serverRequests: AsyncStream<CodexAppServerServerRequest>
+}
+
 actor CodexAppServerSessionRuntime {
     private let endpoint: String
     private let token: String
@@ -42,6 +48,7 @@ actor CodexAppServerSessionRuntime {
     private let configProvider: () async throws -> CodexAppServerConfigResponse
     private var config: CodexAppServerConfigResponse?
     private var connection: CodexAppServerConnection?
+    private var connectionTask: Task<CodexAppServerPreparedConnection, Error>?
     private var notificationPumpTask: Task<Void, Never>?
     private var serverRequestPumpTask: Task<Void, Never>?
     private var projector = CodexAppServerEventProjector()
@@ -66,6 +73,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     deinit {
+        connectionTask?.cancel()
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
     }
@@ -280,7 +288,13 @@ actor CodexAppServerSessionRuntime {
 
     private func ensureConnection() async throws -> CodexAppServerConnection {
         if let connection {
-            return connection
+            if await connection.isReadyForRequests() {
+                return connection
+            }
+            await retireConnection(connection)
+        }
+        if let connectionTask {
+            return try await installPreparedConnectionIfNeeded(from: connectionTask)
         }
         let config = try await ensureConfig()
         guard config.runtime.gatewayAvailable else {
@@ -288,21 +302,75 @@ actor CodexAppServerSessionRuntime {
         }
         let gatewayURL = try gatewayURL(from: config)
         let next = CodexAppServerConnection(transport: transportFactory())
-        let notifications = await next.notifications()
-        let serverRequests = await next.serverRequests()
-        notificationPumpTask = Task { [weak self] in
+        let task = Task { [next, gatewayURL, token] in
+            let notifications = await next.notifications()
+            let serverRequests = await next.serverRequests()
+            try await next.connect(url: gatewayURL, token: token)
+            return CodexAppServerPreparedConnection(
+                connection: next,
+                notifications: notifications,
+                serverRequests: serverRequests
+            )
+        }
+        connectionTask = task
+        do {
+            return try await installPreparedConnectionIfNeeded(from: task)
+        } catch {
+            connectionTask = nil
+            await next.disconnect()
+            throw error
+        }
+    }
+
+    private func installPreparedConnectionIfNeeded(
+        from task: Task<CodexAppServerPreparedConnection, Error>
+    ) async throws -> CodexAppServerConnection {
+        let prepared: CodexAppServerPreparedConnection
+        do {
+            prepared = try await task.value
+            connectionTask = nil
+        } catch {
+            connectionTask = nil
+            throw error
+        }
+        if let connection, await connection.isReadyForRequests() {
+            return connection
+        }
+        installConnection(prepared)
+        return prepared.connection
+    }
+
+    private func installConnection(_ prepared: CodexAppServerPreparedConnection) {
+        notificationPumpTask?.cancel()
+        serverRequestPumpTask?.cancel()
+        connection = prepared.connection
+        notificationPumpTask = Task { [weak self, notifications = prepared.notifications] in
             for await notification in notifications {
                 await self?.handle(notification)
             }
         }
-        serverRequestPumpTask = Task { [weak self] in
+        serverRequestPumpTask = Task { [weak self, serverRequests = prepared.serverRequests] in
             for await request in serverRequests {
                 await self?.handle(request)
             }
         }
-        try await next.connect(url: gatewayURL, token: token)
-        connection = next
-        return next
+    }
+
+    private func retireConnection(_ stale: CodexAppServerConnection) async {
+        notificationPumpTask?.cancel()
+        notificationPumpTask = nil
+        serverRequestPumpTask?.cancel()
+        serverRequestPumpTask = nil
+        connection = nil
+        pendingApprovalRequestsByID.removeAll(keepingCapacity: false)
+        await stale.disconnect()
+    }
+
+    func hasReadyConnectionForTesting() async -> Bool {
+        guard let connection else {
+            return false
+        }
+        return await connection.isReadyForRequests()
     }
 
     private func gatewayURL(from config: CodexAppServerConfigResponse) throws -> URL {
@@ -561,6 +629,7 @@ actor CodexAppServerSessionRuntime {
     ) -> CodexHistoryMessage? {
         let type = item["type"]?.stringValue
         let itemID = item["id"]?.stringValue ?? UUID().uuidString
+        let messageID = appServerHistoryMessageID(turnID: turnID, itemID: itemID)
         switch type {
         case "userMessage":
             let text = userMessageText(from: item).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -568,7 +637,7 @@ actor CodexAppServerSessionRuntime {
                 return nil
             }
             return CodexHistoryMessage(
-                id: itemID,
+                id: messageID,
                 role: "user",
                 content: text,
                 createdAt: createdAt,
@@ -581,16 +650,23 @@ actor CodexAppServerSessionRuntime {
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: itemID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
         case "plan":
             let text = item["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: itemID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
         default:
             return nil
         }
+    }
+
+    private func appServerHistoryMessageID(turnID: TurnID?, itemID: AgentItemID) -> MessageID {
+        guard let turnID, !turnID.isEmpty else {
+            return itemID
+        }
+        return "appserver:\(turnID):\(itemID)"
     }
 
     private func userMessageText(from item: [String: CodexAppServerJSONValue]) -> String {

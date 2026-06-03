@@ -168,6 +168,142 @@ func TestAppServerGatewayRejectsUnsafeMethodWithoutForwarding(t *testing.T) {
 	assertNoUpstreamFrame(t, received)
 }
 
+func TestAppServerGatewayRejectsUnauthorizedThreadIDWithoutForwarding(t *testing.T) {
+	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
+	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "thread read",
+			payload: `{"id":11,"method":"thread/read","params":{"threadId":"thread-outside","includeTurns":true}}`,
+			want:    "threadId 未由当前 gateway 连接授权",
+		},
+		{
+			name: "turn start",
+			payload: fmt.Sprintf(
+				`{"id":12,"method":"turn/start","params":{"threadId":"thread-outside","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+				projectDir,
+				projectDir,
+			),
+			want: "threadId 未由当前 gateway 连接授权",
+		},
+		{
+			name: "thread resume",
+			payload: fmt.Sprintf(
+				`{"id":13,"method":"thread/resume","params":{"threadId":"thread-outside","cwd":%q,"approvalPolicy":"on-request","sandbox":"workspace-write"}}`,
+				projectDir,
+			),
+			want: "threadId 未由当前 gateway 连接授权",
+		},
+		{
+			name:    "turn interrupt",
+			payload: `{"id":14,"method":"turn/interrupt","params":{"threadId":"thread-outside","turnId":"turn-1"}}`,
+			want:    "threadId 未由当前 gateway 连接授权",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(tc.payload)); err != nil {
+				t.Fatal(err)
+			}
+			errFrame := readGatewayError(t, conn)
+			if !strings.Contains(errFrame.message, tc.want) {
+				t.Fatalf("unauthorized thread error 应包含 %q，got=%+v", tc.want, errFrame)
+			}
+		})
+	}
+	assertNoUpstreamFrame(t, received)
+}
+
+func TestAppServerGatewayAuthorizesThreadIDsFromThreadListResponse(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method != "thread/list" {
+			return
+		}
+		response := fmt.Sprintf(
+			`{"id":%s,"result":{"data":[{"id":"thread-authorized","cwd":%q}]}}`,
+			string(*frame.ID),
+			projectDir,
+		)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+			t.Errorf("fake upstream 写 thread/list 响应失败：%v", err)
+		}
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-authorized")
+
+	readFrame := []byte(`{"id":31,"method":"thread/read","params":{"threadId":"thread-authorized","includeTurns":true}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, readFrame); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, readFrame) {
+			t.Fatalf("已授权 thread/read 必须原样转发：got=%s want=%s", got, readFrame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到已授权 thread/read")
+	}
+}
+
+func TestAppServerGatewayKeepsAuthorizedThreadAcrossReconnects(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-reconnect")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	first := dialAuthedGateway(t, server.URL)
+	authorizeGatewayThread(t, first, received, projectDir, "thread-reconnect")
+	_ = first.Close()
+
+	second := dialAuthedGateway(t, server.URL)
+	defer second.Close()
+
+	turnFrame := []byte(fmt.Sprintf(
+		`{"id":32,"method":"turn/start","params":{"threadId":"thread-reconnect","cwd":%q,"input":[{"type":"text","text":"after reconnect"}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	))
+	if err := second.WriteMessage(websocket.TextMessage, turnFrame); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, turnFrame) {
+			t.Fatalf("重连后已授权 turn/start 必须原样转发：got=%s want=%s", got, turnFrame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到重连后的已授权 turn/start")
+	}
+}
+
 func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
 	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
@@ -299,13 +435,19 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 }
 
 func TestAppServerGatewayDoesNotScanPromptTextForDangerFullAccess(t *testing.T) {
-	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
-	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-1")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
+
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-1")
 
 	authorized := []byte(fmt.Sprintf(
 		`{"id":10,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"danger-full-access"}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
@@ -329,7 +471,17 @@ func TestAppServerGatewayDoesNotScanPromptTextForDangerFullAccess(t *testing.T) 
 func TestAppServerGatewayForwardsAuthorizedFrameUnchanged(t *testing.T) {
 	upstreamResponse := []byte(`{"id":7,"result":{"ok":true}}`)
 	upstreamNotification := []byte(`{"method":"item/agentMessage/delta","params":{"delta":"hello"}}`)
+	var projectDir string
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-1")
+			return
+		}
 		if err := conn.WriteMessage(websocket.TextMessage, upstreamResponse); err != nil {
 			t.Errorf("fake upstream 写响应失败：%v", err)
 		}
@@ -337,12 +489,15 @@ func TestAppServerGatewayForwardsAuthorizedFrameUnchanged(t *testing.T) {
 			t.Errorf("fake upstream 写通知失败：%v", err)
 		}
 	})
-	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
+
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-1")
 
 	authorized := []byte(fmt.Sprintf(
 		`{"id":7,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
@@ -369,6 +524,50 @@ func TestAppServerGatewayForwardsAuthorizedFrameUnchanged(t *testing.T) {
 	notification := readGatewayRaw(t, conn)
 	if !bytes.Equal(notification, upstreamNotification) {
 		t.Fatalf("upstream notification 必须原样返回：got=%s want=%s", notification, upstreamNotification)
+	}
+}
+
+func authorizeGatewayThread(t *testing.T, conn *websocket.Conn, received <-chan []byte, projectDir string, threadID string) {
+	t.Helper()
+	listFrame := []byte(fmt.Sprintf(
+		`{"id":30,"method":"thread/list","params":{"cwd":%q,"limit":20}}`,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, listFrame); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, listFrame) {
+			t.Fatalf("thread/list 授权请求必须原样转发：got=%s want=%s", got, listFrame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到 thread/list 授权请求")
+	}
+	raw := readGatewayRaw(t, conn)
+	if !bytes.Contains(raw, []byte(threadID)) {
+		t.Fatalf("thread/list 授权响应应包含 thread id %s：%s", threadID, raw)
+	}
+}
+
+func respondToThreadListAuthorization(t *testing.T, conn *websocket.Conn, payload []byte, projectDir string, threadID string) {
+	t.Helper()
+	var frame appServerGatewayFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		t.Errorf("fake upstream 收到非法 JSON：%v", err)
+		return
+	}
+	if frame.Method != "thread/list" {
+		return
+	}
+	response := fmt.Sprintf(
+		`{"id":%s,"result":{"data":[{"id":%q,"cwd":%q}]}}`,
+		string(*frame.ID),
+		threadID,
+		projectDir,
+	)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+		t.Errorf("fake upstream 写 thread/list 响应失败：%v", err)
 	}
 }
 
