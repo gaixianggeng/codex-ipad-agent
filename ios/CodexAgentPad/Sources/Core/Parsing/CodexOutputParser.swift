@@ -143,6 +143,14 @@ enum AssistantTextNormalizer {
             .joined()
     }
 
+    /// 仅折叠相邻重复句子 + 去空白，不做 prompt 片段截断。
+    /// 用于普通终端 output 去重：含 "›"/">"/"•" 的正常输出不会被误判成 TUI 残影。
+    static func plainDedupKey(_ text: String) -> String {
+        collapseAdjacentRepeatedSentenceSegments(text)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+    }
+
     static func stripTerminalPromptFragment(_ line: String, dropPromptOnlyLine: Bool = true) -> String {
         var trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if let range = trimmed.range(of: "• ") ?? trimmed.range(of: "● ") {

@@ -211,4 +211,29 @@ final class LogStoreTests: XCTestCase {
         XCTAssertEqual(lines.count, 1)
         XCTAssertEqual(lines.first?.text, "数据库管理员去看病。")
     }
+
+    func testLogFormatterDoesNotTruncatePlainOutputWithPromptLikeChars() {
+        // 普通终端 output 里的 "›" / ">Implement" / "•" 不是 TUI 残影，不应被 prompt 清洗截断。
+        let log = [
+            "build a › b done",
+            "note: > Implement later",
+            "data: • item one",
+        ].joined(separator: "\n")
+
+        let lines = LogPanelFormatter().renderedLines(from: log)
+
+        XCTAssertEqual(
+            lines.map(\.text),
+            ["build a › b done", "note: > Implement later", "data: • item one"]
+        )
+    }
+
+    func testLogFormatterKeepsDistinctOutputLinesSharingPromptPrefix() {
+        // 两行只是恰好都含 "›"，内容不同，不能因为 prompt 截断后 key 相同被误合并。
+        let log = ["Step › one", "Step › two"].joined(separator: "\n")
+
+        let lines = LogPanelFormatter().renderedLines(from: log)
+
+        XCTAssertEqual(lines.map(\.text), ["Step › one", "Step › two"])
+    }
 }

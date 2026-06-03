@@ -182,7 +182,7 @@ struct LogPanelFormatter {
             }
             // 按归一化后的语义文本去重：TUI 流式重绘常常只差尾部输入框占位符或空白，
             // 原来的“严格相邻相等”挡不住，这里用压缩后的 key 把这些近似重复行合并掉。
-            let dedupKey = AssistantTextNormalizer.normalizedAssistantTextForDedup(line.text)
+            let dedupKey = dedupKey(for: line)
             let effectiveKey = dedupKey.isEmpty ? line.text : dedupKey
             guard effectiveKey != lastKey else {
                 continue
@@ -209,18 +209,37 @@ struct LogPanelFormatter {
             return LogDisplayLine(id: id, text: stripPromptPrefix(trimmed), kind: .command)
         }
         if trimmed.hasPrefix("•") || trimmed.hasPrefix("●") {
-            return LogDisplayLine(id: id, text: cleanDisplayText(stripBulletPrefix(trimmed)), kind: .assistant)
+            return LogDisplayLine(id: id, text: cleanAssistantText(stripBulletPrefix(trimmed)), kind: .assistant)
         }
-        return LogDisplayLine(id: id, text: cleanDisplayText(trimmed), kind: .output)
+        // 普通终端 output 只做“无损”的重复句子折叠，绝不按 prompt 片段截断，
+        // 否则像 "Home › Settings"、"note: > Implement later"、"data: • item" 这类正常输出会被误伤。
+        return LogDisplayLine(id: id, text: collapseRepeatedSentences(trimmed), kind: .output)
     }
 
-    private func cleanDisplayText(_ text: String) -> String {
-        // 1) 去掉被 TUI 重绘拼到行尾的输入框占位符（"… ›Implement {feature} …"）；
-        // 2) 合并同一行里被重画两遍的句子（"他说X。他说X。" → "他说X。"）。
-        // 失败时回退原文，保证日志不会因为清洗把正常内容清空。
+    private func dedupKey(for line: LogDisplayLine) -> String {
+        switch line.kind {
+        case .assistant:
+            // assistant/bullet 行是 TUI 重绘残影的高发区，按剥离 prompt 片段后的语义文本去重。
+            return AssistantTextNormalizer.normalizedAssistantTextForDedup(line.text)
+        default:
+            // 其余行（output/command/system…）只折叠重复句子 + 去空白，不截断含 "›"/">" 的正常内容。
+            return AssistantTextNormalizer.plainDedupKey(line.text)
+        }
+    }
+
+    private func cleanAssistantText(_ text: String) -> String {
+        // assistant 气泡行：1) 去掉被 TUI 重绘拼到行尾的输入框占位符（"… ›Implement {feature} …"）；
+        // 2) 合并同一行里被重画两遍的句子。失败时回退原文，避免把正常内容清空。
         let stripped = AssistantTextNormalizer.stripTerminalPromptFragment(text, dropPromptOnlyLine: false)
         let collapsed = AssistantTextNormalizer
             .collapseAdjacentRepeatedSentenceSegments(stripped)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? text : collapsed
+    }
+
+    private func collapseRepeatedSentences(_ text: String) -> String {
+        let collapsed = AssistantTextNormalizer
+            .collapseAdjacentRepeatedSentenceSegments(text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return collapsed.isEmpty ? text : collapsed
     }
