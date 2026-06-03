@@ -326,6 +326,7 @@ type runtimeStreamEvent struct {
 	Usage           *session.UsageSummary
 	RateLimit       *session.RateLimitSummary
 	PendingApproval *session.ApprovalSummary
+	Context         *session.ContextSnapshot
 	Error           string
 }
 
@@ -367,6 +368,29 @@ func (r *CodexAppServerRuntime) eventsFromNotification(notification appserver.No
 		return nil
 	}
 	threadID := stringParam(params, "threadId")
+	if threadID == "" && notification.Method == "thread/started" {
+		if thread := appServerThreadFromParam(params, "thread"); strings.TrimSpace(thread.ID) != "" {
+			project, projectOK := r.registry.FindByPath(thread.CWD)
+			snapshot := snapshotFromProjectThread(project, thread)
+			if !projectOK {
+				snapshot.ProjectID = thread.CWD
+				snapshot.Project = thread.CWD
+				snapshot.Dir = thread.CWD
+			}
+			snapshot.Status = appServerThreadStatusValueToSessionStatus(thread.Status)
+			r.storeSnapshot(snapshot)
+			context := snapshot.Context
+			event := runtimeStreamEvent{
+				Type:      "session_context",
+				SessionID: snapshot.ID,
+				Context:   cloneContextSnapshot(context),
+			}
+			event.Seq = r.nextEventSeq(snapshot.ID)
+			event.Revision = event.Seq
+			r.applyRuntimeEventState(&event)
+			return []runtimeStreamEvent{event}
+		}
+	}
 	if threadID == "" {
 		return nil
 	}
@@ -385,12 +409,23 @@ func (r *CodexAppServerRuntime) eventsFromNotification(notification appserver.No
 	case "item/agentMessage/delta":
 		base.Type = "assistant_delta"
 		base.Data = firstNonEmptyRaw(rawStringParam(params, "delta"), rawStringParam(params, "text"))
-	case "item/completed":
-		completed, ok := completedAgentMessageEvent(base, item)
-		if !ok {
+	case "item/started":
+		context := contextSnapshotFromItemParams(sessionID, threadID, params)
+		if context == nil {
 			return nil
 		}
-		base = completed
+		base.Type = "session_context"
+		base.Context = context
+	case "item/completed":
+		completed, ok := completedAgentMessageEvent(base, item)
+		if ok {
+			base = completed
+		} else if context := contextSnapshotFromItemParams(sessionID, threadID, params); context != nil {
+			base.Type = "session_context"
+			base.Context = context
+		} else {
+			return nil
+		}
 	case "item/commandExecution/outputDelta", "command/exec/outputDelta", "commandExecution/outputDelta", "command/execution/outputDelta", "process/outputDelta":
 		base.Type = "log_delta"
 		base.Data = firstNonEmptyRaw(
@@ -402,6 +437,7 @@ func (r *CodexAppServerRuntime) eventsFromNotification(notification appserver.No
 	case "item/fileChange/patchUpdated", "fileChange/patchUpdated", "turn/diff/updated":
 		base.Type = "diff_updated"
 		base.Diff = diffSummaryFromParams(params)
+		base.Context = contextSnapshotFromDiffParams(sessionID, threadID, params)
 	case "turn/completed":
 		base.Type = "turn_completed"
 	case "thread/tokenUsage/updated":
@@ -415,6 +451,7 @@ func (r *CodexAppServerRuntime) eventsFromNotification(notification appserver.No
 	case "thread/status/changed":
 		base.Type = "session_status"
 		base.Status = appServerStatusParam(params)
+		base.Context = contextSnapshotFromStatusParams(sessionID, threadID, params)
 	case "warning":
 		base.Type = "warning"
 		base.Warning = map[string]any{"message": firstNonEmpty(stringParam(params, "message"), "app-server warning")}
@@ -778,19 +815,313 @@ func snapshotFromProjectThread(project projects.Project, thread appServerThread)
 	if title == "" {
 		title = "Codex app-server 会话"
 	}
-	return session.SessionSnapshot{
+	snapshot := session.SessionSnapshot{
 		ID:              mobileSessionID(thread.ID),
 		ProjectID:       project.ID,
 		Project:         project.Name,
 		Dir:             project.Path,
 		Title:           trimRuntimeRunes(title, 48),
-		Status:          appServerThreadStatusToSessionStatus(thread.Status.Type),
+		Status:          appServerThreadStatusValueToSessionStatus(thread.Status),
 		Source:          "codex",
 		ResumeID:        thread.ID,
 		HistoryThreadID: thread.ID,
 		CreatedAt:       createdAt,
 		UpdatedAt:       updatedAt,
 		Preview:         trimRuntimeRunes(thread.Preview, 160),
+	}
+	snapshot.Context = contextSnapshotFromThread(project, thread, snapshot.ID)
+	return snapshot
+}
+
+const maxContextTasks = 8
+
+func contextSnapshotFromThread(project projects.Project, thread appServerThread, sessionID string) *session.ContextSnapshot {
+	threadID := firstNonEmpty(thread.ID, thread.SessionID, threadIDFromMobileSessionID(sessionID))
+	context := &session.ContextSnapshot{
+		SessionID: sessionID,
+		ThreadID:  threadID,
+		Status: &session.ContextStatus{
+			Type:        firstNonEmpty(thread.Status.Type, "notLoaded"),
+			ActiveFlags: append([]string(nil), thread.Status.ActiveFlags...),
+		},
+		Environment: &session.ContextEnvironment{
+			ID:       "local",
+			Kind:     "local",
+			Label:    "本地",
+			CWD:      firstNonEmpty(thread.CWD, project.Path),
+			Provider: firstNonEmpty(thread.ModelProvider, "openai"),
+		},
+		Tasks:     contextTasksFromThread(thread),
+		Sources:   contextSourcesFromThread(thread),
+		Subagents: contextSubagentsFromThread(thread),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if thread.GitInfo != nil {
+		context.Git = &session.ContextGitInfo{
+			SHA:       strings.TrimSpace(thread.GitInfo.SHA),
+			Branch:    strings.TrimSpace(thread.GitInfo.Branch),
+			OriginURL: strings.TrimSpace(thread.GitInfo.OriginURL),
+		}
+		if context.Git.SHA == "" && context.Git.Branch == "" && context.Git.OriginURL == "" {
+			context.Git = nil
+		}
+	}
+	return context
+}
+
+func contextSourcesFromThread(thread appServerThread) []session.ContextSource {
+	sources := make([]session.ContextSource, 0, 3)
+	if label := appServerSourceLabel(thread.Source); label != "" {
+		sources = append(sources, session.ContextSource{
+			ID:       "session_source",
+			Kind:     "session",
+			Label:    label,
+			Subtitle: "session source",
+		})
+	}
+	if strings.TrimSpace(thread.ThreadSource) != "" {
+		sources = append(sources, session.ContextSource{
+			ID:       "thread_source",
+			Kind:     "thread",
+			Label:    strings.TrimSpace(thread.ThreadSource),
+			Subtitle: "thread source",
+		})
+	}
+	if strings.TrimSpace(thread.ForkedFromID) != "" {
+		sources = append(sources, session.ContextSource{
+			ID:       "forked_from",
+			Kind:     "fork",
+			Label:    trimRuntimeRunes(thread.ForkedFromID, 32),
+			Subtitle: "forked from",
+		})
+	}
+	return sources
+}
+
+func contextSubagentsFromThread(thread appServerThread) []session.ContextSubagent {
+	parentThreadID := strings.TrimSpace(thread.ParentThreadID)
+	if parentThreadID == "" {
+		return nil
+	}
+	return []session.ContextSubagent{{
+		ID:             firstNonEmpty(thread.ID, thread.SessionID),
+		ParentThreadID: parentThreadID,
+		Nickname:       strings.TrimSpace(thread.AgentNickname),
+		Role:           strings.TrimSpace(thread.AgentRole),
+		Status:         appServerThreadStatusValueToSessionStatus(thread.Status),
+	}}
+}
+
+func contextTasksFromThread(thread appServerThread) []session.ContextTask {
+	if len(thread.Turns) == 0 {
+		return nil
+	}
+	tasks := make([]session.ContextTask, 0, maxContextTasks)
+	for turnIndex := len(thread.Turns) - 1; turnIndex >= 0 && len(tasks) < maxContextTasks; turnIndex-- {
+		items := thread.Turns[turnIndex].Items
+		for itemIndex := len(items) - 1; itemIndex >= 0 && len(tasks) < maxContextTasks; itemIndex-- {
+			if task, ok := contextTaskFromItem(thread.Turns[turnIndex], items[itemIndex]); ok {
+				tasks = append(tasks, task)
+			}
+		}
+	}
+	return tasks
+}
+
+func contextTaskFromItem(turn appServerTurn, item appServerThreadItem) (session.ContextTask, bool) {
+	id := firstNonEmpty(item.ID, turn.ID)
+	switch item.Type {
+	case "commandExecution":
+		title := firstNonEmpty(item.Command, item.ProcessID, "命令执行")
+		return session.ContextTask{
+			ID:       id,
+			Kind:     "command",
+			Title:    trimRuntimeRunes(title, 80),
+			Subtitle: trimRuntimeRunes(firstNonEmpty(item.CWD, commandActionSummary(item.CommandActions)), 96),
+			Status:   firstNonEmpty(item.Status, turn.Status),
+		}, true
+	case "fileChange":
+		title := "文件变更"
+		if len(item.Changes) > 0 {
+			title = fmt.Sprintf("文件变更 x%d", len(item.Changes))
+		}
+		return session.ContextTask{
+			ID:       id,
+			Kind:     "file_change",
+			Title:    title,
+			Subtitle: trimRuntimeRunes(fileChangeSummary(item.Changes), 96),
+			Status:   firstNonEmpty(item.Status, turn.Status),
+		}, true
+	case "mcpToolCall":
+		return session.ContextTask{
+			ID:       id,
+			Kind:     "mcp_tool",
+			Title:    trimRuntimeRunes(firstNonEmpty(item.Server+"."+item.Tool, item.Tool, "MCP 工具"), 80),
+			Subtitle: trimRuntimeRunes(firstNonEmpty(item.PluginID, "MCP"), 96),
+			Status:   firstNonEmpty(item.Status, turn.Status),
+		}, true
+	case "dynamicToolCall":
+		title := firstNonEmpty(item.Tool, "动态工具")
+		if strings.TrimSpace(item.Namespace) != "" {
+			title = item.Namespace + "." + title
+		}
+		return session.ContextTask{
+			ID:       id,
+			Kind:     "dynamic_tool",
+			Title:    trimRuntimeRunes(title, 80),
+			Subtitle: "dynamic tool",
+			Status:   firstNonEmpty(item.Status, turn.Status),
+		}, true
+	case "collabAgentToolCall":
+		return session.ContextTask{
+			ID:       id,
+			Kind:     "subagent",
+			Title:    trimRuntimeRunes(firstNonEmpty(item.Tool, "子 agent"), 80),
+			Subtitle: "collab agent",
+			Status:   firstNonEmpty(item.Status, turn.Status),
+		}, true
+	default:
+		return session.ContextTask{}, false
+	}
+}
+
+func commandActionSummary(actions []appServerCommandAction) string {
+	for _, action := range actions {
+		if action.Name != "" || action.Path != "" {
+			return strings.TrimSpace(action.Name + " " + action.Path)
+		}
+		if action.Query != "" {
+			return action.Query
+		}
+	}
+	return ""
+}
+
+func fileChangeSummary(changes []appServerFileChange) string {
+	if len(changes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, min(len(changes), 3))
+	for _, change := range changes {
+		if len(parts) >= 3 {
+			break
+		}
+		parts = append(parts, strings.TrimSpace(firstNonEmpty(change.Path, change.Kind)))
+	}
+	if len(changes) > len(parts) {
+		parts = append(parts, fmt.Sprintf("+%d", len(changes)-len(parts)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func appServerSourceLabel(source any) string {
+	switch typed := source.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		if custom, ok := typed["custom"]; ok {
+			return trimRuntimeRunes(fmt.Sprint(custom), 48)
+		}
+		if sub, ok := typed["subAgent"]; ok {
+			return "subAgent " + trimRuntimeRunes(fmt.Sprint(sub), 48)
+		}
+	}
+	return ""
+}
+
+func appServerThreadFromParam(params map[string]any, key string) appServerThread {
+	raw, ok := params[key]
+	if !ok || raw == nil {
+		return appServerThread{}
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return appServerThread{}
+	}
+	var thread appServerThread
+	if err := json.Unmarshal(data, &thread); err != nil {
+		return appServerThread{}
+	}
+	return thread
+}
+
+func contextSnapshotFromStatusParams(sessionID string, threadID string, params map[string]any) *session.ContextSnapshot {
+	status := appServerThreadStatusFromParam(params["status"])
+	if status.Type == "" && len(status.ActiveFlags) == 0 {
+		return nil
+	}
+	return &session.ContextSnapshot{
+		SessionID: sessionID,
+		ThreadID:  threadID,
+		Status: &session.ContextStatus{
+			Type:        status.Type,
+			ActiveFlags: append([]string(nil), status.ActiveFlags...),
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+}
+
+func appServerThreadStatusFromParam(raw any) appServerThreadStatus {
+	switch typed := raw.(type) {
+	case string:
+		return appServerThreadStatus{Type: strings.TrimSpace(typed)}
+	case map[string]any:
+		return appServerThreadStatus{
+			Type:        stringParam(typed, "type"),
+			ActiveFlags: stringSliceParam(typed, "activeFlags"),
+		}
+	default:
+		return appServerThreadStatus{}
+	}
+}
+
+func contextSnapshotFromDiffParams(sessionID string, threadID string, params map[string]any) *session.ContextSnapshot {
+	diff := diffSummaryFromParams(params)
+	path := strings.TrimSpace(fmt.Sprint(diff["path"]))
+	status := strings.TrimSpace(fmt.Sprint(diff["status"]))
+	if path == "" && status == "" {
+		return nil
+	}
+	return &session.ContextSnapshot{
+		SessionID: sessionID,
+		ThreadID:  threadID,
+		Tasks: []session.ContextTask{{
+			ID:       firstNonEmpty(stringParam(params, "itemId"), stringParam(params, "id"), path),
+			Kind:     "file_change",
+			Title:    "文件变更",
+			Subtitle: trimRuntimeRunes(path, 96),
+			Status:   status,
+		}},
+		UpdatedAt: time.Now().UTC(),
+	}
+}
+
+func contextSnapshotFromItemParams(sessionID string, threadID string, params map[string]any) *session.ContextSnapshot {
+	item := mapParam(params, "item")
+	if item == nil {
+		return nil
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		return nil
+	}
+	var threadItem appServerThreadItem
+	if err := json.Unmarshal(data, &threadItem); err != nil {
+		return nil
+	}
+	turn := appServerTurn{
+		ID:     firstNonEmpty(stringParam(params, "turnId"), nestedStringParam(params, "turn", "id")),
+		Status: stringParam(params, "status"),
+	}
+	task, ok := contextTaskFromItem(turn, threadItem)
+	if !ok {
+		return nil
+	}
+	return &session.ContextSnapshot{
+		SessionID: sessionID,
+		ThreadID:  threadID,
+		Tasks:     []session.ContextTask{task},
+		UpdatedAt: time.Now().UTC(),
 	}
 }
 
@@ -803,6 +1134,16 @@ func appServerThreadStatusToSessionStatus(status string) string {
 	default:
 		return "history"
 	}
+}
+
+func appServerThreadStatusValueToSessionStatus(status appServerThreadStatus) string {
+	if containsString(status.ActiveFlags, "waitingOnApproval") {
+		return "waiting_for_approval"
+	}
+	if containsString(status.ActiveFlags, "waitingOnUserInput") {
+		return "waiting_for_input"
+	}
+	return appServerThreadStatusToSessionStatus(status.Type)
 }
 
 func safeThreadStartParams(project projects.Project) map[string]any {
@@ -874,6 +1215,7 @@ func (r *CodexAppServerRuntime) storeSnapshot(snapshot session.SessionSnapshot) 
 	defer r.mu.Unlock()
 	r.mergeSnapshotStateLocked(&snapshot)
 	r.snapshots[snapshot.ID] = snapshot
+	r.attachSnapshotAsSubagentLocked(snapshot)
 }
 
 func (r *CodexAppServerRuntime) cachedSnapshot(id string) (session.SessionSnapshot, bool) {
@@ -966,9 +1308,48 @@ func (r *CodexAppServerRuntime) mergeSnapshotStateLocked(snapshot *session.Sessi
 		if cached.RateLimit != nil {
 			snapshot.RateLimit = cloneRateLimitSummary(cached.RateLimit)
 		}
+		snapshot.Context = mergeContextSnapshots(cached.Context, snapshot.Context)
 	}
 	if r.rateLimit != nil && snapshot.RateLimit == nil {
 		snapshot.RateLimit = cloneRateLimitSummary(r.rateLimit)
+	}
+}
+
+func (r *CodexAppServerRuntime) attachSnapshotAsSubagentLocked(snapshot session.SessionSnapshot) {
+	if snapshot.Context == nil || len(snapshot.Context.Subagents) == 0 {
+		return
+	}
+	for _, subagent := range snapshot.Context.Subagents {
+		parentThreadID := strings.TrimSpace(subagent.ParentThreadID)
+		if parentThreadID == "" {
+			continue
+		}
+		parentSessionID := mobileSessionID(parentThreadID)
+		parent := r.snapshots[parentSessionID]
+		if parent.ID == "" {
+			parent.ID = parentSessionID
+			parent.ResumeID = parentThreadID
+			parent.HistoryThreadID = parentThreadID
+			parent.Source = "codex"
+			parent.Status = "running"
+			parent.Title = "Codex app-server 会话"
+			now := time.Now().UTC()
+			parent.CreatedAt = now
+			parent.UpdatedAt = now
+		}
+		parent.Context = mergeContextSnapshots(parent.Context, &session.ContextSnapshot{
+			SessionID: parentSessionID,
+			ThreadID:  parentThreadID,
+			Subagents: []session.ContextSubagent{{
+				ID:             firstNonEmpty(subagent.ID, snapshot.ID),
+				ParentThreadID: parentThreadID,
+				Nickname:       firstNonEmpty(subagent.Nickname, snapshot.Context.ThreadID, snapshot.ID),
+				Role:           subagent.Role,
+				Status:         firstNonEmpty(subagent.Status, snapshot.Status),
+			}},
+			UpdatedAt: time.Now().UTC(),
+		})
+		r.snapshots[parentSessionID] = parent
 	}
 }
 
@@ -1019,6 +1400,20 @@ func (r *CodexAppServerRuntime) applyRuntimeEventState(event *runtimeStreamEvent
 	} else if r.rateLimit != nil && snapshot.RateLimit == nil {
 		snapshot.RateLimit = cloneRateLimitSummary(r.rateLimit)
 	}
+	if event.Context != nil {
+		snapshot.Context = mergeContextSnapshots(snapshot.Context, event.Context)
+	}
+	if snapshot.Context != nil {
+		snapshot.Context.SessionID = snapshot.ID
+		snapshot.Context.ThreadID = firstNonEmpty(snapshot.Context.ThreadID, snapshot.HistoryThreadID, snapshot.ResumeID, threadIDFromMobileSessionID(snapshot.ID))
+		if event.Status != "" {
+			if snapshot.Context.Status == nil {
+				snapshot.Context.Status = &session.ContextStatus{}
+			}
+			snapshot.Context.Status.Type = statusTypeFromSessionStatus(event.Status)
+		}
+		snapshot.Context.UpdatedAt = time.Now().UTC()
+	}
 	if event.Seq > 0 {
 		snapshot.LastSeq = event.Seq
 	}
@@ -1027,8 +1422,10 @@ func (r *CodexAppServerRuntime) applyRuntimeEventState(event *runtimeStreamEvent
 	}
 	snapshot.UpdatedAt = time.Now().UTC()
 	r.snapshots[event.SessionID] = snapshot
+	r.attachSnapshotAsSubagentLocked(snapshot)
 	row := snapshot
 	event.Row = &row
+	event.Context = cloneContextSnapshot(snapshot.Context)
 }
 
 func (r *CodexAppServerRuntime) appendTrace(id string, event session.TraceEvent) {
@@ -1476,6 +1873,148 @@ func cloneRateLimitSummary(in *session.RateLimitSummary) *session.RateLimitSumma
 	return &out
 }
 
+func cloneContextSnapshot(in *session.ContextSnapshot) *session.ContextSnapshot {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Status != nil {
+		status := *in.Status
+		status.ActiveFlags = append([]string(nil), in.Status.ActiveFlags...)
+		out.Status = &status
+	}
+	if in.Environment != nil {
+		environment := *in.Environment
+		out.Environment = &environment
+	}
+	if in.Git != nil {
+		git := *in.Git
+		out.Git = &git
+	}
+	out.Tasks = append([]session.ContextTask(nil), in.Tasks...)
+	out.Sources = append([]session.ContextSource(nil), in.Sources...)
+	out.Subagents = append([]session.ContextSubagent(nil), in.Subagents...)
+	return &out
+}
+
+func mergeContextSnapshots(base *session.ContextSnapshot, update *session.ContextSnapshot) *session.ContextSnapshot {
+	if base == nil {
+		return cloneContextSnapshot(update)
+	}
+	if update == nil {
+		return cloneContextSnapshot(base)
+	}
+	out := cloneContextSnapshot(base)
+	out.SessionID = firstNonEmpty(update.SessionID, out.SessionID)
+	out.ThreadID = firstNonEmpty(update.ThreadID, out.ThreadID)
+	if update.Status != nil {
+		status := *update.Status
+		status.ActiveFlags = append([]string(nil), update.Status.ActiveFlags...)
+		out.Status = &status
+	}
+	if update.Environment != nil {
+		environment := *update.Environment
+		if out.Environment != nil {
+			environment.ID = firstNonEmpty(environment.ID, out.Environment.ID)
+			environment.Kind = firstNonEmpty(environment.Kind, out.Environment.Kind)
+			environment.Label = firstNonEmpty(environment.Label, out.Environment.Label)
+			environment.CWD = firstNonEmpty(environment.CWD, out.Environment.CWD)
+			environment.Provider = firstNonEmpty(environment.Provider, out.Environment.Provider)
+		}
+		out.Environment = &environment
+	}
+	if update.Git != nil {
+		git := *update.Git
+		out.Git = &git
+	}
+	out.Tasks = mergeContextTasks(out.Tasks, update.Tasks, maxContextTasks)
+	out.Sources = mergeContextSources(out.Sources, update.Sources)
+	out.Subagents = mergeContextSubagents(out.Subagents, update.Subagents)
+	out.UpdatedAt = update.UpdatedAt
+	if out.UpdatedAt.IsZero() {
+		out.UpdatedAt = time.Now().UTC()
+	}
+	return out
+}
+
+func mergeContextTasks(base []session.ContextTask, update []session.ContextTask, limit int) []session.ContextTask {
+	if len(update) == 0 {
+		return append([]session.ContextTask(nil), base...)
+	}
+	out := make([]session.ContextTask, 0, len(base)+len(update))
+	seen := map[string]struct{}{}
+	add := func(task session.ContextTask) {
+		key := firstNonEmpty(task.ID, task.Kind+":"+task.Title)
+		if strings.TrimSpace(key) == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, task)
+	}
+	for _, task := range update {
+		add(task)
+	}
+	for _, task := range base {
+		add(task)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func mergeContextSources(base []session.ContextSource, update []session.ContextSource) []session.ContextSource {
+	out := make([]session.ContextSource, 0, len(base)+len(update))
+	seen := map[string]struct{}{}
+	for _, source := range append(append([]session.ContextSource(nil), update...), base...) {
+		key := firstNonEmpty(source.ID, source.Kind+":"+source.Label)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, source)
+	}
+	return out
+}
+
+func mergeContextSubagents(base []session.ContextSubagent, update []session.ContextSubagent) []session.ContextSubagent {
+	out := make([]session.ContextSubagent, 0, len(base)+len(update))
+	seen := map[string]struct{}{}
+	for _, subagent := range append(append([]session.ContextSubagent(nil), update...), base...) {
+		key := firstNonEmpty(subagent.ID, subagent.Nickname+":"+subagent.Role)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, subagent)
+	}
+	return out
+}
+
+func statusTypeFromSessionStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "waiting_for_approval", "waiting_for_input", "running":
+		return "active"
+	case "failed":
+		return "systemError"
+	case "history":
+		return "notLoaded"
+	case "closed":
+		return "idle"
+	default:
+		return strings.TrimSpace(status)
+	}
+}
+
 func nestedStringParam(params map[string]any, objectKey string, valueKey string) string {
 	object, ok := params[objectKey].(map[string]any)
 	if !ok {
@@ -1502,13 +2041,40 @@ func firstNonEmptyRaw(values ...string) string {
 	return ""
 }
 
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceParam(params map[string]any, key string) []string {
+	raw, ok := params[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		text := strings.TrimSpace(fmt.Sprint(value))
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
 func appServerStatusParam(params map[string]any) string {
 	status := params["status"]
 	switch typed := status.(type) {
 	case string:
 		return appServerThreadStatusToSessionStatus(typed)
 	case map[string]any:
-		return appServerThreadStatusToSessionStatus(stringParam(typed, "type"))
+		return appServerThreadStatusValueToSessionStatus(appServerThreadStatus{
+			Type:        stringParam(typed, "type"),
+			ActiveFlags: stringSliceParam(typed, "activeFlags"),
+		})
 	default:
 		return appServerThreadStatusToSessionStatus(nestedStringParam(params, "thread", "status"))
 	}
@@ -1539,19 +2105,28 @@ type appServerTurnEnvelope struct {
 }
 
 type appServerThread struct {
-	ID        string                `json:"id"`
-	SessionID string                `json:"sessionId"`
-	Preview   string                `json:"preview"`
-	CWD       string                `json:"cwd"`
-	Name      string                `json:"name"`
-	CreatedAt int64                 `json:"createdAt"`
-	UpdatedAt int64                 `json:"updatedAt"`
-	Status    appServerThreadStatus `json:"status"`
-	Turns     []appServerTurn       `json:"turns"`
+	ID             string                `json:"id"`
+	SessionID      string                `json:"sessionId"`
+	ForkedFromID   string                `json:"forkedFromId"`
+	ParentThreadID string                `json:"parentThreadId"`
+	Preview        string                `json:"preview"`
+	CWD            string                `json:"cwd"`
+	Name           string                `json:"name"`
+	ModelProvider  string                `json:"modelProvider"`
+	Source         any                   `json:"source"`
+	ThreadSource   string                `json:"threadSource"`
+	AgentNickname  string                `json:"agentNickname"`
+	AgentRole      string                `json:"agentRole"`
+	GitInfo        *appServerGitInfo     `json:"gitInfo"`
+	CreatedAt      int64                 `json:"createdAt"`
+	UpdatedAt      int64                 `json:"updatedAt"`
+	Status         appServerThreadStatus `json:"status"`
+	Turns          []appServerTurn       `json:"turns"`
 }
 
 type appServerThreadStatus struct {
-	Type string `json:"type"`
+	Type        string   `json:"type"`
+	ActiveFlags []string `json:"activeFlags"`
 }
 
 func (s *appServerThreadStatus) UnmarshalJSON(data []byte) error {
@@ -1561,13 +2136,21 @@ func (s *appServerThreadStatus) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var object struct {
-		Type string `json:"type"`
+		Type        string   `json:"type"`
+		ActiveFlags []string `json:"activeFlags"`
 	}
 	if err := json.Unmarshal(data, &object); err != nil {
 		return err
 	}
 	s.Type = object.Type
+	s.ActiveFlags = append([]string(nil), object.ActiveFlags...)
 	return nil
+}
+
+type appServerGitInfo struct {
+	SHA       string `json:"sha"`
+	Branch    string `json:"branch"`
+	OriginURL string `json:"originUrl"`
 }
 
 type appServerTurn struct {
@@ -1579,14 +2162,41 @@ type appServerTurn struct {
 }
 
 type appServerThreadItem struct {
-	Type     string               `json:"type"`
-	ID       string               `json:"id"`
-	ClientID string               `json:"clientId"`
-	Content  []appServerUserInput `json:"content"`
-	Text     string               `json:"text"`
+	Type           string                   `json:"type"`
+	ID             string                   `json:"id"`
+	ClientID       string                   `json:"clientId"`
+	Content        []appServerUserInput     `json:"content"`
+	Text           string                   `json:"text"`
+	Command        string                   `json:"command"`
+	CWD            string                   `json:"cwd"`
+	ProcessID      string                   `json:"processId"`
+	Source         string                   `json:"source"`
+	Status         string                   `json:"status"`
+	CommandActions []appServerCommandAction `json:"commandActions"`
+	ExitCode       *int                     `json:"exitCode"`
+	Changes        []appServerFileChange    `json:"changes"`
+	Server         string                   `json:"server"`
+	Tool           string                   `json:"tool"`
+	Namespace      string                   `json:"namespace"`
+	PluginID       string                   `json:"pluginId"`
+	Arguments      any                      `json:"arguments"`
 }
 
 type appServerUserInput struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+type appServerCommandAction struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Query   string `json:"query"`
+}
+
+type appServerFileChange struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	Diff string `json:"diff"`
 }

@@ -36,6 +36,9 @@
 		94883D57D559E0D81CC5F945 /* ThemeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010384C967E03B87ABC07B76 /* ThemeStore.swift */; };
 		9E8DB619568A3C70F11769C0 /* EventReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E732124724C5AD07CEDE2BE2 /* EventReducer.swift */; };
 		A00EEEDAEF54C34FFD3D9564 /* ApprovalCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28CAEE543FC4E20DA1326337 /* ApprovalCardView.swift */; };
+		A1C0DE000000000000000001 /* SessionContextModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE000000000000000011 /* SessionContextModels.swift */; };
+		A1C0DE000000000000000002 /* SessionContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE000000000000000012 /* SessionContextStore.swift */; };
+		A1C0DE000000000000000003 /* SessionContextSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE000000000000000013 /* SessionContextSidebarView.swift */; };
 		A7A1BC4FB40AA60C27140832 /* AgentAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BA09AF7F84AF95256BE81DB /* AgentAPIClient.swift */; };
 		B67EAB01CC429A0BC617854E /* LogPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C9D536844479E6AA2EBD58 /* LogPanelView.swift */; };
 		B93EF20EB1A8FC32B5FC3C2E /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3A5334BCA458FEDB8C99F3D /* WorkspaceView.swift */; };
@@ -89,6 +92,9 @@
 		98EB996462DE9F04E33638D8 /* DoctorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoctorView.swift; sourceTree = "<group>"; };
 		99DFCC4A092011F6E76FBFBA /* ParsingPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParsingPerformanceTests.swift; sourceTree = "<group>"; };
 		9C338EFD0F01A91A4FF4E68F /* SessionIndexStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionIndexStore.swift; sourceTree = "<group>"; };
+		A1C0DE000000000000000011 /* SessionContextModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextModels.swift; sourceTree = "<group>"; };
+		A1C0DE000000000000000012 /* SessionContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextStore.swift; sourceTree = "<group>"; };
+		A1C0DE000000000000000013 /* SessionContextSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextSidebarView.swift; sourceTree = "<group>"; };
 		B3A5334BCA458FEDB8C99F3D /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
 		B70ACD2E713B4EE4F276696E /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		B7561F90CF01AAC7A4C6FA3A /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
@@ -139,6 +145,7 @@
 			children = (
 				28CAEE543FC4E20DA1326337 /* ApprovalCardView.swift */,
 				5904108E6945E63ECCCB737E /* DiffPanelView.swift */,
+				A1C0DE000000000000000013 /* SessionContextSidebarView.swift */,
 				7523B8E40856760C565A9CC4 /* SessionInspectorView.swift */,
 			);
 			path = Inspector;
@@ -158,6 +165,7 @@
 				DF61887CD387C60719C6E7F2 /* AgentEvent.swift */,
 				F58CEDA3867A417BA3D154F2 /* AgentModels.swift */,
 				17D07F045185B50C3B902584 /* APIResponses.swift */,
+				A1C0DE000000000000000011 /* SessionContextModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -220,6 +228,7 @@
 				E732124724C5AD07CEDE2BE2 /* EventReducer.swift */,
 				C70E016E422ECC27016A2031 /* LogStore.swift */,
 				0B670640C14A4A61109E91FB /* MessageStore.swift */,
+				A1C0DE000000000000000012 /* SessionContextStore.swift */,
 				9C338EFD0F01A91A4FF4E68F /* SessionIndexStore.swift */,
 				5B8D226D98D17D8C7C8D96EE /* SessionStore.swift */,
 				010384C967E03B87ABC07B76 /* ThemeStore.swift */,
@@ -442,6 +451,9 @@
 				1058623ED9F2696E79653AAB /* RootView.swift in Sources */,
 				5DBA2AF0C09441F19FD34556 /* SessionIndexStore.swift in Sources */,
 				D1C7AFCD6D2100FFEB700B88 /* SessionInspectorView.swift in Sources */,
+				A1C0DE000000000000000003 /* SessionContextSidebarView.swift in Sources */,
+				A1C0DE000000000000000001 /* SessionContextModels.swift in Sources */,
+				A1C0DE000000000000000002 /* SessionContextStore.swift in Sources */,
 				48A1E9482ECC50F5E51C86DB /* SessionListView.swift in Sources */,
 				FD9B45ED91E3B301B7596A97 /* SessionStore.swift in Sources */,
 				5B278A998D63FF1CA900DC6F /* SettingsView.swift in Sources */,

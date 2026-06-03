@@ -4,6 +4,7 @@ enum AgentEvent {
     case session(AgentSession)
     case sessionRow(DataFlowSessionRow, AgentEventMetadata)
     case sessionStatus(String?, AgentEventMetadata)
+    case sessionContext(SessionContextSnapshot, AgentEventMetadata)
     case turnStarted(AgentEventMetadata)
     case assistantDelta(AgentDelta, AgentEventMetadata)
     case messageCompleted(AgentMessage, AgentEventMetadata)
@@ -43,6 +44,7 @@ extension AgentEvent: Decodable {
         case revision
         case createdAt = "created_at"
         case status
+        case context
     }
 
     init(from decoder: Decoder) throws {
@@ -61,9 +63,13 @@ extension AgentEvent: Decodable {
         case "session_status":
             if let row = try container.decodeIfPresent(DataFlowSessionRow.self, forKey: .row) {
                 self = .sessionRow(row, metadata)
+            } else if let context = try container.decodeIfPresent(SessionContextSnapshot.self, forKey: .context) {
+                self = .sessionContext(context, metadata)
             } else {
                 self = .sessionStatus(try container.decodeIfPresent(String.self, forKey: .status), metadata)
             }
+        case "session_context":
+            self = .sessionContext(try container.decode(SessionContextSnapshot.self, forKey: .context), metadata)
         case "turn_started":
             self = .turnStarted(metadata)
         case "assistant_delta":
@@ -136,6 +142,7 @@ extension AgentEvent: Decodable {
 enum StructuredAgentEvent: Decodable, Hashable {
     case sessionRow(DataFlowSessionRow, AgentEventMetadata)
     case sessionStatus(String?, AgentEventMetadata)
+    case sessionContext(SessionContextSnapshot, AgentEventMetadata)
     case turnStarted(AgentEventMetadata)
     case assistantDelta(AgentDelta, AgentEventMetadata)
     case messageCompleted(AgentMessage, AgentEventMetadata)
@@ -168,6 +175,7 @@ enum StructuredAgentEvent: Decodable, Hashable {
         case revision
         case createdAt = "created_at"
         case status
+        case context
     }
 
     init(from decoder: Decoder) throws {
@@ -190,9 +198,13 @@ enum StructuredAgentEvent: Decodable, Hashable {
         case "session_status":
             if let row = try container.decodeIfPresent(DataFlowSessionRow.self, forKey: .row) {
                 self = .sessionRow(row, metadata)
+            } else if let context = try container.decodeIfPresent(SessionContextSnapshot.self, forKey: .context) {
+                self = .sessionContext(context, metadata)
             } else {
                 self = .sessionStatus(try container.decodeIfPresent(String.self, forKey: .status), metadata)
             }
+        case "session_context":
+            self = .sessionContext(try container.decode(SessionContextSnapshot.self, forKey: .context), metadata)
         case "turn_started":
             self = .turnStarted(metadata)
         case "assistant_delta":
@@ -308,8 +320,11 @@ struct CodexAppServerEventProjector {
                 return nil
             }
             return .assistantDelta(AgentDelta(text: text, role: .assistant, kind: .message), metadata)
+        case "item/started":
+            return itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
             return completedAgentMessageEvent(params: params, metadata: metadata)
+                ?? itemContextEvent(params: params, metadata: metadata)
         case "item/commandExecution/outputDelta",
              "command/exec/outputDelta",
              "commandExecution/outputDelta",
@@ -411,6 +426,93 @@ struct CodexAppServerEventProjector {
             sendStatus: .confirmed
         )
         return .messageCompleted(message, metadata)
+    }
+
+    private func itemContextEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue,
+              let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
+        else {
+            return nil
+        }
+        return .sessionContext(
+            SessionContextSnapshot(
+                sessionID: metadata.sessionID,
+                threadID: metadata.sessionID,
+                tasks: [task],
+                updatedAt: Date()
+            ),
+            metadata
+        )
+    }
+
+    private func contextTask(
+        from item: [String: CodexAppServerJSONValue],
+        fallbackStatus: String?
+    ) -> SessionContextTask? {
+        let id = firstString(in: item, keys: ["id"]) ?? UUID().uuidString
+        let status = firstString(in: item, keys: ["status"]) ?? fallbackStatus
+        switch firstString(in: item, keys: ["type"]) {
+        case "commandExecution":
+            let title = firstString(in: item, keys: ["command", "processId"]) ?? "命令执行"
+            let subtitle = firstString(in: item, keys: ["cwd"]) ?? commandActionSummary(from: item["commandActions"]?.arrayValue)
+            return SessionContextTask(id: id, kind: "command", title: String(title.prefix(80)), subtitle: subtitle, status: status)
+        case "fileChange":
+            let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
+            let title = changes.isEmpty ? "文件变更" : "文件变更 x\(changes.count)"
+            return SessionContextTask(id: id, kind: "file_change", title: title, subtitle: fileChangeTaskSummary(from: changes), status: status)
+        case "mcpToolCall":
+            let server = firstString(in: item, keys: ["server"])
+            let tool = firstString(in: item, keys: ["tool"])
+            let title = [server, tool].compactMap { $0 }.joined(separator: ".")
+            return SessionContextTask(
+                id: id,
+                kind: "mcp_tool",
+                title: title.isEmpty ? "MCP 工具" : title,
+                subtitle: firstString(in: item, keys: ["pluginId"]),
+                status: status
+            )
+        case "dynamicToolCall":
+            let namespace = firstString(in: item, keys: ["namespace"])
+            let tool = firstString(in: item, keys: ["tool"]) ?? "动态工具"
+            let title = [namespace, tool].compactMap { $0 }.joined(separator: ".")
+            return SessionContextTask(id: id, kind: "dynamic_tool", title: title, subtitle: "dynamic tool", status: status)
+        case "collabAgentToolCall":
+            let title = firstString(in: item, keys: ["tool", "agentNickname", "nickname"]) ?? "子 Agent"
+            return SessionContextTask(id: id, kind: "subagent", title: title, subtitle: firstString(in: item, keys: ["agentRole", "role"]), status: status)
+        default:
+            return nil
+        }
+    }
+
+    private func commandActionSummary(from actions: [CodexAppServerJSONValue]?) -> String? {
+        for action in actions?.compactMap(\.objectValue) ?? [] {
+            if let value = [firstString(in: action, keys: ["name"]), firstString(in: action, keys: ["path"])]
+                .compactMap({ $0 })
+                .joined(separator: " ")
+                .nilIfEmpty {
+                return value
+            }
+            if let query = firstString(in: action, keys: ["query"]) {
+                return query
+            }
+        }
+        return nil
+    }
+
+    private func fileChangeTaskSummary(from changes: [[String: CodexAppServerJSONValue]]) -> String? {
+        guard !changes.isEmpty else {
+            return nil
+        }
+        var parts = changes.prefix(3).compactMap { change in
+            firstString(in: change, keys: ["path", "kind"])
+        }
+        if changes.count > parts.count {
+            parts.append("+\(changes.count - parts.count)")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func fileChangeSummary(from params: [String: CodexAppServerJSONValue]) -> FileChangeSummary {
@@ -526,5 +628,11 @@ struct CodexAppServerEventProjector {
             return parts.joined(separator: " ")
         }
         return nil
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

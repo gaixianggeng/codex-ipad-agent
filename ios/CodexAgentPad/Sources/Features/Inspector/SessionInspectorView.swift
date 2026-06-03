@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SessionInspectorView: View {
     @EnvironmentObject private var sessionStore: SessionStore
-    @State private var selectedSection: SessionInspectorSection = .logs
+    @State private var selectedSection: SessionInspectorSection = .context
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,6 +22,8 @@ struct SessionInspectorView: View {
 
             Group {
                 switch selectedSection {
+                case .context:
+                    SessionContextSidebarView()
                 case .details:
                     RuntimeDetailsPanelView()
                 case .logs:
@@ -68,6 +70,7 @@ struct SessionInspectorView: View {
 }
 
 private enum SessionInspectorSection: String, CaseIterable, Identifiable {
+    case context
     case details
     case logs
     case diff
@@ -78,6 +81,8 @@ private enum SessionInspectorSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .context:
+            return "状态"
         case .details:
             return "详情"
         case .logs:
@@ -93,6 +98,8 @@ private enum SessionInspectorSection: String, CaseIterable, Identifiable {
 
     var symbolName: String {
         switch self {
+        case .context:
+            return "sidebar.right"
         case .details:
             return "list.bullet.rectangle"
         case .logs:
