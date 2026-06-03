@@ -148,6 +148,7 @@ final class SessionStore: ObservableObject {
     private let appStore: AppStore
     private let conversationStore: ConversationStore
     private let logStore: LogStore
+    private let contextStore: SessionContextStore
     private let eventReducer: EventReducer
     private let terminalStreamStore = TerminalStreamStore()
     private let clientFactory: () throws -> any SessionStoreAPIClient
@@ -195,6 +196,7 @@ final class SessionStore: ObservableObject {
         appStore: AppStore,
         conversationStore: ConversationStore,
         logStore: LogStore,
+        contextStore: SessionContextStore? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         webSocketReconnectDelayNanoseconds: ((Int) -> UInt64)? = nil
@@ -202,6 +204,7 @@ final class SessionStore: ObservableObject {
         self.appStore = appStore
         self.conversationStore = conversationStore
         self.logStore = logStore
+        self.contextStore = contextStore ?? SessionContextStore()
         self.eventReducer = EventReducer()
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
@@ -877,6 +880,7 @@ final class SessionStore: ObservableObject {
 
     private func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?) {
         let next = Self.replacingSessions(sessions, with: fresh, projectID: projectID)
+        ingestSessionContexts(next)
         guard next != sessions else {
             return
         }
@@ -900,6 +904,7 @@ final class SessionStore: ObservableObject {
         guard !pageSessions.isEmpty else {
             return
         }
+        ingestSessionContexts(pageSessions)
         var next = sessions
         var indexByID = sessionIndexByID
         for session in pageSessions {
@@ -1545,6 +1550,10 @@ final class SessionStore: ObservableObject {
             updateSession(id) { item in
                 item.status = status
             }
+            contextStore.updateStatus(sessionID: id, status: status)
+        }
+        for (context, fallbackSessionID) in output.contextUpdates {
+            contextStore.upsert(context, fallbackSessionID: fallbackSessionID)
         }
         for (id, activity, delay) in output.foregroundUpdates {
             setForegroundActivity(activity, sessionID: id, autoClearAfter: delay)
@@ -1590,6 +1599,7 @@ final class SessionStore: ObservableObject {
             return nil
         case .sessionRow(_, let metadata),
              .sessionStatus(_, let metadata),
+             .sessionContext(_, let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
@@ -1707,6 +1717,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func upsert(_ session: AgentSession) {
+        contextStore.upsert(from: session)
         if let index = sessionIndexByID[session.id] {
             guard sessions[index] != session else {
                 return
@@ -1718,6 +1729,12 @@ final class SessionStore: ObservableObject {
             return
         }
         sessions = [session] + sessions
+    }
+
+    private func ingestSessionContexts(_ items: [AgentSession]) {
+        for session in items {
+            contextStore.upsert(from: session)
+        }
     }
 
     private func updateSession(_ id: String, mutate: (inout AgentSession) -> Void) {

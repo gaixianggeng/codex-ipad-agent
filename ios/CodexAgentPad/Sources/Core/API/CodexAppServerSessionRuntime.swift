@@ -421,6 +421,7 @@ actor CodexAppServerSessionRuntime {
         case .sessionRow(let row, _):
             return row.id
         case .sessionStatus(_, let metadata),
+             .sessionContext(_, let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
@@ -456,6 +457,7 @@ actor CodexAppServerSessionRuntime {
                 item.status = status
             }
             emit(.sessionStatus(status, metadata(threadID: threadID, turnID: nil)))
+            emit(.sessionContext(statusContext(threadID: threadID, statusValue: statusValue), metadata(threadID: threadID, turnID: nil)))
         case "thread/closed":
             guard let threadID = params["threadId"]?.stringValue else {
                 return
@@ -465,6 +467,15 @@ actor CodexAppServerSessionRuntime {
                 item.activeTurnID = nil
             }
             emit(.sessionStatus("closed", metadata(threadID: threadID, turnID: nil)))
+            emit(.sessionContext(
+                SessionContextSnapshot(
+                    sessionID: threadID,
+                    threadID: threadID,
+                    status: SessionContextStatus(type: "idle"),
+                    updatedAt: Date()
+                ),
+                metadata(threadID: threadID, turnID: nil)
+            ))
         case "turn/started":
             guard let threadID = params["threadId"]?.stringValue,
                   let turnID = params["turn"]?.objectValue?["id"]?.stringValue else {
@@ -474,6 +485,15 @@ actor CodexAppServerSessionRuntime {
                 item.status = "running"
                 item.activeTurnID = turnID
             }
+            emit(.sessionContext(
+                SessionContextSnapshot(
+                    sessionID: threadID,
+                    threadID: threadID,
+                    status: SessionContextStatus(type: "active"),
+                    updatedAt: Date()
+                ),
+                metadata(threadID: threadID, turnID: turnID)
+            ))
         case "turn/completed":
             guard let threadID = params["threadId"]?.stringValue else {
                 return
@@ -482,6 +502,15 @@ actor CodexAppServerSessionRuntime {
                 item.activeTurnID = nil
                 item.status = "running"
             }
+            emit(.sessionContext(
+                SessionContextSnapshot(
+                    sessionID: threadID,
+                    threadID: threadID,
+                    status: SessionContextStatus(type: "active"),
+                    updatedAt: Date()
+                ),
+                metadata(threadID: threadID, turnID: nil)
+            ))
         default:
             break
         }
@@ -543,21 +572,61 @@ actor CodexAppServerSessionRuntime {
         let title = thread["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? preview?.split(separator: "\n").first.map(String.init)
             ?? "Codex Thread \(id.prefix(8))"
-        return contextsBySessionID[id]?.session ?? AgentSession(
+        let cached = contextsBySessionID[id]?.session
+        let activeTurnID = cached?.activeTurnID ?? activeTurnID(from: thread)
+        let effectiveStatus = cached?.isRunning == true && status == "history" ? cached?.status ?? status : status
+        let context = sessionContext(
+            from: thread,
+            sessionID: id,
+            cwd: cwd,
+            status: effectiveStatus,
+            statusValue: forceRunning ? nil : thread["status"],
+            project: project ?? fallbackProject
+        )
+        return AgentSession(
             id: id,
             projectID: projectID,
             project: projectName,
             dir: cwd,
             title: title.isEmpty ? "未命名会话" : title,
-            status: status,
+            status: effectiveStatus,
             source: "codex",
             resumeID: id,
             createdAt: date(from: thread["createdAt"]),
             updatedAt: date(from: thread["updatedAt"]),
             preview: preview,
-            activeTurnID: activeTurnID(from: thread),
+            activeTurnID: activeTurnID,
             lastSeq: nil,
-            revision: 0
+            revision: 0,
+            context: context
+        )
+    }
+
+    private func sessionContext(
+        from thread: [String: CodexAppServerJSONValue],
+        sessionID: SessionID,
+        cwd: String,
+        status: String,
+        statusValue: CodexAppServerJSONValue?,
+        project: AgentProject?
+    ) -> SessionContextSnapshot {
+        let threadID = thread["id"]?.stringValue ?? sessionID
+        return SessionContextSnapshot(
+            sessionID: sessionID,
+            threadID: threadID,
+            status: contextStatus(from: statusValue, fallbackStatus: status),
+            environment: SessionContextEnvironment(
+                id: "local",
+                kind: "local",
+                label: "本地",
+                cwd: cwd,
+                provider: nonEmpty(thread["modelProvider"]?.stringValue, "openai")
+            ),
+            git: gitInfo(from: thread["gitInfo"]?.objectValue),
+            tasks: contextTasks(from: thread),
+            sources: contextSources(from: thread, project: project),
+            subagents: contextSubagents(from: thread, status: status),
+            updatedAt: Date()
         )
     }
 
@@ -600,6 +669,179 @@ actor CodexAppServerSessionRuntime {
         default:
             return "history"
         }
+    }
+
+    private func statusContext(threadID: String, statusValue: CodexAppServerJSONValue) -> SessionContextSnapshot {
+        SessionContextSnapshot(
+            sessionID: threadID,
+            threadID: threadID,
+            status: contextStatus(from: statusValue, fallbackStatus: sessionStatus(from: statusValue, forceRunning: false)),
+            updatedAt: Date()
+        )
+    }
+
+    private func contextStatus(from value: CodexAppServerJSONValue?, fallbackStatus: String) -> SessionContextStatus {
+        guard let value else {
+            return SessionContextStatus(type: contextStatusType(from: fallbackStatus))
+        }
+        if let raw = value.stringValue {
+            return SessionContextStatus(type: raw == "notLoaded" ? "notLoaded" : raw)
+        }
+        guard let object = value.objectValue else {
+            return SessionContextStatus(type: contextStatusType(from: fallbackStatus))
+        }
+        let type = object["type"]?.stringValue ?? contextStatusType(from: fallbackStatus)
+        let activeFlags = object["activeFlags"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        return SessionContextStatus(type: type, activeFlags: activeFlags)
+    }
+
+    private func contextStatusType(from status: String) -> String {
+        switch status {
+        case "running", "waiting_for_approval", "waiting_for_input":
+            return "active"
+        case "failed":
+            return "systemError"
+        case "closed", "idle":
+            return "idle"
+        default:
+            return "notLoaded"
+        }
+    }
+
+    private func gitInfo(from object: [String: CodexAppServerJSONValue]?) -> SessionContextGitInfo? {
+        guard let object else {
+            return nil
+        }
+        let info = SessionContextGitInfo(
+            sha: object["sha"]?.stringValue,
+            branch: object["branch"]?.stringValue,
+            originURL: object["originUrl"]?.stringValue ?? object["origin_url"]?.stringValue
+        )
+        if [info.sha, info.branch, info.originURL].allSatisfy({ ($0 ?? "").isEmpty }) {
+            return nil
+        }
+        return info
+    }
+
+    private func contextSources(
+        from thread: [String: CodexAppServerJSONValue],
+        project: AgentProject?
+    ) -> [SessionContextSource] {
+        var sources: [SessionContextSource] = []
+        if let label = sourceLabel(from: thread["source"]) {
+            sources.append(SessionContextSource(id: "session_source", kind: "session", label: label, subtitle: "session source"))
+        }
+        if let threadSource = nonEmpty(thread["threadSource"]?.stringValue) {
+            sources.append(SessionContextSource(id: "thread_source", kind: "thread", label: threadSource, subtitle: "thread source"))
+        }
+        if let forkedFrom = nonEmpty(thread["forkedFromId"]?.stringValue) {
+            sources.append(SessionContextSource(id: "forked_from", kind: "fork", label: String(forkedFrom.prefix(32)), subtitle: "forked from"))
+        }
+        if sources.isEmpty, let project {
+            sources.append(SessionContextSource(id: "project", kind: "project", label: project.name, subtitle: project.path))
+        }
+        return sources
+    }
+
+    private func sourceLabel(from value: CodexAppServerJSONValue?) -> String? {
+        if let raw = nonEmpty(value?.stringValue) {
+            return raw
+        }
+        guard let object = value?.objectValue else {
+            return nil
+        }
+        if let custom = nonEmpty(object["custom"]?.stringValue) {
+            return custom
+        }
+        if let subAgent = nonEmpty(object["subAgent"]?.stringValue) {
+            return "subAgent \(subAgent)"
+        }
+        return nil
+    }
+
+    private func contextSubagents(
+        from thread: [String: CodexAppServerJSONValue],
+        status: String
+    ) -> [SessionContextSubagent] {
+        guard let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) else {
+            return []
+        }
+        return [
+            SessionContextSubagent(
+                id: thread["id"]?.stringValue ?? UUID().uuidString,
+                parentThreadID: parentThreadID,
+                nickname: nonEmpty(thread["agentNickname"]?.stringValue),
+                role: nonEmpty(thread["agentRole"]?.stringValue),
+                status: status
+            )
+        ]
+    }
+
+    private func contextTasks(from thread: [String: CodexAppServerJSONValue]) -> [SessionContextTask] {
+        let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        var tasks: [SessionContextTask] = []
+        for turn in turns.reversed() {
+            let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
+            for item in items.reversed() {
+                guard let task = contextTask(from: item, turn: turn) else {
+                    continue
+                }
+                tasks.append(task)
+                if tasks.count >= 8 {
+                    return tasks
+                }
+            }
+        }
+        return tasks
+    }
+
+    private func contextTask(
+        from item: [String: CodexAppServerJSONValue],
+        turn: [String: CodexAppServerJSONValue]
+    ) -> SessionContextTask? {
+        let id = item["id"]?.stringValue ?? turn["id"]?.stringValue ?? UUID().uuidString
+        let status = item["status"]?.stringValue ?? turn["status"]?.stringValue
+        switch item["type"]?.stringValue {
+        case "commandExecution":
+            let title = nonEmpty(item["command"]?.stringValue, item["processId"]?.stringValue, "命令执行") ?? "命令执行"
+            let subtitle = nonEmpty(item["cwd"]?.stringValue, commandActionSummary(from: item["commandActions"]?.arrayValue))
+            return SessionContextTask(id: id, kind: "command", title: String(title.prefix(80)), subtitle: subtitle, status: status)
+        case "fileChange":
+            let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
+            let title = changes.isEmpty ? "文件变更" : "文件变更 x\(changes.count)"
+            return SessionContextTask(id: id, kind: "file_change", title: title, subtitle: fileChangeSummary(from: changes), status: status)
+        case "mcpToolCall", "dynamicToolCall":
+            let title = nonEmpty(item["tool"]?.stringValue, item["name"]?.stringValue, "工具调用") ?? "工具调用"
+            let subtitle = nonEmpty(item["server"]?.stringValue, item["namespace"]?.stringValue, item["pluginId"]?.stringValue)
+            return SessionContextTask(id: id, kind: "tool", title: title, subtitle: subtitle, status: status)
+        default:
+            return nil
+        }
+    }
+
+    private func commandActionSummary(from actions: [CodexAppServerJSONValue]?) -> String? {
+        for action in actions?.compactMap(\.objectValue) ?? [] {
+            if let value = nonEmpty(action["name"]?.stringValue, action["path"]?.stringValue) {
+                return value
+            }
+            if let query = nonEmpty(action["query"]?.stringValue) {
+                return query
+            }
+        }
+        return nil
+    }
+
+    private func fileChangeSummary(from changes: [[String: CodexAppServerJSONValue]]) -> String? {
+        guard !changes.isEmpty else {
+            return nil
+        }
+        var parts = changes.prefix(3).compactMap { change in
+            nonEmpty(change["path"]?.stringValue, change["kind"]?.stringValue)
+        }
+        if changes.count > parts.count {
+            parts.append("+\(changes.count - parts.count)")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func activeTurnID(from thread: [String: CodexAppServerJSONValue]) -> TurnID? {
@@ -756,6 +998,16 @@ actor CodexAppServerSessionRuntime {
         default:
             return nil
         }
+    }
+
+    private func nonEmpty(_ values: String?...) -> String? {
+        for value in values {
+            let text = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return nil
     }
 }
 

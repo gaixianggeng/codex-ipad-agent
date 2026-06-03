@@ -72,6 +72,121 @@ func TestCodexAppServerRuntimeListSessionsMapsThreadList(t *testing.T) {
 	}
 }
 
+func TestCodexAppServerRuntimeProjectsThreadContextForStatusSidebar(t *testing.T) {
+	registry, project := appServerRuntimeFixture(t)
+	fake := &fakeAppServerRPC{}
+	fake.handler = func(method string, params map[string]any, result any) error {
+		switch method {
+		case "account/rateLimits/read":
+			*(result.(*map[string]any)) = map[string]any{}
+		case "thread/list":
+			*(result.(*appServerThreadListResponse)) = appServerThreadListResponse{
+				Data: []appServerThread{{
+					ID:            "thread-context",
+					Preview:       "context",
+					CWD:           project.RealPath,
+					ModelProvider: "openai",
+					Source:        map[string]any{"custom": "desktop"},
+					ThreadSource:  "user",
+					GitInfo:       &appServerGitInfo{SHA: "abcdef1234567890", Branch: "codex/status-sidebar", OriginURL: "https://example.test/repo.git"},
+					CreatedAt:     1_780_300_000,
+					UpdatedAt:     1_780_300_010,
+					Status:        appServerThreadStatus{Type: "active", ActiveFlags: []string{"waitingOnApproval"}},
+					Turns: []appServerTurn{{
+						ID:     "turn-context",
+						Status: "inProgress",
+						Items: []appServerThreadItem{{
+							Type:    "commandExecution",
+							ID:      "cmd-context",
+							Command: "go test ./...",
+							CWD:     project.RealPath,
+							Status:  "running",
+						}},
+					}},
+				}},
+			}
+		default:
+			t.Fatalf("不期望调用 method=%s", method)
+		}
+		return nil
+	}
+
+	runtime := NewCodexAppServerRuntime(registry, fake)
+	page, err := runtime.ListSessions(context.Background(), "demo", 20, sessionPageCursor{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := page.Sessions[0]
+	if got.Status != "waiting_for_approval" {
+		t.Fatalf("activeFlags 应投影成等待审批状态：%+v", got)
+	}
+	if got.Context == nil {
+		t.Fatal("session row 应携带右侧栏 context")
+	}
+	if got.Context.Status == nil || got.Context.Status.Type != "active" || !containsString(got.Context.Status.ActiveFlags, "waitingOnApproval") {
+		t.Fatalf("context status 应保留 app-server activeFlags：%+v", got.Context.Status)
+	}
+	if got.Context.Environment == nil || got.Context.Environment.CWD != project.RealPath || got.Context.Environment.Provider != "openai" {
+		t.Fatalf("context environment 异常：%+v", got.Context.Environment)
+	}
+	if got.Context.Git == nil || got.Context.Git.Branch != "codex/status-sidebar" {
+		t.Fatalf("context git 异常：%+v", got.Context.Git)
+	}
+	if len(got.Context.Tasks) != 1 || got.Context.Tasks[0].Kind != "command" || got.Context.Tasks[0].Title != "go test ./..." {
+		t.Fatalf("context tasks 异常：%+v", got.Context.Tasks)
+	}
+	if len(got.Context.Sources) < 2 {
+		t.Fatalf("context sources 应包含 session/thread 来源：%+v", got.Context.Sources)
+	}
+}
+
+func TestCodexAppServerRuntimeStatusNotificationIncludesContextActiveFlags(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+
+	events := runtime.eventsFromNotification(appserver.Notification{
+		Method: "thread/status/changed",
+		Params: []byte(`{"threadId":"thread-status","status":{"type":"active","activeFlags":["waitingOnUserInput"]}}`),
+	})
+	if len(events) != 1 {
+		t.Fatalf("期望 1 个 status event，got=%+v", events)
+	}
+	event := events[0]
+	if event.Type != "session_status" || event.Status != "waiting_for_input" {
+		t.Fatalf("status event 映射异常：%+v", event)
+	}
+	if event.Context == nil || event.Context.Status == nil || !containsString(event.Context.Status.ActiveFlags, "waitingOnUserInput") {
+		t.Fatalf("status event 应携带 context activeFlags：%+v", event.Context)
+	}
+	if event.Row == nil || event.Row.Context == nil || event.Row.Context.Status == nil {
+		t.Fatalf("status event 应携带含 context 的 session row：%+v", event.Row)
+	}
+}
+
+func TestCodexAppServerRuntimeItemStartedNotificationIncludesContextTask(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+
+	events := runtime.eventsFromNotification(appserver.Notification{
+		Method: "item/started",
+		Params: []byte(`{"threadId":"thread-task","turnId":"turn-task","item":{"type":"commandExecution","id":"cmd-task","command":"go test ./internal/httpapi","cwd":"/tmp/demo","status":"inProgress"}}`),
+	})
+	if len(events) != 1 {
+		t.Fatalf("期望 1 个 item/started context event，got=%+v", events)
+	}
+	event := events[0]
+	if event.Type != "session_context" || event.Context == nil || len(event.Context.Tasks) != 1 {
+		t.Fatalf("item/started 应映射为 session_context task：%+v", event)
+	}
+	task := event.Context.Tasks[0]
+	if task.Kind != "command" || task.Title != "go test ./internal/httpapi" || task.Status != "inProgress" {
+		t.Fatalf("context task 应保留命令和 inProgress 状态：%+v", task)
+	}
+	if event.Row == nil || event.Row.Context == nil || len(event.Row.Context.Tasks) != 1 {
+		t.Fatalf("item/started 应更新 session row context：%+v", event.Row)
+	}
+}
+
 func TestCodexAppServerRuntimeListSessionsReturnsUnknownProjectError(t *testing.T) {
 	registry, _ := appServerRuntimeFixture(t)
 	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})

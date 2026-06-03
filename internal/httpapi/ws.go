@@ -38,6 +38,7 @@ type wsMessage struct {
 	Log             any             `json:"log,omitempty"`
 	Diff            any             `json:"diff,omitempty"`
 	Approval        any             `json:"approval,omitempty"`
+	Context         any             `json:"context,omitempty"`
 	Usage           any             `json:"usage,omitempty"`
 	RateLimit       any             `json:"rate_limit,omitempty"`
 	Warning         any             `json:"warning,omitempty"`
@@ -305,6 +306,7 @@ func runtimeEventToWSMessage(event runtimeStreamEvent) wsMessage {
 		Row:       event.Row,
 		Usage:     event.Usage,
 		RateLimit: event.RateLimit,
+		Context:   event.Context,
 		Message:   event.Message,
 		Error:     event.Error,
 	}

@@ -91,6 +91,64 @@ type SessionSnapshot struct {
 	Usage           *UsageSummary     `json:"usage,omitempty"`
 	PendingApproval *ApprovalSummary  `json:"pending_approval,omitempty"`
 	RateLimit       *RateLimitSummary `json:"rate_limit,omitempty"`
+	Context         *ContextSnapshot  `json:"context,omitempty"`
+}
+
+// ContextSnapshot 是 iOS 右侧状态栏使用的轻量上下文投影。
+// 它只保留 app-server 已结构化暴露的状态摘要，完整日志、diff 和工具结果仍走各自面板，
+// 避免侧边栏订阅高频大 payload。
+type ContextSnapshot struct {
+	SessionID   string              `json:"session_id,omitempty"`
+	ThreadID    string              `json:"thread_id,omitempty"`
+	Status      *ContextStatus      `json:"status,omitempty"`
+	Environment *ContextEnvironment `json:"environment,omitempty"`
+	Git         *ContextGitInfo     `json:"git,omitempty"`
+	Tasks       []ContextTask       `json:"tasks,omitempty"`
+	Sources     []ContextSource     `json:"sources,omitempty"`
+	Subagents   []ContextSubagent   `json:"subagents,omitempty"`
+	UpdatedAt   time.Time           `json:"updated_at,omitempty"`
+}
+
+type ContextStatus struct {
+	Type        string   `json:"type,omitempty"`
+	ActiveFlags []string `json:"active_flags,omitempty"`
+}
+
+type ContextEnvironment struct {
+	ID       string `json:"id,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Label    string `json:"label,omitempty"`
+	CWD      string `json:"cwd,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+type ContextGitInfo struct {
+	SHA       string `json:"sha,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	OriginURL string `json:"origin_url,omitempty"`
+}
+
+type ContextTask struct {
+	ID       string `json:"id,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
+	Status   string `json:"status,omitempty"`
+}
+
+type ContextSource struct {
+	ID       string `json:"id,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
+}
+
+type ContextSubagent struct {
+	ID             string `json:"id,omitempty"`
+	ParentThreadID string `json:"parent_thread_id,omitempty"`
+	Nickname       string `json:"nickname,omitempty"`
+	Role           string `json:"role,omitempty"`
+	Status         string `json:"status,omitempty"`
 }
 
 const promptSubmitDelay = 180 * time.Millisecond

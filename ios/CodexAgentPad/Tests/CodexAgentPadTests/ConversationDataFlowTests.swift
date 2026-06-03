@@ -3660,6 +3660,11 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(created.session.id, "thr_direct")
         XCTAssertEqual(created.session.status, "running")
         XCTAssertEqual(created.session.activeTurnID, "turn_direct_1")
+        let createdContext = try XCTUnwrap(created.session.context)
+        XCTAssertEqual(createdContext.status?.type, "active")
+        XCTAssertEqual(createdContext.environment?.cwd, project.path)
+        XCTAssertEqual(createdContext.environment?.provider, "openai")
+        XCTAssertTrue(createdContext.sources.contains { $0.label == "appServer" })
         XCTAssertEqual(try client.websocketURL(sessionID: "thr_direct").path, "/api/app-server/ws")
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
@@ -3930,6 +3935,16 @@ extension ConversationDataFlowTests {
             XCTFail("Expected assistantDelta")
         }
 
+        let commandStarted = try decodeAppServerNotification(#"{"method":"item/started","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"commandExecution","id":"cmd_1","command":"go test ./...","cwd":"/tmp/demo","status":"inProgress"}}}"#)
+        if case .sessionContext(let context, let meta) = try XCTUnwrap(projector.project(commandStarted)) {
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+            XCTAssertEqual(context.tasks.first?.kind, "command")
+            XCTAssertEqual(context.tasks.first?.title, "go test ./...")
+            XCTAssertEqual(context.tasks.first?.status, "inProgress")
+        } else {
+            XCTFail("Expected command started sessionContext")
+        }
+
         let completed = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"agentMessage","id":"assistant_1","text":"hello world"}}}"#)
         if case .messageCompleted(let message, let meta) = try XCTUnwrap(projector.project(completed)) {
             XCTAssertEqual(message.id, "appserver:turn_demo:assistant_1")
@@ -3939,6 +3954,15 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(meta.itemID, "assistant_1")
         } else {
             XCTFail("Expected messageCompleted")
+        }
+
+        let toolCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"dynamicToolCall","id":"tool_1","namespace":"browser","tool":"open","status":"completed"}}}"#)
+        if case .sessionContext(let context, _) = try XCTUnwrap(projector.project(toolCompleted)) {
+            XCTAssertEqual(context.tasks.first?.kind, "dynamic_tool")
+            XCTAssertEqual(context.tasks.first?.title, "browser.open")
+            XCTAssertEqual(context.tasks.first?.status, "completed")
+        } else {
+            XCTFail("Expected tool completed sessionContext")
         }
 
         let log = try decodeAppServerNotification(#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"thr_demo","turnId":"turn_demo","itemId":"cmd_1","delta":"go test output","stream":"stdout"}}"#)
@@ -3982,6 +4006,80 @@ extension ConversationDataFlowTests {
         } else {
             XCTFail("Expected error")
         }
+    }
+
+    func testAgentEventDecodesSessionContextCompatibilityKeys() throws {
+        let event = try AgentAPIClient.decoder.decode(
+            AgentEvent.self,
+            from: Data("""
+            {
+              "type": "session_context",
+              "meta": {"session_id": "codex_thr_parent"},
+              "context": {
+                "session_id": "codex_thr_parent",
+                "thread_id": "thr_parent",
+                "status": {"type": "active", "activeFlags": ["waitingOnApproval"]},
+                "git": {"branch": "codex/status-sidebar", "originUrl": "https://example.test/repo.git"},
+                "subagents": [
+                  {"id": "thr_child", "parentThreadId": "thr_parent", "nickname": "Noether", "role": "review"}
+                ]
+              }
+            }
+            """.utf8)
+        )
+
+        guard case .sessionContext(let context, let metadata) = event else {
+            return XCTFail("Expected sessionContext event")
+        }
+        XCTAssertEqual(metadata.sessionID, "codex_thr_parent")
+        XCTAssertEqual(context.status?.activeFlags, ["waitingOnApproval"])
+        XCTAssertEqual(context.git?.originURL, "https://example.test/repo.git")
+        XCTAssertEqual(context.subagents.first?.parentThreadID, "thr_parent")
+    }
+
+    func testSessionContextStoreMergesUpdatesAndAttachesSubagents() {
+        let store = SessionContextStore()
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: "thr_parent",
+                threadID: "thr_parent",
+                status: SessionContextStatus(type: "idle"),
+                environment: SessionContextEnvironment(id: "local", kind: "local", label: "本地", cwd: "/tmp/parent", provider: "openai"),
+                sources: [SessionContextSource(id: "session_source", kind: "session", label: "appServer")]
+            ),
+            fallbackSessionID: nil
+        )
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: "thr_parent",
+                status: SessionContextStatus(type: "active", activeFlags: ["waitingOnApproval"]),
+                tasks: [SessionContextTask(id: "cmd_1", kind: "command", title: "go test ./...", subtitle: "/tmp/parent", status: "running")]
+            ),
+            fallbackSessionID: nil
+        )
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: "thr_child",
+                threadID: "thr_child",
+                subagents: [
+                    SessionContextSubagent(
+                        id: "thr_child",
+                        parentThreadID: "thr_parent",
+                        nickname: "Noether",
+                        role: "review",
+                        status: "running"
+                    )
+                ]
+            ),
+            fallbackSessionID: nil
+        )
+
+        let parent = store.context(for: "thr_parent")
+        XCTAssertEqual(parent?.status?.activeFlags, ["waitingOnApproval"])
+        XCTAssertEqual(parent?.environment?.cwd, "/tmp/parent")
+        XCTAssertEqual(parent?.tasks.first?.title, "go test ./...")
+        XCTAssertEqual(parent?.subagents.first?.displayName, "Noether")
+        XCTAssertEqual(store.context(for: "codex_thr_parent")?.subagents.first?.id, "thr_child")
     }
 
     func testCodexAppServerRequestBuildersUseRemoteSafeDefaults() throws {

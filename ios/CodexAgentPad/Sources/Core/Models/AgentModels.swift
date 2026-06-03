@@ -32,6 +32,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let usage: UsageSummary?
     let rateLimit: RateLimitSummary?
     let pendingApproval: ApprovalSummary?
+    let context: SessionContextSnapshot?
 
     var isCodexHistory: Bool {
         source == "codex" && status == "history"
@@ -82,7 +83,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
         revision: ModelRevision? = nil,
         usage: UsageSummary? = nil,
         rateLimit: RateLimitSummary? = nil,
-        pendingApproval: ApprovalSummary? = nil
+        pendingApproval: ApprovalSummary? = nil,
+        context: SessionContextSnapshot? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -101,6 +103,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.usage = usage
         self.rateLimit = rateLimit
         self.pendingApproval = pendingApproval
+        self.context = context
     }
 
     init(row: DataFlowSessionRow) {
@@ -122,7 +125,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
             revision: row.revision,
             usage: row.usage,
             rateLimit: row.rateLimit,
-            pendingApproval: row.pendingApproval
+            pendingApproval: row.pendingApproval,
+            context: row.context
         )
     }
 
@@ -144,6 +148,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case usage
         case rateLimit = "rate_limit"
         case pendingApproval = "pending_approval"
+        case context
     }
 }
 
@@ -624,6 +629,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
     let usage: UsageSummary?
     let rateLimit: RateLimitSummary?
     let pendingApproval: ApprovalSummary?
+    let context: SessionContextSnapshot?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -643,6 +649,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
         case usage
         case rateLimit = "rate_limit"
         case pendingApproval = "pending_approval"
+        case context
     }
 
     init(from decoder: Decoder) throws {
@@ -664,6 +671,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
         self.usage = try container.decodeIfPresent(UsageSummary.self, forKey: .usage)
         self.rateLimit = try container.decodeIfPresent(RateLimitSummary.self, forKey: .rateLimit)
         self.pendingApproval = try container.decodeIfPresent(ApprovalSummary.self, forKey: .pendingApproval)
+        self.context = try container.decodeIfPresent(SessionContextSnapshot.self, forKey: .context)
     }
 }
 
