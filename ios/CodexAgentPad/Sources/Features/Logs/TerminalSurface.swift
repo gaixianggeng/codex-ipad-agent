@@ -51,14 +51,6 @@ final class TerminalSurfaceStore: ObservableObject {
     private var lastSeqBySessionID: [String: EventSequence] = [:]
     private var recentlyUsed: [String] = []
 
-    // 喂入合批：codex TUI 的 spinner/状态行和流式回复会产生密集 PTY 输出，
-    // 若每个 chunk 都立刻 feed→渲染（终端只能在主线程渲染），主线程会被刷帧打满，
-    // 连输入框打字都卡。这里把一个时间窗内的字节攒起来，到点一次性 feed，
-    // 把渲染频率压到 ~25fps，主线程让位给交互。
-    private var pendingBytesBySessionID: [String: [UInt8]] = [:]
-    private var flushScheduled = false
-    private let coalesceIntervalNanoseconds: UInt64 = 40_000_000
-
     private let font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
 
     func view(for sessionID: String) -> ReadOnlyTerminalView {
@@ -78,7 +70,6 @@ final class TerminalSurfaceStore: ObservableObject {
     }
 
     /// 喂入一段原始 PTY 字节（含 ANSI 转义）。seq 单调去重，避免重连 replay 重复喂入。
-    /// 仅把字节攒进缓冲并安排一次合批 flush，不在这里直接渲染。
     func feed(_ text: String, sessionID: String, seq: EventSequence?) {
         guard !text.isEmpty else {
             return
@@ -89,36 +80,12 @@ final class TerminalSurfaceStore: ObservableObject {
             }
             lastSeqBySessionID[sessionID] = seq
         }
-        pendingBytesBySessionID[sessionID, default: []].append(contentsOf: text.utf8)
-        scheduleFlush()
-    }
-
-    private func scheduleFlush() {
-        guard !flushScheduled else {
-            return
-        }
-        flushScheduled = true
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: self?.coalesceIntervalNanoseconds ?? 40_000_000)
-            self?.flushPending()
-        }
-    }
-
-    private func flushPending() {
-        flushScheduled = false
-        guard !pendingBytesBySessionID.isEmpty else {
-            return
-        }
-        let pending = pendingBytesBySessionID
-        pendingBytesBySessionID.removeAll(keepingCapacity: true)
-        for (sessionID, bytes) in pending where !bytes.isEmpty {
-            view(for: sessionID).feed(byteArray: bytes[...])
-        }
+        let view = view(for: sessionID)
+        view.feed(byteArray: Array(text.utf8)[...])
     }
 
     func reset(sessionID: String) {
         lastSeqBySessionID.removeValue(forKey: sessionID)
-        pendingBytesBySessionID.removeValue(forKey: sessionID)
         if let view = viewsBySessionID[sessionID] {
             // ESC c：硬复位，清掉旧屏幕，避免切换/重连后旧帧残留。
             view.feed(byteArray: Array("\u{1b}c".utf8)[...])
