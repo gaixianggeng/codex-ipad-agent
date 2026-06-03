@@ -679,6 +679,89 @@ func TestWebSocketForwardsNewRolloutAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestWebSocketForwardsLateRolloutAssistantWithoutNewInput(t *testing.T) {
+	requireSQLite(t)
+
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", home)
+
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "rollout-late.jsonl")
+	writeFile(t, rolloutPath, `{"timestamp":"2026-06-01T10:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"旧回答"}}`+"\n")
+	writeCodexState(t, home, "thread-late", projectDir, rolloutPath)
+
+	fakeCodex := writeFakeCodex(t)
+	handler, manager := newAcceptanceRouter(t, projectDir, fakeCodex)
+	t.Cleanup(manager.Shutdown)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createReq := authedHTTPClientRequest(t, http.MethodPost, server.URL+"/api/sessions", map[string]any{
+		"project_id": "demo",
+		"resume_id":  "thread-late",
+		"cols":       120,
+		"rows":       32,
+	})
+	createResp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("期望创建 resume 会话返回 201，实际 %d", createResp.StatusCode)
+	}
+	var created struct {
+		Session session.SessionSnapshot `json:"session"`
+		WSURL   string                  `json:"ws_url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + created.WSURL
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testToken)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// 只发一次输入，随后“两段回复”分先后落盘，期间不再有任何 WS 输入。
+	// 连接级 poller 必须持续存活，否则第一段之后就停摆——正是“长回复/最后一条收不到”的根因。
+	if err := conn.WriteJSON(map[string]any{"type": "input", "data": "继续\r", "client_message_id": "client-late-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	readAssistant := func(want string) {
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for {
+			var event map[string]any
+			if err := conn.ReadJSON(&event); err != nil {
+				t.Fatalf("未收到 assistant %q：%v trace=%+v", want, err, sessionTraceEvents(t, server.URL, created.Session.ID))
+			}
+			if event["type"] != "message_completed" {
+				continue
+			}
+			message, ok := event["message"].(map[string]any)
+			if !ok || message["role"] != "assistant" {
+				continue
+			}
+			if message["content"] == want {
+				return
+			}
+		}
+	}
+
+	appendFile(t, rolloutPath, `{"timestamp":"`+time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"agent_message","message":"第一段回复"}}`+"\n")
+	readAssistant("第一段回复")
+
+	// 第二段在第一段被消费之后才落盘，且没有任何新输入触发——只能靠常驻 poller 兜住。
+	appendFile(t, rolloutPath, `{"timestamp":"`+time.Now().UTC().Add(2*time.Second).Format(time.RFC3339Nano)+`","type":"event_msg","payload":{"type":"agent_message","message":"第二段迟到回复"}}`+"\n")
+	readAssistant("第二段迟到回复")
+}
+
 func TestWebSocketAttachForwardsAssistantForInitialPrompt(t *testing.T) {
 	requireSQLite(t)
 
