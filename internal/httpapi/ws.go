@@ -15,6 +15,7 @@ import (
 
 const rolloutAssistantForwardLimit = 200
 const rolloutAssistantForwardInterval = 500 * time.Millisecond
+const rolloutAssistantForwardTimeout = 45 * time.Second
 
 type wsMessage struct {
 	Type            string          `json:"type"`
@@ -71,9 +72,8 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 	}
 	submittedMessages := s.SubmittedMessages()
 	structuredMessages := newStructuredMessageTracker()
-	firstSubmittedAt, hasSubmitted := earliestSubmittedMessageTime(submittedMessages)
 	markBefore := time.Now().UTC()
-	if hasSubmitted {
+	if firstSubmittedAt, ok := earliestSubmittedMessageTime(submittedMessages); ok {
 		markBefore = firstSubmittedAt
 	}
 	structuredMessages.markExisting(r.projects, id, s, markBefore)
@@ -96,12 +96,7 @@ func (r *Router) sessionWS(w http.ResponseWriter, req *http.Request, id string) 
 
 	done := make(chan struct{})
 	rolloutForwarder := newRolloutAssistantForwarder(r.projects, id, s, structuredMessages, done, send)
-	if hasSubmitted {
-		// 只有结构化客户端（曾带 client_message_id 提交过）才起连接级 poller：
-		// 从最早提交点补 assistant 结构化消息，覆盖“首条 prompt 经 HTTP 创建、WS attach
-		// 后才补消息”。旧 Web/终端客户端不消费 message_completed，不启动以免无谓轮询。
-		rolloutForwarder.Request(firstSubmittedAt)
-	}
+	forwardSubmittedRolloutAssistantMessages(submittedMessages, rolloutForwarder)
 	go func() {
 		defer close(done)
 		for {
@@ -188,10 +183,11 @@ type rolloutAssistantForwarder struct {
 	done      <-chan struct{}
 	send      func(wsMessage) bool
 
-	mu      sync.Mutex
-	after   time.Time
-	running bool
-	wake    chan struct{}
+	mu       sync.Mutex
+	after    time.Time
+	deadline time.Time
+	running  bool
+	wake     chan struct{}
 }
 
 func newRolloutAssistantForwarder(
@@ -217,14 +213,19 @@ func (f *rolloutAssistantForwarder) Request(after time.Time) {
 	if after.IsZero() {
 		return
 	}
+	now := time.Now()
+	deadline := now.Add(rolloutAssistantForwardTimeout)
+
 	f.mu.Lock()
 	// 多条提交共享一个连接级 poller。扫描水位保留最早提交点，避免后来的输入
-	// 把尚未转发的 assistant 消息跳过去。
+	// 把尚未转发的 assistant 消息跳过去；deadline 则按最新输入向后延长。
 	if f.after.IsZero() || after.Before(f.after) {
 		f.after = after
 	}
+	if deadline.After(f.deadline) {
+		f.deadline = deadline
+	}
 	if f.running {
-		// 新输入唤醒一次立即轮询，缩短首条 assistant 的到达延迟。
 		f.signalLocked()
 		f.mu.Unlock()
 		return
@@ -243,10 +244,6 @@ func (f *rolloutAssistantForwarder) signalLocked() {
 	}
 }
 
-// run 在整个 WS 连接生命周期内按固定间隔轮询 rollout，直到连接关闭（done）。
-// 故意不设“距上次输入 45s”这类截止时间：长回复（turn 超过 45s）或 rollout 落盘较晚时，
-// 旧逻辑会在 poller 已退出后才写入 assistant 消息，导致对话框永远收不到这条回复，
-// 而 PTY 日志仍在实时显示——正是“日志有、对话没有”的根因。
 func (f *rolloutAssistantForwarder) run() {
 	ticker := time.NewTicker(rolloutAssistantForwardInterval)
 	defer ticker.Stop()
@@ -254,6 +251,7 @@ func (f *rolloutAssistantForwarder) run() {
 	for {
 		f.mu.Lock()
 		after := f.after
+		deadline := f.deadline
 		f.mu.Unlock()
 
 		if !forwardRolloutAssistantMessagesOnce(f.registry, f.sessionID, f.session, after, f.tracker, f.send) {
@@ -261,10 +259,27 @@ func (f *rolloutAssistantForwarder) run() {
 			return
 		}
 
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			f.mu.Lock()
+			if !f.deadline.After(deadline) {
+				f.running = false
+				f.mu.Unlock()
+				return
+			}
+			f.mu.Unlock()
+			continue
+		}
+
+		timer := time.NewTimer(wait)
 		select {
 		case <-ticker.C:
+			stopTimer(timer)
+		case <-timer.C:
 		case <-f.wake:
+			stopTimer(timer)
 		case <-f.done:
+			stopTimer(timer)
 			f.stop()
 			return
 		}
@@ -275,6 +290,15 @@ func (f *rolloutAssistantForwarder) stop() {
 	f.mu.Lock()
 	f.running = false
 	f.mu.Unlock()
+}
+
+func stopTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func earliestSubmittedMessageTime(messages []sessionpkg.SubmittedMessage) (time.Time, bool) {
@@ -318,6 +342,19 @@ func (t *structuredMessageTracker) markIfNew(id string) bool {
 	}
 	t.seen[id] = true
 	return true
+}
+
+func forwardSubmittedRolloutAssistantMessages(
+	submitted []sessionpkg.SubmittedMessage,
+	forwarder *rolloutAssistantForwarder,
+) {
+	after, ok := earliestSubmittedMessageTime(submitted)
+	if !ok {
+		return
+	}
+	// 首条 prompt 通过 HTTP 创建会话时，用户确认已经在 POST 响应里返回；
+	// WS 连接建立后仍要从这条提交点开始补 assistant 的结构化消息，避免 iOS 只能看到 PTY 日志。
+	forwarder.Request(after)
 }
 
 func forwardRolloutAssistantMessagesOnce(
