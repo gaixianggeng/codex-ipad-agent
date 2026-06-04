@@ -87,7 +87,7 @@
 		290B7A5AC69DF8B358B4DE27 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		3660BF894297A00A475C4BBF /* SessionContextSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextSidebarView.swift; sourceTree = "<group>"; };
 		368F5024CC51BCFD41D95D99 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
-		380EBF3B6493A6D78FCAA9BB /* CodexAgentPad.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CodexAgentPad.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		380EBF3B6493A6D78FCAA9BB /* CodexAgentPad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexAgentPad.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3829C0B0B3F998D871354E6F /* testProjectSessionDashboard.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testProjectSessionDashboard.1.png; sourceTree = "<group>"; };
 		4D361ECAF79996C05BDC2B18 /* MarkdownStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownStyle.swift; sourceTree = "<group>"; };
 		52CB4BD9E6102179AA6A6E5D /* SessionContextModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextModels.swift; sourceTree = "<group>"; };
@@ -98,7 +98,7 @@
 		5BA09AF7F84AF95256BE81DB /* AgentAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIClient.swift; sourceTree = "<group>"; };
 		5C79953C6AF2BC510C0748C6 /* ThemeStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStoreTests.swift; sourceTree = "<group>"; };
 		6792ABF5575C5DC1D7F690CD /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
-		6A4AC28507AA70A75A2EBA06 /* direct_app_server_approval_stream.jsonl */ = {isa = PBXFileReference; path = direct_app_server_approval_stream.jsonl; sourceTree = "<group>"; };
+		6A4AC28507AA70A75A2EBA06 /* direct_app_server_approval_stream.jsonl */ = {isa = PBXFileReference; lastKnownFileType = text; path = direct_app_server_approval_stream.jsonl; sourceTree = "<group>"; };
 		70763DD1E0EFC77A63F7FF83 /* MarkdownRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRenderingTests.swift; sourceTree = "<group>"; };
 		722AAC783498229684860284 /* MarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParser.swift; sourceTree = "<group>"; };
 		746EFE6829B049C1D9445747 /* CodexAppServerProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerProtocolTests.swift; sourceTree = "<group>"; };
@@ -118,7 +118,7 @@
 		C6E825FB078CFC2A07BD0FDD /* SessionContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextStore.swift; sourceTree = "<group>"; };
 		C70E016E422ECC27016A2031 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
 		C88CBA6847D568BF38F25D48 /* testConversationBubbleAlignment.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testConversationBubbleAlignment.1.png; sourceTree = "<group>"; };
-		DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CodexAgentPadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper; path = CodexAgentPadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DF61887CD387C60719C6E7F2 /* AgentEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEvent.swift; sourceTree = "<group>"; };
 		E123D0954AC40B8703C8AFF6 /* CodexOutputParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexOutputParser.swift; sourceTree = "<group>"; };
 		E732124724C5AD07CEDE2BE2 /* EventReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventReducer.swift; sourceTree = "<group>"; };
@@ -426,8 +426,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = F876F88A7F1E391827FBD4BE /* Build configuration list for PBXProject "CodexAgentPad" */;
 			developmentRegion = en;
@@ -546,6 +544,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9HZ89R58PZ;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -585,6 +584,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9HZ89R58PZ;
 				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
