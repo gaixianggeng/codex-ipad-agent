@@ -1458,6 +1458,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
         store.selectedProjectID = project.id
         store.selectedSessionID = history.id
+        await store.toggleProjectExpansion(project)
         var publishCount = 0
         var cancellables: Set<AnyCancellable> = []
 
@@ -1626,6 +1627,37 @@ final class ConversationDataFlowTests: XCTestCase {
 
         await store.toggleProjectExpansion(project)
         XCTAssertFalse(store.isProjectExpanded(project.id))
+    }
+
+    func testSelectingSessionRevealsOwningProjectInSidebar() async {
+        let firstProject = makeProject(id: "proj_1")
+        let secondProject = makeProject(id: "proj_2")
+        let secondSession = makeSession(id: "sess_second", projectID: secondProject.id, title: "第二项目会话", status: "closed", source: "agentd")
+        let client = MockSessionStoreClient(
+            projects: [firstProject, secondProject],
+            sessions: [],
+            projectSessions: [
+                firstProject.id: [],
+                secondProject.id: [secondSession]
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.toggleProjectExpansion(secondProject)
+        await store.toggleProjectExpansion(secondProject)
+        XCTAssertFalse(store.isProjectExpanded(secondProject.id))
+
+        await store.selectSession(secondSession)
+
+        XCTAssertEqual(store.selectedProjectID, secondProject.id)
+        XCTAssertEqual(store.selectedSessionID, secondSession.id)
+        XCTAssertTrue(store.isProjectExpanded(secondProject.id))
     }
 
     func testSessionStoreOnlyShowsThreeProjectSessionsByDefault() async {

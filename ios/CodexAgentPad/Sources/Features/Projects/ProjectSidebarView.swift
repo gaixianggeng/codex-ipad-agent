@@ -8,6 +8,8 @@ struct ProjectSidebarView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let selectedProjectID = sessionStore.selectedProjectID
+        let selectedSessionID = sessionStore.selectedSessionID
 
         List {
             Section {
@@ -16,8 +18,10 @@ struct ProjectSidebarView: View {
 
                     ProjectRow(
                         project: project,
-                        isSelected: project.id == sessionStore.selectedProjectID,
+                        isActiveProject: project.id == selectedProjectID,
+                        isSelected: project.id == selectedProjectID && selectedSessionID == nil,
                         isExpanded: snapshot.isExpanded,
+                        isLoading: snapshot.isLoadingMore,
                         onToggle: {
                             Task {
                                 if showsSessions {
@@ -31,10 +35,16 @@ struct ProjectSidebarView: View {
                             Task { await sessionStore.startNewSession(in: project) }
                         }
                     )
+                    .equatable()
                     .sidebarListRow()
 
                     if showsSessions && snapshot.isExpanded {
-                        ProjectSessionRows(project: project, snapshot: snapshot)
+                        ProjectSessionRows(
+                            project: project,
+                            snapshot: snapshot,
+                            selectedSessionID: selectedSessionID,
+                            isLoading: sessionStore.isLoading
+                        )
                     }
                 }
             } header: {
@@ -71,35 +81,49 @@ private struct ProjectSessionRows: View {
     @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
     let snapshot: ProjectSessionListSnapshot
+    let selectedSessionID: SessionID?
+    let isLoading: Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        if snapshot.isEmpty && !sessionStore.isLoading {
+        if snapshot.isEmpty && !isLoading {
             Text("暂无历史会话")
                 .font(themeStore.uiFont(size: 12))
                 .foregroundStyle(tokens.tertiaryText)
-                .padding(.leading, 28)
+                .padding(.leading, 34)
                 .padding(.vertical, 6)
                 .sidebarListRow()
         }
 
         ForEach(snapshot.visibleSessions) { session in
-            SessionRow(session: session, isSelected: session.id == sessionStore.selectedSessionID)
+            SessionRow(session: session, isSelected: session.id == selectedSessionID)
+                .equatable()
                 // List 行内的 Button 会被 UICollectionView 的 delaysContentTouches 拖慢高亮，
                 // 改用 contentShape + onTapGesture，让点击在抬手时立即响应。
                 .contentShape(Rectangle())
                 .onTapGesture {
                     Task { await sessionStore.selectSession(session) }
                 }
-                .padding(.leading, 28)
+                .padding(.leading, 34)
                 .sidebarListRow()
         }
 
         if snapshot.shouldShowActionRow {
-            Text(snapshot.actionTitle)
-                .font(themeStore.uiFont(size: 12, weight: .medium))
-                .foregroundStyle(tokens.tertiaryText)
+            HStack(spacing: 6) {
+                if snapshot.isLoadingMore {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(tokens.tertiaryText)
+                } else {
+                    Image(systemName: snapshot.isShowingAll && !snapshot.canLoadMore ? "chevron.up" : "ellipsis")
+                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                }
+                Text(snapshot.actionTitle)
+                    .lineLimit(1)
+            }
+            .font(themeStore.uiFont(size: 12, weight: .medium))
+            .foregroundStyle(tokens.tertiaryText)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     guard !snapshot.isLoadingMore else {
@@ -113,21 +137,31 @@ private struct ProjectSessionRows: View {
                         }
                     }
                 }
-                .padding(.leading, 38)
+                .padding(.leading, 42)
                 .padding(.vertical, 5)
                 .sidebarListRow()
         }
     }
 }
 
-private struct ProjectRow: View {
+private struct ProjectRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
+    let isActiveProject: Bool
     let isSelected: Bool
     let isExpanded: Bool
+    let isLoading: Bool
     let onToggle: () -> Void
     let onNewSession: () -> Void
+
+    static func == (lhs: ProjectRow, rhs: ProjectRow) -> Bool {
+        lhs.project == rhs.project
+            && lhs.isActiveProject == rhs.isActiveProject
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isExpanded == rhs.isExpanded
+            && lhs.isLoading == rhs.isLoading
+    }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -136,24 +170,25 @@ private struct ProjectRow: View {
             // 整块左侧区域作为展开/收起的点击目标。用 onTapGesture 绕开 List 行内 Button
             // 在 UICollectionView 下的 delaysContentTouches 高亮延迟。
             HStack(spacing: 10) {
-                Image(systemName: isSelected ? "folder.fill" : "folder")
+                Image(systemName: isActiveProject || isExpanded ? "folder.fill" : "folder")
                     .frame(width: 20)
-                    .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(project.name)
-                        .font(themeStore.uiFont(size: 16, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-                    Text(project.path)
-                        .font(themeStore.codeFont(size: 12))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                }
-                .layoutPriority(1)
+                    .foregroundStyle(isActiveProject ? tokens.accent : tokens.secondaryText)
+                Text(project.name)
+                    .font(themeStore.uiFont(size: 16, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .layoutPriority(1)
                 Spacer(minLength: 8)
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(themeStore.uiFont(size: 12, weight: .semibold))
-                    .foregroundStyle(tokens.tertiaryText)
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(tokens.tertiaryText)
+                } else {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .foregroundStyle(tokens.tertiaryText)
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggle)
@@ -179,58 +214,42 @@ private struct ProjectRow: View {
     }
 }
 
-private struct SessionRow: View {
+private struct SessionRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let session: AgentSession
     let isSelected: Bool
 
+    static func == (lhs: SessionRow, rhs: SessionRow) -> Bool {
+        lhs.session == rhs.session && lhs.isSelected == rhs.isSelected
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
+                Circle()
+                    .fill(statusDotColor)
+                    .frame(width: 7, height: 7)
                 Text(session.title)
                     .font(themeStore.uiFont(size: 15, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.86)
                     .layoutPriority(1)
                 Spacer(minLength: 8)
-                StatusPill(text: statusText, kind: statusKind)
-                    .fixedSize(horizontal: true, vertical: false)
+                trailingMetadata
             }
-            HStack {
-                Text(session.source == "codex" ? "Codex" : "agentd")
-                Spacer()
-                if let updatedAt = session.updatedAt {
-                    Text(updatedAt, style: .relative)
-                }
-            }
-            .font(themeStore.uiFont(.caption))
-            .foregroundStyle(tokens.tertiaryText)
 
             if let preview = session.preview, !preview.isEmpty {
                 Text(preview)
                     .font(themeStore.uiFont(size: 12))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(2)
-            }
-
-            if !runtimeChips.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(runtimeChips, id: \.text) { chip in
-                        Label(chip.text, systemImage: chip.symbol)
-                            .font(themeStore.uiFont(size: 11, weight: .medium))
-                            .lineLimit(1)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(chip.tint.opacity(0.12), in: Capsule())
-                            .foregroundStyle(chip.tint)
-                    }
-                }
+                    .foregroundStyle(isSelected ? tokens.secondaryText : tokens.tertiaryText)
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 9)
         .padding(.vertical, 6)
         .background {
             SidebarSelectionBackground(isSelected: isSelected, tint: tokens.selectionFill)
@@ -242,8 +261,27 @@ private struct SessionRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private var statusText: String {
-        session.displayStatusText
+    @ViewBuilder
+    private var trailingMetadata: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        if session.pendingApproval != nil {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(.orange)
+                .accessibilityLabel("等待审批")
+        } else if session.activeTurnID != nil || session.isRunning {
+            Image(systemName: "circle.dotted")
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(.green)
+                .accessibilityLabel(session.displayStatusText)
+        } else if let updatedAt = session.updatedAt {
+            Text(updatedAt, style: .relative)
+                .font(themeStore.uiFont(size: 12, weight: .medium))
+                .foregroundStyle(tokens.tertiaryText)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
     }
 
     private var statusKind: StatusPill.Kind {
@@ -257,21 +295,15 @@ private struct SessionRow: View {
         }
     }
 
-    private var runtimeChips: [(text: String, symbol: String, tint: Color)] {
-        var chips: [(text: String, symbol: String, tint: Color)] = []
-        if session.activeTurnID != nil {
-            chips.append(("active turn", "bolt.fill", .green))
+    private var statusDotColor: Color {
+        switch statusKind {
+        case .success:
+            return .green
+        case .warning:
+            return .orange
+        case .neutral:
+            return .secondary.opacity(0.55)
         }
-        if let approval = session.pendingApproval {
-            chips.append(("审批 \(approval.title)", "checkmark.seal", .orange))
-        }
-        if let usage = session.usage?.compactText {
-            chips.append((usage, "gauge.with.dots.needle.33percent", .secondary))
-        }
-        if let rateLimit = session.rateLimit?.compactText {
-            chips.append((rateLimit, "speedometer", .secondary))
-        }
-        return chips
     }
 }
 
