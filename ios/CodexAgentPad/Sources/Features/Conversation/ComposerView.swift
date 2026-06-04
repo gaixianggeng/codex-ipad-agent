@@ -2,9 +2,13 @@ import SwiftUI
 
 struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     @State private var composerState = ComposerState()
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         VStack(spacing: 8) {
             if let activity = sessionStore.selectedForegroundActivity {
                 composerActivity(activity)
@@ -12,8 +16,8 @@ struct ComposerView: View {
             runtimeChips
             pendingApprovalAction
             TextEditor(text: $composerState.draft)
-                .font(.body)
-                .foregroundStyle(.primary)
+                .font(themeStore.uiFont(.body))
+                .foregroundStyle(tokens.primaryText)
                 .frame(minHeight: composerMinHeight, maxHeight: composerMaxHeight)
                 .onKeyPress { keyPress in
                     guard keyPress.key == .return else {
@@ -27,16 +31,17 @@ struct ComposerView: View {
                 }
                 .padding(10)
                 .scrollContentBackground(.hidden)
-                .background(Color(.tertiarySystemBackground))
+                .background(tokens.elevatedSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color(.separator))
+                        .strokeBorder(tokens.border)
                 )
                 .overlay(alignment: .topLeading) {
                     if composerState.isEmpty {
                         Text("输入任务或后续指令")
-                            .foregroundStyle(Color(.placeholderText))
+                            .font(themeStore.uiFont(.body))
+                            .foregroundStyle(tokens.tertiaryText)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 18)
                             .allowsHitTesting(false)
@@ -47,15 +52,15 @@ struct ComposerView: View {
                 horizontalActions
                 compactActions
             }
-            .font(.callout)
+            .font(themeStore.uiFont(.callout))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        .background(Color(.secondarySystemBackground))
+        .background(tokens.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color(.separator))
+                .strokeBorder(tokens.border)
         )
     }
 
@@ -139,7 +144,7 @@ struct ComposerView: View {
                 HStack(spacing: 7) {
                     ForEach(runtimeChipItems, id: \.text) { item in
                         Label(item.text, systemImage: item.symbol)
-                            .font(.caption.weight(.medium))
+                            .font(themeStore.uiFont(.caption, weight: .medium))
                             .lineLimit(1)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 5)
@@ -219,8 +224,8 @@ struct ComposerView: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(.secondary)
+        .font(themeStore.uiFont(.caption, weight: .medium))
+        .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
     }
 }
 

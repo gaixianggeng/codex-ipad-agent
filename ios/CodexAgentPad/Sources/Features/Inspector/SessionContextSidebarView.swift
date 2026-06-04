@@ -3,6 +3,8 @@ import SwiftUI
 struct SessionContextSidebarView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var contextStore: SessionContextStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     private var context: SessionContextSnapshot? {
         contextStore.context(for: sessionStore.selectedSessionID) ?? sessionStore.selectedSession?.context
@@ -21,10 +23,10 @@ struct SessionContextSidebarView: View {
                 .scrollContentBackground(.hidden)
             } else {
                 ContentUnavailableView("未选择会话", systemImage: "sidebar.right")
-                    .font(.caption)
+                    .font(themeStore.uiFont(.caption))
             }
         }
-        .background(Color(.secondarySystemBackground))
+        .background(themeStore.tokens(for: colorScheme).surface)
     }
 
     private func environmentSection(_ context: SessionContextSnapshot) -> some View {
@@ -198,23 +200,27 @@ struct SessionContextSidebarView: View {
 }
 
 private struct ContextValueRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let symbolName: String
     let title: String
     let value: String
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: symbolName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
                 .frame(width: 18)
             Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
                 .frame(width: 58, alignment: .leading)
             Text(value)
-                .font(.caption.monospaced())
-                .foregroundStyle(.primary)
+                .font(themeStore.codeFont(.caption))
+                .foregroundStyle(tokens.primaryText)
                 .lineLimit(3)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
@@ -225,25 +231,30 @@ private struct ContextValueRow: View {
 }
 
 private struct ContextItemRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let symbolName: String
     let title: String
     let subtitle: String?
     let badge: String?
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: symbolName)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
                 .frame(width: 18, height: 20)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title.isEmpty ? "-" : title)
-                    .font(.caption.weight(.medium))
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.primaryText)
                     .lineLimit(2)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
+                        .font(themeStore.codeFont(.caption2))
+                        .foregroundStyle(tokens.secondaryText)
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
@@ -252,8 +263,8 @@ private struct ContextItemRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if let badge, !badge.isEmpty {
                 Text(badge)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
                     .lineLimit(1)
             }
         }
@@ -262,11 +273,13 @@ private struct ContextItemRow: View {
 }
 
 private struct ContextEmptyRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
 
     var body: some View {
         Label(title, systemImage: "minus.circle")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
     }
 }

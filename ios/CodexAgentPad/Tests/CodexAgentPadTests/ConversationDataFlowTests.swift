@@ -4,7 +4,7 @@ import Combine
 
 @MainActor
 final class ConversationDataFlowTests: XCTestCase {
-    func testThemeStorePersistsThemeAccentAndFontScale() throws {
+    func testThemeStorePersistsThemePresetFontsAndFontScale() throws {
         let suiteName = "ThemeStoreTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -12,22 +12,30 @@ final class ConversationDataFlowTests: XCTestCase {
 
         let store = ThemeStore(defaults: defaults)
         XCTAssertEqual(store.mode, .system)
-        XCTAssertEqual(store.accent, .blue)
+        XCTAssertEqual(store.preset, .codex)
+        XCTAssertEqual(store.uiFontPreset, .system)
+        XCTAssertEqual(store.codeFontPreset, .systemMono)
         XCTAssertEqual(store.fontScale, 1.0, accuracy: 0.001)
 
         let initialVersion = store.themeVersion
         store.mode = .dark
-        store.accent = .orange
+        store.preset = .gruvbox
+        store.uiFontPreset = .rounded
+        store.codeFontPreset = .menlo
         store.setFontScale(1.2)
 
         XCTAssertEqual(store.mode, .dark)
-        XCTAssertEqual(store.accent, .orange)
+        XCTAssertEqual(store.preset, .gruvbox)
+        XCTAssertEqual(store.uiFontPreset, .rounded)
+        XCTAssertEqual(store.codeFontPreset, .menlo)
         XCTAssertEqual(store.fontScale, 1.2, accuracy: 0.001)
         XCTAssertGreaterThan(store.themeVersion, initialVersion)
 
         let reloaded = ThemeStore(defaults: defaults)
         XCTAssertEqual(reloaded.mode, .dark)
-        XCTAssertEqual(reloaded.accent, .orange)
+        XCTAssertEqual(reloaded.preset, .gruvbox)
+        XCTAssertEqual(reloaded.uiFontPreset, .rounded)
+        XCTAssertEqual(reloaded.codeFontPreset, .menlo)
         XCTAssertEqual(reloaded.fontScale, 1.2, accuracy: 0.001)
         XCTAssertEqual(reloaded.themeVersion, store.themeVersion)
     }
@@ -119,7 +127,8 @@ final class ConversationDataFlowTests: XCTestCase {
         let renderPlan = MessageRenderPlanCache(limit: 4).plan(for: try XCTUnwrap(beforeMessages.first))
 
         themeStore.mode = .dark
-        themeStore.accent = .teal
+        themeStore.preset = .gruvbox
+        themeStore.uiFontPreset = .rounded
         themeStore.setFontScale(1.2)
 
         let afterMessages = conversationStore.messages(for: sessionID)

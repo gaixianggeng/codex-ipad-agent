@@ -3,6 +3,8 @@ import SwiftUI
 struct ApprovalCardView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var conversationStore: ConversationStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ScrollView {
@@ -18,7 +20,7 @@ struct ApprovalCardView: View {
 
                 if sessionStore.selectedSession?.pendingApproval == nil && approvalMessages.isEmpty {
                     ContentUnavailableView("暂无审批", systemImage: "checkmark.seal")
-                        .font(.caption)
+                        .font(themeStore.uiFont(.caption))
                         .padding(.top, 48)
                 }
             }
@@ -54,7 +56,7 @@ struct ApprovalCardView: View {
         if isDeclined(message) {
             return .red
         }
-        return .orange
+        return themeStore.tokens(for: colorScheme).warning
     }
 
     private func isApproved(_ message: ConversationMessage) -> Bool {

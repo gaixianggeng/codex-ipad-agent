@@ -2,9 +2,13 @@ import SwiftUI
 
 struct ProjectSidebarView: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     var showsSessions = true
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         List {
             Section {
                 ForEach(sessionStore.projects) { project in
@@ -36,7 +40,8 @@ struct ProjectSidebarView: View {
             } header: {
                 HStack {
                     Text("项目")
-                        .foregroundStyle(SidebarTheme.headerText)
+                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .foregroundStyle(tokens.tertiaryText)
                     Spacer()
                     Button {
                         Task { await sessionStore.refreshAll(autoAttach: false) }
@@ -50,6 +55,8 @@ struct ProjectSidebarView: View {
         .listStyle(.sidebar)
         .contentMargins(.top, 6, for: .scrollContent)
         .contentMargins(.bottom, 12, for: .scrollContent)
+        .scrollContentBackground(.hidden)
+        .background(tokens.background)
         .overlay {
             if sessionStore.projects.isEmpty && !sessionStore.isLoading {
                 ContentUnavailableView("没有项目", systemImage: "folder", description: Text("请检查 agentd 的 AGENTD_SCAN_ROOTS 或配置文件。"))
@@ -60,14 +67,18 @@ struct ProjectSidebarView: View {
 
 private struct ProjectSessionRows: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
     let snapshot: ProjectSessionListSnapshot
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         if snapshot.isEmpty && !sessionStore.isLoading {
             Text("暂无历史会话")
-                .font(.caption)
-                .foregroundStyle(SidebarTheme.mutedText)
+                .font(themeStore.uiFont(size: 12))
+                .foregroundStyle(tokens.tertiaryText)
                 .padding(.leading, 28)
                 .padding(.vertical, 6)
                 .sidebarListRow()
@@ -87,8 +98,8 @@ private struct ProjectSessionRows: View {
 
         if snapshot.shouldShowActionRow {
             Text(snapshot.actionTitle)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(SidebarTheme.mutedText)
+                .font(themeStore.uiFont(size: 12, weight: .medium))
+                .foregroundStyle(tokens.tertiaryText)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     guard !snapshot.isLoadingMore else {
@@ -110,6 +121,8 @@ private struct ProjectSessionRows: View {
 }
 
 private struct ProjectRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
     let isSelected: Bool
     let isExpanded: Bool
@@ -117,35 +130,37 @@ private struct ProjectRow: View {
     let onNewSession: () -> Void
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(spacing: 8) {
             // 整块左侧区域作为展开/收起的点击目标。用 onTapGesture 绕开 List 行内 Button
             // 在 UICollectionView 下的 delaysContentTouches 高亮延迟。
             HStack(spacing: 10) {
                 Image(systemName: isSelected ? "folder.fill" : "folder")
                     .frame(width: 20)
-                    .foregroundStyle(isSelected ? SidebarTheme.primaryText : SidebarTheme.icon)
+                    .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(project.name)
-                        .font(.headline)
-                        .foregroundStyle(SidebarTheme.primaryText)
+                        .font(themeStore.uiFont(size: 16, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
                     Text(project.path)
-                        .font(.caption)
-                        .foregroundStyle(SidebarTheme.secondaryText)
+                        .font(themeStore.codeFont(size: 12))
+                        .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 8)
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(SidebarTheme.mutedText)
+                    .font(themeStore.uiFont(size: 12, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggle)
 
             Image(systemName: "square.and.pencil")
-                .font(.body.weight(.medium))
-                .foregroundStyle(SidebarTheme.primaryText.opacity(0.86))
+                .font(themeStore.uiFont(size: 15, weight: .medium))
+                .foregroundStyle(tokens.primaryText.opacity(0.86))
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onNewSession)
@@ -154,26 +169,30 @@ private struct ProjectRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background {
-            SidebarSelectionBackground(isSelected: isSelected, tint: SidebarTheme.projectSelectionFill)
+            SidebarSelectionBackground(isSelected: isSelected, tint: tokens.selectionFill)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isSelected ? SidebarTheme.selectionStroke : Color.clear, lineWidth: 1)
+                .stroke(isSelected ? tokens.accent.opacity(0.45) : Color.clear, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
 private struct SessionRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let session: AgentSession
     let isSelected: Bool
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
                 Text(session.title)
-                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? SidebarTheme.primaryText : SidebarTheme.secondaryText)
+                    .font(themeStore.uiFont(size: 15, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
                     .lineLimit(2)
                     .layoutPriority(1)
                 Spacer(minLength: 8)
@@ -187,13 +206,13 @@ private struct SessionRow: View {
                     Text(updatedAt, style: .relative)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(SidebarTheme.mutedText)
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.tertiaryText)
 
             if let preview = session.preview, !preview.isEmpty {
                 Text(preview)
-                    .font(.caption)
-                    .foregroundStyle(SidebarTheme.secondaryText)
+                    .font(themeStore.uiFont(size: 12))
+                    .foregroundStyle(tokens.secondaryText)
                     .lineLimit(2)
             }
 
@@ -201,7 +220,7 @@ private struct SessionRow: View {
                 HStack(spacing: 6) {
                     ForEach(runtimeChips, id: \.text) { chip in
                         Label(chip.text, systemImage: chip.symbol)
-                            .font(.caption2.weight(.medium))
+                            .font(themeStore.uiFont(size: 11, weight: .medium))
                             .lineLimit(1)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
@@ -214,11 +233,11 @@ private struct SessionRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background {
-            SidebarSelectionBackground(isSelected: isSelected, tint: SidebarTheme.sessionSelectionFill)
+            SidebarSelectionBackground(isSelected: isSelected, tint: tokens.selectionFill)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isSelected ? SidebarTheme.selectionStroke : Color.clear, lineWidth: 1)
+                .stroke(isSelected ? tokens.accent.opacity(0.45) : Color.clear, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
@@ -254,17 +273,6 @@ private struct SessionRow: View {
         }
         return chips
     }
-}
-
-private enum SidebarTheme {
-    static let primaryText = Color.primary
-    static let secondaryText = Color.secondary
-    static let mutedText = Color.secondary
-    static let headerText = Color.secondary
-    static let icon = Color.secondary
-    static let selectionStroke = Color.accentColor.opacity(0.45)
-    static let projectSelectionFill = Color.accentColor.opacity(0.14)
-    static let sessionSelectionFill = Color.accentColor.opacity(0.14)
 }
 
 private struct SidebarSelectionBackground: View {

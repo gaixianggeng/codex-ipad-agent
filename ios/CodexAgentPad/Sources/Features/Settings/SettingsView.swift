@@ -5,16 +5,18 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
 
     let isInitialSetup: Bool
 
-    @StateObject private var themeStore = ThemeStore()
     @State private var endpoint = ""
     @State private var token = ""
     @State private var connectionMode: ConnectionMode = .compat
     @State private var localError: String?
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         NavigationStack {
             Form {
                 Section {
@@ -62,7 +64,7 @@ struct SettingsView: View {
                     if let message = appStore.lastError ?? localError {
                         Text(message)
                             .foregroundStyle(.red)
-                            .font(.footnote)
+                            .font(themeStore.uiFont(size: 13))
                     }
                 } header: {
                     Text("状态")
@@ -70,7 +72,7 @@ struct SettingsView: View {
 
                 Section {
                     NavigationLink {
-                        AppearanceView(themeStore: themeStore)
+                        AppearanceView()
                     } label: {
                         Label("外观", systemImage: "paintpalette")
                     }
@@ -95,7 +97,8 @@ struct SettingsView: View {
                 token = appStore.token
                 connectionMode = appStore.connectionMode
             }
-            .tint(themeStore.tokens(for: colorScheme).accent)
+            .tint(tokens.accent)
+            .preferredColorScheme(themeStore.preferredColorScheme)
         }
     }
 
@@ -130,54 +133,73 @@ struct SettingsView: View {
 }
 
 struct AppearanceView: View {
-    @ObservedObject var themeStore: ThemeStore
     @Environment(\.colorScheme) private var systemColorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         let tokens = themeStore.tokens(for: systemColorScheme)
 
         Form {
             Section {
-                ForEach(ThemeMode.allCases) { mode in
-                    Button {
-                        themeStore.mode = mode
-                    } label: {
-                        ThemeModeRow(
-                            mode: mode,
-                            isSelected: themeStore.mode == mode,
-                            tokens: tokens
-                        )
+                Picker("外观", selection: $themeStore.mode) {
+                    ForEach(ThemeMode.allCases) { mode in
+                        Label(mode.title, systemImage: iconName(for: mode))
+                            .tag(mode)
                     }
-                    .buttonStyle(.plain)
+                }
+                .pickerStyle(.segmented)
+
+                ForEach(ThemeMode.allCases) { mode in
+                    ThemeModeRow(
+                        mode: mode,
+                        isSelected: themeStore.mode == mode,
+                        tokens: tokens
+                    ) {
+                        themeStore.mode = mode
+                    }
+                }
+            } header: {
+                Text("深浅色")
+            } footer: {
+                Text("系统模式会跟随 iPad 当前外观；浅色和深色会固定 App 外观。")
+            }
+
+            Section {
+                ForEach(ThemePreset.allCases) { preset in
+                    ThemePresetRow(
+                        preset: preset,
+                        isSelected: themeStore.preset == preset,
+                        tokens: tokens
+                    ) {
+                        themeStore.preset = preset
+                    }
                 }
             } header: {
                 Text("主题")
             }
 
             Section {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 54), spacing: 10)], spacing: 10) {
-                    ForEach(ThemeAccent.allCases) { accent in
-                        AccentSwatchButton(
-                            accent: accent,
-                            isSelected: themeStore.accent == accent
-                        ) {
-                            themeStore.accent = accent
-                        }
+                Picker("UI 字体", selection: $themeStore.uiFontPreset) {
+                    ForEach(ThemeUIFontPreset.allCases) { font in
+                        Text(font.title).tag(font)
                     }
                 }
-                .padding(.vertical, 4)
-            } header: {
-                Text("强调色")
-            }
 
-            Section {
+                Picker("代码字体", selection: $themeStore.codeFontPreset) {
+                    ForEach(ThemeCodeFontPreset.allCases) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
+
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Text("字体大小")
                         Spacer()
                         Text(fontScaleText)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(tokens.secondaryText)
                     }
+                    .font(themeStore.uiFont(size: 15, weight: .medium))
+
                     Slider(
                         value: Binding(
                             get: { themeStore.fontScale },
@@ -186,22 +208,34 @@ struct AppearanceView: View {
                         in: ThemeStore.minimumFontScale...ThemeStore.maximumFontScale,
                         step: 0.05
                     )
+
                     HStack(alignment: .firstTextBaseline) {
                         Text("Aa")
-                            .font(.system(size: themeStore.scaledFontSize(13), weight: .medium))
+                            .font(themeStore.uiFont(size: 13, weight: .medium))
                         Spacer()
                         Text("Aa")
-                            .font(.system(size: themeStore.scaledFontSize(22), weight: .semibold))
+                            .font(themeStore.uiFont(size: 22, weight: .semibold))
                     }
                     .foregroundStyle(tokens.secondaryText)
                 }
+                .padding(.vertical, 4)
+            } header: {
+                Text("字体")
             }
 
             Section {
-                AppearanceConversationPreview(themeStore: themeStore)
+                AppearanceConversationPreview()
                     .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
             } header: {
                 Text("聊天预览")
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    themeStore.reset()
+                } label: {
+                    Label("恢复默认外观", systemImage: "arrow.counterclockwise")
+                }
             }
         }
         .navigationTitle("外观")
@@ -212,41 +246,57 @@ struct AppearanceView: View {
     private var fontScaleText: String {
         "\(Int((themeStore.fontScale * 100).rounded()))%"
     }
+
+    private func iconName(for mode: ThemeMode) -> String {
+        switch mode {
+        case .system:
+            return "circle.lefthalf.filled"
+        case .light:
+            return "sun.max"
+        case .dark:
+            return "moon"
+        }
+    }
 }
 
 private struct ThemeModeRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
     let mode: ThemeMode
     let isSelected: Bool
     let tokens: ThemeTokens
+    let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isSelected ? tokens.accent.opacity(0.18) : tokens.elevatedSurface)
-                Image(systemName: iconName)
-                    .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
-            }
-            .frame(width: 42, height: 42)
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
+                    Image(systemName: iconName)
+                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
+                }
+                .frame(width: 42, height: 42)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(mode.title)
-                    .font(.headline)
-                    .foregroundStyle(tokens.primaryText)
-                Text(mode.subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(tokens.secondaryText)
-            }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(mode.title)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(mode.subtitle)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                }
 
-            Spacer()
+                Spacer()
 
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(tokens.accent)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(tokens.accent)
+                }
             }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
         }
-        .contentShape(Rectangle())
-        .padding(.vertical, 4)
+        .buttonStyle(.plain)
     }
 
     private var iconName: String {
@@ -257,62 +307,72 @@ private struct ThemeModeRow: View {
             return "sun.max"
         case .dark:
             return "moon"
-        case .highContrast:
-            return "circle.circle"
         }
     }
 }
 
-private struct AccentSwatchButton: View {
-    let accent: ThemeAccent
+private struct ThemePresetRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    let preset: ThemePreset
     let isSelected: Bool
+    let tokens: ThemeTokens
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            HStack(spacing: 12) {
                 ZStack {
-                    Circle()
-                        .fill(accent.color)
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.white)
-                    }
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(preset.swatchBackground)
+                    Text("Aa")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(preset.swatchForeground)
                 }
-                .frame(width: 32, height: 32)
+                .frame(width: 42, height: 42)
                 .overlay {
-                    Circle()
-                        .stroke(isSelected ? accent.color : Color.secondary.opacity(0.22), lineWidth: isSelected ? 2 : 1)
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isSelected ? tokens.accent : tokens.border, lineWidth: isSelected ? 2 : 1)
                 }
 
-                Text(accent.title)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(preset.title)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(preset.subtitle)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(tokens.accent)
+                }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(accent.title)强调色")
     }
 }
 
 private struct AppearanceConversationPreview: View {
-    @ObservedObject var themeStore: ThemeStore
     @Environment(\.colorScheme) private var systemColorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         let tokens = themeStore.tokens(for: systemColorScheme)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label(themeStore.mode.title, systemImage: "sparkles")
-                    .font(.system(size: themeStore.scaledFontSize(13), weight: .semibold))
+                Label(themeStore.preset.title, systemImage: "sparkles")
+                    .font(themeStore.uiFont(size: 13, weight: .semibold))
                     .foregroundStyle(tokens.accent)
                 Spacer()
-                Text("Codex")
-                    .font(.system(size: themeStore.scaledFontSize(12), weight: .medium))
+                Text(themeStore.mode.title)
+                    .font(themeStore.uiFont(size: 12, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
             }
 
@@ -321,7 +381,7 @@ private struct AppearanceConversationPreview: View {
                 alignment: .trailing,
                 fill: tokens.userBubble,
                 textColor: tokens.primaryText,
-                fontSize: themeStore.scaledFontSize(15)
+                font: themeStore.uiFont(size: 15)
             )
 
             PreviewBubble(
@@ -329,17 +389,26 @@ private struct AppearanceConversationPreview: View {
                 alignment: .leading,
                 fill: tokens.assistantBubble,
                 textColor: tokens.primaryText,
-                fontSize: themeStore.scaledFontSize(15)
+                font: themeStore.uiFont(size: 15)
             )
 
-            HStack(spacing: 8) {
-                Image(systemName: "terminal")
-                Text("命令摘要")
-                Spacer()
-                Text("go test ./...")
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                    Text("命令摘要")
+                    Spacer()
+                    Text("go test ./...")
+                        .lineLimit(1)
+                }
+                .font(themeStore.uiFont(size: 13, weight: .medium))
+
+                Text("let theme = ThemePreset.gruvbox")
+                    .font(themeStore.codeFont(size: 13))
+                    .foregroundStyle(tokens.codeText)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(tokens.codeBlock, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .font(.system(size: themeStore.scaledFontSize(13), weight: .medium))
             .foregroundStyle(tokens.secondaryText)
             .padding(10)
             .background(tokens.systemBubble)
@@ -369,7 +438,7 @@ private struct PreviewBubble: View {
     let alignment: AlignmentSide
     let fill: Color
     let textColor: Color
-    let fontSize: CGFloat
+    let font: Font
 
     var body: some View {
         HStack {
@@ -378,7 +447,7 @@ private struct PreviewBubble: View {
             }
 
             Text(text)
-                .font(.system(size: fontSize))
+                .font(font)
                 .foregroundStyle(textColor)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)

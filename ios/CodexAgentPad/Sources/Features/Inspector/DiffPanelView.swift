@@ -3,13 +3,17 @@ import SwiftUI
 struct DiffPanelView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var conversationStore: ConversationStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 if fileChangeItems.isEmpty {
                     ContentUnavailableView("暂无文件变更", systemImage: "doc.text.magnifyingglass")
-                        .font(.caption)
+                        .font(themeStore.uiFont(.caption))
                         .padding(.top, 48)
                 } else {
                     ForEach(fileChangeItems) { item in
@@ -17,7 +21,7 @@ struct DiffPanelView: View {
                             symbolName: "doc.text.magnifyingglass",
                             title: item.title,
                             subtitle: item.displaySubtitle,
-                            tint: .blue
+                            tint: tokens.accent
                         )
                     }
                 }
@@ -96,6 +100,8 @@ struct DiffPanelItem: Identifiable {
 }
 
 struct InspectorSummaryCard: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let symbolName: String
     let title: String
     let subtitle: String
@@ -111,18 +117,21 @@ struct InspectorSummaryCard: View {
     }
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: symbolName)
-                .font(.caption.weight(.semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tint)
                 .frame(width: 16, height: 18)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
                 Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
                     .lineLimit(lineLimit)
                     .textSelection(.enabled)
             }
@@ -136,4 +145,5 @@ struct InspectorSummaryCard: View {
                 .strokeBorder(tint.opacity(0.22), lineWidth: 1)
         }
     }
+
 }

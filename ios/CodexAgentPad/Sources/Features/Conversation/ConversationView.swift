@@ -3,8 +3,11 @@ import UIKit
 
 struct ConversationView: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
         let model = ConversationScreenModel(
             selectedSession: sessionStore.selectedSession,
             selectedProject: sessionStore.selectedProject,
@@ -26,12 +29,14 @@ struct ConversationView: View {
             .padding(.horizontal, 24)
             .padding(.top, 10)
             .padding(.bottom, 12)
-            .background(.regularMaterial)
+            .background(tokens.surface.opacity(0.94))
             .overlay(alignment: .top) {
-                Divider()
+                Rectangle()
+                    .fill(tokens.border)
+                    .frame(height: 1)
             }
         }
-        .background(Color(.systemBackground).ignoresSafeArea())
+        .background(tokens.background.ignoresSafeArea())
     }
 
     @ViewBuilder
@@ -53,7 +58,7 @@ struct ConversationView: View {
         if let message = model.errorMessage {
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
-                .font(.caption.weight(.medium))
+                .font(themeStore.uiFont(.caption, weight: .medium))
                 .lineLimit(1)
                 .minimumScaleFactor(0.86)
                 .padding(.horizontal, 12)
@@ -73,7 +78,7 @@ struct ConversationView: View {
                 }
                 Text(activity.title)
             }
-            .font(.caption.weight(.medium))
+            .font(themeStore.uiFont(.caption, weight: .medium))
             .foregroundStyle(workbenchSecondaryText)
             .lineLimit(1)
             .padding(.horizontal, 12)
@@ -84,11 +89,11 @@ struct ConversationView: View {
     }
 
     private var statusChipBackground: Color {
-        Color(.secondarySystemBackground)
+        themeStore.tokens(for: colorScheme).elevatedSurface
     }
 
     private var workbenchSecondaryText: Color {
-        .secondary
+        themeStore.tokens(for: colorScheme).secondaryText
     }
 }
 
@@ -116,6 +121,8 @@ struct ConversationScreenModel: Equatable {
 struct ConversationTimelineView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var conversationStore: ConversationStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
     @State private var hasUnseenTailMessage = false
@@ -125,6 +132,7 @@ struct ConversationTimelineView: View {
     private let messageRowInsets = EdgeInsets(top: 7, leading: 24, bottom: 7, trailing: 24)
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
@@ -149,7 +157,7 @@ struct ConversationTimelineView: View {
                         ForEach(messages) { message in
                             // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
                             // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                            MessageRow(message: message)
+                            MessageRow(message: message, themeVersion: themeStore.themeVersion)
                                 .equatable()
                                 .id(message.id)
                                 .listRowSeparator(.hidden)
@@ -160,6 +168,7 @@ struct ConversationTimelineView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .background(tokens.background)
                 // 是否贴近底部用滚动几何实时判断，只在贴底时跟随流式输出，
                 // 用户上翻历史时不会被尾部更新甩回底部。
                 .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -178,9 +187,10 @@ struct ConversationTimelineView: View {
                         scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
                     } label: {
                         Label("新消息", systemImage: "arrow.down.circle.fill")
-                            .font(.caption.weight(.semibold))
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(tokens.accent)
                     .controlSize(.small)
                     .padding(.trailing, 24)
                     .padding(.bottom, 18)
@@ -238,7 +248,7 @@ struct ConversationTimelineView: View {
                     Label("加载更早消息", systemImage: "clock.arrow.circlepath")
                 }
             }
-            .font(.caption.weight(.medium))
+            .font(themeStore.uiFont(.caption, weight: .medium))
             .buttonStyle(.borderless)
             .foregroundStyle(workbenchSecondaryText)
             .disabled(sessionStore.isLoadingEarlierHistory(sessionID: sessionStore.selectedSessionID))
@@ -259,13 +269,13 @@ struct ConversationTimelineView: View {
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "message")
-                .font(.title2)
+                .font(themeStore.uiFont(.title2))
                 .foregroundStyle(workbenchSecondaryText)
             Text("还没有对话")
-                .font(.headline)
+                .font(themeStore.uiFont(.headline, weight: .semibold))
                 .foregroundStyle(workbenchPrimaryText)
             Text("选择历史会话会加载 Codex 上下文；输入任务会启动或继续当前会话。")
-                .font(.callout)
+                .font(themeStore.uiFont(.callout))
                 .foregroundStyle(workbenchSecondaryText)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
@@ -275,15 +285,15 @@ struct ConversationTimelineView: View {
     }
 
     private var statusChipBackground: Color {
-        Color(.secondarySystemBackground)
+        themeStore.tokens(for: colorScheme).elevatedSurface
     }
 
     private var workbenchPrimaryText: Color {
-        .primary
+        themeStore.tokens(for: colorScheme).primaryText
     }
 
     private var workbenchSecondaryText: Color {
-        .secondary
+        themeStore.tokens(for: colorScheme).secondaryText
     }
 
     private func scrollToMessageTail(messages: [ConversationMessage], proxy: ScrollViewProxy, animated: Bool) {
@@ -347,7 +357,10 @@ struct ConversationTimelineView: View {
 
 private struct MessageRow: View, Equatable {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
+    let themeVersion: Int
 
     // 只有内容 fingerprint / 状态变化时才重绘；长消息内容本身不参与这里的逐行比较。
     static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
@@ -357,6 +370,7 @@ private struct MessageRow: View, Equatable {
             && lhs.message.sendStatus == rhs.message.sendStatus
             && lhs.message.revision == rhs.message.revision
             && lhs.message.renderFingerprint == rhs.message.renderFingerprint
+            && lhs.themeVersion == rhs.themeVersion
     }
 
     var body: some View {
@@ -431,12 +445,12 @@ private struct MessageRow: View, Equatable {
         switch message.sendStatus {
         case .failed:
             Text("发送失败")
-                .font(.caption2)
+                .font(themeStore.uiFont(.caption2))
                 .foregroundStyle(.red)
         case .sending:
             Text("发送中…")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(themeStore.uiFont(.caption2))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
         default:
             EmptyView()
         }
@@ -455,6 +469,8 @@ private struct MessageRow: View, Equatable {
 }
 
 private struct MessageBubble: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
 
     var body: some View {
@@ -472,7 +488,7 @@ private struct MessageBubble: View {
         let plan = MessageRenderPlanCache.shared.plan(for: message)
         if plan.isSinglePlainText {
             Text(plan.segments.first?.text ?? "")
-                .font(.body)
+                .font(themeStore.uiFont(.body))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
@@ -490,12 +506,13 @@ private struct MessageBubble: View {
         switch segment.kind {
         case .text:
             Text(segment.text)
-                .font(.body)
+                .font(themeStore.uiFont(.body))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .code:
             Text(segment.text)
-                .font(.system(.body, design: .monospaced))
+                .font(themeStore.codeFont(.body))
+                .foregroundStyle(tokens.codeText)
                 .textSelection(.enabled)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -512,58 +529,67 @@ private struct MessageBubble: View {
     }
 
     private var background: Color {
+        let tokens = themeStore.tokens(for: colorScheme)
         switch message.role {
         case .user:
-            // 强调气泡用系统强调色，浅色/深色都跟随系统。
-            return Color.accentColor
+            return tokens.userBubble
         default:
-            // 助手用系统中性面。
-            return Color(.secondarySystemBackground)
+            return tokens.assistantBubble
         }
     }
 
     private var foreground: Color {
-        message.role == .user ? .white : .primary
+        themeStore.tokens(for: colorScheme).primaryText
     }
 
     private var codeBlockBackground: Color {
-        message.role == .user ? Color.white.opacity(0.16) : Color(.tertiarySystemBackground)
+        themeStore.tokens(for: colorScheme).codeBlock
+    }
+
+    private var tokens: ThemeTokens {
+        themeStore.tokens(for: colorScheme)
     }
 }
 
 private struct SystemNotice: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let text: String
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         Text(text)
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Color(.secondarySystemBackground), in: Capsule())
+            .background(tokens.systemBubble, in: Capsule())
             .frame(maxWidth: 520)
     }
 }
 
 private struct RuntimeSummaryCard: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: symbolName)
-                .font(.caption.weight(.semibold))
+                .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tint)
                 .frame(width: 16, height: 18)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
                 Text(message.content)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
                     .lineLimit(3)
                     .textSelection(.enabled)
             }
@@ -634,13 +660,13 @@ private struct RuntimeSummaryCard: View {
             if isDeclinedApproval {
                 return .red
             }
-            return .orange
+            return tokens.warning
         case .error:
             return .red
         case .fileChangeSummary:
-            return .blue
+            return tokens.accent
         default:
-            return .secondary
+            return tokens.secondaryText
         }
     }
 
@@ -653,13 +679,13 @@ private struct RuntimeSummaryCard: View {
             if isDeclinedApproval {
                 return Color.red.opacity(0.10)
             }
-            return Color.orange.opacity(0.12)
+            return tokens.warning.opacity(0.12)
         case .error:
             return Color.red.opacity(0.10)
         case .fileChangeSummary:
-            return Color.blue.opacity(0.10)
+            return tokens.accent.opacity(0.10)
         default:
-            return Color(.secondarySystemBackground)
+            return tokens.systemBubble
         }
     }
 
@@ -669,5 +695,9 @@ private struct RuntimeSummaryCard: View {
 
     private var isDeclinedApproval: Bool {
         message.content.hasPrefix("审批已拒绝") || message.content.hasPrefix("已拒绝")
+    }
+
+    private var tokens: ThemeTokens {
+        themeStore.tokens(for: colorScheme)
     }
 }

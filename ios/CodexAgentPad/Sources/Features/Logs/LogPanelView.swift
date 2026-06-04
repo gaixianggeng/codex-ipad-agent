@@ -9,21 +9,26 @@ struct LogPanelView: View {
 struct LogTailView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var logStore: LogStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "terminal")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText)
                     .frame(width: 24, height: 24)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("日志")
-                        .font(.subheadline.weight(.semibold))
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
                     Text(sessionSubtitle)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
+                        .font(themeStore.codeFont(.caption2))
+                        .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -39,12 +44,14 @@ struct LogTailView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
-            Divider()
+            Rectangle()
+                .fill(tokens.border)
+                .frame(height: 1)
 
             logContent
         }
-        .background(Color(.secondarySystemBackground))
-        .foregroundStyle(.primary)
+        .background(tokens.surface)
+        .foregroundStyle(tokens.primaryText)
     }
 
     private var logContent: some View {
@@ -59,7 +66,7 @@ struct LogTailView: View {
                             systemImage: "terminal",
                             description: Text("当前会话还没有终端输出。")
                         )
-                        .font(.caption)
+                        .font(themeStore.uiFont(.caption))
                         .padding(.top, 48)
                     } else {
                         ForEach(lines) { line in
@@ -73,6 +80,7 @@ struct LogTailView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(8)
             }
+            .background(themeStore.tokens(for: colorScheme).background)
             .onChange(of: lines.count) { _, _ in
                 scrollToBottom(proxy)
             }
@@ -114,49 +122,6 @@ struct LogDisplayLine: Identifiable, Hashable {
                 return "exclamationmark.triangle"
             case .output:
                 return "terminal"
-            }
-        }
-
-        var tint: Color {
-            switch self {
-            case .command:
-                return .blue
-            case .assistant:
-                return .green
-            case .system:
-                return .orange
-            case .warning:
-                return .orange
-            case .output:
-                return .secondary
-            }
-        }
-
-        var background: Color {
-            switch self {
-            case .command:
-                return Color.blue.opacity(0.10)
-            case .assistant:
-                return Color.green.opacity(0.08)
-            case .system:
-                return Color.orange.opacity(0.10)
-            case .warning:
-                return Color.orange.opacity(0.12)
-            case .output:
-                return Color(.tertiarySystemBackground)
-            }
-        }
-
-        var border: Color {
-            switch self {
-            case .command:
-                return Color.blue.opacity(0.18)
-            case .assistant:
-                return Color.green.opacity(0.16)
-            case .system, .warning:
-                return Color.orange.opacity(0.20)
-            case .output:
-                return Color.secondary.opacity(0.10)
             }
         }
     }
@@ -286,19 +251,23 @@ struct LogPanelFormatter {
 }
 
 private struct LogLineRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let line: LogDisplayLine
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: line.kind.symbolName)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(line.kind.tint)
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
+                .foregroundStyle(rowTint(tokens: tokens))
                 .frame(width: 13, height: 16)
                 .padding(.top, 1)
 
             Text(line.text)
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                .foregroundStyle(.primary)
+                .font(themeStore.codeFont(size: 11))
+                .foregroundStyle(tokens.primaryText)
                 .lineLimit(3)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
@@ -307,11 +276,52 @@ private struct LogLineRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(line.kind.background)
+        .background(rowBackground(tokens: tokens))
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(line.kind.border, lineWidth: 1)
+                .strokeBorder(rowBorder(tokens: tokens), lineWidth: 1)
+        }
+    }
+
+    private func rowTint(tokens: ThemeTokens) -> Color {
+        switch line.kind {
+        case .command:
+            return tokens.accent
+        case .assistant:
+            return tokens.success
+        case .system, .warning:
+            return tokens.warning
+        case .output:
+            return tokens.secondaryText
+        }
+    }
+
+    private func rowBackground(tokens: ThemeTokens) -> Color {
+        switch line.kind {
+        case .command:
+            return tokens.accent.opacity(0.10)
+        case .assistant:
+            return tokens.success.opacity(0.08)
+        case .system:
+            return tokens.warning.opacity(0.10)
+        case .warning:
+            return tokens.warning.opacity(0.12)
+        case .output:
+            return tokens.elevatedSurface
+        }
+    }
+
+    private func rowBorder(tokens: ThemeTokens) -> Color {
+        switch line.kind {
+        case .command:
+            return tokens.accent.opacity(0.18)
+        case .assistant:
+            return tokens.success.opacity(0.16)
+        case .system, .warning:
+            return tokens.warning.opacity(0.20)
+        case .output:
+            return tokens.border.opacity(0.65)
         }
     }
 }

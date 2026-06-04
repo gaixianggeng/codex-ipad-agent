@@ -3,12 +3,16 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingSettings = false
     @State private var showingLogInspector = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         Group {
             if appStore.isConfigured {
                 mainLayout
@@ -30,6 +34,9 @@ struct RootView: View {
                 await sessionStore.resumeFromForeground()
             }
         }
+        .preferredColorScheme(themeStore.preferredColorScheme)
+        .tint(tokens.accent)
+        .background(tokens.background.ignoresSafeArea())
     }
 
     private var mainLayout: some View {
@@ -181,19 +188,24 @@ struct RootView: View {
 
 private struct AgentWorkbenchTitle: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         VStack(spacing: 2) {
             HStack(spacing: 6) {
                 statusDot
                 Text(primaryText)
-                    .font(.subheadline.monospaced().weight(.semibold))
+                    .font(themeStore.codeFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             }
             Text(secondaryText)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
+                .font(themeStore.codeFont(.caption2))
+                .foregroundStyle(tokens.secondaryText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)
         }
@@ -248,38 +260,42 @@ struct StatusPill: View {
 
     let text: String
     let kind: Kind
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         Text(text)
-            .font(.caption.weight(.medium))
+            .font(themeStore.uiFont(size: 12, weight: .medium))
             .lineLimit(1)
             .minimumScaleFactor(0.86)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(background)
-            .foregroundStyle(foreground)
+            .background(background(tokens: tokens))
+            .foregroundStyle(foreground(tokens: tokens))
             .clipShape(Capsule())
     }
 
-    private var background: Color {
+    private func background(tokens: ThemeTokens) -> Color {
         switch kind {
         case .success:
-            return Color.green.opacity(0.16)
+            return tokens.success.opacity(0.16)
         case .warning:
-            return Color.orange.opacity(0.18)
+            return tokens.warning.opacity(0.18)
         case .neutral:
-            return Color.secondary.opacity(0.12)
+            return tokens.elevatedSurface
         }
     }
 
-    private var foreground: Color {
+    private func foreground(tokens: ThemeTokens) -> Color {
         switch kind {
         case .success:
-            return .green
+            return tokens.success
         case .warning:
-            return .orange
+            return tokens.warning
         case .neutral:
-            return .secondary
+            return tokens.secondaryText
         }
     }
 }

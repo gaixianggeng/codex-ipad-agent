@@ -11,6 +11,7 @@ final class ConversationSnapshotTests: XCTestCase {
     private func makeSeededConversation() -> some View {
         let sessionID = "snapshot_session"
         let conversationStore = ConversationStore()
+        let themeStore = makeThemeStore()
 
         conversationStore.appendSystem("Codex 交互式会话已启动。", sessionID: sessionID)
         conversationStore.appendUser("2216", sessionID: sessionID)
@@ -50,6 +51,7 @@ final class ConversationSnapshotTests: XCTestCase {
         return ConversationView()
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
+            .environmentObject(themeStore)
             .frame(width: 1024, height: 768)
     }
 
@@ -62,6 +64,7 @@ final class ConversationSnapshotTests: XCTestCase {
 
     func testEmptyConversationState() {
         let conversationStore = ConversationStore()
+        let themeStore = makeThemeStore()
         let sessionStore = SessionStore(
             appStore: AppStore(),
             conversationStore: conversationStore,
@@ -71,6 +74,7 @@ final class ConversationSnapshotTests: XCTestCase {
         let view = ConversationView()
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
+            .environmentObject(themeStore)
             .frame(width: 1024, height: 768)
 
         assertSnapshot(
@@ -81,6 +85,7 @@ final class ConversationSnapshotTests: XCTestCase {
 
     func testProjectSessionDashboard() async {
         let project = AgentProject(id: "codex-ipad-agent", name: "codex-ipad-agent", path: "/Users/me/code/codex-ipad-agent")
+        let themeStore = makeThemeStore()
         let sessions = [
             makeSnapshotSession(
                 id: "running",
@@ -138,6 +143,7 @@ final class ConversationSnapshotTests: XCTestCase {
             }
         }
         .environmentObject(sessionStore)
+        .environmentObject(themeStore)
         .frame(width: 1024, height: 768)
 
         assertSnapshot(
@@ -150,12 +156,15 @@ final class ConversationSnapshotTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "ConversationSnapshotTests.Appearance.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)
         themeStore.mode = .dark
-        themeStore.accent = .teal
+        themeStore.preset = .gruvbox
+        themeStore.uiFontPreset = .rounded
+        themeStore.codeFontPreset = .menlo
         themeStore.setFontScale(1.1)
 
         let view = NavigationStack {
-            AppearanceView(themeStore: themeStore)
+            AppearanceView()
         }
+        .environmentObject(themeStore)
         .environment(\.colorScheme, .dark)
         .frame(width: 560, height: 1180)
 
@@ -163,6 +172,13 @@ final class ConversationSnapshotTests: XCTestCase {
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 560, height: 1180))
         )
+    }
+
+    private func makeThemeStore() -> ThemeStore {
+        let suiteName = "ConversationSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return ThemeStore(defaults: defaults)
     }
 
     private func makeSnapshotSession(

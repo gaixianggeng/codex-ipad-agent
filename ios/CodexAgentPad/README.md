@@ -122,6 +122,14 @@ xcodebuild \
 - 能发送普通输入、Ctrl-C/interrupt 和审批响应。
 - 能停止 running session。
 - 能从设置页切换 direct / 兼容模式，保存后不复用旧 WebSocket。
+- 能在设置页切换外观模式、主题预设、UI 字体、代码字体和字体大小，主工作台立即生效并在重启后保持。
+
+外观验收：
+
+- 外观模式支持 `系统`、`浅色`、`深色`；系统模式跟随 iPad 当前外观，手动浅色/深色不跟随系统变化。
+- 主题预设先支持 `Codex`、`Xcode`、`Gruvbox`，覆盖聊天背景、气泡、代码块、侧栏选中态、日志和 Inspector 常用面板。
+- 字体设置支持 UI 字体、代码字体和 85%-135% 字体大小；超出范围会自动 clamp。
+- 外观设置只写入本机 `UserDefaults`，不触发连接重置，不影响 Endpoint、Token、会话、日志和 app-server runtime。
 
 性能验收：
 
