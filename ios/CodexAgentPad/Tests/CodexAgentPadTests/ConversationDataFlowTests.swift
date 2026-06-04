@@ -761,6 +761,18 @@ final class ConversationDataFlowTests: XCTestCase {
         } else {
             XCTFail("Expected assistant delta event")
         }
+
+        let resolved = try decoder.decode(
+            AgentEvent.self,
+            from: Data(#"{"type":"approval_resolved","seq":7,"session_id":"sess_output","item_id":"99"}"#.utf8)
+        )
+        if case .approvalResolved(let meta) = resolved {
+            XCTAssertEqual(meta.seq, 7)
+            XCTAssertEqual(meta.sessionID, "sess_output")
+            XCTAssertEqual(meta.itemID, "99")
+        } else {
+            XCTFail("Expected approval resolved event")
+        }
     }
 
     func testStructuredAssistantDeltaKeepsStableMetadata() throws {
@@ -1310,6 +1322,18 @@ final class ConversationDataFlowTests: XCTestCase {
             XCTAssertEqual(meta.seq, 9)
         } else {
             XCTFail("Expected approval request")
+        }
+
+        let resolved = try decoder.decode(
+            StructuredAgentEvent.self,
+            from: Data(#"{"type":"approval_resolved","seq":10,"session_id":"sess_1","item_id":"approval_1"}"#.utf8)
+        )
+        if case .approvalResolved(let meta) = resolved {
+            XCTAssertEqual(meta.seq, 10)
+            XCTAssertEqual(meta.sessionID, "sess_1")
+            XCTAssertEqual(meta.itemID, "approval_1")
+        } else {
+            XCTFail("Expected approval resolved")
         }
     }
 
@@ -2777,10 +2801,11 @@ final class ConversationDataFlowTests: XCTestCase {
         let appStore = AppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [waiting])
+        let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
             appStore: appStore,
-            conversationStore: ConversationStore(),
+            conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
             webSocketFactory: {
@@ -2801,6 +2826,249 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(sockets[0].sentApprovals.count, 1)
         XCTAssertEqual(sockets[0].sentApprovals.first?.approvalID, "approval-1")
         XCTAssertEqual(sockets[0].sentApprovals.first?.decision, "accept")
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertEqual(store.selectedSession?.pendingApproval, nil)
+        XCTAssertTrue(conversationStore.messages(for: waiting.id).contains { message in
+            message.kind == .approval && message.content.contains("审批已批准")
+        })
+    }
+
+    func testApprovalRequestUpdatesSelectedSessionPendingApproval() async throws {
+        let project = makeProject(id: "proj_approval_event")
+        let running = makeSession(id: "sess_approval_event", projectID: project.id, title: "运行中", status: "running", source: "agentd")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        sockets[0].emitEvent(.approvalRequest(
+            AgentApprovalRequest(
+                id: "cmd-approval",
+                title: "运行 curl",
+                body: "curl -I https://example.com",
+                kind: "command",
+                risk: "high"
+            ),
+            AgentEventMetadata(
+                seq: 21,
+                sessionID: running.id,
+                turnID: "turn-approval",
+                itemID: "cmd-approval",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )
+        ))
+        for _ in 0..<80 where store.selectedSession?.pendingApproval?.id != "cmd-approval" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(store.selectedSession?.status, "waiting_for_approval")
+        XCTAssertEqual(store.selectedSession?.pendingApproval?.title, "运行 curl")
+        XCTAssertTrue(conversationStore.messages(for: running.id).contains { $0.kind == .approval })
+
+        store.decideApproval(try XCTUnwrap(store.selectedSession?.pendingApproval), accept: true)
+
+        XCTAssertEqual(sockets[0].sentApprovals.first?.approvalID, "cmd-approval")
+        XCTAssertNil(store.selectedSession?.pendingApproval)
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertTrue(conversationStore.messages(for: running.id).contains { message in
+            message.kind == .approval && message.content.contains("审批已批准：运行 curl")
+        })
+    }
+
+    func testEventReducerClearsPendingApprovalWhenServerRequestResolved() async throws {
+        let reducer = EventReducer()
+        let output = await reducer.reduce(
+            .approvalResolved(AgentEventMetadata(
+                seq: 31,
+                sessionID: "sess_resolved",
+                turnID: "turn_resolved",
+                itemID: "99",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )),
+            fallbackSessionID: "fallback_session",
+            outputIdleClearDelay: 0
+        )
+
+        XCTAssertEqual(output.pendingApprovalUpdates.count, 1)
+        XCTAssertEqual(output.pendingApprovalUpdates.first?.0, "sess_resolved")
+        XCTAssertNil(output.pendingApprovalUpdates.first?.1)
+        XCTAssertEqual(output.statusUpdates.first?.0, "sess_resolved")
+        XCTAssertEqual(output.statusUpdates.first?.1, "running")
+        XCTAssertEqual(output.pendingApprovalTaskClears, ["sess_resolved"])
+        XCTAssertEqual(output.messageMutations.count, 1)
+        if case .resolveLatestPendingApproval(let sessionID) = output.messageMutations[0] {
+            XCTAssertEqual(sessionID, "sess_resolved")
+        } else {
+            XCTFail("Expected resolveLatestPendingApproval mutation")
+        }
+    }
+
+    func testConversationStoreResolvesRemotePendingApprovalAndDeduplicatesReplay() {
+        let store = ConversationStore()
+        let sessionID = "sess_remote_approval"
+        let waitingText = "等待审批：运行 curl，风险：high"
+
+        store.appendSystem(waitingText, sessionID: sessionID, kind: .approval)
+        store.appendSystem(waitingText, sessionID: sessionID, kind: .approval)
+
+        XCTAssertEqual(store.messages(for: sessionID).filter { $0.kind == .approval }.count, 1)
+
+        store.resolveLatestPendingApproval(sessionID: sessionID)
+
+        XCTAssertEqual(store.messages(for: sessionID).filter { $0.kind == .approval }.count, 1)
+        XCTAssertEqual(store.messages(for: sessionID).last?.content, "审批已解决：运行 curl")
+    }
+
+    func testSessionStoreReplaysDirectAppServerEventStreamFixture() async throws {
+        let sessionID = "thr_fixture_stream"
+        let project = AgentProject(id: "proj_fixture_stream", name: "Fixture Stream", path: "/tmp/fixture-stream")
+        let running = makeSession(id: sessionID, projectID: project.id, title: "Fixture 直连", status: "running", source: "codex", resumeID: sessionID)
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            historyPages: [sessionID: HistoryMessagesPage(messages: [])]
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let events = try loadDirectAppServerEventStreamFixture(named: "direct_app_server_approval_stream.jsonl")
+        let approvalIndex = try XCTUnwrap(events.firstIndex {
+            if case .approvalRequest = $0 {
+                return true
+            }
+            return false
+        })
+
+        for event in events[..<approvalIndex] {
+            sockets[0].emitEvent(event)
+        }
+        let completedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: sessionID) { messages in
+            messages.contains { $0.role == .assistant && $0.content == "第一段：真实 app-server 事件流。" && $0.sendStatus == .confirmed }
+        }
+
+        XCTAssertEqual(completedMessages.filter { $0.role == .assistant }.count, 1)
+        XCTAssertEqual(completedMessages.first?.stableID, "appserver:turn_fixture_stream:assistant_fixture")
+        XCTAssertEqual(completedMessages.first?.turnID, "turn_fixture_stream")
+        XCTAssertEqual(completedMessages.first?.itemID, "assistant_fixture")
+        XCTAssertEqual(conversationStore.lastSeenSeq(for: sessionID), 5)
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertNil(store.selectedSession?.pendingApproval)
+        XCTAssertNil(store.selectedForegroundActivity)
+
+        sockets[0].emitEvent(events[approvalIndex])
+        for _ in 0..<80 where store.selectedSession?.pendingApproval?.id != "cmd_fixture_approval" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let pendingApproval = try XCTUnwrap(store.selectedSession?.pendingApproval)
+        XCTAssertEqual(store.selectedSession?.status, "waiting_for_approval")
+        XCTAssertEqual(pendingApproval.title, "Codex 请求执行命令：go test ./ios/CodexAgentPad")
+        XCTAssertTrue(conversationStore.messages(for: sessionID).contains { $0.kind == .approval && $0.content.contains("等待审批") })
+
+        store.decideApproval(pendingApproval, accept: true)
+
+        XCTAssertEqual(sockets[0].sentApprovals.first?.approvalID, "cmd_fixture_approval")
+        XCTAssertEqual(sockets[0].sentApprovals.first?.decision, "accept")
+        XCTAssertNil(store.selectedSession?.pendingApproval)
+
+        for event in events.dropFirst(approvalIndex + 1) {
+            sockets[0].emitEvent(event)
+        }
+        for _ in 0..<80 where conversationStore.lastSeenSeq(for: sessionID) != 7 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(conversationStore.lastSeenSeq(for: sessionID), 7)
+        XCTAssertNil(store.selectedSession?.pendingApproval)
+        XCTAssertNil(store.selectedForegroundActivity)
+    }
+
+    func testApprovalDecisionMarksConversationRecordDeclined() async throws {
+        let project = makeProject(id: "proj_decline")
+        let approval = ApprovalSummary(id: "approval-decline", title: "运行危险命令", kind: "command", count: 1)
+        let waiting = AgentSession(
+            id: "codex_thread_decline",
+            projectID: project.id,
+            project: project.id,
+            dir: "/tmp/\(project.id)",
+            title: "待审批",
+            status: "waiting_for_approval",
+            source: "codex",
+            resumeID: "thread_decline",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            pendingApproval: approval
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        conversationStore.appendSystem("等待审批：运行危险命令，风险：high", sessionID: waiting.id, kind: .approval)
+        let client = MockSessionStoreClient(projects: [project], sessions: [waiting])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(waiting)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        store.decideApproval(approval, accept: false)
+
+        XCTAssertEqual(sockets[0].sentApprovals.first?.decision, "decline")
+        XCTAssertEqual(conversationStore.messages(for: waiting.id).filter { $0.kind == .approval }.last?.content, "审批已拒绝：运行危险命令")
     }
 
     func testRuntimeSummaryEventsKeepStructuredTimelineKinds() {
@@ -2929,6 +3197,34 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testBootstrapRetriesUntilSessionsLoadWhenGatewayStartsLate() async {
+        let project = makeProject(id: "proj_late_gateway")
+        let session = makeSession(id: "codex_late", projectID: project.id, title: "首启恢复", status: "history", source: "codex", resumeID: "history")
+        // projects 立刻可用（agentd HTTP 已就绪），但 app-server gateway 上游晚 2 次才接受连接，
+        // sessions 前两次抛错。冷启动 bootstrap 必须继续重试，而不能一拿到 projects 就收手。
+        let client = FlakyBootstrapClient(
+            failuresBeforeSuccess: 0,
+            sessionFailuresBeforeSuccess: 2,
+            projects: [project],
+            sessions: [session]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.sessionsCallCount, 3) // 会话失败 2 次 + 成功 1 次
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testBootstrapDoesNotRetryWhenBackendHasNoProjects() async {
         let client = FlakyBootstrapClient(failuresBeforeSuccess: 0, projects: [], sessions: [])
         let appStore = AppStore()
@@ -3032,7 +3328,6 @@ private final class DelayedCreateSessionClient: SessionStoreAPIClient {
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
         createPayloads.append(payload)
-        notifyRequestCountWaiters()
         return try await withCheckedThrowingContinuation { continuation in
             createContinuations.append(continuation)
             notifyRequestCountWaiters()
@@ -3052,11 +3347,11 @@ private final class DelayedCreateSessionClient: SessionStoreAPIClient {
     }
 
     func waitForCreateRequestCount(_ count: Int) async {
-        guard createPayloads.count < count else {
+        guard createReadyCount < count else {
             return
         }
         await withCheckedContinuation { continuation in
-            guard createPayloads.count < count else {
+            guard createReadyCount < count else {
                 continuation.resume()
                 return
             }
@@ -3076,13 +3371,17 @@ private final class DelayedCreateSessionClient: SessionStoreAPIClient {
     private func notifyRequestCountWaiters() {
         var pending: [(Int, CheckedContinuation<Void, Never>)] = []
         for waiter in requestCountWaiters {
-            if createPayloads.count >= waiter.0 {
+            if createReadyCount >= waiter.0 {
                 waiter.1.resume()
             } else {
                 pending.append(waiter)
             }
         }
         requestCountWaiters = pending
+    }
+
+    private var createReadyCount: Int {
+        min(createPayloads.count, createContinuations.count)
     }
 }
 
@@ -3771,7 +4070,6 @@ extension ConversationDataFlowTests {
         let reconnectInitialize = try decodeAppServerRequest(reconnectInitializeMessages[0])
         XCTAssertEqual(reconnectInitialize.method, "initialize")
         secondTransport.enqueue(#"{"id":\#(try jsonFragment(for: reconnectInitialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
-        try await reconnectTask.value
 
         let reconnectHandshakeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 2)
         let initialized = try AgentAPIClient.decoder.decode(
@@ -3780,6 +4078,16 @@ extension ConversationDataFlowTests {
         )
         XCTAssertEqual(initialized.method, "initialized")
 
+        // connectForEvents 本身就要按官方 TUI 流程 thread/resume，建立当前连接的 live listener。
+        // 不能等到下一次 turn/start 才 resume，否则历史 pending approval 和早到 turn 事件都可能丢在上游。
+        let reconnectResumeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 3)
+        let reconnectResumeRequest = try decodeAppServerRequest(reconnectResumeMessages[2])
+        XCTAssertEqual(reconnectResumeRequest.method, "thread/resume")
+        XCTAssertEqual(reconnectResumeRequest.params?["threadId"]?.stringValue, "thr_reconnect")
+        XCTAssertEqual(reconnectResumeRequest.params?["cwd"]?.stringValue, project.path)
+        secondTransport.enqueue(#"{"id":\#(try jsonFragment(for: reconnectResumeRequest.id)),"result":{"thread":{"id":"thr_reconnect","sessionId":"thr_reconnect","preview":"可重连会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490202,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-reconnect","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"直连重连","turns":[]}}}"#)
+        try await reconnectTask.value
+
         let turnTask = Task {
             try await runtime.startTurn(
                 sessionID: "thr_reconnect",
@@ -3787,8 +4095,8 @@ extension ConversationDataFlowTests {
                 clientMessageID: "client_reconnect_turn"
             )
         }
-        let turnMessages = try await waitForFakeAppServerMessages(secondTransport, count: 3)
-        let turnStart = try decodeAppServerRequest(turnMessages[2])
+        let turnMessages = try await waitForFakeAppServerMessages(secondTransport, count: 4)
+        let turnStart = try decodeAppServerRequest(turnMessages[3])
         XCTAssertEqual(turnStart.method, "turn/start")
         let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
         XCTAssertEqual(turnParams["threadId"]?.stringValue, "thr_reconnect")
@@ -3801,7 +4109,40 @@ extension ConversationDataFlowTests {
         let firstSentMessages = await firstTransport.sentMessages()
         let secondSentMessages = await secondTransport.sentMessages()
         XCTAssertEqual(firstSentMessages.count, 3)
-        XCTAssertEqual(secondSentMessages.count, 3)
+        XCTAssertEqual(secondSentMessages.count, 4)
+    }
+
+    func testCodexAppServerSessionRuntimeRefreshesUnavailableGatewayConfigBeforeConnecting() async throws {
+        let project = AgentProject(id: "proj_cold_start", name: "Cold Start", path: "/tmp/cold-start")
+        let configProvider = SequencedDirectConfigProvider([
+            makeDirectAppServerConfig(project: project, gatewayAvailable: false),
+            makeDirectAppServerConfig(project: project, gatewayAvailable: true)
+        ])
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { try await configProvider.next() }
+        )
+
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let listRequest = try decodeAppServerRequest(listMessages[2])
+        XCTAssertEqual(listRequest.method, "thread/list")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[{"id":"thr_cold_start","sessionId":"thr_cold_start","preview":"首启恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/cold-start","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"首启恢复","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
+
+        let page = try await pageTask.value
+        XCTAssertEqual(configProvider.callCount, 2)
+        XCTAssertEqual(page.sessions.map(\.id), ["thr_cold_start"])
     }
 
     func testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion() async throws {
@@ -3959,6 +4300,69 @@ extension ConversationDataFlowTests {
         }
     }
 
+    func testStartTurnResumesThreadOnConnectionBeforeFirstTurnStart() async throws {
+        // idle 历史 thread 被映射成 "running" 后会走直连 turn/start 路径。若不先在当前 gateway 连接上
+        // thread/resume，app-server 不会回推这个 thread 的 turn 事件——用户看不到回复，active turn 角标也
+        // 会一直挂着。这里锁定修复：首次 turn/start 前必须补一次 thread/resume，且同一连接内不再重复 resume。
+        let project = AgentProject(id: "proj_resume_guard", name: "Resume Guard", path: "/tmp/resume-guard")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+
+        // thread/list 把 idle thread 灌进 contextsBySessionID，但不会把它登记成「已在本连接 resume」。
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+        let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let listRequest = try decodeAppServerRequest(listMessages[2])
+        XCTAssertEqual(listRequest.method, "thread/list")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[{"id":"thr_idle_guard","sessionId":"thr_idle_guard","preview":"上次的会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-guard","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"上次的会话","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
+        let page = try await pageTask.value
+        XCTAssertEqual(page.sessions.map(\.id), ["thr_idle_guard"])
+        XCTAssertTrue(try XCTUnwrap(page.sessions.first).isRunning, "idle thread 当前会映射成 running，正是会触发直连发送路径的状态")
+
+        // 第一次直连发送：startTurn 必须先 thread/resume，再 turn/start。
+        let firstTurnTask = Task {
+            try await runtime.startTurn(sessionID: "thr_idle_guard", prompt: "继续上次", clientMessageID: nil)
+        }
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let resumeRequest = try decodeAppServerRequest(resumeMessages[3])
+        XCTAssertEqual(resumeRequest.method, "thread/resume", "首次 turn/start 前应先在当前连接 resume thread")
+        XCTAssertEqual(resumeRequest.params?["threadId"]?.stringValue, "thr_idle_guard")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"result":{"thread":{"id":"thr_idle_guard","sessionId":"thr_idle_guard","preview":"上次的会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-guard","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"上次的会话","turns":[]}}}"#)
+
+        let firstTurnMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let firstTurnStart = try decodeAppServerRequest(firstTurnMessages[4])
+        XCTAssertEqual(firstTurnStart.method, "turn/start")
+        XCTAssertEqual(firstTurnStart.params?["threadId"]?.stringValue, "thr_idle_guard")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnStart.id)),"result":{"turn":{"id":"turn_resume_guard","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490303,"completedAt":null,"durationMs":null}}}"#)
+        let firstTurnID = try await firstTurnTask.value
+        XCTAssertEqual(firstTurnID, "turn_resume_guard")
+
+        // 同一连接内第二次发送不应再 resume，只发 turn/start。
+        let secondTurnTask = Task {
+            try await runtime.startTurn(sessionID: "thr_idle_guard", prompt: "再来一次", clientMessageID: nil)
+        }
+        let secondTurnMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let secondTurnStart = try decodeAppServerRequest(secondTurnMessages[5])
+        XCTAssertEqual(secondTurnStart.method, "turn/start", "已在本连接 resume 过的 thread 不应重复 resume")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: secondTurnStart.id)),"result":{"turn":{"id":"turn_resume_guard_2","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490304,"completedAt":null,"durationMs":null}}}"#)
+        let secondTurnID = try await secondTurnTask.value
+        XCTAssertEqual(secondTurnID, "turn_resume_guard_2")
+
+        let allMessages = await transport.sentMessages()
+        let resumeCount = allMessages.filter { (try? decodeAppServerRequest($0))?.method == "thread/resume" }.count
+        XCTAssertEqual(resumeCount, 1, "同一连接内只应 resume 一次")
+    }
+
     func testCodexAppServerSessionRuntimeRequiresProjectForThreadList() async throws {
         let project = AgentProject(id: "proj_direct_required", name: "Direct Required", path: "/tmp/direct-required")
         let transport = FakeCodexAppServerTransport()
@@ -4056,6 +4460,14 @@ extension ConversationDataFlowTests {
             XCTFail("Expected turnCompleted")
         }
 
+        let requestResolved = try decodeAppServerNotification(#"{"method":"serverRequest/resolved","params":{"threadId":"thr_demo","requestId":99}}"#)
+        if case .approvalResolved(let meta) = try XCTUnwrap(projector.project(requestResolved)) {
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+            XCTAssertEqual(meta.itemID, "99")
+        } else {
+            XCTFail("Expected approvalResolved")
+        }
+
         let warning = try decodeAppServerNotification(#"{"method":"warning","params":{"threadId":"thr_demo","message":"rate limit soon","code":"rate_limit"}}"#)
         if case .warning(let payload, let meta) = try XCTUnwrap(projector.project(warning)) {
             XCTAssertEqual(payload.message, "rate limit soon")
@@ -4147,6 +4559,27 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.context(for: "codex_thr_parent")?.subagents.first?.id, "thr_child")
     }
 
+    func testSessionContextStoreClearsPendingApprovalTasks() {
+        let store = SessionContextStore()
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: "thr_approval_tasks",
+                status: SessionContextStatus(type: "active", activeFlags: ["waitingOnApproval"]),
+                tasks: [
+                    SessionContextTask(id: "cmd_waiting", kind: "command", title: "Codex 请求执行命令：curl -I https://example.com", subtitle: "high", status: "waiting"),
+                    SessionContextTask(id: "cmd_running", kind: "command", title: "go test ./...", subtitle: nil, status: "running")
+                ]
+            ),
+            fallbackSessionID: nil
+        )
+
+        store.clearPendingApprovalTasks(sessionID: "thr_approval_tasks")
+
+        let context = store.context(for: "thr_approval_tasks")
+        XCTAssertEqual(context?.tasks.map(\.id), ["cmd_running"])
+        XCTAssertEqual(context?.status?.activeFlags, ["waitingOnApproval"])
+    }
+
     func testCodexAppServerRequestBuildersUseRemoteSafeDefaults() throws {
         let project = AgentProject(id: "proj_safe", name: "Safe", path: "/tmp/safe-project")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
@@ -4193,12 +4626,20 @@ extension ConversationDataFlowTests {
 // 冷启动重试用的客户端：前 N 次 projects() 抛错模拟隧道未就绪，之后成功返回。
 private final class FlakyBootstrapClient: SessionStoreAPIClient {
     private let failuresBeforeSuccess: Int
+    private let sessionFailuresBeforeSuccess: Int
     private let projectsResult: [AgentProject]
     private let sessionsResult: [AgentSession]
     private(set) var projectsCallCount = 0
+    private(set) var sessionsCallCount = 0
 
-    init(failuresBeforeSuccess: Int, projects: [AgentProject], sessions: [AgentSession]) {
+    init(
+        failuresBeforeSuccess: Int,
+        sessionFailuresBeforeSuccess: Int = 0,
+        projects: [AgentProject],
+        sessions: [AgentSession]
+    ) {
         self.failuresBeforeSuccess = failuresBeforeSuccess
+        self.sessionFailuresBeforeSuccess = sessionFailuresBeforeSuccess
         self.projectsResult = projects
         self.sessionsResult = sessions
     }
@@ -4212,7 +4653,12 @@ private final class FlakyBootstrapClient: SessionStoreAPIClient {
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
-        sessionsResult
+        sessionsCallCount += 1
+        if sessionsCallCount <= sessionFailuresBeforeSuccess {
+            // 模拟 agentd HTTP 已就绪、但 app-server gateway 上游还没接受连接的冷启动窗口。
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
+        return sessionsResult
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
@@ -4314,6 +4760,34 @@ private final class FakeCodexAppServerTransportPool {
             return nil
         }
         return transports[index]
+    }
+}
+
+private final class SequencedDirectConfigProvider {
+    private let lock = NSLock()
+    private let configs: [CodexAppServerConfigResponse]
+    private var index = 0
+
+    init(_ configs: [CodexAppServerConfigResponse]) {
+        self.configs = configs
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return index
+    }
+
+    func next() async throws -> CodexAppServerConfigResponse {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        let config = configs[min(index, max(0, configs.count - 1))]
+        index += 1
+        return config
     }
 }
 
@@ -4425,16 +4899,16 @@ private func waitForRuntimeConnectionToBecomeUnavailable(
     XCTFail("Timed out waiting for app-server runtime connection to become unavailable", file: file, line: line)
 }
 
-private func makeDirectAppServerConfig(project: AgentProject) -> CodexAppServerConfigResponse {
+private func makeDirectAppServerConfig(project: AgentProject, gatewayAvailable: Bool = true) -> CodexAppServerConfigResponse {
     CodexAppServerConfigResponse(
-        gatewayWSURL: "ws://127.0.0.1:7777/api/app-server/ws",
+        gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "pty",
             transport: "ws",
             managed: true,
-            gatewayAvailable: true,
-            upstreamConfigured: true,
-            running: true,
+            gatewayAvailable: gatewayAvailable,
+            upstreamConfigured: gatewayAvailable,
+            running: gatewayAvailable,
             initialized: false,
             pendingRequests: 0,
             compatibilityURL: "/api/sessions"
@@ -4453,6 +4927,47 @@ private func decodeAppServerRequest(_ text: String) throws -> CodexAppServerRequ
 
 private func decodeAppServerNotification(_ text: String) throws -> CodexAppServerNotification {
     try AgentAPIClient.decoder.decode(CodexAppServerNotification.self, from: Data(text.utf8))
+}
+
+private func loadDirectAppServerEventStreamFixture(
+    named fixtureName: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws -> [AgentEvent] {
+    // 测试 target 目前没有 Copy Bundle Resources；这里用源码文件路径定位 fixture，
+    // 保持本次改动只触碰测试代码和测试数据，不要求主线程立即重新生成 Xcode 工程。
+    let testFileURL = URL(fileURLWithPath: String(describing: file))
+    let fixtureURL = testFileURL
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
+        .appendingPathComponent(fixtureName)
+    let content = try String(contentsOf: fixtureURL, encoding: .utf8)
+    var projector = CodexAppServerEventProjector()
+    var events: [AgentEvent] = []
+
+    for (index, rawLine) in content.split(whereSeparator: \.isNewline).enumerated() {
+        let lineText = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lineText.isEmpty else {
+            continue
+        }
+        let message = try AgentAPIClient.decoder.decode(CodexAppServerMessage.self, from: Data(lineText.utf8))
+        let event: AgentEvent?
+        switch message {
+        case .notification(let notification):
+            event = projector.project(notification)
+        case .serverRequest(let request):
+            event = projector.project(request)
+        case .response:
+            event = nil
+        }
+        guard let event else {
+            XCTFail("fixture 第 \(index + 1) 行无法投影为 AgentEvent: \(lineText)", file: file, line: line)
+            throw MockError.unimplemented
+        }
+        events.append(event)
+    }
+
+    return events
 }
 
 private func jsonFragment(for id: CodexAppServerRequestID) throws -> String {

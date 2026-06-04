@@ -313,20 +313,37 @@ final class SessionStore: ObservableObject {
         guard appStore.isConfigured else {
             return
         }
-        // 冷启动时 VPN / Tailscale 隧道往往还没就绪，首个请求容易失败；而 scenePhase 的
-        // .active 回调在冷启动不会触发（没有 background→active 的切换），单次失败后就只能靠
-        // 用户切后台再回前台才会重新加载。这里做有限次退避重试，让首屏自己恢复。
-        for attempt in 0..<6 {
-            await refreshAll(autoAttach: true)
-            // 加载到项目就成功；没报错却没有项目说明后端确实为空，不必继续重试。
-            if !projects.isEmpty || errorMessage == nil {
+        // 冷启动有两层“没就绪”：① VPN / Tailscale 隧道还没建好，首个 HTTP 请求就失败；
+        // ② agentd 的 HTTP 端口先于 app-server gateway 上游就绪——projects 能立刻拿到，但首个
+        // 会话请求 / WebSocket 连接会因为上游还没接受连接而失败。scenePhase 的 .active 回调在
+        // 冷启动不会触发（没有 background→active 切换），所以这里必须自己退避重试，直到数据
+        // 真正加载完成。否则只要 projects 一到手就收手，首屏会停在“有项目、无会话、点什么都
+        // 连不上”的半成品状态，只能靠用户杀进程重开才恢复。
+        await refreshUntilLoaded(maxWait: 45, autoAttach: true)
+    }
+
+    // refreshAll 成功拿到数据、或后端确实为空时都会清空 errorMessage；只要还有 errorMessage，
+    // 就说明 projects / sessions / gateway 至少有一环没就绪，需要继续重试让首屏自愈。
+    //
+    // 冷启动失败基本是后端还没就绪（agentd / 隧道未通，或 app-server 上游还没接受连接），这类失败
+    // 都很快返回，所以用较短的固定退避高频轮询：后端一就绪就能在 ~1s 内被探测到并自愈，而不是用
+    // 慢退避白等。按总时长封顶而非固定次数，后端晚十几二十秒才起来也能等到，不会提前放弃又卡回
+    // “要杀进程”的老问题。
+    private func refreshUntilLoaded(maxWait: TimeInterval, autoAttach: Bool) async {
+        let deadline = Date().addingTimeInterval(max(0, maxWait))
+        var attempt = 0
+        while true {
+            await refreshAll(autoAttach: autoAttach)
+            if errorMessage == nil {
                 return
             }
-            if Task.isCancelled {
+            if Task.isCancelled || Date() >= deadline {
                 return
             }
-            let backoffUnits = UInt64(min(attempt + 1, 4))
-            try? await Task.sleep(nanoseconds: backoffUnits * 500_000_000)
+            // 首个失败立刻快速重试一次（隧道/后端经常就差最后一两百毫秒），之后固定 ~0.9s 轮询。
+            let backoffNanoseconds: UInt64 = attempt == 0 ? 300_000_000 : 900_000_000
+            attempt += 1
+            try? await Task.sleep(nanoseconds: backoffNanoseconds)
         }
     }
 
@@ -605,6 +622,14 @@ final class SessionStore: ObservableObject {
             setErrorMessage("审批发送失败：WebSocket 未连接")
             return
         }
+        conversationStore.resolveApproval(approval, accepted: accept, sessionID: session.id)
+        // 审批决定已经发出后先本地清空卡片，避免用户重复点击同一个 pending request。
+        updateSession(session.id) { item in
+            item.pendingApproval = nil
+            if item.status == "waiting_for_approval" {
+                item.status = "running"
+            }
+        }
         setStatusMessage(accept ? "已批准请求" : "已拒绝请求")
     }
 
@@ -643,7 +668,9 @@ final class SessionStore: ObservableObject {
         guard appStore.isConfigured else {
             return
         }
-        await refreshAll(autoAttach: true)
+        // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
+        // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
+        await refreshUntilLoaded(maxWait: 10, autoAttach: true)
     }
 
     func stopSelectedSession() async {
@@ -1552,8 +1579,16 @@ final class SessionStore: ObservableObject {
             }
             contextStore.updateStatus(sessionID: id, status: status)
         }
+        for (id, approval) in output.pendingApprovalUpdates {
+            updateSession(id) { item in
+                item.pendingApproval = approval
+            }
+        }
         for (context, fallbackSessionID) in output.contextUpdates {
             contextStore.upsert(context, fallbackSessionID: fallbackSessionID)
+        }
+        for id in output.pendingApprovalTaskClears {
+            contextStore.clearPendingApprovalTasks(sessionID: id)
         }
         for (id, activity, delay) in output.foregroundUpdates {
             setForegroundActivity(activity, sessionID: id, autoClearAfter: delay)
@@ -1586,6 +1621,8 @@ final class SessionStore: ObservableObject {
             conversationStore.completeMessage(message, metadata: metadata, fallbackSessionID: fallbackSessionID)
         case .system(let text, let sessionID, let kind):
             conversationStore.appendSystem(text, sessionID: sessionID, kind: kind)
+        case .resolveLatestPendingApproval(let sessionID):
+            conversationStore.resolveLatestPendingApproval(sessionID: sessionID)
         case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):
             conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID)
         case .ingestTerminalOutput(let data, let sessionID):
@@ -1606,6 +1643,7 @@ final class SessionStore: ObservableObject {
              .logDelta(_, let metadata),
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
+             .approvalResolved(let metadata),
              .turnCompleted(let metadata),
              .warning(_, let metadata),
              .output(_, let metadata):

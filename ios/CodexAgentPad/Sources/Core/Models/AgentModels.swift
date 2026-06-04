@@ -31,7 +31,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let revision: ModelRevision?
     let usage: UsageSummary?
     let rateLimit: RateLimitSummary?
-    let pendingApproval: ApprovalSummary?
+    var pendingApproval: ApprovalSummary?
     let context: SessionContextSnapshot?
 
     var isCodexHistory: Bool {

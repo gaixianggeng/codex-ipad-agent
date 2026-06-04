@@ -11,6 +11,7 @@ enum AgentEvent {
     case logDelta(LogDelta, AgentEventMetadata)
     case diffUpdated(FileChangeSummary, AgentEventMetadata)
     case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
+    case approvalResolved(AgentEventMetadata)
     case turnCompleted(AgentEventMetadata)
     case warning(AgentErrorPayload, AgentEventMetadata)
     case output(String, AgentEventMetadata)
@@ -82,6 +83,8 @@ extension AgentEvent: Decodable {
             self = .diffUpdated(try container.decode(FileChangeSummary.self, forKey: .diff), metadata)
         case "approval_request":
             self = .approvalRequest(try container.decode(AgentApprovalRequest.self, forKey: .approval), metadata)
+        case "approval_resolved":
+            self = .approvalResolved(metadata)
         case "turn_completed":
             self = .turnCompleted(metadata)
         case "warning":
@@ -149,6 +152,7 @@ enum StructuredAgentEvent: Decodable, Hashable {
     case logDelta(LogDelta, AgentEventMetadata)
     case diffUpdated(FileChangeSummary, AgentEventMetadata)
     case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
+    case approvalResolved(AgentEventMetadata)
     case turnCompleted(AgentEventMetadata)
     case warning(AgentErrorPayload, AgentEventMetadata)
     case error(AgentErrorPayload, AgentEventMetadata)
@@ -217,6 +221,8 @@ enum StructuredAgentEvent: Decodable, Hashable {
             self = .diffUpdated(try container.decode(FileChangeSummary.self, forKey: .diff), metadata)
         case "approval_request":
             self = .approvalRequest(try container.decode(AgentApprovalRequest.self, forKey: .approval), metadata)
+        case "approval_resolved":
+            self = .approvalResolved(metadata)
         case "turn_completed":
             self = .turnCompleted(metadata)
         case "warning":
@@ -340,6 +346,8 @@ struct CodexAppServerEventProjector {
             return .diffUpdated(fileChangeSummary(from: params), metadata)
         case "turn/completed":
             return .turnCompleted(metadata)
+        case "serverRequest/resolved":
+            return .approvalResolved(metadata)
         case "warning":
             return .warning(errorPayload(from: params, fallback: "app-server warning"), metadata)
         case "error":
@@ -374,7 +382,7 @@ struct CodexAppServerEventProjector {
             ?? nestedString(in: params, key: "thread", nestedKey: "id")
         let turnID = firstString(in: params, keys: ["turnId", "turn_id"]) ?? nestedString(in: params, key: "turn", nestedKey: "id")
         let item = params["item"]?.objectValue
-        let itemID = firstString(in: params, keys: ["itemId", "item_id", "callId", "approvalId"]) ?? item?["id"]?.stringValue
+        let itemID = firstString(in: params, keys: ["itemId", "item_id", "requestId", "request_id", "callId", "approvalId"]) ?? item?["id"]?.stringValue
         let messageID = firstString(in: params, keys: ["messageId", "message_id"]) ?? appServerMessageID(turnID: turnID, itemID: itemID)
         let seq = nextSeq(for: sessionID)
         return AgentEventMetadata(

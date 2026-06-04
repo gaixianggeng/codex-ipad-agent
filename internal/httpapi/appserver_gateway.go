@@ -114,10 +114,13 @@ func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request
 		methodNotAllowed(w)
 		return
 	}
+	projectList := r.projects.List()
+	runtimeMeta := r.appServerRuntimeMetadata()
+	log.Printf("app-server config response remote=%s host=%s projects=%d transport=%s gateway_available=%t", requestRemoteHost(req), req.Host, len(projectList), runtimeMeta.Transport, runtimeMeta.GatewayAvailable)
 	writeJSON(w, http.StatusOK, appServerConfigResponse{
 		GatewayWSURL: r.appServerGatewayURL(req),
-		Runtime:      r.appServerRuntimeMetadata(),
-		Projects:     r.projects.List(),
+		Runtime:      runtimeMeta,
+		Projects:     projectList,
 		Policy: appServerPolicyMetadata{
 			AllowedMethods: appServerAllowedMethodList(),
 			ProjectsSource: "agentd_allowlist",
@@ -186,7 +189,10 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	// 上游是 loopback app-server，就绪时握手是亚毫秒级；冷启动上游还没起来时，端口未监听会立刻
+	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
+	// 拿到 502 重试，而不是每次都白等 10s。
+	dialer := websocket.Dialer{HandshakeTimeout: 4 * time.Second}
 	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("连接 app-server gateway 上游失败：%v", err))

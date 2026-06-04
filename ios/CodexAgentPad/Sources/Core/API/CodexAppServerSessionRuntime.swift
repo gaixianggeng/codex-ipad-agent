@@ -53,6 +53,9 @@ actor CodexAppServerSessionRuntime {
     private var serverRequestPumpTask: Task<Void, Never>?
     private var projector = CodexAppServerEventProjector()
     private var contextsBySessionID: [SessionID: CodexAppServerSessionContext] = [:]
+    // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
+    // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
+    private var threadsResumedOnConnection: Set<SessionID> = []
     private var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
     private var eventContinuationsBySessionID: [SessionID: AsyncStream<AgentEvent>.Continuation] = [:]
     private var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
@@ -146,6 +149,8 @@ actor CodexAppServerSessionRuntime {
         var session = try agentSession(from: thread, projects: projects, fallbackProject: project, forceRunning: true)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
+        // thread/start 与 thread/resume 都已经把 thread 绑定到当前连接，记录下来避免随后的 turn/start 再重复 resume。
+        threadsResumedOnConnection.insert(session.id)
 
         if !payload.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let turnID = try await startTurn(
@@ -210,10 +215,18 @@ actor CodexAppServerSessionRuntime {
     }
 
     func connectForEvents(sessionID: SessionID) async throws {
-        _ = try await ensureConnection()
+        let connection = try await ensureConnection()
         if contextsBySessionID[sessionID] == nil {
             _ = try await session(id: sessionID, afterSeq: nil)
         }
+        guard let context = contextsBySessionID[sessionID] else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        // 官方 TUI 选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
+        // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
+        // 可能不会回流到 iPad。
+        try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
     }
 
     @discardableResult
@@ -222,7 +235,9 @@ actor CodexAppServerSessionRuntime {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
-        let result = try await ensureConnection().send(try builder.turnStart(
+        let connection = try await ensureConnection()
+        try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+        let result = try await connection.send(try builder.turnStart(
             threadID: sessionID,
             cwd: context.cwd,
             prompt: prompt,
@@ -236,6 +251,23 @@ actor CodexAppServerSessionRuntime {
         return turnID
     }
 
+    // 直连发送路径下，目标 thread 可能只在 thread/list 里出现过，但没有在当前 gateway 连接上 resume。
+    // app-server 不会向「没在本连接 resume/start 过」的 thread 推送 turn 事件，于是直接 turn/start 会
+    // 看不到任何回复（也收不到 turn/completed，active turn 角标会一直挂着）。这里在首次 turn/start 前补
+    // 一次按当前连接的 resume，事件才会回流；连接重连后集合清空，会自动重新补上。
+    private func ensureThreadResumedOnConnection(
+        sessionID: SessionID,
+        cwd: String,
+        builder: CodexAppServerRequestBuilder,
+        connection: CodexAppServerConnection
+    ) async throws {
+        guard !threadsResumedOnConnection.contains(sessionID) else {
+            return
+        }
+        _ = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd))
+        threadsResumedOnConnection.insert(sessionID)
+    }
+
     func interruptActiveTurn(sessionID: SessionID) async throws {
         guard let turnID = contextsBySessionID[sessionID]?.activeTurnID else {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
@@ -244,10 +276,12 @@ actor CodexAppServerSessionRuntime {
         _ = try await ensureConnection().send(spec)
     }
 
-    func respondToApproval(approvalID: String, decision: String) async throws {
-        guard let request = pendingApprovalRequestsByID.removeValue(forKey: approvalID) else {
+    func respondToApproval(sessionID: SessionID? = nil, approvalID: String, decision: String) async throws {
+        let lookupKeys = pendingApprovalLookupKeys(sessionID: sessionID, approvalID: approvalID)
+        guard let request = lookupKeys.compactMap({ pendingApprovalRequestsByID[$0] }).first else {
             throw CodexAppServerSessionRuntimeError.approvalNotFound(approvalID)
         }
+        removePendingApprovalRequest(request)
         let normalized = normalizeApprovalDecision(decision)
         let result = approvalResponse(method: request.method, params: request.params?.objectValue ?? [:], decision: normalized)
         try await ensureConnection().respond(to: request, result: result)
@@ -296,7 +330,7 @@ actor CodexAppServerSessionRuntime {
         if let connectionTask {
             return try await installPreparedConnectionIfNeeded(from: connectionTask)
         }
-        let config = try await ensureConfig()
+        let config = try await connectionConfig()
         guard config.runtime.gatewayAvailable else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
@@ -340,9 +374,21 @@ actor CodexAppServerSessionRuntime {
         return prepared.connection
     }
 
+    private func connectionConfig() async throws -> CodexAppServerConfigResponse {
+        let cached = try await ensureConfig()
+        if cached.runtime.gatewayAvailable {
+            return cached
+        }
+        // 首次冷启动时 agentd 可能先返回项目列表，但 app-server gateway 仍在启动。
+        // 这种不可用 config 不能长期缓存，否则 bootstrap 重试会一直复用旧状态，直到用户杀掉 APP。
+        return try await ensureConfig(forceRefresh: true)
+    }
+
     private func installConnection(_ prepared: CodexAppServerPreparedConnection) {
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
+        // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。
+        threadsResumedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
         notificationPumpTask = Task { [weak self, notifications = prepared.notifications] in
             for await notification in notifications {
@@ -362,6 +408,7 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask?.cancel()
         serverRequestPumpTask = nil
         connection = nil
+        threadsResumedOnConnection.removeAll(keepingCapacity: true)
         pendingApprovalRequestsByID.removeAll(keepingCapacity: false)
         await stale.disconnect()
     }
@@ -385,6 +432,7 @@ actor CodexAppServerSessionRuntime {
 
     private func handle(_ notification: CodexAppServerNotification) {
         updateContext(from: notification)
+        clearResolvedServerRequest(from: notification)
         guard let event = projector.project(notification) else {
             return
         }
@@ -392,10 +440,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func handle(_ request: CodexAppServerServerRequest) {
-        if let approvalID = approvalID(for: request) {
-            pendingApprovalRequestsByID[approvalID] = request
-            pendingApprovalRequestsByID[request.id.description] = request
-        }
+        rememberPendingApprovalRequest(request)
         guard let event = projector.project(request) else {
             return
         }
@@ -428,6 +473,7 @@ actor CodexAppServerSessionRuntime {
              .logDelta(_, let metadata),
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
+             .approvalResolved(let metadata),
              .turnCompleted(let metadata),
              .warning(_, let metadata),
              .output(_, let metadata):
@@ -935,7 +981,90 @@ actor CodexAppServerSessionRuntime {
         return params["approvalId"]?.stringValue
             ?? params["itemId"]?.stringValue
             ?? params["item_id"]?.stringValue
+            ?? params["callId"]?.stringValue
             ?? request.id.description
+    }
+
+    private func rememberPendingApprovalRequest(_ request: CodexAppServerServerRequest) {
+        guard isApprovalLikeServerRequest(request.method) else {
+            return
+        }
+        for key in pendingApprovalStorageKeys(for: request) {
+            pendingApprovalRequestsByID[key] = request
+        }
+    }
+
+    private func removePendingApprovalRequest(_ request: CodexAppServerServerRequest) {
+        for key in pendingApprovalStorageKeys(for: request) {
+            pendingApprovalRequestsByID.removeValue(forKey: key)
+        }
+    }
+
+    private func clearResolvedServerRequest(from notification: CodexAppServerNotification) {
+        guard notification.method == "serverRequest/resolved" else {
+            return
+        }
+        let params = notification.params?.objectValue ?? [:]
+        let sessionID = approvalSessionID(from: params)
+        let ids = uniqueStrings([
+            params["requestId"]?.stringValue,
+            params["request_id"]?.stringValue,
+            params["id"]?.stringValue,
+            params["approvalId"]?.stringValue,
+            params["itemId"]?.stringValue,
+            params["item_id"]?.stringValue
+        ].compactMap { $0 })
+
+        for id in ids {
+            for key in pendingApprovalLookupKeys(sessionID: sessionID, approvalID: id) {
+                if let request = pendingApprovalRequestsByID.removeValue(forKey: key) {
+                    removePendingApprovalRequest(request)
+                }
+            }
+        }
+    }
+
+    private func pendingApprovalStorageKeys(for request: CodexAppServerServerRequest) -> [String] {
+        let sessionID = approvalSessionID(for: request)
+        let ids = uniqueStrings([approvalID(for: request), request.id.description].compactMap { $0 })
+        return ids.flatMap { id in
+            pendingApprovalLookupKeys(sessionID: sessionID, approvalID: id)
+        }
+    }
+
+    private func pendingApprovalLookupKeys(sessionID: SessionID?, approvalID: String) -> [String] {
+        uniqueStrings([
+            pendingApprovalScopedKey(sessionID: sessionID, approvalID: approvalID),
+            approvalID
+        ].compactMap { $0 })
+    }
+
+    private func pendingApprovalScopedKey(sessionID: SessionID?, approvalID: String) -> String? {
+        guard let sessionID, !sessionID.isEmpty else {
+            return nil
+        }
+        return "\(sessionID)#\(approvalID)"
+    }
+
+    private func approvalSessionID(for request: CodexAppServerServerRequest) -> SessionID? {
+        approvalSessionID(from: request.params?.objectValue ?? [:])
+    }
+
+    private func approvalSessionID(from params: [String: CodexAppServerJSONValue]) -> SessionID? {
+        params["threadId"]?.stringValue
+            ?? params["conversationId"]?.stringValue
+            ?? params["sessionId"]?.stringValue
+            ?? params["session_id"]?.stringValue
+    }
+
+    private func isApprovalLikeServerRequest(_ method: String) -> Bool {
+        let lower = method.lowercased()
+        return lower.contains("approval") || lower.contains("requestuserinput")
+    }
+
+    private func uniqueStrings(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0).inserted }
     }
 
     private func approvalResponse(
@@ -943,6 +1072,9 @@ actor CodexAppServerSessionRuntime {
         params: [String: CodexAppServerJSONValue],
         decision: String
     ) -> CodexAppServerJSONValue {
+        if method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" {
+            return .object(["decision": .string(decision)])
+        }
         if method == "item/permissions/requestApproval" {
             return .object([
                 "permissions": decision == "accept" ? params["permissions"] ?? .object([:]) : .object([:]),
@@ -1175,10 +1307,14 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
 
     @discardableResult
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool {
+        guard let sessionID else {
+            onSendFailure?(nil, "direct WebSocket 未连接")
+            return false
+        }
         let failureHandler = onSendFailure
-        Task { [runtime] in
+        Task { [runtime, sessionID] in
             do {
-                try await runtime.respondToApproval(approvalID: approvalID, decision: decision)
+                try await runtime.respondToApproval(sessionID: sessionID, approvalID: approvalID, decision: decision)
             } catch {
                 await MainActor.run {
                     failureHandler?(nil, error.localizedDescription)

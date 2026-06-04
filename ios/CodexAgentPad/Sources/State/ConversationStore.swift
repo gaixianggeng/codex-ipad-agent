@@ -195,7 +195,41 @@ final class ConversationStore: ObservableObject {
     }
 
     func appendSystem(_ text: String, sessionID: String, kind: MessageKind = .message) {
+        if kind == .approval, text.hasPrefix("等待审批："), upsertPendingApprovalMessage(text, sessionID: sessionID) {
+            return
+        }
         append(ConversationMessage(role: .system, kind: kind, content: text), sessionID: sessionID)
+    }
+
+    func resolveApproval(_ approval: ApprovalSummary, accepted: Bool, sessionID: String) {
+        let text = accepted ? "审批已批准：\(approval.title)" : "审批已拒绝：\(approval.title)"
+        guard var list = messagesBySessionID[sessionID] else {
+            appendSystem(text, sessionID: sessionID, kind: .approval)
+            return
+        }
+        // 审批结果应该回写到原来的等待卡片上，避免时间线和详情里长期显示“等待审批”。
+        if let index = list.lastIndex(where: { message in
+            message.kind == .approval && message.content.contains(approval.title)
+        }) {
+            list[index].content = text
+            setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+            return
+        }
+        appendSystem(text, sessionID: sessionID, kind: .approval)
+    }
+
+    func resolveLatestPendingApproval(sessionID: String) {
+        guard var list = messagesBySessionID[sessionID],
+              let index = list.lastIndex(where: { message in
+                  message.kind == .approval && message.content.hasPrefix("等待审批：")
+              }) else {
+            return
+        }
+        // 远端审批、turn 完成或中断只告诉我们 request 已清理，不一定告诉最终按钮决策；
+        // 用中性文案收口，避免时间线长期停在“等待审批”。
+        let title = pendingApprovalTitle(from: list[index].content)
+        list[index].content = title.isEmpty ? "审批已解决" : "审批已解决：\(title)"
+        setMessages(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
     func moveLocalEcho(clientMessageID: ClientMessageID, from sourceSessionID: String, to targetSessionID: String) {
@@ -228,6 +262,38 @@ final class ConversationStore: ObservableObject {
         } else {
             setMessages(source, sessionID: sourceSessionID)
         }
+    }
+
+    private func upsertPendingApprovalMessage(_ text: String, sessionID: String) -> Bool {
+        guard var list = messagesBySessionID[sessionID] else {
+            return false
+        }
+        let title = pendingApprovalTitle(from: text)
+        if let index = list.lastIndex(where: { message in
+            guard message.kind == .approval, message.content.hasPrefix("等待审批：") else {
+                return false
+            }
+            return message.content == text || pendingApprovalTitle(from: message.content) == title
+        }) {
+            if list[index].content != text {
+                list[index].content = text
+                setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+            }
+            return true
+        }
+        return false
+    }
+
+    private func pendingApprovalTitle(from text: String) -> String {
+        let prefix = "等待审批："
+        guard text.hasPrefix(prefix) else {
+            return text
+        }
+        var value = String(text.dropFirst(prefix.count))
+        if let range = value.range(of: "，风险：") {
+            value = String(value[..<range.lowerBound])
+        }
+        return value
     }
 
     func ingestTerminalOutput(_ raw: String, sessionID: String) {

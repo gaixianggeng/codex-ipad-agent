@@ -3,6 +3,8 @@ import Foundation
 struct EventReducerOutput {
     var upsertSessions: [AgentSession] = []
     var statusUpdates: [(SessionID, String)] = []
+    var pendingApprovalUpdates: [(SessionID, ApprovalSummary?)] = []
+    var pendingApprovalTaskClears: [SessionID] = []
     var contextUpdates: [(SessionContextSnapshot, SessionID?)] = []
     var foregroundUpdates: [(SessionID, SessionForegroundActivity, UInt64?)] = []
     var foregroundClears: [SessionID] = []
@@ -17,6 +19,7 @@ enum EventReducerMessageMutation {
     case assistantDelta(AgentDelta, AgentEventMetadata, SessionID)
     case completed(AgentMessage, AgentEventMetadata, SessionID)
     case system(String, SessionID, MessageKind)
+    case resolveLatestPendingApproval(SessionID)
     case markCurrentAssistantCompleted(AgentEventMetadata, SessionID)
     case ingestTerminalOutput(String, SessionID)
 }
@@ -52,6 +55,9 @@ actor EventReducer {
                 return output
             }
             output.statusUpdates.append((id, status))
+            if status != "waiting_for_approval" {
+                output.pendingApprovalUpdates.append((id, nil))
+            }
             output.contextUpdates.append((
                 SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: contextStatusType(from: status)), updatedAt: Date()),
                 id
@@ -86,22 +92,28 @@ actor EventReducer {
                 sessionID: metadata.sessionID ?? fallbackSessionID,
                 seq: metadata.seq
             ))
-        case .diffUpdated(let change, _):
+        case .diffUpdated(let change, let metadata):
+            let id = metadata.sessionID ?? fallbackSessionID
             output.contextUpdates.append((
                 SessionContextSnapshot(
                     tasks: [SessionContextTask(id: change.path, kind: "file_change", title: "文件变更", subtitle: change.path, status: change.status)],
                     updatedAt: Date()
                 ),
-                fallbackSessionID
+                id
             ))
             output.messageMutations.append(.system(
                 "文件变更：\(change.path) \(change.status)",
-                fallbackSessionID,
+                id,
                 .fileChangeSummary
             ))
         case .approvalRequest(let request, let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
             output.statusUpdates.append((id, "waiting_for_approval"))
+            // 输入框上方的审批卡读取 session.pendingApproval；审批事件不能只写入时间线记录。
+            output.pendingApprovalUpdates.append((
+                id,
+                ApprovalSummary(id: request.id, title: request.title, kind: request.kind, count: nil)
+            ))
             output.contextUpdates.append((
                 SessionContextSnapshot(
                     sessionID: id,
@@ -112,10 +124,30 @@ actor EventReducer {
                 id
             ))
             let risk = request.risk.map { "，风险：\($0)" } ?? ""
-            output.messageMutations.append(.system("等待审批：\(request.title)\(risk)", fallbackSessionID, .approval))
+            output.messageMutations.append(.system("等待审批：\(request.title)\(risk)", id, .approval))
+        case .approvalResolved(let metadata):
+            let id = metadata.sessionID ?? fallbackSessionID
+            // app-server 会在 JSON-RPC server request 被处理后发 serverRequest/resolved；
+            // 这里只收起 pending 卡片，并把本地等待态恢复为运行态，避免历史审批残留挡住输入框。
+            output.pendingApprovalUpdates.append((id, nil))
+            output.statusUpdates.append((id, "running"))
+            output.contextUpdates.append((
+                SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: "active"), updatedAt: Date()),
+                id
+            ))
+            output.pendingApprovalTaskClears.append(id)
+            output.messageMutations.append(.resolveLatestPendingApproval(id))
         case .turnCompleted(let metadata):
+            let id = metadata.sessionID ?? fallbackSessionID
+            output.pendingApprovalUpdates.append((id, nil))
+            output.contextUpdates.append((
+                SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: "active"), updatedAt: Date()),
+                id
+            ))
+            output.pendingApprovalTaskClears.append(id)
+            output.messageMutations.append(.resolveLatestPendingApproval(id))
             output.messageMutations.append(.markCurrentAssistantCompleted(metadata, fallbackSessionID))
-            output.foregroundClears.append(metadata.sessionID ?? fallbackSessionID)
+            output.foregroundClears.append(id)
         case .warning(let payload, _):
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] warning: \(payload.message)\n",
@@ -131,12 +163,14 @@ actor EventReducer {
             output.messageMutations.append(.ingestTerminalOutput(data, id))
         case .exit(let result):
             output.statusUpdates.append((fallbackSessionID, "closed"))
+            output.pendingApprovalUpdates.append((fallbackSessionID, nil))
             output.foregroundClears.append(fallbackSessionID)
             let reason = result.reason ?? "code=\(result.code ?? 0)"
             output.messageMutations.append(.system("Codex 会话已结束：\(reason)", fallbackSessionID, .message))
             output.disconnectWebSocket = true
         case .error(let message):
             output.foregroundClears.append(fallbackSessionID)
+            output.pendingApprovalUpdates.append((fallbackSessionID, nil))
             output.errorMessage = message
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] \(message)\n",

@@ -56,6 +56,21 @@ final class SessionContextStore: ObservableObject {
         )
     }
 
+    func clearPendingApprovalTasks(sessionID: SessionID) {
+        guard var context = contextsBySessionID[sessionID] else {
+            return
+        }
+        let filtered = context.tasks.filter { task in
+            !(task.status == "waiting" && task.title.hasPrefix("Codex 请求"))
+        }
+        guard filtered != context.tasks else {
+            return
+        }
+        context.tasks = filtered
+        context.updatedAt = Date()
+        contextsBySessionID[sessionID] = context
+    }
+
     private func attachSubagentsToParents(from context: SessionContextSnapshot) {
         for subagent in context.subagents {
             guard let parentThreadID = subagent.parentThreadID, !parentThreadID.isEmpty else {

@@ -107,9 +107,17 @@ func logging(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			log.Printf("%s %s status=%d bytes=%d duration=%s", r.Method, r.URL.RequestURI(), rec.status, rec.bytes, time.Since(start).Round(time.Millisecond))
+			log.Printf("%s %s remote=%s host=%s status=%d bytes=%d duration=%s", r.Method, r.URL.RequestURI(), requestRemoteHost(r), r.Host, rec.status, rec.bytes, time.Since(start).Round(time.Millisecond))
 		}
 	})
+}
+
+func requestRemoteHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 type statusRecorder struct {
@@ -183,7 +191,9 @@ func (r *Router) projectsHandler(w http.ResponseWriter, req *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": r.projects.List()})
+	projectList := r.projects.List()
+	log.Printf("projects response remote=%s host=%s projects=%d", requestRemoteHost(req), req.Host, len(projectList))
+	writeJSON(w, http.StatusOK, map[string]any{"projects": projectList})
 }
 
 func (r *Router) sessionsHandler(w http.ResponseWriter, req *http.Request) {

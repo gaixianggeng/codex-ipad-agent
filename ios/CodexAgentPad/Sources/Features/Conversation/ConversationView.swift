@@ -588,6 +588,12 @@ private struct RuntimeSummaryCard: View {
         case .fileChangeSummary:
             return "文件变更"
         case .approval:
+            if isApprovedApproval {
+                return "审批已批准"
+            }
+            if isDeclinedApproval {
+                return "审批已拒绝"
+            }
             return "等待审批"
         case .error:
             return "运行异常"
@@ -605,7 +611,13 @@ private struct RuntimeSummaryCard: View {
         case .fileChangeSummary:
             return "doc.text.magnifyingglass"
         case .approval:
-            return "checkmark.seal"
+            if isApprovedApproval {
+                return "checkmark.circle"
+            }
+            if isDeclinedApproval {
+                return "xmark.circle"
+            }
+            return "exclamationmark.shield"
         case .error:
             return "exclamationmark.triangle"
         case .message:
@@ -616,6 +628,12 @@ private struct RuntimeSummaryCard: View {
     private var tint: Color {
         switch message.kind {
         case .approval:
+            if isApprovedApproval {
+                return .green
+            }
+            if isDeclinedApproval {
+                return .red
+            }
             return .orange
         case .error:
             return .red
@@ -629,6 +647,12 @@ private struct RuntimeSummaryCard: View {
     private var background: Color {
         switch message.kind {
         case .approval:
+            if isApprovedApproval {
+                return Color.green.opacity(0.10)
+            }
+            if isDeclinedApproval {
+                return Color.red.opacity(0.10)
+            }
             return Color.orange.opacity(0.12)
         case .error:
             return Color.red.opacity(0.10)
@@ -637,5 +661,13 @@ private struct RuntimeSummaryCard: View {
         default:
             return Color(.secondarySystemBackground)
         }
+    }
+
+    private var isApprovedApproval: Bool {
+        message.content.hasPrefix("审批已批准") || message.content.hasPrefix("已批准")
+    }
+
+    private var isDeclinedApproval: Bool {
+        message.content.hasPrefix("审批已拒绝") || message.content.hasPrefix("已拒绝")
     }
 }

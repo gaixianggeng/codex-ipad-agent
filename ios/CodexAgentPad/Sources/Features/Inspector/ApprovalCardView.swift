@@ -7,20 +7,12 @@ struct ApprovalCardView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
-                if let approval = sessionStore.selectedSession?.pendingApproval {
-                    PendingApprovalCard(
-                        approval: approval,
-                        onApprove: { sessionStore.decideApproval(approval, accept: true) },
-                        onDecline: { sessionStore.decideApproval(approval, accept: false) }
-                    )
-                }
-
                 ForEach(approvalMessages) { message in
                     InspectorSummaryCard(
-                        symbolName: "checkmark.seal",
-                        title: "审批记录",
+                        symbolName: symbolName(for: message),
+                        title: title(for: message),
                         subtitle: message.content,
-                        tint: .orange
+                        tint: tint(for: message)
                     )
                 }
 
@@ -35,6 +27,44 @@ struct ApprovalCardView: View {
         }
     }
 
+    private func title(for message: ConversationMessage) -> String {
+        if isApproved(message) {
+            return "审批已批准"
+        }
+        if isDeclined(message) {
+            return "审批已拒绝"
+        }
+        return "审批记录"
+    }
+
+    private func symbolName(for message: ConversationMessage) -> String {
+        if isApproved(message) {
+            return "checkmark.circle"
+        }
+        if isDeclined(message) {
+            return "xmark.circle"
+        }
+        return "exclamationmark.shield"
+    }
+
+    private func tint(for message: ConversationMessage) -> Color {
+        if isApproved(message) {
+            return .green
+        }
+        if isDeclined(message) {
+            return .red
+        }
+        return .orange
+    }
+
+    private func isApproved(_ message: ConversationMessage) -> Bool {
+        message.content.hasPrefix("审批已批准") || message.content.hasPrefix("已批准")
+    }
+
+    private func isDeclined(_ message: ConversationMessage) -> Bool {
+        message.content.hasPrefix("审批已拒绝") || message.content.hasPrefix("已拒绝")
+    }
+
     private var approvalMessages: [ConversationMessage] {
         Array(
             conversationStore
@@ -42,52 +72,5 @@ struct ApprovalCardView: View {
                 .filter { $0.kind == .approval }
                 .suffix(20)
         )
-    }
-}
-
-private struct PendingApprovalCard: View {
-    let approval: ApprovalSummary
-    let onApprove: () -> Void
-    let onDecline: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.shield")
-                    .foregroundStyle(.orange)
-                Text(approval.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-            }
-
-            HStack(spacing: 8) {
-                Text(approval.kind)
-                if let count = approval.count {
-                    Text("\(count) 项")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                Button(action: onDecline) {
-                    Label("拒绝", systemImage: "xmark.circle")
-                }
-                .buttonStyle(.bordered)
-
-                Button(action: onApprove) {
-                    Label("批准", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .font(.caption.weight(.semibold))
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.25), lineWidth: 1)
-        }
     }
 }
