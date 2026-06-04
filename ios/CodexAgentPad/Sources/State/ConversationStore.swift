@@ -1164,6 +1164,9 @@ final class ConversationStore: ObservableObject {
     }
 
     private func historyStableID(for item: CodexHistoryMessage) -> MessageID? {
+        if let stableID = appServerStableMessageID(turnID: item.turnID, itemID: item.itemID) {
+            return stableID
+        }
         // 旧 Codex rollout 没有稳定 message id，Swift 解码会补一个随机 UUID；
         // 只有带结构化元数据时才把 id 当稳定键，避免破坏本地回显去重。
         if item.id.hasPrefix("rollout:") || item.clientMessageID != nil || item.turnID != nil || item.itemID != nil || item.seq != nil || item.revision != nil {
@@ -1187,10 +1190,23 @@ final class ConversationStore: ObservableObject {
         if let clientMessageID = item.clientMessageID {
             return "client:\(clientMessageID)"
         }
+        if let appServerStableID = appServerStableMessageID(turnID: item.turnID, itemID: item.itemID) {
+            return "appserver:\(appServerStableID)"
+        }
         if let stableID = item.stableID {
             return "stable:\(stableID)"
         }
         return nil
+    }
+
+    private func appServerStableMessageID(turnID: TurnID?, itemID: AgentItemID?) -> MessageID? {
+        guard let itemID, !itemID.isEmpty else {
+            return nil
+        }
+        guard let turnID, !turnID.isEmpty else {
+            return itemID
+        }
+        return "appserver:\(turnID):\(itemID)"
     }
 
     private func shouldMergeAsLegacyEcho(_ item: ConversationMessage, candidates: [LegacyEchoCandidate]) -> Bool {

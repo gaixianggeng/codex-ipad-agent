@@ -15,6 +15,14 @@ protocol SessionWebSocketClient: AnyObject {
     func ping() -> Bool
 }
 
+enum WebSocketMessageLimits {
+    static let maximumInboundMessageBytes = 64 * 1024 * 1024
+
+    static func apply(to task: URLSessionWebSocketTask, maximumMessageSize: Int = maximumInboundMessageBytes) {
+        task.maximumMessageSize = max(1, maximumMessageSize)
+    }
+}
+
 final class AgentWebSocketClient: NSObject, SessionWebSocketClient {
     private static let pendingMessageLimit = 32
 
@@ -49,6 +57,7 @@ final class AgentWebSocketClient: NSObject, SessionWebSocketClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         let task = session.webSocketTask(with: request)
+        WebSocketMessageLimits.apply(to: task)
         runConnectionOperation { connection in
             await connection.connect(task: task)
         }
@@ -433,10 +442,15 @@ protocol CodexAppServerTransport: AnyObject {
 
 final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
     private let session: URLSession
+    private let maximumMessageSize: Int
     private var task: URLSessionWebSocketTask?
 
-    init(session: URLSession = .shared) {
+    init(
+        session: URLSession = .shared,
+        maximumMessageSize: Int = WebSocketMessageLimits.maximumInboundMessageBytes
+    ) {
         self.session = session
+        self.maximumMessageSize = max(1, maximumMessageSize)
     }
 
     func connect(url: URL, token: String) async throws {
@@ -444,6 +458,7 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
         request.timeoutInterval = 20
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let nextTask = session.webSocketTask(with: request)
+        WebSocketMessageLimits.apply(to: nextTask, maximumMessageSize: maximumMessageSize)
         task = nextTask
         nextTask.resume()
     }
@@ -538,6 +553,8 @@ actor CodexAppServerConnection {
 
     deinit {
         receiveTask?.cancel()
+        notificationContinuation?.finish()
+        serverRequestContinuation?.finish()
     }
 
     func notifications() -> AsyncStream<CodexAppServerNotification> {
@@ -558,8 +575,19 @@ actor CodexAppServerConnection {
         return stream
     }
 
+    func isReadyForRequests() -> Bool {
+        guard let receiveTask else {
+            return false
+        }
+        return isConnected && isInitialized && !receiveTask.isCancelled
+    }
+
     func connect(url: URL, token: String) async throws {
         receiveTask?.cancel()
+        receiveTask = nil
+        isConnected = false
+        isInitialized = false
+        failAllPending(with: CodexAppServerConnectionError.disconnected)
         try await transport.connect(url: url, token: token)
         isConnected = true
         isInitialized = false
@@ -579,12 +607,20 @@ actor CodexAppServerConnection {
                 "requestAttestation": .bool(false)
             ])
         ])
-        _ = try await sendRequestEnvelope(
-            CodexAppServerRequest(id: nextRequestID(), method: "initialize", params: initializeParams),
-            allowBeforeInitialized: true
-        )
-        try await sendNotification(CodexAppServerNotification(method: "initialized", params: .object([:])))
-        isInitialized = true
+        do {
+            _ = try await sendRequestEnvelope(
+                CodexAppServerRequest(id: nextRequestID(), method: "initialize", params: initializeParams),
+                allowBeforeInitialized: true
+            )
+            try await sendNotification(CodexAppServerNotification(method: "initialized", params: .object([:])))
+            isInitialized = true
+        } catch {
+            receiveTask?.cancel()
+            receiveTask = nil
+            markDisconnected(with: error)
+            await transport.close()
+            throw error
+        }
     }
 
     func disconnect() async {
@@ -594,6 +630,7 @@ actor CodexAppServerConnection {
         isInitialized = false
         await transport.close()
         failAllPending(with: CodexAppServerConnectionError.disconnected)
+        finishInboundStreams()
     }
 
     func send(_ request: CodexAppServerRequestSpec) async throws -> CodexAppServerJSONValue? {
@@ -611,7 +648,13 @@ actor CodexAppServerConnection {
             throw CodexAppServerConnectionError.disconnected
         }
         let data = try encoder.encode(notification)
-        try await transport.send(String(decoding: data, as: UTF8.self))
+        do {
+            try await transport.send(String(decoding: data, as: UTF8.self))
+        } catch {
+            let wrapped = CodexAppServerConnectionError.transport(error)
+            markDisconnected(with: wrapped)
+            throw wrapped
+        }
     }
 
     func respond(to request: CodexAppServerServerRequest, result: CodexAppServerJSONValue? = .object([:])) async throws {
@@ -630,6 +673,10 @@ actor CodexAppServerConnection {
         while !Task.isCancelled {
             do {
                 guard let text = try await transport.receive() else {
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    markDisconnected(with: CodexAppServerConnectionError.disconnected)
                     return
                 }
                 handleInboundText(text)
@@ -637,9 +684,7 @@ actor CodexAppServerConnection {
                 guard !Task.isCancelled else {
                     return
                 }
-                isConnected = false
-                isInitialized = false
-                failAllPending(with: CodexAppServerConnectionError.transport(error))
+                markDisconnected(with: CodexAppServerConnectionError.transport(error))
                 return
             }
         }
@@ -673,7 +718,9 @@ actor CodexAppServerConnection {
                 do {
                     try await self.sendEncodedRequest(request)
                 } catch {
-                    self.failPendingRequest(id: request.id, error: CodexAppServerConnectionError.transport(error))
+                    let wrapped = CodexAppServerConnectionError.transport(error)
+                    self.failPendingRequest(id: request.id, error: wrapped)
+                    self.markDisconnected(with: wrapped)
                 }
             }
         }
@@ -689,7 +736,13 @@ actor CodexAppServerConnection {
             throw CodexAppServerConnectionError.disconnected
         }
         let data = try encoder.encode(response)
-        try await transport.send(String(decoding: data, as: UTF8.self))
+        do {
+            try await transport.send(String(decoding: data, as: UTF8.self))
+        } catch {
+            let wrapped = CodexAppServerConnectionError.transport(error)
+            markDisconnected(with: wrapped)
+            throw wrapped
+        }
     }
 
     private func handleInboundText(_ text: String) {
@@ -743,6 +796,20 @@ actor CodexAppServerConnection {
             item.timeoutTask.cancel()
             item.continuation.resume(throwing: error)
         }
+    }
+
+    private func markDisconnected(with error: Error) {
+        isConnected = false
+        isInitialized = false
+        failAllPending(with: error)
+        finishInboundStreams()
+    }
+
+    private func finishInboundStreams() {
+        notificationContinuation?.finish()
+        notificationContinuation = nil
+        serverRequestContinuation?.finish()
+        serverRequestContinuation = nil
     }
 
     private func nextRequestID() -> CodexAppServerRequestID {

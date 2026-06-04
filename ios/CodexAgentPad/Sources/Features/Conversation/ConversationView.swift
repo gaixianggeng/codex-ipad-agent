@@ -119,124 +119,141 @@ struct ConversationTimelineView: View {
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
     @State private var hasUnseenTailMessage = false
+    @State private var isPreservingHistoryScroll = false
 
-    private let messageTailAnchorID = "conversation-message-tail"
-    private let conversationScrollSpace = "conversation-scroll-space"
     private let messageTailFollowThreshold: CGFloat = 120
+    private let messageRowInsets = EdgeInsets(top: 7, leading: 24, bottom: 7, trailing: 24)
 
     var body: some View {
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
-        return GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 14) {
-                            if messages.isEmpty {
-                                emptyState
-                                    .padding(.top, 80)
-                            } else {
-                                loadEarlierRow
-                                ForEach(messages) { message in
-                                    // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
-                                    // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                                    // 行宽用 maxWidth 自适应，不再依赖 geometry 宽度——否则侧栏收起/展开时
-                                    // 容器宽度逐帧变化会让每条可见消息每帧重绘，造成动画卡顿。
-                                    MessageRow(message: message)
-                                        .equatable()
-                                        .id(message.id)
-                                }
-                                messageTailSentinel
-                            }
+        return ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                // 用 List（底层 UITableView）替代 ScrollView + LazyVStack：行高是真实测量值、
+                // 有 cell 复用，scrollTo 对尚未实例化的行也可靠。这样既消除首屏/切换会话
+                // “空白要手滑一下”的竞态，右侧滚动条也不再因 LazyVStack 高度估算而长度/位置乱跳。
+                List {
+                    if messages.isEmpty {
+                        emptyState
+                            .padding(.top, 80)
+                            .frame(maxWidth: .infinity)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(messageRowInsets)
+                            .listRowBackground(Color.clear)
+                    } else {
+                        if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
+                            loadEarlierRow(proxy: proxy)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(messageRowInsets)
+                                .listRowBackground(Color.clear)
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 18)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    .coordinateSpace(name: conversationScrollSpace)
-
-                    if hasUnseenTailMessage {
-                        Button {
-                            hasUnseenTailMessage = false
-                            shouldFollowMessageTail = true
-                            forceNextMessageTailScroll = true
-                            scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
-                        } label: {
-                            Label("新消息", systemImage: "arrow.down.circle.fill")
-                                .font(.caption.weight(.semibold))
+                        ForEach(messages) { message in
+                            // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
+                            // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
+                            MessageRow(message: message)
+                                .equatable()
+                                .id(message.id)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(messageRowInsets)
+                                .listRowBackground(Color.clear)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .padding(.trailing, 24)
-                        .padding(.bottom, 18)
-                        .accessibilityLabel("回到底部查看新消息")
                     }
                 }
-                .onPreferenceChange(MessageTailOffsetKey.self) { tailMaxY in
-                    // 只在用户还贴近底部时自动跟随流式输出；用户向上阅读历史时不再被 token 更新拉回底部。
-                    let isFollowingTail = tailMaxY <= geometry.size.height + messageTailFollowThreshold
-                    shouldFollowMessageTail = isFollowingTail
-                    if isFollowingTail {
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                // 是否贴近底部用滚动几何实时判断，只在贴底时跟随流式输出，
+                // 用户上翻历史时不会被尾部更新甩回底部。
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    isNearBottom(geometry)
+                } action: { _, nearBottom in
+                    shouldFollowMessageTail = nearBottom
+                    if nearBottom {
                         hasUnseenTailMessage = false
                     }
                 }
-                .onChange(of: sessionStore.selectedSessionID) { _, _ in
-                    shouldFollowMessageTail = true
-                    forceNextMessageTailScroll = true
-                    hasUnseenTailMessage = false
-                }
-                .onChange(of: messages.last?.id) { _, _ in
-                    // 只有尾部新消息到达时才滚到底；加载更早历史会 prepend，不应打断阅读位置。
-                    scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
-                }
-                .onChange(of: messages.last?.renderFingerprint) { _, _ in
-                    // 流式增量会高频改写最后一条内容；动画滚动会让多段 0.18s 动画互相打架，
-                    // 这里改成无动画直接定位，跟随输出但不卡。
-                    scrollToMessageTail(messages: messages, proxy: proxy, animated: false)
-                }
-            }
-        }
-    }
 
-    private var messageTailSentinel: some View {
-        Color.clear
-            .frame(height: 1)
-            .id(messageTailAnchorID)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: MessageTailOffsetKey.self,
-                        value: proxy.frame(in: .named(conversationScrollSpace)).maxY
-                    )
-                }
-            }
-    }
-
-    @ViewBuilder
-    private var loadEarlierRow: some View {
-        if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
-            HStack {
-                Spacer()
-                Button {
-                    Task { await sessionStore.loadEarlierHistoryForSelectedSession() }
-                } label: {
-                    if sessionStore.isLoadingEarlierHistory(sessionID: sessionStore.selectedSessionID) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(workbenchSecondaryText)
-                    } else {
-                        Label("加载更早消息", systemImage: "clock.arrow.circlepath")
+                if hasUnseenTailMessage {
+                    Button {
+                        hasUnseenTailMessage = false
+                        shouldFollowMessageTail = true
+                        scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
+                    } label: {
+                        Label("新消息", systemImage: "arrow.down.circle.fill")
+                            .font(.caption.weight(.semibold))
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(.trailing, 24)
+                    .padding(.bottom, 18)
+                    .accessibilityLabel("回到底部查看新消息")
                 }
-                .font(.caption.weight(.medium))
-                .buttonStyle(.borderless)
-                .foregroundStyle(workbenchSecondaryText)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(statusChipBackground, in: Capsule())
-                Spacer()
             }
-            .padding(.bottom, 4)
+            .onChange(of: sessionStore.selectedSessionID) { _, _ in
+                shouldFollowMessageTail = true
+                forceNextMessageTailScroll = true
+                hasUnseenTailMessage = false
+                isPreservingHistoryScroll = false
+            }
+            .onChange(of: messages.last?.id) { _, newID in
+                guard let newID else {
+                    return
+                }
+                if forceNextMessageTailScroll {
+                    // 首屏/切换会话：List 拿到首页数据后无动画贴底，并在下一拍补一次，
+                    // 覆盖首次布局时机，确保落在真正的底部而不是空白区。
+                    forceNextMessageTailScroll = false
+                    hasUnseenTailMessage = false
+                    shouldFollowMessageTail = true
+                    proxy.scrollTo(newID, anchor: .bottom)
+                    Task { @MainActor in
+                        await Task.yield()
+                        proxy.scrollTo(newID, anchor: .bottom)
+                    }
+                    return
+                }
+                scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
+            }
+            .onChange(of: messages.last?.renderFingerprint) { _, _ in
+                // 流式增量会高频改写最后一条内容；无动画直接定位，跟随输出但不卡。
+                scrollToMessageTail(messages: messages, proxy: proxy, animated: false)
+            }
         }
+    }
+
+    private func loadEarlierRow(proxy: ScrollViewProxy) -> some View {
+        HStack {
+            Spacer()
+            Button {
+                let sessionID = sessionStore.selectedSessionID
+                // prepend 后把原来最早的一条滚回顶部，保住用户当前阅读位置。
+                let anchorID = conversationStore.messages(for: sessionID).first?.id
+                Task { @MainActor in
+                    await loadEarlierHistory(preserving: anchorID, sessionID: sessionID, proxy: proxy)
+                }
+            } label: {
+                if sessionStore.isLoadingEarlierHistory(sessionID: sessionStore.selectedSessionID) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(workbenchSecondaryText)
+                } else {
+                    Label("加载更早消息", systemImage: "clock.arrow.circlepath")
+                }
+            }
+            .font(.caption.weight(.medium))
+            .buttonStyle(.borderless)
+            .foregroundStyle(workbenchSecondaryText)
+            .disabled(sessionStore.isLoadingEarlierHistory(sessionID: sessionStore.selectedSessionID))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(statusChipBackground, in: Capsule())
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func isNearBottom(_ geometry: ScrollGeometry) -> Bool {
+        // 距底部多远用滚动几何直接算，不依赖某个具体行是否还被实例化。
+        let distanceFromBottom = geometry.contentSize.height - geometry.visibleRect.maxY
+        return distanceFromBottom <= messageTailFollowThreshold
     }
 
     private var emptyState: some View {
@@ -270,7 +287,10 @@ struct ConversationTimelineView: View {
     }
 
     private func scrollToMessageTail(messages: [ConversationMessage], proxy: ScrollViewProxy, animated: Bool) {
-        guard !messages.isEmpty else {
+        guard let lastID = messages.last?.id else {
+            return
+        }
+        guard !isPreservingHistoryScroll else {
             return
         }
         guard shouldFollowMessageTail || forceNextMessageTailScroll else {
@@ -281,19 +301,47 @@ struct ConversationTimelineView: View {
         forceNextMessageTailScroll = false
         if animated {
             withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo(messageTailAnchorID, anchor: .bottom)
+                proxy.scrollTo(lastID, anchor: .bottom)
             }
         } else {
-            proxy.scrollTo(messageTailAnchorID, anchor: .bottom)
+            proxy.scrollTo(lastID, anchor: .bottom)
         }
     }
-}
 
-private struct MessageTailOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+    @MainActor
+    private func loadEarlierHistory(
+        preserving anchorID: UUID?,
+        sessionID: SessionID?,
+        proxy: ScrollViewProxy
+    ) async {
+        guard !isPreservingHistoryScroll else {
+            return
+        }
+        // 加载更早是向上 prepend，期间屏蔽尾部跟随，避免阅读位置被打断。
+        isPreservingHistoryScroll = true
+        shouldFollowMessageTail = false
+        forceNextMessageTailScroll = false
+        hasUnseenTailMessage = false
+        defer { isPreservingHistoryScroll = false }
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        await sessionStore.loadEarlierHistoryForSelectedSession()
+        guard sessionStore.selectedSessionID == sessionID, let anchorID else {
+            return
+        }
+        await Task.yield()
+        restoreHistoryAnchor(anchorID, proxy: proxy)
+    }
+
+    private func restoreHistoryAnchor(_ anchorID: UUID, proxy: ScrollViewProxy) {
+        let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
+        guard messages.contains(where: { $0.id == anchorID }) else {
+            return
+        }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(anchorID, anchor: .top)
+        }
     }
 }
 

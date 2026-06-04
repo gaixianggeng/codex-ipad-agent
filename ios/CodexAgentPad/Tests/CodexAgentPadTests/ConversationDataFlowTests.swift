@@ -263,6 +263,62 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.revision, 1)
     }
 
+    func testDirectAppServerHistoryDeduplicatesLiveCompletedAssistantItem() {
+        let store = ConversationStore()
+        let sessionID = "thread_direct_dedup"
+        let turnID = "turn_direct_dedup"
+        let itemID = "assistant_direct_dedup"
+        let stableID = "appserver:\(turnID):\(itemID)"
+        let answer = "有。\n\n程序员结婚后第一次吵架。"
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: sessionID,
+            turnID: turnID,
+            itemID: itemID,
+            messageID: stableID,
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: nil
+        )
+
+        store.completeMessage(
+            AgentMessage(
+                id: stableID,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: itemID,
+                role: .assistant,
+                content: answer,
+                createdAt: Date(timeIntervalSince1970: 20),
+                seq: 1,
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: metadata,
+            fallbackSessionID: sessionID
+        )
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: itemID,
+                role: "assistant",
+                content: answer,
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: itemID,
+                revision: 1,
+                sendStatus: .confirmed
+            )
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.stableID, stableID)
+        XCTAssertEqual(messages.first?.turnID, turnID)
+        XCTAssertEqual(messages.first?.itemID, itemID)
+        XCTAssertEqual(messages.first?.content, answer)
+    }
+
     func testLegacyHistoryDeduplicatesClientMessageEcho() {
         let store = ConversationStore()
         let sessionID = "sess_client_echo_legacy_history"
@@ -2298,6 +2354,18 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(components?.queryItems?.first { $0.name == "after_seq" }?.value, "42")
     }
 
+    func testWebSocketMessageLimitAllowsLargeAppServerFrames() throws {
+        let task = URLSession.shared.webSocketTask(with: try XCTUnwrap(URL(string: "ws://127.0.0.1:9/ws")))
+        defer {
+            task.cancel(with: .goingAway, reason: nil)
+        }
+
+        WebSocketMessageLimits.apply(to: task)
+
+        XCTAssertEqual(task.maximumMessageSize, WebSocketMessageLimits.maximumInboundMessageBytes)
+        XCTAssertGreaterThanOrEqual(WebSocketMessageLimits.maximumInboundMessageBytes, 64 * 1024 * 1024)
+    }
+
     func testWebSocketConnectionAsyncStreamParsesAgentEvents() async throws {
         let connection = WebSocketConnection()
         let events = await connection.events()
@@ -3648,6 +3716,89 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
+    func testCodexAppServerSessionRuntimeReconnectsAfterTransportReceiveFailure() async throws {
+        let project = AgentProject(id: "proj_direct_reconnect", name: "Direct Reconnect", path: "/tmp/direct-reconnect")
+        let transportPool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transportPool.make() },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(endpoint: "http://127.0.0.1:8787", runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "",
+                resumeID: "",
+                title: "",
+                cols: 120,
+                rows: 32,
+                clientMessageID: "client_reconnect_create"
+            ))
+        }
+
+        let firstTransport = try await waitForFakeAppServerTransport(in: transportPool, index: 0)
+        let initializeMessages = try await waitForFakeAppServerMessages(firstTransport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        firstTransport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(firstTransport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        firstTransport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_reconnect","sessionId":"thr_reconnect","preview":"可重连会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-reconnect","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"直连重连","turns":[]}}}"#)
+
+        let created = try await createTask.value
+        XCTAssertEqual(created.session.id, "thr_reconnect")
+        let isReadyAfterCreate = await runtime.hasReadyConnectionForTesting()
+        XCTAssertTrue(isReadyAfterCreate)
+
+        firstTransport.failReceive()
+        try await waitForRuntimeConnectionToBecomeUnavailable(runtime)
+
+        let reconnectTask = Task {
+            try await runtime.connectForEvents(sessionID: "thr_reconnect")
+        }
+        let secondTransport = try await waitForFakeAppServerTransport(in: transportPool, index: 1)
+        let reconnectInitializeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 1)
+        let reconnectInitialize = try decodeAppServerRequest(reconnectInitializeMessages[0])
+        XCTAssertEqual(reconnectInitialize.method, "initialize")
+        secondTransport.enqueue(#"{"id":\#(try jsonFragment(for: reconnectInitialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+        try await reconnectTask.value
+
+        let reconnectHandshakeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 2)
+        let initialized = try AgentAPIClient.decoder.decode(
+            CodexAppServerNotification.self,
+            from: Data(reconnectHandshakeMessages[1].utf8)
+        )
+        XCTAssertEqual(initialized.method, "initialized")
+
+        let turnTask = Task {
+            try await runtime.startTurn(
+                sessionID: "thr_reconnect",
+                prompt: "断线后继续",
+                clientMessageID: "client_reconnect_turn"
+            )
+        }
+        let turnMessages = try await waitForFakeAppServerMessages(secondTransport, count: 3)
+        let turnStart = try decodeAppServerRequest(turnMessages[2])
+        XCTAssertEqual(turnStart.method, "turn/start")
+        let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
+        XCTAssertEqual(turnParams["threadId"]?.stringValue, "thr_reconnect")
+        XCTAssertEqual(turnParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(turnParams["clientUserMessageId"]?.stringValue, "client_reconnect_turn")
+        secondTransport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_reconnect","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490202,"completedAt":null,"durationMs":null}}}"#)
+
+        let turnID = try await turnTask.value
+        XCTAssertEqual(turnID, "turn_reconnect")
+        let firstSentMessages = await firstTransport.sentMessages()
+        let secondSentMessages = await secondTransport.sentMessages()
+        XCTAssertEqual(firstSentMessages.count, 3)
+        XCTAssertEqual(secondSentMessages.count, 3)
+    }
+
     func testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion() async throws {
         let project = AgentProject(id: "proj_store_direct", name: "Store Direct", path: "/tmp/store-direct")
         let config = makeDirectAppServerConfig(project: project)
@@ -3736,6 +3887,71 @@ extension ConversationDataFlowTests {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertNil(store.selectedForegroundActivity)
+    }
+
+    func testDirectIdleHistorySessionSendsThroughResumePath() async throws {
+        let project = AgentProject(id: "proj_direct_history", name: "Direct History", path: "/tmp/direct-history")
+        let config = makeDirectAppServerConfig(project: project)
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { config }
+        )
+        let client = CodexAppServerSessionAPIClient(endpoint: "http://127.0.0.1:8787", runtime: runtime)
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { CodexAppServerSessionWebSocketClient(runtime: runtime) },
+            webSocketReconnectDelayNanoseconds: { _ in 1_000_000 }
+        )
+
+        let refreshTask = Task { await store.refreshAll(autoAttach: false) }
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let listRequest = try decodeAppServerRequest(listMessages[2])
+        XCTAssertEqual(listRequest.method, "thread/list")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
+        await refreshTask.value
+
+        let historySession = try XCTUnwrap(store.filteredSessions.first)
+        XCTAssertEqual(historySession.id, "thr_idle_history")
+        XCTAssertEqual(historySession.status, "history")
+        XCTAssertFalse(historySession.isRunning)
+
+        let selectTask = Task { await store.selectSession(historySession) }
+        let historyReadMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let historyRead = try decodeAppServerRequest(historyReadMessages[3])
+        XCTAssertEqual(historyRead.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: historyRead.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
+        await selectTask.value
+
+        let sendTask = Task { await store.sendPrompt("继续排查") }
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let resumeRequest = try decodeAppServerRequest(resumeMessages[4])
+        XCTAssertEqual(resumeRequest.method, "thread/resume")
+        XCTAssertEqual(resumeRequest.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"继续排查","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let turnStart = try decodeAppServerRequest(turnMessages[5])
+        XCTAssertEqual(turnStart.method, "turn/start")
+        XCTAssertEqual(turnStart.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
+        XCTAssertEqual(turnStart.params?.objectValue?["clientUserMessageId"]?.stringValue?.isEmpty, false)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_idle_history","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490303,"completedAt":null,"durationMs":null}}}"#)
+
+        let sent = await sendTask.value
+        XCTAssertTrue(sent)
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_idle_history") {
+            $0.contains { $0.content == "已继续这个 Codex 历史会话。" }
+        }
     }
 
     func testCodexAppServerSessionRuntimeRequiresProjectForThreadList() async throws {
@@ -3926,18 +4142,26 @@ private enum MockError: Error {
     case unimplemented
 }
 
+private enum FakeCodexAppServerTransportError: LocalizedError {
+    case receiveFailed
+
+    var errorDescription: String? {
+        "fake app-server receive failed"
+    }
+}
+
 private func occurrenceCount(of needle: String, in haystack: String) -> Int {
     haystack.components(separatedBy: needle).count - 1
 }
 
 private final class FakeCodexAppServerTransport: CodexAppServerTransport {
     private let sentStore = FakeCodexAppServerSentStore()
-    private var receiveContinuation: AsyncStream<String>.Continuation?
-    private var receiveIterator: AsyncStream<String>.Iterator
+    private var receiveContinuation: AsyncThrowingStream<String, Error>.Continuation?
+    private var receiveIterator: AsyncThrowingStream<String, Error>.Iterator
 
     init() {
-        var continuation: AsyncStream<String>.Continuation?
-        let stream = AsyncStream<String> {
+        var continuation: AsyncThrowingStream<String, Error>.Continuation?
+        let stream = AsyncThrowingStream<String, Error> {
             continuation = $0
         }
         self.receiveContinuation = continuation
@@ -3951,7 +4175,7 @@ private final class FakeCodexAppServerTransport: CodexAppServerTransport {
     }
 
     func receive() async throws -> String? {
-        await receiveIterator.next()
+        try await receiveIterator.next()
     }
 
     func close() async {
@@ -3962,8 +4186,36 @@ private final class FakeCodexAppServerTransport: CodexAppServerTransport {
         receiveContinuation?.yield(text)
     }
 
+    func failReceive(_ error: Error = FakeCodexAppServerTransportError.receiveFailed) {
+        receiveContinuation?.finish(throwing: error)
+    }
+
     func sentMessages() async -> [String] {
         await sentStore.snapshot()
+    }
+}
+
+private final class FakeCodexAppServerTransportPool {
+    private let lock = NSLock()
+    private var transports: [FakeCodexAppServerTransport] = []
+
+    func make() -> CodexAppServerTransport {
+        let transport = FakeCodexAppServerTransport()
+        lock.lock()
+        transports.append(transport)
+        lock.unlock()
+        return transport
+    }
+
+    func transport(at index: Int) -> FakeCodexAppServerTransport? {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        guard transports.indices.contains(index) else {
+            return nil
+        }
+        return transports[index]
     }
 }
 
@@ -3977,6 +4229,22 @@ private actor FakeCodexAppServerSentStore {
     func snapshot() -> [String] {
         messages
     }
+}
+
+private func waitForFakeAppServerTransport(
+    in pool: FakeCodexAppServerTransportPool,
+    index: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws -> FakeCodexAppServerTransport {
+    for _ in 0..<200 {
+        if let transport = pool.transport(at: index) {
+            return transport
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("Timed out waiting for app-server transport \(index)", file: file, line: line)
+    throw MockError.unimplemented
 }
 
 private func waitForFakeAppServerMessages(
@@ -4042,6 +4310,21 @@ private func connectFakeAppServer(
         from: Data(connectedMessages[1].utf8)
     )
     XCTAssertEqual(initialized.method, "initialized")
+}
+
+private func waitForRuntimeConnectionToBecomeUnavailable(
+    _ runtime: CodexAppServerSessionRuntime,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    for _ in 0..<200 {
+        let ready = await runtime.hasReadyConnectionForTesting()
+        if !ready {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("Timed out waiting for app-server runtime connection to become unavailable", file: file, line: line)
 }
 
 private func makeDirectAppServerConfig(project: AgentProject) -> CodexAppServerConfigResponse {

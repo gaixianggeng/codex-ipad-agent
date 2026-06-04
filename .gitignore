@@ -21,5 +21,6 @@ ios/CodexAgentPad/build/
 ios/CodexAgentPad/build-test/
 
 # Logs and temporary files
+logs/
 *.log
 *.tmp
