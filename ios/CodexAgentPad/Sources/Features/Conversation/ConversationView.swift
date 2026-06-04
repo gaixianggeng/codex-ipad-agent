@@ -485,39 +485,38 @@ private struct MessageBubble: View {
 
     @ViewBuilder
     private var renderContent: some View {
-        let plan = MessageRenderPlanCache.shared.plan(for: message)
-        if plan.isSinglePlainText {
-            Text(plan.segments.first?.text ?? "")
+        let tokens = themeStore.tokens(for: colorScheme)
+        let style = MarkdownStyle.make(
+            role: message.role,
+            colorScheme: colorScheme,
+            fontScale: themeStore.fontScale,
+            tokens: tokens
+        )
+        if shouldRenderMarkdown {
+            let plan = MessageRenderPlanCache.shared.plan(for: message)
+            if plan.isSinglePlainParagraph, case let .paragraph(inline) = plan.blocks.first?.kind {
+                Text(inline.plain)
+                    .font(style.bodyFont)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: style.blockSpacing) {
+                    ForEach(plan.blocks) { block in
+                        MarkdownBlockView(block: block, style: style)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            Text(message.content)
                 .font(themeStore.uiFont(.body))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(plan.segments) { segment in
-                    segmentView(segment)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    @ViewBuilder
-    private func segmentView(_ segment: MessageRenderSegment) -> some View {
-        switch segment.kind {
-        case .text:
-            Text(segment.text)
-                .font(themeStore.uiFont(.body))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case .code:
-            Text(segment.text)
-                .font(themeStore.codeFont(.body))
-                .foregroundStyle(tokens.codeText)
-                .textSelection(.enabled)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(codeBlockBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
+    private var shouldRenderMarkdown: Bool {
+        message.role == .assistant && message.kind == .message
     }
 
     private var bubbleAlignment: Alignment {
@@ -540,14 +539,6 @@ private struct MessageBubble: View {
 
     private var foreground: Color {
         themeStore.tokens(for: colorScheme).primaryText
-    }
-
-    private var codeBlockBackground: Color {
-        themeStore.tokens(for: colorScheme).codeBlock
-    }
-
-    private var tokens: ThemeTokens {
-        themeStore.tokens(for: colorScheme)
     }
 }
 

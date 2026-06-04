@@ -228,6 +228,7 @@ final class ThemeStore: ObservableObject {
         static let themeVersion = "appearance.theme.version"
     }
 
+    static let fontScaleStorageKey = Keys.fontScale
     static let minimumFontScale = 0.85
     static let maximumFontScale = 1.35
     static let defaultFontScale = 1.0

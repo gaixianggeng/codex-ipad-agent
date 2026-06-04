@@ -55,9 +55,71 @@ final class ConversationSnapshotTests: XCTestCase {
             .frame(width: 1024, height: 768)
     }
 
+    private func makeRichMarkdownConversation() -> some View {
+        let sessionID = "snapshot_markdown_session"
+        let conversationStore = ConversationStore()
+        let themeStore = makeThemeStore()
+        let markdown = """
+        # Markdown 验收
+
+        这段包含 **粗体**、*斜体*、~~删除线~~、`inline code` 和 [安全链接](https://example.com)。
+
+        - [x] 已完成任务
+        - 普通列表项
+        - [ ] 待处理任务
+
+        > 引用内容保持克制缩进，不应该压迫主文本。
+
+        | 指标 | 数值 | 状态 |
+        |:---|---:|:---:|
+        | latency | 42 | ok |
+        | tokens | 1280 | warn |
+
+        ```swift
+        let message = "hello markdown"
+        print(message)
+        ```
+        """
+
+        conversationStore.applyAssistantDelta(
+            AgentDelta(text: markdown, role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn_markdown",
+                itemID: "item_markdown",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        let sessionStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.selectedSessionID = sessionID
+
+        return ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .frame(width: 1024, height: 768)
+    }
+
     func testConversationBubbleAlignment() {
         assertSnapshot(
             of: makeSeededConversation(),
+            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+        )
+    }
+
+    func testRichMarkdownConversationRendering() {
+        assertSnapshot(
+            of: makeRichMarkdownConversation(),
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
         )
     }

@@ -13,6 +13,9 @@ packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
     from: "1.17.0"
+  swift-markdown:
+    url: https://github.com/swiftlang/swift-markdown
+    from: "0.8.0"
 targets:
   CodexAgentPad:
     type: application
@@ -21,6 +24,9 @@ targets:
       - path: Sources
     resources:
       - path: Resources
+    dependencies:
+      - package: swift-markdown
+        product: Markdown
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gaixiaotongxue.CodexAgentPad

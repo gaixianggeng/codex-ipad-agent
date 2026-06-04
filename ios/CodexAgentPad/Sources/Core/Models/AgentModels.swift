@@ -228,28 +228,19 @@ struct ConversationMessageRenderFingerprint: Hashable {
     let contentByteCount: Int
 }
 
-enum MessageRenderSegmentKind: Hashable {
-    case text
-    case code
-}
-
-struct MessageRenderSegment: Identifiable, Hashable {
-    let id: Int
-    let kind: MessageRenderSegmentKind
-    let text: String
-    let language: String?
-}
-
 struct MessageRenderPlan: Hashable {
     let messageKey: String
     let content: String
     let contentDigest: UInt64
     let contentByteCount: Int
-    let segments: [MessageRenderSegment]
-    let openCodeFenceLanguage: String?
+    let blocks: [MarkdownBlock]
+    let openTailByteOffset: Int
 
-    var isSinglePlainText: Bool {
-        segments.count == 1 && segments.first?.kind == .text
+    var isSinglePlainParagraph: Bool {
+        guard blocks.count == 1, case let .paragraph(inline) = blocks[0].kind else {
+            return false
+        }
+        return !inline.hasFormatting
     }
 }
 
@@ -291,8 +282,7 @@ final class MessageRenderPlanCache {
         if let cached = plansByMessageKey[messageKey],
            content.hasPrefix(cached.content),
            content.count >= cached.content.count {
-            let suffix = String(content.dropFirst(cached.content.count))
-            plan = extend(cached, suffix: suffix, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
+            plan = extend(cached, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
 #if DEBUG
             incrementalReuseCountForTesting += 1
 #endif
@@ -308,111 +298,59 @@ final class MessageRenderPlanCache {
 
     private func extend(
         _ cached: MessageRenderPlan,
-        suffix: String,
         content: String,
         contentDigest: UInt64,
         contentByteCount: Int
     ) -> MessageRenderPlan {
-        guard !suffix.isEmpty else {
+        guard content != cached.content else {
             return MessageRenderPlan(
                 messageKey: cached.messageKey,
                 content: content,
                 contentDigest: contentDigest,
                 contentByteCount: contentByteCount,
-                segments: cached.segments,
-                openCodeFenceLanguage: cached.openCodeFenceLanguage
+                blocks: cached.blocks,
+                openTailByteOffset: cached.openTailByteOffset
             )
         }
 
-        let parsedSuffix = parseSegments(in: suffix, startingInCodeLanguage: cached.openCodeFenceLanguage)
-        let merged = merge(cached.segments, with: parsedSuffix.segments)
+        let safeTailStart = min(cached.openTailByteOffset, contentByteCount)
+        // 只复用稳定前缀块，尾部开放块交给 swift-markdown 重算；
+        // 这样列表续行、表格分隔行、未闭合代码围栏都能在下一帧自然收敛。
+        let reusableBlocks = cached.blocks.filter { block in
+            guard let range = block.sourceByteRange else {
+                return false
+            }
+            return range.upperBound > range.lowerBound && range.upperBound <= safeTailStart
+        }
+        let tail = String(decoding: content.utf8.dropFirst(safeTailStart), as: UTF8.self)
+        let parsedTail = MarkdownParser.shared.parse(tail, baseByteOffset: safeTailStart)
+        let mergedBlocks = renumber(reusableBlocks + parsedTail.blocks)
+
         return MessageRenderPlan(
             messageKey: cached.messageKey,
             content: content,
             contentDigest: contentDigest,
             contentByteCount: contentByteCount,
-            segments: renumber(merged),
-            openCodeFenceLanguage: parsedSuffix.openCodeFenceLanguage
+            blocks: mergedBlocks,
+            openTailByteOffset: parsedTail.openTailByteOffset
         )
     }
 
     private func parse(messageKey: String, content: String, contentDigest: UInt64, contentByteCount: Int) -> MessageRenderPlan {
-        let parsed = parseSegments(in: content, startingInCodeLanguage: nil)
+        let parsed = MarkdownParser.shared.parse(content)
         return MessageRenderPlan(
             messageKey: messageKey,
             content: content,
             contentDigest: contentDigest,
             contentByteCount: contentByteCount,
-            segments: parsed.segments,
-            openCodeFenceLanguage: parsed.openCodeFenceLanguage
+            blocks: parsed.blocks,
+            openTailByteOffset: parsed.openTailByteOffset
         )
     }
 
-    private func parseSegments(
-        in content: String,
-        startingInCodeLanguage: String?
-    ) -> (segments: [MessageRenderSegment], openCodeFenceLanguage: String?) {
-        var segments: [MessageRenderSegment] = []
-        var buffer = ""
-        var codeLanguage = startingInCodeLanguage
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-
-        func flush() {
-            guard !buffer.isEmpty else {
-                return
-            }
-            segments.append(MessageRenderSegment(
-                id: segments.count,
-                kind: codeLanguage == nil ? .text : .code,
-                text: buffer,
-                language: codeLanguage
-            ))
-            buffer = ""
-        }
-
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") {
-                flush()
-                if codeLanguage == nil {
-                    let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    codeLanguage = language.isEmpty ? nil : language
-                    if codeLanguage == nil {
-                        codeLanguage = "plain"
-                    }
-                } else {
-                    codeLanguage = nil
-                }
-                continue
-            }
-
-            buffer += line
-            if index < lines.count - 1 {
-                buffer += "\n"
-            }
-        }
-        flush()
-
-        if segments.isEmpty {
-            segments.append(MessageRenderSegment(id: 0, kind: .text, text: "", language: nil))
-        }
-        return (segments, codeLanguage)
-    }
-
-    private func merge(_ prefix: [MessageRenderSegment], with suffix: [MessageRenderSegment]) -> [MessageRenderSegment] {
-        guard var last = prefix.last, let first = suffix.first else {
-            return prefix + suffix
-        }
-        guard last.kind == first.kind, last.language == first.language else {
-            return prefix + suffix
-        }
-        last = MessageRenderSegment(id: last.id, kind: last.kind, text: last.text + first.text, language: last.language)
-        return prefix.dropLast() + [last] + suffix.dropFirst()
-    }
-
-    private func renumber(_ segments: [MessageRenderSegment]) -> [MessageRenderSegment] {
-        segments.enumerated().map { index, segment in
-            MessageRenderSegment(id: index, kind: segment.kind, text: segment.text, language: segment.language)
+    private func renumber(_ blocks: [MarkdownBlock]) -> [MarkdownBlock] {
+        blocks.enumerated().map { index, block in
+            MarkdownBlock(id: index, sourceByteRange: block.sourceByteRange, kind: block.kind)
         }
     }
 

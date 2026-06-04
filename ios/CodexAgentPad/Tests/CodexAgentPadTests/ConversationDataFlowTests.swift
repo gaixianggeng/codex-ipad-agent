@@ -85,16 +85,25 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         let first = cache.plan(for: message)
-        XCTAssertEqual(first.segments.count, 2)
-        XCTAssertEqual(first.openCodeFenceLanguage, "swift")
+        XCTAssertTrue(first.blocks.contains { block in
+            if case let .codeBlock(language, code) = block.kind {
+                return language == "swift" && code.contains("let a = 1")
+            }
+            return false
+        })
+        XCTAssertEqual(first.openTailByteOffset, "先解释一下\n".utf8.count)
 
         message.content += "let b = 2\n```"
         let second = cache.plan(for: message)
 
         XCTAssertEqual(cache.incrementalReuseCountForTesting, 1)
         XCTAssertEqual(second.messageKey, "assistant:render")
-        XCTAssertNil(second.openCodeFenceLanguage)
-        XCTAssertTrue(second.segments.contains { $0.kind == .code && $0.text.contains("let b = 2") })
+        XCTAssertTrue(second.blocks.contains { block in
+            if case let .codeBlock(language, code) = block.kind {
+                return language == "swift" && code.contains("let b = 2")
+            }
+            return false
+        })
     }
 
     func testThemeSwitchDuringStreamingDoesNotRebuildConversationData() throws {
@@ -136,7 +145,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(afterMessages.map(\.stableID), beforeMessages.map(\.stableID))
         XCTAssertEqual(try XCTUnwrap(afterMessages.first).renderFingerprint, beforePlan)
         XCTAssertEqual(conversationStore.lastSeenSeq(for: sessionID), 12)
-        XCTAssertEqual(MessageRenderPlanCache(limit: 4).plan(for: try XCTUnwrap(afterMessages.first)).segments, renderPlan.segments)
+        XCTAssertEqual(MessageRenderPlanCache(limit: 4).plan(for: try XCTUnwrap(afterMessages.first)).blocks, renderPlan.blocks)
     }
 
     func testEventReducerActorProducesBatchedStoreMutations() async {
