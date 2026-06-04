@@ -4310,9 +4310,9 @@ extension ConversationDataFlowTests {
     }
 
     func testStartTurnResumesThreadOnConnectionBeforeFirstTurnStart() async throws {
-        // idle 历史 thread 被映射成 "running" 后会走直连 turn/start 路径。若不先在当前 gateway 连接上
-        // thread/resume，app-server 不会回推这个 thread 的 turn 事件——用户看不到回复，active turn 角标也
-        // 会一直挂着。这里锁定修复：首次 turn/start 前必须补一次 thread/resume，且同一连接内不再重复 resume。
+        // idle 历史 thread 会进入 runtime 的上下文缓存。若 startTurn 不先在当前 gateway 连接上
+        // thread/resume，app-server 不会回推这个 thread 的 turn 事件。这里锁定修复：首次
+        // turn/start 前必须补一次 thread/resume，且同一连接内不再重复 resume。
         let project = AgentProject(id: "proj_resume_guard", name: "Resume Guard", path: "/tmp/resume-guard")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -4336,7 +4336,7 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[{"id":"thr_idle_guard","sessionId":"thr_idle_guard","preview":"上次的会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-guard","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"上次的会话","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
         let page = try await pageTask.value
         XCTAssertEqual(page.sessions.map(\.id), ["thr_idle_guard"])
-        XCTAssertTrue(try XCTUnwrap(page.sessions.first).isRunning, "idle thread 当前会映射成 running，正是会触发直连发送路径的状态")
+        XCTAssertFalse(try XCTUnwrap(page.sessions.first).isRunning, "idle 历史 thread 在列表语义上应保持 history，但 runtime startTurn 仍需要先 resume")
 
         // 第一次直连发送：startTurn 必须先 thread/resume，再 turn/start。
         let firstTurnTask = Task {
