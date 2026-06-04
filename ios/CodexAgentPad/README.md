@@ -31,18 +31,16 @@ Mac agentd compatibility runtime
 
 - Endpoint，例如 `http://100.127.16.9:8787`
 - Token，也就是 `AGENTD_TOKEN`
-- 模式：`兼容模式` 走旧 `/api/sessions*`，`直连模式` 走 Codex app-server JSON-RPC
 
-Token 存入 Keychain，Endpoint 和模式存入 UserDefaults。默认先保持兼容模式，启动 loopback app-server gateway 后再切到直连模式。
+Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端当前固定使用直连模式，旧版本保存过的兼容模式会在启动时自动迁移为直连模式。
 
 direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。Mac 侧如果 app-server WS upstream 启用了 capability token，由 `agentd` 通过 `AGENTD_APP_SERVER_WS_TOKEN_FILE` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
 
-模式切换：
+直连要求：
 
 1. 直连模式需要 Mac 先运行 `codex app-server --listen ws://127.0.0.1:4222`，并让 `agentd` 配置 `AGENTD_APP_SERVER_LISTEN`。
-2. 设置页选择 `直连模式` 后点击“测试连接”，会校验 `/api/app-server/config` 和 gateway 可用性。
-3. 点击“保存并加载”会断开旧 WebSocket，重新按当前模式创建 API client 和 WebSocket client。
-4. 如果 direct upstream 不稳定，切回 `兼容模式` 即可回滚到 `/api/sessions*`。
+2. 设置页点击“测试连接”，会校验 `/api/app-server/config` 和 gateway 可用性。
+3. 点击“保存并加载”会断开旧 WebSocket，重新创建 direct API client 和 WebSocket client。
 
 ## 实现
 
@@ -121,7 +119,7 @@ xcodebuild \
 - 能通过 app-server notification 接收 assistant delta、completed item、日志、diff、turn completed。
 - 能发送普通输入、Ctrl-C/interrupt 和审批响应。
 - 能停止 running session。
-- 能从设置页切换 direct / 兼容模式，保存后不复用旧 WebSocket。
+- 设置页固定使用 direct 模式，保存后不复用旧 WebSocket。
 - 能在设置页切换外观模式、主题预设、UI 字体、代码字体和字体大小，主工作台立即生效并在重启后保持。
 
 外观验收：

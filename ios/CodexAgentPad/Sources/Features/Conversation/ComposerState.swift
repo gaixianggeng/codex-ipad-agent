@@ -1,15 +1,20 @@
 import Foundation
 
 struct ComposerState {
-    var draft = ""
+    var draft = "" {
+        didSet {
+            hasNonWhitespaceDraft = Self.containsNonWhitespace(draft)
+        }
+    }
     var isExpanded = false
+    private(set) var hasNonWhitespaceDraft = false
 
     var isEmpty: Bool {
         draft.isEmpty
     }
 
     func canSubmit(isLoading: Bool) -> Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isLoading
+        hasNonWhitespaceDraft && !isLoading
     }
 
     mutating func takeDraftForSubmit(isLoading: Bool) -> String? {
@@ -27,5 +32,13 @@ struct ComposerState {
 
     mutating func toggleExpanded() {
         isExpanded.toggle()
+    }
+
+    private static func containsNonWhitespace(_ text: String) -> Bool {
+        // 输入热路径只需要知道“有没有有效字符”；逐字扫描可以在首个非空白处停止，
+        // 避免每次按键都通过 trimmingCharacters 创建新字符串。
+        text.unicodeScalars.contains { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar)
+        }
     }
 }

@@ -18,6 +18,7 @@ struct RootView: View {
                 mainLayout
             } else {
                 SettingsView(isInitialSetup: true)
+                    .environment(\.themeSystemColorScheme, colorScheme)
             }
         }
         .task {
@@ -25,6 +26,7 @@ struct RootView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(isInitialSetup: false)
+                .environment(\.themeSystemColorScheme, colorScheme)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else {
@@ -34,6 +36,7 @@ struct RootView: View {
                 await sessionStore.resumeFromForeground()
             }
         }
+        .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
         .tint(tokens.accent)
         .background(tokens.background.ignoresSafeArea())

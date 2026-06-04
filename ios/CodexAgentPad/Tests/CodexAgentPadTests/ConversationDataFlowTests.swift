@@ -227,6 +227,24 @@ final class ConversationDataFlowTests: XCTestCase {
         withExtendedLifetime((conversationCancellable, logCancellable)) {}
     }
 
+    func testComposerStateTracksSubmitEligibilityWithoutTrimmingDraft() {
+        var composerState = ComposerState()
+
+        composerState.draft = " \n\t "
+        XCTAssertFalse(composerState.canSubmit(isLoading: false))
+
+        composerState.draft = " \n\t 执行一次诊断"
+        XCTAssertTrue(composerState.canSubmit(isLoading: false))
+        XCTAssertFalse(composerState.canSubmit(isLoading: true))
+
+        _ = composerState.takeDraftForSubmit(isLoading: false)
+        XCTAssertEqual(composerState.draft, "")
+        XCTAssertFalse(composerState.canSubmit(isLoading: false))
+
+        composerState.restore("继续检查输入卡顿")
+        XCTAssertTrue(composerState.canSubmit(isLoading: false))
+    }
+
     func testHistoryMergeDeduplicatesLocalEchoByRoleAndContent() {
         let store = ConversationStore()
         let sessionID = "sess_data_flow"

@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -11,11 +12,12 @@ struct SettingsView: View {
 
     @State private var endpoint = ""
     @State private var token = ""
-    @State private var connectionMode: ConnectionMode = .compat
     @State private var localError: String?
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
+        let systemColorScheme = themeSystemColorScheme ?? colorScheme
+        let resolvedColorScheme = themeStore.resolvedColorScheme(for: systemColorScheme)
+        let tokens = themeStore.tokens(for: systemColorScheme)
 
         NavigationStack {
             Form {
@@ -27,21 +29,15 @@ struct SettingsView: View {
                     SecureField("agentd Token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Picker("模式", selection: $connectionMode) {
-                        ForEach(ConnectionMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
                 } header: {
                     Text("连接")
                 } footer: {
-                    Text("直连模式使用 Codex app-server JSON-RPC；兼容模式保留旧 REST/WS 会话接口。MVP 只建议在本机或 Tailscale 网络中使用。")
+                    Text("iPad 客户端固定使用 Codex app-server JSON-RPC 直连链路。MVP 只建议在本机或 Tailscale 网络中使用。")
                 }
 
                 Section {
                     Button {
-                        Task { await appStore.testConnection(endpoint: endpoint, token: token, connectionMode: connectionMode) }
+                        Task { await appStore.testConnection(endpoint: endpoint, token: token, connectionMode: .direct) }
                     } label: {
                         Label("测试连接", systemImage: "bolt.horizontal.circle")
                     }
@@ -95,10 +91,11 @@ struct SettingsView: View {
             .onAppear {
                 endpoint = appStore.endpoint
                 token = appStore.token
-                connectionMode = appStore.connectionMode
             }
             .tint(tokens.accent)
-            .preferredColorScheme(themeStore.preferredColorScheme)
+            // 设置页是 sheet 内的独立 presentation；系统模式下也显式解析成当前系统深/浅色，避免从浅色切回默认时停在旧环境。
+            .preferredColorScheme(resolvedColorScheme)
+            .environment(\.colorScheme, resolvedColorScheme)
         }
     }
 
@@ -117,7 +114,7 @@ struct SettingsView: View {
 
     private func save() {
         do {
-            try appStore.save(endpoint: endpoint, token: token, connectionMode: connectionMode)
+            try appStore.save(endpoint: endpoint, token: token, connectionMode: .direct)
             sessionStore.resetConnectionForSettingsChange()
             localError = nil
             Task {
@@ -133,10 +130,13 @@ struct SettingsView: View {
 }
 
 struct AppearanceView: View {
-    @Environment(\.colorScheme) private var systemColorScheme
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
+        let systemColorScheme = themeSystemColorScheme ?? colorScheme
+        let resolvedColorScheme = themeStore.resolvedColorScheme(for: systemColorScheme)
         let tokens = themeStore.tokens(for: systemColorScheme)
 
         Form {
@@ -239,7 +239,8 @@ struct AppearanceView: View {
             }
         }
         .navigationTitle("外观")
-        .preferredColorScheme(themeStore.preferredColorScheme)
+        .preferredColorScheme(resolvedColorScheme)
+        .environment(\.colorScheme, resolvedColorScheme)
         .tint(tokens.accent)
     }
 
@@ -359,11 +360,12 @@ private struct ThemePresetRow: View {
 }
 
 private struct AppearanceConversationPreview: View {
-    @Environment(\.colorScheme) private var systemColorScheme
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        let tokens = themeStore.tokens(for: systemColorScheme)
+        let tokens = themeStore.tokens(for: themeSystemColorScheme ?? colorScheme)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -402,7 +404,7 @@ private struct AppearanceConversationPreview: View {
                 }
                 .font(themeStore.uiFont(size: 13, weight: .medium))
 
-                Text("let theme = ThemePreset.gruvbox")
+                Text("let theme = ThemePreset.\(themeStore.preset.rawValue)")
                     .font(themeStore.codeFont(size: 13))
                     .foregroundStyle(tokens.codeText)
                     .padding(8)

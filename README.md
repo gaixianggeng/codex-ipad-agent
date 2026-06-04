@@ -114,9 +114,8 @@ App 首次启动会进入设置页：
 
 - Endpoint：例如 `http://127.0.0.1:8787` 或 `http://100.127.16.9:8787`
 - Token：`AGENTD_TOKEN`
-- 模式：`兼容模式` 走旧 `/api/sessions*`；`直连模式` 走 `/api/app-server/ws` + app-server JSON-RPC
 
-Token 使用 iOS Keychain 保存，Endpoint 和模式使用 UserDefaults 保存。MVP 为了支持本机/Tailscale HTTP，App 已开启 ATS HTTP 例外；不要把 agentd 暴露到公网。
+Token 使用 iOS Keychain 保存，Endpoint 使用 UserDefaults 保存。iPad App 固定走 `/api/app-server/ws` + app-server JSON-RPC 直连链路。MVP 为了支持本机/Tailscale HTTP，App 已开启 ATS HTTP 例外；不要把 agentd 暴露到公网。
 
 App 端设计边界：
 
@@ -145,9 +144,9 @@ export AGENTD_SCAN_ROOTS="/Users/gaixiaotongxue/code"
 http://127.0.0.1:8787
 ```
 
-页面里输入 `AGENTD_TOKEN` 后连接。Web/PWA 当前走兼容 API；原生 iPad App 可以在设置页切换 `兼容模式` 和 `直连模式`。
+页面里输入 `AGENTD_TOKEN` 后连接。Web/PWA 当前走兼容 API；原生 iPad App 固定走 direct app-server 链路。
 
-当前原生 iPad App 默认先使用兼容模式，确保只启动 `agentd` 也能工作。启用 direct 模式前，先按下面的方式启动 loopback `codex app-server` 和 `agentd` gateway，然后在 App 设置页把模式切到 `直连模式`，点击“测试连接”和“保存并加载”。
+当前原生 iPad App 需要先启动 loopback `codex app-server` 和 `agentd` gateway，然后在 App 设置页点击“测试连接”和“保存并加载”。
 
 注意：原生 iPad App 会在 HTTP 和 WebSocket 握手里使用 `Authorization: Bearer <token>`。浏览器 WebSocket 不能设置 Authorization header；如果仍要使用内置 Web/PWA 调试入口，需要显式开启兼容模式：
 
@@ -176,22 +175,14 @@ AGENTD_APP_SERVER_WS_TOKEN_FILE=/tmp/codex-app-server-ws-token \
 
 `AGENTD_TOKEN` 只用于 iPad/Web 访问 `agentd`；`AGENTD_APP_SERVER_WS_TOKEN_FILE` 只用于 `agentd` 访问本机 app-server upstream，二者不要复用。
 
-### 2.1 direct / 兼容模式切换
+### 2.1 iPad direct 启动
 
-切到 direct 模式：
+iPad direct 模式启动步骤：
 
 1. 启动 `codex app-server --listen ws://127.0.0.1:4222`，建议启用 capability token。
 2. 用 `AGENTD_APP_SERVER_LISTEN` 和 `AGENTD_APP_SERVER_WS_TOKEN_FILE` 启动 `agentd`。
-3. iPad App 设置页选择 `直连模式`。
-4. 点击“测试连接”，确认能读取 `/api/app-server/config` 且 gateway 可用。
-5. 点击“保存并加载”，会断开旧 WebSocket 并按 direct 模式重新拉取项目和会话。
-
-回滚到兼容模式：
-
-1. iPad App 设置页选择 `兼容模式`。
-2. 点击“保存并加载”。
-3. 可以停止独立 `codex app-server` upstream；`agentd` 会继续使用旧 `/api/sessions*` 和 `/api/sessions/{id}/ws`。
-4. Web/PWA 始终优先使用兼容模式，除非后续单独做浏览器 HTTPS/WSS 网关。
+3. iPad App 设置页点击“测试连接”，确认能读取 `/api/app-server/config` 且 gateway 可用。
+4. 点击“保存并加载”，会断开旧 WebSocket 并按 direct 模式重新拉取项目和会话。
 
 ### 3. Tailscale 启动
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
@@ -15,22 +16,15 @@ struct ComposerView: View {
             }
             runtimeChips
             pendingApprovalAction
-            TextEditor(text: $composerState.draft)
-                .font(themeStore.uiFont(.body))
-                .foregroundStyle(tokens.primaryText)
+            ComposerTextView(
+                text: $composerState.draft,
+                font: composerUIFont,
+                textColor: UIColor(tokens.primaryText),
+                tintColor: UIColor(tokens.accent),
+                onSubmit: { submitDraft() }
+            )
                 .frame(minHeight: composerMinHeight, maxHeight: composerMaxHeight)
-                .onKeyPress { keyPress in
-                    guard keyPress.key == .return else {
-                        return .ignored
-                    }
-                    // 普通回车交给 TextEditor 换行；只有 Command + 回车才提交消息。
-                    guard keyPress.modifiers.contains(.command) else {
-                        return .ignored
-                    }
-                    return submitDraft() ? .handled : .ignored
-                }
                 .padding(10)
-                .scrollContentBackground(.hidden)
                 .background(tokens.elevatedSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
@@ -209,6 +203,24 @@ struct ComposerView: View {
         composerState.isExpanded ? 260 : 130
     }
 
+    private var composerUIFont: UIFont {
+        let size = themeStore.scaledFontSize(17)
+        let base = UIFont.systemFont(ofSize: size)
+        let design: UIFontDescriptor.SystemDesign
+        switch themeStore.uiFontPreset {
+        case .system:
+            design = .default
+        case .rounded:
+            design = .rounded
+        case .serif:
+            design = .serif
+        }
+        guard let descriptor = base.fontDescriptor.withDesign(design) else {
+            return base
+        }
+        return UIFont(descriptor: descriptor, size: size)
+    }
+
     private func composerActivity(_ activity: SessionForegroundActivity) -> some View {
         HStack(spacing: 7) {
             if activity.showsSpinner {
@@ -226,6 +238,110 @@ struct ComposerView: View {
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
         .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+    }
+}
+
+private struct ComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let font: UIFont
+    let textColor: UIColor
+    let tintColor: UIColor
+    let onSubmit: () -> Bool
+
+    func makeUIView(context: Context) -> CommandSubmitTextView {
+        let textView = CommandSubmitTextView()
+        textView.delegate = context.coordinator
+        textView.onCommandSubmit = onSubmit
+        textView.backgroundColor = .clear
+        textView.font = font
+        textView.textColor = textColor
+        textView.tintColor = tintColor
+        textView.isScrollEnabled = true
+        textView.alwaysBounceVertical = false
+        textView.showsVerticalScrollIndicator = true
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.keyboardDismissMode = .interactive
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.autocorrectionType = .no
+        textView.spellCheckingType = .no
+        textView.accessibilityLabel = "输入任务或后续指令"
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+
+    func updateUIView(_ uiView: CommandSubmitTextView, context: Context) {
+        context.coordinator.parent = self
+        uiView.onCommandSubmit = onSubmit
+
+        // 字体/颜色只在真正变化时赋值：UITextView 的 font setter 会让 TextKit 对整段文本重新排版，
+        // 打字时（尤其是中文 marked text 合成期间）每次按键都重设会打断输入法合成并造成可感知卡顿。
+        if uiView.font != font {
+            uiView.font = font
+        }
+        if uiView.textColor != textColor {
+            uiView.textColor = textColor
+        }
+        if uiView.tintColor != tintColor {
+            uiView.tintColor = tintColor
+        }
+
+        guard uiView.text != text else {
+            return
+        }
+
+        // 外部清空/恢复草稿时才同步 UIKit 文本；用户正常输入由 delegate 单向写回，
+        // 避免中文 marked text 和光标位置在 SwiftUI 重算时被反复重置。
+        let selectedRange = uiView.selectedRange
+        uiView.text = text
+        uiView.selectedRange = clampedRange(selectedRange, in: uiView.text)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    private func clampedRange(_ range: NSRange, in text: String) -> NSRange {
+        let length = (text as NSString).length
+        let location = min(range.location, length)
+        let remaining = max(0, length - location)
+        return NSRange(location: location, length: min(range.length, remaining))
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ComposerTextView
+
+        init(_ parent: ComposerTextView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard parent.text != textView.text else {
+                return
+            }
+            parent.text = textView.text
+        }
+    }
+}
+
+private final class CommandSubmitTextView: UITextView {
+    var onCommandSubmit: (() -> Bool)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        let submit = UIKeyCommand(
+            input: "\r",
+            modifierFlags: .command,
+            action: #selector(handleCommandReturn),
+            discoverabilityTitle: "发送"
+        )
+        return (super.keyCommands ?? []) + [submit]
+    }
+
+    @objc private func handleCommandReturn() {
+        // 普通回车仍由 UITextView 插入换行；只有 Command + Return 走发送。
+        _ = onCommandSubmit?()
     }
 }
 

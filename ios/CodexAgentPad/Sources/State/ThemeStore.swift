@@ -46,6 +46,17 @@ enum ThemeResolvedScheme: String {
     case dark
 }
 
+private struct ThemeSystemColorSchemeKey: EnvironmentKey {
+    static let defaultValue: ColorScheme? = nil
+}
+
+extension EnvironmentValues {
+    var themeSystemColorScheme: ColorScheme? {
+        get { self[ThemeSystemColorSchemeKey.self] }
+        set { self[ThemeSystemColorSchemeKey.self] = newValue }
+    }
+}
+
 enum ThemePreset: String, CaseIterable, Identifiable {
     case codex
     case xcode
@@ -239,6 +250,16 @@ final class ThemeStore: ObservableObject {
 
     var preferredColorScheme: ColorScheme? {
         mode.preferredColorScheme
+    }
+
+    func resolvedColorScheme(for systemColorScheme: ColorScheme) -> ColorScheme {
+        // 系统模式不能直接依赖已打开 sheet 里的 colorScheme；它可能还停留在上一次手动浅/深色。
+        switch resolvedScheme(for: systemColorScheme) {
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
     }
 
     func setFontScale(_ value: Double) {

@@ -98,6 +98,17 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(restored.fontScale, ThemeStore.defaultFontScale)
     }
 
+    func testResetResolvesToCurrentSystemColorScheme() {
+        let store = ThemeStore(defaults: defaults)
+        store.mode = .light
+
+        store.reset()
+
+        XCTAssertNil(store.preferredColorScheme)
+        XCTAssertEqual(store.resolvedColorScheme(for: .dark), .dark)
+        XCTAssertEqual(store.tokens(for: .dark).resolvedScheme, .dark)
+    }
+
     func testTokenSelectionUsesPresetAndResolvedScheme() {
         let store = ThemeStore(defaults: defaults)
         store.mode = .system

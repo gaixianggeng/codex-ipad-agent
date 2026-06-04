@@ -33,8 +33,9 @@ final class AppStore: ObservableObject {
     init() {
         self.endpoint = UserDefaults.standard.string(forKey: endpointKey) ?? "http://127.0.0.1:8787"
         self.token = tokenStore.load()
-        self.connectionMode = UserDefaults.standard.string(forKey: connectionModeKey)
-            .flatMap(ConnectionMode.init(rawValue:)) ?? .compat
+        // 当前 iPad 客户端只暴露直连 app-server 链路；旧版本写入的 compat 配置在启动时迁移掉。
+        self.connectionMode = .direct
+        UserDefaults.standard.set(ConnectionMode.direct.rawValue, forKey: connectionModeKey)
     }
 
     var isConfigured: Bool {
@@ -89,7 +90,7 @@ final class AppStore: ObservableObject {
     }
 
     func save(endpoint: String, token: String) throws {
-        try save(endpoint: endpoint, token: token, connectionMode: connectionMode)
+        try save(endpoint: endpoint, token: token, connectionMode: .direct)
     }
 
     func testConnection(endpoint: String, token: String, connectionMode: ConnectionMode) async {
@@ -112,7 +113,7 @@ final class AppStore: ObservableObject {
     }
 
     func testConnection(endpoint: String, token: String) async {
-        await testConnection(endpoint: endpoint, token: token, connectionMode: connectionMode)
+        await testConnection(endpoint: endpoint, token: token, connectionMode: .direct)
     }
 
     private func runtime(endpoint: String, token: String) -> CodexAppServerSessionRuntime {
