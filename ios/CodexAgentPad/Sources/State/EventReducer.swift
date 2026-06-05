@@ -18,7 +18,7 @@ struct EventReducerOutput {
 enum EventReducerMessageMutation {
     case assistantDelta(AgentDelta, AgentEventMetadata, SessionID)
     case completed(AgentMessage, AgentEventMetadata, SessionID)
-    case system(String, SessionID, MessageKind)
+    case system(String, SessionID, MessageKind, AgentEventMetadata?)
     case resolveLatestPendingApproval(SessionID)
     case markCurrentAssistantCompleted(AgentEventMetadata, SessionID)
 }
@@ -103,7 +103,8 @@ actor EventReducer {
             output.messageMutations.append(.system(
                 "文件变更：\(change.path) \(change.status)",
                 id,
-                .fileChangeSummary
+                .fileChangeSummary,
+                metadata
             ))
         case .approvalRequest(let request, let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
@@ -123,7 +124,7 @@ actor EventReducer {
                 id
             ))
             let risk = request.risk.map { "，风险：\($0)" } ?? ""
-            output.messageMutations.append(.system("等待审批：\(request.title)\(risk)", id, .approval))
+            output.messageMutations.append(.system("等待审批：\(request.title)\(risk)", id, .approval, metadata))
         case .approvalResolved(let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
             // app-server 会在 JSON-RPC server request 被处理后发 serverRequest/resolved；
@@ -147,13 +148,13 @@ actor EventReducer {
             output.messageMutations.append(.resolveLatestPendingApproval(id))
             output.messageMutations.append(.markCurrentAssistantCompleted(metadata, fallbackSessionID))
             output.foregroundClears.append(id)
-        case .warning(let payload, _):
+        case .warning(let payload, let metadata):
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] warning: \(payload.message)\n",
                 sessionID: fallbackSessionID,
                 seq: nil
             ))
-            output.messageMutations.append(.system("运行警告：\(payload.message)", fallbackSessionID, .error))
+            output.messageMutations.append(.system("运行警告：\(payload.message)", fallbackSessionID, .error, metadata))
         case .error(let message):
             output.foregroundClears.append(fallbackSessionID)
             output.pendingApprovalUpdates.append((fallbackSessionID, nil))
@@ -163,7 +164,7 @@ actor EventReducer {
                 sessionID: fallbackSessionID,
                 seq: nil
             ))
-            output.messageMutations.append(.system("运行错误：\(message)", fallbackSessionID, .error))
+            output.messageMutations.append(.system("运行错误：\(message)", fallbackSessionID, .error, nil))
         case .unknown(let type):
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] 未知消息类型：\(type)\n",
