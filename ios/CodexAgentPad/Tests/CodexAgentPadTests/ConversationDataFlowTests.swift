@@ -3822,6 +3822,47 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
+    func testDirectRuntimeServesEarlierHistoryFromCacheWithoutRefetch() async throws {
+        let project = AgentProject(id: "proj_hist", name: "Hist", path: "/tmp/hist")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        // 首屏 before=nil：触发一次整段 thread/read。
+        let firstPageTask = Task {
+            try await client.messagesPage(sessionID: "thr_hist", before: nil, limit: 2)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist","sessionId":"thr_hist","preview":"hist","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist","turns":[{"id":"turn_h","startedAt":1780490000,"items":[{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]},{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"userMessage","id":"item_2","content":[{"type":"text","text":"m2"}]}]}]}}}"#)
+
+        let firstPage = try await firstPageTask.value
+        XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2"])
+        XCTAssertTrue(firstPage.hasMoreBefore)
+        let cursor = try XCTUnwrap(firstPage.previousCursor)
+
+        // 翻看更早 before=cursor：必须命中缓存，能取回最早的 m0，并且不再发第二次 thread/read。
+        let earlier = try await client.messagesPage(sessionID: "thr_hist", before: cursor, limit: 2)
+        XCTAssertEqual(earlier.messages.map(\.content), ["m0"])
+        XCTAssertFalse(earlier.hasMoreBefore)
+
+        let sent = await transport.sentMessages()
+        let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
+        XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
+    }
+
     func testDirectRuntimeDropsStaleReplayedApprovalForIdleThread() async throws {
         let project = AgentProject(id: "proj_stale", name: "Stale", path: "/tmp/stale")
         let transport = FakeCodexAppServerTransport()
@@ -3954,6 +3995,71 @@ extension ConversationDataFlowTests {
             }
             return false
         }, "旧 turn 的审批不应重新变成输入框上方的审批卡")
+
+        socket.disconnect()
+    }
+
+    func testDirectRuntimeDropsAncientReplayedApprovalEvenWhenItsTurnIsStillActive() async throws {
+        // 现场复现：thread 早期 on-request 阶段有一条提权审批一直没 terminal 化，后来 thread 切到 never
+        // 又跑了很多 turn。app-server 仍把这条旧审批所在的 turn 报成 active（activeTurnID 与审批 turnId
+        // 相同），并在 resume 时重放它。仅靠 turn 比对无法识别，必须靠 startedAtMs 兜底。
+        let project = AgentProject(id: "proj_ancient", name: "Ancient", path: "/tmp/ancient")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let sessionTask = Task {
+            try await client.session(id: "thr_ancient")
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        // 关键：active turn 就是旧审批所在的 turn（turn_ancient），按 turn 比对识别不出来。
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_ancient","sessionId":"thr_ancient","preview":"远古审批","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active","activeFlags":["waitingOnApproval"]},"path":null,"cwd":"/tmp/ancient","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"远古审批","turns":[{"id":"turn_ancient","status":"inProgress","items":[]}]}}}"#)
+        let sessionResponse = try await sessionTask.value
+        XCTAssertEqual(sessionResponse.session.activeTurnID, "turn_ancient")
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+        socket.connect(sessionID: "thr_ancient")
+
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let resume = try decodeAppServerRequest(resumeMessages[3])
+        XCTAssertEqual(resume.method, "thread/resume")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_ancient","sessionId":"thr_ancient","preview":"远古审批","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"active","activeFlags":["waitingOnApproval"]},"path":null,"cwd":"/tmp/ancient","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"远古审批","turns":[{"id":"turn_ancient","status":"inProgress","items":[]}]}}}"#)
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        // startedAtMs=1000 表示 1970 年（远超过期阈值）；availableDecisions 只有 accept/cancel，没有 decline。
+        transport.enqueue(#"{"id":6262,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_ancient","turnId":"turn_ancient","itemId":"cmd_ancient","startedAtMs":1000,"command":"/bin/zsh -lc 'xcrun devicectl list devices'","availableDecisions":["accept","cancel"]}}"#)
+
+        let release = try await waitForFakeAppServerResponse(transport, id: .int(6262))
+        // 必须用 availableDecisions 里真实支持的 cancel 释放，而不是 app-server 不认的 decline。
+        XCTAssertEqual(release.result?["decision"]?.stringValue, "cancel")
+
+        XCTAssertFalse(events.contains {
+            if case .approvalRequest = $0 {
+                return true
+            }
+            return false
+        }, "22 小时前、turn 已被取代的旧审批不应再弹成审批卡")
 
         socket.disconnect()
     }

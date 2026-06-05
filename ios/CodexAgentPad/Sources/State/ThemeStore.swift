@@ -59,6 +59,7 @@ extension EnvironmentValues {
 
 enum ThemePreset: String, CaseIterable, Identifiable {
     case codex
+    case github
     case xcode
     case gruvbox
 
@@ -68,6 +69,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return "Codex"
+        case .github:
+            return "GitHub"
         case .xcode:
             return "Xcode"
         case .gruvbox:
@@ -79,6 +82,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return "清爽中性，适合长时间对话"
+        case .github:
+            return "接近 GitHub Primer 的代码审阅配色"
         case .xcode:
             return "接近开发工具的蓝灰风格"
         case .gruvbox:
@@ -90,6 +95,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return Color(red: 0.10, green: 0.46, blue: 0.92)
+        case .github:
+            return Color(red: 0.03, green: 0.41, blue: 0.85)
         case .xcode:
             return Color(red: 0.00, green: 0.44, blue: 0.86)
         case .gruvbox:
@@ -101,6 +108,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return Color(red: 0.91, green: 0.95, blue: 1.00)
+        case .github:
+            return Color(red: 0.96, green: 0.97, blue: 0.98)
         case .xcode:
             return Color(red: 0.89, green: 0.93, blue: 0.98)
         case .gruvbox:
@@ -304,6 +313,10 @@ final class ThemeStore: ObservableObject {
             return codexLightTokens
         case (.codex, .dark):
             return codexDarkTokens
+        case (.github, .light):
+            return githubLightTokens
+        case (.github, .dark):
+            return githubDarkTokens
         case (.xcode, .light):
             return xcodeLightTokens
         case (.xcode, .dark):
@@ -400,6 +413,52 @@ final class ThemeStore: ObservableObject {
             success: Color(red: 0.36, green: 0.82, blue: 0.50),
             border: Color(red: 0.28, green: 0.31, blue: 0.36),
             selectionFill: Color(red: 0.38, green: 0.62, blue: 1.00).opacity(0.18)
+        )
+    }
+
+    private var githubLightTokens: ThemeTokens {
+        ThemeTokens(
+            preset: .github,
+            resolvedScheme: .light,
+            background: Color(red: 1.00, green: 1.00, blue: 1.00),
+            surface: Color(red: 1.00, green: 1.00, blue: 1.00),
+            elevatedSurface: Color(red: 0.96, green: 0.97, blue: 0.98),
+            userBubble: Color(red: 0.03, green: 0.41, blue: 0.85).opacity(0.13),
+            assistantBubble: Color(red: 1.00, green: 1.00, blue: 1.00),
+            systemBubble: Color(red: 0.96, green: 0.97, blue: 0.98),
+            codeBlock: Color(red: 0.96, green: 0.97, blue: 0.98),
+            codeText: Color(red: 0.13, green: 0.16, blue: 0.20),
+            primaryText: Color(red: 0.12, green: 0.14, blue: 0.16),
+            secondaryText: Color(red: 0.35, green: 0.39, blue: 0.43),
+            tertiaryText: Color(red: 0.43, green: 0.48, blue: 0.53),
+            accent: Color(red: 0.03, green: 0.41, blue: 0.85),
+            warning: Color(red: 0.60, green: 0.40, blue: 0.00),
+            success: Color(red: 0.10, green: 0.50, blue: 0.22),
+            border: Color(red: 0.82, green: 0.84, blue: 0.87),
+            selectionFill: Color(red: 0.03, green: 0.41, blue: 0.85).opacity(0.12)
+        )
+    }
+
+    private var githubDarkTokens: ThemeTokens {
+        ThemeTokens(
+            preset: .github,
+            resolvedScheme: .dark,
+            background: Color(red: 0.05, green: 0.07, blue: 0.09),
+            surface: Color(red: 0.09, green: 0.11, blue: 0.15),
+            elevatedSurface: Color(red: 0.13, green: 0.16, blue: 0.20),
+            userBubble: Color(red: 0.18, green: 0.51, blue: 0.97).opacity(0.28),
+            assistantBubble: Color(red: 0.09, green: 0.11, blue: 0.15),
+            systemBubble: Color(red: 0.13, green: 0.16, blue: 0.20),
+            codeBlock: Color(red: 0.04, green: 0.06, blue: 0.08),
+            codeText: Color(red: 0.90, green: 0.93, blue: 0.95),
+            primaryText: Color(red: 0.90, green: 0.93, blue: 0.95),
+            secondaryText: Color(red: 0.49, green: 0.52, blue: 0.56),
+            tertiaryText: Color(red: 0.36, green: 0.39, blue: 0.44),
+            accent: Color(red: 0.18, green: 0.51, blue: 0.97),
+            warning: Color(red: 0.82, green: 0.60, blue: 0.13),
+            success: Color(red: 0.25, green: 0.73, blue: 0.31),
+            border: Color(red: 0.19, green: 0.22, blue: 0.25),
+            selectionFill: Color(red: 0.18, green: 0.51, blue: 0.97).opacity(0.18)
         )
     }
 

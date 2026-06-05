@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 
+private let composerTextContentInset: CGFloat = 10
+
 struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -24,7 +26,7 @@ struct ComposerView: View {
                 onSubmit: { submitDraft() }
             )
                 .frame(minHeight: composerMinHeight, maxHeight: composerMaxHeight)
-                .padding(10)
+                .padding(composerTextContentInset)
                 .background(tokens.elevatedSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
@@ -36,8 +38,8 @@ struct ComposerView: View {
                         Text("输入任务或后续指令")
                             .font(themeStore.uiFont(.body))
                             .foregroundStyle(tokens.tertiaryText)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 18)
+                            // 和 UITextView 外层 padding 保持同一个起点，避免占位文案与真实光标错位。
+                            .padding(composerTextContentInset)
                             .allowsHitTesting(false)
                     }
                 }

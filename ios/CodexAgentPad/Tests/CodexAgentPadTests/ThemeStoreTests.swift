@@ -125,6 +125,21 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(store.tokens(for: .light).resolvedScheme, .dark)
     }
 
+    func testGitHubPresetProvidesLightAndDarkTokens() {
+        let store = ThemeStore(defaults: defaults)
+        store.preset = .github
+
+        let lightTokens = store.tokens(for: .light)
+        let darkTokens = store.tokens(for: .dark)
+
+        XCTAssertTrue(ThemePreset.allCases.contains(.github))
+        XCTAssertEqual(ThemePreset.github.title, "GitHub")
+        XCTAssertEqual(lightTokens.preset, .github)
+        XCTAssertEqual(lightTokens.resolvedScheme, .light)
+        XCTAssertEqual(darkTokens.preset, .github)
+        XCTAssertEqual(darkTokens.resolvedScheme, .dark)
+    }
+
     func testThemeVersionIncrementsWhenVisualStateChanges() {
         let store = ThemeStore(defaults: defaults)
         let originalVersion = store.themeVersion

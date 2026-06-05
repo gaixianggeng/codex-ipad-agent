@@ -220,14 +220,18 @@ actor CodexAppServerConnection {
         finishInboundStreams()
     }
 
-    func send(_ request: CodexAppServerRequestSpec) async throws -> CodexAppServerJSONValue? {
+    func send(_ request: CodexAppServerRequestSpec, timeout: TimeInterval? = nil) async throws -> CodexAppServerJSONValue? {
         guard isConnected else {
             throw CodexAppServerConnectionError.disconnected
         }
         guard isInitialized else {
             throw CodexAppServerConnectionError.notInitialized
         }
-        return try await sendRequestEnvelope(request.request(id: nextRequestID()), allowBeforeInitialized: false)
+        return try await sendRequestEnvelope(
+            request.request(id: nextRequestID()),
+            allowBeforeInitialized: false,
+            timeout: timeout
+        )
     }
 
     func sendNotification(_ notification: CodexAppServerNotification) async throws {
@@ -279,7 +283,8 @@ actor CodexAppServerConnection {
 
     private func sendRequestEnvelope(
         _ request: CodexAppServerRequest,
-        allowBeforeInitialized: Bool
+        allowBeforeInitialized: Bool,
+        timeout: TimeInterval? = nil
     ) async throws -> CodexAppServerJSONValue? {
         guard isConnected else {
             throw CodexAppServerConnectionError.disconnected
@@ -291,9 +296,10 @@ actor CodexAppServerConnection {
             throw CodexAppServerConnectionError.duplicateRequestID(request.id)
         }
 
+        let timeoutNanoseconds = timeout.map { UInt64(max(0.1, $0) * 1_000_000_000) } ?? requestTimeoutNanoseconds
         return try await withCheckedThrowingContinuation { continuation in
-            let timeoutTask = Task { [requestTimeoutNanoseconds] in
-                try? await Task.sleep(nanoseconds: requestTimeoutNanoseconds)
+            let timeoutTask = Task { [timeoutNanoseconds] in
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
                 self.timeoutRequest(id: request.id)
             }
             pendingResponses[request.id] = PendingCodexAppServerResponse(

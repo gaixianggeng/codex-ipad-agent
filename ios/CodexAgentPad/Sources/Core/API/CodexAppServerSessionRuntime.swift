@@ -63,6 +63,13 @@ actor CodexAppServerSessionRuntime {
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
     private var sessionsStartingTurn: Set<SessionID> = []
+    // 本端这条 runtime 亲自发起过的 turn。app-server 在 resume 时会重放“仍未应答”的审批；只有属于这些
+    // turn 的审批才是当前用户真正在等待的，其余（Desktop 发起、或历史里没 terminal 化的旧审批）需要按
+    // 过期处理。即使本端的审批挂了很久也不能误杀，所以单列出来优先放行。
+    private var turnsStartedByThisRuntime: Set<TurnID> = []
+    // thread/read 没有分页参数，一次会返回整段 thread。把上次整段读取缓存下来，翻看更早历史时直接
+    // 从缓存切窗口，避免每次翻页都在 Tailscale 这类慢链路上重新拉一遍大会话（会很慢甚至超时）。
+    private var threadHistoryCacheBySessionID: [SessionID: [CodexHistoryMessage]] = [:]
 
     init(
         endpoint: String,
@@ -193,12 +200,24 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
+    // thread/read 是整段历史的批量拉取，慢链路（Tailscale）下比交互式请求耗时得多；给它一个更宽的
+    // 超时，避免大会话首屏因为 20s 的默认请求超时而直接报错。
+    private static let bulkReadTimeout: TimeInterval = 60
+
     func messagesPage(sessionID: SessionID, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
-        let result = try await ensureConnection().send(CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: sessionID, includeTurns: true))
+        // 翻看更早历史：老 turn 不会变，直接用上次整段读取的缓存切窗口，不再重复拉整段 thread。
+        if before != nil, let cached = threadHistoryCacheBySessionID[sessionID] {
+            return Self.paginateHistory(cached, before: before, limit: limit)
+        }
+        let result = try await ensureConnection().send(
+            CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: sessionID, includeTurns: true),
+            timeout: Self.bulkReadTimeout
+        )
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let messages = historyMessages(from: thread, sessionID: sessionID)
+        threadHistoryCacheBySessionID[sessionID] = messages
         return Self.paginateHistory(messages, before: before, limit: limit)
     }
 
@@ -288,6 +307,9 @@ actor CodexAppServerSessionRuntime {
             clientMessageID: clientMessageID
         ))
         let turnID = result?["turn"]?.objectValue?["id"]?.stringValue
+        if let turnID {
+            turnsStartedByThisRuntime.insert(turnID)
+        }
         _ = withUpdatedSession(sessionID) { item in
             item.status = "running"
             item.activeTurnID = turnID
@@ -534,11 +556,22 @@ actor CodexAppServerSessionRuntime {
             // 新 turn，绝不能当成过期重放。
             return false
         }
-        // 如果 app-server 已把 thread 标成等待审批，但重放的审批属于旧 turn，而本地已经记录了新的
-        // active turn，说明它不是当前 iPad 正在等待的审批。直接释放，避免旧 Desktop 审批长期卡住
-        // 当前对话。status 条件很重要：新 turn 刚启动时，approval request 可能先于 turn/start 响应
-        // 进入 server-request 队列，此时不能把正常审批误判成旧请求。
-        if let requestTurnID = approvalTurnID(for: request),
+        let requestTurnID = approvalTurnID(for: request)
+        if let requestTurnID, turnsStartedByThisRuntime.contains(requestTurnID) {
+            // 本端这条 runtime 亲自发起的 turn 的审批一定是 live 的，必须展示（即使已经挂了很久）。
+            return false
+        }
+        // app-server 可能把 thread 卡在 waitingOnApproval，并把这条早被放弃的旧审批所在的 turn 仍然
+        // 报成 active（activeTurnID 与审批 turnId 相同），于是下面按 turn 比对的判据全都命中不了。改用
+        // 审批自带的 startedAtMs：不是本端发起、且早就挂在那里的审批，必然是历史 transcript 里没
+        // terminal 化、被 thread/resume 反复重放的旧请求（现场就是一条 22 小时前、之后又被十几个 turn
+        // 取代的提权审批），直接 fail-closed 释放，避免每次打开 thread 都凭空冒出旧审批卡。
+        if let startedAtMs = approvalStartedAtMs(for: request),
+           Date().timeIntervalSince1970 - startedAtMs / 1000 > Self.staleReplayedApprovalMaxAge {
+            return true
+        }
+        // app-server 已切到新的 active turn，但仍重放旧 turn 的审批：本地 active turn 与审批 turnId 不同。
+        if let requestTurnID,
            let activeTurnID = context.activeTurnID,
            context.session.status == "waiting_for_approval",
            requestTurnID != activeTurnID {
@@ -548,6 +581,20 @@ actor CodexAppServerSessionRuntime {
         // 正在执行的 turn（无论谁发起）本地状态都会是 running/waiting 且记着 activeTurnID；
         // 只有 app-server 自己把该 thread 报成空闲、且本地没有活跃 turn 时，才判定为过期重放。
         return context.activeTurnID == nil && isInactiveThreadStatus(context.session.status)
+    }
+
+    // 审批挂起超过这个时长就视为历史里没 terminal 化的旧请求。真正需要用户当下处理的审批一定是刚发生的；
+    // 本端自己发起的 turn 不受这个阈值约束（见上面的 turnsStartedByThisRuntime 放行）。
+    private static let staleReplayedApprovalMaxAge: TimeInterval = 10 * 60
+
+    private func approvalStartedAtMs(for request: CodexAppServerServerRequest) -> Double? {
+        let params = request.params?.objectValue ?? [:]
+        for key in ["startedAtMs", "started_at_ms", "createdAtMs", "created_at_ms"] {
+            if let value = params[key]?.intValue {
+                return Double(value)
+            }
+        }
+        return nil
     }
 
     private func isInactiveThreadStatus(_ status: String) -> Bool {
@@ -565,10 +612,11 @@ actor CodexAppServerSessionRuntime {
             return
         }
         let sessionID = approvalSessionID(for: request)
+        let params = request.params?.objectValue ?? [:]
         let result = approvalResponse(
             method: request.method,
-            params: request.params?.objectValue ?? [:],
-            decision: "decline"
+            params: params,
+            decision: staleReleaseDecision(from: params)
         )
         Task { [connection, sessionID] in
             // 释放失败（连接已断或 app-server 已自行清理）无所谓：下次 resume 仍会重新走这套判断。
@@ -579,6 +627,17 @@ actor CodexAppServerSessionRuntime {
                 }
             } catch {}
         }
+    }
+
+    // 释放旧审批要用 app-server 真正支持的“放弃”决策才能把请求 terminal 化，否则它会一直挂在挂起表里、
+    // 每次 resume 又被重放。命令/文件审批的 availableDecisions 通常是 ["accept", "cancel"]，没有 decline，
+    // 所以优先选 cancel/reject；只有在请求没带 availableDecisions 时（如旧 mock）才退回 decline。
+    private func staleReleaseDecision(from params: [String: CodexAppServerJSONValue]) -> String {
+        let available = (params["availableDecisions"]?.arrayValue ?? []).compactMap { $0.stringValue?.lowercased() }
+        for candidate in ["cancel", "reject", "deny", "decline"] where available.contains(candidate) {
+            return candidate
+        }
+        return "decline"
     }
 
     private func emit(_ event: AgentEvent) {
