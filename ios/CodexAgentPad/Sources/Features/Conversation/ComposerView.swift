@@ -7,6 +7,7 @@ struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var composerState = ComposerState()
 
     var body: some View {
@@ -45,13 +46,14 @@ struct ComposerView: View {
                 }
 
             ViewThatFits(in: .horizontal) {
-                horizontalActions
+                horizontalActions(showLabels: true)
+                horizontalActions(showLabels: false)
                 compactActions
             }
             .font(themeStore.uiFont(.callout))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(12)
+        .padding(isCompactComposer ? 10 : 12)
         .background(tokens.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
@@ -80,57 +82,70 @@ struct ComposerView: View {
         composerState.canSubmit(isLoading: sessionStore.isLoading)
     }
 
-    private var horizontalActions: some View {
+    private var isCompactComposer: Bool {
+        horizontalSizeClass == .compact
+    }
+
+    private func horizontalActions(showLabels: Bool) -> some View {
         HStack(spacing: 10) {
-            terminalControls
+            terminalControls(showLabels: showLabels)
             Spacer(minLength: 12)
-            sendButton
+            sendButton(showLabels: showLabels)
         }
     }
 
     private var compactActions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            terminalControls
+            terminalControls(showLabels: false)
             HStack {
                 Spacer()
-                sendButton
+                sendButton(showLabels: !isCompactComposer)
             }
         }
     }
 
-    private var terminalControls: some View {
+    private func terminalControls(showLabels: Bool) -> some View {
         HStack(spacing: 8) {
             Button {
                 composerState.toggleExpanded()
             } label: {
-                Label(composerState.isExpanded ? "收起" : "展开", systemImage: composerState.isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                controlLabel(
+                    composerState.isExpanded ? "收起" : "展开",
+                    systemImage: composerState.isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                    showLabels: showLabels
+                )
             }
             .buttonStyle(.bordered)
+            .accessibilityLabel(composerState.isExpanded ? "收起输入框" : "展开输入框")
 
             Button {
                 sessionStore.sendCtrlC()
             } label: {
-                Label("Ctrl-C", systemImage: "stop.circle")
+                controlLabel("Ctrl-C", systemImage: "stop.circle", showLabels: showLabels)
             }
             .buttonStyle(.bordered)
             .disabled(sessionStore.selectedSession?.isRunning != true)
+            .accessibilityLabel("发送 Ctrl-C")
 
             Button {
                 submitDraft()
             } label: {
-                Label("Enter", systemImage: "return")
+                controlLabel("Enter", systemImage: "return", showLabels: showLabels)
             }
             .buttonStyle(.bordered)
             .disabled(!canSubmitDraft)
+            .accessibilityLabel("发送回车")
 
             Button(role: .destructive) {
                 Task { await sessionStore.stopSelectedSession() }
             } label: {
-                Label("停止", systemImage: "xmark.circle")
+                controlLabel("停止", systemImage: "xmark.circle", showLabels: showLabels)
             }
             .buttonStyle(.bordered)
             .disabled(sessionStore.selectedSession?.isRunning != true)
+            .accessibilityLabel("停止当前会话")
         }
+        .controlSize(isCompactComposer || !showLabels ? .small : .regular)
     }
 
     @ViewBuilder
@@ -183,23 +198,40 @@ struct ComposerView: View {
         }
     }
 
-    private var sendButton: some View {
+    private func sendButton(showLabels: Bool) -> some View {
         Button {
             submitDraft()
         } label: {
-            Label("发送", systemImage: "paperplane.fill")
+            controlLabel("发送", systemImage: "paperplane.fill", showLabels: showLabels)
         }
         .buttonStyle(.borderedProminent)
+        .controlSize(isCompactComposer || !showLabels ? .small : .regular)
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!canSubmitDraft)
+        .accessibilityLabel("发送")
+    }
+
+    @ViewBuilder
+    private func controlLabel(_ title: String, systemImage: String, showLabels: Bool) -> some View {
+        if showLabels {
+            Label(title, systemImage: systemImage)
+        } else {
+            Image(systemName: systemImage)
+        }
     }
 
     private var composerMinHeight: CGFloat {
-        composerState.isExpanded ? 150 : 72
+        if isCompactComposer {
+            return composerState.isExpanded ? 118 : 60
+        }
+        return composerState.isExpanded ? 150 : 72
     }
 
     private var composerMaxHeight: CGFloat {
-        composerState.isExpanded ? 260 : 130
+        if isCompactComposer {
+            return composerState.isExpanded ? 190 : 108
+        }
+        return composerState.isExpanded ? 260 : 130
     }
 
     private var composerUIFont: UIFont {
