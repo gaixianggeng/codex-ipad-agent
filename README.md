@@ -44,14 +44,87 @@ Codex core / 本机凭证 / 项目目录
 
 ## 实现
 
-### 1. 构建
+### 1. Homebrew 首次使用
+
+推荐公开发布后让用户只走这一条路径：
+
+```bash
+brew tap gaixianggeng/tap
+brew install codex-ipad-agent
+
+codex --version
+codex app-server --help
+
+agentd setup
+agentd doctor --check-port
+brew services start codex-ipad-agent
+agentd doctor
+agentd pair
+```
+
+`agentd setup` 会生成：
+
+- 用户配置，macOS 默认在 `~/Library/Application Support/codex-ipad-agent/config.json`，Linux 默认在 `~/.config/codex-ipad-agent/config.json`
+- iPad 访问 `agentd` 的随机 Token
+- `agentd` 访问本机 app-server upstream 的独立 capability token file
+- 默认项目扫描目录，优先 `~/code`，否则使用执行 `setup` 时所在目录
+- 默认 loopback app-server upstream：`ws://127.0.0.1:4222`
+
+`agentd setup` 会打印实际配置文件路径。首次运行前需要先安装并登录 Codex CLI；`agentd doctor --check-port` 会检查 `codex app-server` 是否支持当前需要的 WebSocket 参数。
+
+如果 Mac 已安装并登录 Tailscale，`setup` 会优先把 `agentd` 绑定到 Tailscale IP；否则会使用 `127.0.0.1:8787` 并给出真机 iPad 不可直连的警告。
+
+`agentd pair` 会输出：
+
+```text
+Endpoint：http://100.x.x.x:8787
+Token：<随机 token>
+配对链接：codexagentpad://pair?endpoint=...&token=...
+```
+
+iPad App 首次启动后可以手填 Endpoint/Token，也可以粘贴或打开配对链接。配对链接只包含 iPad 访问 `agentd` 的外侧 Token，不包含本机 app-server upstream token。
+
+常用命令：
+
+```bash
+# 重新生成配置和 token
+agentd setup --force
+
+# 指定扫描目录
+agentd setup --scan-root "$HOME/code"
+
+# 指定监听地址，例如手动绑定 Tailscale IP
+agentd setup --listen "$(tailscale ip -4):8787"
+
+# 查看配对信息
+agentd pair
+
+# 机器可读输出，适合脚本或后续二维码工具
+agentd pair --json
+
+# 检查配置、Codex CLI、项目、Tailscale、runtime 和服务端口，通常在启动服务前使用
+agentd doctor --check-port
+
+# 服务启动后复查配置和 runtime
+agentd doctor
+```
+
+Homebrew service 会执行：
+
+```bash
+agentd serve
+```
+
+`agentd serve` 默认读取当前系统的用户配置目录；也可以用 `AGENTD_CONFIG=/path/to/config.json` 覆盖。在 `app_server.transport=ws` 且 `app_server.managed=true` 时，`agentd` 会自动启动并托管本机 loopback `codex app-server`，用户不需要手动再开一个终端。
+
+### 1.1 开发构建
 
 ```bash
 cd /Users/gaixiaotongxue/code/codex-ipad-agent
 go build -o bin/agentd ./cmd/agentd
 ```
 
-### 1.1 构建原生 iPad App
+### 1.2 构建原生 iPad App
 
 原生 App 工程位于：
 
@@ -73,11 +146,11 @@ xcodegen generate
 ```bash
 xcodebuild \
   -project CodexAgentPad.xcodeproj \
-  -target CodexAgentPad \
+  -scheme CodexAgentPad \
   -configuration Debug \
   -sdk iphoneos26.5 \
   CODE_SIGNING_ALLOWED=NO \
-  build
+  clean build
 ```
 
 测试 target 编译：
@@ -85,11 +158,11 @@ xcodebuild \
 ```bash
 xcodebuild \
   -project CodexAgentPad.xcodeproj \
-  -target CodexAgentPadTests \
+  -scheme CodexAgentPad \
   -configuration Debug \
   -sdk iphoneos26.5 \
   CODE_SIGNING_ALLOWED=NO \
-  build
+  clean build-for-testing
 ```
 
 模拟器运行：
@@ -127,6 +200,44 @@ App 端设计边界：
 - 终端 parser 只作为兼容回退，不是主消息来源。
 - app-server runtime 不依赖终端尺寸；旧 PTY fallback 仍固定 `120x32`，不跟随键盘或布局变化频繁发送 resize。
 
+### 1.3 iPad-only 远程开发闭环
+
+如果只通过 iPad 和 Codex 对话，不要让 Xcode 构建命令触发交互式权限确认。推荐把当前受信项目的 Codex 会话启动为：
+
+```text
+filesystem: unrestricted
+approval policy: never
+network: enabled
+```
+
+这个配置只用于本机受信开发会话，也就是“Codex 帮你改这个仓库并调用 Xcode 部署到你自己的 iPad”。不要把它作为 iPad App 暴露给任意项目的默认运行权限。原因很直接：`xcodebuild` 和 `devicectl` 需要访问 `~/Library/Developer/Xcode`、SwiftPM cache、签名证书、CoreDevice 服务和已配对 iPad。沙箱或审批弹窗会打断 iPad-only 的远程反馈循环。
+
+当前项目提供一条无交互部署命令：
+
+```bash
+./scripts/deploy-ipad.sh
+```
+
+默认会构建 `CodexAgentPad` Debug 包，安装到名为 `iPad Pro` 的真机，并自动启动 App。
+
+常用覆盖参数：
+
+```bash
+# 指定设备名
+DEVICE_NAME="盖吃饭的iPad" ./scripts/deploy-ipad.sh
+
+# 指定设备 UDID，适合同名设备或设备名不稳定时使用
+DEVICE_ID="00008103-000125C00ED3401E" ./scripts/deploy-ipad.sh
+
+# 指定 Apple Developer Team，默认使用当前开发机已验证过的 9HZ89R58PZ
+IOS_DEVELOPMENT_TEAM="9HZ89R58PZ" ./scripts/deploy-ipad.sh
+
+# 只安装不启动
+SKIP_LAUNCH=1 ./scripts/deploy-ipad.sh
+```
+
+这个脚本是后续“你测试 -> 告诉我问题 -> 我改代码 -> 我重新打到 iPad”的默认执行入口。
+
 ### 2. 本机启动
 
 推荐用环境变量启动，避免把真实 Token 写进配置文件：
@@ -146,7 +257,7 @@ http://127.0.0.1:8787
 
 页面里输入 `AGENTD_TOKEN` 后连接。Web/PWA 当前走兼容 API；原生 iPad App 固定走 direct app-server 链路。
 
-当前原生 iPad App 需要先启动 loopback `codex app-server` 和 `agentd` gateway，然后在 App 设置页点击“测试连接”和“保存并加载”。
+使用 `agentd setup` 生成的配置时，`agentd serve` 会自动托管 loopback `codex app-server`，原生 iPad App 只需要连接 `agentd`。手动环境变量启动主要用于开发和调试。
 
 注意：原生 iPad App 会在 HTTP 和 WebSocket 握手里使用 `Authorization: Bearer <token>`。浏览器 WebSocket 不能设置 Authorization header；如果仍要使用内置 Web/PWA 调试入口，需要显式开启兼容模式：
 
@@ -156,7 +267,7 @@ export AGENTD_ALLOW_QUERY_TOKEN=1
 
 这个模式会把 token 放进 WebSocket URL query，只建议本机或可信 Tailscale 网络内临时使用。
 
-direct app-server gateway 需要本机 loopback WebSocket upstream，不复用兼容 runtime 的 managed stdio 连接。上游 app-server 如果启用 capability token，给 `agentd` 配独立 token file：
+如果你想手动管理 app-server upstream，可以显式启动 loopback WebSocket。上游 app-server 如果启用 capability token，给 `agentd` 配独立 token file：
 
 ```bash
 APP_SERVER_TOKEN="$(openssl rand -hex 32)"
@@ -170,6 +281,7 @@ codex app-server \
 AGENTD_APP_SERVER_TRANSPORT=ws \
 AGENTD_APP_SERVER_LISTEN=ws://127.0.0.1:4222 \
 AGENTD_APP_SERVER_WS_TOKEN_FILE=/tmp/codex-app-server-ws-token \
+AGENTD_APP_SERVER_MANAGED=false \
 ./bin/agentd serve
 ```
 
@@ -179,8 +291,8 @@ AGENTD_APP_SERVER_WS_TOKEN_FILE=/tmp/codex-app-server-ws-token \
 
 iPad direct 模式启动步骤：
 
-1. 启动 `codex app-server --listen ws://127.0.0.1:4222`，建议启用 capability token。
-2. 用 `AGENTD_APP_SERVER_LISTEN` 和 `AGENTD_APP_SERVER_WS_TOKEN_FILE` 启动 `agentd`。
+1. 推荐先运行 `agentd setup`，让 `agentd` 自动生成 token file 和托管 loopback app-server。
+2. 用 `brew services start codex-ipad-agent` 或 `agentd serve` 启动 `agentd`。
 3. iPad App 设置页点击“测试连接”，确认能读取 `/api/app-server/config` 且 gateway 可用。
 4. 点击“保存并加载”，会断开旧 WebSocket 并按 direct 模式重新拉取项目和会话。
 
@@ -311,6 +423,44 @@ curl -X POST \
   http://127.0.0.1:8787/api/sessions
 ```
 
+## 发布
+
+发布使用 GoReleaser。Release workflow 固定使用已验证的 GoReleaser `v2.9.0`，原因是当前 Homebrew Formula + `brew services` 的发布方式需要稳定生成 `Formula/codex-ipad-agent.rb`。仓库 tag 形如 `v0.1.0` 时，GitHub Actions 会：
+
+1. 运行 `go test ./...`
+2. 构建 darwin/linux 的 amd64/arm64 `agentd`
+3. 创建 GitHub Release 和 checksums
+4. 更新 `gaixianggeng/homebrew-tap` 里的 `Formula/codex-ipad-agent.rb`
+
+发布前置条件：
+
+- `gaixianggeng/homebrew-tap` 仓库已创建，且公开或至少对目标用户可访问。
+- 主仓库已配置 `TAP_GITHUB_TOKEN` secret，token 对 `homebrew-tap` 有 `contents:write` 权限。
+- Release workflow、GoReleaser 配置和源码改动已经 commit 并 push；确认后再打 `v*` tag。
+- 发布机或 CI 中 `go mod tidy` 不会产生额外 diff。
+
+发布前本地检查：
+
+```bash
+go mod tidy
+go test ./...
+
+CGO_ENABLED=0 go build \
+  -trimpath \
+  -ldflags "-s -w -X main.version=0.0.0-test" \
+  -o /tmp/agentd \
+  ./cmd/agentd
+
+/tmp/agentd version
+```
+
+如果本机安装了 GoReleaser，可以先做快照检查：
+
+```bash
+go run github.com/goreleaser/goreleaser/v2@v2.9.0 check
+go run github.com/goreleaser/goreleaser/v2@v2.9.0 release --snapshot --clean --skip=publish
+```
+
 ## 风险与优化
 
 ### 安全与成本控制
@@ -342,7 +492,8 @@ curl -X POST \
 
 后续优化：
 
-- 加 `launchd` 后台运行。
+- iPad 内置二维码扫描配对。
+- 多 Mac 配置。
 - 持久化会话和对话消息。
 - 加 session 历史和 diff 视图。
 - 加项目级权限模式和高危命令审批。

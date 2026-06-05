@@ -1,0 +1,118 @@
+package setup
+
+import (
+	"context"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
+)
+
+func TestRunCreatesConfigAndPairURL(t *testing.T) {
+	scanRoot := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+
+	result, err := Run(context.Background(), Options{
+		ConfigPath: cfgPath,
+		ScanRoot:   scanRoot,
+		Listen:     "127.0.0.1:8787",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !result.Created {
+		t.Fatal("首次 setup 应创建配置")
+	}
+	if result.ConfigPath != cfgPath {
+		t.Fatalf("配置路径异常：%s", result.ConfigPath)
+	}
+	if result.Endpoint != "http://127.0.0.1:8787" {
+		t.Fatalf("Endpoint 异常：%s", result.Endpoint)
+	}
+	if len(result.Token) != 64 {
+		t.Fatalf("外侧 token 应为 32 bytes hex，got len=%d", len(result.Token))
+	}
+	if result.AppServerTokenFile == "" {
+		t.Fatal("应生成独立 app-server upstream token file")
+	}
+	if _, err := os.Stat(result.AppServerTokenFile); err != nil {
+		t.Fatalf("app-server token file 不存在：%v", err)
+	}
+	parsed, err := url.Parse(result.PairURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "codexagentpad" || parsed.Host != "pair" {
+		t.Fatalf("配对链接 scheme/host 异常：%s", result.PairURL)
+	}
+	if parsed.Query().Get("endpoint") != result.Endpoint || parsed.Query().Get("token") != result.Token {
+		t.Fatalf("配对链接未包含 endpoint/token：%s", result.PairURL)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen != "ws://127.0.0.1:4222" {
+		t.Fatalf("setup 应默认启用 managed ws gateway：%+v", cfg.AppServer)
+	}
+	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
+		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)
+	}
+}
+
+func TestRunKeepsExistingConfigWithoutForce(t *testing.T) {
+	scanRoot := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	first, err := Run(context.Background(), Options{
+		ConfigPath: cfgPath,
+		ScanRoot:   scanRoot,
+		Listen:     "127.0.0.1:8787",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Run(context.Background(), Options{
+		ConfigPath: cfgPath,
+		ScanRoot:   scanRoot,
+		Listen:     "127.0.0.1:9999",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Created {
+		t.Fatal("配置已存在时 setup 不应覆盖")
+	}
+	if second.Token != first.Token || second.Endpoint != first.Endpoint {
+		t.Fatalf("未 force 时应保留原配置：first=%+v second=%+v", first, second)
+	}
+}
+
+func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
+	scanRoot := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	result, err := Run(context.Background(), Options{
+		ConfigPath: cfgPath,
+		ScanRoot:   scanRoot,
+		Listen:     "127.0.0.1:8787",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarning(result.Warnings, "本机地址") {
+		t.Fatalf("loopback endpoint 应提示真机 iPad 风险：%+v", result.Warnings)
+	}
+}
+
+func hasWarning(warnings []string, want string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, want) {
+			return true
+		}
+	}
+	return false
+}

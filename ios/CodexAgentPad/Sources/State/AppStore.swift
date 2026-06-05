@@ -16,6 +16,28 @@ enum ConnectionMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum PairingLinkError: LocalizedError, Equatable {
+    case unsupportedURL
+    case missingEndpoint
+    case missingToken
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedURL:
+            return "配对链接无效"
+        case .missingEndpoint:
+            return "配对链接缺少 Endpoint"
+        case .missingToken:
+            return "配对链接缺少 Token"
+        }
+    }
+}
+
+struct PairingCredentials: Equatable {
+    let endpoint: String
+    let token: String
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var endpoint: String
@@ -26,12 +48,13 @@ final class AppStore: ObservableObject {
 
     private let endpointKey = "agentd.endpoint"
     private let connectionModeKey = "agentd.connectionMode"
+    private let defaultEndpoint = "http://127.0.0.1:8787"
     private let tokenStore = TokenStore()
     private var directRuntime: CodexAppServerSessionRuntime?
     private var directRuntimeIdentity: String?
 
     init() {
-        self.endpoint = UserDefaults.standard.string(forKey: endpointKey) ?? "http://127.0.0.1:8787"
+        self.endpoint = UserDefaults.standard.string(forKey: endpointKey) ?? defaultEndpoint
         self.token = tokenStore.load()
         // 当前 iPad 客户端只暴露直连 app-server 链路；旧版本写入的 compat 配置在启动时迁移掉。
         self.connectionMode = .direct
@@ -44,10 +67,7 @@ final class AppStore: ObservableObject {
     }
 
     func client() throws -> AgentAPIClient {
-        let endpoint = AgentAPIClient.normalizedEndpoint(endpoint)
-        guard URL(string: endpoint) != nil else {
-            throw AgentAPIError.invalidEndpoint
-        }
+        let endpoint = try Self.validatedEndpoint(endpoint)
         return AgentAPIClient(endpoint: endpoint, token: token)
     }
 
@@ -56,10 +76,7 @@ final class AppStore: ObservableObject {
         case .compat:
             return try client()
         case .direct:
-            let endpoint = AgentAPIClient.normalizedEndpoint(endpoint)
-            guard URL(string: endpoint) != nil else {
-                throw AgentAPIError.invalidEndpoint
-            }
+            let endpoint = try Self.validatedEndpoint(endpoint)
             return CodexAppServerSessionAPIClient(endpoint: endpoint, runtime: runtime(endpoint: endpoint, token: token))
         }
     }
@@ -77,7 +94,7 @@ final class AppStore: ObservableObject {
     }
 
     func save(endpoint: String, token: String, connectionMode: ConnectionMode) throws {
-        let normalized = AgentAPIClient.normalizedEndpoint(endpoint)
+        let normalized = try Self.validatedEndpoint(endpoint)
         UserDefaults.standard.set(normalized, forKey: endpointKey)
         UserDefaults.standard.set(connectionMode.rawValue, forKey: connectionModeKey)
         try tokenStore.save(token)
@@ -93,19 +110,49 @@ final class AppStore: ObservableObject {
         try save(endpoint: endpoint, token: token, connectionMode: .direct)
     }
 
-    func testConnection(endpoint: String, token: String, connectionMode: ConnectionMode) async {
+    func validateAndSave(endpoint: String, token: String, connectionMode: ConnectionMode = .direct) async throws {
+        let normalized = try await validateConnection(endpoint: endpoint, token: token, connectionMode: connectionMode)
+        try save(endpoint: normalized, token: token, connectionMode: connectionMode)
+        lastError = nil
+    }
+
+    func validateAndSavePairingURL(_ url: URL) async throws {
+        let credentials = try Self.pairingCredentials(from: url)
+        // 配对链接只写入 agentd 外侧访问 token；app-server upstream token 仍只保存在 Mac 本机配置里。
+        try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token, connectionMode: .direct)
+    }
+
+    func clearPairing() throws {
+        UserDefaults.standard.removeObject(forKey: endpointKey)
+        UserDefaults.standard.set(ConnectionMode.direct.rawValue, forKey: connectionModeKey)
+        try tokenStore.delete(allowMissing: true)
+        resetDirectRuntime()
+        endpoint = defaultEndpoint
+        token = ""
+        connectionMode = .direct
+        connectionStatus = .idle
+        lastError = nil
+    }
+
+    @discardableResult
+    func validateConnection(endpoint: String, token: String, connectionMode: ConnectionMode) async throws -> String {
         connectionStatus = .testing
         lastError = nil
-        let normalized = AgentAPIClient.normalizedEndpoint(endpoint)
+        let normalized = try Self.validatedEndpoint(endpoint)
         let client = AgentAPIClient(endpoint: normalized, token: token)
+        _ = try await client.health()
+        let version = try await client.version()
+        if connectionMode == .direct {
+            let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token)
+            try await runtime.validateDirectGateway()
+        }
+        connectionStatus = .connected(connectionMode == .direct ? "\(version.version) · direct" : version.version)
+        return normalized
+    }
+
+    func testConnection(endpoint: String, token: String, connectionMode: ConnectionMode) async {
         do {
-            _ = try await client.health()
-            let version = try await client.version()
-            if connectionMode == .direct {
-                let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token)
-                try await runtime.validateDirectGateway()
-            }
-            connectionStatus = .connected(connectionMode == .direct ? "\(version.version) · direct" : version.version)
+            _ = try await validateConnection(endpoint: endpoint, token: token, connectionMode: connectionMode)
         } catch {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
@@ -114,6 +161,59 @@ final class AppStore: ObservableObject {
 
     func testConnection(endpoint: String, token: String) async {
         await testConnection(endpoint: endpoint, token: token, connectionMode: .direct)
+    }
+
+    static func pairingCredentials(from url: URL) throws -> PairingCredentials {
+        let route = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard url.scheme?.lowercased() == "codexagentpad", route == "pair" else {
+            throw PairingLinkError.unsupportedURL
+        }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let endpoint = components?.queryItems?.first(where: { $0.name == "endpoint" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let token = components?.queryItems?.first(where: { $0.name == "token" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !endpoint.isEmpty else {
+            throw PairingLinkError.missingEndpoint
+        }
+        guard !token.isEmpty else {
+            throw PairingLinkError.missingToken
+        }
+        return PairingCredentials(endpoint: try validatedEndpoint(endpoint), token: token)
+    }
+
+    static func validatedEndpoint(_ raw: String) throws -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AgentAPIError.invalidEndpoint
+        }
+        let candidate: String
+        if trimmed.contains("://") {
+            candidate = trimmed
+        } else {
+            candidate = "http://" + trimmed
+        }
+        guard var components = URLComponents(string: candidate),
+              components.scheme == "http" || components.scheme == "https",
+              components.host?.isEmpty == false
+        else {
+            throw AgentAPIError.invalidEndpoint
+        }
+        if components.path == "/" {
+            components.path = ""
+        }
+        guard components.path.isEmpty,
+              components.query == nil,
+              components.fragment == nil,
+              components.user == nil,
+              components.password == nil
+        else {
+            throw AgentAPIError.invalidEndpoint
+        }
+        guard let url = components.url else {
+            throw AgentAPIError.invalidEndpoint
+        }
+        return url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     private func runtime(endpoint: String, token: String) -> CodexAppServerSessionRuntime {

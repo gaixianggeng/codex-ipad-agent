@@ -3,6 +3,7 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,9 @@ func TestCheckerFailsOnMissingCodexButIgnoresMissingTailscale(t *testing.T) {
 	if codexOK {
 		t.Fatal("codex check 应失败")
 	}
+	if !hasCheckMessage(results, "codex", "未找到 Codex CLI") {
+		t.Fatalf("codex 缺失时应给出准确文案：%+v", results.Checks)
+	}
 	if tailscaleOK {
 		t.Fatal("空 PATH 下 tailscale check 应失败但不影响整体失败原因判断")
 	}
@@ -83,7 +87,7 @@ func TestCheckerFailsOnMissingCodexButIgnoresMissingTailscale(t *testing.T) {
 
 func TestCheckerReportsAppServerRuntimeSafely(t *testing.T) {
 	binDir := t.TempDir()
-	writeFakeExecutable(t, filepath.Join(binDir, "codex"))
+	writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
 	t.Setenv("PATH", binDir)
 
 	checker := newTestChecker(t, config.Config{
@@ -110,7 +114,7 @@ func TestCheckerReportsAppServerRuntimeSafely(t *testing.T) {
 
 func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	binDir := t.TempDir()
-	writeFakeExecutable(t, filepath.Join(binDir, "codex"))
+	writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
 	t.Setenv("PATH", binDir)
 
 	checker := newTestChecker(t, config.Config{
@@ -132,9 +136,102 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	}
 }
 
+func TestCheckerReportsManagedWSGatewayEvenWhenRuntimeIsPTY(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "pty", FallbackPTY: true},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		Codex:     config.CodexConfig{Bin: "codex"},
+		Projects: []config.ProjectConfig{{
+			ID:   "demo",
+			Name: "Demo",
+			Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), false)
+	if !results.OK {
+		t.Fatalf("setup 默认 ws gateway 应通过 doctor：%+v", results)
+	}
+	if !hasCheck(results, "app-server") {
+		t.Fatalf("runtime=pty 但启用 ws gateway 时仍应检查 app-server：%+v", results.Checks)
+	}
+}
+
+func TestCheckerCheckPortIncludesManagedAppServerPort(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	listener := listenOnFreePort(t)
+	defer listener.Close()
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:0",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "pty", FallbackPTY: true},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://" + listener.Addr().String()},
+		Codex:     config.CodexConfig{Bin: "codex"},
+		Projects: []config.ProjectConfig{{
+			ID:   "demo",
+			Name: "Demo",
+			Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), true)
+	if results.OK {
+		t.Fatalf("app-server upstream 端口被占用时 doctor --check-port 应失败：%+v", results)
+	}
+	if !hasCheckMessage(results, "app-server-port", "端口不可监听") {
+		t.Fatalf("应报告 app-server-port 占用：%+v", results.Checks)
+	}
+}
+
+func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
+	binDir := t.TempDir()
+	writeFakeExecutable(t, filepath.Join(binDir, "codex"))
+	t.Setenv("PATH", binDir)
+
+	checker := newTestChecker(t, config.Config{
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Runtime:   config.RuntimeConfig{Type: "pty", FallbackPTY: true},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		Codex:     config.CodexConfig{Bin: "codex"},
+		Projects: []config.ProjectConfig{{
+			ID:   "demo",
+			Name: "Demo",
+			Path: t.TempDir(),
+		}},
+	})
+
+	results := checker.Run(context.Background(), false)
+	if results.OK {
+		t.Fatalf("缺少 app-server ws flags 时 doctor 应失败：%+v", results)
+	}
+	if !hasCheck(results, "codex-app-server") {
+		t.Fatalf("应包含 codex-app-server 检查：%+v", results.Checks)
+	}
+}
+
 func hasCheck(results Results, name string) bool {
 	for _, check := range results.Checks {
 		if check.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCheckMessage(results Results, name, want string) bool {
+	for _, check := range results.Checks {
+		if check.Name == name && strings.Contains(check.Message, want) {
 			return true
 		}
 	}
@@ -150,10 +247,33 @@ func newTestChecker(t *testing.T, cfg config.Config) *Checker {
 	return NewChecker("test-version", cfg, registry)
 }
 
+func listenOnFreePort(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listener
+}
+
 func writeFakeExecutable(t *testing.T, path string) {
 	t.Helper()
 	// doctor 只需要 LookPath 能找到命令；脚本内容保持最小，避免测试依赖真实 CLI。
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFakeCodexWithAppServerHelp(t *testing.T, path string) {
+	t.Helper()
+	body := `#!/bin/sh
+if [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' '--listen --ws-auth --ws-token-file'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

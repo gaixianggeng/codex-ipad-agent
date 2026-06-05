@@ -90,6 +90,10 @@ actor CodexAppServerSessionRuntime {
         guard config.runtime.gatewayAvailable, !config.gatewayWSURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
+        let gatewayURL = try gatewayURL(from: config)
+        let probe = CodexAppServerConnection(transport: transportFactory())
+        try await probe.connect(url: gatewayURL, token: token)
+        await probe.disconnect()
     }
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
@@ -409,7 +413,10 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask = nil
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
-        pendingApprovalRequestsByID.removeAll(keepingCapacity: false)
+        let affectedSessionIDs = clearAllPendingApprovalRequests()
+        for sessionID in affectedSessionIDs {
+            emitApprovalResolved(sessionID: sessionID)
+        }
         await stale.disconnect()
     }
 
@@ -432,11 +439,18 @@ actor CodexAppServerSessionRuntime {
 
     private func handle(_ notification: CodexAppServerNotification) {
         updateContext(from: notification)
-        clearResolvedServerRequest(from: notification)
+        let affectedSessionIDs = clearResolvedServerRequest(from: notification)
         guard let event = projector.project(notification) else {
+            for sessionID in affectedSessionIDs {
+                emitApprovalResolved(sessionID: sessionID)
+            }
             return
         }
         emit(event)
+        let emittedSessionID = sessionID(from: event)
+        for sessionID in affectedSessionIDs where sessionID != emittedSessionID {
+            emitApprovalResolved(sessionID: sessionID)
+        }
     }
 
     private func handle(_ request: CodexAppServerServerRequest) {
@@ -1000,9 +1014,9 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    private func clearResolvedServerRequest(from notification: CodexAppServerNotification) {
+    private func clearResolvedServerRequest(from notification: CodexAppServerNotification) -> [SessionID] {
         guard notification.method == "serverRequest/resolved" else {
-            return
+            return []
         }
         let params = notification.params?.objectValue ?? [:]
         let sessionID = approvalSessionID(from: params)
@@ -1015,13 +1029,42 @@ actor CodexAppServerSessionRuntime {
             params["item_id"]?.stringValue
         ].compactMap { $0 })
 
+        var affectedSessionIDs: [SessionID] = []
         for id in ids {
             for key in pendingApprovalLookupKeys(sessionID: sessionID, approvalID: id) {
                 if let request = pendingApprovalRequestsByID.removeValue(forKey: key) {
+                    if let affected = approvalSessionID(for: request), !affectedSessionIDs.contains(affected) {
+                        affectedSessionIDs.append(affected)
+                    }
                     removePendingApprovalRequest(request)
                 }
             }
         }
+        if let sessionID, !affectedSessionIDs.contains(sessionID) {
+            affectedSessionIDs.append(sessionID)
+        }
+        return affectedSessionIDs
+    }
+
+    private func clearAllPendingApprovalRequests() -> [SessionID] {
+        let affectedSessionIDs = uniqueStrings(pendingApprovalRequestsByID.values.compactMap { request in
+            approvalSessionID(for: request)
+        })
+        pendingApprovalRequestsByID.removeAll(keepingCapacity: false)
+        return affectedSessionIDs
+    }
+
+    private func emitApprovalResolved(sessionID: SessionID) {
+        emit(.approvalResolved(AgentEventMetadata(
+            seq: nil,
+            sessionID: sessionID,
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date()
+        )))
     }
 
     private func pendingApprovalStorageKeys(for request: CodexAppServerServerRequest) -> [String] {

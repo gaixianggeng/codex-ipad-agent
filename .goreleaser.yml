@@ -1,0 +1,81 @@
+version: 2
+
+project_name: codex-ipad-agent
+
+builds:
+  - id: agentd
+    main: ./cmd/agentd
+    binary: agentd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: agentd
+    ids:
+      - agentd
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - README.md
+      - config.example.json
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: codex-ipad-agent
+    ids:
+      - agentd
+    repository:
+      owner: gaixianggeng
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/gaixianggeng/codex-ipad-agent
+    description: iPad Codex companion agent for user-owned Macs
+    install: |
+      bin.install "agentd"
+    test: |
+      system "#{bin}/agentd", "version"
+    custom_block: |
+      service do
+        run [opt_bin/"agentd", "serve"]
+        environment_variables PATH: std_service_path_env
+        keep_alive true
+        log_path var/"log/codex-ipad-agent.log"
+        error_log_path var/"log/codex-ipad-agent.log"
+      end
+    caveats: |
+      首次使用：
+        codex --version
+        codex app-server --help
+        agentd setup
+        agentd doctor --check-port
+        brew services start codex-ipad-agent
+        agentd doctor
+        agentd pair
+
+      iPad App 使用 agentd pair 输出的 Endpoint/Token 或配对链接连接。

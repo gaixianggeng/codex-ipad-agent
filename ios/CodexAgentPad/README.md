@@ -27,18 +27,32 @@ Mac agentd compatibility runtime
   -> Codex app-server / PTY fallback
 ```
 
-目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex，也不做 Mac 自动发现。用户在设置页手动输入：
+目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex，也不做 Mac 自动发现。用户先在 Mac 上执行：
+
+```bash
+codex --version
+codex app-server --help
+
+agentd setup
+agentd doctor --check-port
+brew services start codex-ipad-agent
+agentd doctor
+agentd pair
+```
+
+然后在设置页手动输入或导入配对链接：
 
 - Endpoint，例如 `http://100.127.16.9:8787`
 - Token，也就是 `AGENTD_TOKEN`
+- 配对链接，例如 `codexagentpad://pair?endpoint=...&token=...`
 
 Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端当前固定使用直连模式，旧版本保存过的兼容模式会在启动时自动迁移为直连模式。
 
-direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。Mac 侧如果 app-server WS upstream 启用了 capability token，由 `agentd` 通过 `AGENTD_APP_SERVER_WS_TOKEN_FILE` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
+direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。`agentd setup` 会生成独立 upstream token file；Mac 侧由 `agentd` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
 
 直连要求：
 
-1. 直连模式需要 Mac 先运行 `codex app-server --listen ws://127.0.0.1:4222`，并让 `agentd` 配置 `AGENTD_APP_SERVER_LISTEN`。
+1. 推荐用 `agentd setup` 生成配置；`agentd serve` 会在 `app_server.managed=true` 时自动托管 loopback `codex app-server`。
 2. 设置页点击“测试连接”，会校验 `/api/app-server/config` 和 gateway 可用性。
 3. 点击“保存并加载”会断开旧 WebSocket，重新创建 direct API client 和 WebSocket client。
 
@@ -79,11 +93,11 @@ xcodegen generate --spec ios/CodexAgentPad/project.yml --project ios/CodexAgentP
 ```bash
 xcodebuild \
   -project ios/CodexAgentPad/CodexAgentPad.xcodeproj \
-  -target CodexAgentPad \
+  -scheme CodexAgentPad \
   -configuration Debug \
   -sdk iphoneos26.5 \
   CODE_SIGNING_ALLOWED=NO \
-  build
+  clean build
 ```
 
 测试 target 编译：
@@ -91,11 +105,11 @@ xcodebuild \
 ```bash
 xcodebuild \
   -project ios/CodexAgentPad/CodexAgentPad.xcodeproj \
-  -target CodexAgentPadTests \
+  -scheme CodexAgentPad \
   -configuration Debug \
   -sdk iphoneos26.5 \
   CODE_SIGNING_ALLOWED=NO \
-  build
+  clean build-for-testing
 ```
 
 真机运行：

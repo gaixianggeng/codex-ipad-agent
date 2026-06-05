@@ -12,6 +12,8 @@ struct SettingsView: View {
 
     @State private var endpoint = ""
     @State private var token = ""
+    @State private var pairingLink = ""
+    @State private var isSavingConnection = false
     @State private var localError: String?
 
     var body: some View {
@@ -36,6 +38,21 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    TextField("codexagentpad://pair?...", text: $pairingLink)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                    Button {
+                        applyPairingLink()
+                    } label: {
+                        Label("导入配对链接", systemImage: "link.badge.plus")
+                    }
+                    .disabled(isSavingConnection || pairingLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } header: {
+                    Text("配对")
+                }
+
+                Section {
                     Button {
                         Task { await appStore.testConnection(endpoint: endpoint, token: token, connectionMode: .direct) }
                     } label: {
@@ -43,11 +60,11 @@ struct SettingsView: View {
                     }
 
                     Button {
-                        save()
+                        Task { await save() }
                     } label: {
                         Label("保存并加载", systemImage: "checkmark.circle")
                     }
-                    .disabled(endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isSavingConnection || endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 Section {
@@ -64,6 +81,15 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("状态")
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        clearPairing()
+                    } label: {
+                        Label("清除配对", systemImage: "trash")
+                    }
+                    .disabled(isSavingConnection || !appStore.isConfigured)
                 }
 
                 Section {
@@ -112,16 +138,65 @@ struct SettingsView: View {
         }
     }
 
-    private func save() {
+    private func save() async {
+        isSavingConnection = true
+        defer { isSavingConnection = false }
         do {
-            try appStore.save(endpoint: endpoint, token: token, connectionMode: .direct)
-            sessionStore.resetConnectionForSettingsChange()
+            try await appStore.validateAndSave(endpoint: endpoint, token: token, connectionMode: .direct)
+            endpoint = appStore.endpoint
+            token = appStore.token
+            sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
-            Task {
-                await sessionStore.refreshAll(autoAttach: true)
-                if !isInitialSetup {
-                    dismiss()
-                }
+            await sessionStore.refreshAll(autoAttach: true)
+            if !isInitialSetup {
+                dismiss()
+            }
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+            localError = error.localizedDescription
+        }
+    }
+
+    private func applyPairingLink() {
+        Task { await importPairingLink() }
+    }
+
+    private func importPairingLink() async {
+        isSavingConnection = true
+        defer { isSavingConnection = false }
+        do {
+            let raw = pairingLink.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: raw) else {
+                throw PairingLinkError.unsupportedURL
+            }
+            try await appStore.validateAndSavePairingURL(url)
+            endpoint = appStore.endpoint
+            token = appStore.token
+            pairingLink = ""
+            sessionStore.resetConnectionForSettingsChange(clearData: true)
+            localError = nil
+            await sessionStore.refreshAll(autoAttach: true)
+            if !isInitialSetup {
+                dismiss()
+            }
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+            localError = error.localizedDescription
+        }
+    }
+
+    private func clearPairing() {
+        do {
+            try appStore.clearPairing()
+            endpoint = appStore.endpoint
+            token = appStore.token
+            pairingLink = ""
+            sessionStore.resetConnectionForSettingsChange(clearData: true)
+            localError = nil
+            if !isInitialSetup {
+                dismiss()
             }
         } catch {
             localError = error.localizedDescription

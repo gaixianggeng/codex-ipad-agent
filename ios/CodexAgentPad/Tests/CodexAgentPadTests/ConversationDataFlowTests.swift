@@ -1605,6 +1605,40 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(sessions.map(\.id), [freshHistory.id, otherProjectSession.id])
     }
 
+    func testAgentSessionDropsStalePendingApprovalOutsideWaitingStatus() {
+        let approval = ApprovalSummary(id: "approval-stale", title: "运行 xcodebuild", kind: "command", count: 1)
+
+        let running = AgentSession(
+            id: "codex_running",
+            projectID: "proj_1",
+            project: "proj_1",
+            dir: "/tmp/proj_1",
+            title: "运行中",
+            status: "running",
+            source: "codex",
+            resumeID: "running",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            pendingApproval: approval
+        )
+        XCTAssertNil(running.pendingApproval)
+
+        let waiting = AgentSession(
+            id: "codex_waiting",
+            projectID: "proj_1",
+            project: "proj_1",
+            dir: "/tmp/proj_1",
+            title: "等待审批",
+            status: "waiting_for_approval",
+            source: "codex",
+            resumeID: "waiting",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            pendingApproval: approval
+        )
+        XCTAssertEqual(waiting.pendingApproval?.id, approval.id)
+    }
+
     func testSessionStoreProjectExpansionCanCollapseAndReloadProjectSessions() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
@@ -4052,6 +4086,84 @@ extension ConversationDataFlowTests {
         let approvalResponse = try await waitForFakeAppServerResponse(transport, id: .int(99))
         XCTAssertEqual(approvalResponse.id, .int(99))
         XCTAssertEqual(approvalResponse.result?["decision"]?.stringValue, "accept")
+
+        socket.disconnect()
+    }
+
+    func testDirectRuntimeClearsApprovalWhenResolvedNotificationOnlyHasRequestID() async throws {
+        let project = AgentProject(id: "proj_resolved", name: "Resolved", path: "/tmp/resolved")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(endpoint: "http://127.0.0.1:8787", runtime: runtime)
+
+        let sessionTask = Task {
+            try await client.session(id: "thr_resolved")
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
+        _ = try await sessionTask.value
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+        socket.connect(url: try client.websocketURL(sessionID: "thr_resolved"), token: "outer-token")
+
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let resume = try decodeAppServerRequest(resumeMessages[3])
+        XCTAssertEqual(resume.method, "thread/resume")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_resolved","sessionId":"thr_resolved","preview":"等待审批清理","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resolved","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待审批清理","turns":[]}}}"#)
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        transport.enqueue(#"{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_resolved","turnId":"turn_resolved","itemId":"cmd_resolved","command":"xcrun devicectl list devices"}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .approvalRequest(let approval, _) = $0 {
+                return approval.id == "cmd_resolved"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .approvalRequest(let approval, _) = $0 {
+                return approval.id == "cmd_resolved"
+            }
+            return false
+        })
+
+        transport.enqueue(#"{"method":"serverRequest/resolved","params":{"requestId":"cmd_resolved"}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .approvalResolved(let metadata) = $0 {
+                return metadata.sessionID == "thr_resolved"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .approvalResolved(let metadata) = $0 {
+                return metadata.sessionID == "thr_resolved"
+            }
+            return false
+        })
 
         socket.disconnect()
     }

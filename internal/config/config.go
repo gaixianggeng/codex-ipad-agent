@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+const AppName = "codex-ipad-agent"
 
 type Config struct {
 	Listen      string          `json:"listen"`
@@ -56,6 +59,25 @@ type ProjectConfig struct {
 	Path string `json:"path"`
 }
 
+func DefaultPath() string {
+	if v := strings.TrimSpace(os.Getenv("AGENTD_CONFIG")); v != "" {
+		return v
+	}
+	dir, err := UserConfigDir()
+	if err != nil {
+		return "config.json"
+	}
+	return filepath.Join(dir, "config.json")
+}
+
+func UserConfigDir() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, AppName), nil
+}
+
 func Load(path string) (Config, error) {
 	cfg, err := load(path)
 	if err != nil {
@@ -73,6 +95,7 @@ func LoadForDoctor(path string) (Config, error) {
 
 func load(path string) (Config, error) {
 	cfg := defaults()
+	path = expandPath(path)
 	if path != "" {
 		if b, err := os.ReadFile(path); err == nil {
 			if err := json.Unmarshal(b, &cfg); err != nil {
@@ -92,6 +115,18 @@ func load(path string) (Config, error) {
 	}
 	cfg.Projects = mergeProjects(cfg.Projects, scanned)
 	return cfg, nil
+}
+
+func expandPath(path string) string {
+	value := strings.TrimSpace(path)
+	if !strings.HasPrefix(value, "~/") {
+		return value
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return value
+	}
+	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
 }
 
 func defaults() Config {
@@ -332,6 +367,9 @@ func (c Config) Validate() error {
 	if c.Auth.Token != "" && len(c.Auth.Token) < 16 {
 		return fmt.Errorf("token 太短，建议至少 32 字符")
 	}
+	if strings.Contains(strings.ToLower(c.Auth.Token), "change-me") {
+		return fmt.Errorf("token 仍是示例占位值，请执行 agentd setup 生成随机 token")
+	}
 	if c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
@@ -361,6 +399,13 @@ func isLoopbackListen(raw string) bool {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return true
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return false
+		}
+		value = parsed.Host
 	}
 	if strings.HasPrefix(value, "127.") || strings.HasPrefix(value, "localhost:") || strings.HasPrefix(value, "[::1]:") || strings.HasPrefix(value, "::1:") {
 		return true

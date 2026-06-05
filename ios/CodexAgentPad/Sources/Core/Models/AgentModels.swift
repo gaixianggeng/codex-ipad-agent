@@ -102,7 +102,9 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.revision = revision
         self.usage = usage
         self.rateLimit = rateLimit
-        self.pendingApproval = pendingApproval
+        // pendingApproval 只在真实等待审批状态下有效；历史快照偶发带回旧值时，
+        // 这里先做归一化，避免输入框展示已经失效的审批卡。
+        self.pendingApproval = status == "waiting_for_approval" ? pendingApproval : nil
         self.context = context
     }
 

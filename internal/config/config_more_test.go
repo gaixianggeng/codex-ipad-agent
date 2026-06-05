@@ -141,6 +141,7 @@ func TestValidateRejectsUnsafeAppServerListen(t *testing.T) {
 func clearAgentdEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
+		"AGENTD_CONFIG",
 		"AGENTD_LISTEN",
 		"AGENTD_BIND",
 		"AGENTD_PORT",

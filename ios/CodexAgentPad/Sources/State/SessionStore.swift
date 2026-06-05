@@ -520,8 +520,11 @@ final class SessionStore: ObservableObject {
         disconnectWebSocket()
     }
 
-    func resetConnectionForSettingsChange() {
+    func resetConnectionForSettingsChange(clearData: Bool = false) {
         disconnectWebSocket()
+        if clearData {
+            clearConnectionData()
+        }
         setErrorMessage(nil)
         setStatusMessage(nil)
     }
@@ -682,6 +685,8 @@ final class SessionStore: ObservableObject {
             try await client.stopSession(id: session.id)
             updateSession(session.id) { item in
                 item.status = "closed"
+                item.pendingApproval = nil
+                item.activeTurnID = nil
             }
             clearForegroundActivity(sessionID: session.id)
             conversationStore.appendSystem("Codex 会话已停止。", sessionID: session.id)
@@ -906,7 +911,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?) {
-        let next = Self.replacingSessions(sessions, with: fresh, projectID: projectID)
+        let next = Self.replacingSessions(sessions, with: fresh.map(Self.normalizedSession), projectID: projectID)
         ingestSessionContexts(next)
         guard next != sessions else {
             return
@@ -1754,7 +1759,35 @@ final class SessionStore: ObservableObject {
         webSocketStatus = value
     }
 
+    private func clearConnectionData() {
+        setSelectedSessionID(nil)
+        setSelectedProjectID(nil)
+        setProjectsIfChanged([])
+        sessions = []
+        setExpandedProjectIDs([])
+        setShowingAllSessionProjectIDs([])
+        frozenAllSessionOrder = []
+        frozenSessionOrderByProjectID = [:]
+        sessionPageCursorByProjectID = [:]
+        sessionHasMoreByProjectID = [:]
+        sessionPageRequestTokenByProjectID = [:]
+        sessionPageLoadingTokenByProjectID = [:]
+        historyPreviousCursorBySessionID = [:]
+        historyHasMoreBeforeBySessionID = [:]
+        historyPageRequestTokenBySessionID = [:]
+        initialHistoryLoadingSessionIDs = []
+        loadingEarlierHistorySessionIDs = []
+        lastSeenEventSeqBySessionID = [:]
+        foregroundActivityBySessionID = [:]
+        runtimeEventFlushTasks.values.forEach { $0.cancel() }
+        runtimeEventFlushTasks = [:]
+        foregroundActivityClearTasks.values.forEach { $0.cancel() }
+        foregroundActivityClearTasks = [:]
+        rebuildProjectSessionListSnapshots()
+    }
+
     private func upsert(_ session: AgentSession) {
+        let session = Self.normalizedSession(session)
         contextStore.upsert(from: session)
         if let index = sessionIndexByID[session.id] {
             guard sessions[index] != session else {
@@ -1782,10 +1815,20 @@ final class SessionStore: ObservableObject {
         var next = sessions
         let oldValue = next[index]
         mutate(&next[index])
+        next[index] = Self.normalizedSession(next[index])
         guard next[index] != oldValue else {
             return
         }
         sessions = next
+    }
+
+    private static func normalizedSession(_ session: AgentSession) -> AgentSession {
+        guard session.status != "waiting_for_approval", session.pendingApproval != nil else {
+            return session
+        }
+        var next = session
+        next.pendingApproval = nil
+        return next
     }
 
     private func setForegroundActivity(
