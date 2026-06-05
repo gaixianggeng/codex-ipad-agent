@@ -5,6 +5,7 @@ struct ConversationView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -15,39 +16,43 @@ struct ConversationView: View {
             errorMessage: sessionStore.errorMessage
         )
 
-        VStack(spacing: 0) {
-            topStatusStrip(model: model)
-            ConversationTimelineView()
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack {
-                Spacer(minLength: 0)
-                ComposerView()
-                    .frame(maxWidth: 920)
-                Spacer(minLength: 0)
+        GeometryReader { proxy in
+            let layout = ConversationLayout(containerWidth: proxy.size.width, horizontalSizeClass: horizontalSizeClass)
+
+            VStack(spacing: 0) {
+                topStatusStrip(model: model, layout: layout)
+                ConversationTimelineView(layout: layout)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
-            .background(tokens.surface.opacity(0.94))
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(tokens.border)
-                    .frame(height: 1)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack {
+                    Spacer(minLength: 0)
+                    ComposerView()
+                        .frame(maxWidth: layout.composerMaxWidth)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, layout.horizontalInset)
+                .padding(.top, layout.composerTopPadding)
+                .padding(.bottom, layout.composerBottomPadding)
+                .background(tokens.surface.opacity(0.94))
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(tokens.border)
+                        .frame(height: 1)
+                }
             }
+            .background(tokens.background.ignoresSafeArea())
         }
-        .background(tokens.background.ignoresSafeArea())
     }
 
     @ViewBuilder
-    private func topStatusStrip(model: ConversationScreenModel) -> some View {
+    private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
         if model.errorMessage != nil || model.foregroundActivity != nil {
             HStack {
                 Spacer(minLength: 0)
                 foregroundStatus(model: model)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, layout.horizontalInset)
             .padding(.top, 10)
             .padding(.bottom, 4)
         }
@@ -118,18 +123,54 @@ struct ConversationScreenModel: Equatable {
     }
 }
 
+struct ConversationLayout: Equatable {
+    let horizontalInset: CGFloat
+    let messageSideSpacer: CGFloat
+    let composerMaxWidth: CGFloat
+    let composerTopPadding: CGFloat
+    let composerBottomPadding: CGFloat
+    let userBubbleMaxWidth: CGFloat
+    let assistantBubbleMaxWidth: CGFloat
+    let systemMaxWidth: CGFloat
+    let runtimeCardMaxWidth: CGFloat
+    let emptyStateMaxWidth: CGFloat
+
+    var messageRowInsets: EdgeInsets {
+        EdgeInsets(top: 7, leading: horizontalInset, bottom: 7, trailing: horizontalInset)
+    }
+
+    init(containerWidth: CGFloat, horizontalSizeClass: UserInterfaceSizeClass?) {
+        let isCompactWidth = horizontalSizeClass == .compact || containerWidth < 560
+        let isTightPadWidth = containerWidth < 820
+
+        horizontalInset = isCompactWidth ? 12 : (isTightPadWidth ? 16 : 24)
+        messageSideSpacer = isCompactWidth ? 12 : (isTightPadWidth ? 24 : 56)
+        composerMaxWidth = isCompactWidth ? .infinity : min(920, max(360, containerWidth - horizontalInset * 2))
+        composerTopPadding = isCompactWidth ? 8 : 10
+        composerBottomPadding = isCompactWidth ? 10 : 12
+
+        // 气泡宽度按实际容器收缩，保留左右身份感，同时避免 iPhone/mini 竖屏横向溢出。
+        let rowAvailableWidth = max(240, containerWidth - horizontalInset * 2 - messageSideSpacer)
+        userBubbleMaxWidth = min(isCompactWidth ? 420 : 560, rowAvailableWidth)
+        assistantBubbleMaxWidth = min(isCompactWidth ? 520 : 660, rowAvailableWidth)
+        systemMaxWidth = min(520, max(240, containerWidth - horizontalInset * 2))
+        runtimeCardMaxWidth = min(560, max(260, containerWidth - horizontalInset * 2))
+        emptyStateMaxWidth = min(420, max(260, containerWidth - horizontalInset * 2))
+    }
+}
+
 struct ConversationTimelineView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var conversationStore: ConversationStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    let layout: ConversationLayout
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
 
     private let messageTailFollowThreshold: CGFloat = 120
-    private let messageRowInsets = EdgeInsets(top: 7, leading: 24, bottom: 7, trailing: 24)
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -145,23 +186,23 @@ struct ConversationTimelineView: View {
                             .padding(.top, 80)
                             .frame(maxWidth: .infinity)
                             .listRowSeparator(.hidden)
-                            .listRowInsets(messageRowInsets)
+                            .listRowInsets(layout.messageRowInsets)
                             .listRowBackground(Color.clear)
                     } else {
                         if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
                             loadEarlierRow(proxy: proxy)
                                 .listRowSeparator(.hidden)
-                                .listRowInsets(messageRowInsets)
+                                .listRowInsets(layout.messageRowInsets)
                                 .listRowBackground(Color.clear)
                         }
                         ForEach(messages) { message in
                             // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
                             // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                            MessageRow(message: message, themeVersion: themeStore.themeVersion)
+                            MessageRow(message: message, themeVersion: themeStore.themeVersion, layout: layout)
                                 .equatable()
                                 .id(message.id)
                                 .listRowSeparator(.hidden)
-                                .listRowInsets(messageRowInsets)
+                                .listRowInsets(layout.messageRowInsets)
                                 .listRowBackground(Color.clear)
                         }
                     }
@@ -192,7 +233,7 @@ struct ConversationTimelineView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(tokens.accent)
                     .controlSize(.small)
-                    .padding(.trailing, 24)
+                    .padding(.trailing, layout.horizontalInset)
                     .padding(.bottom, 18)
                     .accessibilityLabel("回到底部查看新消息")
                 }
@@ -278,7 +319,7 @@ struct ConversationTimelineView: View {
                 .font(themeStore.uiFont(.callout))
                 .foregroundStyle(workbenchSecondaryText)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: layout.emptyStateMaxWidth)
         }
         .padding(.vertical, 40)
         .frame(maxWidth: .infinity)
@@ -361,6 +402,7 @@ private struct MessageRow: View, Equatable {
     @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
     let themeVersion: Int
+    let layout: ConversationLayout
 
     // 只有内容 fingerprint / 状态变化时才重绘；长消息内容本身不参与这里的逐行比较。
     static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
@@ -371,6 +413,7 @@ private struct MessageRow: View, Equatable {
             && lhs.message.revision == rhs.message.revision
             && lhs.message.renderFingerprint == rhs.message.renderFingerprint
             && lhs.themeVersion == rhs.themeVersion
+            && lhs.layout == rhs.layout
     }
 
     var body: some View {
@@ -412,9 +455,9 @@ private struct MessageRow: View, Equatable {
 
     private var userRow: some View {
         HStack(spacing: 0) {
-            Spacer(minLength: 56)
+            Spacer(minLength: layout.messageSideSpacer)
             VStack(alignment: .trailing, spacing: 3) {
-                MessageBubble(message: message)
+                MessageBubble(message: message, layout: layout)
                 statusCaption
             }
         }
@@ -422,8 +465,8 @@ private struct MessageRow: View, Equatable {
 
     private var assistantRow: some View {
         HStack(spacing: 0) {
-            MessageBubble(message: message)
-            Spacer(minLength: 56)
+            MessageBubble(message: message, layout: layout)
+            Spacer(minLength: layout.messageSideSpacer)
         }
     }
 
@@ -431,9 +474,9 @@ private struct MessageRow: View, Equatable {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             if message.kind == .message {
-                SystemNotice(text: message.content)
+                SystemNotice(text: message.content, layout: layout)
             } else {
-                RuntimeSummaryCard(message: message)
+                RuntimeSummaryCard(message: message, layout: layout)
             }
             Spacer(minLength: 0)
         }
@@ -472,6 +515,7 @@ private struct MessageBubble: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
+    let layout: ConversationLayout
 
     var body: some View {
         renderContent
@@ -524,7 +568,7 @@ private struct MessageBubble: View {
     }
 
     private var maxBubbleWidth: CGFloat {
-        message.role == .user ? 560 : 660
+        message.role == .user ? layout.userBubbleMaxWidth : layout.assistantBubbleMaxWidth
     }
 
     private var background: Color {
@@ -546,6 +590,7 @@ private struct SystemNotice: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let text: String
+    let layout: ConversationLayout
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -558,7 +603,7 @@ private struct SystemNotice: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(tokens.systemBubble, in: Capsule())
-            .frame(maxWidth: 520)
+            .frame(maxWidth: layout.systemMaxWidth)
     }
 }
 
@@ -566,6 +611,7 @@ private struct RuntimeSummaryCard: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
+    let layout: ConversationLayout
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -588,7 +634,7 @@ private struct RuntimeSummaryCard: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
         .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)

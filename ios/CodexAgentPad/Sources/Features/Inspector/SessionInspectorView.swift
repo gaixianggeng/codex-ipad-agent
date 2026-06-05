@@ -275,26 +275,55 @@ private struct InspectorMetricRow: View {
     let symbolName: String
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            horizontalRow
+            verticalRow
+        }
+    }
+
+    private var horizontalRow: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbolName)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 16, height: 18)
+        return HStack(alignment: .top, spacing: 8) {
+            rowIcon(tokens: tokens)
 
             Text(title)
                 .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(tokens.secondaryText)
                 .frame(width: 82, alignment: .leading)
 
-            Text(value.isEmpty ? "-" : value)
-                .font(themeStore.codeFont(.caption))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            valueText(tokens: tokens)
         }
+    }
+
+    private var verticalRow: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(alignment: .top, spacing: 8) {
+            rowIcon(tokens: tokens)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+                valueText(tokens: tokens)
+            }
+        }
+    }
+
+    private func rowIcon(tokens: ThemeTokens) -> some View {
+        Image(systemName: symbolName)
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .foregroundStyle(tokens.secondaryText)
+            .frame(width: 16, height: 18)
+    }
+
+    private func valueText(tokens: ThemeTokens) -> some View {
+        Text(value.isEmpty ? "-" : value)
+            .font(themeStore.codeFont(.caption))
+            .foregroundStyle(tokens.primaryText)
+            .lineLimit(3)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

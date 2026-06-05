@@ -34,7 +34,7 @@ targets:
         INFOPLIST_FILE: Resources/Info.plist
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-        TARGETED_DEVICE_FAMILY: "2"
+        TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: "NO"
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "0.1.0"

@@ -207,26 +207,55 @@ private struct ContextValueRow: View {
     let value: String
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            horizontalRow
+            verticalRow
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var horizontalRow: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: symbolName)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 18)
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            rowIcon(tokens: tokens)
             Text(title)
                 .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(tokens.secondaryText)
                 .frame(width: 58, alignment: .leading)
-            Text(value)
-                .font(themeStore.codeFont(.caption))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(3)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            valueText(tokens: tokens)
         }
-        .padding(.vertical, 2)
+    }
+
+    private var verticalRow: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(alignment: .top, spacing: 10) {
+            rowIcon(tokens: tokens)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+                valueText(tokens: tokens)
+            }
+        }
+    }
+
+    private func rowIcon(tokens: ThemeTokens) -> some View {
+        Image(systemName: symbolName)
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .foregroundStyle(tokens.secondaryText)
+            .frame(width: 18)
+    }
+
+    private func valueText(tokens: ThemeTokens) -> some View {
+        Text(value)
+            .font(themeStore.codeFont(.caption))
+            .foregroundStyle(tokens.primaryText)
+            .lineLimit(3)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -239,36 +268,69 @@ private struct ContextItemRow: View {
     let badge: String?
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbolName)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 18, height: 20)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title.isEmpty ? "-" : title)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(2)
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(themeStore.codeFont(.caption2))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let badge, !badge.isEmpty {
-                Text(badge)
-                    .font(themeStore.uiFont(.caption2, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-            }
+        ViewThatFits(in: .horizontal) {
+            horizontalRow
+            verticalRow
         }
         .padding(.vertical, 3)
+    }
+
+    private var horizontalRow: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(alignment: .top, spacing: 10) {
+            rowIcon(tokens: tokens)
+            titleStack(tokens: tokens)
+            if let badge, !badge.isEmpty {
+                badgeText(badge, tokens: tokens)
+            }
+        }
+    }
+
+    private var verticalRow: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(alignment: .top, spacing: 10) {
+            rowIcon(tokens: tokens)
+            VStack(alignment: .leading, spacing: 4) {
+                titleStack(tokens: tokens)
+                if let badge, !badge.isEmpty {
+                    badgeText(badge, tokens: tokens)
+                }
+            }
+        }
+    }
+
+    private func rowIcon(tokens: ThemeTokens) -> some View {
+        Image(systemName: symbolName)
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .foregroundStyle(tokens.secondaryText)
+            .frame(width: 18, height: 20)
+    }
+
+    private func titleStack(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.isEmpty ? "-" : title)
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(2)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(themeStore.codeFont(.caption2))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func badgeText(_ badge: String, tokens: ThemeTokens) -> some View {
+        Text(badge)
+            .font(themeStore.uiFont(.caption2, weight: .medium))
+            .foregroundStyle(tokens.secondaryText)
+            .lineLimit(1)
     }
 }
 

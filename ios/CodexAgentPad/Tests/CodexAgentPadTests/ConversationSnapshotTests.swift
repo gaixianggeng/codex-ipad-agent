@@ -1,10 +1,21 @@
 import XCTest
 import SwiftUI
+import UIKit
 import SnapshotTesting
 @testable import CodexAgentPad
 
 @MainActor
 final class ConversationSnapshotTests: XCTestCase {
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // 现有参考图按 iPad 渲染环境录制；Universal 后 iPhone 会使用不同 trait，
+        // 容易产生设备差异误报。iPhone 适配用模拟器 smoke 和后续专属基线覆盖。
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
+        )
+    }
+
     // 固定尺寸 + 固定内容，专门锁住气泡对齐这类纯视觉回归（user 贴右、assistant/system 贴左）。
     // 使用模拟器默认外观，避免 snapshot 基准图和真实首屏默认 UI 不一致。
     // 首次运行会自动录制参考图到 __Snapshots__/，之后逐像素对比。
