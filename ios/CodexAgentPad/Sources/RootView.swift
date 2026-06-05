@@ -44,12 +44,10 @@ struct RootView: View {
 
     private var mainLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            ProjectSidebarView(showsSessions: false)
-                .navigationTitle("Codex")
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
-        } content: {
-            SessionListView()
-                .navigationTitle(sessionStore.selectedProject?.name ?? "会话")
+            ProjectSidebarView(showsSessions: true)
+                // 侧栏本身用 Section header 呈现“项目”，隐藏大标题可以让项目树首屏更紧凑。
+                .toolbar(.hidden, for: .navigationBar)
+                // 项目和会话合并到同一个原生 sidebar 后，需要给会话标题和状态留足宽度。
                 .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 420)
         } detail: {
             WorkspaceView()
@@ -80,8 +78,9 @@ struct RootView: View {
                             Button {
                                 sessionStore.returnToSessionList()
                             } label: {
-                                Label("返回会话", systemImage: "chevron.left")
+                                Label("回到项目", systemImage: "xmark.circle")
                             }
+                            .accessibilityLabel("回到项目")
                         }
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {

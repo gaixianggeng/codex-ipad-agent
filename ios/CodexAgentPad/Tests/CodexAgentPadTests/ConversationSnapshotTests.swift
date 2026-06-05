@@ -192,25 +192,17 @@ final class ConversationSnapshotTests: XCTestCase {
         )
         await sessionStore.refreshAll(autoAttach: false)
 
-        let view = HStack(spacing: 0) {
-            NavigationStack {
-                ProjectSidebarView(showsSessions: false)
-                    .navigationTitle("Codex")
-            }
-            .frame(width: 340)
-
-            NavigationStack {
-                SessionListView()
-                    .navigationTitle("会话")
-            }
+        let view = NavigationStack {
+            ProjectSidebarView(showsSessions: true)
+                .toolbar(.hidden, for: .navigationBar)
         }
         .environmentObject(sessionStore)
         .environmentObject(themeStore)
-        .frame(width: 1024, height: 768)
+        .frame(width: 420, height: 768)
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
         )
     }
 

@@ -396,6 +396,7 @@ final class SessionStore: ObservableObject {
                 // 刷新或重新保存设置不能抢走用户已经点选的历史会话。
                 setSelectedProjectID(session.projectID)
                 setSelectedSessionID(session.id)
+                revealProjectInSidebar(session.projectID)
                 await prepareSelectedSessionAfterRefresh(session, autoAttach: autoAttach)
             } else {
                 setSelectedSessionID(nil)
@@ -532,6 +533,7 @@ final class SessionStore: ObservableObject {
     func selectSession(_ session: AgentSession) async {
         setSelectedProjectID(session.projectID)
         setSelectedSessionID(session.id)
+        revealProjectInSidebar(session.projectID)
         setErrorMessage(nil)
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
@@ -1698,6 +1700,12 @@ final class SessionStore: ObservableObject {
         }
         expandedProjectIDs.remove(value)
         rebuildProjectSessionListSnapshot(forProjectID: value)
+    }
+
+    private func revealProjectInSidebar(_ projectID: String) {
+        // 选中历史会话、恢复前台或 create 成功后，只展开所属项目这一支。
+        // snapshot 按项目增量重建，避免右侧高频会话内容变化时牵动整个侧栏列表。
+        insertExpandedProjectID(projectID)
     }
 
     private func setShowingAllSessionProjectIDs(_ value: Set<String>) {
