@@ -1579,8 +1579,8 @@ final class SessionStore: ObservableObject {
             conversationStore.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: fallbackSessionID)
         case .completed(let message, let metadata, let fallbackSessionID):
             conversationStore.completeMessage(message, metadata: metadata, fallbackSessionID: fallbackSessionID)
-        case .system(let text, let sessionID, let kind):
-            conversationStore.appendSystem(text, sessionID: sessionID, kind: kind)
+        case .system(let text, let sessionID, let kind, let metadata):
+            conversationStore.appendSystem(text, sessionID: sessionID, kind: kind, metadata: metadata)
         case .resolveLatestPendingApproval(let sessionID):
             conversationStore.resolveLatestPendingApproval(sessionID: sessionID)
         case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):

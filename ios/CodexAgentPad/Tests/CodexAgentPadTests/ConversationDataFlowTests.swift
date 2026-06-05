@@ -75,6 +75,332 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertGreaterThan(message.contentByteCount, initial.contentByteCount)
     }
 
+    func testTimelineBuilderCollapsesProcessMessagesBeforeCompletedAssistant() throws {
+        let base = Date(timeIntervalSince1970: 1_000)
+        let user = ConversationMessage(
+            stableID: "user-1",
+            role: .user,
+            content: "检查 UI 展示",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let command = ConversationMessage(
+            stableID: "cmd-1",
+            turnID: "turn-processed",
+            role: .system,
+            kind: .commandSummary,
+            content: "命令：xcodebuild test",
+            createdAt: base.addingTimeInterval(1),
+            sendStatus: .confirmed
+        )
+        let diff = ConversationMessage(
+            stableID: "diff-1",
+            turnID: "turn-processed",
+            role: .system,
+            kind: .fileChangeSummary,
+            content: "文件变更：ConversationView.swift modified",
+            createdAt: base.addingTimeInterval(4),
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-1",
+            turnID: "turn-processed",
+            role: .assistant,
+            content: "已完成，最终回答保持展开。",
+            createdAt: base.addingTimeInterval(10),
+            sendStatus: .confirmed
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [user, command, diff, assistant])
+
+        XCTAssertEqual(items.count, 3)
+        if case .message(let first) = items[0] {
+            XCTAssertEqual(first.content, "检查 UI 展示")
+        } else {
+            XCTFail("用户消息不应被折叠")
+        }
+        let group: ProcessedConversationGroup
+        if case .processed(let processed) = items[1] {
+            group = processed
+        } else {
+            return XCTFail("过程消息应聚合成已处理折叠组")
+        }
+        XCTAssertEqual(group.messages.map(\.content), ["命令：xcodebuild test", "文件变更：ConversationView.swift modified"])
+        XCTAssertEqual(group.title, "已处理 9s")
+        if case .message(let final) = items[2] {
+            XCTAssertEqual(final.role, .assistant)
+            XCTAssertEqual(final.content, "已完成，最终回答保持展开。")
+        } else {
+            XCTFail("最终 assistant 消息必须保持独立展开")
+        }
+    }
+
+    func testTimelineBuilderDoesNotCollapseProcessMessagesIntoDifferentTurn() {
+        let base = Date(timeIntervalSince1970: 1_500)
+        let command = ConversationMessage(
+            stableID: "cmd-other-turn",
+            turnID: "turn-a",
+            role: .system,
+            kind: .commandSummary,
+            content: "命令：go test ./...",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-other-turn",
+            turnID: "turn-b",
+            role: .assistant,
+            content: "这是另一个 turn 的最终回复。",
+            createdAt: base.addingTimeInterval(5),
+            sendStatus: .confirmed
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
+
+        XCTAssertEqual(items.count, 2)
+        if case .message(let first) = items[0] {
+            XCTAssertEqual(first.turnID, "turn-a")
+        } else {
+            XCTFail("不同 turn 的过程消息不能折叠到后续 assistant")
+        }
+    }
+
+    func testTimelineBuilderPlacesLateProcessMessagesBeforeTheirCompletedAssistant() throws {
+        let base = Date(timeIntervalSince1970: 1_700)
+        let user = ConversationMessage(
+            stableID: "user-late-process",
+            role: .user,
+            content: "先出最终回复再出 diff",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-late-process",
+            turnID: "turn-late-process",
+            role: .assistant,
+            content: "最终回答仍然完整展示。",
+            createdAt: base.addingTimeInterval(5),
+            sendStatus: .confirmed
+        )
+        let diff = ConversationMessage(
+            stableID: "diff-late-process",
+            turnID: "turn-late-process",
+            role: .system,
+            kind: .fileChangeSummary,
+            content: "文件变更：README.md modified",
+            createdAt: base.addingTimeInterval(9),
+            sendStatus: .confirmed
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [user, assistant, diff])
+
+        XCTAssertEqual(items.count, 3)
+        if case .message(let first) = items[0] {
+            XCTAssertEqual(first.role, .user)
+        } else {
+            XCTFail("用户消息应保持在首位")
+        }
+        let group: ProcessedConversationGroup
+        if case .processed(let processed) = items[1] {
+            group = processed
+        } else {
+            return XCTFail("迟到的过程消息应按 turnID 归到最终回复之前")
+        }
+        XCTAssertEqual(group.messages.map(\.content), ["文件变更：README.md modified"])
+        XCTAssertEqual(group.title, "已处理 4s")
+        if case .message(let final) = items[2] {
+            XCTAssertEqual(final.content, "最终回答仍然完整展示。")
+        } else {
+            XCTFail("最终 assistant 消息仍应独立展示")
+        }
+    }
+
+    func testTimelineBuilderKeepsProcessMessagesVisibleWhileAssistantIsStreaming() {
+        let base = Date(timeIntervalSince1970: 2_000)
+        let command = ConversationMessage(
+            stableID: "cmd-streaming",
+            turnID: "turn-streaming",
+            role: .system,
+            kind: .commandSummary,
+            content: "命令仍在运行",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-streaming",
+            turnID: "turn-streaming",
+            role: .assistant,
+            content: "正在输出",
+            createdAt: base.addingTimeInterval(2),
+            sendStatus: .sending
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertFalse(items.contains { item in
+            if case .processed = item {
+                return true
+            }
+            return false
+        })
+    }
+
+    func testTimelineBuilderKeepsProcessMessagesVisibleWhenAssistantFailed() {
+        let base = Date(timeIntervalSince1970: 2_500)
+        let command = ConversationMessage(
+            stableID: "cmd-failed",
+            turnID: "turn-failed",
+            role: .system,
+            kind: .commandSummary,
+            content: "命令执行失败",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-failed",
+            turnID: "turn-failed",
+            role: .assistant,
+            content: "无法完成。",
+            createdAt: base.addingTimeInterval(2),
+            sendStatus: .failed
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertFalse(items.contains { item in
+            if case .processed = item {
+                return true
+            }
+            return false
+        })
+    }
+
+    func testTimelineBuilderDoesNotHideErrorMessagesInsideProcessedGroup() {
+        let base = Date(timeIntervalSince1970: 3_000)
+        let error = ConversationMessage(
+            stableID: "error-1",
+            role: .system,
+            kind: .error,
+            content: "运行错误：网络断开",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-after-error",
+            role: .assistant,
+            content: "失败原因如上。",
+            createdAt: base.addingTimeInterval(3),
+            sendStatus: .confirmed
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [error, assistant])
+
+        XCTAssertEqual(items.count, 2)
+        if case .message(let first) = items[0] {
+            XCTAssertEqual(first.kind, .error)
+        } else {
+            XCTFail("错误消息必须直接可见")
+        }
+    }
+
+    func testAppendSystemPreservesRuntimeTurnMetadata() throws {
+        let store = ConversationStore()
+        let sessionID = "sess-runtime-metadata"
+        let metadata = AgentEventMetadata(
+            seq: 9,
+            sessionID: sessionID,
+            turnID: "turn-runtime",
+            itemID: "item-diff",
+            messageID: "message-diff",
+            clientMessageID: nil,
+            revision: 3,
+            createdAt: Date(timeIntervalSince1970: 4_000)
+        )
+
+        store.appendSystem(
+            "文件变更：ConversationView.swift modified",
+            sessionID: sessionID,
+            kind: .fileChangeSummary,
+            metadata: metadata
+        )
+
+        let message = try XCTUnwrap(store.messages(for: sessionID).first)
+        XCTAssertEqual(message.turnID, "turn-runtime")
+        XCTAssertEqual(message.itemID, "item-diff")
+        XCTAssertEqual(message.revision, 3)
+        XCTAssertEqual(message.createdAt, Date(timeIntervalSince1970: 4_000))
+        XCTAssertNil(message.clientMessageID)
+    }
+
+    func testSystemRuntimeMetadataDoesNotStealUserClientMessageIndex() throws {
+        let store = ConversationStore()
+        let sessionID = "sess-client-index"
+        let clientMessageID = "client-shared"
+        store.appendLocalUser("运行测试", sessionID: sessionID, clientMessageID: clientMessageID, sendStatus: .sending)
+        store.appendSystem(
+            "文件变更：README.md modified",
+            sessionID: sessionID,
+            kind: .fileChangeSummary,
+            metadata: AgentEventMetadata(
+                seq: 11,
+                sessionID: sessionID,
+                turnID: "turn-client-index",
+                itemID: "diff-client-index",
+                messageID: nil,
+                clientMessageID: clientMessageID,
+                revision: 1,
+                createdAt: nil
+            )
+        )
+
+        store.updateSendStatus(clientMessageID: clientMessageID, sessionID: sessionID, status: .confirmed)
+
+        let messages = store.messages(for: sessionID)
+        let user = try XCTUnwrap(messages.first)
+        let system = try XCTUnwrap(messages.last)
+        XCTAssertEqual(user.role, .user)
+        XCTAssertEqual(user.sendStatus, .confirmed)
+        XCTAssertEqual(system.role, .system)
+        XCTAssertNil(system.clientMessageID)
+    }
+
+    func testCompletedRuntimeMessageDoesNotStealUserClientMessageIndex() throws {
+        let store = ConversationStore()
+        let sessionID = "sess-completed-client-index"
+        let clientMessageID = "client-completed-shared"
+        store.appendLocalUser("运行命令", sessionID: sessionID, clientMessageID: clientMessageID, sendStatus: .sending)
+        store.completeMessage(
+            AgentMessage(
+                id: "tool-completed",
+                sessionID: sessionID,
+                clientMessageID: clientMessageID,
+                turnID: "turn-completed-client-index",
+                itemID: "tool-item",
+                role: .tool,
+                kind: .message,
+                content: "go test ./...",
+                createdAt: Date(timeIntervalSince1970: 4_500),
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: .empty,
+            fallbackSessionID: sessionID
+        )
+
+        store.updateSendStatus(clientMessageID: clientMessageID, sessionID: sessionID, status: .confirmed)
+
+        let messages = store.messages(for: sessionID)
+        let user = try XCTUnwrap(messages.first)
+        let runtime = try XCTUnwrap(messages.last)
+        XCTAssertEqual(user.role, .user)
+        XCTAssertEqual(user.sendStatus, .confirmed)
+        XCTAssertEqual(runtime.role, .system)
+        XCTAssertEqual(runtime.kind, .commandSummary)
+        XCTAssertNil(runtime.clientMessageID)
+    }
+
     func testMessageRenderPlanCacheReusesAppendOnlyStreamingPrefix() {
         let cache = MessageRenderPlanCache(limit: 4)
         var message = ConversationMessage(

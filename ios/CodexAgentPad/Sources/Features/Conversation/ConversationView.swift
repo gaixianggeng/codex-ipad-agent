@@ -118,6 +118,200 @@ struct ConversationScreenModel: Equatable {
     }
 }
 
+enum ConversationTimelineItem: Identifiable, Equatable {
+    case message(ConversationMessage)
+    case processed(ProcessedConversationGroup)
+
+    var id: String {
+        switch self {
+        case .message(let message):
+            return "message:\(message.id.uuidString)"
+        case .processed(let group):
+            return group.id
+        }
+    }
+}
+
+struct ProcessedConversationGroup: Identifiable, Equatable {
+    let id: String
+    let messages: [ConversationMessage]
+    let startedAt: Date
+    let completedAt: Date
+
+    var duration: TimeInterval {
+        max(0, completedAt.timeIntervalSince(startedAt))
+    }
+
+    var title: String {
+        let durationText = Self.compactDuration(duration)
+        guard !durationText.isEmpty else {
+            return "已处理"
+        }
+        return "已处理 \(durationText)"
+    }
+
+    private static func compactDuration(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration.rounded()))
+        guard seconds > 0 else {
+            return ""
+        }
+        let minutes = seconds / 60
+        let remainingSeconds = seconds % 60
+        if minutes > 0 {
+            return "\(minutes)m \(remainingSeconds)s"
+        }
+        return "\(remainingSeconds)s"
+    }
+}
+
+struct ConversationTimelineItemBuilder {
+    static func items(from messages: [ConversationMessage]) -> [ConversationTimelineItem] {
+        let completedAssistantByTurnID = completedAssistantMessagesByTurnID(in: messages)
+        let processMessagesByTurnID = groupedProcessMessagesByTurnID(
+            in: messages,
+            completedTurnIDs: Set(completedAssistantByTurnID.keys)
+        )
+        let groupedProcessMessageIDs = Set(processMessagesByTurnID.values.flatMap { grouped in
+            grouped.map(\.id)
+        })
+        var insertedProcessTurnIDs = Set<TurnID>()
+        var items: [ConversationTimelineItem] = []
+        var index = messages.startIndex
+
+        while index < messages.endIndex {
+            let message = messages[index]
+            if groupedProcessMessageIDs.contains(message.id) {
+                index = messages.index(after: index)
+                continue
+            }
+            if let turnID = message.turnID,
+               isCompletedAssistantMessage(message),
+               let processMessages = processMessagesByTurnID[turnID],
+               !insertedProcessTurnIDs.contains(turnID) {
+                // app-server 事件可能先到最终 assistant、后到 diff/approval；渲染层按 turnID 归位，
+                // 保持“已处理”入口在最终回答之前，避免过程卡散落在最终回答之后。
+                items.append(.processed(group(from: processMessages, completedBy: message, id: "processed:turn:\(turnID)")))
+                insertedProcessTurnIDs.insert(turnID)
+            }
+            guard isCollapsibleProcessMessage(message) else {
+                items.append(.message(message))
+                index = messages.index(after: index)
+                continue
+            }
+
+            let startIndex = index
+            var processMessages: [ConversationMessage] = []
+            while index < messages.endIndex, isCollapsibleProcessMessage(messages[index]) {
+                processMessages.append(messages[index])
+                index = messages.index(after: index)
+            }
+
+            if let completedAssistant = fallbackCompletedAssistant(for: processMessages, nextIndex: index, messages: messages) {
+                // 只有最终 assistant 回复已经落定时才折叠过程；运行中仍完整展示，避免隐藏实时状态。
+                items.append(.processed(group(from: processMessages, completedBy: completedAssistant)))
+            } else {
+                items.append(contentsOf: messages[startIndex..<index].map(ConversationTimelineItem.message))
+            }
+        }
+
+        return items
+    }
+
+    private static func isCollapsibleProcessMessage(_ message: ConversationMessage) -> Bool {
+        guard message.role == .system else {
+            return false
+        }
+        switch message.kind {
+        case .reasoningSummary, .commandSummary, .fileChangeSummary, .approval:
+            return true
+        case .error, .message:
+            return false
+        }
+    }
+
+    private static func isCompletedAssistantMessage(_ message: ConversationMessage) -> Bool {
+        guard message.role == .assistant && message.kind == .message else {
+            return false
+        }
+        return message.sendStatus == .confirmed || message.sendStatus == .sent
+    }
+
+    private static func completedAssistantMessagesByTurnID(in messages: [ConversationMessage]) -> [TurnID: ConversationMessage] {
+        var result: [TurnID: ConversationMessage] = [:]
+        for message in messages {
+            guard let turnID = message.turnID, !turnID.isEmpty, isCompletedAssistantMessage(message) else {
+                continue
+            }
+            result[turnID] = result[turnID] ?? message
+        }
+        return result
+    }
+
+    private static func groupedProcessMessagesByTurnID(
+        in messages: [ConversationMessage],
+        completedTurnIDs: Set<TurnID>
+    ) -> [TurnID: [ConversationMessage]] {
+        var result: [TurnID: [ConversationMessage]] = [:]
+        for message in messages {
+            guard let turnID = message.turnID,
+                  completedTurnIDs.contains(turnID),
+                  isCollapsibleProcessMessage(message)
+            else {
+                continue
+            }
+            result[turnID, default: []].append(message)
+        }
+        return result
+    }
+
+    private static func fallbackCompletedAssistant(
+        for processMessages: [ConversationMessage],
+        nextIndex: [ConversationMessage].Index,
+        messages: [ConversationMessage]
+    ) -> ConversationMessage? {
+        guard sharedTurnID(in: processMessages) == nil else {
+            return nil
+        }
+        guard let next = messages[safe: nextIndex], isCompletedAssistantMessage(next) else {
+            return nil
+        }
+        return next
+    }
+
+    private static func sharedTurnID(in messages: [ConversationMessage]) -> TurnID? {
+        let turnIDs = Set(messages.compactMap(\.turnID))
+        guard turnIDs.count == 1, let turnID = turnIDs.first, !turnID.isEmpty else {
+            return nil
+        }
+        return turnID
+    }
+
+    private static func group(
+        from messages: [ConversationMessage],
+        completedBy assistant: ConversationMessage,
+        id: String? = nil
+    ) -> ProcessedConversationGroup {
+        let firstID = messages.first?.id.uuidString ?? assistant.id.uuidString
+        let lastID = messages.last?.id.uuidString ?? firstID
+        let processStart = messages.map(\.createdAt).min() ?? assistant.createdAt
+        let processEnd = messages.map(\.createdAt).max() ?? assistant.createdAt
+        let startedAt = min(processStart, assistant.createdAt)
+        let completedAt = max(processEnd, assistant.createdAt)
+        return ProcessedConversationGroup(
+            id: id ?? "processed:\(firstID):\(lastID)",
+            messages: messages,
+            startedAt: startedAt,
+            completedAt: completedAt
+        )
+    }
+}
+
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
 struct ConversationTimelineView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var conversationStore: ConversationStore
@@ -127,6 +321,7 @@ struct ConversationTimelineView: View {
     @State private var forceNextMessageTailScroll = true
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
+    @State private var expandedProcessedGroupIDs: Set<String> = []
 
     private let messageTailFollowThreshold: CGFloat = 120
     private let messageRowInsets = EdgeInsets(top: 7, leading: 24, bottom: 7, trailing: 24)
@@ -134,13 +329,15 @@ struct ConversationTimelineView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
+        let timelineItems = ConversationTimelineItemBuilder.items(from: messages)
+        let timelineItemIDs = timelineItems.map(\.id)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 // 用 List（底层 UITableView）替代 ScrollView + LazyVStack：行高是真实测量值、
                 // 有 cell 复用，scrollTo 对尚未实例化的行也可靠。这样既消除首屏/切换会话
                 // “空白要手滑一下”的竞态，右侧滚动条也不再因 LazyVStack 高度估算而长度/位置乱跳。
                 List {
-                    if messages.isEmpty {
+                    if timelineItems.isEmpty {
                         emptyState
                             .padding(.top, 80)
                             .frame(maxWidth: .infinity)
@@ -149,17 +346,16 @@ struct ConversationTimelineView: View {
                             .listRowBackground(Color.clear)
                     } else {
                         if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
-                            loadEarlierRow(proxy: proxy)
+                            loadEarlierRow(proxy: proxy, timelineItems: timelineItems)
                                 .listRowSeparator(.hidden)
                                 .listRowInsets(messageRowInsets)
                                 .listRowBackground(Color.clear)
                         }
-                        ForEach(messages) { message in
+                        ForEach(timelineItems) { item in
                             // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
                             // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                            MessageRow(message: message, themeVersion: themeStore.themeVersion)
-                                .equatable()
-                                .id(message.id)
+                            timelineRow(item)
+                                .id(item.id)
                                 .listRowSeparator(.hidden)
                                 .listRowInsets(messageRowInsets)
                                 .listRowBackground(Color.clear)
@@ -184,7 +380,7 @@ struct ConversationTimelineView: View {
                     Button {
                         hasUnseenTailMessage = false
                         shouldFollowMessageTail = true
-                        scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
+                        scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: true)
                     } label: {
                         Label("新消息", systemImage: "arrow.down.circle.fill")
                             .font(themeStore.uiFont(.caption, weight: .semibold))
@@ -202,9 +398,10 @@ struct ConversationTimelineView: View {
                 forceNextMessageTailScroll = true
                 hasUnseenTailMessage = false
                 isPreservingHistoryScroll = false
+                expandedProcessedGroupIDs.removeAll()
             }
             .onChange(of: messages.last?.id) { _, newID in
-                guard let newID else {
+                guard newID != nil else {
                     return
                 }
                 if forceNextMessageTailScroll {
@@ -213,29 +410,57 @@ struct ConversationTimelineView: View {
                     forceNextMessageTailScroll = false
                     hasUnseenTailMessage = false
                     shouldFollowMessageTail = true
-                    proxy.scrollTo(newID, anchor: .bottom)
+                    scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: false)
                     Task { @MainActor in
                         await Task.yield()
-                        proxy.scrollTo(newID, anchor: .bottom)
+                        scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: false)
                     }
                     return
                 }
-                scrollToMessageTail(messages: messages, proxy: proxy, animated: true)
+                scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: true)
             }
             .onChange(of: messages.last?.renderFingerprint) { _, _ in
                 // 流式增量会高频改写最后一条内容；无动画直接定位，跟随输出但不卡。
-                scrollToMessageTail(messages: messages, proxy: proxy, animated: false)
+                scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: false)
+            }
+            .onChange(of: timelineItemIDs) { _, _ in
+                // turn 完成可能只改变 sendStatus，却让过程卡从多行收成“已处理”一行；
+                // 监听派生 row id，确保折叠发生时底部跟随逻辑仍然有机会重锚。
+                scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: false)
             }
         }
     }
 
-    private func loadEarlierRow(proxy: ScrollViewProxy) -> some View {
+    @ViewBuilder
+    private func timelineRow(_ item: ConversationTimelineItem) -> some View {
+        switch item {
+        case .message(let message):
+            MessageRow(message: message, themeVersion: themeStore.themeVersion)
+                .equatable()
+        case .processed(let group):
+            ProcessedTurnRow(
+                group: group,
+                isExpanded: expandedProcessedGroupIDs.contains(group.id),
+                toggle: {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        if expandedProcessedGroupIDs.contains(group.id) {
+                            expandedProcessedGroupIDs.remove(group.id)
+                        } else {
+                            expandedProcessedGroupIDs.insert(group.id)
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    private func loadEarlierRow(proxy: ScrollViewProxy, timelineItems: [ConversationTimelineItem]) -> some View {
         HStack {
             Spacer()
             Button {
                 let sessionID = sessionStore.selectedSessionID
                 // prepend 后把原来最早的一条滚回顶部，保住用户当前阅读位置。
-                let anchorID = conversationStore.messages(for: sessionID).first?.id
+                let anchorID = timelineItems.first?.id
                 Task { @MainActor in
                     await loadEarlierHistory(preserving: anchorID, sessionID: sessionID, proxy: proxy)
                 }
@@ -296,8 +521,8 @@ struct ConversationTimelineView: View {
         themeStore.tokens(for: colorScheme).secondaryText
     }
 
-    private func scrollToMessageTail(messages: [ConversationMessage], proxy: ScrollViewProxy, animated: Bool) {
-        guard let lastID = messages.last?.id else {
+    private func scrollToTimelineTail(timelineItems: [ConversationTimelineItem], proxy: ScrollViewProxy, animated: Bool) {
+        guard let lastID = timelineItems.last?.id else {
             return
         }
         guard !isPreservingHistoryScroll else {
@@ -320,7 +545,7 @@ struct ConversationTimelineView: View {
 
     @MainActor
     private func loadEarlierHistory(
-        preserving anchorID: UUID?,
+        preserving anchorID: String?,
         sessionID: SessionID?,
         proxy: ScrollViewProxy
     ) async {
@@ -342,9 +567,10 @@ struct ConversationTimelineView: View {
         restoreHistoryAnchor(anchorID, proxy: proxy)
     }
 
-    private func restoreHistoryAnchor(_ anchorID: UUID, proxy: ScrollViewProxy) {
+    private func restoreHistoryAnchor(_ anchorID: String, proxy: ScrollViewProxy) {
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
-        guard messages.contains(where: { $0.id == anchorID }) else {
+        let timelineItems = ConversationTimelineItemBuilder.items(from: messages)
+        guard timelineItems.contains(where: { $0.id == anchorID }) else {
             return
         }
         var transaction = Transaction()
@@ -352,6 +578,56 @@ struct ConversationTimelineView: View {
         withTransaction(transaction) {
             proxy.scrollTo(anchorID, anchor: .top)
         }
+    }
+}
+
+private struct ProcessedTurnRow: View, Equatable {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let group: ProcessedConversationGroup
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    static func == (lhs: ProcessedTurnRow, rhs: ProcessedTurnRow) -> Bool {
+        lhs.group == rhs.group && lhs.isExpanded == rhs.isExpanded
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button(action: toggle) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle")
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                        Text(group.title)
+                            .font(themeStore.uiFont(.caption, weight: .medium))
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    }
+                    .foregroundStyle(tokens.secondaryText)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "收起已处理过程" : "展开已处理过程")
+
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(group.messages) { message in
+                            RuntimeSummaryCard(message: message)
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .frame(maxWidth: 660, alignment: .leading)
+
+            Spacer(minLength: 56)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var tokens: ThemeTokens {
+        themeStore.tokens(for: colorScheme)
     }
 }
 

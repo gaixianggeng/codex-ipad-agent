@@ -179,11 +179,26 @@ final class ConversationStore: ObservableObject {
         setMessages(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
-    func appendSystem(_ text: String, sessionID: String, kind: MessageKind = .message) {
+    func appendSystem(
+        _ text: String,
+        sessionID: String,
+        kind: MessageKind = .message,
+        metadata: AgentEventMetadata? = nil
+    ) {
         if kind == .approval, text.hasPrefix("等待审批："), upsertPendingApprovalMessage(text, sessionID: sessionID) {
             return
         }
-        append(ConversationMessage(role: .system, kind: kind, content: text), sessionID: sessionID)
+        // runtime 过程消息需要保留 turnID/itemID，UI 才能在 turn 完成后准确折叠到“已处理”组里。
+        append(ConversationMessage(
+            turnID: metadata?.turnID,
+            itemID: metadata?.itemID,
+            role: .system,
+            kind: kind,
+            content: text,
+            createdAt: metadata?.createdAt ?? Date(),
+            sendStatus: .confirmed,
+            revision: metadata?.revision
+        ), sessionID: sessionID)
     }
 
     func resolveApproval(_ approval: ApprovalSummary, accepted: Bool, sessionID: String) {
@@ -373,13 +388,17 @@ final class ConversationStore: ObservableObject {
         }
 
         let role: ConversationMessage.Role
+        let clientMessageID: ClientMessageID?
         switch message.role {
         case .user:
             role = .user
+            clientMessageID = message.clientMessageID
         case .assistant:
             role = .assistant
+            clientMessageID = nil
         default:
             role = .system
+            clientMessageID = nil
         }
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
 
@@ -387,7 +406,7 @@ final class ConversationStore: ObservableObject {
         let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
         let uuid = messageUUIDByStableMessageID[key] ?? UUID()
         messageUUIDByStableMessageID[key] = uuid
-        if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? message.clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
+        if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
             list[index].stableID = stableID
             list[index].kind = displayKind
             list[index].content = message.content
@@ -397,7 +416,7 @@ final class ConversationStore: ObservableObject {
             list.append(ConversationMessage(
                 id: uuid,
                 stableID: stableID,
-                clientMessageID: message.clientMessageID,
+                clientMessageID: clientMessageID,
                 turnID: message.turnID,
                 itemID: message.itemID,
                 role: role,
@@ -671,7 +690,8 @@ final class ConversationStore: ObservableObject {
             if let stableID = message.stableID {
                 stableIndexes[stableID] = index
             }
-            if let clientMessageID = message.clientMessageID {
+            // client_message_id 只用于用户本地回显确认；非 user runtime/assistant 消息带同名字段时不能覆盖用户行索引。
+            if message.role == .user, let clientMessageID = message.clientMessageID {
                 clientIndexes[clientMessageID] = index
             }
         }
@@ -686,7 +706,8 @@ final class ConversationStore: ObservableObject {
         if let stableID = message.stableID {
             messageIndexByStableIDBySessionID[sessionID, default: [:]][stableID] = index
         }
-        if let clientMessageID = message.clientMessageID {
+        // client_message_id 只索引 user 行，避免 runtime 过程事件误用同一个 client id 后影响 retry/status。
+        if message.role == .user, let clientMessageID = message.clientMessageID {
             messageIndexByClientMessageIDBySessionID[sessionID, default: [:]][clientMessageID] = index
         }
     }
