@@ -56,7 +56,6 @@ type appServerRuntimeMetadata struct {
 	Running            bool   `json:"running"`
 	Initialized        bool   `json:"initialized"`
 	PendingRequests    int    `json:"pending_requests"`
-	CompatibilityURL   string `json:"compatibility_sessions_url"`
 }
 
 type appServerPolicyMetadata struct {
@@ -131,12 +130,11 @@ func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request
 func (r *Router) appServerRuntimeMetadata() appServerRuntimeMetadata {
 	upstream, _ := r.appServerUpstreamWebSocketURL()
 	meta := appServerRuntimeMetadata{
-		Type:               firstNonEmpty(r.cfg.Runtime.Type, "pty"),
-		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "stdio"),
+		Type:               firstNonEmpty(r.cfg.Runtime.Type, "codex_app_server"),
+		Transport:          firstNonEmpty(r.cfg.AppServer.Transport, "ws"),
 		Managed:            r.cfg.AppServer.Managed,
 		GatewayAvailable:   upstream != "",
 		UpstreamConfigured: strings.TrimSpace(r.cfg.AppServer.Listen) != "",
-		CompatibilityURL:   "/api/sessions",
 	}
 	if provider, ok := r.runtime.(appServerDiagnosticsProvider); ok {
 		// metadata 只暴露运行态计数，不返回 codex home、token 或 stderr 等敏感细节。

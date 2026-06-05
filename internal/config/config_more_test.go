@@ -59,6 +59,39 @@ func TestLoadMergesExplicitAndScannedProjects(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesLegacyStdioTransportToWS(t *testing.T) {
+	projectDir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(map[string]any{
+		"auth":       AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		"runtime":    map[string]any{"type": "pty", "fallback_pty": true},
+		"app_server": map[string]any{"transport": "stdio", "managed": true},
+		"projects":   []ProjectConfig{{ID: "demo", Name: "Demo", Path: projectDir}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clearAgentdEnv(t)
+
+	// 旧配置（pty + stdio，且没有 listen）不能再让 Load/Validate 直接失败，必须平滑迁移到 ws gateway。
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("旧 stdio 配置应平滑迁移而不是报错：%v", err)
+	}
+	if cfg.Runtime.Type != "codex_app_server" {
+		t.Fatalf("runtime.type 应迁移为 codex_app_server，实际 %q", cfg.Runtime.Type)
+	}
+	if cfg.AppServer.Transport != "ws" {
+		t.Fatalf("app_server.transport 应迁移为 ws，实际 %q", cfg.AppServer.Transport)
+	}
+	if cfg.AppServer.Listen != defaultAppServerListen {
+		t.Fatalf("迁移后缺失的 listen 应补默认 loopback upstream，实际 %q", cfg.AppServer.Listen)
+	}
+}
+
 func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	projectDir := t.TempDir()
 	clearAgentdEnv(t)
@@ -69,11 +102,9 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_LISTEN", "127.0.0.1:7777")
 	t.Setenv("AGENTD_OUTPUT_BUFFER_BYTES", "4096")
 	t.Setenv("AGENTD_ALLOW_QUERY_TOKEN", "1")
-	t.Setenv("AGENTD_RUNTIME", "app_server")
-	t.Setenv("AGENTD_APP_SERVER_TRANSPORT", "stdio")
+	t.Setenv("AGENTD_APP_SERVER_TRANSPORT", "ws")
 	t.Setenv("AGENTD_APP_SERVER_MANAGED", "true")
 	t.Setenv("AGENTD_APP_SERVER_WS_TOKEN_FILE", "/tmp/codex-app-server-ws-token")
-	t.Setenv("AGENTD_APP_SERVER_FALLBACK_PTY", "false")
 
 	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil {
@@ -89,10 +120,10 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	if !cfg.Auth.AllowQueryToken {
 		t.Fatal("AGENTD_ALLOW_QUERY_TOKEN=1 应启用 query token 兼容模式")
 	}
-	if cfg.Runtime.Type != "codex_app_server" || cfg.Runtime.FallbackPTY {
+	if cfg.Runtime.Type != "codex_app_server" {
 		t.Fatalf("runtime 环境变量解析异常：%+v", cfg.Runtime)
 	}
-	if cfg.AppServer.Transport != "stdio" || !cfg.AppServer.Managed || cfg.AppServer.WSTokenFile != "/tmp/codex-app-server-ws-token" {
+	if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.WSTokenFile != "/tmp/codex-app-server-ws-token" {
 		t.Fatalf("app_server 环境变量解析异常：%+v", cfg.AppServer)
 	}
 	if len(cfg.Projects) != 1 || cfg.Projects[0].Path != projectDir {
@@ -149,12 +180,10 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_ALLOW_QUERY_TOKEN",
 		"AGENTD_CODEX_BIN",
 		"AGENTD_CODEX_ARGS",
-		"AGENTD_RUNTIME",
 		"AGENTD_APP_SERVER_TRANSPORT",
 		"AGENTD_APP_SERVER_LISTEN",
 		"AGENTD_APP_SERVER_WS_TOKEN_FILE",
 		"AGENTD_APP_SERVER_MANAGED",
-		"AGENTD_APP_SERVER_FALLBACK_PTY",
 		"AGENTD_DEV_INSECURE",
 		"AGENTD_OUTPUT_BUFFER_BYTES",
 		"AGENTD_PROJECTS",

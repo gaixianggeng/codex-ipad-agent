@@ -1,21 +1,5 @@
 import Foundation
 
-enum ConnectionMode: String, CaseIterable, Identifiable {
-    case compat
-    case direct
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .compat:
-            return "兼容模式"
-        case .direct:
-            return "直连模式"
-        }
-    }
-}
-
 enum PairingLinkError: LocalizedError, Equatable {
     case unsupportedURL
     case missingEndpoint
@@ -42,12 +26,11 @@ struct PairingCredentials: Equatable {
 final class AppStore: ObservableObject {
     @Published var endpoint: String
     @Published var token: String
-    @Published var connectionMode: ConnectionMode
     @Published var connectionStatus: ConnectionStatus = .idle
     @Published var lastError: String?
 
     private let endpointKey = "agentd.endpoint"
-    private let connectionModeKey = "agentd.connectionMode"
+    private let retiredConnectionModeKey = "agentd.connectionMode"
     private let defaultEndpoint = "http://127.0.0.1:8787"
     private let tokenStore = TokenStore()
     private var directRuntime: CodexAppServerSessionRuntime?
@@ -56,9 +39,8 @@ final class AppStore: ObservableObject {
     init() {
         self.endpoint = UserDefaults.standard.string(forKey: endpointKey) ?? defaultEndpoint
         self.token = tokenStore.load()
-        // 当前 iPad 客户端只暴露直连 app-server 链路；旧版本写入的 compat 配置在启动时迁移掉。
-        self.connectionMode = .direct
-        UserDefaults.standard.set(ConnectionMode.direct.rawValue, forKey: connectionModeKey)
+        // 当前 iPad 客户端只保留 Codex app-server JSON-RPC 直连链路；旧版本写入的连接模式配置直接清理掉。
+        UserDefaults.standard.removeObject(forKey: retiredConnectionModeKey)
     }
 
     var isConfigured: Bool {
@@ -72,95 +54,73 @@ final class AppStore: ObservableObject {
     }
 
     func makeSessionStoreAPIClient() throws -> any SessionStoreAPIClient {
-        switch connectionMode {
-        case .compat:
-            return try client()
-        case .direct:
-            let endpoint = try Self.validatedEndpoint(endpoint)
-            return CodexAppServerSessionAPIClient(endpoint: endpoint, runtime: runtime(endpoint: endpoint, token: token))
-        }
+        let endpoint = try Self.validatedEndpoint(endpoint)
+        return CodexAppServerSessionAPIClient(runtime: runtime(endpoint: endpoint, token: token))
     }
 
     func makeSessionWebSocketClient() -> any SessionWebSocketClient {
-        switch connectionMode {
-        case .compat:
-            return AgentWebSocketClient()
-        case .direct:
-            return CodexAppServerSessionWebSocketClient(runtime: runtime(
-                endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
-                token: token
-            ))
-        }
+        CodexAppServerSessionWebSocketClient(runtime: runtime(
+            endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
+            token: token
+        ))
     }
 
-    func save(endpoint: String, token: String, connectionMode: ConnectionMode) throws {
+    func save(endpoint: String, token: String) throws {
         let normalized = try Self.validatedEndpoint(endpoint)
         UserDefaults.standard.set(normalized, forKey: endpointKey)
-        UserDefaults.standard.set(connectionMode.rawValue, forKey: connectionModeKey)
+        UserDefaults.standard.removeObject(forKey: retiredConnectionModeKey)
         try tokenStore.save(token)
         // “保存并加载”必须重新读取 agentd 的 app-server config；否则 direct runtime
         // 会继续使用旧 allowlist 缓存，后端扫描根目录变化后 iPad 仍可能只看到旧项目。
         resetDirectRuntime()
         self.endpoint = normalized
         self.token = token
-        self.connectionMode = connectionMode
     }
 
-    func save(endpoint: String, token: String) throws {
-        try save(endpoint: endpoint, token: token, connectionMode: .direct)
-    }
-
-    func validateAndSave(endpoint: String, token: String, connectionMode: ConnectionMode = .direct) async throws {
-        let normalized = try await validateConnection(endpoint: endpoint, token: token, connectionMode: connectionMode)
-        try save(endpoint: normalized, token: token, connectionMode: connectionMode)
+    func validateAndSave(endpoint: String, token: String) async throws {
+        let normalized = try await validateConnection(endpoint: endpoint, token: token)
+        try save(endpoint: normalized, token: token)
         lastError = nil
     }
 
     func validateAndSavePairingURL(_ url: URL) async throws {
         let credentials = try Self.pairingCredentials(from: url)
         // 配对链接只写入 agentd 外侧访问 token；app-server upstream token 仍只保存在 Mac 本机配置里。
-        try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token, connectionMode: .direct)
+        try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
     }
 
     func clearPairing() throws {
         UserDefaults.standard.removeObject(forKey: endpointKey)
-        UserDefaults.standard.set(ConnectionMode.direct.rawValue, forKey: connectionModeKey)
+        UserDefaults.standard.removeObject(forKey: retiredConnectionModeKey)
         try tokenStore.delete(allowMissing: true)
         resetDirectRuntime()
         endpoint = defaultEndpoint
         token = ""
-        connectionMode = .direct
         connectionStatus = .idle
         lastError = nil
     }
 
     @discardableResult
-    func validateConnection(endpoint: String, token: String, connectionMode: ConnectionMode) async throws -> String {
+    func validateConnection(endpoint: String, token: String) async throws -> String {
         connectionStatus = .testing
         lastError = nil
         let normalized = try Self.validatedEndpoint(endpoint)
         let client = AgentAPIClient(endpoint: normalized, token: token)
         _ = try await client.health()
         let version = try await client.version()
-        if connectionMode == .direct {
-            let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token)
-            try await runtime.validateDirectGateway()
-        }
-        connectionStatus = .connected(connectionMode == .direct ? "\(version.version) · direct" : version.version)
+        let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token)
+        try await runtime.validateDirectGateway()
+        connectionStatus = .connected("\(version.version) · direct")
         return normalized
     }
 
-    func testConnection(endpoint: String, token: String, connectionMode: ConnectionMode) async {
+    func testConnection(endpoint: String, token: String) async {
         do {
-            _ = try await validateConnection(endpoint: endpoint, token: token, connectionMode: connectionMode)
+            _ = try await validateConnection(endpoint: endpoint, token: token)
         } catch {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
         }
-    }
-
-    func testConnection(endpoint: String, token: String) async {
-        await testConnection(endpoint: endpoint, token: token, connectionMode: .direct)
     }
 
     static func pairingCredentials(from url: URL) throws -> PairingCredentials {

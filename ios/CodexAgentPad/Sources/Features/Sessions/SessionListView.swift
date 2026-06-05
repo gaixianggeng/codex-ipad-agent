@@ -148,12 +148,10 @@ private struct SessionListRow: View {
 
     private var sourceText: String {
         switch session.source {
-        case "codex":
-            return session.isRunning ? "Codex app-server" : "Codex 历史"
         case "local":
             return "本地回显"
         default:
-            return "PTY fallback"
+            return session.isRunning ? "Codex app-server" : "Codex 历史"
         }
     }
 

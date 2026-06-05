@@ -59,6 +59,10 @@ actor CodexAppServerSessionRuntime {
     private var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
     private var eventContinuationsBySessionID: [SessionID: AsyncStream<AgentEvent>.Continuation] = [:]
     private var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
+    // 正在 startTurn 中的 thread：turn/start 请求挂起期间，actor 会重入处理 server-request，
+    // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
+    // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
+    private var sessionsStartingTurn: Set<SessionID> = []
 
     init(
         endpoint: String,
@@ -195,8 +199,40 @@ actor CodexAppServerSessionRuntime {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let messages = historyMessages(from: thread, sessionID: sessionID)
-        let bounded = limit.map { Array(messages.suffix(max(1, $0))) } ?? messages
-        return HistoryMessagesPage(messages: bounded, previousCursor: nil, hasMoreBefore: false)
+        return Self.paginateHistory(messages, before: before, limit: limit)
+    }
+
+    // thread/read 一次性返回整段 thread 历史；分页只能在客户端做。按消息稳定 id 切窗口，并回填
+    // previousCursor / hasMoreBefore，否则长会话只会拿到最近一窗，最早的消息既被 suffix 截掉、又因为
+    // 没有 cursor 而永远翻不回去（直连取代旧 REST 兼容链路后这条路是唯一来源）。
+    static func paginateHistory(
+        _ messages: [CodexHistoryMessage],
+        before: String?,
+        limit: Int?
+    ) -> HistoryMessagesPage {
+        let upperBound: Int
+        if let before {
+            guard let index = messages.firstIndex(where: { $0.id == before }) else {
+                // 游标对应的消息已不在历史里（极少见），关闭分页，避免反复请求同一页。
+                return HistoryMessagesPage(messages: [], previousCursor: nil, hasMoreBefore: false)
+            }
+            upperBound = index
+        } else {
+            upperBound = messages.count
+        }
+        let window = messages[..<upperBound]
+        let bounded: [CodexHistoryMessage]
+        if let limit, limit > 0, window.count > limit {
+            bounded = Array(window.suffix(limit))
+        } else {
+            bounded = Array(window)
+        }
+        let hasMoreBefore = bounded.count < window.count
+        return HistoryMessagesPage(
+            messages: bounded,
+            previousCursor: hasMoreBefore ? bounded.first?.id : nil,
+            hasMoreBefore: hasMoreBefore
+        )
     }
 
     func attachEvents(sessionID: SessionID) -> AsyncStream<AgentEvent> {
@@ -227,7 +263,7 @@ actor CodexAppServerSessionRuntime {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
-        // 官方 TUI 选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
+        // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
         // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
         // 可能不会回流到 iPad。
         try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
@@ -237,6 +273,10 @@ actor CodexAppServerSessionRuntime {
     func startTurn(sessionID: SessionID, prompt: String, clientMessageID: ClientMessageID?) async throws -> TurnID? {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        sessionsStartingTurn.insert(sessionID)
+        defer {
+            sessionsStartingTurn.remove(sessionID)
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         let connection = try await ensureConnection()
@@ -268,7 +308,20 @@ actor CodexAppServerSessionRuntime {
         guard !threadsResumedOnConnection.contains(sessionID) else {
             return
         }
-        _ = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd))
+        let result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd))
+        if let thread = threadObject(from: result),
+           let session = try? agentSession(
+            from: thread,
+            projects: (try? projectsFromCache()) ?? [],
+            fallbackProject: nil
+           ) {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+            emit(.session(session))
+        }
         threadsResumedOnConnection.insert(sessionID)
     }
 
@@ -454,11 +507,78 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func handle(_ request: CodexAppServerServerRequest) {
+        if isStaleReplayedApproval(request) {
+            // app-server 在 resume 时会把"仍未应答"的 server request 重新投递给新连接。如果这个审批属于
+            // 一个本地权威状态已经空闲、且没有活跃 turn 的 thread，它必然是某个被放弃的旧 turn 残留下来的
+            // 僵尸请求（原 turn 早已结束，永远不会再有 serverRequest/resolved）。直接回 decline 把它从
+            // app-server 的挂起表里释放，避免每次重连又被重放，也就不会再在输入框上方堆出过期审批卡。
+            releaseStaleApprovalRequest(request)
+            return
+        }
         rememberPendingApprovalRequest(request)
         guard let event = projector.project(request) else {
             return
         }
         emit(event)
+    }
+
+    private func isStaleReplayedApproval(_ request: CodexAppServerServerRequest) -> Bool {
+        guard isApprovalLikeServerRequest(request.method),
+              let sessionID = approvalSessionID(for: request),
+              let context = contextsBySessionID[sessionID] else {
+            // 不认识的 thread 或拿不到本地会话状态时，保守地照常弹卡，避免误杀真实审批。
+            return false
+        }
+        if sessionsStartingTurn.contains(sessionID) {
+            // 正在 startTurn 的挂起窗口内：activeTurnID/状态都还没回填，这一刻到达的审批属于刚发起的
+            // 新 turn，绝不能当成过期重放。
+            return false
+        }
+        // 如果 app-server 已把 thread 标成等待审批，但重放的审批属于旧 turn，而本地已经记录了新的
+        // active turn，说明它不是当前 iPad 正在等待的审批。直接释放，避免旧 Desktop 审批长期卡住
+        // 当前对话。status 条件很重要：新 turn 刚启动时，approval request 可能先于 turn/start 响应
+        // 进入 server-request 队列，此时不能把正常审批误判成旧请求。
+        if let requestTurnID = approvalTurnID(for: request),
+           let activeTurnID = context.activeTurnID,
+           context.session.status == "waiting_for_approval",
+           requestTurnID != activeTurnID {
+            return true
+        }
+
+        // 正在执行的 turn（无论谁发起）本地状态都会是 running/waiting 且记着 activeTurnID；
+        // 只有 app-server 自己把该 thread 报成空闲、且本地没有活跃 turn 时，才判定为过期重放。
+        return context.activeTurnID == nil && isInactiveThreadStatus(context.session.status)
+    }
+
+    private func isInactiveThreadStatus(_ status: String) -> Bool {
+        switch status {
+        case "running", "waiting_for_approval", "waiting_for_input":
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func releaseStaleApprovalRequest(_ request: CodexAppServerServerRequest) {
+        removePendingApprovalRequest(request)
+        guard let connection else {
+            return
+        }
+        let sessionID = approvalSessionID(for: request)
+        let result = approvalResponse(
+            method: request.method,
+            params: request.params?.objectValue ?? [:],
+            decision: "decline"
+        )
+        Task { [connection, sessionID] in
+            // 释放失败（连接已断或 app-server 已自行清理）无所谓：下次 resume 仍会重新走这套判断。
+            do {
+                try await connection.respond(to: request, result: result)
+                if let sessionID {
+                    self.emitApprovalResolved(sessionID: sessionID)
+                }
+            } catch {}
+        }
     }
 
     private func emit(_ event: AgentEvent) {
@@ -489,10 +609,9 @@ actor CodexAppServerSessionRuntime {
              .approvalRequest(_, let metadata),
              .approvalResolved(let metadata),
              .turnCompleted(let metadata),
-             .warning(_, let metadata),
-             .output(_, let metadata):
+             .warning(_, let metadata):
             return metadata.sessionID
-        case .exit, .error, .pong, .unknown:
+        case .error, .unknown:
             return nil
         }
     }
@@ -633,8 +752,15 @@ actor CodexAppServerSessionRuntime {
             ?? preview?.split(separator: "\n").first.map(String.init)
             ?? "Codex Thread \(id.prefix(8))"
         let cached = contextsBySessionID[id]?.session
-        let activeTurnID = cached?.activeTurnID ?? activeTurnID(from: thread)
-        let effectiveStatus = cached?.isRunning == true && status == "history" ? cached?.status ?? status : status
+        // thread/list 可能不带 turns，此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
+        // turns，就让服务端最新的 inProgress turn 覆盖旧缓存。现场曾出现旧审批 turn 长期保持
+        // inProgress，同时后面又有新的 inProgress turn；如果缓存优先，会把旧审批误当当前审批。
+        let remoteActiveTurnID = activeTurnID(from: thread)
+        let activeTurnID = remoteActiveTurnID ?? cached?.activeTurnID
+        // 列表/历史读偶发把正在执行的 turn 读成 history。只有本地确实记着一个进行中的 turn（activeTurnID
+        // 非空）时，才在这一瞬间保留运行态，避免侧栏角标抖动；没有活跃 turn 的残留态（例如被放弃的审批
+        // 等待）必须允许权威 history 把它降级，否则 stale 审批态会一直挂着清不掉。
+        let effectiveStatus = (cached?.activeTurnID != nil && status == "history") ? (cached?.status ?? status) : status
         let context = sessionContext(
             from: thread,
             sessionID: id,
@@ -1093,6 +1219,13 @@ actor CodexAppServerSessionRuntime {
         approvalSessionID(from: request.params?.objectValue ?? [:])
     }
 
+    private func approvalTurnID(for request: CodexAppServerServerRequest) -> TurnID? {
+        let params = request.params?.objectValue ?? [:]
+        return params["turnId"]?.stringValue
+            ?? params["turnID"]?.stringValue
+            ?? params["turn_id"]?.stringValue
+    }
+
     private func approvalSessionID(from params: [String: CodexAppServerJSONValue]) -> SessionID? {
         params["threadId"]?.stringValue
             ?? params["conversationId"]?.stringValue
@@ -1195,11 +1328,9 @@ actor CodexAppServerSessionRuntime {
 }
 
 final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
-    private let endpoint: String
     private let runtime: CodexAppServerSessionRuntime
 
-    init(endpoint: String, runtime: CodexAppServerSessionRuntime) {
-        self.endpoint = AgentAPIClient.normalizedEndpoint(endpoint)
+    init(runtime: CodexAppServerSessionRuntime) {
         self.runtime = runtime
     }
 
@@ -1234,10 +1365,6 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
         try await runtime.messagesPage(sessionID: sessionID, before: before, limit: limit)
     }
-
-    func websocketURL(sessionID: String) throws -> URL {
-        try CodexAppServerSessionRuntime.gatewayURL(endpoint: endpoint, sessionID: sessionID)
-    }
 }
 
 final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
@@ -1253,11 +1380,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         self.runtime = runtime
     }
 
-    func connect(url: URL, token: String) {
-        guard let threadID = Self.threadID(from: url) else {
-            onStatus?(.failed("direct WebSocket URL 缺少 thread_id"))
-            return
-        }
+    func connect(sessionID threadID: SessionID) {
         sessionID = threadID
         onStatus?(.connecting)
         eventPumpTask?.cancel()
@@ -1320,11 +1443,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     @discardableResult
-    func sendEnter() -> Bool {
-        true
-    }
-
-    @discardableResult
     func sendCtrlC() -> Bool {
         guard let sessionID else {
             onSendFailure?(nil, "direct WebSocket 未连接")
@@ -1344,11 +1462,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     @discardableResult
-    func sendResize(cols: Int, rows: Int) -> Bool {
-        true
-    }
-
-    @discardableResult
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool {
         guard let sessionID else {
             onSendFailure?(nil, "direct WebSocket 未连接")
@@ -1365,18 +1478,5 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             }
         }
         return true
-    }
-
-    @discardableResult
-    func ping() -> Bool {
-        onEvent?(.pong)
-        return true
-    }
-
-    private static func threadID(from url: URL) -> SessionID? {
-        URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first(where: { $0.name == "thread_id" })?
-            .value
     }
 }

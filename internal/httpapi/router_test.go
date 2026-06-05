@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -61,36 +60,21 @@ func newTestServer(t *testing.T) testServer {
 	}
 }
 
-func TestPositiveSeqParsesOnlyPositiveIntegers(t *testing.T) {
-	cases := map[string]int64{
-		"":    0,
-		"0":   0,
-		"-1":  0,
-		"bad": 0,
-		"42":  42,
-	}
-	for raw, want := range cases {
-		if got := positiveSeq(raw); got != want {
-			t.Fatalf("positiveSeq(%q)=%d, want %d", raw, got, want)
-		}
-	}
-}
-
 func TestSameOriginOrNoOrigin(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "http://agentd.local/api/sessions/sess/ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://agentd.local/api/app-server/ws", nil)
 	req.Host = "agentd.local"
 	if !sameOriginOrNoOrigin(req) {
 		t.Fatal("没有 Origin 的原生客户端/WebSocket 请求应允许")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "http://agentd.local/api/sessions/sess/ws", nil)
+	req = httptest.NewRequest(http.MethodGet, "http://agentd.local/api/app-server/ws", nil)
 	req.Host = "agentd.local"
 	req.Header.Set("Origin", "http://agentd.local")
 	if !sameOriginOrNoOrigin(req) {
 		t.Fatal("同源浏览器 WebSocket 应允许")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "http://agentd.local/api/sessions/sess/ws", nil)
+	req = httptest.NewRequest(http.MethodGet, "http://agentd.local/api/app-server/ws", nil)
 	req.Host = "agentd.local"
 	req.Header.Set("Origin", "http://evil.local")
 	if sameOriginOrNoOrigin(req) {
@@ -155,89 +139,6 @@ func TestDecodeSessionCursorRejectsMalformedNonEmptyCursor(t *testing.T) {
 			t.Fatalf("非空无效 cursor 应返回错误且不启用分页，raw=%q has=%v err=%v", raw, hasCursor, err)
 		}
 	}
-}
-
-func TestSessionsRejectsMalformedCursor(t *testing.T) {
-	server := newTestServer(t)
-	rec := httptest.NewRecorder()
-
-	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/sessions?cursor=not-base64!", nil))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("坏 cursor 应返回 400，实际 %d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestSessionTraceEndpointReturnsRecentTraceEvents(t *testing.T) {
-	server := newTestServer(t)
-	dir := t.TempDir()
-	s, err := server.manager.Create(session.CreateRequest{
-		Project: projects.Project{ID: "demo", Name: "Demo", Path: dir, RealPath: dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Stop() })
-
-	rec := httptest.NewRecorder()
-	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/sessions/"+s.ID+"/trace", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("期望 trace 返回 200，实际 %d body=%s", rec.Code, rec.Body.String())
-	}
-	body := decodeJSON(t, rec)
-	trace, ok := body["trace"].([]any)
-	if !ok || len(trace) == 0 {
-		t.Fatalf("trace 响应应包含最近事件：%v", body)
-	}
-	first := trace[0].(map[string]any)
-	if first["type"] != "session_created" {
-		t.Fatalf("首个 trace 事件应记录 session_created：%v", trace)
-	}
-}
-
-func TestSessionDetailAfterSeqOmitsAlreadySeenRecentOutput(t *testing.T) {
-	server := newTestServer(t)
-	dir := t.TempDir()
-	s, err := server.manager.Create(session.CreateRequest{
-		Project: projects.Project{ID: "demo", Name: "Demo", Path: dir, RealPath: dir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Stop() })
-
-	if err := s.Write("hello\n"); err != nil {
-		t.Fatal(err)
-	}
-	lastSeq := waitForSessionSeq(t, s)
-
-	rec := httptest.NewRecorder()
-	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/sessions/"+s.ID+"/?after_seq="+strconv.FormatInt(lastSeq, 10), nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("期望 session detail 返回 200，实际 %d body=%s", rec.Code, rec.Body.String())
-	}
-	body := decodeJSON(t, rec)
-	if body["recent_output"] != "" {
-		t.Fatalf("after_seq 已到最新水位时不应重复返回 recent_output：%v", body)
-	}
-	if got := int64(body["last_seq"].(float64)); got != lastSeq {
-		t.Fatalf("last_seq 应仍返回当前水位，got=%d want=%d", got, lastSeq)
-	}
-}
-
-func waitForSessionSeq(t *testing.T, s *session.Session) int64 {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		snapshot := s.RecentOutputSnapshot()
-		if snapshot.LastSeq > 0 {
-			return snapshot.LastSeq
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("等待 session 输出超时")
-	return 0
 }
 
 func authedRequest(t *testing.T, method, path string, body any) *http.Request {
@@ -328,129 +229,30 @@ func TestProjectsReturnsConfiguredProjects(t *testing.T) {
 	}
 }
 
-func TestSessionsRejectsUnknownProject(t *testing.T) {
+func TestLegacySessionsEndpointsAreRemoved(t *testing.T) {
+	server := newTestServer(t)
+	for _, path := range []string{
+		"/api/sessions",
+		"/api/sessions/codex_thread-demo",
+		"/api/sessions/codex_thread-demo/messages",
+		"/api/sessions/codex_thread-demo/trace",
+		"/api/sessions/codex_thread-demo/ws",
+	} {
+		rec := httptest.NewRecorder()
+		server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s 应已下线并返回 404，实际 %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestWebPWAStaticRootIsRemoved(t *testing.T) {
 	server := newTestServer(t)
 	rec := httptest.NewRecorder()
 
-	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/sessions", map[string]any{
-		"project_id": "missing",
-		"prompt":     "hello",
-	}))
+	server.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("期望未知项目返回 400，实际 %d body=%s", rec.Code, rec.Body.String())
-	}
-	body := decodeJSON(t, rec)
-	if body["error"] == "" {
-		t.Fatalf("期望返回错误信息：%v", body)
-	}
-}
-
-func TestCreateSessionAndListSessions(t *testing.T) {
-	server := newTestServer(t)
-	createRec := httptest.NewRecorder()
-
-	server.handler.ServeHTTP(createRec, authedRequest(t, http.MethodPost, "/api/sessions", map[string]any{
-		"project_id":        "demo",
-		"prompt":            "帮我测试",
-		"cols":              120,
-		"rows":              32,
-		"client_message_id": "client-create-1",
-	}))
-
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("期望创建会话返回 201，实际 %d body=%s", createRec.Code, createRec.Body.String())
-	}
-	created := decodeJSON(t, createRec)
-	sessionObj, ok := created["session"].(map[string]any)
-	if !ok {
-		t.Fatalf("创建会话响应缺少 session：%v", created)
-	}
-	sessionID, _ := sessionObj["id"].(string)
-	if sessionID == "" || sessionObj["project_id"] != "demo" || sessionObj["status"] != "running" {
-		t.Fatalf("创建会话字段异常：%v", sessionObj)
-	}
-	if created["ws_url"] != "/api/sessions/"+sessionID+"/ws" {
-		t.Fatalf("ws_url 异常：%v", created)
-	}
-	if created["client_message_id"] != "client-create-1" {
-		t.Fatalf("创建响应应回传 client_message_id：%v", created)
-	}
-	firstMessage, ok := created["first_message"].(map[string]any)
-	if !ok {
-		t.Fatalf("带 client_message_id 的创建响应应返回 first_message：%v", created)
-	}
-	if firstMessage["id"] != "client:client-create-1" ||
-		firstMessage["session_id"] != sessionID ||
-		firstMessage["client_message_id"] != "client-create-1" ||
-		firstMessage["role"] != "user" ||
-		firstMessage["kind"] != "message" ||
-		firstMessage["content"] != "帮我测试" ||
-		firstMessage["send_status"] != "confirmed" {
-		t.Fatalf("first_message 字段异常：%v", firstMessage)
-	}
-	if revision, _ := firstMessage["revision"].(float64); revision != 1 {
-		t.Fatalf("first_message revision 应为 1：%v", firstMessage)
-	}
-
-	listRec := httptest.NewRecorder()
-	server.handler.ServeHTTP(listRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=demo&limit=20", nil))
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("期望会话列表返回 200，实际 %d body=%s", listRec.Code, listRec.Body.String())
-	}
-	listed := decodeJSON(t, listRec)
-	sessions, ok := listed["sessions"].([]any)
-	if !ok || len(sessions) == 0 {
-		t.Fatalf("会话列表响应异常：%v", listed)
-	}
-
-	otherProjectRec := httptest.NewRecorder()
-	server.handler.ServeHTTP(otherProjectRec, authedRequest(t, http.MethodGet, "/api/sessions?project_id=missing", nil))
-	if otherProjectRec.Code != http.StatusOK {
-		t.Fatalf("期望其他项目过滤返回 200，实际 %d body=%s", otherProjectRec.Code, otherProjectRec.Body.String())
-	}
-	otherProjectBody := decodeJSON(t, otherProjectRec)
-	otherProjectSessions, ok := otherProjectBody["sessions"].([]any)
-	if !ok || len(otherProjectSessions) != 0 {
-		t.Fatalf("project_id 过滤应排除其他项目会话：%v", otherProjectBody)
-	}
-}
-
-func TestSessionMessagesReturnsEmptyPageForLiveSession(t *testing.T) {
-	server := newTestServer(t)
-	createRec := httptest.NewRecorder()
-	server.handler.ServeHTTP(createRec, authedRequest(t, http.MethodPost, "/api/sessions", map[string]any{
-		"project_id": "demo",
-	}))
-	created := decodeJSON(t, createRec)
-	sessionObj := created["session"].(map[string]any)
-	sessionID := sessionObj["id"].(string)
-
-	msgRec := httptest.NewRecorder()
-	server.handler.ServeHTTP(msgRec, authedRequest(t, http.MethodGet, "/api/sessions/"+sessionID+"/messages?before=cursor&limit=50", nil))
-
-	if msgRec.Code != http.StatusOK {
-		t.Fatalf("期望消息接口返回 200，实际 %d body=%s", msgRec.Code, msgRec.Body.String())
-	}
-	body := decodeJSON(t, msgRec)
-	messages, ok := body["messages"].([]any)
-	if !ok || len(messages) != 0 {
-		t.Fatalf("期望 live session 消息页为空：%v", body)
-	}
-}
-
-func TestSessionMessagesDoesNot404ForMissingCodexHistory(t *testing.T) {
-	server := newTestServer(t)
-	msgRec := httptest.NewRecorder()
-
-	server.handler.ServeHTTP(msgRec, authedRequest(t, http.MethodGet, "/api/sessions/codex_missing-thread/messages", nil))
-
-	if msgRec.Code != http.StatusOK {
-		t.Fatalf("缺失 Codex rollout 不应让详情页 404，实际 %d body=%s", msgRec.Code, msgRec.Body.String())
-	}
-	body := decodeJSON(t, msgRec)
-	messages, ok := body["messages"].([]any)
-	if !ok || len(messages) != 0 {
-		t.Fatalf("期望缺失历史返回空消息页：%v", body)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("Web/PWA 根页面应已下线并返回 404，实际 %d body=%s", rec.Code, rec.Body.String())
 	}
 }

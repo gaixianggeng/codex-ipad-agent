@@ -167,9 +167,6 @@ struct ComposerView: View {
         if let rateLimit = session.rateLimit?.compactText {
             items.append((rateLimit, "speedometer", .secondary))
         }
-        if session.source == "agentd" {
-            items.append(("PTY fallback", "terminal", .secondary))
-        }
         return items
     }
 

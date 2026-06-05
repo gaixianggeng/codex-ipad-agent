@@ -5,8 +5,7 @@
     "allow_query_token": false
   },
   "runtime": {
-    "type": "pty",
-    "fallback_pty": true
+    "type": "codex_app_server"
   },
   "app_server": {
     "transport": "ws",

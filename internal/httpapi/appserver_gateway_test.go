@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/doctor"
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
+	"github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
 )
 
 func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
@@ -589,7 +593,7 @@ func appServerGatewayRouterFixtureWithTokenFile(t *testing.T, upstreamURL string
 
 func appServerGatewayRouterFixtureWithConfig(t *testing.T, upstreamURL string, customize func(*config.Config)) (http.Handler, string) {
 	t.Helper()
-	cfg, registry, manager, checker, projectDir := runtimeRouterFixture(t)
+	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
 	cfg.AppServer = config.AppServerConfig{
 		Transport: "ws",
 		Managed:   true,
@@ -598,7 +602,39 @@ func appServerGatewayRouterFixtureWithConfig(t *testing.T, upstreamURL string, c
 	if customize != nil {
 		customize(&cfg)
 	}
-	return NewRouterWithRuntime(cfg, registry, manager, checker, "test", &fakeSessionRuntime{}), projectDir
+	return NewRouterWithRuntime(cfg, registry, manager, checker, "test", nil), projectDir
+}
+
+func appServerGatewayBaseFixture(t *testing.T) (config.Config, *projects.Registry, *session.Manager, *doctor.Checker, string) {
+	t.Helper()
+	projectDir := t.TempDir()
+	cfg := config.Config{
+		Listen: "127.0.0.1:0",
+		Auth:   config.AuthConfig{Token: testToken},
+		Codex: config.CodexConfig{
+			Bin: "/bin/cat",
+			Env: map[string]string{"TERM": "xterm-256color"},
+		},
+		Session: config.SessionConfig{OutputBufferBytes: 8 * 1024},
+		Projects: []config.ProjectConfig{{
+			ID:   "demo",
+			Name: "Demo",
+			Path: projectDir,
+		}},
+	}
+	registry, err := projects.NewRegistry(cfg.Projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager(session.Options{
+		CodexBin:     cfg.Codex.Bin,
+		DefaultArgs:  cfg.Codex.DefaultArgs,
+		Env:          cfg.Codex.Env,
+		OutputBuffer: cfg.Session.OutputBufferBytes,
+	})
+	t.Cleanup(manager.Shutdown)
+	checker := doctor.NewChecker("test", cfg, registry)
+	return cfg, registry, manager, checker, projectDir
 }
 
 func fakeAppServerUpstream(t *testing.T, onFrame func(conn *websocket.Conn, messageType int, payload []byte)) (string, <-chan []byte, *atomic.Int64) {
@@ -635,6 +671,21 @@ func fakeAppServerUpstreamWithAuth(t *testing.T, expectedToken string, onFrame f
 	}))
 	t.Cleanup(server.Close)
 	return wsURL(server.URL, "/"), received, &connections
+}
+
+func wsURL(serverURL string, path string) string {
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		return serverURL
+	}
+	switch parsed.Scheme {
+	case "https":
+		parsed.Scheme = "wss"
+	default:
+		parsed.Scheme = "ws"
+	}
+	parsed.Path = path
+	return parsed.String()
 }
 
 func dialAuthedGateway(t *testing.T, serverURL string) *websocket.Conn {

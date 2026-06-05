@@ -159,7 +159,7 @@ struct RootView: View {
             return nil
         }
         guard session.isRunning else {
-            if session.isCodexHistory {
+            if session.isAppServerHistory {
                 return "clock"
             }
             return session.status == "closed" ? "checkmark.circle" : "circle.dashed"

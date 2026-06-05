@@ -14,10 +14,7 @@ enum AgentEvent {
     case approvalResolved(AgentEventMetadata)
     case turnCompleted(AgentEventMetadata)
     case warning(AgentErrorPayload, AgentEventMetadata)
-    case output(String, AgentEventMetadata)
-    case exit(ExitResult)
     case error(String)
-    case pong
     case unknown(String)
 }
 
@@ -89,14 +86,8 @@ extension AgentEvent: Decodable {
             self = .turnCompleted(metadata)
         case "warning":
             self = .warning(try Self.decodePayload(from: container, key: .warning, fallback: "未知警告"), metadata)
-        case "output":
-            self = .output(try container.decodeIfPresent(String.self, forKey: .data) ?? "", metadata)
-        case "exit":
-            self = .exit(try container.decodeIfPresent(ExitResult.self, forKey: .exit) ?? ExitResult(code: nil, reason: nil))
         case "error":
             self = .error(try container.decodeIfPresent(String.self, forKey: .error) ?? "未知错误")
-        case "pong":
-            self = .pong
         default:
             self = .unknown(type)
         }
@@ -119,7 +110,6 @@ extension AgentEvent: Decodable {
         if let delta = try container.decodeIfPresent(AgentDelta.self, forKey: .delta) {
             return delta
         }
-        // 兼容早期 agentd 直接把增量文本放在 data 字段的格式。
         return AgentDelta(text: try container.decodeIfPresent(String.self, forKey: .data) ?? "", role: .assistant, kind: .message)
     }
 
@@ -271,44 +261,6 @@ extension AgentEventMetadata {
         revision: nil,
         createdAt: nil
     )
-}
-
-struct ClientWebSocketMessage: Encodable {
-    let type: String
-    let data: String?
-    let cols: Int?
-    let rows: Int?
-    let approvalID: String?
-    let decision: String?
-    let clientMessageID: ClientMessageID?
-
-    enum CodingKeys: String, CodingKey {
-        case type
-        case data
-        case cols
-        case rows
-        case approvalID = "approval_id"
-        case decision
-        case clientMessageID = "client_message_id"
-    }
-
-    init(
-        type: String,
-        data: String? = nil,
-        cols: Int? = nil,
-        rows: Int? = nil,
-        approvalID: String? = nil,
-        decision: String? = nil,
-        clientMessageID: ClientMessageID? = nil
-    ) {
-        self.type = type
-        self.data = data
-        self.cols = cols
-        self.rows = rows
-        self.approvalID = approvalID
-        self.decision = decision
-        self.clientMessageID = clientMessageID
-    }
 }
 
 struct CodexAppServerEventProjector {

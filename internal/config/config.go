@@ -38,8 +38,7 @@ type CodexConfig struct {
 }
 
 type RuntimeConfig struct {
-	Type        string `json:"type"`
-	FallbackPTY bool   `json:"fallback_pty"`
+	Type string `json:"type"`
 }
 
 type AppServerConfig struct {
@@ -108,7 +107,11 @@ func load(path string) (Config, error) {
 
 	applyEnv(&cfg)
 	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
-	cfg.AppServer.Transport = strings.TrimSpace(strings.ToLower(cfg.AppServer.Transport))
+	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
+	if strings.EqualFold(cfg.AppServer.Transport, "ws") && strings.TrimSpace(cfg.AppServer.Listen) == "" {
+		// 旧配置迁移到 ws 后可能没有 listen；补一个默认 loopback upstream，避免 Validate 直接失败。
+		cfg.AppServer.Listen = defaultAppServerListen
+	}
 	scanned, err := discoverProjects(cfg.ScanRoots)
 	if err != nil {
 		return Config{}, err
@@ -129,16 +132,19 @@ func expandPath(path string) string {
 	return filepath.Join(home, strings.TrimPrefix(value, "~/"))
 }
 
+// defaultAppServerListen 是托管 Codex app-server 的默认 loopback WebSocket upstream，仅本机可达。
+const defaultAppServerListen = "ws://127.0.0.1:4222"
+
 func defaults() Config {
 	return Config{
 		Listen: "127.0.0.1:8787",
 		Runtime: RuntimeConfig{
-			Type:        "pty",
-			FallbackPTY: true,
+			Type: "codex_app_server",
 		},
 		AppServer: AppServerConfig{
-			Transport: "stdio",
+			Transport: "ws",
 			Managed:   true,
+			Listen:    defaultAppServerListen,
 		},
 		Codex: CodexConfig{
 			Bin:         "codex",
@@ -181,9 +187,6 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("AGENTD_CODEX_ARGS"); v != "" {
 		cfg.Codex.DefaultArgs = strings.Fields(v)
 	}
-	if v := os.Getenv("AGENTD_RUNTIME"); v != "" {
-		cfg.Runtime.Type = normalizeRuntimeType(v)
-	}
 	if v := os.Getenv("AGENTD_APP_SERVER_TRANSPORT"); v != "" {
 		cfg.AppServer.Transport = strings.TrimSpace(strings.ToLower(v))
 	}
@@ -195,9 +198,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_MANAGED"); v != "" {
 		cfg.AppServer.Managed = truthy(v)
-	}
-	if v := os.Getenv("AGENTD_APP_SERVER_FALLBACK_PTY"); v != "" {
-		cfg.Runtime.FallbackPTY = truthy(v)
 	}
 	if v := os.Getenv("AGENTD_DEV_INSECURE"); v == "1" || strings.EqualFold(v, "true") {
 		cfg.DevInsecure = true
@@ -224,6 +224,20 @@ func normalizeRuntimeType(raw string) string {
 	switch value {
 	case "app_server", "app-server", "codex-app-server":
 		return "codex_app_server"
+	case "pty":
+		// 旧配置平滑迁移：不再启动 PTY runtime，只把历史字段归一到当前 app-server 链路。
+		return "codex_app_server"
+	default:
+		return value
+	}
+}
+
+func normalizeTransport(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "", "stdio", "unix", "off":
+		// 旧配置平滑迁移：直连链路只保留 ws gateway，历史 stdio/unix/off 等 transport 统一归一到 ws。
+		return "ws"
 	default:
 		return value
 	}
@@ -374,14 +388,17 @@ func (c Config) Validate() error {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
 	switch normalizeRuntimeType(c.Runtime.Type) {
-	case "pty", "codex_app_server":
+	case "codex_app_server":
 	default:
-		return fmt.Errorf("runtime.type 只支持 pty 或 codex_app_server")
+		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
-	case "stdio", "unix", "ws", "off":
+	case "ws":
 	default:
-		return fmt.Errorf("app_server.transport 只支持 stdio、unix、ws 或 off")
+		return fmt.Errorf("app_server.transport 只支持 ws")
+	}
+	if strings.EqualFold(c.AppServer.Transport, "ws") && strings.TrimSpace(c.AppServer.Listen) == "" {
+		return fmt.Errorf("app_server.listen 不能为空")
 	}
 	if strings.EqualFold(c.AppServer.Transport, "ws") && c.AppServer.Listen != "" && !isLoopbackListen(c.AppServer.Listen) {
 		return fmt.Errorf("app_server.listen 只允许 loopback；iPad 应连接 agentd，不应直连 Codex app-server")

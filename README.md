@@ -36,11 +36,11 @@ Codex core / 本机凭证 / 项目目录
 - 默认不接受 URL query token，避免 token 出现在浏览器历史、日志或 Referer 里。
 - MVP 不建议公网暴露，只建议本机或 Tailscale 使用。
 
-兼容路径：
+已下线旧路径：
 
-- 旧 `/api/sessions*` REST 和 `/api/sessions/{id}/ws` 仍保留，主要服务 Web/PWA 和迁移回退。
-- Go 的 `CodexAppServerRuntime` 属于兼容协议转换层；目标主链路不再依赖它。
-- Safari/PWA 不能直接裸连 Codex app-server，因为浏览器 WebSocket 不能自定义 `Authorization` header，且浏览器请求会带 `Origin`。浏览器路径继续走 agentd 兼容 API，或后续单独做 HTTPS/WSS 网关。
+- `/api/sessions*` REST、`/api/sessions/{id}/ws` 和内置 Web/PWA 静态站点已经删除。
+- iPad 原生 App 只通过 `/api/projects`、`/api/app-server/config` 和 `/api/app-server/ws` 工作。
+- 浏览器/Safari 入口不再维护；需要远程使用时请安装原生 iPad App，并通过 Tailscale 访问 `agentd`。
 
 ## 实现
 
@@ -197,8 +197,8 @@ App 端设计边界：
 - direct 模式下 Swift 客户端自己处理 app-server JSON-RPC request/response、notification 和 server request。
 - app-server 原始事件在 Swift 端投影为内部 `AgentEvent`，再通过 `EventReducer` 分发给 `MessageStore`/`ConversationStore` 和 `LogStore`。
 - 日志有节流和最大缓冲，输入框连续输入不会触发日志刷新。
-- 终端 parser 只作为兼容回退，不是主消息来源。
-- app-server runtime 不依赖终端尺寸；旧 PTY fallback 仍固定 `120x32`，不跟随键盘或布局变化频繁发送 resize。
+- iOS 不再解析 PTY 文本生成消息气泡；消息区只消费 app-server 结构化 history/event。
+- app-server runtime 不依赖终端尺寸，iOS 不再发送 resize 事件。
 
 ### 1.3 iPad-only 远程开发闭环
 
@@ -249,23 +249,17 @@ export AGENTD_SCAN_ROOTS="/Users/gaixiaotongxue/code"
 ./bin/agentd serve
 ```
 
-本机打开：
+本机只提供 API 和 app-server gateway，不再提供 Web/PWA 页面。可用 curl 检查服务：
 
-```text
-http://127.0.0.1:8787
+```bash
+curl http://127.0.0.1:8787/healthz
 ```
 
-页面里输入 `AGENTD_TOKEN` 后连接。Web/PWA 当前走兼容 API；原生 iPad App 固定走 direct app-server 链路。
+原生 iPad App 固定走 direct app-server 链路，设置页里填写 `agentd` Endpoint 和 `AGENTD_TOKEN`。
 
 使用 `agentd setup` 生成的配置时，`agentd serve` 会自动托管 loopback `codex app-server`，原生 iPad App 只需要连接 `agentd`。手动环境变量启动主要用于开发和调试。
 
-注意：原生 iPad App 会在 HTTP 和 WebSocket 握手里使用 `Authorization: Bearer <token>`。浏览器 WebSocket 不能设置 Authorization header；如果仍要使用内置 Web/PWA 调试入口，需要显式开启兼容模式：
-
-```bash
-export AGENTD_ALLOW_QUERY_TOKEN=1
-```
-
-这个模式会把 token 放进 WebSocket URL query，只建议本机或可信 Tailscale 网络内临时使用。
+注意：原生 iPad App 会在 HTTP 和 WebSocket 握手里使用 `Authorization: Bearer <token>`。不要把 `AGENTD_TOKEN` 放进 URL query。
 
 如果你想手动管理 app-server upstream，可以显式启动 loopback WebSocket。上游 app-server 如果启用 capability token，给 `agentd` 配独立 token file：
 
@@ -285,7 +279,7 @@ AGENTD_APP_SERVER_MANAGED=false \
 ./bin/agentd serve
 ```
 
-`AGENTD_TOKEN` 只用于 iPad/Web 访问 `agentd`；`AGENTD_APP_SERVER_WS_TOKEN_FILE` 只用于 `agentd` 访问本机 app-server upstream，二者不要复用。
+`AGENTD_TOKEN` 只用于 iPad 访问 `agentd`；`AGENTD_APP_SERVER_WS_TOKEN_FILE` 只用于 `agentd` 访问本机 app-server upstream，二者不要复用。
 
 ### 2.1 iPad direct 启动
 
@@ -294,7 +288,7 @@ iPad direct 模式启动步骤：
 1. 推荐先运行 `agentd setup`，让 `agentd` 自动生成 token file 和托管 loopback app-server。
 2. 用 `brew services start codex-ipad-agent` 或 `agentd serve` 启动 `agentd`。
 3. iPad App 设置页点击“测试连接”，确认能读取 `/api/app-server/config` 且 gateway 可用。
-4. 点击“保存并加载”，会断开旧 WebSocket 并按 direct 模式重新拉取项目和会话。
+4. 点击“保存并加载”，会断开现有 WebSocket 并按 direct 模式重新拉取项目和会话。
 
 ### 3. Tailscale 启动
 
@@ -317,7 +311,7 @@ AGENTD_PORT=8787 \
 ./bin/agentd serve
 ```
 
-iPad Safari 打开：
+iPad App 设置页填写 Endpoint：
 
 ```text
 http://<Mac 的 Tailscale IP>:8787
@@ -328,24 +322,6 @@ http://<Mac 的 Tailscale IP>:8787
 ```text
 http://<mac-hostname>.<tailnet-name>.ts.net:8787
 ```
-
-### 3.1 安装成 iPad PWA
-
-项目已经内置 PWA 文件：
-
-```text
-/manifest.webmanifest
-/sw.js
-/icons/icon.svg
-```
-
-iPad 上推荐用 HTTPS 访问后添加到主屏幕：
-
-```text
-Safari -> 分享 -> 添加到主屏幕
-```
-
-注意：service worker 通常要求 HTTPS 或 localhost。直接访问 `http://100.x.x.x:8787` 时页面仍能正常用，但 PWA 离线缓存可能不会启用。后续可以用 Tailscale HTTPS/MagicDNS 或 `tailscale serve` 提供 HTTPS 入口。
 
 ### 4. 使用配置文件
 
@@ -371,11 +347,9 @@ AGENTD_TOKEN
 AGENTD_ALLOW_QUERY_TOKEN
 AGENTD_CODEX_BIN
 AGENTD_CODEX_ARGS
-AGENTD_RUNTIME
 AGENTD_APP_SERVER_TRANSPORT
 AGENTD_APP_SERVER_LISTEN
 AGENTD_APP_SERVER_MANAGED
-AGENTD_APP_SERVER_FALLBACK_PTY
 AGENTD_PROJECTS
 AGENTD_SCAN_ROOTS
 AGENTD_OUTPUT_BUFFER_BYTES
@@ -413,14 +387,11 @@ curl -H "Authorization: Bearer $AGENTD_TOKEN" \
   http://127.0.0.1:8787/api/projects
 ```
 
-兼容 API 创建 Codex 会话：
+读取 app-server gateway 配置：
 
 ```bash
-curl -X POST \
-  -H "Authorization: Bearer $AGENTD_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"project_id":"code","prompt":"帮我查看这个项目结构","cols":120,"rows":32}' \
-  http://127.0.0.1:8787/api/sessions
+curl -H "Authorization: Bearer $AGENTD_TOKEN" \
+  http://127.0.0.1:8787/api/app-server/config
 ```
 
 ## 发布
@@ -477,10 +448,9 @@ go run github.com/goreleaser/goreleaser/v2@v2.9.0 release --snapshot --clean --s
 当前 MVP 限制：
 
 - 单用户、单 Token。
-- 兼容模式的 running session 只存在内存中，重启会丢失；direct 模式历史来自 app-server thread store。
+- running/history 状态来自 app-server thread store。
 - 每个 session 同时只允许一个 WebSocket 客户端。
-- 兼容 PTY 终端输出只保留最近 128KB。
-- 已集成 xterm.js，但终端日志只作为辅助面板，不持久化完整历史。
+- 终端日志只作为辅助面板，不持久化完整历史。
 
 安全建议：
 

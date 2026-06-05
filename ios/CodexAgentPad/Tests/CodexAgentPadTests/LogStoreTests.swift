@@ -190,7 +190,7 @@ final class LogStoreTests: XCTestCase {
     }
 
     func testLogFormatterCollapsesInlineRepeatedSentences() {
-        // Codex TUI 在同一行里把整句重画两遍，旧逻辑会原样展示重复内容。
+        // 日志重绘在同一行里把整句重画两遍，旧逻辑会原样展示重复内容。
         let log = "● 他说：\"那你得放松。\" 他说：\"那你得放松。\"\n"
 
         let lines = LogPanelFormatter().renderedLines(from: log)
@@ -213,7 +213,7 @@ final class LogStoreTests: XCTestCase {
     }
 
     func testLogFormatterDoesNotTruncatePlainOutputWithPromptLikeChars() {
-        // 普通终端 output 里的 "›" / ">Implement" / "•" 不是 TUI 残影，不应被 prompt 清洗截断。
+        // 普通日志里的 "›" / ">Implement" / "•" 不是 prompt 残片，不应被清洗截断。
         let log = [
             "build a › b done",
             "note: > Implement later",

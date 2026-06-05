@@ -34,8 +34,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var pendingApproval: ApprovalSummary?
     let context: SessionContextSnapshot?
 
-    var isCodexHistory: Bool {
-        source == "codex" && status == "history"
+    var isAppServerHistory: Bool {
+        status == "history"
     }
 
     var isRunning: Bool {
@@ -807,11 +807,6 @@ struct AgentErrorPayload: Codable, Hashable {
     let message: String
     let code: String?
     let retryable: Bool?
-}
-
-struct ExitResult: Codable, Hashable {
-    let code: Int?
-    let reason: String?
 }
 
 enum ConnectionStatus: Equatable {

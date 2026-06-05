@@ -54,7 +54,7 @@ struct SettingsView: View {
 
                 Section {
                     Button {
-                        Task { await appStore.testConnection(endpoint: endpoint, token: token, connectionMode: .direct) }
+                        Task { await appStore.testConnection(endpoint: endpoint, token: token) }
                     } label: {
                         Label("测试连接", systemImage: "bolt.horizontal.circle")
                     }
@@ -142,7 +142,7 @@ struct SettingsView: View {
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
-            try await appStore.validateAndSave(endpoint: endpoint, token: token, connectionMode: .direct)
+            try await appStore.validateAndSave(endpoint: endpoint, token: token)
             endpoint = appStore.endpoint
             token = appStore.token
             sessionStore.resetConnectionForSettingsChange(clearData: true)

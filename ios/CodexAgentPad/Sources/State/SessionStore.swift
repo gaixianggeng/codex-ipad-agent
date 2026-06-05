@@ -9,10 +9,7 @@ protocol SessionStoreAPIClient {
     func stopSession(id: String) async throws
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage
-    func websocketURL(sessionID: String) throws -> URL
 }
-
-extension AgentAPIClient: SessionStoreAPIClient {}
 
 extension SessionStoreAPIClient {
     func session(id: String) async throws -> SessionResponse {
@@ -27,18 +24,6 @@ extension SessionStoreAPIClient {
         HistoryMessagesPage(messages: try await messages(sessionID: sessionID, before: before, limit: limit))
     }
 
-    func websocketURL(sessionID: String, afterSeq: EventSequence?) throws -> URL {
-        var url = try websocketURL(sessionID: sessionID)
-        guard let afterSeq, afterSeq > 0,
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url
-        }
-        var items = components.queryItems ?? []
-        items.append(URLQueryItem(name: "after_seq", value: String(afterSeq)))
-        components.queryItems = items
-        url = components.url ?? url
-        return url
-    }
 }
 
 enum SessionForegroundActivity: Equatable, Sendable {
@@ -181,8 +166,6 @@ final class SessionStore: ObservableObject {
     private var initialHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published private var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
-    private let fixedCols = 120
-    private let fixedRows = 32
     private let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
     private let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
     private let historyPageLimit = 120
@@ -249,7 +232,7 @@ final class SessionStore: ObservableObject {
             return nil
         }
         guard selectedSession.isRunning else {
-            if selectedSession.isCodexHistory {
+            if selectedSession.isAppServerHistory {
                 return "历史"
             }
             return selectedSession.status == "closed" ? "已结束" : selectedSession.status
@@ -398,6 +381,13 @@ final class SessionStore: ObservableObject {
                 setSelectedSessionID(session.id)
                 revealProjectInSidebar(session.projectID)
                 await prepareSelectedSessionAfterRefresh(session, autoAttach: autoAttach)
+            } else if autoAttach, let runningSession = sessions(forProjectID: projectID).first(where: \.isRunning) {
+                // iPad 冷启动/回前台时，如果当前没有明确选中的会话，优先恢复正在运行的会话。
+                // 这会触发 direct app-server 的 thread/resume，让残留审批等运行态问题有机会自愈。
+                setSelectedProjectID(runningSession.projectID)
+                setSelectedSessionID(runningSession.id)
+                revealProjectInSidebar(runningSession.projectID)
+                await prepareSelectedSessionAfterRefresh(runningSession, autoAttach: true)
             } else {
                 setSelectedSessionID(nil)
             }
@@ -493,7 +483,6 @@ final class SessionStore: ObservableObject {
 
     func loadEarlierHistoryForSelectedSession() async {
         guard let session = selectedSession,
-              session.source == "codex",
               let cursor = historyPreviousCursorBySessionID[session.id],
               canLoadEarlierHistory(sessionID: session.id),
               !loadingEarlierHistorySessionIDs.contains(session.id)
@@ -538,9 +527,7 @@ final class SessionStore: ObservableObject {
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
 
-        if session.source == "codex" {
-            await loadHistoryIfNeeded(for: session)
-        }
+        await loadHistoryIfNeeded(for: session)
 
         if session.isRunning {
             connectWebSocket(session)
@@ -590,22 +577,13 @@ final class SessionStore: ObservableObject {
             return true
         }
 
-        let resume = selectedSession?.source == "codex" ? selectedSession : nil
+        let resume = selectedSession
         let projectID = resume?.projectID ?? selectedProjectID
         guard let projectID else {
             setErrorMessage("请先选择项目")
             return false
         }
         return await createSession(projectID: projectID, prompt: prompt, resume: resume, clientMessageID: UUID().uuidString)
-    }
-
-    func sendEnter() {
-        guard let session = selectedSession, session.isRunning, let socket = readyWebSocket(for: session) else {
-            return
-        }
-        if !socket.sendEnter() {
-            setErrorMessage("发送 Enter 失败：WebSocket 未连接")
-        }
     }
 
     func sendCtrlC() {
@@ -724,9 +702,6 @@ final class SessionStore: ObservableObject {
                 projectID: projectID,
                 prompt: prompt,
                 resumeID: resume?.resumeID ?? "",
-                title: resume?.title ?? "",
-                cols: fixedCols,
-                rows: fixedRows,
                 clientMessageID: clientMessageID
             ))
 
@@ -747,9 +722,7 @@ final class SessionStore: ObservableObject {
             insertExpandedProjectID(response.session.projectID)
 
             // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
-            if response.session.source == "codex" {
-                await loadHistoryIfNeeded(for: response.session)
-            }
+            await loadHistoryIfNeeded(for: response.session)
             if !prompt.isEmpty {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: response.session.id, status: .sent)
@@ -788,7 +761,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func loadHistoryIfNeeded(for session: AgentSession) async {
-        guard session.source == "codex", !conversationStore.hasLoadedHistory(sessionID: session.id) else {
+        guard !conversationStore.hasLoadedHistory(sessionID: session.id) else {
             return
         }
         guard !initialHistoryLoadingSessionIDs.contains(session.id) else {
@@ -827,16 +800,14 @@ final class SessionStore: ObservableObject {
 
         do {
             let client = try clientFactory()
-            if session.source == "codex" {
-                // 手动刷新必须绕过 hasLoadedHistory 缓存，Mac/iPad 混合使用时 rollout 可能已经更新。
-                let requestToken = beginHistoryPageRequest(sessionID: session.id)
-                let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
-                guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
-                    return
-                }
-                conversationStore.setHistory(page.messages, sessionID: session.id)
-                updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
+            // 手动刷新必须绕过 hasLoadedHistory 缓存，Mac/iPad 混合使用时 app-server 历史可能已经更新。
+            let requestToken = beginHistoryPageRequest(sessionID: session.id)
+            let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
+            guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
+                return
             }
+            conversationStore.setHistory(page.messages, sessionID: session.id)
+            updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
             if session.isRunning {
                 do {
                     let response = try await client.session(id: session.id, afterSeq: logStore.lastSeq(for: session.id))
@@ -845,13 +816,11 @@ final class SessionStore: ObservableObject {
                         clearForegroundActivity(sessionID: session.id)
                     }
                     if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
-                        // PTY 尾部先补日志，同时作为结构化消息未落地时的对话兜底。
-                        // 后续 history/message_completed 到达时，ConversationStore 会用稳定消息替换这条临时气泡。
+                        // recent_output 只作为诊断日志展示；对话内容以 app-server 结构化 history/event 为准。
                         logStore.append(recentOutput, sessionID: session.id, seq: response.lastSeq)
-                        conversationStore.ingestTerminalOutput(recentOutput, sessionID: session.id)
                     }
                 } catch {
-                    // 运行态详情只存在于 agentd 内存。重启后可能 404，这时列表刷新会把它拉回历史态。
+                    // 运行态快照读取失败时，用列表刷新重新同步 app-server 线程状态。
                     await refreshSessions(forProjectID: session.projectID)
                 }
             } else {
@@ -896,9 +865,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func prepareSelectedSessionAfterRefresh(_ session: AgentSession, autoAttach: Bool) async {
-        if session.source == "codex" {
-            await loadHistoryIfNeeded(for: session)
-        }
+        await loadHistoryIfNeeded(for: session)
         if session.isRunning {
             if autoAttach {
                 connectWebSocket(session)
@@ -1298,56 +1265,49 @@ final class SessionStore: ObservableObject {
         }
         disconnectWebSocket(cancelReconnect: !isReconnectAttempt)
 
-        do {
-            let client = try clientFactory()
-            let url = try client.websocketURL(sessionID: session.id, afterSeq: replayWatermark(for: session.id))
-            let socket = webSocketFactory()
-            socket.onStatus = { [weak self] status in
-                Task { @MainActor in
-                    switch status {
-                    case .failed, .disconnected:
-                        await self?.flushRuntimeEvents(sessionID: session.id)
-                    default:
-                        break
-                    }
-                    self?.applyWebSocketStatus(status, sessionID: session.id)
+        let socket = webSocketFactory()
+        socket.onStatus = { [weak self] status in
+            Task { @MainActor in
+                switch status {
+                case .failed, .disconnected:
+                    await self?.flushRuntimeEvents(sessionID: session.id)
+                default:
+                    break
                 }
+                self?.applyWebSocketStatus(status, sessionID: session.id)
             }
-            let terminalStreamStore = terminalStreamStore
-            socket.onEvent = { [weak self, terminalStreamStore] event in
-                Task {
-                    let shouldFlushImmediately = await terminalStreamStore.append(event, sessionID: session.id)
-                    if shouldFlushImmediately {
-                        await self?.flushRuntimeEvents(sessionID: session.id)
-                    } else {
-                        await MainActor.run {
-                            self?.scheduleRuntimeEventFlush(sessionID: session.id)
-                        }
-                    }
-                }
-            }
-            socket.onSendFailure = { [weak self] clientMessageID, message in
-                Task { @MainActor in
-                    if let clientMessageID {
-                        self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
-                    }
-                    self?.clearForegroundActivity(sessionID: session.id)
-                    self?.setErrorMessage("发送失败：\(message)")
-                }
-            }
-            webSocket = socket
-            connectedSessionID = session.id
-            conversationStore.resetLiveTranscript(sessionID: session.id)
-            runtimeEventFlushTasks[session.id]?.cancel()
-            runtimeEventFlushTasks[session.id] = nil
-            Task { [terminalStreamStore] in
-                await terminalStreamStore.removeAll(sessionID: session.id)
-            }
-            socket.connect(url: url, token: appStore.token)
-        } catch {
-            setWebSocketStatus(.failed(error.localizedDescription))
-            setErrorMessage(error.localizedDescription)
         }
+        let terminalStreamStore = terminalStreamStore
+        socket.onEvent = { [weak self, terminalStreamStore] event in
+            Task {
+                let shouldFlushImmediately = await terminalStreamStore.append(event, sessionID: session.id)
+                if shouldFlushImmediately {
+                    await self?.flushRuntimeEvents(sessionID: session.id)
+                } else {
+                    await MainActor.run {
+                        self?.scheduleRuntimeEventFlush(sessionID: session.id)
+                    }
+                }
+            }
+        }
+        socket.onSendFailure = { [weak self] clientMessageID, message in
+            Task { @MainActor in
+                if let clientMessageID {
+                    self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
+                }
+                self?.clearForegroundActivity(sessionID: session.id)
+                self?.setErrorMessage("发送失败：\(message)")
+            }
+        }
+        webSocket = socket
+        connectedSessionID = session.id
+        conversationStore.resetLiveTranscript(sessionID: session.id)
+        runtimeEventFlushTasks[session.id]?.cancel()
+        runtimeEventFlushTasks[session.id] = nil
+        Task { [terminalStreamStore] in
+            await terminalStreamStore.removeAll(sessionID: session.id)
+        }
+        socket.connect(sessionID: session.id)
     }
 
     private func replayWatermark(for sessionID: SessionID) -> EventSequence? {
@@ -1386,9 +1346,6 @@ final class SessionStore: ObservableObject {
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
-            if connectedSessionID == sessionID {
-                _ = webSocket?.sendResize(cols: fixedCols, rows: fixedRows)
-            }
         case .failed(let message):
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
             if connectedSessionID == sessionID {
@@ -1521,15 +1478,11 @@ final class SessionStore: ObservableObject {
             let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
             upsert(response.session)
             if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
-                // 重连前先补一次 snapshot/recent_output；Codex runtime 再补 history，
-                // 这样 WS 断线期间的结构化消息不会只出现在日志里。
+                // 重连前只补诊断日志；结构化消息由 history 和 app-server event 补齐。
                 logStore.append(recentOutput, sessionID: sessionID, seq: response.lastSeq)
-                conversationStore.ingestTerminalOutput(recentOutput, sessionID: sessionID)
             }
-            if response.session.source == "codex" {
-                // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
-                await loadHistory(for: response.session)
-            }
+            // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
+            await loadHistory(for: response.session)
             return response.session
         } catch {
             setStatusMessage("重连前快照刷新失败：\(error.localizedDescription)")
@@ -1632,8 +1585,6 @@ final class SessionStore: ObservableObject {
             conversationStore.resolveLatestPendingApproval(sessionID: sessionID)
         case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):
             conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID)
-        case .ingestTerminalOutput(let data, let sessionID):
-            conversationStore.ingestTerminalOutput(data, sessionID: sessionID)
         }
     }
 
@@ -1652,10 +1603,9 @@ final class SessionStore: ObservableObject {
              .approvalRequest(_, let metadata),
              .approvalResolved(let metadata),
              .turnCompleted(let metadata),
-             .warning(_, let metadata),
-             .output(_, let metadata):
+             .warning(_, let metadata):
             return metadata
-        case .exit, .error, .pong, .unknown:
+        case .error, .unknown:
             return nil
         }
     }
@@ -1844,7 +1794,7 @@ final class SessionStore: ObservableObject {
         sessionID: SessionID,
         autoClearAfter delay: UInt64? = nil
     ) {
-        // 流式输出时每个 PTY 分片都会调到这里。@Published 字典即使赋同值也会触发
+        // 流式输出时每个 app-server 分片都会调到这里。@Published 字典即使赋同值也会触发
         // objectWillChange，进而让整张边栏 List 反复重绘、抢占主线程，导致点击发涩。
         // 因此仅在活动真正变化时才写回；计时器仍每次重置（它不是 @Published）。
         if foregroundActivityBySessionID[sessionID] != activity {
@@ -1855,7 +1805,7 @@ final class SessionStore: ObservableObject {
             foregroundActivityClearTasks[sessionID] = nil
             return
         }
-        // PTY 没有明确的“回复结束”事件，用空闲超时兜底，避免输出结束后仍一直显示正在回复。
+        // 部分 app-server 流式事件可能缺少完成事件，用空闲超时兜底，避免输出结束后仍一直显示正在回复。
         foregroundActivityClearTasks[sessionID] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else {

@@ -15,15 +15,17 @@ import (
 
 func TestCheckerRunAndPrintDoNotLeakToken(t *testing.T) {
 	binDir := t.TempDir()
-	writeFakeExecutable(t, filepath.Join(binDir, "codex"))
+	writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
 	writeFakeExecutable(t, filepath.Join(binDir, "tailscale"))
 	t.Setenv("PATH", binDir)
 
 	secret := "0123456789abcdef0123456789abcdef"
 	checker := newTestChecker(t, config.Config{
-		Listen: "127.0.0.1:8787",
-		Auth:   config.AuthConfig{Token: secret},
-		Codex:  config.CodexConfig{Bin: "codex"},
+		Listen:    "127.0.0.1:8787",
+		Auth:      config.AuthConfig{Token: secret},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
+		Codex:     config.CodexConfig{Bin: "codex"},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
 			Name: "Demo",
@@ -93,8 +95,8 @@ func TestCheckerReportsAppServerRuntimeSafely(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "codex_app_server", FallbackPTY: true},
-		AppServer: config.AppServerConfig{Transport: "stdio", Managed: true},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
+		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
 		Codex:     config.CodexConfig{Bin: "codex"},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
@@ -105,10 +107,10 @@ func TestCheckerReportsAppServerRuntimeSafely(t *testing.T) {
 
 	results := checker.Run(context.Background(), false)
 	if !results.OK {
-		t.Fatalf("stdio app-server runtime 应通过 doctor：%+v", results)
+		t.Fatalf("ws app-server gateway 应通过 doctor：%+v", results)
 	}
 	if !hasCheck(results, "app-server") {
-		t.Fatalf("doctor 应包含 app-server runtime 检查：%+v", results.Checks)
+		t.Fatalf("doctor 应包含 app-server gateway 检查：%+v", results.Checks)
 	}
 }
 
@@ -120,7 +122,7 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "codex_app_server", FallbackPTY: true},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
 		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "0.0.0.0:8390"},
 		Codex:     config.CodexConfig{Bin: "codex"},
 		Projects: []config.ProjectConfig{{
@@ -136,7 +138,7 @@ func TestCheckerRejectsUnsafeAppServerWS(t *testing.T) {
 	}
 }
 
-func TestCheckerReportsManagedWSGatewayEvenWhenRuntimeIsPTY(t *testing.T) {
+func TestCheckerReportsManagedWSGatewayForAppServerRuntime(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakeCodexWithAppServerHelp(t, filepath.Join(binDir, "codex"))
 	t.Setenv("PATH", binDir)
@@ -144,7 +146,7 @@ func TestCheckerReportsManagedWSGatewayEvenWhenRuntimeIsPTY(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "pty", FallbackPTY: true},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
 		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
 		Codex:     config.CodexConfig{Bin: "codex"},
 		Projects: []config.ProjectConfig{{
@@ -159,7 +161,7 @@ func TestCheckerReportsManagedWSGatewayEvenWhenRuntimeIsPTY(t *testing.T) {
 		t.Fatalf("setup 默认 ws gateway 应通过 doctor：%+v", results)
 	}
 	if !hasCheck(results, "app-server") {
-		t.Fatalf("runtime=pty 但启用 ws gateway 时仍应检查 app-server：%+v", results.Checks)
+		t.Fatalf("启用 ws gateway 时应检查 app-server：%+v", results.Checks)
 	}
 }
 
@@ -174,7 +176,7 @@ func TestCheckerCheckPortIncludesManagedAppServerPort(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:0",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "pty", FallbackPTY: true},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
 		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://" + listener.Addr().String()},
 		Codex:     config.CodexConfig{Bin: "codex"},
 		Projects: []config.ProjectConfig{{
@@ -201,7 +203,7 @@ func TestCheckerFailsWhenCodexAppServerHelpMissingWSFlags(t *testing.T) {
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
 		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Runtime:   config.RuntimeConfig{Type: "pty", FallbackPTY: true},
+		Runtime:   config.RuntimeConfig{Type: "codex_app_server"},
 		AppServer: config.AppServerConfig{Transport: "ws", Managed: true, Listen: "ws://127.0.0.1:4222"},
 		Codex:     config.CodexConfig{Bin: "codex"},
 		Projects: []config.ProjectConfig{{

@@ -236,7 +236,7 @@ private struct SessionDiagnosticsPanel: View {
 
         return VStack(alignment: .leading, spacing: 10) {
             InspectorMetricRow(title: "状态", value: session.displayStatusText, symbolName: "circle.dashed")
-            InspectorMetricRow(title: "来源", value: session.source == "codex" ? "Codex app-server" : "PTY fallback", symbolName: "server.rack")
+            InspectorMetricRow(title: "来源", value: session.source == "local" ? "本地回显" : "Codex app-server", symbolName: "server.rack")
             InspectorMetricRow(title: "实时连接", value: sessionStore.webSocketStatus.title, symbolName: "dot.radiowaves.left.and.right")
             InspectorMetricRow(title: "项目", value: session.project.isEmpty ? session.projectID : session.project, symbolName: "folder")
             InspectorMetricRow(title: "路径", value: session.dir, symbolName: "terminal")

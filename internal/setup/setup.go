@@ -92,8 +92,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 			Token: token,
 		},
 		Runtime: config.RuntimeConfig{
-			Type:        "pty",
-			FallbackPTY: true,
+			Type: "codex_app_server",
 		},
 		AppServer: config.AppServerConfig{
 			Transport:   "ws",

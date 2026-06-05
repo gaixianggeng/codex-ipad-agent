@@ -179,7 +179,7 @@ final class ConversationSnapshotTests: XCTestCase {
                 project: project,
                 title: "README 迁移说明",
                 status: "completed",
-                preview: "记录 Tailscale、Token、app-server 本机监听和 PTY fallback。"
+                preview: "记录 Tailscale、Token 和 app-server 本机监听。"
             )
         ]
         let sessionStore = SessionStore(
@@ -309,10 +309,6 @@ private struct SnapshotSessionAPIClient: SessionStoreAPIClient {
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
-        throw SnapshotAPIError.unimplemented
-    }
-
-    func websocketURL(sessionID: String) throws -> URL {
         throw SnapshotAPIError.unimplemented
     }
 }

@@ -2,11 +2,9 @@ package httpapi
 
 import (
 	"bufio"
-	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -27,9 +25,6 @@ import (
 	"github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
 )
 
-//go:embed static/*
-var staticFS embed.FS
-
 type Router struct {
 	cfg      config.Config
 	projects *projects.Registry
@@ -45,13 +40,10 @@ type Router struct {
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
-	return NewRouterWithRuntime(cfg, registry, manager, checker, version, NewPTYSessionRuntime(registry, manager))
+	return NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
 }
 
 func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) http.Handler {
-	if runtime == nil {
-		runtime = NewPTYSessionRuntime(registry, manager)
-	}
 	r := &Router{
 		cfg:      cfg,
 		projects: registry,
@@ -78,9 +70,6 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/projects", r.auth.Middleware(http.HandlerFunc(r.projectsHandler)))
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
-	mux.Handle("/api/sessions", r.auth.Middleware(http.HandlerFunc(r.sessionsHandler)))
-	mux.HandleFunc("/api/sessions/", r.sessionByIDHandler)
-	mux.Handle("/", r.staticHandler())
 	return logging(mux)
 }
 
@@ -94,11 +83,6 @@ func sameOriginOrNoOrigin(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Host, r.Host)
-}
-
-func (r *Router) staticHandler() http.Handler {
-	sub, _ := fs.Sub(staticFS, "static")
-	return http.FileServer(http.FS(sub))
 }
 
 func logging(next http.Handler) http.Handler {
@@ -194,80 +178,6 @@ func (r *Router) projectsHandler(w http.ResponseWriter, req *http.Request) {
 	projectList := r.projects.List()
 	log.Printf("projects response remote=%s host=%s projects=%d", requestRemoteHost(req), req.Host, len(projectList))
 	writeJSON(w, http.StatusOK, map[string]any{"projects": projectList})
-}
-
-func (r *Router) sessionsHandler(w http.ResponseWriter, req *http.Request) {
-	switch req.Method {
-	case http.MethodGet:
-		projectID := strings.TrimSpace(req.URL.Query().Get("project_id"))
-		limit := positiveLimit(req.URL.Query().Get("limit"))
-		cursor, hasCursor, err := decodeSessionCursor(req.URL.Query().Get("cursor"))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "cursor 无效")
-			return
-		}
-		page, err := r.runtime.ListSessions(req.Context(), projectID, limit, cursor, hasCursor)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		response := map[string]any{
-			"sessions": page.Sessions,
-			"has_more": page.HasMore,
-		}
-		if page.NextCursor != "" {
-			response["next_cursor"] = page.NextCursor
-		}
-		writeJSON(w, http.StatusOK, response)
-	case http.MethodPost:
-		var body struct {
-			ProjectID       string `json:"project_id"`
-			Prompt          string `json:"prompt"`
-			ResumeID        string `json:"resume_id"`
-			Title           string `json:"title"`
-			Cols            int    `json:"cols"`
-			Rows            int    `json:"rows"`
-			ClientMessageID string `json:"client_message_id"`
-		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 64*1024)).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "请求 JSON 无效")
-			return
-		}
-		project, ok := r.projects.Get(body.ProjectID)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "项目不存在")
-			return
-		}
-		log.Printf("create session project=%s resume=%s prompt_bytes=%d", body.ProjectID, body.ResumeID, len(body.Prompt))
-		result, err := r.runtime.CreateSession(req.Context(), RuntimeCreateRequest{
-			Project:         project,
-			Prompt:          body.Prompt,
-			ResumeID:        body.ResumeID,
-			Title:           body.Title,
-			Cols:            body.Cols,
-			Rows:            body.Rows,
-			ClientMessageID: body.ClientMessageID,
-		})
-		if err != nil {
-			log.Printf("create session failed project=%s resume=%s err=%v", body.ProjectID, body.ResumeID, err)
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		log.Printf("created session id=%s source=%s status=%s resume=%s", result.Snapshot.ID, result.Snapshot.Source, result.Snapshot.Status, result.Snapshot.ResumeID)
-		response := map[string]any{"session": result.Snapshot, "ws_url": "/api/sessions/" + result.Snapshot.ID + "/ws"}
-		if body.ClientMessageID != "" {
-			response["client_message_id"] = body.ClientMessageID
-			if message, ok := userMessageConfirmation(result.Snapshot.ID, body.ClientMessageID, body.Prompt, time.Now().UTC()); ok {
-				if result.LiveSession != nil {
-					recordSubmittedUserMessage(result.LiveSession, message)
-				}
-				response["first_message"] = message
-			}
-		}
-		writeJSON(w, http.StatusCreated, response)
-	default:
-		methodNotAllowed(w)
-	}
 }
 
 type sessionPageCursor struct {
@@ -421,58 +331,6 @@ func positiveLimit(raw string) int {
 	return n
 }
 
-func (r *Router) sessionByIDHandler(w http.ResponseWriter, req *http.Request) {
-	if !r.auth.ValidRequest(req) {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	path := strings.TrimPrefix(req.URL.Path, "/api/sessions/")
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(w, req)
-		return
-	}
-	id := parts[0]
-	if len(parts) == 2 && parts[1] == "messages" {
-		r.sessionMessages(w, req, id)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "trace" {
-		r.sessionTrace(w, req, id)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "ws" {
-		r.sessionWS(w, req, id)
-		return
-	}
-	if len(parts) != 1 {
-		http.NotFound(w, req)
-		return
-	}
-	switch req.Method {
-	case http.MethodGet:
-		detail, err := r.runtime.SessionDetail(req.Context(), id, positiveSeq(req.URL.Query().Get("after_seq")))
-		if err != nil {
-			writeError(w, http.StatusNotFound, "session 不存在")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"session":       detail.Snapshot,
-			"recent_output": detail.RecentOutput,
-			"last_seq":      detail.LastSeq,
-		})
-	case http.MethodDelete:
-		if err := r.runtime.StopSession(req.Context(), id); err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	default:
-		methodNotAllowed(w)
-	}
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -485,36 +343,4 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-}
-
-func (r *Router) sessionTrace(w http.ResponseWriter, req *http.Request, id string) {
-	if req.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	trace, err := r.runtime.SessionTrace(req.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "session 不存在")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"trace": trace})
-}
-
-func (r *Router) sessionMessages(w http.ResponseWriter, req *http.Request, id string) {
-	if req.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	limit := positiveLimit(req.URL.Query().Get("limit"))
-	before := strings.TrimSpace(req.URL.Query().Get("before"))
-	page, err := r.runtime.SessionMessages(req.Context(), id, before, limit)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"messages":        page.Messages,
-		"previous_cursor": page.PreviousCursor,
-		"has_more_before": page.HasMoreBefore,
-	})
 }

@@ -164,36 +164,27 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		Env:          cfg.Codex.Env,
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
-	var runtime httpapi.SessionRuntime = httpapi.NewPTYSessionRuntime(registry, manager)
-	var appServerProcess *appserver.ManagedProcess
 	var appServerWSProcess *appserver.ManagedWebSocketProcess
-	if cfg.AppServer.Transport == "ws" && cfg.AppServer.Managed && strings.TrimSpace(cfg.AppServer.Listen) != "" {
+	if cfg.AppServer.Transport != "ws" {
+		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ws")
+	}
+	if strings.TrimSpace(cfg.AppServer.Listen) == "" {
+		return fmt.Errorf("app_server.listen 未配置，无法启用 app-server gateway")
+	}
+	if cfg.AppServer.Managed {
 		process, err := startManagedAppServerWebSocket(cfg)
 		if err != nil {
 			return err
 		}
 		appServerWSProcess = process
 		log.Printf("agentd managed app-server ws upstream=%s", cfg.AppServer.Listen)
-	}
-	if cfg.Runtime.Type == "codex_app_server" {
-		process, appRuntime, err := startAppServerRuntime(cfg, registry)
-		if err != nil {
-			if !cfg.Runtime.FallbackPTY {
-				return err
-			}
-			log.Printf("codex app-server runtime 不可用，回退到 PTY runtime：%v", err)
-		} else {
-			appServerProcess = process
-			runtime = appRuntime
-			log.Printf("agentd runtime=codex_app_server transport=stdio managed=true")
-		}
 	} else {
-		log.Printf("agentd runtime=pty fallback=true")
+		log.Printf("agentd app-server ws upstream=%s", cfg.AppServer.Listen)
 	}
 
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, runtime),
+		Handler:           httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, nil),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -209,7 +200,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	select {
 	case sig := <-stopCh:
 		log.Printf("收到退出信号 %s，正在关闭会话和 HTTP 服务", sig)
-		shutdownServeResources(manager, appServerProcess, appServerWSProcess)
+		shutdownServeResources(manager, appServerWSProcess)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return server.Shutdown(ctx)
@@ -217,19 +208,14 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		if err == http.ErrServerClosed {
 			return nil
 		}
-		shutdownServeResources(manager, appServerProcess, appServerWSProcess)
+		shutdownServeResources(manager, appServerWSProcess)
 		return err
 	}
 }
 
-func shutdownServeResources(manager *session.Manager, appServerProcess *appserver.ManagedProcess, appServerWSProcess *appserver.ManagedWebSocketProcess) {
+func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess) {
 	// HTTP 端口绑定失败或收到退出信号时，都必须回收托管子进程，避免孤儿进程继续占用 app-server 端口。
 	manager.Shutdown()
-	if appServerProcess != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		_ = appServerProcess.Shutdown(ctx)
-		cancel()
-	}
 	if appServerWSProcess != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = appServerWSProcess.Shutdown(ctx)
@@ -246,34 +232,6 @@ func startManagedAppServerWebSocket(cfg config.Config) (*appserver.ManagedWebSoc
 		Listen:      cfg.AppServer.Listen,
 		WSTokenFile: cfg.AppServer.WSTokenFile,
 	})
-}
-
-func startAppServerRuntime(cfg config.Config, registry *projects.Registry) (*appserver.ManagedProcess, *httpapi.CodexAppServerRuntime, error) {
-	if cfg.AppServer.Transport != "stdio" || !cfg.AppServer.Managed {
-		return nil, nil, fmt.Errorf("当前 MVP 只支持 managed stdio app-server runtime")
-	}
-	runtime := httpapi.NewCodexAppServerRuntime(registry, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	process, _, err := appserver.StartManaged(ctx, appserver.ManagedOptions{
-		CodexBin: cfg.Codex.Bin,
-		Env:      cfg.Codex.Env,
-		ClientInfo: appserver.ClientInfo{
-			Name:    "codex_ipad_agent",
-			Title:   "Codex iPad Agent",
-			Version: version,
-		},
-		NotificationBuffer:   1024,
-		ServerRequestTimeout: 45 * time.Second,
-		OverloadRetries:      2,
-		OverloadBackoff:      80 * time.Millisecond,
-		ServerRequestHandler: runtime.HandleServerRequest,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	runtime.SetClient(process.Client())
-	return process, runtime, nil
 }
 
 func printJSON(value any) error {

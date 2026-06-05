@@ -33,7 +33,6 @@ struct CodexAppServerRuntimeMetadata: Codable, Hashable {
     let running: Bool
     let initialized: Bool
     let pendingRequests: Int
-    let compatibilityURL: String
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -44,7 +43,6 @@ struct CodexAppServerRuntimeMetadata: Codable, Hashable {
         case running
         case initialized
         case pendingRequests = "pending_requests"
-        case compatibilityURL = "compatibility_sessions_url"
     }
 }
 
@@ -248,18 +246,12 @@ struct CreateSessionRequest: Encodable {
     let projectID: String
     let prompt: String
     let resumeID: String
-    let title: String
-    let cols: Int
-    let rows: Int
     let clientMessageID: ClientMessageID?
 
     enum CodingKeys: String, CodingKey {
         case projectID = "project_id"
         case prompt
         case resumeID = "resume_id"
-        case title
-        case cols
-        case rows
         case clientMessageID = "client_message_id"
     }
 
@@ -267,17 +259,11 @@ struct CreateSessionRequest: Encodable {
         projectID: String,
         prompt: String,
         resumeID: String,
-        title: String,
-        cols: Int,
-        rows: Int,
         clientMessageID: ClientMessageID? = nil
     ) {
         self.projectID = projectID
         self.prompt = prompt
         self.resumeID = resumeID
-        self.title = title
-        self.cols = cols
-        self.rows = rows
         self.clientMessageID = clientMessageID
     }
 }

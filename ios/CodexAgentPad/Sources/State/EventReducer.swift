@@ -21,7 +21,6 @@ enum EventReducerMessageMutation {
     case system(String, SessionID, MessageKind)
     case resolveLatestPendingApproval(SessionID)
     case markCurrentAssistantCompleted(AgentEventMetadata, SessionID)
-    case ingestTerminalOutput(String, SessionID)
 }
 
 struct EventReducerLogAppend {
@@ -155,19 +154,6 @@ actor EventReducer {
                 seq: nil
             ))
             output.messageMutations.append(.system("运行警告：\(payload.message)", fallbackSessionID, .error))
-        case .output(let data, let metadata):
-            let id = metadata.sessionID ?? fallbackSessionID
-            output.foregroundUpdates.append((id, .receivingAssistant, outputIdleClearDelay))
-            // PTY fallback 仍进入日志层；结构化消息落地后 MessageStore 会按稳定 id 去重。
-            output.logAppends.append(EventReducerLogAppend(text: data, sessionID: id, seq: metadata.seq))
-            output.messageMutations.append(.ingestTerminalOutput(data, id))
-        case .exit(let result):
-            output.statusUpdates.append((fallbackSessionID, "closed"))
-            output.pendingApprovalUpdates.append((fallbackSessionID, nil))
-            output.foregroundClears.append(fallbackSessionID)
-            let reason = result.reason ?? "code=\(result.code ?? 0)"
-            output.messageMutations.append(.system("Codex 会话已结束：\(reason)", fallbackSessionID, .message))
-            output.disconnectWebSocket = true
         case .error(let message):
             output.foregroundClears.append(fallbackSessionID)
             output.pendingApprovalUpdates.append((fallbackSessionID, nil))
@@ -178,8 +164,6 @@ actor EventReducer {
                 seq: nil
             ))
             output.messageMutations.append(.system("运行错误：\(message)", fallbackSessionID, .error))
-        case .pong:
-            output.statusMessage = "WebSocket 心跳正常"
         case .unknown(let type):
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] 未知消息类型：\(type)\n",

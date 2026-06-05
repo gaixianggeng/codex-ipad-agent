@@ -5,12 +5,6 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var messagesBySessionID: [String: [ConversationMessage]] = [:]
 
     private var loadedHistorySessionIDs: Set<String> = []
-    private var pendingRawOutput: [String: String] = [:]
-    private var pendingOutput: [String: String] = [:]
-    private var transcripts: [String: String] = [:]
-    private var lastAssistantBySessionID: [String: String] = [:]
-    // 一旦收到结构化助手消息的会话，就以结构化为准、忽略 PTY 解析兜底，避免两路并存导致重复。
-    private var sawStructuredAssistant: Set<String> = []
     private var lastSeenSeqBySessionID: [String: EventSequence] = [:]
     private var revisionByStableMessageID: [StableMessageCacheKey: ModelRevision] = [:]
     private var messageUUIDByStableMessageID: [StableMessageCacheKey: UUID] = [:]
@@ -20,8 +14,6 @@ final class ConversationStore: ObservableObject {
     private var historyProjectionCacheBySessionID: [String: HistoryProjectionCache] = [:]
     private var pendingAssistantDeltasBySessionID: [String: PendingAssistantDelta] = [:]
     private var assistantDeltaFlushTasks: [String: Task<Void, Never>] = [:]
-    private var cleanTasks: [String: Task<Void, Never>] = [:]
-    private var parseTasks: [String: Task<Void, Never>] = [:]
     private var sessionAccessTickBySessionID: [String: UInt64] = [:]
     private var sessionAccessCounter: UInt64 = 0
 
@@ -66,13 +58,13 @@ final class ConversationStore: ObservableObject {
         let stableID: MessageID
     }
 
-    private struct LegacyEchoCandidate {
+    private struct NearbyHistoryEchoCandidate {
         let role: ConversationMessage.Role
         let content: String
         let createdAt: Date
     }
 
-    private struct LegacyHistoryReuseKey: Hashable {
+    private struct UnstableHistoryReuseKey: Hashable {
         let role: ConversationMessage.Role
         let content: String
         let createdAt: Date
@@ -80,7 +72,7 @@ final class ConversationStore: ObservableObject {
         let revision: ModelRevision?
     }
 
-    private struct LegacyHistoryReuseBucket {
+    private struct UnstableHistoryReuseBucket {
         let messages: [ConversationMessage]
         var nextIndex = 0
 
@@ -98,7 +90,7 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    private let legacyEchoMergeWindow: TimeInterval = 10 * 60
+    private let nearbyHistoryEchoMergeWindow: TimeInterval = 10 * 60
 
     func messages(for sessionID: String?) -> [ConversationMessage] {
         guard let sessionID else {
@@ -150,7 +142,6 @@ final class ConversationStore: ObservableObject {
 
     func appendUser(_ text: String, sessionID: String) {
         appendLocalUser(text, sessionID: sessionID, clientMessageID: nil, sendStatus: .sent)
-        lastAssistantBySessionID[sessionID] = ""
     }
 
     func appendLocalUser(
@@ -165,8 +156,6 @@ final class ConversationStore: ObservableObject {
             list[index].content = text
             list[index].sendStatus = sendStatus
             setMessages(list, sessionID: sessionID, rebuildIndexes: false)
-            sawStructuredAssistant.remove(sessionID)
-            lastAssistantBySessionID[sessionID] = ""
             return
         }
         append(
@@ -179,10 +168,6 @@ final class ConversationStore: ObservableObject {
             ),
             sessionID: sessionID
         )
-        // 新一轮用户输入开始后，结构化 assistant 可能还没从 rollout 落盘/转发；
-        // 重新允许 PTY 输出先生成临时气泡，避免右侧日志有回复但中间对话空白。
-        sawStructuredAssistant.remove(sessionID)
-        lastAssistantBySessionID[sessionID] = ""
     }
 
     func updateSendStatus(clientMessageID: ClientMessageID, sessionID: String, status: MessageSendStatus) {
@@ -296,29 +281,8 @@ final class ConversationStore: ObservableObject {
         return value
     }
 
-    func ingestTerminalOutput(_ raw: String, sessionID: String) {
-        guard !raw.isEmpty else {
-            return
-        }
-
-        // 旧协议/测试兜底入口：生产路径已经由结构化 AgentEvent.messageCompleted /
-        // assistantDelta 驱动消息气泡，PTY 文本只进入日志。这里保留给老 WebSocket
-        // transcript 和 parser 回归测试，避免把旧兼容逻辑误当成主链路继续扩展。
-        // WebSocket 输出先进入独立原始缓冲区，ANSI 清洗放到后台任务做，避免拖慢输入。
-        pendingRawOutput[sessionID] = appendBoundedWindow(raw, to: pendingRawOutput[sessionID], maxCharacters: 16_000)
-        scheduleClean(sessionID: sessionID)
-    }
-
     func resetLiveTranscript(sessionID: String) {
         flushPendingAssistantDelta(sessionID: sessionID)
-        pendingRawOutput[sessionID] = ""
-        pendingOutput[sessionID] = ""
-        transcripts[sessionID] = ""
-        lastAssistantBySessionID[sessionID] = ""
-        cleanTasks[sessionID]?.cancel()
-        cleanTasks[sessionID] = nil
-        parseTasks[sessionID]?.cancel()
-        parseTasks[sessionID] = nil
     }
 
     func applyAssistantDelta(_ delta: AgentDelta, metadata: AgentEventMetadata, fallbackSessionID: String) {
@@ -333,8 +297,6 @@ final class ConversationStore: ObservableObject {
         guard shouldApplyRevision(metadata.revision, stableID: stableID, sessionID: sessionID) else {
             return
         }
-        markStructuredAssistant(sessionID: sessionID)
-
         let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
         let uuid = messageUUIDByStableMessageID[key] ?? UUID()
         messageUUIDByStableMessageID[key] = uuid
@@ -414,16 +376,12 @@ final class ConversationStore: ObservableObject {
         switch message.role {
         case .user:
             role = .user
-            sawStructuredAssistant.remove(sessionID)
         case .assistant:
             role = .assistant
         default:
             role = .system
         }
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
-        if role == .assistant {
-            markStructuredAssistant(sessionID: sessionID)
-        }
 
         var list = messagesBySessionID[sessionID] ?? []
         let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
@@ -520,213 +478,8 @@ final class ConversationStore: ObservableObject {
         return "\(prefix):\(fallbackSessionID):live"
     }
 
-    private func scheduleClean(sessionID: String) {
-        guard cleanTasks[sessionID] == nil else {
-            return
-        }
-        cleanTasks[sessionID] = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 180_000_000)
-            } catch {
-                return
-            }
-
-            let raw = await MainActor.run { [weak self] () -> String in
-                guard let self else {
-                    return ""
-                }
-                let raw = self.pendingRawOutput[sessionID] ?? ""
-                self.pendingRawOutput[sessionID] = ""
-                return raw
-            }
-            guard !raw.isEmpty else {
-                await MainActor.run { [weak self] in
-                    self?.finishCleanTask(sessionID: sessionID)
-                }
-                return
-            }
-
-            // ANSI 清洗可能遇到大段终端控制序列，放到 utility 优先级后台线程。
-            let clean = await Task.detached(priority: .utility) {
-                AnsiCleaner.clean(raw)
-            }.value
-            guard !Task.isCancelled else {
-                return
-            }
-
-            await MainActor.run { [weak self] in
-                self?.appendCleanTerminalOutput(clean, sessionID: sessionID)
-                self?.finishCleanTask(sessionID: sessionID)
-            }
-        }
-    }
-
-    private func finishCleanTask(sessionID: String) {
-        cleanTasks[sessionID] = nil
-        if pendingRawOutput[sessionID]?.isEmpty == false {
-            scheduleClean(sessionID: sessionID)
-        }
-    }
-
-    private func appendCleanTerminalOutput(_ clean: String, sessionID: String) {
-        guard !clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
-        }
-
-        // 对话解析只消费清洗后的输出，不依赖右侧日志渲染完成。
-        pendingOutput[sessionID] = appendBoundedWindow(clean, to: pendingOutput[sessionID], separator: "\n", maxCharacters: 12_000)
-        scheduleParse(sessionID: sessionID)
-    }
-
-    private func scheduleParse(sessionID: String) {
-        parseTasks[sessionID]?.cancel()
-        parseTasks[sessionID] = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 700_000_000)
-            } catch {
-                return
-            }
-
-            let transcript = await MainActor.run { [weak self] () -> String in
-                guard let self else {
-                    return ""
-                }
-                defer {
-                    self.parseTasks[sessionID] = nil
-                }
-                guard let pending = self.pendingOutput[sessionID],
-                      !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    return ""
-                }
-                self.pendingOutput[sessionID] = ""
-                let boundedTranscript = self.appendBoundedWindow(
-                    pending,
-                    to: self.transcripts[sessionID],
-                    separator: "\n",
-                    maxCharacters: 24_000
-                )
-                self.transcripts[sessionID] = boundedTranscript
-                return boundedTranscript
-            }
-            guard !transcript.isEmpty else {
-                return
-            }
-
-            // parser 只处理 bounded transcript，离开主线程计算，避免 UI 卡顿。
-            let candidate = await Task.detached(priority: .utility) {
-                CodexOutputParser().latestAssistantBlock(from: transcript)
-            }.value
-            guard !Task.isCancelled else {
-                return
-            }
-
-            await MainActor.run { [weak self] in
-                self?.applyAssistantCandidate(candidate, sessionID: sessionID)
-            }
-        }
-    }
-
-    private func applyAssistantCandidate(_ candidate: String, sessionID: String) {
-        // 已有结构化助手消息时，PTY 解析只会重复且带终端装饰，直接忽略。
-        guard !sawStructuredAssistant.contains(sessionID) else {
-            return
-        }
-        guard !candidate.isEmpty, candidate != lastAssistantBySessionID[sessionID] else {
-            return
-        }
-        if shouldIgnoreAssistantCandidateAsDuplicate(candidate, sessionID: sessionID) {
-            lastAssistantBySessionID[sessionID] = candidate
-            return
-        }
-        lastAssistantBySessionID[sessionID] = candidate
-        addOrUpdateAssistant(candidate, sessionID: sessionID)
-    }
-
-    private func shouldIgnoreAssistantCandidateAsDuplicate(_ candidate: String, sessionID: String) -> Bool {
-        let normalizedCandidate = normalizedAssistantTextForDedup(candidate)
-        guard normalizedCandidate.count >= 12 else {
-            return false
-        }
-
-        // 刷新运行中历史会话时，Go rollout 已经能返回干净的 agent_message，
-        // recent_output 仍可能包含同一段 PTY 尾部。这里只过滤“内容已经存在”的兜底解析，
-        // 不阻断 rollout 还没落盘时靠 PTY 先显示的新回复。
-        for message in (messagesBySessionID[sessionID] ?? []).reversed() where message.role == .assistant {
-            let normalizedExisting = normalizedAssistantTextForDedup(message.content)
-            guard normalizedExisting.count >= 12 else {
-                continue
-            }
-            if normalizedCandidate == normalizedExisting ||
-                normalizedCandidate.contains(normalizedExisting) ||
-                normalizedExisting.contains(normalizedCandidate) {
-                return true
-            }
-        }
-        return false
-    }
-
     private func normalizedAssistantTextForDedup(_ text: String) -> String {
         AssistantTextNormalizer.normalizedAssistantTextForDedup(text)
-    }
-
-    private func markStructuredAssistant(sessionID: String) {
-        guard sawStructuredAssistant.insert(sessionID).inserted else {
-            return
-        }
-        // 第一次收到本轮结构化助手消息：把本轮 PTY 解析兜底生成的助手气泡（stableID == nil）清掉，
-        // 避免“干净的结构化消息”和“带装饰的解析消息”同时出现在记录里；更早轮次的临时气泡保留。
-        if let list = messagesBySessionID[sessionID] {
-            let lastUserIndex = list.lastIndex { $0.role == .user }
-            let filtered = list.enumerated().compactMap { index, message -> ConversationMessage? in
-                let isCurrentTurnFallback: Bool
-                if let lastUserIndex {
-                    isCurrentTurnFallback = index > lastUserIndex
-                } else {
-                    isCurrentTurnFallback = true
-                }
-                if message.role == .assistant && message.stableID == nil && isCurrentTurnFallback {
-                    return nil
-                }
-                return message
-            }
-            if filtered.count != list.count {
-                setMessages(filtered, sessionID: sessionID)
-            }
-        }
-        lastAssistantBySessionID[sessionID] = ""
-    }
-
-    private func appendBoundedWindow(
-        _ addition: String,
-        to current: String?,
-        separator: String = "",
-        maxCharacters: Int
-    ) -> String {
-        guard maxCharacters > 0 else {
-            return ""
-        }
-        let boundedAddition = boundedSuffix(addition, maxCharacters: maxCharacters)
-        guard boundedAddition.count < maxCharacters,
-              let current,
-              !current.isEmpty
-        else {
-            return boundedAddition
-        }
-
-        let currentBudget = maxCharacters - boundedAddition.count - separator.count
-        guard currentBudget > 0 else {
-            return boundedSuffix(separator + boundedAddition, maxCharacters: maxCharacters)
-        }
-        // 实时 PTY 输出只需要尾部窗口；先裁当前缓存再拼新块，避免 current+addition
-        // 构造出超大临时字符串再 suffix，和 Litter 的 terminal tail window 思路一致。
-        return boundedSuffix(current, maxCharacters: currentBudget) + separator + boundedAddition
-    }
-
-    private func boundedSuffix(_ value: String, maxCharacters: Int) -> String {
-        guard value.count > maxCharacters else {
-            return value
-        }
-        return String(value.suffix(maxCharacters))
     }
 
     private func appendAssistantMessage(
@@ -801,18 +554,6 @@ final class ConversationStore: ObservableObject {
         )
         list.append(message)
         appendMessageWithIndex(message, list: list, sessionID: sessionID)
-    }
-
-    private func addOrUpdateAssistant(_ text: String, sessionID: String) {
-        var list = messagesBySessionID[sessionID] ?? []
-        if let last = list.last, last.role == .assistant {
-            list[list.count - 1].content = text
-            setMessages(list, sessionID: sessionID, rebuildIndexes: false)
-        } else {
-            let message = ConversationMessage(role: .assistant, content: text)
-            list.append(message)
-            appendMessageWithIndex(message, list: list, sessionID: sessionID)
-        }
     }
 
     private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
@@ -903,11 +644,6 @@ final class ConversationStore: ObservableObject {
 
     private func clearConversationSessionState(sessionID: String, messages: [ConversationMessage]) {
         loadedHistorySessionIDs.remove(sessionID)
-        pendingRawOutput.removeValue(forKey: sessionID)
-        pendingOutput.removeValue(forKey: sessionID)
-        transcripts.removeValue(forKey: sessionID)
-        lastAssistantBySessionID.removeValue(forKey: sessionID)
-        sawStructuredAssistant.remove(sessionID)
         lastSeenSeqBySessionID.removeValue(forKey: sessionID)
         messageIndexByStableIDBySessionID.removeValue(forKey: sessionID)
         messageIndexByClientMessageIDBySessionID.removeValue(forKey: sessionID)
@@ -916,10 +652,6 @@ final class ConversationStore: ObservableObject {
         pendingAssistantDeltasBySessionID.removeValue(forKey: sessionID)
         assistantDeltaFlushTasks[sessionID]?.cancel()
         assistantDeltaFlushTasks.removeValue(forKey: sessionID)
-        cleanTasks[sessionID]?.cancel()
-        cleanTasks.removeValue(forKey: sessionID)
-        parseTasks[sessionID]?.cancel()
-        parseTasks.removeValue(forKey: sessionID)
         sessionAccessTickBySessionID.removeValue(forKey: sessionID)
 
         messageUUIDByStableMessageID = messageUUIDByStableMessageID.filter { $0.key.sessionID != sessionID }
@@ -977,7 +709,7 @@ final class ConversationStore: ObservableObject {
 #endif
         var seenPrimaryKeys = Set<String>()
         var seenUUIDs = Set<UUID>()
-        var legacyEchoCandidates: [LegacyEchoCandidate] = []
+        var nearbyHistoryEchoCandidates: [NearbyHistoryEchoCandidate] = []
         var merged: [ConversationMessage] = []
 
         for item in history {
@@ -989,7 +721,7 @@ final class ConversationStore: ObservableObject {
                     continue
                 }
             }
-            legacyEchoCandidates.append(LegacyEchoCandidate(role: item.role, content: item.content, createdAt: item.createdAt))
+            nearbyHistoryEchoCandidates.append(NearbyHistoryEchoCandidate(role: item.role, content: item.content, createdAt: item.createdAt))
             merged.append(item)
         }
 
@@ -997,7 +729,7 @@ final class ConversationStore: ObservableObject {
             guard seenUUIDs.insert(item.id).inserted else {
                 continue
             }
-            if shouldMergeAsLegacyEcho(item, candidates: legacyEchoCandidates) {
+            if shouldMergeAsNearbyHistoryEcho(item, candidates: nearbyHistoryEchoCandidates) {
                 continue
             }
             if let key = primaryMergeKey(for: item) {
@@ -1015,7 +747,7 @@ final class ConversationStore: ObservableObject {
         let keys = history.map { historyProjectionKey(for: $0) }
         // Litter 的 ConversationScreenModel 会缓存“hydrated -> UI item”的投影结果；
         // 这里也把历史 JSON 消息到本地 ConversationMessage 的转换缓存住。这样手动刷新、
-        // 前后台恢复拿到同一页历史时，不会因为 legacy rollout 缺稳定 id 而反复生成新 UUID。
+        // 前后台恢复拿到同一页历史时，不会因为缺少稳定 id 的历史项而反复生成新 UUID。
         if let cached = historyProjectionCacheBySessionID[sessionID],
            cached.keys == keys {
             return cached.messages
@@ -1031,9 +763,9 @@ final class ConversationStore: ObservableObject {
                 sessionID: sessionID
             )
         } else {
-            var legacyReuseBuckets = legacyHistoryReuseBuckets(sessionID: sessionID)
+            var unstableReuseBuckets = unstableHistoryReuseBuckets(sessionID: sessionID)
             converted = history.map { item in
-                projectHistoryMessage(item, sessionID: sessionID, legacyReuseBuckets: &legacyReuseBuckets)
+                projectHistoryMessage(item, sessionID: sessionID, unstableReuseBuckets: &unstableReuseBuckets)
             }
         }
         historyProjectionCacheBySessionID[sessionID] = HistoryProjectionCache(keys: keys, messages: converted)
@@ -1068,11 +800,11 @@ final class ConversationStore: ObservableObject {
         for message in suffixMessages {
             preservedIDs.insert(message.id)
         }
-        var legacyReuseBuckets = legacyHistoryReuseBuckets(sessionID: sessionID, excludingIDs: preservedIDs)
+        var unstableReuseBuckets = unstableHistoryReuseBuckets(sessionID: sessionID, excludingIDs: preservedIDs)
 
         if prefixCount < changedUpperBound {
             for index in prefixCount..<changedUpperBound {
-                converted.append(projectHistoryMessage(history[index], sessionID: sessionID, legacyReuseBuckets: &legacyReuseBuckets))
+                converted.append(projectHistoryMessage(history[index], sessionID: sessionID, unstableReuseBuckets: &unstableReuseBuckets))
             }
         }
 
@@ -1083,7 +815,7 @@ final class ConversationStore: ObservableObject {
     private func projectHistoryMessage(
         _ item: CodexHistoryMessage,
         sessionID: String,
-        legacyReuseBuckets: inout [LegacyHistoryReuseKey: LegacyHistoryReuseBucket]
+        unstableReuseBuckets: inout [UnstableHistoryReuseKey: UnstableHistoryReuseBucket]
     ) -> ConversationMessage {
         let stableID = historyStableID(for: item)
         let role = messageRole(item.role)
@@ -1094,13 +826,13 @@ final class ConversationStore: ObservableObject {
            let reusedID = messageUUIDByStableMessageID[stableCacheKey(stableID: stableID, sessionID: sessionID)] {
             id = reusedID
         } else if stableID == nil,
-                  let reused = popLegacyHistoryMessage(
+                  let reused = popUnstableHistoryMessage(
                       role: role,
                       content: item.content,
                       createdAt: createdAt,
                       sendStatus: sendStatus,
                       revision: item.revision,
-                      buckets: &legacyReuseBuckets
+                      buckets: &unstableReuseBuckets
                   ) {
             id = reused.id
         } else {
@@ -1147,8 +879,8 @@ final class ConversationStore: ObservableObject {
         return suffixCount
     }
 
-    private func legacyHistoryReuseBuckets(sessionID: String, excludingIDs: Set<UUID> = []) -> [LegacyHistoryReuseKey: LegacyHistoryReuseBucket] {
-        var grouped: [LegacyHistoryReuseKey: [ConversationMessage]] = [:]
+    private func unstableHistoryReuseBuckets(sessionID: String, excludingIDs: Set<UUID> = []) -> [UnstableHistoryReuseKey: UnstableHistoryReuseBucket] {
+        var grouped: [UnstableHistoryReuseKey: [ConversationMessage]] = [:]
         for message in messagesBySessionID[sessionID] ?? [] {
             guard message.stableID == nil,
                   message.clientMessageID == nil,
@@ -1159,19 +891,19 @@ final class ConversationStore: ObservableObject {
             else {
                 continue
             }
-            grouped[legacyHistoryReuseKey(for: message), default: []].append(message)
+            grouped[unstableHistoryReuseKey(for: message), default: []].append(message)
         }
 
-        var buckets: [LegacyHistoryReuseKey: LegacyHistoryReuseBucket] = [:]
+        var buckets: [UnstableHistoryReuseKey: UnstableHistoryReuseBucket] = [:]
         buckets.reserveCapacity(grouped.count)
         for (key, messages) in grouped {
-            buckets[key] = LegacyHistoryReuseBucket(messages: messages)
+            buckets[key] = UnstableHistoryReuseBucket(messages: messages)
         }
         return buckets
     }
 
-    private func legacyHistoryReuseKey(for message: ConversationMessage) -> LegacyHistoryReuseKey {
-        LegacyHistoryReuseKey(
+    private func unstableHistoryReuseKey(for message: ConversationMessage) -> UnstableHistoryReuseKey {
+        UnstableHistoryReuseKey(
             role: message.role,
             content: message.content,
             createdAt: message.createdAt,
@@ -1180,15 +912,15 @@ final class ConversationStore: ObservableObject {
         )
     }
 
-    private func popLegacyHistoryMessage(
+    private func popUnstableHistoryMessage(
         role: ConversationMessage.Role,
         content: String,
         createdAt: Date,
         sendStatus: MessageSendStatus,
         revision: ModelRevision?,
-        buckets: inout [LegacyHistoryReuseKey: LegacyHistoryReuseBucket]
+        buckets: inout [UnstableHistoryReuseKey: UnstableHistoryReuseBucket]
     ) -> ConversationMessage? {
-        let key = LegacyHistoryReuseKey(
+        let key = UnstableHistoryReuseKey(
             role: role,
             content: content,
             createdAt: createdAt,
@@ -1199,7 +931,7 @@ final class ConversationStore: ObservableObject {
             return nil
         }
         // 同一时间同一文本也可能重复出现，按出现顺序逐个复用。
-        // 用游标代替 removeFirst，避免大批重复 legacy 消息刷新时反复搬数组。
+        // 用游标代替 removeFirst，避免大批重复历史消息刷新时反复搬数组。
         guard let message = bucket.pop() else {
             buckets.removeValue(forKey: key)
             return nil
@@ -1275,7 +1007,7 @@ final class ConversationStore: ObservableObject {
         return "appserver:\(turnID):\(itemID)"
     }
 
-    private func shouldMergeAsLegacyEcho(_ item: ConversationMessage, candidates: [LegacyEchoCandidate]) -> Bool {
+    private func shouldMergeAsNearbyHistoryEcho(_ item: ConversationMessage, candidates: [NearbyHistoryEchoCandidate]) -> Bool {
         guard item.sendStatus != .confirmed else {
             return false
         }
@@ -1283,7 +1015,7 @@ final class ConversationStore: ObservableObject {
         // 和时间接近的同文历史合并；历史页里的两条相同文本不能再被 role+content 误删。
         return candidates.contains { candidate in
             guard candidate.role == item.role,
-                  abs(candidate.createdAt.timeIntervalSince(item.createdAt)) <= legacyEchoMergeWindow else {
+                  abs(candidate.createdAt.timeIntervalSince(item.createdAt)) <= nearbyHistoryEchoMergeWindow else {
                 return false
             }
             if candidate.content == item.content {
@@ -1292,17 +1024,17 @@ final class ConversationStore: ObservableObject {
             guard item.role == .assistant else {
                 return false
             }
-            return shouldMergeAssistantLegacyEcho(localContent: item.content, historyContent: candidate.content)
+            return shouldMergeAssistantNearbyHistoryEcho(localContent: item.content, historyContent: candidate.content)
         }
     }
 
-    private func shouldMergeAssistantLegacyEcho(localContent: String, historyContent: String) -> Bool {
+    private func shouldMergeAssistantNearbyHistoryEcho(localContent: String, historyContent: String) -> Bool {
         let localKey = normalizedAssistantTextForDedup(localContent)
         let historyKey = normalizedAssistantTextForDedup(historyContent)
         guard localKey.count >= 12, historyKey.count >= 12 else {
             return false
         }
-        // PTY 兜底可能把同一句重绘内容连在一个气泡里；history 返回干净 assistant 后，
+        // 早期历史可能把同一句重绘内容连在一个气泡里；history 返回干净 assistant 后，
         // 用压缩后的语义文本合并，刷新时让干净历史替换旧脏气泡。
         return localKey == historyKey ||
             localKey.contains(historyKey) ||

@@ -2,7 +2,7 @@
 
 ## 目标
 
-`CodexAgentPad` 是原生 iPad SwiftUI 控制台，用来替代 Web/PWA 前端。目标主链路是 iPad App 直接消费 Codex app-server JSON-RPC 协议；Mac 上的 `agentd` 只负责项目 allowlist、鉴权、健康诊断、app-server 启动和可选薄网关。
+`CodexAgentPad` 是原生 iPad SwiftUI 控制台，用来替代已删除的 Web/PWA 前端。目标主链路是 iPad App 直接消费 Codex app-server JSON-RPC 协议；Mac 上的 `agentd` 只负责项目 allowlist、鉴权、健康诊断、app-server 启动和可选薄网关。
 
 ## 方案
 
@@ -17,15 +17,7 @@ Mac agentd control plane / thin gateway
   -> loopback codex app-server WebSocket upstream
 ```
 
-兼容链路仍保留：
-
-```text
-iPad SwiftUI App / Web/PWA
-  -> REST: /api/sessions
-  -> WebSocket: /api/sessions/{id}/ws
-Mac agentd compatibility runtime
-  -> Codex app-server / PTY fallback
-```
+已下线旧链路：`/api/sessions*`、`/api/sessions/{id}/ws`、Web/PWA 和 iOS PTY 文本解析回退都已经删除。后续不要再基于这些入口增加功能。
 
 目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex，也不做 Mac 自动发现。用户先在 Mac 上执行：
 
@@ -46,7 +38,7 @@ agentd pair
 - Token，也就是 `AGENTD_TOKEN`
 - 配对链接，例如 `codexagentpad://pair?endpoint=...&token=...`
 
-Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端当前固定使用直连模式，旧版本保存过的兼容模式会在启动时自动迁移为直连模式。
+Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。
 
 direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。`agentd setup` 会生成独立 upstream token file；Mac 侧由 `agentd` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
 
@@ -62,9 +54,9 @@ direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server up
 
 ```text
 Sources/
-  Core/API              agentd control-plane、app-server JSON-RPC 和兼容 WebSocket 客户端
-  Core/Models           app-server / agentd 兼容 JSON 模型
-  Core/Parsing          兼容 PTY 的 ANSI 清理和 Codex 输出解析
+  Core/API              agentd control-plane 和 app-server JSON-RPC 客户端
+  Core/Models           app-server / agentd control-plane JSON 模型
+  Core/Parsing          历史文本解析与 Markdown 渲染辅助
   Core/Security         Keychain TokenStore
   State                 AppStore / SessionStore / SessionIndexStore / MessageStore / EventReducer / LogStore
   Features              设置、项目、会话、对话、日志、诊断视图
@@ -76,8 +68,8 @@ Sources/
 - direct 模式由 Swift JSON-RPC client 处理 app-server request/response、notification 和 server request。
 - app-server 事件先投影成内部 `AgentEvent`，再由 `EventReducer` 分发给消息层和日志层；`SessionStore` 只协调低频 session 状态。
 - `LogStore` 先批量合并 output，再以 120ms 节流刷新 UI；内部保留 120000 字符，界面渲染最近 80000 字符。
-- app-server runtime 不依赖终端尺寸；兼容 PTY fallback 固定 `120x32`，不跟随 iPad 键盘或布局变化频繁发送 resize。
-- ANSI 清洗和 parser 只服务兼容回退路径；direct 模式不把终端文本作为主消息来源。
+- app-server runtime 不依赖终端尺寸，不跟随 iPad 键盘或布局变化频繁发送 resize。
+- direct 模式不把终端文本作为主消息来源；消息以 app-server 结构化事件为准。
 
 ## 构建
 
@@ -156,9 +148,9 @@ xcodebuild \
 当前限制：
 
 - 只支持单个后端配置。
-- direct 模式仍需要 app-server WebSocket transport 或 agentd 薄网关；兼容 managed stdio 连接不能直接当 raw gateway 复用。
-- 兼容 session 后端仍只允许一个 WebSocket attach。
-- app-server runtime 走结构化事件；兼容 PTY fallback 仍保留 TUI 文本启发式解析。
+- direct 模式仍需要 app-server WebSocket transport 或 agentd 薄网关。
+- 每个 session 当前只允许一个 iOS WebSocket attach。
+- app-server runtime 走结构化事件；iOS 不再用 PTY/TUI 文本启发式解析消息气泡。
 - 当前后端是 HTTP，App 通过 ATS 例外访问，仅建议本机或 Tailscale 使用。
 
 后续优化：

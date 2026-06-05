@@ -83,10 +83,10 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 func (c *Checker) runtimeCheck() Check {
 	runtimeType := c.cfg.Runtime.Type
 	if runtimeType == "" {
-		runtimeType = "pty"
+		runtimeType = "codex_app_server"
 	}
 	if runtimeType != "codex_app_server" {
-		return Check{Name: "runtime", OK: true, Message: fmt.Sprintf("当前运行时：%s", runtimeType)}
+		return Check{Name: "runtime", OK: false, Message: fmt.Sprintf("当前运行时配置无效：%s", runtimeType), Fix: "设置 runtime.type=codex_app_server，或重新执行 agentd setup"}
 	}
 	return Check{Name: "runtime", OK: true, Message: "当前运行时：codex_app_server"}
 }
@@ -94,16 +94,9 @@ func (c *Checker) runtimeCheck() Check {
 func (c *Checker) appServerGatewayCheck() Check {
 	transport := c.cfg.AppServer.Transport
 	if transport == "" {
-		transport = "stdio"
-	}
-	if c.cfg.Runtime.Type != "codex_app_server" && transport != "ws" {
-		return Check{}
+		transport = "ws"
 	}
 	switch transport {
-	case "stdio":
-		return Check{Name: "app-server", OK: true, Message: "Codex app-server 将通过 stdio 子进程访问"}
-	case "unix":
-		return Check{Name: "app-server", OK: true, Message: "Codex app-server 将通过 unix socket 本机访问"}
 	case "ws":
 		if c.cfg.AppServer.Listen == "" {
 			return Check{Name: "app-server", OK: false, Message: "app-server ws upstream 未配置", Fix: "执行 agentd setup 生成默认 loopback upstream"}
@@ -115,15 +108,15 @@ func (c *Checker) appServerGatewayCheck() Check {
 			Name:    "app-server",
 			OK:      false,
 			Message: "Codex app-server 不应暴露到非 loopback 网络",
-			Fix:     "使用 stdio://，或将 app_server.listen 改为 127.0.0.1，仅让 iPad 连接 agentd",
+			Fix:     "将 app_server.listen 改为 127.0.0.1，仅让 iPad 连接 agentd",
 		}
 	default:
-		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=stdio"}
+		return Check{Name: "app-server", OK: false, Message: "app-server transport 配置无效", Fix: "设置 AGENTD_APP_SERVER_TRANSPORT=ws"}
 	}
 }
 
 func (c *Checker) needsCodexAppServerCheck() bool {
-	return c.cfg.Runtime.Type == "codex_app_server" || strings.EqualFold(c.cfg.AppServer.Transport, "ws")
+	return true
 }
 
 func (c *Checker) codexAppServerCheck(ctx context.Context) Check {

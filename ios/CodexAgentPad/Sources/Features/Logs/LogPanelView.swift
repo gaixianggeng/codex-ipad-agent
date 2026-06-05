@@ -108,7 +108,7 @@ struct LogDisplayLine: Identifiable, Hashable {
         case assistant
         case system
         case warning
-        case output
+        case plain
 
         var symbolName: String {
             switch self {
@@ -120,7 +120,7 @@ struct LogDisplayLine: Identifiable, Hashable {
                 return "gearshape"
             case .warning:
                 return "exclamationmark.triangle"
-            case .output:
+            case .plain:
                 return "terminal"
             }
         }
@@ -139,7 +139,7 @@ struct LogPanelFormatter {
             return []
         }
 
-        // 只渲染最新的可见行，同时把 TUI 重绘产生的大量空行和边框压掉。
+        // 只渲染最新的可见行，同时把日志重绘产生的大量空行和边框压掉。
         let normalizedLines = log
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -151,7 +151,7 @@ struct LogPanelFormatter {
             guard let line = makeDisplayLine(from: rawLine, id: startLineID + rawIndex) else {
                 continue
             }
-            // 按归一化后的语义文本去重：TUI 流式重绘常常只差尾部输入框占位符或空白，
+            // 按归一化后的语义文本去重：日志重绘常常只差尾部输入框占位符或空白，
             // 原来的“严格相邻相等”挡不住，这里用压缩后的 key 把这些近似重复行合并掉。
             let dedupKey = dedupKey(for: line)
             let effectiveKey = dedupKey.isEmpty ? line.text : dedupKey
@@ -182,24 +182,24 @@ struct LogPanelFormatter {
         if trimmed.hasPrefix("•") || trimmed.hasPrefix("●") {
             return LogDisplayLine(id: id, text: cleanAssistantText(stripBulletPrefix(trimmed)), kind: .assistant)
         }
-        // 普通终端 output 只做“无损”的重复句子折叠，绝不按 prompt 片段截断，
+        // 普通日志行只做“无损”的重复句子折叠，绝不按 prompt 片段截断，
         // 否则像 "Home › Settings"、"note: > Implement later"、"data: • item" 这类正常输出会被误伤。
-        return LogDisplayLine(id: id, text: collapseRepeatedSentences(trimmed), kind: .output)
+        return LogDisplayLine(id: id, text: collapseRepeatedSentences(trimmed), kind: .plain)
     }
 
     private func dedupKey(for line: LogDisplayLine) -> String {
         switch line.kind {
         case .assistant:
-            // assistant/bullet 行是 TUI 重绘残影的高发区，按剥离 prompt 片段后的语义文本去重。
+            // assistant/bullet 行是 prompt 残片的高发区，按剥离 prompt 片段后的语义文本去重。
             return AssistantTextNormalizer.normalizedAssistantTextForDedup(line.text)
         default:
-            // 其余行（output/command/system…）只折叠重复句子 + 去空白，不截断含 "›"/">" 的正常内容。
+            // 其余行（plain/command/system…）只折叠重复句子 + 去空白，不截断含 "›"/">" 的正常内容。
             return AssistantTextNormalizer.plainDedupKey(line.text)
         }
     }
 
     private func cleanAssistantText(_ text: String) -> String {
-        // assistant 气泡行：1) 去掉被 TUI 重绘拼到行尾的输入框占位符（"… ›Implement {feature} …"）；
+        // assistant 气泡行：1) 去掉被日志重绘拼到行尾的输入框占位符（"… ›Implement {feature} …"）；
         // 2) 合并同一行里被重画两遍的句子。失败时回退原文，避免把正常内容清空。
         let stripped = AssistantTextNormalizer.stripTerminalPromptFragment(text, dropPromptOnlyLine: false)
         let collapsed = AssistantTextNormalizer
@@ -239,7 +239,7 @@ struct LogPanelFormatter {
         if line == "Working" || line == "thinking" || line == "esc to interrupt" {
             return true
         }
-        // Codex TUI 流式重绘会留下 W/Wo/Wor 这类半截状态，日志面板里直接过滤。
+        // 流式日志重绘会留下 W/Wo/Wor 这类半截状态，日志面板里直接过滤。
         if "Working".hasPrefix(line), line.count <= 6 {
             return true
         }
@@ -292,7 +292,7 @@ private struct LogLineRow: View {
             return tokens.success
         case .system, .warning:
             return tokens.warning
-        case .output:
+        case .plain:
             return tokens.secondaryText
         }
     }
@@ -307,7 +307,7 @@ private struct LogLineRow: View {
             return tokens.warning.opacity(0.10)
         case .warning:
             return tokens.warning.opacity(0.12)
-        case .output:
+        case .plain:
             return tokens.elevatedSurface
         }
     }
@@ -320,7 +320,7 @@ private struct LogLineRow: View {
             return tokens.success.opacity(0.16)
         case .system, .warning:
             return tokens.warning.opacity(0.20)
-        case .output:
+        case .plain:
             return tokens.border.opacity(0.65)
         }
     }
