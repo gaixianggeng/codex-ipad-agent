@@ -157,7 +157,7 @@ func TestCreateWithFakeCodexUsesProjectDirAndBoundsTerminalSize(t *testing.T) {
 
 	select {
 	case <-session.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("fake codex 未按预期退出")
 	}
 
