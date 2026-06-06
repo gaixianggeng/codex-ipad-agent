@@ -663,6 +663,7 @@ actor CodexAppServerSessionRuntime {
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
              .logDelta(_, let metadata),
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
@@ -1108,10 +1109,11 @@ actor CodexAppServerSessionRuntime {
         let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
         return turns.flatMap { turn -> [CodexHistoryMessage] in
             let turnID = turn["id"]?.stringValue
-            let timestamp = date(from: turn["startedAt"])
+            let startedAt = date(from: turn["startedAt"])
+            let completedAt = date(from: turn["completedAt"])
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             return items.compactMap { item in
-                historyMessage(from: item, sessionID: sessionID, turnID: turnID, createdAt: timestamp)
+                historyMessage(from: item, sessionID: sessionID, turnID: turnID, startedAt: startedAt, completedAt: completedAt)
             }
         }
     }
@@ -1120,7 +1122,8 @@ actor CodexAppServerSessionRuntime {
         from item: [String: CodexAppServerJSONValue],
         sessionID: SessionID,
         turnID: TurnID?,
-        createdAt: Date?
+        startedAt: Date?,
+        completedAt: Date?
     ) -> CodexHistoryMessage? {
         let type = item["type"]?.stringValue
         let itemID = item["id"]?.stringValue ?? UUID().uuidString
@@ -1135,7 +1138,7 @@ actor CodexAppServerSessionRuntime {
                 id: messageID,
                 role: "user",
                 content: text,
-                createdAt: createdAt,
+                createdAt: startedAt,
                 clientMessageID: item["clientId"]?.stringValue,
                 turnID: turnID,
                 itemID: itemID
@@ -1145,16 +1148,104 @@ actor CodexAppServerSessionRuntime {
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
+            if item["phase"]?.stringValue == "commentary" {
+                return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+            }
+            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: completedAt ?? startedAt, turnID: turnID, itemID: itemID)
         case "plan":
             let text = item["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "reasoning":
+            let text = reasoningHistoryText(from: item)
+            guard !text.isEmpty else {
+                return nil
+            }
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "commandExecution":
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: commandExecutionHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "fileChange":
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .fileChangeSummary, content: fileChangeHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: toolHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
         default:
             return nil
         }
+    }
+
+    private func reasoningHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        let summary = item["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let content = item["content"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        return (summary + content)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func commandExecutionHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        let command = item["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "命令执行"
+        var lines = ["命令：\(command)"]
+        if let cwd = item["cwd"]?.stringValue, !cwd.isEmpty {
+            lines.append("目录：\(cwd)")
+        }
+        let status = item["status"]?.stringValue
+        let exitCode = item["exitCode"]?.intValue.map { "\($0)" }
+        let statusLine = [status.map { "状态：\($0)" }, exitCode.map { "退出码：\($0)" }]
+            .compactMap { $0 }
+            .joined(separator: "，")
+        if !statusLine.isEmpty {
+            lines.append(statusLine)
+        }
+        if let output = item["aggregatedOutput"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+            lines.append("输出：\n\(truncatedHistoryText(output))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func fileChangeHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let status = item["status"]?.stringValue ?? "modified"
+        let summary = fileChangeSummary(from: changes) ?? "workspace"
+        return "文件变更：\(summary) \(status)"
+    }
+
+    private func toolHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        switch item["type"]?.stringValue {
+        case "mcpToolCall":
+            let title = [item["server"]?.stringValue, item["tool"]?.stringValue]
+                .compactMap { nonEmpty($0) }
+                .joined(separator: ".")
+            return historyToolLine(title: title.isEmpty ? "MCP 工具调用" : title, status: item["status"]?.stringValue)
+        case "dynamicToolCall":
+            let title = [item["namespace"]?.stringValue, item["tool"]?.stringValue]
+                .compactMap { nonEmpty($0) }
+                .joined(separator: ".")
+            return historyToolLine(title: title.isEmpty ? "动态工具调用" : title, status: item["status"]?.stringValue)
+        case "collabAgentToolCall":
+            let title = item["tool"]?.stringValue ?? "子 Agent 调用"
+            return historyToolLine(title: title, status: item["status"]?.stringValue)
+        case "webSearch":
+            return historyToolLine(title: "网络搜索：\(item["query"]?.stringValue ?? "")", status: nil)
+        default:
+            return "工具调用"
+        }
+    }
+
+    private func historyToolLine(title: String, status: String?) -> String {
+        guard let status, !status.isEmpty else {
+            return "工具：\(title)"
+        }
+        return "工具：\(title)\n状态：\(status)"
+    }
+
+    private func truncatedHistoryText(_ text: String, limit: Int = 2_000) -> String {
+        let prefix = text.prefix(limit)
+        guard prefix.endIndex != text.endIndex else {
+            return text
+        }
+        return String(prefix) + "\n... output truncated"
     }
 
     private func appServerHistoryMessageID(turnID: TurnID?, itemID: AgentItemID) -> MessageID {

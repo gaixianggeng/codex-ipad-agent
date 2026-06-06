@@ -1598,6 +1598,7 @@ final class SessionStore: ObservableObject {
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
              .logDelta(_, let metadata),
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),

@@ -157,6 +157,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
 struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     var id: MessageID
     let role: String
+    let kind: MessageKind
     let content: String
     let createdAt: Date?
     let clientMessageID: ClientMessageID?
@@ -169,6 +170,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     init(
         id: MessageID = UUID().uuidString,
         role: String,
+        kind: MessageKind = .message,
         content: String,
         createdAt: Date?,
         clientMessageID: ClientMessageID? = nil,
@@ -180,6 +182,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     ) {
         self.id = id
         self.role = role
+        self.kind = kind
         self.content = content
         self.createdAt = createdAt
         self.clientMessageID = clientMessageID
@@ -193,6 +196,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id
         case role
+        case kind
         case content
         case createdAt = "created_at"
         case clientMessageID = "client_message_id"
@@ -212,6 +216,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         self.init(
             id: try container.decodeIfPresent(MessageID.self, forKey: .id) ?? clientMessageID ?? UUID().uuidString,
             role: role,
+            kind: try container.decodeIfPresent(MessageKind.self, forKey: .kind) ?? .message,
             content: content,
             createdAt: createdAt,
             clientMessageID: clientMessageID,
@@ -381,7 +386,7 @@ struct ConversationMessage: Identifiable, Hashable {
     let clientMessageID: ClientMessageID?
     let turnID: TurnID?
     let itemID: AgentItemID?
-    let role: Role
+    var role: Role
     var kind: MessageKind
     var content: String {
         didSet {

@@ -681,6 +681,63 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.content, answer)
     }
 
+    func testStructuredHistoryProcessMessagesCollapseBeforeFinalAssistant() throws {
+        let store = ConversationStore()
+        let sessionID = "sess_history_processed"
+        let turnID = "turn_history_processed"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "user_history_processed",
+                role: "user",
+                content: "调用子 agent 讲个笑话",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "user_history_processed"
+            ),
+            CodexHistoryMessage(
+                id: "commentary_history_processed",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "我先调用一个子 agent。",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "commentary_history_processed"
+            ),
+            CodexHistoryMessage(
+                id: "plan_history_processed",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "让子 agent 生成一个短笑话。",
+                createdAt: Date(timeIntervalSince1970: 12),
+                turnID: turnID,
+                itemID: "plan_history_processed"
+            ),
+            CodexHistoryMessage(
+                id: "assistant_history_processed",
+                role: "assistant",
+                content: "程序员相亲，对方问：你会浪漫吗？",
+                createdAt: Date(timeIntervalSince1970: 44),
+                turnID: turnID,
+                itemID: "assistant_history_processed"
+            )
+        ], sessionID: sessionID)
+
+        let items = ConversationTimelineItemBuilder.items(from: store.messages(for: sessionID))
+
+        XCTAssertEqual(items.count, 3)
+        guard case .processed(let group) = items[1] else {
+            return XCTFail("history 过程消息应该折叠到最终 assistant 前")
+        }
+        XCTAssertEqual(group.messages.map(\.content), ["我先调用一个子 agent。", "让子 agent 生成一个短笑话。"])
+        XCTAssertEqual(group.title, "已处理 34s")
+        guard case .message(let final) = items[2] else {
+            return XCTFail("最终 assistant 应保持独立展开")
+        }
+        XCTAssertEqual(final.role, .assistant)
+        XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
+    }
+
     func testHistoryDeduplicatesClientMessageEcho() {
         let store = ConversationStore()
         let sessionID = "sess_client_echo_history"
@@ -4189,6 +4246,53 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
     }
 
+    func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {
+        let project = AgentProject(id: "proj_processed_history", name: "Processed", path: "/tmp/processed")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(sessionID: "thr_processed", before: nil, limit: nil)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_processed","sessionId":"thr_processed","preview":"调用子 agent 讲个笑话","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490134,"status":{"type":"idle"},"path":null,"cwd":"/tmp/processed","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"processed","turns":[{"id":"turn_processed","startedAt":1780490100,"completedAt":1780490134,"itemsView":"full","status":"completed","error":null,"items":[{"type":"userMessage","id":"user_processed","clientId":"client_processed","content":[{"type":"text","text":"调用子 agent 讲个笑话"}]},{"type":"agentMessage","id":"commentary_processed","text":"我先调用一个子 agent。","phase":"commentary","memoryCitation":null},{"type":"plan","id":"plan_processed","text":"让子 agent 生成一个短笑话。"},{"type":"reasoning","id":"reasoning_processed","summary":["确认请求要讲笑话"],"content":[]},{"type":"commandExecution","id":"cmd_processed","command":"echo joke","cwd":"/tmp/processed","processId":null,"source":"exec","status":"completed","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1000},{"type":"agentMessage","id":"assistant_processed","text":"程序员相亲，对方问：你会浪漫吗？","phase":"final_answer","memoryCitation":null}]}]}}}"#)
+
+        let page = try await pageTask.value
+        XCTAssertEqual(page.messages.map(\.role), ["user", "system", "system", "system", "system", "assistant"])
+        XCTAssertEqual(page.messages.map(\.kind), [.message, .reasoningSummary, .reasoningSummary, .reasoningSummary, .commandSummary, .message])
+        XCTAssertEqual(page.messages.last?.createdAt, Date(timeIntervalSince1970: 1780490134))
+
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory(page.messages, sessionID: "thr_processed")
+        let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"))
+
+        XCTAssertEqual(items.count, 3)
+        guard case .processed(let group) = items[1] else {
+            return XCTFail("thread/read 过程 item 应折叠到最终 assistant 前")
+        }
+        XCTAssertEqual(group.messages.count, 4)
+        XCTAssertEqual(group.title, "已处理 34s")
+        guard case .message(let final) = items[2] else {
+            return XCTFail("最终 assistant 应保持独立展开")
+        }
+        XCTAssertEqual(final.role, .assistant)
+        XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
+    }
+
     func testDirectRuntimeDropsStaleReplayedApprovalForIdleThread() async throws {
         let project = AgentProject(id: "proj_stale", name: "Stale", path: "/tmp/stale")
         let transport = FakeCodexAppServerTransport()
@@ -4602,10 +4706,12 @@ extension ConversationDataFlowTests {
         let appStore = AppStore()
         let conversationStore = ConversationStore()
         let logStore = LogStore()
+        let contextStore = SessionContextStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
             logStore: logStore,
+            contextStore: contextStore,
             clientFactory: { client },
             webSocketFactory: { CodexAppServerSessionWebSocketClient(runtime: runtime) },
             webSocketReconnectDelayNanoseconds: { _ in 1_000_000 }
@@ -4658,9 +4764,17 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(logStore.log(for: "thr_store_direct").contains("go test ok"))
 
         transport.enqueue(#"{"method":"turn/diff/updated","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","path":"Sources/App.swift","status":"modified"}}"#)
+        for _ in 0..<300 where contextStore.context(for: "thr_store_direct")?.tasks.contains(where: { $0.kind == "file_change" && $0.subtitle == "Sources/App.swift" }) != true {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(contextStore.context(for: "thr_store_direct")?.tasks.contains { $0.kind == "file_change" && $0.subtitle == "Sources/App.swift" } == true)
+        XCTAssertFalse(conversationStore.messages(for: "thr_store_direct").contains { $0.kind == .fileChangeSummary })
+
+        transport.enqueue(#"{"method":"item/completed","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","item":{"type":"fileChange","id":"file_change_store","status":"modified","changes":[{"path":"Sources/App.swift","kind":"modified"}]}}}"#)
         _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
             $0.contains { $0.kind == .fileChangeSummary && $0.content.contains("Sources/App.swift") }
         }
+        XCTAssertEqual(conversationStore.messages(for: "thr_store_direct").filter { $0.kind == .fileChangeSummary }.count, 1)
 
         transport.enqueue(#"{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","itemId":"cmd_store","command":"go test ./..."}}"#)
         _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
@@ -4862,19 +4976,56 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(message.id, "appserver:turn_demo:assistant_1")
             XCTAssertEqual(message.sessionID, "thr_demo")
             XCTAssertEqual(message.content, "hello world")
+            XCTAssertEqual(message.role, .assistant)
+            XCTAssertEqual(message.kind, .message)
             XCTAssertEqual(message.sendStatus, .confirmed)
             XCTAssertEqual(meta.itemID, "assistant_1")
         } else {
             XCTFail("Expected messageCompleted")
         }
 
-        let toolCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"dynamicToolCall","id":"tool_1","namespace":"browser","tool":"open","status":"completed"}}}"#)
-        if case .sessionContext(let context, _) = try XCTUnwrap(projector.project(toolCompleted)) {
-            XCTAssertEqual(context.tasks.first?.kind, "dynamic_tool")
-            XCTAssertEqual(context.tasks.first?.title, "browser.open")
-            XCTAssertEqual(context.tasks.first?.status, "completed")
+        let commentary = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"agentMessage","id":"commentary_1","text":"我先检查上下文。","phase":"commentary"}}}"#)
+        if case .messageCompleted(let message, _) = try XCTUnwrap(projector.project(commentary)) {
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .reasoningSummary)
+            XCTAssertEqual(message.content, "我先检查上下文。")
         } else {
-            XCTFail("Expected tool completed sessionContext")
+            XCTFail("Expected commentary messageCompleted")
+        }
+
+        let planCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"plan","id":"plan_1","text":"检查上下文并给出答案。"}}}"#)
+        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(planCompleted)) {
+            XCTAssertEqual(message.id, "appserver:turn_demo:plan_1")
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .reasoningSummary)
+            XCTAssertEqual(message.content, "检查上下文并给出答案。")
+            XCTAssertNil(context)
+        } else {
+            XCTFail("Expected plan processItemCompleted")
+        }
+
+        let commandCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"commandExecution","id":"cmd_1","command":"go test ./...","cwd":"/tmp/demo","status":"completed","aggregatedOutput":"ok","exitCode":0}}}"#)
+        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(commandCompleted)) {
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .commandSummary)
+            XCTAssertTrue(message.content.contains("命令：go test ./..."))
+            XCTAssertTrue(message.content.contains("输出：\nok"))
+            XCTAssertEqual(context?.tasks.first?.kind, "command")
+            XCTAssertEqual(context?.tasks.first?.status, "completed")
+        } else {
+            XCTFail("Expected command processItemCompleted")
+        }
+
+        let toolCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"dynamicToolCall","id":"tool_1","namespace":"browser","tool":"open","status":"completed"}}}"#)
+        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(toolCompleted)) {
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .commandSummary)
+            XCTAssertEqual(message.content, "工具：browser.open\n状态：completed")
+            XCTAssertEqual(context?.tasks.first?.kind, "dynamic_tool")
+            XCTAssertEqual(context?.tasks.first?.title, "browser.open")
+            XCTAssertEqual(context?.tasks.first?.status, "completed")
+        } else {
+            XCTFail("Expected tool completed processItemCompleted")
         }
 
         let log = try decodeAppServerNotification(#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"thr_demo","turnId":"turn_demo","itemId":"cmd_1","delta":"go test output","stream":"stdout"}}"#)
@@ -4886,13 +5037,13 @@ extension ConversationDataFlowTests {
         }
 
         let diff = try decodeAppServerNotification(#"{"method":"turn/diff/updated","params":{"threadId":"thr_demo","turnId":"turn_demo","path":"Sources/App.swift","status":"modified","additions":2,"deletions":1}}"#)
-        if case .diffUpdated(let summary, _) = try XCTUnwrap(projector.project(diff)) {
-            XCTAssertEqual(summary.path, "Sources/App.swift")
-            XCTAssertEqual(summary.status, "modified")
-            XCTAssertEqual(summary.additions, 2)
-            XCTAssertEqual(summary.deletions, 1)
+        if case .sessionContext(let context, let meta) = try XCTUnwrap(projector.project(diff)) {
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+            XCTAssertEqual(context.tasks.first?.kind, "file_change")
+            XCTAssertEqual(context.tasks.first?.subtitle, "Sources/App.swift")
+            XCTAssertEqual(context.tasks.first?.status, "modified")
         } else {
-            XCTFail("Expected diffUpdated")
+            XCTFail("Expected file change sessionContext")
         }
 
         let turnCompleted = try decodeAppServerNotification(#"{"method":"turn/completed","params":{"threadId":"thr_demo","turnId":"turn_demo"}}"#)

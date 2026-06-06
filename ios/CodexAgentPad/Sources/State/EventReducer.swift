@@ -85,6 +85,11 @@ actor EventReducer {
             if message.role == .assistant {
                 output.foregroundClears.append(metadata.sessionID ?? message.sessionID)
             }
+        case .processItemCompleted(let message, let context, let metadata):
+            output.messageMutations.append(.completed(message, metadata, fallbackSessionID))
+            if let context {
+                output.contextUpdates.append((context, metadata.sessionID))
+            }
         case .logDelta(let delta, let metadata):
             output.logAppends.append(EventReducerLogAppend(
                 text: delta.text,

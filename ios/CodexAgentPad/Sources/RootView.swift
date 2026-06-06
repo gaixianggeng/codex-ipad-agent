@@ -47,91 +47,142 @@ struct RootView: View {
         GeometryReader { proxy in
             let layout = WorkbenchLayout(containerWidth: proxy.size.width, horizontalSizeClass: horizontalSizeClass)
 
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                ProjectSidebarView(showsSessions: true)
-                    // 侧栏本身用 Section header 呈现“项目”，隐藏大标题可以让项目树首屏更紧凑。
-                    .toolbar(.hidden, for: .navigationBar)
-                    // 侧栏宽度跟随窗口缩放，iPad mini/浮窗不会把详情区挤到只剩一条窄缝。
-                    .navigationSplitViewColumnWidth(
-                        min: layout.projectColumn.min,
-                        ideal: layout.projectColumn.ideal,
-                        max: layout.projectColumn.max
-                    )
-            } detail: {
-                WorkspaceView()
-                    .navigationTitle(sessionStore.selectedSession?.title ?? sessionStore.selectedProject?.name ?? "会话")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .principal) {
-                            HStack(spacing: 12) {
-                                AgentWorkbenchTitle(maxWidth: layout.titleMaxWidth)
-                                refreshControl
-                            }
-                        }
-                        ToolbarItem(placement: .topBarLeading) {
-                            // 仅在侧栏收起时，在主界面提供展开按钮；展开时由侧栏自带的开关负责收起，避免两个图标同时出现。
-                            if columnVisibility == .detailOnly {
-                                Button {
-                                    withAnimation {
-                                        columnVisibility = .all
-                                    }
-                                } label: {
-                                    Label("显示项目栏", systemImage: "sidebar.left")
-                                }
-                                .accessibilityLabel("显示项目栏")
-                            }
-                        }
-                        ToolbarItem(placement: .topBarLeading) {
-                            if sessionStore.selectedSessionID != nil {
-                                Button {
-                                    sessionStore.returnToSessionList()
-                                } label: {
-                                    Label("回到项目", systemImage: "xmark.circle")
-                                }
-                                .accessibilityLabel("回到项目")
-                            }
-                        }
-                        ToolbarItemGroup(placement: .topBarTrailing) {
-                            if let symbol = connectionBadgeSymbol {
-                                Image(systemName: symbol)
-                                    .foregroundStyle(connectionBadgeColor)
-                                    .symbolRenderingMode(.hierarchical)
-                                    .accessibilityLabel(sessionStore.connectionBadgeTitle ?? "连接状态")
-                            }
-                            if sessionStore.selectedSessionID != nil {
-                                Button {
-                                    showingLogInspector.toggle()
-                                } label: {
-                                    Label(layout.usesAttachedInspector ? "日志" : "会话详情", systemImage: layout.usesAttachedInspector ? "terminal" : "sidebar.right")
-                                }
-                                .labelStyle(.iconOnly)
-                                .accessibilityLabel(showingLogInspector ? "隐藏详情" : "显示详情")
-                            }
-                            Button {
-                                showingSettings = true
-                            } label: {
-                                Label("设置", systemImage: "gearshape")
-                            }
-                            .labelStyle(.iconOnly)
-                            .accessibilityLabel("设置")
-                        }
-                    }
-                    .sessionInspectorPresentation(isPresented: $showingLogInspector, layout: layout)
-            }
-            .navigationSplitViewStyle(.balanced)
-            .onAppear {
-                applyResponsiveColumnVisibility(for: layout)
-            }
-            .onChange(of: layout) { _, newLayout in
-                applyResponsiveColumnVisibility(for: newLayout)
-            }
-            .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
-                if sessionID == nil {
-                    showingLogInspector = false
-                }
-                applyResponsiveColumnVisibility(for: layout)
+            if layout.usesCompactNavigation {
+                compactLayout(layout: layout)
+            } else {
+                splitLayout(layout: layout)
             }
         }
+    }
+
+    private func compactLayout(layout: WorkbenchLayout) -> some View {
+        NavigationStack {
+            ProjectSidebarView(showsSessions: true)
+                .navigationTitle("Codex")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("设置", systemImage: "gearshape")
+                        }
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel("设置")
+                    }
+                }
+                .navigationDestination(isPresented: compactSessionDetailBinding) {
+                    workspaceDetail(
+                        layout: layout,
+                        showsSidebarToggle: false,
+                        showsReturnButton: false
+                    )
+                }
+        }
+        .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
+            if sessionID == nil {
+                showingLogInspector = false
+            }
+        }
+    }
+
+    private func splitLayout(layout: WorkbenchLayout) -> some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            ProjectSidebarView(showsSessions: true)
+                // 侧栏本身用 Section header 呈现“项目”，隐藏大标题可以让项目树首屏更紧凑。
+                .toolbar(.hidden, for: .navigationBar)
+                // 侧栏宽度跟随窗口缩放，iPad mini/浮窗不会把详情区挤到只剩一条窄缝。
+                .navigationSplitViewColumnWidth(
+                    min: layout.projectColumn.min,
+                    ideal: layout.projectColumn.ideal,
+                    max: layout.projectColumn.max
+                )
+        } detail: {
+            workspaceDetail(
+                layout: layout,
+                showsSidebarToggle: true,
+                showsReturnButton: true
+            )
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear {
+            applyResponsiveColumnVisibility(for: layout)
+        }
+        .onChange(of: layout) { _, newLayout in
+            applyResponsiveColumnVisibility(for: newLayout)
+        }
+        .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
+            if sessionID == nil {
+                showingLogInspector = false
+            }
+            applyResponsiveColumnVisibility(for: layout)
+        }
+    }
+
+    private func workspaceDetail(
+        layout: WorkbenchLayout,
+        showsSidebarToggle: Bool,
+        showsReturnButton: Bool
+    ) -> some View {
+        WorkspaceView()
+            .navigationTitle(sessionStore.selectedSession?.title ?? sessionStore.selectedProject?.name ?? "会话")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 12) {
+                        AgentWorkbenchTitle(maxWidth: layout.titleMaxWidth)
+                        refreshControl
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    // 仅在侧栏收起时，在主界面提供展开按钮；展开时由侧栏自带的开关负责收起，避免两个图标同时出现。
+                    if showsSidebarToggle && columnVisibility == .detailOnly {
+                        Button {
+                            withAnimation {
+                                columnVisibility = .all
+                            }
+                        } label: {
+                            Label("显示项目栏", systemImage: "sidebar.left")
+                        }
+                        .accessibilityLabel("显示项目栏")
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if showsReturnButton && sessionStore.selectedSessionID != nil {
+                        Button {
+                            sessionStore.returnToSessionList()
+                        } label: {
+                            Label("回到项目", systemImage: "xmark.circle")
+                        }
+                        .accessibilityLabel("回到项目")
+                    }
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if let symbol = connectionBadgeSymbol {
+                        Image(systemName: symbol)
+                            .foregroundStyle(connectionBadgeColor)
+                            .symbolRenderingMode(.hierarchical)
+                            .accessibilityLabel(sessionStore.connectionBadgeTitle ?? "连接状态")
+                    }
+                    if sessionStore.selectedSessionID != nil {
+                        Button {
+                            showingLogInspector.toggle()
+                        } label: {
+                            Label(layout.usesAttachedInspector ? "日志" : "会话详情", systemImage: layout.usesAttachedInspector ? "terminal" : "sidebar.right")
+                        }
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel(showingLogInspector ? "隐藏详情" : "显示详情")
+                    }
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("设置")
+                }
+            }
+            .sessionInspectorPresentation(isPresented: $showingLogInspector, layout: layout)
     }
 
     // 刷新挪到标题旁，与右侧的日志/设置图标分开，避免功能与视觉都挤在右上角。
@@ -200,18 +251,28 @@ struct RootView: View {
     }
 
     private func applyResponsiveColumnVisibility(for layout: WorkbenchLayout) {
+        guard sessionStore.selectedSessionID != nil else {
+            if columnVisibility == .detailOnly || layout.prefersDetailOnly {
+                // 没有会话被选中时，窄 split 要回到项目/会话列表；否则会停在一个没有返回路径的详情列。
+                columnVisibility = .all
+            }
+            return
+        }
         guard layout.prefersDetailOnly else {
             return
         }
-        guard sessionStore.selectedProjectID != nil || sessionStore.selectedSessionID != nil else {
-            return
-        }
-        guard sessionStore.selectedSessionID != nil else {
-            // 窄屏回到项目时要展示项目/会话列表；仅选中 project 不应继续停在 detail。
-            columnVisibility = .all
-            return
-        }
         columnVisibility = .detailOnly
+    }
+
+    private var compactSessionDetailBinding: Binding<Bool> {
+        Binding(get: {
+            sessionStore.selectedSessionID != nil
+        }, set: { isPresented in
+            guard !isPresented, sessionStore.selectedSessionID != nil else {
+                return
+            }
+            sessionStore.returnToSessionList()
+        })
     }
 }
 
@@ -225,6 +286,7 @@ private struct WorkbenchLayout: Equatable {
     let projectColumn: ColumnWidth
     let inspectorColumn: ColumnWidth
     let titleMaxWidth: CGFloat
+    let usesCompactNavigation: Bool
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
 
@@ -249,6 +311,7 @@ private struct WorkbenchLayout: Equatable {
 
         // 三栏只在真正宽的横向空间里附着；窄窗口改用 sheet，保住会话阅读/输入区域。
         usesAttachedInspector = horizontalSizeClass != .compact && containerWidth >= 1180
+        usesCompactNavigation = isCompactWidth
         prefersDetailOnly = isCompactWidth || containerWidth < 860
     }
 }

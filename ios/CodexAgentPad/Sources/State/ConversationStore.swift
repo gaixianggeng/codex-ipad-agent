@@ -43,6 +43,7 @@ final class ConversationStore: ObservableObject {
         let stableID: MessageID?
         let wireID: MessageID?
         let role: String
+        let kind: MessageKind
         let content: String
         let createdAt: Date?
         let clientMessageID: ClientMessageID?
@@ -66,6 +67,7 @@ final class ConversationStore: ObservableObject {
 
     private struct UnstableHistoryReuseKey: Hashable {
         let role: ConversationMessage.Role
+        let kind: MessageKind
         let content: String
         let createdAt: Date
         let sendStatus: MessageSendStatus
@@ -408,6 +410,7 @@ final class ConversationStore: ObservableObject {
         messageUUIDByStableMessageID[key] = uuid
         if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
             list[index].stableID = stableID
+            list[index].role = role
             list[index].kind = displayKind
             list[index].content = message.content
             list[index].sendStatus = message.sendStatus == .failed ? .failed : .confirmed
@@ -761,7 +764,14 @@ final class ConversationStore: ObservableObject {
             merged.append(item)
         }
 
-        return merged.sorted { $0.createdAt < $1.createdAt }
+        return merged.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.createdAt == rhs.element.createdAt {
+                    return lhs.offset < rhs.offset
+                }
+                return lhs.element.createdAt < rhs.element.createdAt
+            }
+            .map(\.element)
     }
 
     private func projectedHistoryMessages(_ history: [CodexHistoryMessage], sessionID: String) -> [ConversationMessage] {
@@ -849,6 +859,7 @@ final class ConversationStore: ObservableObject {
         } else if stableID == nil,
                   let reused = popUnstableHistoryMessage(
                       role: role,
+                      kind: item.kind,
                       content: item.content,
                       createdAt: createdAt,
                       sendStatus: sendStatus,
@@ -866,7 +877,7 @@ final class ConversationStore: ObservableObject {
             turnID: item.turnID,
             itemID: item.itemID,
             role: role,
-            kind: .message,
+            kind: item.kind,
             content: item.content,
             createdAt: createdAt,
             sendStatus: sendStatus,
@@ -926,6 +937,7 @@ final class ConversationStore: ObservableObject {
     private func unstableHistoryReuseKey(for message: ConversationMessage) -> UnstableHistoryReuseKey {
         UnstableHistoryReuseKey(
             role: message.role,
+            kind: message.kind,
             content: message.content,
             createdAt: message.createdAt,
             sendStatus: message.sendStatus,
@@ -935,6 +947,7 @@ final class ConversationStore: ObservableObject {
 
     private func popUnstableHistoryMessage(
         role: ConversationMessage.Role,
+        kind: MessageKind,
         content: String,
         createdAt: Date,
         sendStatus: MessageSendStatus,
@@ -943,6 +956,7 @@ final class ConversationStore: ObservableObject {
     ) -> ConversationMessage? {
         let key = UnstableHistoryReuseKey(
             role: role,
+            kind: kind,
             content: content,
             createdAt: createdAt,
             sendStatus: sendStatus,
@@ -971,6 +985,7 @@ final class ConversationStore: ObservableObject {
             stableID: stableID,
             wireID: stableID == nil ? nil : item.id,
             role: item.role,
+            kind: item.kind,
             content: item.content,
             createdAt: item.createdAt,
             clientMessageID: item.clientMessageID,

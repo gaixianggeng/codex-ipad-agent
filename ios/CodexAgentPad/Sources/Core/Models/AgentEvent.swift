@@ -8,6 +8,7 @@ enum AgentEvent {
     case turnStarted(AgentEventMetadata)
     case assistantDelta(AgentDelta, AgentEventMetadata)
     case messageCompleted(AgentMessage, AgentEventMetadata)
+    case processItemCompleted(AgentMessage, SessionContextSnapshot?, AgentEventMetadata)
     case logDelta(LogDelta, AgentEventMetadata)
     case diffUpdated(FileChangeSummary, AgentEventMetadata)
     case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
@@ -282,6 +283,7 @@ struct CodexAppServerEventProjector {
             return itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
             return completedAgentMessageEvent(params: params, metadata: metadata)
+                ?? completedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/commandExecution/outputDelta",
              "command/exec/outputDelta",
@@ -295,7 +297,7 @@ struct CodexAppServerEventProjector {
         case "item/fileChange/patchUpdated",
              "fileChange/patchUpdated",
              "turn/diff/updated":
-            return .diffUpdated(fileChangeSummary(from: params), metadata)
+            return fileChangeContextEvent(params: params, metadata: metadata)
         case "turn/completed":
             return .turnCompleted(metadata)
         case "serverRequest/resolved":
@@ -372,13 +374,14 @@ struct CodexAppServerEventProjector {
         let itemID = metadata.itemID ?? item["id"]?.stringValue
         let messageID = metadata.messageID ?? appServerMessageID(turnID: metadata.turnID, itemID: itemID) ?? itemID ?? UUID().uuidString
         let sessionID = metadata.sessionID ?? ""
+        let isCommentary = firstString(in: item, keys: ["phase"]) == "commentary"
         let message = AgentMessage(
             id: messageID,
             sessionID: sessionID,
             turnID: metadata.turnID,
             itemID: itemID,
-            role: .assistant,
-            kind: .message,
+            role: isCommentary ? .system : .assistant,
+            kind: isCommentary ? .reasoningSummary : .message,
             content: text,
             createdAt: Date(),
             seq: metadata.seq,
@@ -386,6 +389,149 @@ struct CodexAppServerEventProjector {
             sendStatus: .confirmed
         )
         return .messageCompleted(message, metadata)
+    }
+
+    private func completedProcessItemEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue,
+              let type = firstString(in: item, keys: ["type"]),
+              let content = processItemSummary(from: item)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !content.isEmpty,
+              let kind = processItemMessageKind(type: type)
+        else {
+            return nil
+        }
+        let itemID = metadata.itemID ?? item["id"]?.stringValue
+        let messageID = metadata.messageID ?? appServerMessageID(turnID: metadata.turnID, itemID: itemID) ?? itemID ?? UUID().uuidString
+        let sessionID = metadata.sessionID ?? ""
+        let message = AgentMessage(
+            id: messageID,
+            sessionID: sessionID,
+            turnID: metadata.turnID,
+            itemID: itemID,
+            role: .system,
+            kind: kind,
+            content: content,
+            createdAt: Date(),
+            seq: metadata.seq,
+            revision: metadata.revision ?? 0,
+            sendStatus: .confirmed
+        )
+        let context = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"])).map { task in
+            SessionContextSnapshot(
+                sessionID: metadata.sessionID,
+                threadID: metadata.sessionID,
+                tasks: [task],
+                updatedAt: Date()
+            )
+        }
+        return .processItemCompleted(message, context, metadata)
+    }
+
+    private func processItemMessageKind(type: String) -> MessageKind? {
+        switch type {
+        case "plan", "reasoning":
+            return .reasoningSummary
+        case "commandExecution", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
+            return .commandSummary
+        case "fileChange":
+            return .fileChangeSummary
+        default:
+            return nil
+        }
+    }
+
+    private func processItemSummary(from item: [String: CodexAppServerJSONValue]) -> String? {
+        switch firstString(in: item, keys: ["type"]) {
+        case "plan":
+            return firstString(in: item, keys: ["text"])
+        case "reasoning":
+            return reasoningSummary(from: item)
+        case "commandExecution":
+            return commandExecutionSummary(from: item)
+        case "fileChange":
+            return fileChangeProcessSummary(from: item)
+        case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
+            return toolProcessSummary(from: item)
+        default:
+            return nil
+        }
+    }
+
+    private func reasoningSummary(from item: [String: CodexAppServerJSONValue]) -> String {
+        let summary = item["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let content = item["content"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        return (summary + content)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func commandExecutionSummary(from item: [String: CodexAppServerJSONValue]) -> String {
+        let command = firstString(in: item, keys: ["command", "processId"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "命令执行"
+        var lines = ["命令：\(command)"]
+        if let cwd = firstString(in: item, keys: ["cwd"]), !cwd.isEmpty {
+            lines.append("目录：\(cwd)")
+        }
+        let status = firstString(in: item, keys: ["status"])
+        let exitCode = firstInt(in: item, keys: ["exitCode"]).map { "\($0)" }
+        let statusLine = [status.map { "状态：\($0)" }, exitCode.map { "退出码：\($0)" }]
+            .compactMap { $0 }
+            .joined(separator: "，")
+        if !statusLine.isEmpty {
+            lines.append(statusLine)
+        }
+        if let output = firstString(in: item, keys: ["aggregatedOutput"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !output.isEmpty {
+            lines.append("输出：\n\(truncatedProcessText(output))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func fileChangeProcessSummary(from item: [String: CodexAppServerJSONValue]) -> String {
+        let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let status = firstString(in: item, keys: ["status"]) ?? "modified"
+        let summary = fileChangeTaskSummary(from: changes) ?? "workspace"
+        return "文件变更：\(summary) \(status)"
+    }
+
+    private func toolProcessSummary(from item: [String: CodexAppServerJSONValue]) -> String {
+        switch firstString(in: item, keys: ["type"]) {
+        case "mcpToolCall":
+            let title = [firstString(in: item, keys: ["server"]), firstString(in: item, keys: ["tool"])]
+                .compactMap { $0?.nilIfEmpty }
+                .joined(separator: ".")
+            return toolProcessLine(title: title.isEmpty ? "MCP 工具调用" : title, status: firstString(in: item, keys: ["status"]))
+        case "dynamicToolCall":
+            let title = [firstString(in: item, keys: ["namespace"]), firstString(in: item, keys: ["tool"])]
+                .compactMap { $0?.nilIfEmpty }
+                .joined(separator: ".")
+            return toolProcessLine(title: title.isEmpty ? "动态工具调用" : title, status: firstString(in: item, keys: ["status"]))
+        case "collabAgentToolCall":
+            let title = firstString(in: item, keys: ["tool", "agentNickname", "nickname"]) ?? "子 Agent 调用"
+            return toolProcessLine(title: title, status: firstString(in: item, keys: ["status"]))
+        case "webSearch":
+            return toolProcessLine(title: "网络搜索：\(firstString(in: item, keys: ["query"]) ?? "")", status: firstString(in: item, keys: ["status"]))
+        default:
+            return "工具调用"
+        }
+    }
+
+    private func toolProcessLine(title: String, status: String?) -> String {
+        guard let status, !status.isEmpty else {
+            return "工具：\(title)"
+        }
+        return "工具：\(title)\n状态：\(status)"
+    }
+
+    private func truncatedProcessText(_ text: String, limit: Int = 2_000) -> String {
+        let prefix = text.prefix(limit)
+        guard prefix.endIndex != text.endIndex else {
+            return text
+        }
+        return String(prefix) + "\n... output truncated"
     }
 
     private func itemContextEvent(
@@ -473,6 +619,30 @@ struct CodexAppServerEventProjector {
             parts.append("+\(changes.count - parts.count)")
         }
         return parts.joined(separator: ", ")
+    }
+
+    private func fileChangeContextEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent {
+        let change = fileChangeSummary(from: params)
+        return .sessionContext(
+            SessionContextSnapshot(
+                sessionID: metadata.sessionID,
+                threadID: metadata.sessionID,
+                tasks: [
+                    SessionContextTask(
+                        id: metadata.itemID ?? change.path,
+                        kind: "file_change",
+                        title: "文件变更",
+                        subtitle: change.path,
+                        status: change.status
+                    )
+                ],
+                updatedAt: Date()
+            ),
+            metadata
+        )
     }
 
     private func fileChangeSummary(from params: [String: CodexAppServerJSONValue]) -> FileChangeSummary {
