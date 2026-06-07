@@ -245,12 +245,16 @@ struct HistoryMessagesPage: Equatable {
 struct CreateSessionRequest: Encodable {
     let projectID: String
     let prompt: String
+    let input: [CodexAppServerUserInput]
+    let turnOptions: CodexAppServerTurnOptions
     let resumeID: String
     let clientMessageID: ClientMessageID?
 
     enum CodingKeys: String, CodingKey {
         case projectID = "project_id"
         case prompt
+        case input
+        case turnOptions = "turn_options"
         case resumeID = "resume_id"
         case clientMessageID = "client_message_id"
     }
@@ -258,13 +262,546 @@ struct CreateSessionRequest: Encodable {
     init(
         projectID: String,
         prompt: String,
+        input: [CodexAppServerUserInput]? = nil,
+        turnOptions: CodexAppServerTurnOptions = .default,
         resumeID: String,
         clientMessageID: ClientMessageID? = nil
     ) {
         self.projectID = projectID
         self.prompt = prompt
+        self.input = input ?? CodexAppServerTurnPayload.defaultInput(for: prompt)
+        self.turnOptions = turnOptions
         self.resumeID = resumeID
         self.clientMessageID = clientMessageID
+    }
+}
+
+enum CodexAppServerImageDetail: String, Codable, CaseIterable, Hashable, Identifiable {
+    case auto
+    case low
+    case high
+    case original
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto:
+            return "自动"
+        case .low:
+            return "低"
+        case .high:
+            return "高"
+        case .original:
+            return "原图"
+        }
+    }
+}
+
+enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
+    case text(String, textElements: [CodexAppServerJSONValue] = [])
+    case image(url: String, detail: CodexAppServerImageDetail? = nil)
+    case localImage(path: String, detail: CodexAppServerImageDetail? = nil)
+    case skill(name: String, path: String)
+    case mention(name: String, path: String)
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case textElements = "text_elements"
+        case url
+        case path
+        case name
+        case detail
+    }
+
+    var id: String {
+        switch self {
+        case .text(let text, _):
+            return "text:\(text)"
+        case .image(let url, _):
+            return "image:\(Self.stableDigest(url))"
+        case .localImage(let path, _):
+            return "localImage:\(path)"
+        case .skill(let name, let path):
+            return "skill:\(name):\(path)"
+        case .mention(let name, let path):
+            return "mention:\(name):\(path)"
+        }
+    }
+
+    private static func stableDigest(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    var previewText: String {
+        switch self {
+        case .text(let text, _):
+            return text
+        case .image:
+            return "[图片]"
+        case .localImage(let path, _):
+            return "[图片 \(URL(fileURLWithPath: path).lastPathComponent)]"
+        case .skill(let name, _):
+            return "[$\(name)]"
+        case .mention(let name, _):
+            return "[@\(name)]"
+        }
+    }
+
+    var jsonValue: CodexAppServerJSONValue {
+        switch self {
+        case .text(let text, let textElements):
+            return .object([
+                "type": .string("text"),
+                "text": .string(text),
+                "text_elements": .array(textElements)
+            ])
+        case .image(let url, let detail):
+            var object: [String: CodexAppServerJSONValue] = [
+                "type": .string("image"),
+                "url": .string(url)
+            ]
+            if let detail {
+                object["detail"] = .string(detail.rawValue)
+            }
+            return .object(object)
+        case .localImage(let path, let detail):
+            var object: [String: CodexAppServerJSONValue] = [
+                "type": .string("localImage"),
+                "path": .string(path)
+            ]
+            if let detail {
+                object["detail"] = .string(detail.rawValue)
+            }
+            return .object(object)
+        case .skill(let name, let path):
+            return .object([
+                "type": .string("skill"),
+                "name": .string(name),
+                "path": .string(path)
+            ])
+        case .mention(let name, let path):
+            return .object([
+                "type": .string("mention"),
+                "name": .string(name),
+                "path": .string(path)
+            ])
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        switch type {
+        case "text":
+            self = .text(
+                try container.decode(String.self, forKey: .text),
+                textElements: try container.decodeIfPresent([CodexAppServerJSONValue].self, forKey: .textElements) ?? []
+            )
+        case "image":
+            self = .image(
+                url: try container.decode(String.self, forKey: .url),
+                detail: try container.decodeIfPresent(CodexAppServerImageDetail.self, forKey: .detail)
+            )
+        case "localImage":
+            self = .localImage(
+                path: try container.decode(String.self, forKey: .path),
+                detail: try container.decodeIfPresent(CodexAppServerImageDetail.self, forKey: .detail)
+            )
+        case "skill":
+            self = .skill(
+                name: try container.decode(String.self, forKey: .name),
+                path: try container.decode(String.self, forKey: .path)
+            )
+        case "mention":
+            self = .mention(
+                name: try container.decode(String.self, forKey: .name),
+                path: try container.decode(String.self, forKey: .path)
+            )
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "未知 app-server UserInput 类型：\(type)"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let text, let textElements):
+            try container.encode("text", forKey: .type)
+            try container.encode(text, forKey: .text)
+            try container.encode(textElements, forKey: .textElements)
+        case .image(let url, let detail):
+            try container.encode("image", forKey: .type)
+            try container.encode(url, forKey: .url)
+            try container.encodeIfPresent(detail, forKey: .detail)
+        case .localImage(let path, let detail):
+            try container.encode("localImage", forKey: .type)
+            try container.encode(path, forKey: .path)
+            try container.encodeIfPresent(detail, forKey: .detail)
+        case .skill(let name, let path):
+            try container.encode("skill", forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(path, forKey: .path)
+        case .mention(let name, let path):
+            try container.encode("mention", forKey: .type)
+            try container.encode(name, forKey: .name)
+            try container.encode(path, forKey: .path)
+        }
+    }
+}
+
+enum CodexAppServerReasoningEffort: String, Codable, CaseIterable, Hashable, Identifiable {
+    case none
+    case minimal
+    case low
+    case medium
+    case high
+    case xhigh
+
+    var id: String { rawValue }
+}
+
+enum CodexAppServerReasoningSummary: String, Codable, CaseIterable, Hashable, Identifiable {
+    case auto
+    case concise
+    case detailed
+    case none
+
+    var id: String { rawValue }
+}
+
+enum CodexAppServerPersonality: String, Codable, CaseIterable, Hashable, Identifiable {
+    case none
+    case friendly
+    case pragmatic
+
+    var id: String { rawValue }
+}
+
+enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Identifiable {
+    case untrusted
+    case onFailure = "on-failure"
+    case onRequest = "on-request"
+
+    var id: String { rawValue }
+}
+
+enum CodexAppServerSandboxMode: String, Codable, CaseIterable, Hashable, Identifiable {
+    case readOnly
+    case workspaceWrite
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .readOnly:
+            return "只读"
+        case .workspaceWrite:
+            return "可写"
+        }
+    }
+}
+
+struct CodexAppServerTurnOptions: Codable, Hashable {
+    var model: String?
+    var modelProvider: String?
+    var serviceTier: String?
+    var reasoningEffort: CodexAppServerReasoningEffort?
+    var reasoningSummary: CodexAppServerReasoningSummary?
+    var approvalPolicy: CodexAppServerApprovalPolicy
+    var approvalsReviewer: String
+    var sandboxMode: CodexAppServerSandboxMode
+    var networkAccess: Bool
+    var personality: CodexAppServerPersonality?
+    var config: CodexAppServerJSONValue?
+    var baseInstructions: String?
+    var developerInstructions: String?
+    var outputSchema: CodexAppServerJSONValue?
+    var serviceName: String?
+    var sessionStartSource: String?
+    var threadSource: String?
+
+    enum CodingKeys: String, CodingKey {
+        case model
+        case modelProvider = "model_provider"
+        case serviceTier = "service_tier"
+        case reasoningEffort = "reasoning_effort"
+        case reasoningSummary = "reasoning_summary"
+        case approvalPolicy = "approval_policy"
+        case approvalsReviewer = "approvals_reviewer"
+        case sandboxMode = "sandbox_mode"
+        case networkAccess = "network_access"
+        case personality
+        case config
+        case baseInstructions = "base_instructions"
+        case developerInstructions = "developer_instructions"
+        case outputSchema = "output_schema"
+        case serviceName = "service_name"
+        case sessionStartSource = "session_start_source"
+        case threadSource = "thread_source"
+    }
+
+    static let `default` = CodexAppServerTurnOptions(
+        model: nil,
+        modelProvider: nil,
+        serviceTier: nil,
+        reasoningEffort: nil,
+        reasoningSummary: nil,
+        approvalPolicy: .onRequest,
+        approvalsReviewer: "user",
+        sandboxMode: .workspaceWrite,
+        networkAccess: false,
+        personality: nil,
+        config: nil,
+        baseInstructions: nil,
+        developerInstructions: nil,
+        outputSchema: nil,
+        serviceName: nil,
+        sessionStartSource: nil,
+        threadSource: nil
+    )
+
+    func turnParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
+        [
+            "model": model.flatMap(nonEmptyString).map { .string($0) },
+            "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
+            "effort": reasoningEffort.map { .string($0.rawValue) },
+            "summary": reasoningSummary.map { .string($0.rawValue) },
+            "approvalPolicy": .string(approvalPolicy.rawValue),
+            "approvalsReviewer": .string(approvalsReviewer),
+            "sandboxPolicy": sandboxPolicy(projectPath: projectPath),
+            "personality": personality.map { .string($0.rawValue) },
+            "outputSchema": outputSchema
+        ]
+    }
+
+    func threadParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
+        [
+            "model": model.flatMap(nonEmptyString).map { .string($0) },
+            "modelProvider": modelProvider.flatMap(nonEmptyString).map { .string($0) },
+            "serviceTier": serviceTier.flatMap(nonEmptyString).map { .string($0) },
+            "approvalPolicy": .string(approvalPolicy.rawValue),
+            "approvalsReviewer": .string(approvalsReviewer),
+            "sandbox": .string(sandboxMode == .readOnly ? "read-only" : "workspace-write"),
+            "personality": personality.map { .string($0.rawValue) },
+            "config": config,
+            "serviceName": serviceName.flatMap(nonEmptyString).map { .string($0) },
+            "baseInstructions": baseInstructions.flatMap(nonEmptyString).map { .string($0) },
+            "developerInstructions": developerInstructions.flatMap(nonEmptyString).map { .string($0) },
+            "sessionStartSource": sessionStartSource.flatMap(nonEmptyString).map { .string($0) },
+            "threadSource": threadSource.flatMap(nonEmptyString).map { .string($0) }
+        ]
+    }
+
+    private func sandboxPolicy(projectPath: String) -> CodexAppServerJSONValue {
+        switch sandboxMode {
+        case .readOnly:
+            return .object([
+                "type": .string("readOnly"),
+                "networkAccess": .bool(networkAccess)
+            ])
+        case .workspaceWrite:
+            return .object([
+                "type": .string("workspaceWrite"),
+                "writableRoots": .array([.string(projectPath)]),
+                "networkAccess": .bool(networkAccess),
+                "excludeTmpdirEnvVar": .bool(false),
+                "excludeSlashTmp": .bool(false)
+            ])
+        }
+    }
+
+    private func nonEmptyString(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : value
+    }
+}
+
+struct CodexAppServerTurnPayload: Codable, Hashable {
+    var input: [CodexAppServerUserInput]
+    var options: CodexAppServerTurnOptions
+
+    init(input: [CodexAppServerUserInput], options: CodexAppServerTurnOptions = .default) {
+        self.input = input
+        self.options = options
+    }
+
+    init(prompt: String, options: CodexAppServerTurnOptions = .default) {
+        self.input = Self.defaultInput(for: prompt)
+        self.options = options
+    }
+
+    var isEmpty: Bool {
+        input.allSatisfy { item in
+            switch item {
+            case .text(let text, _):
+                return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            default:
+                return false
+            }
+        }
+    }
+
+    var previewText: String {
+        input.map(\.previewText)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var textPrompt: String {
+        input.compactMap { item in
+            if case .text(let text, _) = item {
+                return text
+            }
+            return nil
+        }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var appServerInput: CodexAppServerJSONValue {
+        .array(input.map(\.jsonValue))
+    }
+
+    static func defaultInput(for prompt: String) -> [CodexAppServerUserInput] {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? [] : [.text(trimmed)]
+    }
+}
+
+struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
+    let model: String
+    let title: String
+    let provider: String?
+    let description: String?
+    let isDefault: Bool
+
+    init(
+        id: String,
+        title: String? = nil,
+        provider: String? = nil,
+        description: String? = nil,
+        isDefault: Bool = false
+    ) {
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.model = trimmedID
+        self.title = title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? trimmedID
+        self.provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.description = description?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.isDefault = isDefault
+    }
+
+    var id: String {
+        guard let provider else {
+            return model
+        }
+        return "\(model)@\(provider)"
+    }
+
+    var menuTitle: String {
+        guard let provider else {
+            return title
+        }
+        return "\(title) · \(provider)"
+    }
+
+    static let builtInFallback: [CodexAppServerModelOption] = [
+        CodexAppServerModelOption(id: "gpt-5-codex", title: "gpt-5-codex"),
+        CodexAppServerModelOption(id: "gpt-5.1-codex", title: "gpt-5.1-codex"),
+        CodexAppServerModelOption(id: "gpt-5", title: "gpt-5"),
+        CodexAppServerModelOption(id: "gpt-5.1", title: "gpt-5.1")
+    ]
+
+    static func parseListResult(_ result: CodexAppServerJSONValue?) -> [CodexAppServerModelOption] {
+        let rawItems = modelItems(from: result)
+        var seen: Set<String> = []
+        var options: [CodexAppServerModelOption] = []
+        for item in rawItems {
+            guard let option = option(from: item), !seen.contains(option.id) else {
+                continue
+            }
+            seen.insert(option.id)
+            options.append(option)
+        }
+        return options.sorted { lhs, rhs in
+            if lhs.isDefault != rhs.isDefault {
+                return lhs.isDefault
+            }
+            return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    private static func modelItems(from result: CodexAppServerJSONValue?) -> [CodexAppServerJSONValue] {
+        guard let result else {
+            return []
+        }
+        if let items = result.arrayValue {
+            return items
+        }
+        guard let object = result.objectValue else {
+            return []
+        }
+        for key in ["models", "data", "items"] {
+            if let items = object[key]?.arrayValue {
+                return items
+            }
+            if let keyed = object[key]?.objectValue {
+                return keyed.map { key, value in
+                    if var object = value.objectValue {
+                        object["id"] = object["id"] ?? .string(key)
+                        return .object(object)
+                    }
+                    return .object(["id": .string(key), "title": value])
+                }
+            }
+        }
+        return object.map { key, value in
+            if var item = value.objectValue {
+                item["id"] = item["id"] ?? .string(key)
+                return .object(item)
+            }
+            return .object(["id": .string(key), "title": value])
+        }
+    }
+
+    private static func option(from item: CodexAppServerJSONValue) -> CodexAppServerModelOption? {
+        if let id = item.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+            return CodexAppServerModelOption(id: id)
+        }
+        guard let object = item.objectValue else {
+            return nil
+        }
+        let id = firstString(in: object, keys: ["id", "model", "name", "slug"])
+        guard let id, !id.isEmpty else {
+            return nil
+        }
+        return CodexAppServerModelOption(
+            id: id,
+            title: firstString(in: object, keys: ["title", "label", "displayName", "display_name", "name"]),
+            provider: firstString(in: object, keys: ["provider", "modelProvider", "model_provider"]),
+            description: firstString(in: object, keys: ["description", "summary"]),
+            isDefault: object["isDefault"]?.boolValue ?? object["default"]?.boolValue ?? false
+        )
+    }
+
+    private static func firstString(in object: [String: CodexAppServerJSONValue], keys: [String]) -> String? {
+        for key in keys {
+            let value = object[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 }
 
@@ -371,6 +908,12 @@ indirect enum CodexAppServerJSONValue: Codable, Hashable {
 
     static func objectValue(_ values: [String: CodexAppServerJSONValue?]) -> CodexAppServerJSONValue {
         .object(values.compactMapValues { $0 })
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
@@ -614,7 +1157,7 @@ struct CodexAppServerRequestBuilder {
 
     init(allowlistedProjects: [AgentProject]) {
         self.projectsByID = Dictionary(uniqueKeysWithValues: allowlistedProjects.map { ($0.id, $0) })
-        self.allowlistedPaths = Set(allowlistedProjects.map(\.path).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        self.allowlistedPaths = Set(allowlistedProjects.map(\.path).compactMap(Self.standardizedAllowlistPath))
     }
 
     func threadList(cwd: String, limit: Int? = 20, cursor: String? = nil) throws -> CodexAppServerRequestSpec {
@@ -626,29 +1169,61 @@ struct CodexAppServerRequestBuilder {
         ]))
     }
 
-    func threadStart(projectID: String, model: String? = nil) throws -> CodexAppServerRequestSpec {
-        try threadStart(cwd: pathForProject(id: projectID), model: model)
+    func modelList() -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "model/list")
     }
 
-    func threadStart(cwd: String, model: String? = nil) throws -> CodexAppServerRequestSpec {
+    func threadStart(projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+        var resolved = options
+        if resolved.model == nil {
+            resolved.model = model
+        }
+        return try threadStart(cwd: pathForProject(id: projectID), options: resolved)
+    }
+
+    func threadStart(cwd: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+        var resolved = options
+        if resolved.model == nil {
+            resolved.model = model
+        }
+        return try threadStart(cwd: cwd, options: resolved)
+    }
+
+    func threadStart(cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
-        params["model"] = model.map { .string($0) }
+        options.threadParams(projectPath: path).forEach { key, value in
+            params[key] = value
+        }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
     }
 
-    func threadResume(threadID: String, projectID: String, model: String? = nil) throws -> CodexAppServerRequestSpec {
-        try threadResume(threadID: threadID, cwd: pathForProject(id: projectID), model: model)
+    func threadResume(threadID: String, projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+        var resolved = options
+        if resolved.model == nil {
+            resolved.model = model
+        }
+        return try threadResume(threadID: threadID, cwd: pathForProject(id: projectID), options: resolved)
     }
 
-    func threadResume(threadID: String, cwd: String, model: String? = nil) throws -> CodexAppServerRequestSpec {
+    func threadResume(threadID: String, cwd: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+        var resolved = options
+        if resolved.model == nil {
+            resolved.model = model
+        }
+        return try threadResume(threadID: threadID, cwd: cwd, options: resolved)
+    }
+
+    func threadResume(threadID: String, cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
         params["threadId"] = .string(threadID)
         params["excludeTurns"] = .bool(true)
         params["ephemeral"] = nil
-        params["model"] = model.map { .string($0) }
+        options.threadParams(projectPath: path).forEach { key, value in
+            params[key] = value
+        }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(method: "thread/resume", params: .object(params.compactMapValues { $0 }))
     }
@@ -666,7 +1241,12 @@ struct CodexAppServerRequestBuilder {
         prompt: String,
         clientMessageID: ClientMessageID? = nil
     ) throws -> CodexAppServerRequestSpec {
-        try turnStart(threadID: threadID, cwd: pathForProject(id: projectID), prompt: prompt, clientMessageID: clientMessageID)
+        try turnStart(
+            threadID: threadID,
+            cwd: pathForProject(id: projectID),
+            payload: CodexAppServerTurnPayload(prompt: prompt),
+            clientMessageID: clientMessageID
+        )
     }
 
     func turnStart(
@@ -675,24 +1255,39 @@ struct CodexAppServerRequestBuilder {
         prompt: String,
         clientMessageID: ClientMessageID? = nil
     ) throws -> CodexAppServerRequestSpec {
+        try turnStart(
+            threadID: threadID,
+            cwd: cwd,
+            payload: CodexAppServerTurnPayload(prompt: prompt),
+            clientMessageID: clientMessageID
+        )
+    }
+
+    func turnStart(
+        threadID: String,
+        projectID: String,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID? = nil
+    ) throws -> CodexAppServerRequestSpec {
+        try turnStart(threadID: threadID, cwd: pathForProject(id: projectID), payload: payload, clientMessageID: clientMessageID)
+    }
+
+    func turnStart(
+        threadID: String,
+        cwd: String,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID? = nil
+    ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
-        let params: [String: CodexAppServerJSONValue?] = [
+        var params: [String: CodexAppServerJSONValue?] = [
             "threadId": .string(threadID),
             "cwd": .string(path),
-            "input": .array([
-                .object([
-                    "type": .string("text"),
-                    "text": .string(prompt),
-                    "text_elements": .array([])
-                ])
-            ]),
-            // 远程 iPad 操作默认需要用户审批，不能让移动端悄悄切到 never。
-            "approvalPolicy": .string("on-request"),
-            "approvalsReviewer": .string("user"),
-            // turn/start 是实际执行入口，必须限制在 allowlist 项目根目录内写入，并默认关闭网络。
-            "sandboxPolicy": safeSandboxPolicy(projectPath: path),
+            "input": payload.appServerInput,
             "clientUserMessageId": clientMessageID.map { .string($0) }
         ]
+        payload.options.turnParams(projectPath: path).forEach { key, value in
+            params[key] = value
+        }
         try validateRemoteSafeParams(params, projectPath: path)
         return CodexAppServerRequestSpec(method: "turn/start", params: .object(params.compactMapValues { $0 }))
     }
@@ -720,11 +1315,11 @@ struct CodexAppServerRequestBuilder {
     }
 
     private func allowlistedPath(_ path: String) throws -> String {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard allowlistedPaths.contains(trimmed) else {
-            throw CodexAppServerRequestBuilderError.pathNotAllowlisted(trimmed)
+        let standardized = Self.standardizedAllowlistPath(path) ?? ""
+        guard allowlistedPaths.contains(standardized) else {
+            throw CodexAppServerRequestBuilderError.pathNotAllowlisted(path.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return trimmed
+        return standardized
     }
 
     private func safeThreadRuntimeParams(cwd: String) -> [String: CodexAppServerJSONValue?] {
@@ -738,16 +1333,6 @@ struct CodexAppServerRequestBuilder {
         ]
     }
 
-    private func safeSandboxPolicy(projectPath: String) -> CodexAppServerJSONValue {
-        .object([
-            "type": .string("workspaceWrite"),
-            "writableRoots": .array([.string(projectPath)]),
-            "networkAccess": .bool(false),
-            "excludeTmpdirEnvVar": .bool(false),
-            "excludeSlashTmp": .bool(false)
-        ])
-    }
-
     private func validateRemoteSafeParams(_ params: [String: CodexAppServerJSONValue?], projectPath: String) throws {
         if let cwd = params["cwd"]??.stringValue, cwd != projectPath {
             throw CodexAppServerRequestBuilderError.unsafeParameter("cwd 必须来自项目 allowlist")
@@ -758,6 +1343,7 @@ struct CodexAppServerRequestBuilder {
         if normalizedDangerToken(params["sandbox"]??.stringValue) == "dangerfullaccess" {
             throw CodexAppServerRequestBuilderError.unsafeParameter("dangerFullAccess sandbox 被禁止")
         }
+        try validateNoDangerousConfig(params["config"] ?? nil)
         guard let sandbox = params["sandboxPolicy"]??.objectValue else {
             return
         }
@@ -771,6 +1357,10 @@ struct CodexAppServerRequestBuilder {
         if writableRoots.contains(where: { $0 != projectPath }) {
             throw CodexAppServerRequestBuilderError.unsafeParameter("writableRoots 只能包含当前 allowlist 项目")
         }
+        let inputPaths = try collectUserInputPaths(params["input"] ?? nil)
+        if inputPaths.contains(where: { !isPathInAllowlist($0) }) {
+            throw CodexAppServerRequestBuilderError.unsafeParameter("结构化输入路径必须来自当前 allowlist 项目")
+        }
     }
 
     private func normalizedDangerToken(_ value: String?) -> String {
@@ -779,5 +1369,89 @@ struct CodexAppServerRequestBuilder {
             .lowercased()
             .replacingOccurrences(of: "-", with: "")
             .replacingOccurrences(of: "_", with: "")
+    }
+
+    private func collectUserInputPaths(_ input: CodexAppServerJSONValue?) throws -> [String] {
+        guard let items = input?.arrayValue else {
+            return []
+        }
+        var paths: [String] = []
+        for item in items {
+            guard let object = item.objectValue else {
+                throw CodexAppServerRequestBuilderError.unsafeParameter("turn/start.input item 必须是 object")
+            }
+            let type = object["type"]?.stringValue ?? ""
+            switch type {
+            case "localImage", "skill", "mention":
+                guard let path = object["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("turn/start.input.\(type).path 不能为空")
+                }
+                paths.append(path)
+            case "image":
+                let url = object["url"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !url.isEmpty else {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("turn/start.input.image.url 不能为空")
+                }
+                if url.lowercased().hasPrefix("file:") {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("image.url 不允许 file URL，请使用 localImage.path")
+                }
+            case "text":
+                continue
+            default:
+                throw CodexAppServerRequestBuilderError.unsafeParameter("turn/start.input 类型不支持：\(type)")
+            }
+        }
+        return paths
+    }
+
+    private func isPathInAllowlist(_ raw: String) -> Bool {
+        guard let path = Self.standardizedAllowlistPath(raw) else {
+            return false
+        }
+        return allowlistedPaths.contains { root in
+            path == root || path.hasPrefix(root + "/")
+        }
+    }
+
+    private func validateNoDangerousConfig(_ value: CodexAppServerJSONValue?, parentKey: String? = nil) throws {
+        guard let value else {
+            return
+        }
+        switch value {
+        case .object(let object):
+            for (key, child) in object {
+                let normalizedKey = normalizedDangerToken(key)
+                if normalizedKey == "dangerfullaccess" {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("config 不允许 dangerFullAccess")
+                }
+                if normalizedKey == "approvalpolicy",
+                   normalizedDangerToken(child.stringValue) == "never" {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("config 不允许 approvalPolicy=never")
+                }
+                if normalizedKey == "sandbox" || normalizedKey == "sandboxmode" || (parentKey == "sandboxpolicy" && normalizedKey == "type"),
+                   normalizedDangerToken(child.stringValue) == "dangerfullaccess" {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("config 不允许 dangerFullAccess")
+                }
+                if normalizedKey == "networkaccess",
+                   child.boolValue == true || child.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true" {
+                    throw CodexAppServerRequestBuilderError.unsafeParameter("config 不允许 networkAccess=true")
+                }
+                try validateNoDangerousConfig(child, parentKey: normalizedKey)
+            }
+        case .array(let values):
+            for child in values {
+                try validateNoDangerousConfig(child, parentKey: parentKey)
+            }
+        default:
+            return
+        }
+    }
+
+    private static func standardizedAllowlistPath(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
     }
 }

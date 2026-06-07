@@ -8,6 +8,7 @@ protocol SessionWebSocketClient: AnyObject {
     func connect(sessionID: SessionID)
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
+    func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
     func sendCtrlC() -> Bool
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool
 }

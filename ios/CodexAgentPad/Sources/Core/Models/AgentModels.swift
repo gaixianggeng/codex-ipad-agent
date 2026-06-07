@@ -391,6 +391,7 @@ struct ConversationMessage: Identifiable, Hashable {
     let createdAt: Date
     var sendStatus: MessageSendStatus
     var revision: ModelRevision?
+    var turnPayload: CodexAppServerTurnPayload?
     private(set) var contentRevision: UInt64
     private(set) var contentDigest: UInt64
     private(set) var contentByteCount: Int
@@ -414,7 +415,8 @@ struct ConversationMessage: Identifiable, Hashable {
         content: String,
         createdAt: Date = Date(),
         sendStatus: MessageSendStatus = .sent,
-        revision: ModelRevision? = nil
+        revision: ModelRevision? = nil,
+        turnPayload: CodexAppServerTurnPayload? = nil
     ) {
         self.id = id
         self.stableID = stableID
@@ -427,6 +429,7 @@ struct ConversationMessage: Identifiable, Hashable {
         self.createdAt = createdAt
         self.sendStatus = sendStatus
         self.revision = revision
+        self.turnPayload = turnPayload
         let fingerprint = Self.makeRenderFingerprint(for: content)
         self.contentRevision = 0
         self.contentDigest = fingerprint.digest

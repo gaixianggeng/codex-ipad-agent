@@ -418,6 +418,130 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 			},
 			want: "networkAccess",
 		},
+		{
+			name: "config approval policy never snake case",
+			payload: map[string]any{
+				"id":     15,
+				"method": "thread/start",
+				"params": map[string]any{
+					"cwd":            projectDir,
+					"approvalPolicy": "on-request",
+					"sandbox":        "workspace-write",
+					"config": map[string]any{
+						"approval_policy": "never",
+					},
+				},
+			},
+			want: "approvalPolicy=never",
+		},
+		{
+			name: "config danger full access snake case",
+			payload: map[string]any{
+				"id":     16,
+				"method": "thread/start",
+				"params": map[string]any{
+					"cwd":            projectDir,
+					"approvalPolicy": "on-request",
+					"sandbox":        "workspace-write",
+					"config": map[string]any{
+						"sandbox_mode": "danger-full-access",
+					},
+				},
+			},
+			want: "dangerFullAccess",
+		},
+		{
+			name: "config network access snake case",
+			payload: map[string]any{
+				"id":     17,
+				"method": "thread/start",
+				"params": map[string]any{
+					"cwd":            projectDir,
+					"approvalPolicy": "on-request",
+					"sandbox":        "workspace-write",
+					"config": map[string]any{
+						"network_access": true,
+					},
+				},
+			},
+			want: "networkAccess",
+		},
+		{
+			name: "input must be array",
+			payload: map[string]any{
+				"id":     11,
+				"method": "turn/start",
+				"params": map[string]any{
+					"threadId":       "thread-1",
+					"cwd":            projectDir,
+					"input":          map[string]any{"type": "text", "text": "hi"},
+					"approvalPolicy": "on-request",
+					"sandboxPolicy": map[string]any{
+						"type":          "workspaceWrite",
+						"writableRoots": []string{projectDir},
+						"networkAccess": false,
+					},
+				},
+			},
+			want: "turn/start.input 必须是数组",
+		},
+		{
+			name: "unknown input type",
+			payload: map[string]any{
+				"id":     12,
+				"method": "turn/start",
+				"params": map[string]any{
+					"threadId":       "thread-1",
+					"cwd":            projectDir,
+					"input":          []any{map[string]any{"type": "audio", "url": "https://example.test/a.wav"}},
+					"approvalPolicy": "on-request",
+					"sandboxPolicy": map[string]any{
+						"type":          "workspaceWrite",
+						"writableRoots": []string{projectDir},
+						"networkAccess": false,
+					},
+				},
+			},
+			want: "类型不支持",
+		},
+		{
+			name: "image file URL",
+			payload: map[string]any{
+				"id":     13,
+				"method": "turn/start",
+				"params": map[string]any{
+					"threadId":       "thread-1",
+					"cwd":            projectDir,
+					"input":          []any{map[string]any{"type": "image", "url": "file:///tmp/screen.png"}},
+					"approvalPolicy": "on-request",
+					"sandboxPolicy": map[string]any{
+						"type":          "workspaceWrite",
+						"writableRoots": []string{projectDir},
+						"networkAccess": false,
+					},
+				},
+			},
+			want: "不允许 file URL",
+		},
+		{
+			name: "local image outside allowlist",
+			payload: map[string]any{
+				"id":     14,
+				"method": "turn/start",
+				"params": map[string]any{
+					"threadId":       "thread-1",
+					"cwd":            projectDir,
+					"input":          []any{map[string]any{"type": "localImage", "path": filepath.Join(outsideDir, "screen.png")}},
+					"approvalPolicy": "on-request",
+					"sandboxPolicy": map[string]any{
+						"type":          "workspaceWrite",
+						"writableRoots": []string{projectDir},
+						"networkAccess": false,
+					},
+				},
+			},
+			want: "path 必须来自 projects allowlist",
+		},
 	}
 
 	for _, tc := range cases {
@@ -469,6 +593,79 @@ func TestAppServerGatewayDoesNotScanPromptTextForDangerFullAccess(t *testing.T) 
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到合法 prompt 帧")
+	}
+}
+
+func TestAppServerGatewayForwardsModelList(t *testing.T) {
+	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixture(t, upstreamURL)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+
+	authorized := []byte(`{"id":41,"method":"model/list","params":{}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, authorized); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, authorized) {
+			t.Fatalf("model/list 必须原样转发：got=%s want=%s", got, authorized)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到 model/list 帧")
+	}
+}
+
+func TestAppServerGatewayForwardsStructuredUserInputUnchanged(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-structured")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	localImage := filepath.Join(projectDir, "screen.png")
+	skillPath := filepath.Join(projectDir, "skills", "review.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localImage, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-structured")
+
+	authorized := []byte(fmt.Sprintf(
+		`{"id":21,"method":"turn/start","params":{"threadId":"thread-structured","cwd":%q,"input":[{"type":"text","text":"看图并检查引用","text_elements":[]},{"type":"image","url":"data:image/png;base64,AA==","detail":"high"},{"type":"localImage","path":%q,"detail":"original"},{"type":"skill","name":"review","path":%q},{"type":"mention","name":"project","path":%q}],"model":"gpt-5-codex","effort":"high","serviceTier":"priority","approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		localImage,
+		skillPath,
+		projectDir,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, authorized); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, authorized) {
+			t.Fatalf("结构化 input 必须原样转发：got=%s want=%s", got, authorized)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到结构化 input 帧")
 	}
 }
 

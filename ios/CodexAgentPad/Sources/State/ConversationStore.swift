@@ -148,13 +148,15 @@ final class ConversationStore: ObservableObject {
         _ text: String,
         sessionID: String,
         clientMessageID: ClientMessageID?,
-        sendStatus: MessageSendStatus = .sending
+        sendStatus: MessageSendStatus = .sending,
+        turnPayload: CodexAppServerTurnPayload? = nil
     ) {
         if let clientMessageID,
            var list = messagesBySessionID[sessionID],
            let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) {
             list[index].content = text
             list[index].sendStatus = sendStatus
+            list[index].turnPayload = turnPayload ?? list[index].turnPayload
             setMessages(list, sessionID: sessionID, rebuildIndexes: false)
             return
         }
@@ -164,7 +166,8 @@ final class ConversationStore: ObservableObject {
                 clientMessageID: clientMessageID,
                 role: .user,
                 content: text,
-                sendStatus: sendStatus
+                sendStatus: sendStatus,
+                turnPayload: turnPayload
             ),
             sessionID: sessionID
         )

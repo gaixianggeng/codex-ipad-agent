@@ -96,6 +96,13 @@ actor CodexAppServerSessionRuntime {
         try await ensureConfig().projects
     }
 
+    func modelOptions() async throws -> [CodexAppServerModelOption] {
+        let result = try await ensureConnection().send(
+            CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).modelList()
+        )
+        return CodexAppServerModelOption.parseListResult(result)
+    }
+
     func validateDirectGateway() async throws {
         let config = try await ensureConfig(forceRefresh: true)
         guard config.runtime.gatewayAvailable, !config.gatewayWSURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -152,9 +159,9 @@ actor CodexAppServerSessionRuntime {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let spec: CodexAppServerRequestSpec
         if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            spec = try builder.threadStart(projectID: payload.projectID)
+            spec = try builder.threadStart(projectID: payload.projectID, options: payload.turnOptions)
         } else {
-            spec = try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID)
+            spec = try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: payload.turnOptions)
         }
 
         let result = try await ensureConnection().send(spec)
@@ -167,10 +174,11 @@ actor CodexAppServerSessionRuntime {
         // thread/start 与 thread/resume 都已经把 thread 绑定到当前连接，记录下来避免随后的 turn/start 再重复 resume。
         threadsResumedOnConnection.insert(session.id)
 
-        if !payload.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let turnPayload = CodexAppServerTurnPayload(input: payload.input, options: payload.turnOptions)
+        if !turnPayload.isEmpty {
             let turnID = try await startTurn(
                 sessionID: session.id,
-                prompt: payload.prompt,
+                payload: turnPayload,
                 clientMessageID: payload.clientMessageID
             )
             session = withUpdatedSession(session.id) { item in
@@ -290,8 +298,20 @@ actor CodexAppServerSessionRuntime {
 
     @discardableResult
     func startTurn(sessionID: SessionID, prompt: String, clientMessageID: ClientMessageID?) async throws -> TurnID? {
+        try await startTurn(
+            sessionID: sessionID,
+            payload: CodexAppServerTurnPayload(prompt: prompt),
+            clientMessageID: clientMessageID
+        )
+    }
+
+    @discardableResult
+    func startTurn(sessionID: SessionID, payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) async throws -> TurnID? {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        guard !payload.isEmpty else {
+            return nil
         }
         sessionsStartingTurn.insert(sessionID)
         defer {
@@ -303,7 +323,7 @@ actor CodexAppServerSessionRuntime {
         let result = try await connection.send(try builder.turnStart(
             threadID: sessionID,
             cwd: context.cwd,
-            prompt: prompt,
+            payload: payload,
             clientMessageID: clientMessageID
         ))
         let turnID = result?["turn"]?.objectValue?["id"]?.stringValue
@@ -1397,6 +1417,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.projects()
     }
 
+    func modelOptions() async throws -> [CodexAppServerModelOption] {
+        try await runtime.modelOptions()
+    }
+
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
         try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit).sessions
     }
@@ -1476,22 +1500,26 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
 
     @discardableResult
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {
-        guard let sessionID else {
-            onSendFailure?(clientMessageID, "direct WebSocket 未连接")
-            return false
-        }
         var prompt = text
         if prompt.hasSuffix("\r") {
             prompt.removeLast()
         }
-        prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
+        return sendTurn(CodexAppServerTurnPayload(prompt: prompt), clientMessageID: clientMessageID)
+    }
+
+    @discardableResult
+    func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool {
+        guard let sessionID else {
+            onSendFailure?(clientMessageID, "direct WebSocket 未连接")
+            return false
+        }
+        guard !payload.isEmpty else {
             return true
         }
         let failureHandler = onSendFailure
         Task { [runtime] in
             do {
-                _ = try await runtime.startTurn(sessionID: sessionID, prompt: prompt, clientMessageID: clientMessageID)
+                _ = try await runtime.startTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
             } catch {
                 await MainActor.run {
                     failureHandler?(clientMessageID, error.localizedDescription)

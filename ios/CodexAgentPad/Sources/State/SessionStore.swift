@@ -2,6 +2,7 @@ import Foundation
 
 protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
+    func modelOptions() async throws -> [CodexAppServerModelOption]
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession]
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
@@ -12,6 +13,10 @@ protocol SessionStoreAPIClient {
 }
 
 extension SessionStoreAPIClient {
+    func modelOptions() async throws -> [CodexAppServerModelOption] {
+        []
+    }
+
     func session(id: String) async throws -> SessionResponse {
         try await session(id: id, afterSeq: nil)
     }
@@ -128,6 +133,8 @@ final class SessionStore: ObservableObject {
     @Published var statusMessage: String?
     @Published var errorMessage: String?
     @Published private(set) var isRefreshingSelectedSession = false
+    @Published private(set) var appServerModelOptions: [CodexAppServerModelOption] = []
+    @Published private(set) var isRefreshingAppServerModels = false
     @Published private var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
 
     private let appStore: AppStore
@@ -164,6 +171,7 @@ final class SessionStore: ObservableObject {
     private var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
     private var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     private var initialHistoryLoadingSessionIDs: Set<SessionID> = []
+    private var appServerModelOptionsLastRefresh: Date?
     @Published private var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
     private let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
@@ -481,6 +489,37 @@ final class SessionStore: ObservableObject {
         await refreshSelectedSessionContent(session)
     }
 
+    func refreshAppServerModelOptions(force: Bool = false) async {
+        if isRefreshingAppServerModels {
+            return
+        }
+        if !force,
+           !appServerModelOptions.isEmpty,
+           let appServerModelOptionsLastRefresh,
+           Date().timeIntervalSince(appServerModelOptionsLastRefresh) < 300 {
+            return
+        }
+
+        isRefreshingAppServerModels = true
+        defer { isRefreshingAppServerModels = false }
+        do {
+            let client = try clientFactory()
+            let options = try await client.modelOptions()
+            appServerModelOptionsLastRefresh = Date()
+            if !options.isEmpty || force {
+                appServerModelOptions = options
+            }
+            if force {
+                setStatusMessage(options.isEmpty ? "未发现 app-server 模型列表，继续使用内置选项" : "已刷新模型列表")
+            }
+        } catch {
+            appServerModelOptionsLastRefresh = Date()
+            if force {
+                setStatusMessage("模型列表不可用，继续使用内置选项")
+            }
+        }
+    }
+
     func loadEarlierHistoryForSelectedSession() async {
         guard let session = selectedSession,
               let cursor = historyPreviousCursorBySessionID[session.id],
@@ -555,19 +594,24 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func sendPrompt(_ text: String) async -> Bool {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
+        await sendTurn(CodexAppServerTurnPayload(prompt: text))
+    }
+
+    @discardableResult
+    func sendTurn(_ payload: CodexAppServerTurnPayload) async -> Bool {
+        guard !payload.isEmpty else {
             return false
         }
+        let prompt = payload.previewText
 
         if let session = selectedSession, session.isRunning {
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
             let clientMessageID = UUID().uuidString
-            conversationStore.appendLocalUser(prompt, sessionID: session.id, clientMessageID: clientMessageID, sendStatus: .sending)
+            conversationStore.appendLocalUser(prompt, sessionID: session.id, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-            guard socket.sendInput(prompt + "\r", clientMessageID: clientMessageID) else {
+            guard socket.sendTurn(payload, clientMessageID: clientMessageID) else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage("发送失败：WebSocket 未连接")
@@ -583,7 +627,7 @@ final class SessionStore: ObservableObject {
             setErrorMessage("请先选择项目")
             return false
         }
-        return await createSession(projectID: projectID, prompt: prompt, resume: resume, clientMessageID: UUID().uuidString)
+        return await createSession(projectID: projectID, payload: payload, resume: resume, clientMessageID: UUID().uuidString)
     }
 
     func sendCtrlC() {
@@ -633,7 +677,8 @@ final class SessionStore: ObservableObject {
             // 失败消息有 client_message_id 时直接复用原 row 重发，避免 timeline 里出现重复用户气泡。
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-            guard socket.sendInput(prompt + "\r", clientMessageID: clientMessageID) else {
+            let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
+            guard socket.sendTurn(payload, clientMessageID: clientMessageID) else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage("重试失败：WebSocket 未连接")
@@ -644,7 +689,7 @@ final class SessionStore: ObservableObject {
         }
 
         // 会话已经结束或失败时，沿用普通发送路径重新创建/恢复 Codex thread。
-        return await sendPrompt(prompt)
+        return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
     }
 
     func resumeFromForeground() async {
@@ -679,8 +724,14 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     private func createSession(projectID: String, prompt: String, resume: AgentSession?, clientMessageID: ClientMessageID? = nil) async -> Bool {
+        await createSession(projectID: projectID, payload: CodexAppServerTurnPayload(prompt: prompt), resume: resume, clientMessageID: clientMessageID)
+    }
+
+    @discardableResult
+    private func createSession(projectID: String, payload: CodexAppServerTurnPayload, resume: AgentSession?, clientMessageID: ClientMessageID? = nil) async -> Bool {
         isLoading = true
         defer { isLoading = false }
+        let prompt = payload.previewText
         let optimisticSessionID = optimisticSessionID(projectID: projectID, resume: resume, clientMessageID: clientMessageID, prompt: prompt)
         if let optimisticSessionID,
            let clientMessageID {
@@ -692,7 +743,7 @@ final class SessionStore: ObservableObject {
             setSelectedProjectID(projectID)
             setSelectedSessionID(optimisticSessionID)
             insertExpandedProjectID(projectID)
-            conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending)
+            conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
             setForegroundActivity(.waitingForAssistant, sessionID: optimisticSessionID)
         }
 
@@ -701,6 +752,8 @@ final class SessionStore: ObservableObject {
             let response = try await client.createSession(CreateSessionRequest(
                 projectID: projectID,
                 prompt: prompt,
+                input: payload.input,
+                turnOptions: payload.options,
                 resumeID: resume?.resumeID ?? "",
                 clientMessageID: clientMessageID
             ))
@@ -727,7 +780,7 @@ final class SessionStore: ObservableObject {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: response.session.id, status: .sent)
                 } else {
-                    conversationStore.appendLocalUser(prompt, sessionID: response.session.id, clientMessageID: nil, sendStatus: .sent)
+                    conversationStore.appendLocalUser(prompt, sessionID: response.session.id, clientMessageID: nil, sendStatus: .sent, turnPayload: payload)
                 }
                 setForegroundActivity(.waitingForAssistant, sessionID: response.session.id)
             } else {
