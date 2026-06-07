@@ -45,6 +45,12 @@ struct AgentAPIClient {
         return response.projects
     }
 
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        let body = try JSONEncoder().encode(WorkspaceResolveRequest(path: path))
+        let response: WorkspaceResolveResponse = try await request(path: "/api/workspaces/resolve", method: "POST", body: body)
+        return response.workspace
+    }
+
     private func request<T: Decodable>(path: String, method: String, requiresAuth: Bool = true, body: Data?) async throws -> T {
         guard let baseURL else {
             throw AgentAPIError.invalidEndpoint

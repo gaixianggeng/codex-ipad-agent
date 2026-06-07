@@ -130,6 +130,29 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        let projects = projectsIncludingWorkspace(try await projects(), workspace: workspace)
+        let workspaceProject = workspace.project
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
+        let spec = try builder.threadList(cwd: workspace.path, limit: limit, cursor: cursor)
+
+        let result = try await ensureConnection().send(spec)
+        let page = threadListPage(from: result, projects: projects, fallbackProject: workspaceProject)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return page
+    }
+
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        // resolve 是 agentd 控制面的 REST 接口（非 app-server JSON-RPC），用 runtime 自己的 endpoint/token 直接请求。
+        try await AgentAPIClient(endpoint: endpoint, token: token).resolveWorkspace(path: path)
+    }
+
     func session(id: SessionID, afterSeq: EventSequence?) async throws -> SessionResponse {
         let result = try await ensureConnection().send(CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: id, includeTurns: false))
         guard let thread = threadObject(from: result) else {
@@ -145,16 +168,35 @@ actor CodexAppServerSessionRuntime {
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
-        let projects = try await projects()
-        guard let project = projects.first(where: { $0.id == payload.projectID }) else {
-            throw CodexAppServerSessionRuntimeError.projectNotFound(payload.projectID)
+        let baseProjects = try await projects()
+        let projectPath = payload.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project: AgentProject
+        let projects: [AgentProject]
+        if let projectPath, !projectPath.isEmpty {
+            project = AgentProject(
+                id: payload.projectID,
+                name: firstNonEmpty(payload.projectName?.trimmingCharacters(in: .whitespacesAndNewlines), URL(fileURLWithPath: projectPath).lastPathComponent),
+                path: projectPath
+            )
+            projects = projectsIncludingWorkspace(baseProjects, workspace: AgentWorkspace(
+                id: project.id,
+                name: project.name,
+                path: project.path,
+                rootProjectID: payload.rootProjectID
+            ))
+        } else {
+            guard let existingProject = baseProjects.first(where: { $0.id == payload.projectID }) else {
+                throw CodexAppServerSessionRuntimeError.projectNotFound(payload.projectID)
+            }
+            project = existingProject
+            projects = baseProjects
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let spec: CodexAppServerRequestSpec
         if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            spec = try builder.threadStart(projectID: payload.projectID)
+            spec = projectPath?.isEmpty == false ? try builder.threadStart(cwd: project.path) : try builder.threadStart(projectID: payload.projectID)
         } else {
-            spec = try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID)
+            spec = projectPath?.isEmpty == false ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path) : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID)
         }
 
         let result = try await ensureConnection().send(spec)
@@ -281,7 +323,7 @@ actor CodexAppServerSessionRuntime {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
-        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
         // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
         // 可能不会回流到 iPad。
@@ -297,7 +339,7 @@ actor CodexAppServerSessionRuntime {
         defer {
             sessionsStartingTurn.remove(sessionID)
         }
-        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         let connection = try await ensureConnection()
         try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
         let result = try await connection.send(try builder.turnStart(
@@ -877,9 +919,39 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func projectFor(cwd: String, projects: [AgentProject]) -> AgentProject? {
-        projects.first { project in
-            project.path == cwd
+        let path = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        return projects
+            .filter { project in
+                let projectPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+                return path == projectPath || path.hasPrefix(projectPath + "/")
+            }
+            .max { lhs, rhs in
+                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+            }
+    }
+
+    private func projectsIncludingWorkspace(_ projects: [AgentProject], workspace: AgentWorkspace) -> [AgentProject] {
+        var next = projects.filter { $0.id != workspace.id && $0.path != workspace.path }
+        next.append(workspace.project)
+        return next
+    }
+
+    private func projectsIncludingSessionContext(_ projects: [AgentProject], context: CodexAppServerSessionContext) -> [AgentProject] {
+        projectsIncludingWorkspace(projects, workspace: AgentWorkspace(
+            id: context.session.projectID,
+            name: context.session.project,
+            path: context.cwd
+        ))
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String {
+        for value in values {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
         }
+        return ""
     }
 
     private func sessionStatus(from value: CodexAppServerJSONValue?, forceRunning: Bool) -> String {
@@ -1488,12 +1560,20 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.projects()
     }
 
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        try await runtime.resolveWorkspace(path: path)
+    }
+
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
         try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit).sessions
     }
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
         try await runtime.sessionsPage(projectID: projectID, cursor: cursor, limit: limit)
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit)
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {

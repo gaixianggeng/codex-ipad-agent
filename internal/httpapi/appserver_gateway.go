@@ -652,19 +652,25 @@ func (r *Router) pathInProjectAllowlist(raw string) bool {
 }
 
 func (r *Router) projectForGatewayPath(raw string) (projects.Project, bool) {
+	project, _, ok := r.projectForGatewayPathWithRealPath(raw)
+	return project, ok
+}
+
+func (r *Router) projectForGatewayPathWithRealPath(raw string) (projects.Project, string, bool) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
-		return projects.Project{}, false
+		return projects.Project{}, "", false
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return projects.Project{}, false
+		return projects.Project{}, "", false
 	}
 	realPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return projects.Project{}, false
+		return projects.Project{}, "", false
 	}
-	return r.projects.FindByPath(realPath)
+	project, ok := r.projects.FindByPath(realPath)
+	return project, realPath, ok
 }
 
 func collectWritableRoots(value any) ([]string, error) {

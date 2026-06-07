@@ -60,6 +60,14 @@ struct ProjectsResponse: Codable {
     let projects: [AgentProject]
 }
 
+struct WorkspaceResolveRequest: Encodable {
+    let path: String
+}
+
+struct WorkspaceResolveResponse: Codable {
+    let workspace: AgentWorkspace
+}
+
 struct SessionsResponse: Codable {
     let sessions: [AgentSession]
     let rows: [DataFlowSessionRow]
@@ -244,12 +252,18 @@ struct HistoryMessagesPage: Equatable {
 
 struct CreateSessionRequest: Encodable {
     let projectID: String
+    let projectPath: String?
+    let projectName: String?
+    let rootProjectID: String?
     let prompt: String
     let resumeID: String
     let clientMessageID: ClientMessageID?
 
     enum CodingKeys: String, CodingKey {
         case projectID = "project_id"
+        case projectPath = "project_path"
+        case projectName = "project_name"
+        case rootProjectID = "root_project_id"
         case prompt
         case resumeID = "resume_id"
         case clientMessageID = "client_message_id"
@@ -257,11 +271,17 @@ struct CreateSessionRequest: Encodable {
 
     init(
         projectID: String,
+        projectPath: String? = nil,
+        projectName: String? = nil,
+        rootProjectID: String? = nil,
         prompt: String,
         resumeID: String,
         clientMessageID: ClientMessageID? = nil
     ) {
         self.projectID = projectID
+        self.projectPath = projectPath
+        self.projectName = projectName
+        self.rootProjectID = rootProjectID
         self.prompt = prompt
         self.resumeID = resumeID
         self.clientMessageID = clientMessageID

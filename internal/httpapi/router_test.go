@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,6 +229,99 @@ func TestProjectsReturnsConfiguredProjects(t *testing.T) {
 	if !filepath.IsAbs(project["path"].(string)) {
 		t.Fatalf("项目路径应为绝对路径：%v", project)
 	}
+}
+
+func TestWorkspaceResolveReturnsCanonicalChildWorkspace(t *testing.T) {
+	server := newTestServer(t)
+
+	projectDir := configuredProjectPath(t, server.handler)
+	childDir := filepath.Join(projectDir, "ios")
+	if err := os.Mkdir(childDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realChildDir, err := filepath.EvalSymlinks(childDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/workspaces/resolve", map[string]string{
+		"path": childDir,
+	}))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 workspace resolve 返回 200，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	workspace, ok := body["workspace"].(map[string]any)
+	if !ok {
+		t.Fatalf("workspace 响应异常：%v", body)
+	}
+	if workspace["id"] == "" || !strings.HasPrefix(workspace["id"].(string), "ws_") {
+		t.Fatalf("workspace id 应由服务端生成稳定 hash：%v", workspace)
+	}
+	if workspace["name"] != "ios" || workspace["path"] != realChildDir {
+		t.Fatalf("workspace 基础字段异常：%v", workspace)
+	}
+	if workspace["root_project_id"] != "demo" || workspace["trusted"] != true || workspace["can_start_session"] != true {
+		t.Fatalf("workspace 应继承 allowlist 根项目能力：%v", workspace)
+	}
+}
+
+func TestWorkspaceResolveRejectsOutsidePathWithoutLeakingDetails(t *testing.T) {
+	server := newTestServer(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/workspaces/resolve", map[string]string{
+		"path": outside,
+	}))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("allowlist 外路径应被拒绝，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), outside) {
+		t.Fatalf("拒绝响应不应泄漏外部路径：%s", rec.Body.String())
+	}
+}
+
+func TestWorkspaceResolveRejectsFileInsideAllowlist(t *testing.T) {
+	server := newTestServer(t)
+	projectDir := configuredProjectPath(t, server.handler)
+	filePath := filepath.Join(projectDir, "README.md")
+	if err := os.WriteFile(filePath, []byte("demo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/workspaces/resolve", map[string]string{
+		"path": filePath,
+	}))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("allowlist 内文件不能作为 workspace，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func configuredProjectPath(t *testing.T, handler http.Handler) string {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/projects", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取项目列表失败：%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	items, ok := body["projects"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("项目列表响应异常：%v", body)
+	}
+	project := items[0].(map[string]any)
+	path, ok := project["path"].(string)
+	if !ok || path == "" {
+		t.Fatalf("项目 path 异常：%v", project)
+	}
+	return path
 }
 
 func TestLegacySessionsEndpointsAreRemoved(t *testing.T) {
