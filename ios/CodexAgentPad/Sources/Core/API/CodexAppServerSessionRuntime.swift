@@ -137,6 +137,29 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        let projects = projectsIncludingWorkspace(try await projects(), workspace: workspace)
+        let workspaceProject = workspace.project
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
+        let spec = try builder.threadList(cwd: workspace.path, limit: limit, cursor: cursor)
+
+        let result = try await ensureConnection().send(spec)
+        let page = threadListPage(from: result, projects: projects, fallbackProject: workspaceProject)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return page
+    }
+
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        // resolve 是 agentd 控制面的 REST 接口（非 app-server JSON-RPC），用 runtime 自己的 endpoint/token 直接请求。
+        try await AgentAPIClient(endpoint: endpoint, token: token).resolveWorkspace(path: path)
+    }
+
     func session(id: SessionID, afterSeq: EventSequence?) async throws -> SessionResponse {
         let result = try await ensureConnection().send(CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: id, includeTurns: false))
         guard let thread = threadObject(from: result) else {
@@ -152,16 +175,39 @@ actor CodexAppServerSessionRuntime {
     }
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
-        let projects = try await projects()
-        guard let project = projects.first(where: { $0.id == payload.projectID }) else {
-            throw CodexAppServerSessionRuntimeError.projectNotFound(payload.projectID)
+        let baseProjects = try await projects()
+        let projectPath = payload.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project: AgentProject
+        let projects: [AgentProject]
+        if let projectPath, !projectPath.isEmpty {
+            project = AgentProject(
+                id: payload.projectID,
+                name: firstNonEmpty(payload.projectName?.trimmingCharacters(in: .whitespacesAndNewlines), URL(fileURLWithPath: projectPath).lastPathComponent),
+                path: projectPath
+            )
+            projects = projectsIncludingWorkspace(baseProjects, workspace: AgentWorkspace(
+                id: project.id,
+                name: project.name,
+                path: project.path,
+                rootProjectID: payload.rootProjectID
+            ))
+        } else {
+            guard let existingProject = baseProjects.first(where: { $0.id == payload.projectID }) else {
+                throw CodexAppServerSessionRuntimeError.projectNotFound(payload.projectID)
+            }
+            project = existingProject
+            projects = baseProjects
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let spec: CodexAppServerRequestSpec
         if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            spec = try builder.threadStart(projectID: payload.projectID, options: payload.turnOptions)
+            spec = projectPath?.isEmpty == false
+                ? try builder.threadStart(cwd: project.path, options: payload.turnOptions)
+                : try builder.threadStart(projectID: payload.projectID, options: payload.turnOptions)
         } else {
-            spec = try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: payload.turnOptions)
+            spec = projectPath?.isEmpty == false
+                ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path, options: payload.turnOptions)
+                : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: payload.turnOptions)
         }
 
         let result = try await ensureConnection().send(spec)
@@ -289,7 +335,7 @@ actor CodexAppServerSessionRuntime {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
-        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
         // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
         // 可能不会回流到 iPad。
@@ -317,7 +363,7 @@ actor CodexAppServerSessionRuntime {
         defer {
             sessionsStartingTurn.remove(sessionID)
         }
-        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         let connection = try await ensureConnection()
         try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
         let result = try await connection.send(try builder.turnStart(
@@ -683,6 +729,7 @@ actor CodexAppServerSessionRuntime {
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
              .logDelta(_, let metadata),
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
@@ -896,9 +943,39 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func projectFor(cwd: String, projects: [AgentProject]) -> AgentProject? {
-        projects.first { project in
-            project.path == cwd
+        let path = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        return projects
+            .filter { project in
+                let projectPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+                return path == projectPath || path.hasPrefix(projectPath + "/")
+            }
+            .max { lhs, rhs in
+                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+            }
+    }
+
+    private func projectsIncludingWorkspace(_ projects: [AgentProject], workspace: AgentWorkspace) -> [AgentProject] {
+        var next = projects.filter { $0.id != workspace.id && $0.path != workspace.path }
+        next.append(workspace.project)
+        return next
+    }
+
+    private func projectsIncludingSessionContext(_ projects: [AgentProject], context: CodexAppServerSessionContext) -> [AgentProject] {
+        projectsIncludingWorkspace(projects, workspace: AgentWorkspace(
+            id: context.session.projectID,
+            name: context.session.project,
+            path: context.cwd
+        ))
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String {
+        for value in values {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
         }
+        return ""
     }
 
     private func sessionStatus(from value: CodexAppServerJSONValue?, forceRunning: Bool) -> String {
@@ -1128,10 +1205,11 @@ actor CodexAppServerSessionRuntime {
         let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
         return turns.flatMap { turn -> [CodexHistoryMessage] in
             let turnID = turn["id"]?.stringValue
-            let timestamp = date(from: turn["startedAt"])
+            let startedAt = date(from: turn["startedAt"])
+            let completedAt = date(from: turn["completedAt"])
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             return items.compactMap { item in
-                historyMessage(from: item, sessionID: sessionID, turnID: turnID, createdAt: timestamp)
+                historyMessage(from: item, sessionID: sessionID, turnID: turnID, startedAt: startedAt, completedAt: completedAt)
             }
         }
     }
@@ -1140,7 +1218,8 @@ actor CodexAppServerSessionRuntime {
         from item: [String: CodexAppServerJSONValue],
         sessionID: SessionID,
         turnID: TurnID?,
-        createdAt: Date?
+        startedAt: Date?,
+        completedAt: Date?
     ) -> CodexHistoryMessage? {
         let type = item["type"]?.stringValue
         let itemID = item["id"]?.stringValue ?? UUID().uuidString
@@ -1155,7 +1234,7 @@ actor CodexAppServerSessionRuntime {
                 id: messageID,
                 role: "user",
                 content: text,
-                createdAt: createdAt,
+                createdAt: startedAt,
                 clientMessageID: item["clientId"]?.stringValue,
                 turnID: turnID,
                 itemID: itemID
@@ -1165,16 +1244,104 @@ actor CodexAppServerSessionRuntime {
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
+            if item["phase"]?.stringValue == "commentary" {
+                return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+            }
+            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: completedAt ?? startedAt, turnID: turnID, itemID: itemID)
         case "plan":
             let text = item["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: createdAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "reasoning":
+            let text = reasoningHistoryText(from: item)
+            guard !text.isEmpty else {
+                return nil
+            }
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "commandExecution":
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: commandExecutionHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "fileChange":
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .fileChangeSummary, content: fileChangeHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+        case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: toolHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
         default:
             return nil
         }
+    }
+
+    private func reasoningHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        let summary = item["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let content = item["content"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        return (summary + content)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func commandExecutionHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        let command = item["command"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "命令执行"
+        var lines = ["命令：\(command)"]
+        if let cwd = item["cwd"]?.stringValue, !cwd.isEmpty {
+            lines.append("目录：\(cwd)")
+        }
+        let status = item["status"]?.stringValue
+        let exitCode = item["exitCode"]?.intValue.map { "\($0)" }
+        let statusLine = [status.map { "状态：\($0)" }, exitCode.map { "退出码：\($0)" }]
+            .compactMap { $0 }
+            .joined(separator: "，")
+        if !statusLine.isEmpty {
+            lines.append(statusLine)
+        }
+        if let output = item["aggregatedOutput"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty {
+            lines.append("输出：\n\(truncatedHistoryText(output))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func fileChangeHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let status = item["status"]?.stringValue ?? "modified"
+        let summary = fileChangeSummary(from: changes) ?? "workspace"
+        return "文件变更：\(summary) \(status)"
+    }
+
+    private func toolHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
+        switch item["type"]?.stringValue {
+        case "mcpToolCall":
+            let title = [item["server"]?.stringValue, item["tool"]?.stringValue]
+                .compactMap { nonEmpty($0) }
+                .joined(separator: ".")
+            return historyToolLine(title: title.isEmpty ? "MCP 工具调用" : title, status: item["status"]?.stringValue)
+        case "dynamicToolCall":
+            let title = [item["namespace"]?.stringValue, item["tool"]?.stringValue]
+                .compactMap { nonEmpty($0) }
+                .joined(separator: ".")
+            return historyToolLine(title: title.isEmpty ? "动态工具调用" : title, status: item["status"]?.stringValue)
+        case "collabAgentToolCall":
+            let title = item["tool"]?.stringValue ?? "子 Agent 调用"
+            return historyToolLine(title: title, status: item["status"]?.stringValue)
+        case "webSearch":
+            return historyToolLine(title: "网络搜索：\(item["query"]?.stringValue ?? "")", status: nil)
+        default:
+            return "工具调用"
+        }
+    }
+
+    private func historyToolLine(title: String, status: String?) -> String {
+        guard let status, !status.isEmpty else {
+            return "工具：\(title)"
+        }
+        return "工具：\(title)\n状态：\(status)"
+    }
+
+    private func truncatedHistoryText(_ text: String, limit: Int = 2_000) -> String {
+        let prefix = text.prefix(limit)
+        guard prefix.endIndex != text.endIndex else {
+            return text
+        }
+        return String(prefix) + "\n... output truncated"
     }
 
     private func appServerHistoryMessageID(turnID: TurnID?, itemID: AgentItemID) -> MessageID {
@@ -1421,12 +1588,20 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.modelOptions()
     }
 
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        try await runtime.resolveWorkspace(path: path)
+    }
+
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
         try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit).sessions
     }
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
         try await runtime.sessionsPage(projectID: projectID, cursor: cursor, limit: limit)
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit)
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {

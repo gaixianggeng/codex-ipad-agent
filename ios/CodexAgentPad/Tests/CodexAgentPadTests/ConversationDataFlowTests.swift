@@ -760,6 +760,63 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.content, answer)
     }
 
+    func testStructuredHistoryProcessMessagesCollapseBeforeFinalAssistant() throws {
+        let store = ConversationStore()
+        let sessionID = "sess_history_processed"
+        let turnID = "turn_history_processed"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "user_history_processed",
+                role: "user",
+                content: "调用子 agent 讲个笑话",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "user_history_processed"
+            ),
+            CodexHistoryMessage(
+                id: "commentary_history_processed",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "我先调用一个子 agent。",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "commentary_history_processed"
+            ),
+            CodexHistoryMessage(
+                id: "plan_history_processed",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "让子 agent 生成一个短笑话。",
+                createdAt: Date(timeIntervalSince1970: 12),
+                turnID: turnID,
+                itemID: "plan_history_processed"
+            ),
+            CodexHistoryMessage(
+                id: "assistant_history_processed",
+                role: "assistant",
+                content: "程序员相亲，对方问：你会浪漫吗？",
+                createdAt: Date(timeIntervalSince1970: 44),
+                turnID: turnID,
+                itemID: "assistant_history_processed"
+            )
+        ], sessionID: sessionID)
+
+        let items = ConversationTimelineItemBuilder.items(from: store.messages(for: sessionID))
+
+        XCTAssertEqual(items.count, 3)
+        guard case .processed(let group) = items[1] else {
+            return XCTFail("history 过程消息应该折叠到最终 assistant 前")
+        }
+        XCTAssertEqual(group.messages.map(\.content), ["我先调用一个子 agent。", "让子 agent 生成一个短笑话。"])
+        XCTAssertEqual(group.title, "已处理 34s")
+        guard case .message(let final) = items[2] else {
+            return XCTFail("最终 assistant 应保持独立展开")
+        }
+        XCTAssertEqual(final.role, .assistant)
+        XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
+    }
+
     func testHistoryDeduplicatesClientMessageEcho() {
         let store = ConversationStore()
         let sessionID = "sess_client_echo_history"
@@ -1651,6 +1708,172 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(session.isRunning)
     }
 
+    func testRecentWorkspaceStoreScopesByEndpointAndSupportsForget() {
+        let first = AgentWorkspace(id: "proj_a", name: "Project A", path: "/tmp/proj-a")
+        let second = AgentWorkspace(id: "proj_b", name: "Project B", path: "/tmp/proj-b")
+        let store = makeRecentWorkspaceStore(workspaces: [], endpoint: "http://mac-a.local:8787")
+
+        _ = store.upsert(first, endpoint: "http://mac-a.local:8787", openedAt: Date(timeIntervalSince1970: 10))
+        _ = store.upsert(second, endpoint: "http://mac-b.local:8787", openedAt: Date(timeIntervalSince1970: 20))
+
+        XCTAssertEqual(store.load(endpoint: "http://mac-a.local:8787").map(\.id), [first.id])
+        XCTAssertEqual(store.load(endpoint: "http://mac-b.local:8787").map(\.id), [second.id])
+
+        _ = store.forget(id: first.id, endpoint: "http://mac-a.local:8787")
+
+        XCTAssertTrue(store.load(endpoint: "http://mac-a.local:8787").isEmpty)
+        XCTAssertEqual(store.load(endpoint: "http://mac-b.local:8787").map(\.id), [second.id])
+    }
+
+    func testRefreshWithoutRecentWorkspacesDoesNotLoadSessions() async {
+        let project = makeProject(id: "proj_no_recent")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = MockSessionStoreClient(projects: [project], sessions: [history])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertTrue(store.sidebarProjects.isEmpty)
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertTrue(client.requestedProjectIDs.isEmpty)
+    }
+
+    func testWorkspaceRecentMapsRootProjectSessionsToWorkspaceID() async {
+        let rootProject = makeProject(id: "proj_root")
+        let workspace = AgentWorkspace(
+            id: "ws_child",
+            name: "ios",
+            path: "/tmp/\(rootProject.id)/ios",
+            rootProjectID: rootProject.id,
+            rootProjectName: rootProject.name,
+            rootProjectPath: rootProject.path,
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let childSession = AgentSession(
+            id: "codex_child",
+            projectID: rootProject.id,
+            project: rootProject.name,
+            dir: workspace.path,
+            title: "子目录会话",
+            status: "history",
+            source: "codex",
+            resumeID: "child",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            projectPages: [
+                rootProject.id: SessionsPage(sessions: [childSession])
+            ]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = workspace.id
+        await store.refreshAll(autoAttach: false)
+
+        XCTAssertEqual(client.requestedProjectIDs, [rootProject.id])
+        XCTAssertEqual(store.sidebarProjects.map(\.id), [workspace.id])
+        XCTAssertEqual(store.sessions(forProjectID: workspace.id).map(\.id), [childSession.id])
+        XCTAssertEqual(store.sessions.first?.projectID, workspace.id)
+    }
+
+    func testWorkspaceLoadFailureMarksUnavailableWhenResolveRejects() async {
+        let rootProject = makeProject(id: "proj_root")
+        let workspace = makeChildWorkspace(id: "ws_gone", name: "gone", root: rootProject)
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            workspaceSessionsError: [workspace.id: AgentAPIError.server(status: 403, message: "cwd 必须来自 projects allowlist")],
+            resolveResults: [workspace.path: .failure(AgentAPIError.server(status: 403, message: "路径不在允许范围内或不可访问"))]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = workspace.id
+        await store.refreshAll(autoAttach: false)
+
+        // 会话加载失败 + resolve 明确 4xx → 单独标记该工作区不可用，且不冒泡成全局错误。
+        XCTAssertTrue(store.isWorkspaceUnavailable(workspace.id))
+        XCTAssertEqual(client.requestedResolvePaths, [workspace.path])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testWorkspaceLoadFailureStaysTransientWhenResolveSucceeds() async {
+        let rootProject = makeProject(id: "proj_root")
+        let workspace = makeChildWorkspace(id: "ws_flaky", name: "flaky", root: rootProject)
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            workspaceSessionsError: [workspace.id: AgentAPIError.server(status: 502, message: "连接 app-server gateway 上游失败")],
+            resolveResults: [workspace.path: .success(workspace)]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = workspace.id
+        await store.refreshAll(autoAttach: false)
+
+        // resolve 仍成功 → 判定为瞬时故障：不标记不可用，仍按普通错误处理以便重试。
+        XCTAssertFalse(store.isWorkspaceUnavailable(workspace.id))
+        XCTAssertEqual(client.requestedResolvePaths, [workspace.path])
+        XCTAssertNotNil(store.errorMessage)
+    }
+
+    func testForgetWorkspaceClearsUnavailableMark() async {
+        let rootProject = makeProject(id: "proj_root")
+        let workspace = makeChildWorkspace(id: "ws_gone", name: "gone", root: rootProject)
+        let client = MockSessionStoreClient(
+            projects: [rootProject],
+            sessions: [],
+            workspaceSessionsError: [workspace.id: AgentAPIError.server(status: 403, message: "denied")],
+            resolveResults: [workspace.path: .failure(AgentAPIError.server(status: 403, message: "denied"))]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = workspace.id
+        await store.refreshAll(autoAttach: false)
+        XCTAssertTrue(store.isWorkspaceUnavailable(workspace.id))
+
+        store.forgetWorkspace(workspace.project)
+
+        XCTAssertFalse(store.isWorkspaceUnavailable(workspace.id))
+        XCTAssertTrue(store.sidebarProjects.isEmpty)
+    }
+
     func testSessionStoreAutoAttachKeepsExplicitHistorySelection() async {
         let project = makeProject(id: "proj_1")
         let selectedHistory = makeSession(id: "codex_selected", projectID: project.id, title: "用户点选的历史", status: "history", source: "codex", resumeID: "selected")
@@ -1669,7 +1892,7 @@ final class ConversationDataFlowTests: XCTestCase {
         await store.selectSession(selectedHistory)
         await store.refreshAll(autoAttach: true)
 
-        XCTAssertEqual(client.requestedProjectIDs.compactMap { $0 }, [project.id, project.id])
+        XCTAssertEqual(client.requestedProjectIDs.compactMap { $0 }, [project.id])
         XCTAssertEqual(store.selectedSessionID, selectedHistory.id)
         XCTAssertEqual(store.selectedProjectID, project.id)
         XCTAssertTrue(conversationStore.hasLoadedHistory(sessionID: selectedHistory.id))
@@ -1681,10 +1904,15 @@ final class ConversationDataFlowTests: XCTestCase {
         let running = makeSession(id: "sess_auto_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let client = MockSessionStoreClient(projects: [project], sessions: [history, running])
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project, lastOpenedAt: Date(timeIntervalSince1970: 10))],
+                endpoint: appStore.endpoint
+            ),
             clientFactory: { client },
             webSocketFactory: {
                 let socket = MockWebSocketClient()
@@ -1858,6 +2086,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         var publishCount = 0
         var cancellables: Set<AnyCancellable> = []
@@ -1994,6 +2223,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
 
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2"])
@@ -2063,6 +2293,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertTrue(store.canLoadMoreSessions(projectID: project.id))
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), firstPage.map(\.id))
@@ -2110,6 +2341,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         var snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertTrue(snapshot.canLoadMore)
@@ -2159,6 +2391,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), [newer.id, older.id])
 
@@ -2190,6 +2423,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
 
         // Go 后端 cursor 按 updated_at desc + id desc；Swift 派生索引必须保持同序，
@@ -2224,6 +2458,7 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
+        store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [history.id, running.id])
 
@@ -2559,8 +2794,8 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
-        await store.refreshAll(autoAttach: false)
         store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
         store.selectedSessionID = running.id
         await store.refreshCurrentContext()
         try await Task.sleep(nanoseconds: 1_100_000_000)
@@ -2642,8 +2877,8 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
-        await store.refreshAll(autoAttach: false)
         store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
         store.selectedSessionID = running.id
         await store.refreshCurrentContext()
 
@@ -2827,8 +3062,8 @@ final class ConversationDataFlowTests: XCTestCase {
             clientFactory: { client }
         )
 
-        await store.refreshAll(autoAttach: false)
         store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
         store.selectedSessionID = running.id
 
         XCTAssertNil(store.selectedForegroundActivity)
@@ -3571,6 +3806,10 @@ final class ConversationDataFlowTests: XCTestCase {
             appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project, lastOpenedAt: Date(timeIntervalSince1970: 10))],
+                endpoint: appStore.endpoint
+            ),
             clientFactory: { client }
         )
 
@@ -3742,9 +3981,13 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     let messagesResult: [CodexHistoryMessage]
     let historyPages: [String: HistoryMessagesPage]
     let historyCursorPages: [String: HistoryMessagesPage]
+    let workspaceSessionsError: [String: Error]
+    let resolveResults: [String: Result<AgentWorkspace, Error>]
     let messagesError: Error?
     let modelOptionsResult: [CodexAppServerModelOption]
     var requestedProjectIDs: [String?] = []
+    var requestedWorkspaceIDs: [String] = []
+    var requestedResolvePaths: [String] = []
     var requestedSessionIDs: [String] = []
     var requestedSessionAfterSeqs: [EventSequence?] = []
     var requestedMessageSessionIDs: [String] = []
@@ -3763,6 +4006,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         messagesResult: [CodexHistoryMessage]? = nil,
         historyPages: [String: HistoryMessagesPage] = [:],
         historyCursorPages: [String: HistoryMessagesPage] = [:],
+        workspaceSessionsError: [String: Error] = [:],
+        resolveResults: [String: Result<AgentWorkspace, Error>] = [:],
         messagesError: Error? = nil,
         modelOptions: [CodexAppServerModelOption] = []
     ) {
@@ -3779,6 +4024,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         ]
         self.historyPages = historyPages
         self.historyCursorPages = historyCursorPages
+        self.workspaceSessionsError = workspaceSessionsError
+        self.resolveResults = resolveResults
         self.messagesError = messagesError
         self.modelOptionsResult = modelOptions
     }
@@ -3790,6 +4037,27 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         modelOptionsCallCount += 1
         return modelOptionsResult
+    }
+
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        requestedResolvePaths.append(path)
+        switch resolveResults[path] {
+        case .success(let workspace):
+            return workspace
+        case .failure(let error):
+            throw error
+        case .none:
+            throw MockError.unimplemented
+        }
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        requestedWorkspaceIDs.append(workspace.id)
+        if let error = workspaceSessionsError[workspace.id] {
+            throw error
+        }
+        // 没有注入错误时沿用 projectID 路径，保持既有 workspace→rootProjectID 映射测试不变。
+        return try await sessionsPage(projectID: workspace.rootProjectID ?? workspace.id, cursor: cursor, limit: limit)
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
@@ -4687,6 +4955,53 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
     }
 
+    func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {
+        let project = AgentProject(id: "proj_processed_history", name: "Processed", path: "/tmp/processed")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(sessionID: "thr_processed", before: nil, limit: nil)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_processed","sessionId":"thr_processed","preview":"调用子 agent 讲个笑话","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490134,"status":{"type":"idle"},"path":null,"cwd":"/tmp/processed","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"processed","turns":[{"id":"turn_processed","startedAt":1780490100,"completedAt":1780490134,"itemsView":"full","status":"completed","error":null,"items":[{"type":"userMessage","id":"user_processed","clientId":"client_processed","content":[{"type":"text","text":"调用子 agent 讲个笑话"}]},{"type":"agentMessage","id":"commentary_processed","text":"我先调用一个子 agent。","phase":"commentary","memoryCitation":null},{"type":"plan","id":"plan_processed","text":"让子 agent 生成一个短笑话。"},{"type":"reasoning","id":"reasoning_processed","summary":["确认请求要讲笑话"],"content":[]},{"type":"commandExecution","id":"cmd_processed","command":"echo joke","cwd":"/tmp/processed","processId":null,"source":"exec","status":"completed","commandActions":[],"aggregatedOutput":"ok","exitCode":0,"durationMs":1000},{"type":"agentMessage","id":"assistant_processed","text":"程序员相亲，对方问：你会浪漫吗？","phase":"final_answer","memoryCitation":null}]}]}}}"#)
+
+        let page = try await pageTask.value
+        XCTAssertEqual(page.messages.map(\.role), ["user", "system", "system", "system", "system", "assistant"])
+        XCTAssertEqual(page.messages.map(\.kind), [.message, .reasoningSummary, .reasoningSummary, .reasoningSummary, .commandSummary, .message])
+        XCTAssertEqual(page.messages.last?.createdAt, Date(timeIntervalSince1970: 1780490134))
+
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory(page.messages, sessionID: "thr_processed")
+        let items = ConversationTimelineItemBuilder.items(from: conversationStore.messages(for: "thr_processed"))
+
+        XCTAssertEqual(items.count, 3)
+        guard case .processed(let group) = items[1] else {
+            return XCTFail("thread/read 过程 item 应折叠到最终 assistant 前")
+        }
+        XCTAssertEqual(group.messages.count, 4)
+        XCTAssertEqual(group.title, "已处理 34s")
+        guard case .message(let final) = items[2] else {
+            return XCTFail("最终 assistant 应保持独立展开")
+        }
+        XCTAssertEqual(final.role, .assistant)
+        XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
+    }
+
     func testDirectRuntimeDropsStaleReplayedApprovalForIdleThread() async throws {
         let project = AgentProject(id: "proj_stale", name: "Stale", path: "/tmp/stale")
         let transport = FakeCodexAppServerTransport()
@@ -5100,15 +5415,18 @@ extension ConversationDataFlowTests {
         let appStore = AppStore()
         let conversationStore = ConversationStore()
         let logStore = LogStore()
+        let contextStore = SessionContextStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
             logStore: logStore,
+            contextStore: contextStore,
             clientFactory: { client },
             webSocketFactory: { CodexAppServerSessionWebSocketClient(runtime: runtime) },
             webSocketReconnectDelayNanoseconds: { _ in 1_000_000 }
         )
 
+        store.selectedProjectID = project.id
         let refreshTask = Task { await store.refreshAll(autoAttach: false) }
         let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
         let initialize = try decodeAppServerRequest(initializeMessages[0])
@@ -5156,9 +5474,17 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(logStore.log(for: "thr_store_direct").contains("go test ok"))
 
         transport.enqueue(#"{"method":"turn/diff/updated","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","path":"Sources/App.swift","status":"modified"}}"#)
+        for _ in 0..<300 where contextStore.context(for: "thr_store_direct")?.tasks.contains(where: { $0.kind == "file_change" && $0.subtitle == "Sources/App.swift" }) != true {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(contextStore.context(for: "thr_store_direct")?.tasks.contains { $0.kind == "file_change" && $0.subtitle == "Sources/App.swift" } == true)
+        XCTAssertFalse(conversationStore.messages(for: "thr_store_direct").contains { $0.kind == .fileChangeSummary })
+
+        transport.enqueue(#"{"method":"item/completed","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","item":{"type":"fileChange","id":"file_change_store","status":"modified","changes":[{"path":"Sources/App.swift","kind":"modified"}]}}}"#)
         _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
             $0.contains { $0.kind == .fileChangeSummary && $0.content.contains("Sources/App.swift") }
         }
+        XCTAssertEqual(conversationStore.messages(for: "thr_store_direct").filter { $0.kind == .fileChangeSummary }.count, 1)
 
         transport.enqueue(#"{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_store_direct","turnId":"turn_store_direct","itemId":"cmd_store","command":"go test ./..."}}"#)
         _ = try await waitForConversationMessages(in: conversationStore, sessionID: "thr_store_direct") {
@@ -5197,6 +5523,7 @@ extension ConversationDataFlowTests {
             webSocketReconnectDelayNanoseconds: { _ in 1_000_000 }
         )
 
+        store.selectedProjectID = project.id
         let refreshTask = Task { await store.refreshAll(autoAttach: false) }
         let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
         let initialize = try decodeAppServerRequest(initializeMessages[0])
@@ -5360,19 +5687,56 @@ extension ConversationDataFlowTests {
             XCTAssertEqual(message.id, "appserver:turn_demo:assistant_1")
             XCTAssertEqual(message.sessionID, "thr_demo")
             XCTAssertEqual(message.content, "hello world")
+            XCTAssertEqual(message.role, .assistant)
+            XCTAssertEqual(message.kind, .message)
             XCTAssertEqual(message.sendStatus, .confirmed)
             XCTAssertEqual(meta.itemID, "assistant_1")
         } else {
             XCTFail("Expected messageCompleted")
         }
 
-        let toolCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"dynamicToolCall","id":"tool_1","namespace":"browser","tool":"open","status":"completed"}}}"#)
-        if case .sessionContext(let context, _) = try XCTUnwrap(projector.project(toolCompleted)) {
-            XCTAssertEqual(context.tasks.first?.kind, "dynamic_tool")
-            XCTAssertEqual(context.tasks.first?.title, "browser.open")
-            XCTAssertEqual(context.tasks.first?.status, "completed")
+        let commentary = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"agentMessage","id":"commentary_1","text":"我先检查上下文。","phase":"commentary"}}}"#)
+        if case .messageCompleted(let message, _) = try XCTUnwrap(projector.project(commentary)) {
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .reasoningSummary)
+            XCTAssertEqual(message.content, "我先检查上下文。")
         } else {
-            XCTFail("Expected tool completed sessionContext")
+            XCTFail("Expected commentary messageCompleted")
+        }
+
+        let planCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"plan","id":"plan_1","text":"检查上下文并给出答案。"}}}"#)
+        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(planCompleted)) {
+            XCTAssertEqual(message.id, "appserver:turn_demo:plan_1")
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .reasoningSummary)
+            XCTAssertEqual(message.content, "检查上下文并给出答案。")
+            XCTAssertNil(context)
+        } else {
+            XCTFail("Expected plan processItemCompleted")
+        }
+
+        let commandCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"commandExecution","id":"cmd_1","command":"go test ./...","cwd":"/tmp/demo","status":"completed","aggregatedOutput":"ok","exitCode":0}}}"#)
+        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(commandCompleted)) {
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .commandSummary)
+            XCTAssertTrue(message.content.contains("命令：go test ./..."))
+            XCTAssertTrue(message.content.contains("输出：\nok"))
+            XCTAssertEqual(context?.tasks.first?.kind, "command")
+            XCTAssertEqual(context?.tasks.first?.status, "completed")
+        } else {
+            XCTFail("Expected command processItemCompleted")
+        }
+
+        let toolCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"dynamicToolCall","id":"tool_1","namespace":"browser","tool":"open","status":"completed"}}}"#)
+        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(toolCompleted)) {
+            XCTAssertEqual(message.role, .system)
+            XCTAssertEqual(message.kind, .commandSummary)
+            XCTAssertEqual(message.content, "工具：browser.open\n状态：completed")
+            XCTAssertEqual(context?.tasks.first?.kind, "dynamic_tool")
+            XCTAssertEqual(context?.tasks.first?.title, "browser.open")
+            XCTAssertEqual(context?.tasks.first?.status, "completed")
+        } else {
+            XCTFail("Expected tool completed processItemCompleted")
         }
 
         let log = try decodeAppServerNotification(#"{"method":"item/commandExecution/outputDelta","params":{"threadId":"thr_demo","turnId":"turn_demo","itemId":"cmd_1","delta":"go test output","stream":"stdout"}}"#)
@@ -5384,13 +5748,13 @@ extension ConversationDataFlowTests {
         }
 
         let diff = try decodeAppServerNotification(#"{"method":"turn/diff/updated","params":{"threadId":"thr_demo","turnId":"turn_demo","path":"Sources/App.swift","status":"modified","additions":2,"deletions":1}}"#)
-        if case .diffUpdated(let summary, _) = try XCTUnwrap(projector.project(diff)) {
-            XCTAssertEqual(summary.path, "Sources/App.swift")
-            XCTAssertEqual(summary.status, "modified")
-            XCTAssertEqual(summary.additions, 2)
-            XCTAssertEqual(summary.deletions, 1)
+        if case .sessionContext(let context, let meta) = try XCTUnwrap(projector.project(diff)) {
+            XCTAssertEqual(meta.sessionID, "thr_demo")
+            XCTAssertEqual(context.tasks.first?.kind, "file_change")
+            XCTAssertEqual(context.tasks.first?.subtitle, "Sources/App.swift")
+            XCTAssertEqual(context.tasks.first?.status, "modified")
         } else {
-            XCTFail("Expected diffUpdated")
+            XCTFail("Expected file change sessionContext")
         }
 
         let turnCompleted = try decodeAppServerNotification(#"{"method":"turn/completed","params":{"threadId":"thr_demo","turnId":"turn_demo"}}"#)
@@ -5917,6 +6281,27 @@ private func jsonFragment(for id: CodexAppServerRequestID) throws -> String {
 
 private func makeProject(id: String) -> AgentProject {
     AgentProject(id: id, name: id, path: "/tmp/\(id)")
+}
+
+private func makeChildWorkspace(id: String, name: String, root: AgentProject) -> AgentWorkspace {
+    AgentWorkspace(
+        id: id,
+        name: name,
+        path: "\(root.path)/\(name)",
+        rootProjectID: root.id,
+        rootProjectName: root.name,
+        rootProjectPath: root.path,
+        lastOpenedAt: Date(timeIntervalSince1970: 10)
+    )
+}
+
+private func makeRecentWorkspaceStore(workspaces: [AgentWorkspace], endpoint: String) -> RecentWorkspaceStore {
+    let suiteName = "RecentWorkspaceStoreTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+    defaults.removePersistentDomain(forName: suiteName)
+    let store = RecentWorkspaceStore(defaults: defaults)
+    store.save(workspaces, endpoint: endpoint)
+    return store
 }
 
 private func makeCreateSessionResponse(session: AgentSession, firstMessageJSON: String? = nil) throws -> CreateSessionResponse {

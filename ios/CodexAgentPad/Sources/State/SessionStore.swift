@@ -3,8 +3,10 @@ import Foundation
 protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession]
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse
     func stopSession(id: String) async throws
@@ -21,8 +23,17 @@ extension SessionStoreAPIClient {
         try await session(id: id, afterSeq: nil)
     }
 
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/workspaces/resolve。
+        throw AgentAPIError.invalidResponse
+    }
+
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
         SessionsPage(sessions: try await sessions(projectID: projectID, cursor: cursor, limit: limit))
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await sessionsPage(projectID: workspace.rootProjectID ?? workspace.id, cursor: cursor, limit: limit)
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
@@ -116,9 +127,21 @@ final class SessionStore: ObservableObject {
     @Published private(set) var projects: [AgentProject] = [] {
         didSet {
             rebuildProjectIndex()
+        }
+    }
+    @Published private(set) var recentWorkspaces: [AgentWorkspace] = [] {
+        didSet {
+            rebuildWorkspaceIndex()
+        }
+    }
+    @Published private(set) var sidebarProjects: [AgentProject] = [] {
+        didSet {
             rebuildProjectSessionListSnapshots()
         }
     }
+    // 某个工作区的目录被删除、或 Mac 端 scan_roots 改动后掉出 allowlist 时记入这里：
+    // 侧栏单独标记该行不可用，避免把“某个 recent 失效”冒泡成整页的全局错误。
+    @Published private(set) var unavailableWorkspaceIDs: Set<String> = []
     @Published private(set) var sessions: [AgentSession] = [] {
         didSet {
             rebuildSessionIndexes()
@@ -142,6 +165,7 @@ final class SessionStore: ObservableObject {
     private let logStore: LogStore
     private let contextStore: SessionContextStore
     private let eventReducer: EventReducer
+    private let recentWorkspaceStore: RecentWorkspaceStore
     private let terminalStreamStore = TerminalStreamStore()
     private let clientFactory: () throws -> any SessionStoreAPIClient
     private let webSocketFactory: () -> any SessionWebSocketClient
@@ -154,6 +178,8 @@ final class SessionStore: ObservableObject {
     private var runtimeEventFlushTasks: [SessionID: Task<Void, Never>] = [:]
     private var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
     private var projectsByID: [String: AgentProject] = [:]
+    private var workspacesByID: [String: AgentWorkspace] = [:]
+    private var sidebarProjectsByID: [String: AgentProject] = [:]
     private var sessionsByID: [SessionID: AgentSession] = [:]
     private var sessionIndexByID: [SessionID: Int] = [:]
     private var sortedAllSessions: [AgentSession] = []
@@ -188,6 +214,7 @@ final class SessionStore: ObservableObject {
         conversationStore: ConversationStore,
         logStore: LogStore,
         contextStore: SessionContextStore? = nil,
+        recentWorkspaceStore: RecentWorkspaceStore? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         webSocketReconnectDelayNanoseconds: ((Int) -> UInt64)? = nil
@@ -197,6 +224,14 @@ final class SessionStore: ObservableObject {
         self.logStore = logStore
         self.contextStore = contextStore ?? SessionContextStore()
         self.eventReducer = EventReducer()
+        if let recentWorkspaceStore {
+            self.recentWorkspaceStore = recentWorkspaceStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(suiteName: "SessionStore.RecentWorkspaces.\(UUID().uuidString)") ?? .standard
+            self.recentWorkspaceStore = RecentWorkspaceStore(defaults: defaults)
+        } else {
+            self.recentWorkspaceStore = RecentWorkspaceStore()
+        }
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
@@ -212,7 +247,7 @@ final class SessionStore: ObservableObject {
         guard let selectedProjectID else {
             return nil
         }
-        return projectsByID[selectedProjectID]
+        return sidebarProjectsByID[selectedProjectID] ?? projectsByID[selectedProjectID]
     }
 
     var selectedSession: AgentSession? {
@@ -343,13 +378,20 @@ final class SessionStore: ObservableObject {
         defer { isLoading = false }
         var requestToken: Int?
         var requestProjectID: String?
+        var activeWorkspace: AgentWorkspace?
         do {
             let client = try clientFactory()
             let previousProjectID = selectedProjectID
             let previousSessionID = selectedSessionID
             let fetchedProjects = try await client.projects()
             setProjectsIfChanged(fetchedProjects)
-            let validProjectIDs = Self.projectIDs(projects)
+            reloadRecentWorkspaces()
+            if let previousProjectID,
+               sidebarProjectsByID[previousProjectID] == nil,
+               let project = projectsByID[previousProjectID] {
+                _ = ensureWorkspace(for: project)
+            }
+            let validProjectIDs = Self.projectIDs(sidebarProjects)
             setExpandedProjectIDs(expandedProjectIDs.intersection(validProjectIDs))
             setShowingAllSessionProjectIDs(showingAllSessionProjectIDs.intersection(validProjectIDs))
             sessionPageCursorByProjectID = sessionPageCursorByProjectID.filter { validProjectIDs.contains($0.key) }
@@ -358,30 +400,37 @@ final class SessionStore: ObservableObject {
             sessionPageLoadingTokenByProjectID = sessionPageLoadingTokenByProjectID.filter { validProjectIDs.contains($0.key) }
             rebuildProjectSessionListSnapshots()
             let projectID = previousProjectID.flatMap { id in
-                projectsByID[id] == nil ? nil : id
-            } ?? projects.first?.id
+                sidebarProjectsByID[id] == nil ? nil : id
+            } ?? (autoAttach ? sidebarProjects.first?.id : nil)
             setSelectedProjectID(projectID)
             guard let projectID else {
                 replaceSessionsIfChanged(with: [], projectID: nil)
                 setSelectedSessionID(nil)
                 disconnectWebSocket()
-                setStatusMessage("未发现可用项目")
+                setStatusMessage(sidebarProjects.isEmpty ? "尚未打开工作区" : "已加载 \(sidebarProjects.count) 个最近工作区")
                 setErrorMessage(nil)
                 return
-            }
-            if previousProjectID == nil && expandedProjectIDs.isEmpty {
-                insertExpandedProjectID(projectID)
             }
 
             requestProjectID = projectID
             requestToken = beginSessionPageRequest(projectID: projectID)
             defer { finishSessionPageRequest(projectID: projectID, token: requestToken ?? 0) }
-            let page = try await client.sessionsPage(projectID: projectID, cursor: nil, limit: Self.initialSessionPageLimit)
+            guard let workspace = workspacesByID[projectID] else {
+                setSelectedProjectID(nil)
+                setSelectedSessionID(nil)
+                setStatusMessage("工作区已失效，请重新打开")
+                setErrorMessage(nil)
+                return
+            }
+            activeWorkspace = workspace
+            let page = try await client.sessionsPage(workspace: workspace, cursor: nil, limit: Self.initialSessionPageLimit)
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
-            replaceSessionsIfChanged(with: pageSessionsPreservingSelection(page.sessions, projectID: projectID), projectID: projectID)
+            let pageSessions = sessions(page.sessions, in: workspace)
+            replaceSessionsIfChanged(with: pageSessionsPreservingSelection(pageSessions, projectID: projectID), projectID: projectID)
             updateSessionPageState(projectID: projectID, page: page)
+            clearWorkspaceUnavailable(projectID)
 
             if let previousSessionID, let session = sessionsByID[previousSessionID] {
                 // 刷新或重新保存设置不能抢走用户已经点选的历史会话。
@@ -400,40 +449,109 @@ final class SessionStore: ObservableObject {
                 setSelectedSessionID(nil)
             }
 
-            setStatusMessage("已加载 \(projects.count) 个项目，\(filteredSessions.count) 个会话")
+            setStatusMessage("已加载 \(sidebarProjects.count) 个最近工作区，\(filteredSessions.count) 个会话")
             setErrorMessage(nil)
         } catch {
             if let requestProjectID, let requestToken, !isCurrentSessionPageRequest(projectID: requestProjectID, token: requestToken) {
                 return
             }
-            setErrorMessage(error.localizedDescription)
+            if let activeWorkspace {
+                // 已经拿到 projects、只是这个工作区的会话加载失败：单独判定该工作区可用性，
+                // 避免把“某个 recent 失效”冒泡成整页错误，也避免冷启动退避一直重试一个已删除目录。
+                await handleWorkspaceLoadFailure(workspace: activeWorkspace, error: error)
+            } else {
+                setErrorMessage(error.localizedDescription)
+            }
         }
     }
 
     func selectProject(_ project: AgentProject) async {
-        setSelectedProjectID(project.id)
+        let workspace = ensureWorkspace(for: project)
+        setSelectedProjectID(workspace.id)
         setSelectedSessionID(nil)
-        insertExpandedProjectID(project.id)
+        insertExpandedProjectID(workspace.id)
         setErrorMessage(nil)
         disconnectWebSocket()
+        await refreshSessions(forProjectID: workspace.id)
+    }
+
+    @discardableResult
+    func openWorkspace(path: String) async -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            setErrorMessage("请输入 Mac 上的目录路径")
+            return false
+        }
+        do {
+            // 走 clientFactory（与会话请求同一个注入点）而不是 appStore.client()，
+            // 让 resolve 和后续会话加载共用一条可测试链路。
+            let workspace = try await clientFactory().resolveWorkspace(path: trimmed)
+            rememberWorkspace(workspace)
+            clearWorkspaceUnavailable(workspace.id)
+            setSelectedProjectID(workspace.id)
+            setSelectedSessionID(nil)
+            insertExpandedProjectID(workspace.id)
+            setErrorMessage(nil)
+            disconnectWebSocket()
+            await refreshSessions(forProjectID: workspace.id)
+            return true
+        } catch {
+            setErrorMessage(error.localizedDescription)
+            return false
+        }
+    }
+
+    @discardableResult
+    func openWorkspace(project: AgentProject) async -> Bool {
+        await openWorkspace(path: project.path)
+    }
+
+    func forgetWorkspace(_ project: AgentProject) {
+        let next = recentWorkspaceStore.forget(id: project.id, endpoint: appStore.endpoint)
+        setRecentWorkspacesIfChanged(next)
+        removeExpandedProjectID(project.id)
+        removeShowingAllSessionProjectID(project.id)
+        sessionPageCursorByProjectID.removeValue(forKey: project.id)
+        sessionHasMoreByProjectID.removeValue(forKey: project.id)
+        sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
+        sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
+        sessions = sessions.filter { $0.projectID != project.id }
+        clearWorkspaceUnavailable(project.id)
+        if selectedProjectID == project.id {
+            setSelectedProjectID(nil)
+            setSelectedSessionID(nil)
+            disconnectWebSocket()
+        }
+        setStatusMessage("已从当前设备移除 \(project.name)")
+    }
+
+    func isWorkspaceUnavailable(_ projectID: String) -> Bool {
+        unavailableWorkspaceIDs.contains(projectID)
+    }
+
+    // 用户在 Mac 上恢复目录或修好配置后，点“重试”重新校验并加载；resolve 通过即自动清除不可用标记。
+    func retryWorkspace(_ project: AgentProject) async {
+        clearWorkspaceUnavailable(project.id)
+        setErrorMessage(nil)
         await refreshSessions(forProjectID: project.id)
     }
 
     func toggleProjectExpansion(_ project: AgentProject) async {
-        if expandedProjectIDs.contains(project.id) {
-            removeExpandedProjectID(project.id)
-            removeShowingAllSessionProjectID(project.id)
+        let workspace = ensureWorkspace(for: project)
+        if expandedProjectIDs.contains(workspace.id) {
+            removeExpandedProjectID(workspace.id)
+            removeShowingAllSessionProjectID(workspace.id)
             return
         }
 
-        insertExpandedProjectID(project.id)
-        if selectedProjectID != project.id {
-            setSelectedProjectID(project.id)
+        insertExpandedProjectID(workspace.id)
+        if selectedProjectID != workspace.id {
+            setSelectedProjectID(workspace.id)
             setSelectedSessionID(nil)
             setErrorMessage(nil)
             disconnectWebSocket()
         }
-        await refreshSessions(forProjectID: project.id)
+        await refreshSessions(forProjectID: workspace.id)
     }
 
     func toggleSessionListExpansion(projectID: String) async {
@@ -448,6 +566,11 @@ final class SessionStore: ObservableObject {
     }
 
     func loadMoreSessions(projectID: String) async {
+        var projectID = projectID
+        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+            return
+        }
+        projectID = workspace.id
         guard let cursor = sessionPageCursorByProjectID[projectID],
               canLoadMoreSessions(projectID: projectID),
               sessionPageLoadingTokenByProjectID[projectID] == nil
@@ -459,12 +582,13 @@ final class SessionStore: ObservableObject {
             let client = try clientFactory()
             requestToken = beginSessionPageRequest(projectID: projectID)
             defer { finishSessionPageRequest(projectID: projectID, token: requestToken ?? 0) }
-            let page = try await client.sessionsPage(projectID: projectID, cursor: cursor, limit: Self.expandedSessionPageLimit)
+            let page = try await client.sessionsPage(workspace: workspace, cursor: cursor, limit: Self.expandedSessionPageLimit)
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
-            mergeSessionPage(page.sessions)
+            mergeSessionPage(sessions(page.sessions, in: workspace))
             updateSessionPageState(projectID: projectID, page: page)
+            clearWorkspaceUnavailable(projectID)
             setErrorMessage(nil)
         } catch {
             if let requestToken, !isCurrentSessionPageRequest(projectID: projectID, token: requestToken) {
@@ -559,6 +683,7 @@ final class SessionStore: ObservableObject {
     }
 
     func selectSession(_ session: AgentSession) async {
+        let session = sessionForExplicitSelection(session)
         setSelectedProjectID(session.projectID)
         setSelectedSessionID(session.id)
         revealProjectInSidebar(session.projectID)
@@ -584,12 +709,13 @@ final class SessionStore: ObservableObject {
     }
 
     func startNewSession(in project: AgentProject) async {
-        setSelectedProjectID(project.id)
+        let workspace = ensureWorkspace(for: project)
+        setSelectedProjectID(workspace.id)
         setSelectedSessionID(nil)
-        insertExpandedProjectID(project.id)
+        insertExpandedProjectID(workspace.id)
         setErrorMessage(nil)
         disconnectWebSocket()
-        await createSession(projectID: project.id, prompt: "", resume: nil)
+        await createSession(projectID: workspace.id, prompt: "", resume: nil)
     }
 
     @discardableResult
@@ -729,6 +855,12 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     private func createSession(projectID: String, payload: CodexAppServerTurnPayload, resume: AgentSession?, clientMessageID: ClientMessageID? = nil) async -> Bool {
+        var projectID = projectID
+        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+            setErrorMessage("工作区已失效，请重新打开")
+            return false
+        }
+        projectID = workspace.id
         isLoading = true
         defer { isLoading = false }
         let prompt = payload.previewText
@@ -751,58 +883,62 @@ final class SessionStore: ObservableObject {
             let client = try clientFactory()
             let response = try await client.createSession(CreateSessionRequest(
                 projectID: projectID,
+                projectPath: workspace.path,
+                projectName: workspace.name,
+                rootProjectID: workspace.rootProjectID,
                 prompt: prompt,
                 input: payload.input,
                 turnOptions: payload.options,
                 resumeID: resume?.resumeID ?? "",
                 clientMessageID: clientMessageID
             ))
+            let responseSession = self.session(response.session, in: workspace)
 
             if let optimisticSessionID,
                let clientMessageID,
-               optimisticSessionID != response.session.id {
+               optimisticSessionID != responseSession.id {
                 // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
                 // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
-                conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: response.session.id)
-                migrateForegroundActivity(from: optimisticSessionID, to: response.session.id)
+                conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
+                migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
                 if resume == nil {
                     removeSession(optimisticSessionID)
                 }
             }
-            upsert(response.session)
-            setSelectedProjectID(response.session.projectID)
-            setSelectedSessionID(response.session.id)
-            insertExpandedProjectID(response.session.projectID)
+            upsert(responseSession)
+            setSelectedProjectID(responseSession.projectID)
+            setSelectedSessionID(responseSession.id)
+            insertExpandedProjectID(responseSession.projectID)
 
             // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
-            await loadHistoryIfNeeded(for: response.session)
+            await loadHistoryIfNeeded(for: responseSession)
             if !prompt.isEmpty {
                 if let clientMessageID {
-                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: response.session.id, status: .sent)
-                    conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: response.session.id)
+                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
+                    conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
                 } else {
                     conversationStore.appendLocalUser(
                         prompt,
-                        sessionID: response.session.id,
+                        sessionID: responseSession.id,
                         clientMessageID: nil,
                         sendStatus: .sent,
                         turnPayload: payload.retainedAfterAcceptedSend()
                     )
                 }
-                setForegroundActivity(.waitingForAssistant, sessionID: response.session.id)
+                setForegroundActivity(.waitingForAssistant, sessionID: responseSession.id)
             } else {
-                conversationStore.appendSystem("Codex 交互式会话已启动。", sessionID: response.session.id)
+                conversationStore.appendSystem("Codex 交互式会话已启动。", sessionID: responseSession.id)
             }
             if let firstMessage = response.firstMessage {
-                conversationStore.completeMessage(firstMessage, metadata: .empty, fallbackSessionID: response.session.id)
+                conversationStore.completeMessage(firstMessage, metadata: .empty, fallbackSessionID: responseSession.id)
                 if firstMessage.role == .assistant {
-                    clearForegroundActivity(sessionID: response.session.id)
+                    clearForegroundActivity(sessionID: responseSession.id)
                 }
             }
             if resume != nil {
-                conversationStore.appendSystem("已继续这个 Codex 历史会话。", sessionID: response.session.id)
+                conversationStore.appendSystem("已继续这个 Codex 历史会话。", sessionID: responseSession.id)
             }
-            connectWebSocket(response.session)
+            connectWebSocket(responseSession)
             setStatusMessage("会话已启动")
             setErrorMessage(nil)
             return true
@@ -871,8 +1007,9 @@ final class SessionStore: ObservableObject {
             if session.isRunning {
                 do {
                     let response = try await client.session(id: session.id, afterSeq: logStore.lastSeq(for: session.id))
-                    upsert(response.session)
-                    if !response.session.isRunning {
+                    let refreshed = self.session(response.session, in: workspaceForSession(session))
+                    upsert(refreshed)
+                    if !refreshed.isRunning {
                         clearForegroundActivity(sessionID: session.id)
                     }
                     if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
@@ -895,6 +1032,15 @@ final class SessionStore: ObservableObject {
     }
 
     private func refreshSessions(forProjectID projectID: String) async {
+        var projectID = projectID
+        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+            setErrorMessage("工作区已失效，请重新打开")
+            return
+        }
+        projectID = workspace.id
+        if selectedProjectID != projectID {
+            setSelectedProjectID(projectID)
+        }
         isLoading = true
         defer { isLoading = false }
         var requestToken: Int?
@@ -902,7 +1048,7 @@ final class SessionStore: ObservableObject {
             let client = try clientFactory()
             requestToken = beginSessionPageRequest(projectID: projectID)
             defer { finishSessionPageRequest(projectID: projectID, token: requestToken ?? 0) }
-            let page = try await client.sessionsPage(projectID: projectID, cursor: nil, limit: Self.initialSessionPageLimit)
+            let page = try await client.sessionsPage(workspace: workspace, cursor: nil, limit: Self.initialSessionPageLimit)
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
@@ -910,8 +1056,10 @@ final class SessionStore: ObservableObject {
                 return
             }
             // 只替换当前项目的会话，避免一次项目点击误删其他项目已经加载好的列表。
-            replaceSessionsIfChanged(with: pageSessionsPreservingSelection(page.sessions, projectID: projectID), projectID: projectID)
+            let pageSessions = sessions(page.sessions, in: workspace)
+            replaceSessionsIfChanged(with: pageSessionsPreservingSelection(pageSessions, projectID: projectID), projectID: projectID)
             updateSessionPageState(projectID: projectID, page: page)
+            clearWorkspaceUnavailable(projectID)
             setStatusMessage("已加载 \(filteredSessions.count) 个会话")
             setErrorMessage(nil)
         } catch {
@@ -919,7 +1067,7 @@ final class SessionStore: ObservableObject {
                 return
             }
             if selectedProjectID == projectID {
-                setErrorMessage(error.localizedDescription)
+                await handleWorkspaceLoadFailure(workspace: workspace, error: error)
             }
         }
     }
@@ -959,6 +1107,66 @@ final class SessionStore: ObservableObject {
         // 分页首屏只取最近会话；如果用户当前停在更旧的历史，会话行必须保留，
         // 否则前台刷新会把右侧正在看的上下文从列表索引里踢掉。
         return fresh + [selected]
+    }
+
+    private func sessions(_ items: [AgentSession], in workspace: AgentWorkspace) -> [AgentSession] {
+        items.map { session($0, in: workspace) }
+    }
+
+    private func session(_ item: AgentSession, in workspace: AgentWorkspace?) -> AgentSession {
+        guard let workspace else {
+            return alignSessionToKnownWorkspace(item)
+        }
+        return AgentSession(
+            id: item.id,
+            projectID: workspace.id,
+            project: workspace.name,
+            dir: item.dir.isEmpty ? workspace.path : item.dir,
+            title: item.title,
+            status: item.status,
+            source: item.source,
+            resumeID: item.resumeID,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+            preview: item.preview,
+            activeTurnID: item.activeTurnID,
+            lastSeq: item.lastSeq,
+            revision: item.revision,
+            usage: item.usage,
+            rateLimit: item.rateLimit,
+            pendingApproval: item.pendingApproval,
+            context: item.context
+        )
+    }
+
+    private func alignSessionToKnownWorkspace(_ item: AgentSession) -> AgentSession {
+        if let existing = sessionsByID[item.id],
+           let workspace = workspacesByID[existing.projectID] {
+            return session(item, in: workspace)
+        }
+        if let workspace = workspaceForPath(item.dir) {
+            return session(item, in: workspace)
+        }
+        return item
+    }
+
+    private func workspaceForSession(_ session: AgentSession) -> AgentWorkspace? {
+        workspacesByID[session.projectID] ?? workspaceForPath(session.dir)
+    }
+
+    private func workspaceForPath(_ rawPath: String) -> AgentWorkspace? {
+        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            return nil
+        }
+        return recentWorkspaces
+            .filter { workspace in
+                let workspacePath = workspace.path.trimmingCharacters(in: .whitespacesAndNewlines)
+                return path == workspacePath || path.hasPrefix(workspacePath + "/")
+            }
+            .max { lhs, rhs in
+                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+            }
     }
 
     private func mergeSessionPage(_ pageSessions: [AgentSession]) {
@@ -1030,7 +1238,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func makeOptimisticSession(id: SessionID, projectID: String, prompt: String) -> AgentSession {
-        let project = projectsByID[projectID]
+        let project = sidebarProjectsByID[projectID] ?? projectsByID[projectID]
         let title = Self.promptTitle(prompt)
         return AgentSession(
             id: id,
@@ -1123,6 +1331,16 @@ final class SessionStore: ObservableObject {
         projectsByID = byID
     }
 
+    private func rebuildWorkspaceIndex() {
+        var byID: [String: AgentWorkspace] = [:]
+        byID.reserveCapacity(recentWorkspaces.count)
+        for workspace in recentWorkspaces {
+            byID[workspace.id] = workspace
+        }
+        workspacesByID = byID
+        setSidebarProjectsIfChanged(recentWorkspaces.map(\.project))
+    }
+
     private func rebuildSessionIndexes() {
         var byID: [SessionID: AgentSession] = [:]
         var indexByID: [SessionID: Int] = [:]
@@ -1150,7 +1368,7 @@ final class SessionStore: ObservableObject {
         }
 
         var naturalGrouped: [String: [AgentSession]] = [:]
-        naturalGrouped.reserveCapacity(projects.count)
+        naturalGrouped.reserveCapacity(sidebarProjects.count)
         for session in sorted {
             naturalGrouped[session.projectID, default: []].append(session)
         }
@@ -1223,8 +1441,8 @@ final class SessionStore: ObservableObject {
 
     private func rebuildProjectSessionListSnapshots() {
         var projectIDs: Set<String> = []
-        projectIDs.reserveCapacity(projects.count + sortedSessionsByProjectID.count)
-        for project in projects {
+        projectIDs.reserveCapacity(sidebarProjects.count + sortedSessionsByProjectID.count)
+        for project in sidebarProjects {
             projectIDs.insert(project.id)
         }
         projectIDs.formUnion(sortedSessionsByProjectID.keys)
@@ -1544,14 +1762,15 @@ final class SessionStore: ObservableObject {
         do {
             let client = try clientFactory()
             let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
-            upsert(response.session)
+            let refreshed = self.session(response.session, in: workspaceForSession(current))
+            upsert(refreshed)
             if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
                 // 重连前只补诊断日志；结构化消息由 history 和 app-server event 补齐。
                 logStore.append(recentOutput, sessionID: sessionID, seq: response.lastSeq)
             }
             // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
-            await loadHistory(for: response.session)
-            return response.session
+            await loadHistory(for: refreshed)
+            return refreshed
         } catch {
             setStatusMessage("重连前快照刷新失败：\(error.localizedDescription)")
             return current
@@ -1666,6 +1885,7 @@ final class SessionStore: ObservableObject {
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
              .logDelta(_, let metadata),
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
@@ -1694,6 +1914,124 @@ final class SessionStore: ObservableObject {
             return
         }
         projects = value
+    }
+
+    private func setRecentWorkspacesIfChanged(_ value: [AgentWorkspace]) {
+        guard recentWorkspaces != value else {
+            return
+        }
+        recentWorkspaces = value
+    }
+
+    private func setSidebarProjectsIfChanged(_ value: [AgentProject]) {
+        guard sidebarProjects != value else {
+            return
+        }
+        sidebarProjects = value
+
+        var byID: [String: AgentProject] = [:]
+        byID.reserveCapacity(value.count)
+        for project in value {
+            byID[project.id] = project
+        }
+        sidebarProjectsByID = byID
+    }
+
+    private func reloadRecentWorkspaces() {
+        setRecentWorkspacesIfChanged(recentWorkspaceStore.load(endpoint: appStore.endpoint))
+    }
+
+    private func rememberWorkspace(_ workspace: AgentWorkspace) {
+        let next = recentWorkspaceStore.upsert(workspace, endpoint: appStore.endpoint)
+        setRecentWorkspacesIfChanged(next)
+    }
+
+    private func ensureWorkspace(for project: AgentProject) -> AgentWorkspace {
+        if let workspace = workspacesByID[project.id] {
+            return workspace
+        }
+        let workspace = AgentWorkspace(project: project)
+        rememberWorkspace(workspace)
+        return workspacesByID[workspace.id] ?? workspace
+    }
+
+    private func ensureWorkspaceForKnownProjectID(_ projectID: String) -> AgentWorkspace? {
+        if let workspace = workspacesByID[projectID] {
+            return workspace
+        }
+        if let project = sidebarProjectsByID[projectID] ?? projectsByID[projectID] {
+            return ensureWorkspace(for: project)
+        }
+        return nil
+    }
+
+    private enum WorkspaceAvailability {
+        case available
+        case unavailable(String)
+        case indeterminate
+    }
+
+    // 会话加载失败时，用 resolve 复核这个工作区到底是“真没了”还是“暂时连不上”：
+    // - resolve 成功 → 路径仍在 allowlist 内，原失败多半是网关冷启动等瞬时问题。
+    // - resolve 返回 4xx → agentd 明确判定路径不可用（被删 / 掉出 allowlist）。
+    // - resolve 抛传输层错误（连不上 agentd） → 无法判定，按瞬时处理，不冤枉标记。
+    private func evaluateWorkspaceAvailability(_ workspace: AgentWorkspace) async -> WorkspaceAvailability {
+        do {
+            let client = try clientFactory()
+            _ = try await client.resolveWorkspace(path: workspace.path)
+            return .available
+        } catch let error as AgentAPIError {
+            if case let .server(status, _) = error, (400..<500).contains(status) {
+                return .unavailable("“\(workspace.name)”已不在 Mac 允许范围或已被删除，可重试或从当前设备移除")
+            }
+            return .indeterminate
+        } catch {
+            return .indeterminate
+        }
+    }
+
+    private func handleWorkspaceLoadFailure(workspace: AgentWorkspace, error: Error) async {
+        switch await evaluateWorkspaceAvailability(workspace) {
+        case .unavailable(let message):
+            markWorkspaceUnavailable(workspace.id)
+            // 明确的不可用态：清掉全局错误，bootstrap 的退避重试不再死磕一个已失效的目录。
+            setErrorMessage(nil)
+            setStatusMessage(message)
+        case .available, .indeterminate:
+            clearWorkspaceUnavailable(workspace.id)
+            setErrorMessage(error.localizedDescription)
+        }
+    }
+
+    private func markWorkspaceUnavailable(_ id: String) {
+        guard !unavailableWorkspaceIDs.contains(id) else {
+            return
+        }
+        unavailableWorkspaceIDs.insert(id)
+    }
+
+    private func clearWorkspaceUnavailable(_ id: String) {
+        guard unavailableWorkspaceIDs.contains(id) else {
+            return
+        }
+        unavailableWorkspaceIDs.remove(id)
+    }
+
+    private func sessionForExplicitSelection(_ item: AgentSession) -> AgentSession {
+        if let workspace = workspaceForSession(item) {
+            let aligned = session(item, in: workspace)
+            upsert(aligned)
+            return aligned
+        }
+        if let project = sidebarProjectsByID[item.projectID] ?? projectsByID[item.projectID] {
+            let workspace = ensureWorkspace(for: project)
+            let aligned = session(item, in: workspace)
+            upsert(aligned)
+            return aligned
+        }
+        let aligned = alignSessionToKnownWorkspace(item)
+        upsert(aligned)
+        return aligned
     }
 
     private func setExpandedProjectIDs(_ value: Set<String>) {
@@ -1789,6 +2127,9 @@ final class SessionStore: ObservableObject {
         setSelectedSessionID(nil)
         setSelectedProjectID(nil)
         setProjectsIfChanged([])
+        setRecentWorkspacesIfChanged([])
+        setSidebarProjectsIfChanged([])
+        unavailableWorkspaceIDs = []
         sessions = []
         setExpandedProjectIDs([])
         setShowingAllSessionProjectIDs([])
@@ -1813,7 +2154,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func upsert(_ session: AgentSession) {
-        let session = Self.normalizedSession(session)
+        let session = Self.normalizedSession(alignSessionToKnownWorkspace(session))
         contextStore.upsert(from: session)
         if let index = sessionIndexByID[session.id] {
             guard sessions[index] != session else {

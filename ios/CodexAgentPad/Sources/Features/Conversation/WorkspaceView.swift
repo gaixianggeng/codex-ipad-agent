@@ -11,9 +11,9 @@ struct WorkspaceView: View {
         Group {
             if sessionStore.selectedProjectID == nil && sessionStore.selectedSessionID == nil {
                 ContentUnavailableView(
-                    "请选择项目",
-                    systemImage: "folder",
-                    description: Text("选择项目后可以查看历史会话或新建任务。")
+                    "打开工作区",
+                    systemImage: "folder.badge.plus",
+                    description: Text("从左侧打开一个 Mac 工作目录后，可以查看会话或新建任务。")
                 )
                 .font(themeStore.uiFont(.callout))
                 .foregroundStyle(tokens.secondaryText)

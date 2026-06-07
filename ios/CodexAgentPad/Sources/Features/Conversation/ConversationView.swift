@@ -484,12 +484,10 @@ struct ConversationTimelineView: View {
                 layout: layout,
                 isExpanded: expandedProcessedGroupIDs.contains(group.id),
                 toggle: {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        if expandedProcessedGroupIDs.contains(group.id) {
-                            expandedProcessedGroupIDs.remove(group.id)
-                        } else {
-                            expandedProcessedGroupIDs.insert(group.id)
-                        }
+                    if expandedProcessedGroupIDs.contains(group.id) {
+                        expandedProcessedGroupIDs.remove(group.id)
+                    } else {
+                        expandedProcessedGroupIDs.insert(group.id)
                     }
                 }
             )
@@ -630,6 +628,7 @@ private struct ProcessedTurnRow: View, Equatable {
     let layout: ConversationLayout
     let isExpanded: Bool
     let toggle: () -> Void
+    private static let disclosureAnimation = Animation.easeInOut(duration: 0.18)
 
     static func == (lhs: ProcessedTurnRow, rhs: ProcessedTurnRow) -> Bool {
         lhs.group == rhs.group && lhs.layout == rhs.layout && lhs.isExpanded == rhs.isExpanded
@@ -637,15 +636,18 @@ private struct ProcessedTurnRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
                 Button(action: toggle) {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle")
                             .font(themeStore.uiFont(.caption, weight: .semibold))
                         Text(group.title)
                             .font(themeStore.uiFont(.caption, weight: .medium))
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        Image(systemName: "chevron.right")
                             .font(themeStore.uiFont(.caption2, weight: .semibold))
+                            .frame(width: 10, height: 10)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .animation(Self.disclosureAnimation, value: isExpanded)
                     }
                     .foregroundStyle(tokens.secondaryText)
                     .contentShape(Rectangle())
@@ -659,10 +661,12 @@ private struct ProcessedTurnRow: View, Equatable {
                             RuntimeSummaryCard(message: message, layout: layout)
                         }
                     }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .padding(.top, 8)
+                    .transition(.opacity)
                 }
             }
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
+            .animation(Self.disclosureAnimation, value: isExpanded)
 
             Spacer(minLength: layout.messageSideSpacer)
         }

@@ -14,6 +14,72 @@ struct AgentProject: Identifiable, Codable, Hashable {
     let path: String
 }
 
+struct AgentWorkspace: Identifiable, Codable, Hashable {
+    let id: String
+    let name: String
+    let path: String
+    let rootProjectID: String?
+    let rootProjectName: String?
+    let rootProjectPath: String?
+    var lastOpenedAt: Date?
+
+    var project: AgentProject {
+        AgentProject(id: id, name: name, path: path)
+    }
+
+    init(
+        id: String,
+        name: String,
+        path: String,
+        rootProjectID: String? = nil,
+        rootProjectName: String? = nil,
+        rootProjectPath: String? = nil,
+        lastOpenedAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.rootProjectID = rootProjectID
+        self.rootProjectName = rootProjectName
+        self.rootProjectPath = rootProjectPath
+        self.lastOpenedAt = lastOpenedAt
+    }
+
+    init(project: AgentProject, lastOpenedAt: Date? = nil) {
+        self.init(
+            id: project.id,
+            name: project.name,
+            path: project.path,
+            rootProjectID: project.id,
+            rootProjectName: project.name,
+            rootProjectPath: project.path,
+            lastOpenedAt: lastOpenedAt
+        )
+    }
+
+    func opened(at date: Date) -> AgentWorkspace {
+        AgentWorkspace(
+            id: id,
+            name: name,
+            path: path,
+            rootProjectID: rootProjectID,
+            rootProjectName: rootProjectName,
+            rootProjectPath: rootProjectPath,
+            lastOpenedAt: date
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case path
+        case rootProjectID = "root_project_id"
+        case rootProjectName = "root_project_name"
+        case rootProjectPath = "root_project_path"
+        case lastOpenedAt = "last_opened_at"
+    }
+}
+
 struct AgentSession: Identifiable, Codable, Hashable {
     let id: SessionID
     let projectID: String
@@ -157,6 +223,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
 struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     var id: MessageID
     let role: String
+    let kind: MessageKind
     let content: String
     let createdAt: Date?
     let clientMessageID: ClientMessageID?
@@ -169,6 +236,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     init(
         id: MessageID = UUID().uuidString,
         role: String,
+        kind: MessageKind = .message,
         content: String,
         createdAt: Date?,
         clientMessageID: ClientMessageID? = nil,
@@ -180,6 +248,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     ) {
         self.id = id
         self.role = role
+        self.kind = kind
         self.content = content
         self.createdAt = createdAt
         self.clientMessageID = clientMessageID
@@ -193,6 +262,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id
         case role
+        case kind
         case content
         case createdAt = "created_at"
         case clientMessageID = "client_message_id"
@@ -212,6 +282,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         self.init(
             id: try container.decodeIfPresent(MessageID.self, forKey: .id) ?? clientMessageID ?? UUID().uuidString,
             role: role,
+            kind: try container.decodeIfPresent(MessageKind.self, forKey: .kind) ?? .message,
             content: content,
             createdAt: createdAt,
             clientMessageID: clientMessageID,
@@ -381,7 +452,7 @@ struct ConversationMessage: Identifiable, Hashable {
     let clientMessageID: ClientMessageID?
     let turnID: TurnID?
     let itemID: AgentItemID?
-    let role: Role
+    var role: Role
     var kind: MessageKind
     var content: String {
         didSet {
