@@ -779,8 +779,15 @@ final class SessionStore: ObservableObject {
             if !prompt.isEmpty {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: response.session.id, status: .sent)
+                    conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: response.session.id)
                 } else {
-                    conversationStore.appendLocalUser(prompt, sessionID: response.session.id, clientMessageID: nil, sendStatus: .sent, turnPayload: payload)
+                    conversationStore.appendLocalUser(
+                        prompt,
+                        sessionID: response.session.id,
+                        clientMessageID: nil,
+                        sendStatus: .sent,
+                        turnPayload: payload.retainedAfterAcceptedSend()
+                    )
                 }
                 setForegroundActivity(.waitingForAssistant, sessionID: response.session.id)
             } else {
@@ -1341,6 +1348,14 @@ final class SessionStore: ObservableObject {
                         self?.scheduleRuntimeEventFlush(sessionID: session.id)
                     }
                 }
+            }
+        }
+        socket.onSendAccepted = { [weak self] clientMessageID in
+            Task { @MainActor in
+                guard let clientMessageID else {
+                    return
+                }
+                self?.conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: session.id)
             }
         }
         socket.onSendFailure = { [weak self] clientMessageID, message in

@@ -182,6 +182,20 @@ final class ConversationStore: ObservableObject {
         setMessages(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
+    func compactTurnPayloadAfterSendAccepted(clientMessageID: ClientMessageID, sessionID: String) {
+        guard var list = messagesBySessionID[sessionID],
+              let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID),
+              let payload = list[index].turnPayload else {
+            return
+        }
+        let retained = payload.retainedAfterAcceptedSend()
+        guard list[index].turnPayload != retained else {
+            return
+        }
+        list[index].turnPayload = retained
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+    }
+
     func appendSystem(
         _ text: String,
         sessionID: String,
@@ -251,7 +265,8 @@ final class ConversationStore: ObservableObject {
         if let targetIndex = messageIndex(clientMessageID: clientMessageID, sessionID: targetSessionID) {
             target[targetIndex].content = message.content
             target[targetIndex].sendStatus = message.sendStatus
-            setMessages(target, sessionID: targetSessionID)
+            target[targetIndex].turnPayload = target[targetIndex].turnPayload ?? message.turnPayload
+            replaceMessagesWithoutEquivalenceCheck(target, sessionID: targetSessionID)
         } else {
             target.append(message)
             setMessages(target, sessionID: targetSessionID)
@@ -406,6 +421,7 @@ final class ConversationStore: ObservableObject {
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
 
         var list = messagesBySessionID[sessionID] ?? []
+        var requiresUnconditionalWrite = false
         let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
         let uuid = messageUUIDByStableMessageID[key] ?? UUID()
         messageUUIDByStableMessageID[key] = uuid
@@ -415,6 +431,13 @@ final class ConversationStore: ObservableObject {
             list[index].content = message.content
             list[index].sendStatus = message.sendStatus == .failed ? .failed : .confirmed
             list[index].revision = message.revision
+            if clientMessageID != nil, message.sendStatus != .failed {
+                let retained = list[index].turnPayload?.retainedAfterAcceptedSend()
+                if list[index].turnPayload != retained {
+                    list[index].turnPayload = retained
+                    requiresUnconditionalWrite = true
+                }
+            }
         } else {
             list.append(ConversationMessage(
                 id: uuid,
@@ -430,7 +453,11 @@ final class ConversationStore: ObservableObject {
                 revision: message.revision
             ))
         }
-        setMessages(list, sessionID: sessionID)
+        if requiresUnconditionalWrite {
+            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID)
+        } else {
+            setMessages(list, sessionID: sessionID)
+        }
     }
 
     func markCurrentAssistantCompleted(metadata: AgentEventMetadata, fallbackSessionID: String) {
@@ -609,6 +636,25 @@ final class ConversationStore: ObservableObject {
             rebuildMessageIndexes(for: sessionID, messages: list)
         }
         return true
+    }
+
+    private func replaceMessagesWithoutEquivalenceCheck(
+        _ list: [ConversationMessage],
+        sessionID: String,
+        rebuildIndexes: Bool = true
+    ) {
+        touchConversationSession(sessionID)
+        let evictedSessionIDs = trimConversationSessionCacheCandidates()
+        var nextMessagesBySessionID = messagesBySessionID
+        nextMessagesBySessionID[sessionID] = list
+        for evictedSessionID in evictedSessionIDs {
+            let evictedMessages = nextMessagesBySessionID.removeValue(forKey: evictedSessionID) ?? []
+            clearConversationSessionState(sessionID: evictedSessionID, messages: evictedMessages)
+        }
+        messagesBySessionID = nextMessagesBySessionID
+        if rebuildIndexes {
+            rebuildMessageIndexes(for: sessionID, messages: list)
+        }
     }
 
     private func areMessagesEquivalent(_ lhs: [ConversationMessage]?, _ rhs: [ConversationMessage]) -> Bool {

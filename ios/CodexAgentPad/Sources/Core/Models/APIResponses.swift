@@ -339,6 +339,20 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
         return String(hash, radix: 16)
     }
 
+    var retainedAfterAcceptedSend: CodexAppServerUserInput? {
+        switch self {
+        case .image(let url, _):
+            return Self.isInlineImageDataURL(url) ? nil : self
+        default:
+            return self
+        }
+    }
+
+    private static func isInlineImageDataURL(_ value: String) -> Bool {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .range(of: "data:image/", options: [.anchored, .caseInsensitive]) != nil
+    }
+
     var previewText: String {
         switch self {
         case .text(let text, _):
@@ -671,6 +685,15 @@ struct CodexAppServerTurnPayload: Codable, Hashable {
 
     var appServerInput: CodexAppServerJSONValue {
         .array(input.map(\.jsonValue))
+    }
+
+    func retainedAfterAcceptedSend() -> CodexAppServerTurnPayload? {
+        let retainedInput = input.compactMap(\.retainedAfterAcceptedSend)
+        let retained = CodexAppServerTurnPayload(input: retainedInput, options: options)
+        if retained.input.isEmpty && retained.options == .default {
+            return nil
+        }
+        return retained
     }
 
     static func defaultInput(for prompt: String) -> [CodexAppServerUserInput] {

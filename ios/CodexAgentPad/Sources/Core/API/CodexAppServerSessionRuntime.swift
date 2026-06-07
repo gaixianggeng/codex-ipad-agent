@@ -1453,6 +1453,7 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
 final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onEvent: ((AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
+    var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
@@ -1516,10 +1517,14 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         guard !payload.isEmpty else {
             return true
         }
+        let acceptedHandler = onSendAccepted
         let failureHandler = onSendFailure
         Task { [runtime] in
             do {
                 _ = try await runtime.startTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
+                await MainActor.run {
+                    acceptedHandler?(clientMessageID)
+                }
             } catch {
                 await MainActor.run {
                     failureHandler?(clientMessageID, error.localizedDescription)
