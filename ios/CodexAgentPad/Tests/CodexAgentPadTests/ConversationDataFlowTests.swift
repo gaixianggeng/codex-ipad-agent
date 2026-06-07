@@ -75,6 +75,48 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertGreaterThan(message.contentByteCount, initial.contentByteCount)
     }
 
+    func testConversationMessageEqualityAndHashIgnoreTurnPayload() {
+        let id = UUID()
+        let createdAt = Date(timeIntervalSince1970: 42)
+        let firstPayload = CodexAppServerTurnPayload(input: [
+            .text("看图"),
+            .image(url: "data:image/png;base64,AA==", detail: .high)
+        ])
+        let secondPayload = CodexAppServerTurnPayload(input: [
+            .text("看图"),
+            .image(url: "data:image/png;base64,BBBB", detail: .high)
+        ])
+        let first = ConversationMessage(
+            id: id,
+            stableID: "message-1",
+            clientMessageID: "client-1",
+            turnID: "turn-1",
+            itemID: "item-1",
+            role: .user,
+            content: "看图 [图片]",
+            createdAt: createdAt,
+            sendStatus: .sent,
+            revision: 1,
+            turnPayload: firstPayload
+        )
+        let second = ConversationMessage(
+            id: id,
+            stableID: "message-1",
+            clientMessageID: "client-1",
+            turnID: "turn-1",
+            itemID: "item-1",
+            role: .user,
+            content: "看图 [图片]",
+            createdAt: createdAt,
+            sendStatus: .sent,
+            revision: 1,
+            turnPayload: secondPayload
+        )
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(Set([first, second]).count, 1)
+    }
+
     func testTimelineBuilderCollapsesProcessMessagesBeforeCompletedAssistant() throws {
         let base = Date(timeIntervalSince1970: 1_000)
         let user = ConversationMessage(
@@ -578,6 +620,43 @@ final class ConversationDataFlowTests: XCTestCase {
 
         composerState.restore("继续检查输入卡顿")
         XCTAssertTrue(composerState.canSubmit(isLoading: false))
+    }
+
+    func testComposerStateBuildsStructuredPayloadAndRestoresAttachments() throws {
+        var composerState = ComposerState()
+        composerState.draft = "看下这张图"
+        composerState.addAttachment(.image(url: "data:image/png;base64,AA==", detail: .high))
+        composerState.addAttachment(.mention(name: "README", path: "/tmp/project/README.md"))
+        composerState.turnOptions.model = "gpt-5-codex"
+        composerState.turnOptions.reasoningEffort = .high
+
+        let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(isLoading: false))
+
+        XCTAssertTrue(composerState.draft.isEmpty)
+        XCTAssertTrue(composerState.attachments.isEmpty)
+        XCTAssertEqual(submitted.payload.textPrompt, "看下这张图")
+        XCTAssertEqual(submitted.payload.input.count, 3)
+        XCTAssertEqual(submitted.payload.options.model, "gpt-5-codex")
+        XCTAssertEqual(submitted.payload.options.reasoningEffort, .high)
+
+        composerState.restore(submitted)
+        XCTAssertEqual(composerState.draft, "看下这张图")
+        XCTAssertEqual(composerState.attachments.count, 2)
+        XCTAssertTrue(composerState.canSubmit(isLoading: false))
+    }
+
+    func testComposerStateVoiceTranscriptPreservesManualEditsDuringRecording() {
+        var composerState = ComposerState()
+        composerState.draft = "已有上下文"
+        composerState.beginVoiceInput()
+        composerState.applyVoiceTranscript("第一段")
+        XCTAssertEqual(composerState.draft, "已有上下文\n第一段")
+
+        composerState.draft += "\n手动补充"
+        composerState.applyVoiceTranscript("第二段")
+
+        XCTAssertEqual(composerState.draft, "已有上下文\n第一段\n手动补充\n第二段")
+        composerState.endVoiceInput()
     }
 
     func testHistoryMergeDeduplicatesLocalEchoByRoleAndContent() {
@@ -3013,6 +3092,67 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(store.selectedForegroundActivity, .waitingForAssistant)
     }
 
+    func testCreatingSessionForwardsStructuredPayloadAndOptions() async throws {
+        let project = makeProject(id: "proj_rich_create")
+        let created = makeSession(id: "sess_rich_create", projectID: project.id, title: "Rich Create", status: "running", source: "codex")
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [])
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        var options = CodexAppServerTurnOptions.default
+        options.model = "gpt-5-codex"
+        options.serviceTier = "priority"
+        options.approvalPolicy = .onFailure
+        let payload = CodexAppServerTurnPayload(input: [
+            .text("分析截图"),
+            .image(url: "data:image/png;base64,AA==", detail: .high),
+            .skill(name: "review", path: project.path)
+        ], options: options)
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        let sendTask = Task { await store.sendTurn(payload) }
+        await client.waitForCreateRequestCount(1)
+
+        let sent = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(sent.prompt, payload.previewText)
+        XCTAssertEqual(sent.input, payload.input)
+        XCTAssertEqual(sent.turnOptions.model, "gpt-5-codex")
+        XCTAssertEqual(sent.turnOptions.serviceTier, "priority")
+        XCTAssertEqual(sent.turnOptions.approvalPolicy, .onFailure)
+
+        client.resolveCreate(with: .success(try makeCreateSessionResponse(session: created)))
+        let accepted = await sendTask.value
+        XCTAssertTrue(accepted)
+        let message = try XCTUnwrap(conversationStore.messages(for: created.id).first)
+        XCTAssertFalse(payloadContainsInlineImage(message.turnPayload))
+        XCTAssertTrue(payloadContainsSkill(message.turnPayload, name: "review"))
+        XCTAssertEqual(message.turnPayload?.options, options)
+    }
+
+    func testRefreshAppServerModelOptionsCachesDynamicList() async throws {
+        let options = [
+            CodexAppServerModelOption(id: "gpt-5.1-codex", title: "GPT-5.1 Codex", provider: "openai", isDefault: true),
+            CodexAppServerModelOption(id: "gpt-5-codex", title: "GPT-5 Codex", provider: "openai")
+        ]
+        let client = MockSessionStoreClient(projects: [], sessions: [], modelOptions: options)
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAppServerModelOptions(force: true)
+
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["gpt-5.1-codex", "gpt-5-codex"])
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+    }
+
     func testNewSessionPromptLocalEchoConfirmsWithoutDuplicateWhenCreateReturns() async throws {
         let project = makeProject(id: "proj_local_echo")
         let created = makeSession(id: "sess_created_echo", projectID: project.id, title: "新会话", status: "running", source: "codex")
@@ -3091,6 +3231,51 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(conversationStore.messages(for: optimisticSessionID).first?.sendStatus, .failed)
     }
 
+    func testNewSessionRichPayloadFailureKeepsInlineImageForRetry() async throws {
+        let project = makeProject(id: "proj_rich_echo_fail")
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [])
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let payload = CodexAppServerTurnPayload(input: [
+            .text("失败后重试图片"),
+            .image(url: "data:image/png;base64,AA==", detail: .high),
+            .mention(name: "README", path: project.path)
+        ])
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        let sendTask = Task { await store.sendTurn(payload) }
+        await client.waitForCreateRequestCount(1)
+
+        client.resolveCreate(with: .failure(MockError.unimplemented), at: 0)
+        let sendSucceeded = await sendTask.value
+
+        XCTAssertFalse(sendSucceeded)
+        let optimisticSessionID = try XCTUnwrap(store.selectedSessionID)
+        let failedMessage = try XCTUnwrap(conversationStore.messages(for: optimisticSessionID).first)
+        XCTAssertEqual(failedMessage.sendStatus, .failed)
+        XCTAssertTrue(payloadContainsInlineImage(failedMessage.turnPayload))
+        XCTAssertEqual(failedMessage.turnPayload, payload)
+
+        let retryTask = Task { await store.retryFailedUserMessage(failedMessage) }
+        await client.waitForCreateRequestCount(2)
+        XCTAssertEqual(client.createPayloads[1].input, payload.input)
+        XCTAssertTrue(client.createPayloads[1].input.contains { item in
+            if case .image(let url, _) = item {
+                return url == "data:image/png;base64,AA=="
+            }
+            return false
+        })
+        client.resolveCreate(with: .failure(MockError.unimplemented), at: 1)
+        let retrySucceeded = await retryTask.value
+        XCTAssertFalse(retrySucceeded)
+    }
+
     func testFailedRunningMessageRetryReusesClientMessageID() async throws {
         let project = makeProject(id: "proj_retry")
         let running = makeSession(id: "sess_retry", projectID: project.id, title: "运行中", status: "running", source: "codex")
@@ -3125,13 +3310,113 @@ final class ConversationDataFlowTests: XCTestCase {
         let retried = await store.retryFailedUserMessage(failedMessage)
 
         XCTAssertTrue(retried)
-        XCTAssertEqual(sockets[0].sentInputs.count, 1)
-        XCTAssertEqual(sockets[0].sentInputs.first?.text, "请重试\r")
-        XCTAssertEqual(sockets[0].sentInputs.first?.clientMessageID, "client-retry")
+        XCTAssertTrue(sockets[0].sentInputs.isEmpty)
+        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "请重试")
+        XCTAssertEqual(sockets[0].sentTurns.first?.clientMessageID, "client-retry")
         let messages = conversationStore.messages(for: running.id)
         let retriedMessages = messages.filter { $0.clientMessageID == "client-retry" }
         XCTAssertEqual(retriedMessages.count, 1)
         XCTAssertEqual(retriedMessages.first?.sendStatus, .sent)
+    }
+
+    func testRetryFailedUserMessagePreservesStructuredTurnPayload() async throws {
+        let project = makeProject(id: "proj_retry_payload")
+        let running = makeSession(id: "sess_retry_payload", projectID: project.id, title: "Retry Payload", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let payload = CodexAppServerTurnPayload(input: [
+            .text("看下这张图"),
+            .image(url: "data:image/png;base64,AA==", detail: .high),
+            .mention(name: "README", path: project.path)
+        ])
+        conversationStore.appendLocalUser(
+            payload.previewText,
+            sessionID: running.id,
+            clientMessageID: "client-rich-retry",
+            sendStatus: .failed,
+            turnPayload: payload
+        )
+
+        let retried = await store.retryFailedUserMessage(try XCTUnwrap(conversationStore.messages(for: running.id).first))
+
+        XCTAssertTrue(retried)
+        let sent = try XCTUnwrap(sockets[0].sentTurns.first)
+        XCTAssertEqual(sent.clientMessageID, "client-rich-retry")
+        XCTAssertEqual(sent.payload, payload)
+    }
+
+    func testRunningSendCompactsInlineImagePayloadOnlyAfterAccepted() async throws {
+        let project = makeProject(id: "proj_compact_payload")
+        let running = makeSession(id: "sess_compact_payload", projectID: project.id, title: "Compact Payload", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let payload = CodexAppServerTurnPayload(input: [
+            .text("看下这张图"),
+            .image(url: "data:image/png;base64,AA==", detail: .high),
+            .image(url: "https://example.test/diagram.png", detail: .low),
+            .mention(name: "README", path: project.path)
+        ])
+        let sent = await store.sendTurn(payload)
+
+        XCTAssertTrue(sent)
+        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        let localEcho = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.clientMessageID != nil })
+        let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
+        XCTAssertTrue(payloadContainsInlineImage(localEcho.turnPayload))
+        XCTAssertEqual(localEcho.turnPayload, payload)
+
+        sockets[0].onSendAccepted?(clientMessageID)
+        let compactedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
+            guard let message = messages.first(where: { $0.clientMessageID == clientMessageID }) else {
+                return false
+            }
+            return !payloadContainsInlineImage(message.turnPayload)
+        }
+        let compacted = try XCTUnwrap(compactedMessages.first { $0.clientMessageID == clientMessageID })
+        XCTAssertTrue(payloadContainsImageURL(compacted.turnPayload, url: "https://example.test/diagram.png"))
+        XCTAssertTrue(payloadContainsMention(compacted.turnPayload, name: "README"))
+        XCTAssertEqual(compacted.turnPayload?.textPrompt, "看下这张图")
     }
 
     func testApprovalDecisionSendsThroughCurrentWebSocket() async throws {
@@ -3559,10 +3844,12 @@ final class ConversationDataFlowTests: XCTestCase {
 private final class MockWebSocketClient: SessionWebSocketClient {
     var onEvent: ((AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
+    var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
 
     private(set) var connectedSessionIDs: [SessionID] = []
     private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
+    private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
     private(set) var disconnectCallCount = 0
 
@@ -3578,6 +3865,11 @@ private final class MockWebSocketClient: SessionWebSocketClient {
 
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {
         sentInputs.append((text, clientMessageID))
+        return true
+    }
+
+    func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool {
+        sentTurns.append((payload, clientMessageID))
         return true
     }
 
@@ -3692,6 +3984,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     let workspaceSessionsError: [String: Error]
     let resolveResults: [String: Result<AgentWorkspace, Error>]
     let messagesError: Error?
+    let modelOptionsResult: [CodexAppServerModelOption]
     var requestedProjectIDs: [String?] = []
     var requestedWorkspaceIDs: [String] = []
     var requestedResolvePaths: [String] = []
@@ -3700,6 +3993,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedMessageSessionIDs: [String] = []
     var requestedMessageCursors: [String?] = []
     var createPayloads: [CreateSessionRequest] = []
+    private(set) var modelOptionsCallCount = 0
 
     init(
         projects: [AgentProject],
@@ -3714,7 +4008,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         historyCursorPages: [String: HistoryMessagesPage] = [:],
         workspaceSessionsError: [String: Error] = [:],
         resolveResults: [String: Result<AgentWorkspace, Error>] = [:],
-        messagesError: Error? = nil
+        messagesError: Error? = nil,
+        modelOptions: [CodexAppServerModelOption] = []
     ) {
         self.projectsResult = projects
         self.sessionsResult = sessions
@@ -3732,10 +4027,16 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         self.workspaceSessionsError = workspaceSessionsError
         self.resolveResults = resolveResults
         self.messagesError = messagesError
+        self.modelOptionsResult = modelOptions
     }
 
     func projects() async throws -> [AgentProject] {
         projectsResult
+    }
+
+    func modelOptions() async throws -> [CodexAppServerModelOption] {
+        modelOptionsCallCount += 1
+        return modelOptionsResult
     }
 
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
@@ -3980,6 +4281,43 @@ private func queryValue(_ name: String, in url: URL?) -> String? {
         .queryItems?
         .first { $0.name == name }?
         .value
+}
+
+private func payloadContainsInlineImage(_ payload: CodexAppServerTurnPayload?) -> Bool {
+    payload?.input.contains { item in
+        if case .image(let url, _) = item {
+            return url.trimmingCharacters(in: .whitespacesAndNewlines)
+                .range(of: "data:image/", options: [.anchored, .caseInsensitive]) != nil
+        }
+        return false
+    } ?? false
+}
+
+private func payloadContainsImageURL(_ payload: CodexAppServerTurnPayload?, url expectedURL: String) -> Bool {
+    payload?.input.contains { item in
+        if case .image(let url, _) = item {
+            return url == expectedURL
+        }
+        return false
+    } ?? false
+}
+
+private func payloadContainsMention(_ payload: CodexAppServerTurnPayload?, name expectedName: String) -> Bool {
+    payload?.input.contains { item in
+        if case .mention(let name, _) = item {
+            return name == expectedName
+        }
+        return false
+    } ?? false
+}
+
+private func payloadContainsSkill(_ payload: CodexAppServerTurnPayload?, name expectedName: String) -> Bool {
+    payload?.input.contains { item in
+        if case .skill(let name, _) = item {
+            return name == expectedName
+        }
+        return false
+    } ?? false
 }
 
 @MainActor
@@ -4324,6 +4662,166 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(approvalResponse.result?["decision"]?.stringValue, "accept")
 
         socket.disconnect()
+    }
+
+    func testDirectSocketEmitsSendAcceptedOnlyAfterTurnStartSucceeds() async throws {
+        let project = AgentProject(id: "proj_direct_accept", name: "Direct Accept", path: "/tmp/direct-accept")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "准备直连 socket",
+                resumeID: "",
+                clientMessageID: "client_direct_accept_initial"
+            ))
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_direct_accept","sessionId":"thr_direct_accept","preview":"准备直连 socket","ephemeral":false,"modelProvider":"openai","createdAt":1780490500,"updatedAt":1780490501,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-accept","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Direct accept","turns":[]}}}"#)
+
+        let initialTurnMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let initialTurnStart = try decodeAppServerRequest(initialTurnMessages[3])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialTurnStart.id)),"result":{"turn":{"id":"turn_direct_accept_initial","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490502,"completedAt":null,"durationMs":null}}}"#)
+
+        let created = try await createTask.value
+        XCTAssertEqual(created.session.id, "thr_direct_accept")
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var acceptedIDs: [ClientMessageID?] = []
+        var failures: [(ClientMessageID?, String)] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onSendAccepted = { acceptedIDs.append($0) }
+        socket.onSendFailure = { failures.append(($0, $1)) }
+        socket.connect(sessionID: "thr_direct_accept")
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "成功 turn"), clientMessageID: "client_direct_accept_success"))
+        let successMessages = try await waitForFakeAppServerMessages(transport, count: 5)
+        let successTurnStart = try decodeAppServerRequest(successMessages[4])
+        XCTAssertEqual(successTurnStart.method, "turn/start")
+        XCTAssertEqual(successTurnStart.params?.objectValue?["clientUserMessageId"]?.stringValue, "client_direct_accept_success")
+        XCTAssertTrue(acceptedIDs.isEmpty)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: successTurnStart.id)),"result":{"turn":{"id":"turn_direct_accept_success","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490503,"completedAt":null,"durationMs":null}}}"#)
+
+        for _ in 0..<200 where !acceptedIDs.contains("client_direct_accept_success") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(acceptedIDs.contains("client_direct_accept_success"))
+        XCTAssertTrue(failures.isEmpty)
+
+        XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "失败 turn"), clientMessageID: "client_direct_accept_fail"))
+        let failureMessages = try await waitForFakeAppServerMessages(transport, count: 6)
+        let failureTurnStart = try decodeAppServerRequest(failureMessages[5])
+        XCTAssertEqual(failureTurnStart.method, "turn/start")
+        XCTAssertEqual(failureTurnStart.params?.objectValue?["clientUserMessageId"]?.stringValue, "client_direct_accept_fail")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: failureTurnStart.id)),"error":{"code":-32000,"message":"turn failed"}}"#)
+
+        for _ in 0..<200 where failures.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(failures.first?.0, "client_direct_accept_fail")
+        XCTAssertFalse(acceptedIDs.contains("client_direct_accept_fail"))
+
+        socket.disconnect()
+    }
+
+    func testCodexAppServerSessionRuntimeForwardsRichCreatePayload() async throws {
+        let project = AgentProject(id: "proj_direct_rich", name: "Direct Rich", path: "/tmp/direct-rich")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        var options = CodexAppServerTurnOptions.default
+        options.model = "gpt-5.1-codex"
+        options.modelProvider = "openai"
+        options.serviceTier = "priority"
+        options.reasoningEffort = .high
+        options.approvalPolicy = .onFailure
+        options.sandboxMode = .readOnly
+        options.baseInstructions = "base"
+        options.developerInstructions = "dev"
+        let payload = CodexAppServerTurnPayload(input: [
+            .text("分析截图"),
+            .image(url: "data:image/png;base64,AA==", detail: .high),
+            .skill(name: "review", path: project.path + "/.codex/skills/review/SKILL.md")
+        ], options: options)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: payload.previewText,
+                input: payload.input,
+                turnOptions: payload.options,
+                resumeID: "",
+                clientMessageID: "client_direct_rich"
+            ))
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        let threadParams = try XCTUnwrap(threadStart.params?.objectValue)
+        XCTAssertEqual(threadParams["model"]?.stringValue, "gpt-5.1-codex")
+        XCTAssertEqual(threadParams["modelProvider"]?.stringValue, "openai")
+        XCTAssertEqual(threadParams["serviceTier"]?.stringValue, "priority")
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-failure")
+        XCTAssertEqual(threadParams["sandbox"]?.stringValue, "read-only")
+        XCTAssertEqual(threadParams["baseInstructions"]?.stringValue, "base")
+        XCTAssertEqual(threadParams["developerInstructions"]?.stringValue, "dev")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_direct_rich","sessionId":"thr_direct_rich","preview":"分析截图","ephemeral":false,"modelProvider":"openai","createdAt":1780490400,"updatedAt":1780490401,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-rich","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Rich direct","turns":[]}}}"#)
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let turnStart = try decodeAppServerRequest(turnMessages[3])
+        XCTAssertEqual(turnStart.method, "turn/start")
+        let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
+        XCTAssertEqual(turnParams["threadId"]?.stringValue, "thr_direct_rich")
+        XCTAssertEqual(turnParams["clientUserMessageId"]?.stringValue, "client_direct_rich")
+        XCTAssertEqual(turnParams["model"]?.stringValue, "gpt-5.1-codex")
+        XCTAssertEqual(turnParams["serviceTier"]?.stringValue, "priority")
+        XCTAssertEqual(turnParams["effort"]?.stringValue, "high")
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-failure")
+        XCTAssertNil(turnParams["modelProvider"])
+        XCTAssertNil(turnParams["baseInstructions"])
+        let input = try XCTUnwrap(turnParams["input"]?.arrayValue)
+        XCTAssertEqual(input.count, 3)
+        XCTAssertEqual(input[0].objectValue?["text"]?.stringValue, "分析截图")
+        XCTAssertEqual(input[1].objectValue?["detail"]?.stringValue, "high")
+        XCTAssertEqual(input[2].objectValue?["path"]?.stringValue, project.path + "/.codex/skills/review/SKILL.md")
+        let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)
+        XCTAssertEqual(sandbox["type"]?.stringValue, "readOnly")
+        XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_direct_rich","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490402,"completedAt":null,"durationMs":null}}}"#)
+
+        let created = try await createTask.value
+        XCTAssertEqual(created.session.id, "thr_direct_rich")
+        XCTAssertEqual(created.session.activeTurnID, "turn_direct_rich")
     }
 
     func testDirectRuntimeClearsApprovalWhenResolvedNotificationOnlyHasRequestID() async throws {
@@ -5584,6 +6082,10 @@ private final class SequencedDirectConfigProvider {
     }
 
     func next() async throws -> CodexAppServerConfigResponse {
+        takeNext()
+    }
+
+    private func takeNext() -> CodexAppServerConfigResponse {
         lock.lock()
         defer {
             lock.unlock()

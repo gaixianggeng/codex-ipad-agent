@@ -37,6 +37,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"thread/read":             {},
 	"turn/start":              {},
 	"turn/interrupt":          {},
+	"model/list":              {},
 	"account/rateLimits/read": {},
 }
 
@@ -625,6 +626,15 @@ func (r *Router) validateGatewayPolicyParams(method string, params map[string]an
 			return fmt.Errorf("sandboxPolicy.writableRoots 必须来自 projects allowlist")
 		}
 	}
+	inputPaths, err := collectUserInputPaths(params)
+	if err != nil {
+		return err
+	}
+	for _, path := range inputPaths {
+		if !r.pathInProjectAllowlist(path) {
+			return fmt.Errorf("turn/start.input path 必须来自 projects allowlist")
+		}
+	}
 	return nil
 }
 
@@ -644,6 +654,45 @@ func gatewayStringParam(params map[string]any, key string) (string, bool) {
 	}
 	text, ok := value.(string)
 	return strings.TrimSpace(text), ok && strings.TrimSpace(text) != ""
+}
+
+func collectUserInputPaths(params map[string]any) ([]string, error) {
+	raw, ok := params["input"]
+	if !ok {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("turn/start.input 必须是数组")
+	}
+	paths := []string{}
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("turn/start.input item 必须是 object")
+		}
+		inputType, _ := gatewayStringParam(obj, "type")
+		switch inputType {
+		case "localImage", "skill", "mention":
+			path, ok := gatewayStringParam(obj, "path")
+			if !ok {
+				return nil, fmt.Errorf("turn/start.input.%s.path 不能为空", inputType)
+			}
+			paths = append(paths, path)
+		case "image":
+			url, ok := gatewayStringParam(obj, "url")
+			if !ok {
+				return nil, fmt.Errorf("turn/start.input.image.url 不能为空")
+			}
+			if strings.HasPrefix(strings.ToLower(url), "file:") {
+				return nil, fmt.Errorf("turn/start.input.image.url 不允许 file URL，请使用 localImage.path")
+			}
+		case "text":
+		default:
+			return nil, fmt.Errorf("turn/start.input 类型不支持：%s", inputType)
+		}
+	}
+	return paths, nil
 }
 
 func (r *Router) pathInProjectAllowlist(raw string) bool {
@@ -717,7 +766,7 @@ func hasApprovalPolicyNever(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if strings.EqualFold(key, "approvalPolicy") {
+			if normalizePolicyValue(key) == "approvalpolicy" {
 				if text, ok := child.(string); ok && strings.EqualFold(strings.TrimSpace(text), "never") {
 					return true
 				}
@@ -737,25 +786,29 @@ func hasApprovalPolicyNever(value any) bool {
 }
 
 func hasDangerFullAccess(params map[string]any) bool {
-	if sandbox, ok := gatewayValueForKey(params, "sandbox"); ok {
-		if text, ok := sandbox.(string); ok && normalizePolicyValue(text) == "dangerfullaccess" {
-			return true
+	return hasDangerFullAccessValue(params, "")
+}
+
+func hasDangerFullAccessValue(value any, parentKey string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			normalizedKey := normalizePolicyValue(key)
+			if normalizedKey == "dangerfullaccess" {
+				return true
+			}
+			if normalizedKey == "sandbox" || normalizedKey == "sandboxmode" || (parentKey == "sandboxpolicy" && normalizedKey == "type") {
+				if text, ok := child.(string); ok && normalizePolicyValue(text) == "dangerfullaccess" {
+					return true
+				}
+			}
+			if hasDangerFullAccessValue(child, normalizedKey) {
+				return true
+			}
 		}
-	}
-	sandboxPolicy, ok := gatewayValueForKey(params, "sandboxPolicy")
-	if !ok {
-		return false
-	}
-	policy, ok := sandboxPolicy.(map[string]any)
-	if !ok {
-		return false
-	}
-	for key, child := range policy {
-		if normalizePolicyValue(key) == "dangerfullaccess" {
-			return true
-		}
-		if strings.EqualFold(key, "type") {
-			if text, ok := child.(string); ok && normalizePolicyValue(text) == "dangerfullaccess" {
+	case []any:
+		for _, child := range typed {
+			if hasDangerFullAccessValue(child, parentKey) {
 				return true
 			}
 		}
@@ -767,7 +820,7 @@ func hasNetworkAccessEnabled(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if strings.EqualFold(key, "networkAccess") {
+			if normalizePolicyValue(key) == "networkaccess" {
 				if enabled, ok := child.(bool); ok && enabled {
 					return true
 				}
@@ -787,15 +840,6 @@ func hasNetworkAccessEnabled(value any) bool {
 		}
 	}
 	return false
-}
-
-func gatewayValueForKey(values map[string]any, target string) (any, bool) {
-	for key, value := range values {
-		if strings.EqualFold(key, target) {
-			return value, true
-		}
-	}
-	return nil, false
 }
 
 func normalizePolicyValue(value string) string {

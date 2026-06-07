@@ -3,11 +3,13 @@ import Foundation
 protocol SessionWebSocketClient: AnyObject {
     var onEvent: ((AgentEvent) -> Void)? { get set }
     var onStatus: ((WebSocketStatus) -> Void)? { get set }
+    var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
     var onSendFailure: ((ClientMessageID?, String) -> Void)? { get set }
 
     func connect(sessionID: SessionID)
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
+    func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
     func sendCtrlC() -> Bool
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool
 }

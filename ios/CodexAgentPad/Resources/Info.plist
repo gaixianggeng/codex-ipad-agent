@@ -38,6 +38,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于通过本机网络或 Tailscale 连接 Mac 上运行的 agentd 服务。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>用于在 iPad 输入框中把语音转成 Codex 提示词。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>用于在 iPad 输入框中识别语音并填入待发送内容。</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

@@ -462,6 +462,7 @@ struct ConversationMessage: Identifiable, Hashable {
     let createdAt: Date
     var sendStatus: MessageSendStatus
     var revision: ModelRevision?
+    var turnPayload: CodexAppServerTurnPayload?
     private(set) var contentRevision: UInt64
     private(set) var contentDigest: UInt64
     private(set) var contentByteCount: Int
@@ -485,7 +486,8 @@ struct ConversationMessage: Identifiable, Hashable {
         content: String,
         createdAt: Date = Date(),
         sendStatus: MessageSendStatus = .sent,
-        revision: ModelRevision? = nil
+        revision: ModelRevision? = nil,
+        turnPayload: CodexAppServerTurnPayload? = nil
     ) {
         self.id = id
         self.stableID = stableID
@@ -498,10 +500,41 @@ struct ConversationMessage: Identifiable, Hashable {
         self.createdAt = createdAt
         self.sendStatus = sendStatus
         self.revision = revision
+        self.turnPayload = turnPayload
         let fingerprint = Self.makeRenderFingerprint(for: content)
         self.contentRevision = 0
         self.contentDigest = fingerprint.digest
         self.contentByteCount = fingerprint.byteCount
+    }
+
+    static func == (lhs: ConversationMessage, rhs: ConversationMessage) -> Bool {
+        lhs.id == rhs.id
+            && lhs.stableID == rhs.stableID
+            && lhs.clientMessageID == rhs.clientMessageID
+            && lhs.turnID == rhs.turnID
+            && lhs.itemID == rhs.itemID
+            && lhs.role == rhs.role
+            && lhs.kind == rhs.kind
+            && lhs.createdAt == rhs.createdAt
+            && lhs.sendStatus == rhs.sendStatus
+            && lhs.revision == rhs.revision
+            && lhs.contentDigest == rhs.contentDigest
+            && lhs.contentByteCount == rhs.contentByteCount
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(stableID)
+        hasher.combine(clientMessageID)
+        hasher.combine(turnID)
+        hasher.combine(itemID)
+        hasher.combine(role)
+        hasher.combine(kind)
+        hasher.combine(createdAt)
+        hasher.combine(sendStatus)
+        hasher.combine(revision)
+        hasher.combine(contentDigest)
+        hasher.combine(contentByteCount)
     }
 
     private mutating func updateRenderFingerprint() {
