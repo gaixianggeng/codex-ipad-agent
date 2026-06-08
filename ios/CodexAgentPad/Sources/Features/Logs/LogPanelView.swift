@@ -48,13 +48,24 @@ struct LogTailView: View {
                 .fill(tokens.border)
                 .frame(height: 1)
 
-            logContent
+            LogTailContentView()
         }
         .background(tokens.surface)
         .foregroundStyle(tokens.primaryText)
     }
 
-    private var logContent: some View {
+    private var sessionSubtitle: String {
+        return sessionStore.selectedSessionID ?? "未选择会话"
+    }
+}
+
+struct LogTailContentView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var logStore: LogStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
         // 行已在 LogStore 后台算好，这里只读缓存，body 不再做重活。
         let lines = logStore.lines(for: sessionStore.selectedSessionID)
         return ScrollViewReader { proxy in
@@ -95,10 +106,6 @@ struct LogTailView: View {
             return
         }
         proxy.scrollTo("bottom", anchor: .bottom)
-    }
-
-    private var sessionSubtitle: String {
-        return sessionStore.selectedSessionID ?? "未选择会话"
     }
 }
 

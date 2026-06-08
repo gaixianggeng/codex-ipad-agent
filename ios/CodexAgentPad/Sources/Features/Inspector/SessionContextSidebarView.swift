@@ -14,9 +14,9 @@ struct SessionContextSidebarView: View {
         Group {
             if let context {
                 List {
-                    environmentSection(context)
+                    overviewSection(context, session: sessionStore.selectedSession)
                     taskSection(context.tasks)
-                    sourceSection(context.sources)
+                    entrySection(context.sources)
                     subagentSection(context.subagents)
                 }
                 .listStyle(.insetGrouped)
@@ -29,9 +29,40 @@ struct SessionContextSidebarView: View {
         .background(themeStore.tokens(for: colorScheme).surface)
     }
 
-    private func environmentSection(_ context: SessionContextSnapshot) -> some View {
-        Section("环境信息") {
-            if let status = context.status {
+    private func overviewSection(_ context: SessionContextSnapshot, session: AgentSession?) -> some View {
+        Section("状态") {
+            if let session {
+                ContextValueRow(
+                    symbolName: "circle.dashed",
+                    title: "状态",
+                    value: session.displayStatusText
+                )
+                ContextValueRow(
+                    symbolName: "dot.radiowaves.left.and.right",
+                    title: "连接",
+                    value: sessionStore.webSocketStatus.title
+                )
+                ContextValueRow(
+                    symbolName: "folder",
+                    title: "项目",
+                    value: session.project.isEmpty ? session.projectID : session.project
+                )
+                if let activeTurnID = session.activeTurnID {
+                    ContextValueRow(symbolName: "bolt.fill", title: "Turn", value: activeTurnID)
+                }
+                if let lastSeq = session.lastSeq {
+                    ContextValueRow(symbolName: "number", title: "Seq", value: String(lastSeq))
+                }
+                if let revision = session.revision {
+                    ContextValueRow(symbolName: "arrow.triangle.2.circlepath", title: "Rev", value: String(revision))
+                }
+                if let usage = session.usage?.compactText {
+                    ContextValueRow(symbolName: "gauge.with.dots.needle.33percent", title: "Token", value: usage)
+                }
+                if let rateLimit = session.rateLimit?.compactText {
+                    ContextValueRow(symbolName: "speedometer", title: "限额", value: rateLimit)
+                }
+            } else if let status = context.status {
                 ContextValueRow(
                     symbolName: symbolName(forStatus: status),
                     title: "状态",
@@ -79,19 +110,21 @@ struct SessionContextSidebarView: View {
         }
     }
 
-    private func sourceSection(_ sources: [SessionContextSource]) -> some View {
-        Section("来源") {
-            if sources.isEmpty {
-                ContextEmptyRow(title: "暂无来源")
-            } else {
-                ForEach(sources) { source in
-                    ContextItemRow(
-                        symbolName: symbolName(forSourceKind: source.kind),
-                        title: source.label,
-                        subtitle: source.subtitle,
-                        badge: nil
-                    )
-                }
+    private func entrySection(_ sources: [SessionContextSource]) -> some View {
+        Section("入口") {
+            ContextItemRow(
+                symbolName: "ipad",
+                title: "当前入口",
+                subtitle: "Codex iPad",
+                badge: nil
+            )
+            ForEach(sources) { source in
+                ContextItemRow(
+                    symbolName: symbolName(forSourceKind: source.kind),
+                    title: title(forSource: source),
+                    subtitle: subtitle(forSource: source),
+                    badge: nil
+                )
             }
         }
     }
@@ -168,8 +201,12 @@ struct SessionContextSidebarView: View {
             return "terminal"
         case "file_change":
             return "doc.text.magnifyingglass"
-        case "tool":
+        case "tool", "mcp_tool", "dynamic_tool":
             return "wrench.and.screwdriver"
+        case "subagent":
+            return "person.2"
+        case "web_search":
+            return "magnifyingglass"
         default:
             return "smallcircle.filled.circle"
         }
@@ -177,6 +214,8 @@ struct SessionContextSidebarView: View {
 
     private func symbolName(forSourceKind kind: String) -> String {
         switch kind {
+        case "session":
+            return "server.rack"
         case "fork":
             return "arrow.triangle.branch"
         case "project":
@@ -185,6 +224,52 @@ struct SessionContextSidebarView: View {
             return "bubble.left.and.bubble.right"
         default:
             return "link"
+        }
+    }
+
+    private func title(forSource source: SessionContextSource) -> String {
+        switch source.kind {
+        case "session":
+            return "原始来源"
+        case "thread":
+            return "线程来源"
+        case "fork":
+            return "Fork 来源"
+        case "project":
+            return "项目"
+        default:
+            return source.subtitle ?? "来源"
+        }
+    }
+
+    private func subtitle(forSource source: SessionContextSource) -> String? {
+        switch source.kind {
+        case "session", "thread":
+            return displaySourceLabel(source.label)
+        case "project":
+            if let subtitle = nonEmpty(source.subtitle) {
+                return "\(source.label) · \(subtitle)"
+            }
+            return source.label
+        default:
+            return nonEmpty(source.subtitle, displaySourceLabel(source.label))
+        }
+    }
+
+    private func displaySourceLabel(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "vscode", "vs code":
+            return "VS Code"
+        case "cli":
+            return "CLI"
+        case "appserver", "app-server", "codex app-server":
+            return "Codex app-server"
+        case "ipad", "ios":
+            return "Codex iPad"
+        case "user":
+            return "用户发起"
+        default:
+            return raw
         }
     }
 

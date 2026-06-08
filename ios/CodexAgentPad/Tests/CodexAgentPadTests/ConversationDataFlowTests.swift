@@ -2630,6 +2630,83 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["更早的问题", "较新的问题", "较新的回答"])
     }
 
+    func testSessionStoreIngestsHistoryPageContextOnInitialLoadEarlierAndRefresh() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_context_history", projectID: project.id, title: "历史 context", status: "history", source: "codex", resumeID: "history")
+        let initialContext = SessionContextSnapshot(
+            sessionID: history.id,
+            threadID: "thr_context_history",
+            status: SessionContextStatus(type: "notLoaded"),
+            tasks: [SessionContextTask(id: "cmd_initial", kind: "command", title: "go test ./...", subtitle: project.path, status: "completed")],
+            sources: [SessionContextSource(id: "session_source", kind: "session", label: "vscode")]
+        )
+        let earlierContext = SessionContextSnapshot(
+            sessionID: history.id,
+            tasks: [SessionContextTask(id: "sub_earlier", kind: "subagent", title: "Zeno", subtitle: "review", status: "completed")],
+            subagents: [SessionContextSubagent(id: "thr_child", parentThreadID: "thr_context_history", nickname: "Zeno", role: "review", status: "completed")]
+        )
+        let refreshContext = SessionContextSnapshot(
+            sessionID: history.id,
+            status: SessionContextStatus(type: "active"),
+            tasks: [SessionContextTask(id: "web_refresh", kind: "web_search", title: "网络搜索：SwiftUI", status: "completed")]
+        )
+        let newer = [
+            CodexHistoryMessage(id: "rollout:200", role: "assistant", content: "较新的回答", createdAt: Date(timeIntervalSince1970: 20))
+        ]
+        let older = [
+            CodexHistoryMessage(id: "rollout:10", role: "user", content: "更早的问题", createdAt: Date(timeIntervalSince1970: 10))
+        ]
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history]),
+            historyPages: [
+                history.id: HistoryMessagesPage(
+                    messages: newer,
+                    previousCursor: "older_cursor",
+                    hasMoreBefore: true,
+                    context: initialContext
+                )
+            ],
+            historyCursorPages: [
+                "older_cursor": HistoryMessagesPage(messages: older, hasMoreBefore: false, context: earlierContext)
+            ]
+        )
+        let contextStore = SessionContextStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            contextStore: contextStore,
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        XCTAssertEqual(contextStore.context(for: history.id)?.tasks.map(\.id), ["cmd_initial"])
+        XCTAssertEqual(contextStore.context(for: history.id)?.sources.first?.label, "vscode")
+
+        await store.loadEarlierHistoryForSelectedSession()
+        let taskIDsAfterEarlier = contextStore.context(for: history.id)?.tasks.map(\.id) ?? []
+        XCTAssertEqual(Array(taskIDsAfterEarlier.prefix(2)), ["sub_earlier", "cmd_initial"])
+        XCTAssertEqual(contextStore.context(for: history.id)?.subagents.first?.displayName, "Zeno")
+
+        client.historyPages[history.id] = HistoryMessagesPage(messages: newer, hasMoreBefore: false, context: refreshContext)
+        await store.refreshCurrentContext()
+
+        let refreshed = contextStore.context(for: history.id)
+        XCTAssertTrue(refreshed?.tasks.contains { $0.id == "web_refresh" && $0.kind == "web_search" } == true)
+    }
+
+    func testSessionInspectorSectionsCollapseDetailsLogsAndDiagnostics() {
+        let descriptors = SessionInspectorSectionDescriptor.all
+
+        XCTAssertEqual(descriptors.map(\.title), ["概览", "活动", "文件", "审批"])
+        XCTAssertEqual(descriptors.map(\.id), ["context", "activity", "diff", "approval"])
+        XCTAssertFalse(descriptors.contains { $0.title == "诊断" })
+        XCTAssertFalse(descriptors.contains { $0.title == "详情" })
+        XCTAssertFalse(descriptors.contains { $0.title == "日志" })
+    }
+
     func testHistoryPagingStatePrunesWhenSessionLeavesList() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
@@ -4953,6 +5030,57 @@ extension ConversationDataFlowTests {
         let sent = await transport.sentMessages()
         let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
         XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
+    }
+
+    func testDirectRuntimeThreadReadBackfillsHistoryContextFromTurns() async throws {
+        let project = AgentProject(id: "proj_context", name: "Context", path: "/tmp/context")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let firstPageTask = Task {
+            try await client.messagesPage(sessionID: "thr_context", before: nil, limit: 2)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        XCTAssertEqual(read.params?.objectValue?["includeTurns"]?.boolValue, true)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_context","sessionId":"thr_context","preview":"context","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"idle"},"path":null,"cwd":"/tmp/context","cliVersion":"0.0.0","source":{"custom":"vscode"},"threadSource":"user","forkedFromId":"thr_parent","name":"context","turns":[{"id":"turn_context","startedAt":1780490200,"completedAt":1780490201,"status":"completed","items":[{"type":"userMessage","id":"user_context","content":[{"type":"text","text":"检查右栏 context"}]},{"type":"commandExecution","id":"cmd_context","command":"go test ./...","cwd":"/tmp/context","status":"completed","commandActions":[]},{"type":"fileChange","id":"file_context","status":"modified","changes":[{"path":"Sources/App.swift","kind":"modified"}]},{"type":"mcpToolCall","id":"mcp_context","server":"figma","tool":"get_design","pluginId":"figma","status":"completed"},{"type":"dynamicToolCall","id":"dyn_context","namespace":"tool_search","tool":"tool_search_tool","pluginId":"browser","status":"completed"},{"type":"collabAgentToolCall","id":"sub_context","tool":"Zeno","agentNickname":"Zeno","agentRole":"review","childThreadId":"thr_child","status":"completed"},{"type":"webSearch","id":"web_context","query":"SwiftUI Inspector","status":"completed"},{"type":"agentMessage","id":"assistant_context","text":"已完成 context 检查","phase":"final_answer"}]}]}}}"#)
+
+        let firstPage = try await firstPageTask.value
+        let context = try XCTUnwrap(firstPage.context)
+        XCTAssertEqual(context.sessionID, "thr_context")
+        XCTAssertEqual(context.environment?.cwd, "/tmp/context")
+        XCTAssertEqual(context.sources.map(\.id), ["session_source", "thread_source", "forked_from"])
+        XCTAssertEqual(context.sources.first?.label, "vscode")
+        XCTAssertTrue(context.tasks.contains { $0.id == "cmd_context" && $0.kind == "command" && $0.title == "go test ./..." })
+        XCTAssertTrue(context.tasks.contains { $0.id == "file_context" && $0.kind == "file_change" })
+        XCTAssertTrue(context.tasks.contains { $0.id == "mcp_context" && $0.kind == "mcp_tool" })
+        XCTAssertTrue(context.tasks.contains { $0.id == "dyn_context" && $0.kind == "dynamic_tool" })
+        XCTAssertTrue(context.tasks.contains { $0.id == "sub_context" && $0.kind == "subagent" })
+        XCTAssertTrue(context.tasks.contains { $0.id == "web_context" && $0.kind == "web_search" })
+        XCTAssertEqual(context.subagents.first?.id, "thr_child")
+        XCTAssertEqual(context.subagents.first?.parentThreadID, "thr_context")
+        XCTAssertEqual(context.subagents.first?.displayName, "Zeno")
+
+        let cursor = try XCTUnwrap(firstPage.previousCursor)
+        let earlier = try await client.messagesPage(sessionID: "thr_context", before: cursor, limit: 2)
+        XCTAssertEqual(earlier.context?.subagents.first?.id, "thr_child")
+
+        let sent = await transport.sentMessages()
+        let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
+        XCTAssertEqual(threadReadCount, 1, "翻看更早历史应复用 history/context 缓存")
     }
 
     func testDirectRuntimeMapsThreadReadProcessItemsForTimelineCollapse() async throws {

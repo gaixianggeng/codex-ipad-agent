@@ -179,7 +179,7 @@ func (r *CodexAppServerRuntime) SessionDetail(ctx context.Context, id string, af
 	r.refreshRateLimits(ctx)
 	threadID := threadIDFromMobileSessionID(id)
 	var response appServerThreadEnvelope
-	if err := r.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": false}, &response); err != nil {
+	if err := r.call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true}, &response); err != nil {
 		return SessionDetail{}, err
 	}
 	snapshot, ok := r.snapshotFromThread(response.Thread, projects.Project{}, false)

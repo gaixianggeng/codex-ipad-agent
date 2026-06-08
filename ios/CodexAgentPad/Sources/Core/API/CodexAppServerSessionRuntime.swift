@@ -261,18 +261,33 @@ actor CodexAppServerSessionRuntime {
     func messagesPage(sessionID: SessionID, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
         // 翻看更早历史：老 turn 不会变，直接用上次整段读取的缓存切窗口，不再重复拉整段 thread。
         if before != nil, let cached = threadHistoryCacheBySessionID[sessionID] {
-            return Self.paginateHistory(cached, before: before, limit: limit)
+            return Self.paginateHistory(
+                cached,
+                before: before,
+                limit: limit,
+                context: contextsBySessionID[sessionID]?.session.context
+            )
         }
+        let projects = try await projects()
         let result = try await ensureConnection().send(
-            CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: sessionID, includeTurns: true),
+            CodexAppServerRequestBuilder(allowlistedProjects: projects).threadRead(threadID: sessionID, includeTurns: true),
             timeout: Self.bulkReadTimeout
         )
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let messages = historyMessages(from: thread, sessionID: sessionID)
+        var context: SessionContextSnapshot?
+        if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
+            contextsBySessionID[sessionID] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+            context = session.context
+        }
         threadHistoryCacheBySessionID[sessionID] = messages
-        return Self.paginateHistory(messages, before: before, limit: limit)
+        return Self.paginateHistory(messages, before: before, limit: limit, context: context)
     }
 
     // thread/read 一次性返回整段 thread 历史；分页只能在客户端做。按消息稳定 id 切窗口，并回填
@@ -281,13 +296,14 @@ actor CodexAppServerSessionRuntime {
     static func paginateHistory(
         _ messages: [CodexHistoryMessage],
         before: String?,
-        limit: Int?
+        limit: Int?,
+        context: SessionContextSnapshot? = nil
     ) -> HistoryMessagesPage {
         let upperBound: Int
         if let before {
             guard let index = messages.firstIndex(where: { $0.id == before }) else {
                 // 游标对应的消息已不在历史里（极少见），关闭分页，避免反复请求同一页。
-                return HistoryMessagesPage(messages: [], previousCursor: nil, hasMoreBefore: false)
+                return HistoryMessagesPage(messages: [], previousCursor: nil, hasMoreBefore: false, context: context)
             }
             upperBound = index
         } else {
@@ -304,7 +320,8 @@ actor CodexAppServerSessionRuntime {
         return HistoryMessagesPage(
             messages: bounded,
             previousCursor: hasMoreBefore ? bounded.first?.id : nil,
-            hasMoreBefore: hasMoreBefore
+            hasMoreBefore: hasMoreBefore,
+            context: context
         )
     }
 
@@ -1079,13 +1096,13 @@ actor CodexAppServerSessionRuntime {
     ) -> [SessionContextSource] {
         var sources: [SessionContextSource] = []
         if let label = sourceLabel(from: thread["source"]) {
-            sources.append(SessionContextSource(id: "session_source", kind: "session", label: label, subtitle: "session source"))
+            sources.append(SessionContextSource(id: "session_source", kind: "session", label: label, subtitle: "原始来源"))
         }
         if let threadSource = nonEmpty(thread["threadSource"]?.stringValue) {
-            sources.append(SessionContextSource(id: "thread_source", kind: "thread", label: threadSource, subtitle: "thread source"))
+            sources.append(SessionContextSource(id: "thread_source", kind: "thread", label: threadSource, subtitle: "线程来源"))
         }
         if let forkedFrom = nonEmpty(thread["forkedFromId"]?.stringValue) {
-            sources.append(SessionContextSource(id: "forked_from", kind: "fork", label: String(forkedFrom.prefix(32)), subtitle: "forked from"))
+            sources.append(SessionContextSource(id: "forked_from", kind: "fork", label: String(forkedFrom.prefix(32)), subtitle: "Fork 来源"))
         }
         if sources.isEmpty, let project {
             sources.append(SessionContextSource(id: "project", kind: "project", label: project.name, subtitle: project.path))
@@ -1113,18 +1130,47 @@ actor CodexAppServerSessionRuntime {
         from thread: [String: CodexAppServerJSONValue],
         status: String
     ) -> [SessionContextSubagent] {
-        guard let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) else {
-            return []
-        }
-        return [
-            SessionContextSubagent(
-                id: thread["id"]?.stringValue ?? UUID().uuidString,
-                parentThreadID: parentThreadID,
-                nickname: nonEmpty(thread["agentNickname"]?.stringValue),
-                role: nonEmpty(thread["agentRole"]?.stringValue),
-                status: status
+        var subagents: [SessionContextSubagent] = []
+        if let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) {
+            subagents.append(
+                SessionContextSubagent(
+                    id: thread["id"]?.stringValue ?? UUID().uuidString,
+                    parentThreadID: parentThreadID,
+                    nickname: nonEmpty(thread["agentNickname"]?.stringValue),
+                    role: nonEmpty(thread["agentRole"]?.stringValue),
+                    status: status
+                )
             )
-        ]
+        }
+        guard let threadID = nonEmpty(thread["id"]?.stringValue) else {
+            return subagents
+        }
+        let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        for turn in turns.reversed() {
+            let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
+            for item in items.reversed() where item["type"]?.stringValue == "collabAgentToolCall" {
+                let id = nonEmpty(
+                    item["childThreadId"]?.stringValue,
+                    item["agentThreadId"]?.stringValue,
+                    item["subagentThreadId"]?.stringValue,
+                    item["threadId"]?.stringValue,
+                    item["id"]?.stringValue
+                ) ?? UUID().uuidString
+                subagents.append(
+                    SessionContextSubagent(
+                        id: id,
+                        parentThreadID: threadID,
+                        nickname: nonEmpty(item["agentNickname"]?.stringValue, item["nickname"]?.stringValue, item["tool"]?.stringValue),
+                        role: nonEmpty(item["agentRole"]?.stringValue, item["role"]?.stringValue),
+                        status: nonEmpty(item["status"]?.stringValue, turn["status"]?.stringValue, status)
+                    )
+                )
+                if subagents.count >= 8 {
+                    return subagents
+                }
+            }
+        }
+        return subagents
     }
 
     private func contextTasks(from thread: [String: CodexAppServerJSONValue]) -> [SessionContextTask] {
@@ -1160,10 +1206,22 @@ actor CodexAppServerSessionRuntime {
             let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
             let title = changes.isEmpty ? "文件变更" : "文件变更 x\(changes.count)"
             return SessionContextTask(id: id, kind: "file_change", title: title, subtitle: fileChangeSummary(from: changes), status: status)
-        case "mcpToolCall", "dynamicToolCall":
+        case "mcpToolCall":
             let title = nonEmpty(item["tool"]?.stringValue, item["name"]?.stringValue, "工具调用") ?? "工具调用"
             let subtitle = nonEmpty(item["server"]?.stringValue, item["namespace"]?.stringValue, item["pluginId"]?.stringValue)
-            return SessionContextTask(id: id, kind: "tool", title: title, subtitle: subtitle, status: status)
+            return SessionContextTask(id: id, kind: "mcp_tool", title: title, subtitle: subtitle, status: status)
+        case "dynamicToolCall":
+            let title = nonEmpty(item["tool"]?.stringValue, item["name"]?.stringValue, "动态工具") ?? "动态工具"
+            let subtitle = nonEmpty(item["pluginId"]?.stringValue, item["namespace"]?.stringValue, "dynamic tool")
+            return SessionContextTask(id: id, kind: "dynamic_tool", title: title, subtitle: subtitle, status: status)
+        case "collabAgentToolCall":
+            let title = nonEmpty(item["agentNickname"]?.stringValue, item["nickname"]?.stringValue, item["tool"]?.stringValue, "子 Agent") ?? "子 Agent"
+            let subtitle = nonEmpty(item["agentRole"]?.stringValue, item["role"]?.stringValue)
+            return SessionContextTask(id: id, kind: "subagent", title: title, subtitle: subtitle, status: status)
+        case "webSearch":
+            let query = nonEmpty(item["query"]?.stringValue, item["action"]?.stringValue)
+            let title = query.map { "网络搜索：\($0)" } ?? "网络搜索"
+            return SessionContextTask(id: id, kind: "web_search", title: title, subtitle: nil, status: status)
         default:
             return nil
         }

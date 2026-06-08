@@ -659,6 +659,7 @@ final class SessionStore: ObservableObject {
         do {
             let client = try clientFactory()
             let page = try await client.messagesPage(sessionID: session.id, before: cursor, limit: historyPageLimit)
+            ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
             setErrorMessage(nil)
@@ -980,6 +981,7 @@ final class SessionStore: ObservableObject {
             guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
                 return
             }
+            ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
         } catch {
@@ -1002,6 +1004,7 @@ final class SessionStore: ObservableObject {
             guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
                 return
             }
+            ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
             if session.isRunning {
@@ -2173,6 +2176,13 @@ final class SessionStore: ObservableObject {
         for session in items {
             contextStore.upsert(from: session)
         }
+    }
+
+    private func ingestHistoryContext(_ context: SessionContextSnapshot?, fallbackSessionID: SessionID) {
+        guard let context else {
+            return
+        }
+        contextStore.upsert(context, fallbackSessionID: fallbackSessionID)
     }
 
     private func updateSession(_ id: String, mutate: (inout AgentSession) -> Void) {

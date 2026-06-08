@@ -236,17 +236,25 @@ struct HistoryMessagesPage: Equatable {
     let messages: [CodexHistoryMessage]
     let previousCursor: String?
     let hasMoreBefore: Bool
+    let context: SessionContextSnapshot?
 
     init(response: MessagesResponse) {
         self.messages = response.messages
         self.previousCursor = response.previousCursor
         self.hasMoreBefore = response.hasMoreBefore ?? false
+        self.context = nil
     }
 
-    init(messages: [CodexHistoryMessage], previousCursor: String? = nil, hasMoreBefore: Bool = false) {
+    init(
+        messages: [CodexHistoryMessage],
+        previousCursor: String? = nil,
+        hasMoreBefore: Bool = false,
+        context: SessionContextSnapshot? = nil
+    ) {
         self.messages = messages
         self.previousCursor = previousCursor
         self.hasMoreBefore = hasMoreBefore
+        self.context = context
     }
 }
 

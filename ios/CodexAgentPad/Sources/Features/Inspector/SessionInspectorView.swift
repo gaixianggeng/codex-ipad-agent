@@ -30,16 +30,12 @@ struct SessionInspectorView: View {
                 switch selectedSection {
                 case .context:
                     SessionContextSidebarView()
-                case .details:
-                    RuntimeDetailsPanelView()
-                case .logs:
-                    LogTailView()
+                case .activity:
+                    RuntimeActivityPanelView()
                 case .diff:
                     DiffPanelView()
                 case .approval:
                     ApprovalCardView()
-                case .diagnostics:
-                    SessionDiagnosticsPanel()
                 }
             }
         }
@@ -78,28 +74,22 @@ struct SessionInspectorView: View {
 
 private enum SessionInspectorSection: String, CaseIterable, Identifiable {
     case context
-    case details
-    case logs
+    case activity
     case diff
     case approval
-    case diagnostics
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .context:
-            return "状态"
-        case .details:
-            return "详情"
-        case .logs:
-            return "日志"
+            return "概览"
+        case .activity:
+            return "活动"
         case .diff:
             return "文件"
         case .approval:
             return "审批"
-        case .diagnostics:
-            return "诊断"
         }
     }
 
@@ -107,33 +97,89 @@ private enum SessionInspectorSection: String, CaseIterable, Identifiable {
         switch self {
         case .context:
             return "sidebar.right"
-        case .details:
+        case .activity:
             return "list.bullet.rectangle"
-        case .logs:
-            return "terminal"
         case .diff:
             return "doc.text.magnifyingglass"
         case .approval:
             return "checkmark.seal"
-        case .diagnostics:
-            return "stethoscope"
         }
     }
 }
 
-private struct RuntimeDetailsPanelView: View {
+struct SessionInspectorSectionDescriptor: Equatable {
+    let id: String
+    let title: String
+    let symbolName: String
+
+    static var all: [SessionInspectorSectionDescriptor] {
+        SessionInspectorSection.allCases.map {
+            SessionInspectorSectionDescriptor(
+                id: $0.id,
+                title: $0.title,
+                symbolName: $0.symbolName
+            )
+        }
+    }
+}
+
+private enum RuntimeActivityMode: String, CaseIterable, Identifiable {
+    case entries
+    case output
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .entries:
+            return "条目"
+        case .output:
+            return "原始输出"
+        }
+    }
+}
+
+private struct RuntimeActivityPanelView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var conversationStore: ConversationStore
+    @EnvironmentObject private var logStore: LogStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @State private var selectedMode: RuntimeActivityMode = .entries
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
+        VStack(spacing: 0) {
+            Picker("活动", selection: $selectedMode) {
+                ForEach(RuntimeActivityMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(12)
+
+            Rectangle()
+                .fill(tokens.border)
+                .frame(height: 1)
+
+            Group {
+                switch selectedMode {
+                case .entries:
+                    entriesContent(tokens: tokens)
+                case .output:
+                    outputContent(tokens: tokens)
+                }
+            }
+        }
+        .background(tokens.surface)
+    }
+
+    private func entriesContent(tokens: ThemeTokens) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 if runtimeMessages.isEmpty {
-                    ContentUnavailableView("暂无运行详情", systemImage: "list.bullet.rectangle")
+                    ContentUnavailableView("暂无活动条目", systemImage: "list.bullet.rectangle")
                         .font(themeStore.uiFont(.caption))
                         .padding(.top, 48)
                 } else {
@@ -150,6 +196,26 @@ private struct RuntimeDetailsPanelView: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func outputContent(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Toggle("自动滚动", isOn: $logStore.autoScroll)
+                    .toggleStyle(.switch)
+                    .font(themeStore.uiFont(.caption))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(tokens.surface)
+
+            Rectangle()
+                .fill(tokens.border)
+                .frame(height: 1)
+
+            LogTailContentView()
         }
     }
 
@@ -207,123 +273,5 @@ private struct RuntimeDetailsPanelView: View {
         default:
             return tokens.secondaryText
         }
-    }
-}
-
-private struct SessionDiagnosticsPanel: View {
-    @EnvironmentObject private var sessionStore: SessionStore
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if let session = sessionStore.selectedSession {
-                    diagnosticsCard(session)
-                } else {
-                    ContentUnavailableView("未选择会话", systemImage: "bubble.left.and.bubble.right")
-                        .font(themeStore.uiFont(.caption))
-                        .padding(.top, 48)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private func diagnosticsCard(_ session: AgentSession) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        return VStack(alignment: .leading, spacing: 10) {
-            InspectorMetricRow(title: "状态", value: session.displayStatusText, symbolName: "circle.dashed")
-            InspectorMetricRow(title: "来源", value: session.source == "local" ? "本地回显" : "Codex app-server", symbolName: "server.rack")
-            InspectorMetricRow(title: "实时连接", value: sessionStore.webSocketStatus.title, symbolName: "dot.radiowaves.left.and.right")
-            InspectorMetricRow(title: "项目", value: session.project.isEmpty ? session.projectID : session.project, symbolName: "folder")
-            InspectorMetricRow(title: "路径", value: session.dir, symbolName: "terminal")
-
-            if let activeTurnID = session.activeTurnID {
-                InspectorMetricRow(title: "Active turn", value: activeTurnID, symbolName: "bolt.fill")
-            }
-            if let lastSeq = session.lastSeq {
-                InspectorMetricRow(title: "事件序号", value: String(lastSeq), symbolName: "number")
-            }
-            if let revision = session.revision {
-                InspectorMetricRow(title: "Revision", value: String(revision), symbolName: "arrow.triangle.2.circlepath")
-            }
-            if let usage = session.usage?.compactText {
-                InspectorMetricRow(title: "Token / Cost", value: usage, symbolName: "gauge.with.dots.needle.33percent")
-            }
-            if let rateLimit = session.rateLimit?.compactText {
-                InspectorMetricRow(title: "Rate limit", value: rateLimit, symbolName: "speedometer")
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(tokens.border, lineWidth: 1)
-        }
-    }
-}
-
-private struct InspectorMetricRow: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    let title: String
-    let value: String
-    let symbolName: String
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            horizontalRow
-            verticalRow
-        }
-    }
-
-    private var horizontalRow: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        return HStack(alignment: .top, spacing: 8) {
-            rowIcon(tokens: tokens)
-
-            Text(title)
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(width: 82, alignment: .leading)
-
-            valueText(tokens: tokens)
-        }
-    }
-
-    private var verticalRow: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        return HStack(alignment: .top, spacing: 8) {
-            rowIcon(tokens: tokens)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                valueText(tokens: tokens)
-            }
-        }
-    }
-
-    private func rowIcon(tokens: ThemeTokens) -> some View {
-        Image(systemName: symbolName)
-            .font(themeStore.uiFont(.caption, weight: .semibold))
-            .foregroundStyle(tokens.secondaryText)
-            .frame(width: 16, height: 18)
-    }
-
-    private func valueText(tokens: ThemeTokens) -> some View {
-        Text(value.isEmpty ? "-" : value)
-            .font(themeStore.codeFont(.caption))
-            .foregroundStyle(tokens.primaryText)
-            .lineLimit(3)
-            .truncationMode(.middle)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
