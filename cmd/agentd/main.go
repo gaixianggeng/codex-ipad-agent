@@ -5,21 +5,26 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/appserver"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/doctor"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/httpapi"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
-	agentsetup "github.com/gaixiaotongxue/codex-ipad-agent/internal/setup"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/appserver"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/doctor"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/httpapi"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
+	agentsetup "github.com/gaixianggeng/codex-ipad-agent/internal/setup"
+	"github.com/skip2/go-qrcode"
 )
 
 var version = "0.1.0"
@@ -43,6 +48,8 @@ func run(args []string) error {
 		return nil
 	case "setup":
 		return runSetup(args)
+	case "start":
+		return runStart(args)
 	case "pair":
 		return runPair(args)
 	case "doctor":
@@ -54,7 +61,7 @@ func run(args []string) error {
 		}
 		return serve(cfg, registry, checker)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：setup、pair、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：setup、start、pair、serve、doctor、version", cmd)
 	}
 }
 
@@ -83,6 +90,39 @@ func runSetup(args []string) error {
 		return printJSON(result)
 	}
 	printSetupResult(os.Stdout, result)
+	return nil
+}
+
+func runStart(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	result, err := agentsetup.Pair(context.Background(), config.DefaultPath())
+	if err != nil {
+		return fmt.Errorf("读取连接信息失败，请先执行 agentd setup：%w", err)
+	}
+	brew, err := exec.LookPath("brew")
+	if err != nil {
+		return fmt.Errorf("未找到 brew；Homebrew 安装场景请先安装 Homebrew，源码调试请用 agentd serve")
+	}
+
+	fmt.Fprintln(os.Stdout, "正在启动 Homebrew 后台服务...")
+	cmd := exec.Command(brew, "services", "start", config.AppName)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("启动 Homebrew 服务失败：%w", err)
+	}
+
+	if err := waitForServiceHealth(context.Background(), result.Endpoint, *waitTimeout); err != nil {
+		fmt.Fprintf(os.Stdout, "警告：后台服务已提交，但健康检查未通过：%v\n", err)
+	} else if *waitTimeout > 0 {
+		fmt.Fprintln(os.Stdout, "agentd 后台服务已启动")
+	}
+	printServeConnection(os.Stdout, result)
 	return nil
 }
 
@@ -188,10 +228,18 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	listener, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		shutdownServeResources(manager, appServerWSProcess)
+		return err
+	}
+
+	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("agentd listening on http://%s", cfg.Listen)
-		errCh <- server.ListenAndServe()
+		errCh <- server.Serve(listener)
 	}()
 
 	stopCh := make(chan os.Signal, 1)
@@ -240,7 +288,7 @@ func printJSON(value any) error {
 	return encoder.Encode(value)
 }
 
-func printSetupResult(w *os.File, result agentsetup.Result) {
+func printSetupResult(w io.Writer, result agentsetup.Result) {
 	if result.Created {
 		fmt.Fprintln(w, "agentd setup 完成")
 	} else {
@@ -250,6 +298,7 @@ func printSetupResult(w *os.File, result agentsetup.Result) {
 	fmt.Fprintf(w, "项目扫描：%s\n", result.ScanRoot)
 	fmt.Fprintf(w, "Endpoint：%s\n", result.Endpoint)
 	fmt.Fprintf(w, "Token：%s\n", result.Token)
+	fmt.Fprintf(w, "连接链接：%s\n", result.ConnectURL)
 	fmt.Fprintf(w, "配对链接：%s\n", result.PairURL)
 	if result.AppServerListen != "" {
 		fmt.Fprintf(w, "app-server upstream：%s\n", result.AppServerListen)
@@ -257,23 +306,115 @@ func printSetupResult(w *os.File, result agentsetup.Result) {
 	if result.AppServerTokenFile != "" {
 		fmt.Fprintf(w, "app-server token file：%s\n", result.AppServerTokenFile)
 	}
+	printConnectionQRCode(w, result.ConnectURL)
 	printWarnings(w, result.Warnings)
 	fmt.Fprintln(w, "\n下一步：")
 	fmt.Fprintln(w, "  1. agentd doctor --check-port")
-	fmt.Fprintln(w, "  2. brew services start codex-ipad-agent")
+	fmt.Fprintln(w, "  2. agentd start")
 	fmt.Fprintln(w, "  3. agentd doctor")
-	fmt.Fprintln(w, "  4. iPad App 打开设置，填入上面的 Endpoint 和 Token，或打开配对链接")
+	fmt.Fprintln(w, "  4. iPad App 打开设置，扫码连接；二维码不可用时再手动输入 Endpoint 和 Token")
 }
 
-func printPairResult(w *os.File, result agentsetup.Result) {
+func printPairResult(w io.Writer, result agentsetup.Result) {
 	fmt.Fprintf(w, "Endpoint：%s\n", result.Endpoint)
 	fmt.Fprintf(w, "Token：%s\n", result.Token)
+	fmt.Fprintf(w, "连接链接：%s\n", result.ConnectURL)
 	fmt.Fprintf(w, "配对链接：%s\n", result.PairURL)
+	printConnectionQRCode(w, result.ConnectURL)
 	printWarnings(w, result.Warnings)
 }
 
-func printWarnings(w *os.File, warnings []string) {
+func printServeConnection(w io.Writer, result agentsetup.Result) {
+	fmt.Fprintln(w, "\n扫码连接 iPad / iPhone：")
+	printConnectionQRCode(w, result.ConnectURL)
+	fmt.Fprintf(w, "连接链接：%s\n", result.ConnectURL)
+	fmt.Fprintf(w, "手动备用：Endpoint=%s Token=%s\n", result.Endpoint, result.Token)
+	printWarnings(w, result.Warnings)
+	fmt.Fprintln(w)
+}
+
+func maybePrintServeConnection(w *os.File, result agentsetup.Result) {
+	if !isTerminalOutput(w) {
+		return
+	}
+	printServeConnection(w, result)
+}
+
+func isTerminalOutput(w *os.File) bool {
+	if w == nil {
+		return false
+	}
+	info, err := w.Stat()
+	if err != nil {
+		return false
+	}
+	// Homebrew service 会把 stdout/stderr 写入日志文件；非交互式输出不打印连接二维码和 Token，
+	// 避免外侧 agentd 访问凭证长期留在服务日志里。`agentd start` 仍会在当前终端显式打印二维码。
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func printConnectionQRCode(w io.Writer, connectURL string) {
+	if strings.TrimSpace(connectURL) == "" {
+		return
+	}
+	// 二维码只承载外侧 agentd 访问凭证，不包含本机 app-server upstream token。
+	code, err := qrcode.New(connectURL, qrcode.Medium)
+	if err != nil {
+		fmt.Fprintf(w, "二维码生成失败：%v\n", err)
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprint(w, code.ToSmallString(false))
+}
+
+func printWarnings(w io.Writer, warnings []string) {
 	for _, warning := range warnings {
 		fmt.Fprintf(w, "警告：%s\n", warning)
 	}
+}
+
+func waitForServiceHealth(ctx context.Context, endpoint string, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	healthURL, err := healthCheckURL(endpoint)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	client := http.Client{Timeout: time.Second}
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+			err = fmt.Errorf("healthz HTTP %d", resp.StatusCode)
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+
+func healthCheckURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("Endpoint 无效：%s", endpoint)
+	}
+	parsed.Path = "/healthz"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }

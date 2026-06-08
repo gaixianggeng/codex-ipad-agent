@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
 )
 
 type row struct {

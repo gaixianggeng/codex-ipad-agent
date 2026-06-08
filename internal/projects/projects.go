@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
 )
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)

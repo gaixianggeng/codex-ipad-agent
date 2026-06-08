@@ -17,12 +17,12 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/auth"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/codexhistory"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/doctor"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/auth"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/codexhistory"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/doctor"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
 )
 
 type Router struct {

@@ -760,6 +760,61 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.content, answer)
     }
 
+    func testHistoryDeduplicatesLiveAssistantWhenThreadReadRenumbersItemID() {
+        // 复刻真实抓包：流式 item/completed 用 app-server 真实 id(msg_…)，而 thread/read 把同一条助手
+        // 消息重排成整条线程的全局顺序号(item-N)；turnId 与最终文本两边一致。手动刷新时必须合并为一条。
+        let store = ConversationStore()
+        let sessionID = "thread_renumber"
+        let turnID = "019ea77f-608a-7be0-9ae1-3bf9d3421370"
+        let liveItemID = "msg_0457a91708aef848016a26c89602288195938ee282e5218165"
+        let historyItemID = "item-8"
+        let answer = "面试官：“你最大的缺点是什么？”\n\n程序员：“太诚实。”"
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:\(turnID):\(liveItemID)",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: liveItemID,
+                role: .assistant,
+                content: answer,
+                createdAt: Date(timeIntervalSince1970: 20),
+                seq: 1,
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: liveItemID,
+                messageID: "appserver:\(turnID):\(liveItemID)",
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):\(historyItemID)",
+                role: "assistant",
+                content: answer,
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: historyItemID,
+                revision: 1,
+                sendStatus: .confirmed
+            )
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1, "itemId 不一致(msg_… vs item-N)但 turnId+文本一致时应合并为一条，而不是刷新后重复")
+        XCTAssertEqual(messages.first?.role, .assistant)
+        XCTAssertEqual(messages.first?.content, answer)
+    }
+
     func testStructuredHistoryProcessMessagesCollapseBeforeFinalAssistant() throws {
         let store = ConversationStore()
         let sessionID = "sess_history_processed"

@@ -8,11 +8,11 @@ enum PairingLinkError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unsupportedURL:
-            return "配对链接无效"
+            return "连接链接无效"
         case .missingEndpoint:
-            return "配对链接缺少 Endpoint"
+            return "连接链接缺少 Endpoint"
         case .missingToken:
-            return "配对链接缺少 Token"
+            return "连接链接缺少 Token"
         }
     }
 }
@@ -89,6 +89,13 @@ final class AppStore: ObservableObject {
         try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
     }
 
+    func validatePairingURL(_ url: URL) async throws -> PairingCredentials {
+        let credentials = try Self.pairingCredentials(from: url)
+        // 扫码只先测试外侧 agentd 连接，不立刻写入 Keychain；用户确认“保存并加载”后才持久化。
+        let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
+        return PairingCredentials(endpoint: normalized, token: credentials.token)
+    }
+
     func clearPairing() throws {
         UserDefaults.standard.removeObject(forKey: endpointKey)
         UserDefaults.standard.removeObject(forKey: retiredConnectionModeKey)
@@ -125,7 +132,9 @@ final class AppStore: ObservableObject {
 
     static func pairingCredentials(from url: URL) throws -> PairingCredentials {
         let route = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard url.scheme?.lowercased() == "codexagentpad", route == "pair" else {
+        guard ["mimi", "codexagentpad"].contains(url.scheme?.lowercased() ?? ""),
+              route == "pair" || route == "connect"
+        else {
             throw PairingLinkError.unsupportedURL
         }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)

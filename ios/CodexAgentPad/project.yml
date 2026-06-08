@@ -1,6 +1,6 @@
 name: CodexAgentPad
 options:
-  bundleIdPrefix: com.gaixiaotongxue
+  bundleIdPrefix: com.gaixianggeng
   deploymentTarget:
     iOS: "26.0"
 settings:
@@ -29,8 +29,9 @@ targets:
         product: Markdown
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixiaotongxue.CodexAgentPad
-        PRODUCT_NAME: CodexAgentPad
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi
+        PRODUCT_NAME: mimi
+        PRODUCT_MODULE_NAME: CodexAgentPad
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SDKROOT: iphoneos
@@ -50,9 +51,9 @@ targets:
         product: SnapshotTesting
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixiaotongxue.CodexAgentPadTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiTests
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         GENERATE_INFOPLIST_FILE: "YES"
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/CodexAgentPad.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CodexAgentPad"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/mimi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/mimi"
         BUNDLE_LOADER: "$(TEST_HOST)"

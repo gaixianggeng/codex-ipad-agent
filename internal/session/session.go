@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/ring"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/ring"
 )
 
 type Options struct {

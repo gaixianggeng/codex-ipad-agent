@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/appserver"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/codexhistory"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/appserver"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/codexhistory"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
 )
 
 const (

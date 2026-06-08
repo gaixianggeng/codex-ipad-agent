@@ -74,8 +74,7 @@ brews:
         codex app-server --help
         agentd setup
         agentd doctor --check-port
-        brew services start codex-ipad-agent
+        agentd start
         agentd doctor
-        agentd pair
 
-      iPad App 使用 agentd pair 输出的 Endpoint/Token 或配对链接连接。
+      iPad App 优先扫描 agentd start 输出的二维码；扫码不可用时再使用 Endpoint/Token。

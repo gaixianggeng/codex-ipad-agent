@@ -27,16 +27,15 @@ codex app-server --help
 
 agentd setup
 agentd doctor --check-port
-brew services start codex-ipad-agent
+agentd start
 agentd doctor
-agentd pair
 ```
 
-然后在设置页手动输入或导入配对链接：
+`agentd start` 会通过 Homebrew 后台启动服务，并在当前终端输出扫码连接二维码；后台服务本身不会把 Token 写入日志。然后在设置页优先点“扫码连接”，扫描后会自动测试连接。二维码不可用时再手动输入：
 
 - Endpoint，例如 `http://100.127.16.9:8787`
 - Token，也就是 `AGENTD_TOKEN`
-- 配对链接，例如 `codexagentpad://pair?endpoint=...&token=...`
+- 连接链接，例如 `mimi://connect?endpoint=...&token=...`
 
 Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。
 
@@ -45,7 +44,7 @@ direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server up
 直连要求：
 
 1. 推荐用 `agentd setup` 生成配置；`agentd serve` 会在 `app_server.managed=true` 时自动托管 loopback `codex app-server`。
-2. 设置页点击“测试连接”，会校验 `/api/app-server/config` 和 gateway 可用性。
+2. 设置页扫码连接会先填入 Endpoint/Token，再校验 `/api/app-server/config` 和 gateway 可用性。
 3. 点击“保存并加载”会断开旧 WebSocket，重新创建 direct API client 和 WebSocket client。
 
 ## 实现
@@ -76,7 +75,7 @@ Sources/
 生成 Xcode 工程：
 
 ```bash
-cd /Users/gaixiaotongxue/code/codex-ipad-agent
+cd "$HOME/code/codex-ipad-agent"
 xcodegen generate --spec ios/CodexAgentPad/project.yml --project ios/CodexAgentPad
 ```
 

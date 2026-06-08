@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
 )
 
 type Checker struct {

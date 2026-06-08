@@ -782,6 +782,7 @@ final class ConversationStore: ObservableObject {
 #endif
         var seenPrimaryKeys = Set<String>()
         var seenUUIDs = Set<UUID>()
+        var historyTurnScopedTextKeys = Set<String>()
         var nearbyHistoryEchoCandidates: [NearbyHistoryEchoCandidate] = []
         var merged: [ConversationMessage] = []
 
@@ -794,6 +795,10 @@ final class ConversationStore: ObservableObject {
                     continue
                 }
             }
+            // 历史侧只登记 (turnId, 文本) 键、本身不参与去重：同一个 turn 内两条同文历史仍各自保留。
+            if let key = turnScopedTextMergeKey(for: item) {
+                historyTurnScopedTextKeys.insert(key)
+            }
             nearbyHistoryEchoCandidates.append(NearbyHistoryEchoCandidate(role: item.role, content: item.content, createdAt: item.createdAt))
             merged.append(item)
         }
@@ -803,6 +808,13 @@ final class ConversationStore: ObservableObject {
                 continue
             }
             if shouldMergeAsNearbyHistoryEcho(item, candidates: nearbyHistoryEchoCandidates) {
+                continue
+            }
+            // app-server 的 thread/read 把 item id 重排成整条线程的全局顺序号(item-N)，与流式事件里的
+            // 真实 id(msg_…)对不上，导致同一条已 confirmed 的助手消息在手动刷新后既留着直播副本又追加
+            // 历史副本。turnId 两边一致、最终文本一致，按 (turnId, 文本) 兜底判为同一条：丢掉本地副本、
+            // 保留历史，消除重复气泡。
+            if let key = turnScopedTextMergeKey(for: item), historyTurnScopedTextKeys.contains(key) {
                 continue
             }
             if let key = primaryMergeKey(for: item) {
@@ -1090,6 +1102,22 @@ final class ConversationStore: ObservableObject {
             return itemID
         }
         return "appserver:\(turnID):\(itemID)"
+    }
+
+    // thread/read 把 assistant 的 item id 重排成整条线程的全局顺序号(item-N)，与流式 msg_… 永远对不上，
+    // 仅靠 appserver:<turnId>:<itemId> 无法把直播气泡和历史副本判为同一条。turnId 两边一致、最终文本也一致，
+    // 于是补一个 (turnId, 规范化文本) 的键，专门收敛已 confirmed 助手消息在手动刷新后的重复；只认 assistant，
+    // 避免误伤 user(走 clientMessageId 合并)和各类 system 提示。
+    private func turnScopedTextMergeKey(for item: ConversationMessage) -> String? {
+        guard item.role == .assistant,
+              let turnID = item.turnID, !turnID.isEmpty else {
+            return nil
+        }
+        let normalized = normalizedAssistantTextForDedup(item.content)
+        guard !normalized.isEmpty else {
+            return nil
+        }
+        return "turn:\(turnID):assistant:\(normalized)"
     }
 
     private func shouldMergeAsNearbyHistoryEcho(_ item: ConversationMessage, candidates: [NearbyHistoryEchoCandidate]) -> Bool {

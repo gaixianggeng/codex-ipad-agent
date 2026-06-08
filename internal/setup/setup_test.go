@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
 )
 
 func TestRunCreatesConfigAndPairURL(t *testing.T) {
@@ -42,11 +42,21 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if _, err := os.Stat(result.AppServerTokenFile); err != nil {
 		t.Fatalf("app-server token file 不存在：%v", err)
 	}
+	connect, err := url.Parse(result.ConnectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connect.Scheme != "mimi" || connect.Host != "connect" {
+		t.Fatalf("连接链接 scheme/host 异常：%s", result.ConnectURL)
+	}
+	if connect.Query().Get("endpoint") != result.Endpoint || connect.Query().Get("token") != result.Token {
+		t.Fatalf("连接链接未包含 endpoint/token：%s", result.ConnectURL)
+	}
 	parsed, err := url.Parse(result.PairURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Scheme != "codexagentpad" || parsed.Host != "pair" {
+	if parsed.Scheme != "mimi" || parsed.Host != "pair" {
 		t.Fatalf("配对链接 scheme/host 异常：%s", result.PairURL)
 	}
 	if parsed.Query().Get("endpoint") != result.Endpoint || parsed.Query().Get("token") != result.Token {

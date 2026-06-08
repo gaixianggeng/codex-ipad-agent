@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/codexhistory"
-	sessionpkg "github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/codexhistory"
+	sessionpkg "github.com/gaixianggeng/codex-ipad-agent/internal/session"
 )
 
 func TestSubmittedUserContentStripsSubmitNewlinesAndIgnoresControls(t *testing.T) {

@@ -15,8 +15,10 @@ struct ComposerView: View {
     @StateObject private var voiceInput = VoiceInputController()
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var manualInputKind: ManualInputKind = .localImage
+    @State private var showsAddContentPanel = false
     @State private var showsManualInputSheet = false
     @State private var showsAdvancedOptionsSheet = false
+    @State private var isVoicePressActive = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -27,7 +29,7 @@ struct ComposerView: View {
             }
             runtimeChips
             pendingApprovalAction
-            optionToolbar
+            composerControlRow
             voiceErrorMessage
             attachmentStrip
             ComposerTextView(
@@ -85,6 +87,7 @@ struct ComposerView: View {
             guard let item else {
                 return
             }
+            showsAddContentPanel = false
             loadPhotoAttachment(item)
         }
         .task {
@@ -92,6 +95,7 @@ struct ComposerView: View {
         }
         .onDisappear {
             voiceInput.stop()
+            isVoicePressActive = false
             composerState.endVoiceInput()
         }
     }
@@ -182,76 +186,75 @@ struct ComposerView: View {
         .controlSize(isCompactComposer || !showLabels ? .small : .regular)
     }
 
+    private var composerControlRow: some View {
+        HStack(spacing: 8) {
+            optionToolbar
+                .frame(maxWidth: .infinity, alignment: .leading)
+            inlineVoiceRecordingStatus
+            VoiceMicButton(
+                isActive: voiceInput.isRecording || isVoicePressActive,
+                onPressChanged: { pressed in
+                    if pressed {
+                        beginHoldToTalk()
+                    } else {
+                        endHoldToTalk()
+                    }
+                }
+            )
+        }
+    }
+
     private var optionToolbar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                    Label("图片", systemImage: "photo")
-                }
-                .buttonStyle(.bordered)
-
                 Button {
-                    toggleVoiceInput()
+                    showsAddContentPanel.toggle()
                 } label: {
-                    Label(voiceInput.isRecording ? "停止录音" : "语音", systemImage: voiceInput.isRecording ? "waveform.circle.fill" : "mic")
+                    Label("添加", systemImage: "plus.circle")
                 }
                 .buttonStyle(.bordered)
-                .tint(voiceInput.isRecording ? .red : nil)
-
-                Menu {
-                    Button("图片 URL") {
-                        manualInputKind = .imageURL
-                        showsManualInputSheet = true
-                    }
-                    Button("本机图片") {
-                        manualInputKind = .localImage
-                        showsManualInputSheet = true
-                    }
-                    Button("Skill") {
-                        manualInputKind = .skill
-                        showsManualInputSheet = true
-                    }
-                    Button("Mention") {
-                        manualInputKind = .mention
-                        showsManualInputSheet = true
-                    }
-                } label: {
-                    Label("引用", systemImage: "paperclip")
+                .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
+                    AddContentPanel(
+                        selectedPhotoItem: $selectedPhotoItem,
+                        onManualInput: { kind in
+                            openManualInput(kind)
+                        },
+                        onShortcut: { shortcut in
+                            composerState.insertShortcut(shortcut)
+                            showsAddContentPanel = false
+                        }
+                    )
+                    .environmentObject(themeStore)
+                    .presentationCompactAdaptation(.sheet)
                 }
-                .buttonStyle(.bordered)
 
-                shortcutsMenu
-                modelMenu
-                reasoningMenu
-                serviceTierMenu
+                runSettingsMenu
                 permissionMenu
-                moreOptionsMenu
-
-                Button {
-                    showsAdvancedOptionsSheet = true
-                } label: {
-                    Label("高级", systemImage: "ellipsis.circle")
-                }
-                .buttonStyle(.bordered)
             }
             .font(themeStore.uiFont(.caption, weight: .medium))
             .controlSize(.small)
         }
     }
 
-    private var shortcutsMenu: some View {
+    private var runSettingsMenu: some View {
         Menu {
-            Button("检查这段实现并给出风险") { composerState.insertShortcut("检查这段实现并给出风险") }
-            Button("实现这个功能并补测试") { composerState.insertShortcut("实现这个功能并补测试") }
-            Button("只做最小可运行版本") { composerState.insertShortcut("只做最小可运行版本，避免过度设计") }
-            Button("解释失败日志并给修复方案") { composerState.insertShortcut("解释失败日志并给修复方案") }
+            modelOptionsMenu
+            reasoningOptionsMenu
+            serviceTierOptionsMenu
+            outputOptionsMenu
+            Divider()
+            Button {
+                showsAdvancedOptionsSheet = true
+            } label: {
+                Label("高级选项", systemImage: "ellipsis.circle")
+            }
         } label: {
-            Label("快捷", systemImage: "bolt")
+            Label("运行", systemImage: "gearshape")
         }
         .buttonStyle(.bordered)
     }
 
-    private var modelMenu: some View {
+    private var modelOptionsMenu: some View {
         Menu {
             Button("默认") {
                 composerState.turnOptions.model = nil
@@ -273,14 +276,9 @@ struct ComposerView: View {
         } label: {
             Label(composerState.turnOptions.model ?? "默认模型", systemImage: "cpu")
         }
-        .buttonStyle(.bordered)
     }
 
-    private var modelOptionsForMenu: [CodexAppServerModelOption] {
-        sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
-    }
-
-    private var reasoningMenu: some View {
+    private var reasoningOptionsMenu: some View {
         Menu {
             Button("默认") { composerState.turnOptions.reasoningEffort = nil }
             ForEach(CodexAppServerReasoningEffort.allCases) { effort in
@@ -289,10 +287,9 @@ struct ComposerView: View {
         } label: {
             Label(composerState.turnOptions.reasoningEffort?.rawValue ?? "推理默认", systemImage: "brain.head.profile")
         }
-        .buttonStyle(.bordered)
     }
 
-    private var serviceTierMenu: some View {
+    private var serviceTierOptionsMenu: some View {
         Menu {
             Button("默认") { composerState.turnOptions.serviceTier = nil }
             Button("auto") { composerState.turnOptions.serviceTier = "auto" }
@@ -301,38 +298,67 @@ struct ComposerView: View {
         } label: {
             Label(composerState.turnOptions.serviceTier ?? "速度默认", systemImage: "speedometer")
         }
-        .buttonStyle(.bordered)
+    }
+
+    private var outputOptionsMenu: some View {
+        Menu {
+            Section("摘要") {
+                Button("默认") { composerState.turnOptions.reasoningSummary = nil }
+                ForEach(CodexAppServerReasoningSummary.allCases) { summary in
+                    Button(summary.rawValue) { composerState.turnOptions.reasoningSummary = summary }
+                }
+            }
+            Section("人格") {
+                Button("默认") { composerState.turnOptions.personality = nil }
+                Button("none") { composerState.turnOptions.personality = CodexAppServerPersonality.none }
+                Button("friendly") { composerState.turnOptions.personality = .friendly }
+                Button("pragmatic") { composerState.turnOptions.personality = .pragmatic }
+            }
+        } label: {
+            Label("摘要/人格", systemImage: "text.bubble")
+        }
     }
 
     private var permissionMenu: some View {
         Menu {
-            Button("on-request") { composerState.turnOptions.approvalPolicy = .onRequest }
-            Button("on-failure") { composerState.turnOptions.approvalPolicy = .onFailure }
-            Button("untrusted") { composerState.turnOptions.approvalPolicy = .untrusted }
-            Divider()
-            Button("只读") { composerState.turnOptions.sandboxMode = .readOnly }
-            Button("工作区写入") { composerState.turnOptions.sandboxMode = .workspaceWrite }
+            Section("当前：\(permissionTitle)") {
+                Button("on-request") { composerState.turnOptions.approvalPolicy = .onRequest }
+                Button("on-failure") { composerState.turnOptions.approvalPolicy = .onFailure }
+                Button("untrusted") { composerState.turnOptions.approvalPolicy = .untrusted }
+            }
+            Section("沙盒") {
+                Button("只读") { composerState.turnOptions.sandboxMode = .readOnly }
+                Button("工作区写入") { composerState.turnOptions.sandboxMode = .workspaceWrite }
+            }
         } label: {
-            Label(permissionTitle, systemImage: "lock.shield")
+            Label("权限", systemImage: "lock.shield")
         }
         .buttonStyle(.bordered)
     }
 
-    private var moreOptionsMenu: some View {
-        Menu {
-            Button("summary 默认") { composerState.turnOptions.reasoningSummary = nil }
-            ForEach(CodexAppServerReasoningSummary.allCases) { summary in
-                Button(summary.rawValue) { composerState.turnOptions.reasoningSummary = summary }
+    @ViewBuilder
+    private var inlineVoiceRecordingStatus: some View {
+        if voiceInput.isRecording || isVoicePressActive {
+            HStack(spacing: 8) {
+                VoiceWaveformView(meter: voiceInput.levelMeter, isActive: true, tint: .red)
+                    .frame(width: isCompactComposer ? 54 : 72, height: 22)
+                Text("松手生成草稿")
+                    .lineLimit(1)
             }
-            Divider()
-            Button("人格默认") { composerState.turnOptions.personality = nil }
-            Button("none") { composerState.turnOptions.personality = CodexAppServerPersonality.none }
-            Button("friendly") { composerState.turnOptions.personality = .friendly }
-            Button("pragmatic") { composerState.turnOptions.personality = .pragmatic }
-        } label: {
-            Label("更多", systemImage: "slider.horizontal.3")
+            .font(themeStore.uiFont(.caption, weight: .medium))
+            .foregroundStyle(.red)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.red.opacity(0.35))
+            }
         }
-        .buttonStyle(.bordered)
+    }
+
+    private var modelOptionsForMenu: [CodexAppServerModelOption] {
+        sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
     }
 
     @ViewBuilder
@@ -507,21 +533,35 @@ struct ComposerView: View {
         .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
     }
 
-    private func toggleVoiceInput() {
-        if voiceInput.isRecording {
-            voiceInput.stop()
-            composerState.endVoiceInput()
+    private func openManualInput(_ kind: ManualInputKind) {
+        manualInputKind = kind
+        showsAddContentPanel = false
+        showsManualInputSheet = true
+    }
+
+    private func beginHoldToTalk() {
+        guard !isVoicePressActive && !voiceInput.isRecording else {
             return
         }
+        isVoicePressActive = true
         composerState.beginVoiceInput()
         voiceInput.start(
             onTranscript: { transcript in
                 composerState.applyVoiceTranscript(transcript)
             },
             onFinish: {
+                isVoicePressActive = false
                 composerState.endVoiceInput()
             }
         )
+    }
+
+    private func endHoldToTalk() {
+        guard isVoicePressActive || voiceInput.isRecording else {
+            return
+        }
+        isVoicePressActive = false
+        voiceInput.stop()
     }
 
     private func loadPhotoAttachment(_ item: PhotosPickerItem) {
@@ -575,6 +615,209 @@ struct ComposerView: View {
         case .text:
             return "text.alignleft"
         }
+    }
+}
+
+private struct AddContentPanel: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Binding var selectedPhotoItem: PhotosPickerItem?
+
+    let onManualInput: (ManualInputKind) -> Void
+    let onShortcut: (String) -> Void
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 8),
+        GridItem(.flexible(), spacing: 8)
+    ]
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 14) {
+            panelSection("图片") {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        panelActionLabel("图片", systemImage: "photo")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        onManualInput(.localImage)
+                    } label: {
+                        panelActionLabel("本机图片", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        onManualInput(.imageURL)
+                    } label: {
+                        panelActionLabel("图片 URL", systemImage: "link")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            panelSection("快捷短语") {
+                Menu {
+                    ForEach(Self.shortcuts, id: \.self) { shortcut in
+                        Button(shortcut) {
+                            onShortcut(shortcut)
+                        }
+                    }
+                } label: {
+                    panelActionLabel("快捷短语", systemImage: "bolt")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            panelSection("引用") {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    Button {
+                        onManualInput(.skill)
+                    } label: {
+                        panelActionLabel("Skill", systemImage: "wand.and.stars")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        onManualInput(.mention)
+                    } label: {
+                        panelActionLabel("Mention", systemImage: "at")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .font(themeStore.uiFont(.callout))
+        .padding(16)
+        .frame(maxWidth: 360)
+        .background(tokens.surface)
+    }
+
+    private func panelSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+            content()
+        }
+    }
+
+    private func panelActionLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 30)
+    }
+
+    private static let shortcuts = [
+        "检查这段实现并给出风险",
+        "实现这个功能并补测试",
+        "只做最小可运行版本，避免过度设计",
+        "解释失败日志并给修复方案"
+    ]
+}
+
+private struct VoiceMicButton: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isPressed = false
+
+    let isActive: Bool
+    let onPressChanged: (Bool) -> Void
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        // 固定尺寸：录音时不显示波形（波形交给麦克风左侧状态条），
+        // 避免按钮在工具栏里忽宽忽窄抖动。
+        Image(systemName: isActive ? "waveform" : "mic.fill")
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(isActive ? .red : tokens.accent)
+            .frame(width: 46, height: 30)
+            .background(isActive ? Color.red.opacity(0.12) : tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isActive ? Color.red.opacity(0.5) : tokens.border)
+            }
+            .scaleEffect(isActive ? 1.06 : 1)
+            .animation(.easeInOut(duration: 0.15), value: isActive)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // 放在横向 ScrollView 外面，长按手势不会和工具栏滚动相互抢占。
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !isPressed else {
+                            return
+                        }
+                        isPressed = true
+                        onPressChanged(true)
+                    }
+                    .onEnded { _ in
+                        guard isPressed else {
+                            return
+                        }
+                        isPressed = false
+                        onPressChanged(false)
+                    }
+            )
+            .onDisappear {
+                guard isPressed else {
+                    return
+                }
+                isPressed = false
+                onPressChanged(false)
+            }
+            .accessibilityLabel(isActive ? "正在听写，松手结束" : "按住说话")
+            .accessibilityHint("按住把语音转写到草稿")
+    }
+}
+
+private struct VoiceWaveformView: View {
+    @ObservedObject var meter: VoiceLevelMeter
+    let isActive: Bool
+    let tint: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(Array(meter.samples.enumerated()), id: \.offset) { index, level in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(tint.opacity(isActive ? 0.95 : 0.38))
+                        .frame(width: 3, height: barHeight(index: index, level: level, maxHeight: proxy.size.height))
+                        .animation(.linear(duration: 0.08), value: level)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+    }
+
+    private func barHeight(index: Int, level: CGFloat, maxHeight: CGFloat) -> CGFloat {
+        let minHeight: CGFloat = 4
+        let usable = max(0, maxHeight - minHeight)
+        guard isActive else {
+            // 静止时给一点高低错落，避免看起来像坏掉的直线。
+            return minHeight + (index.isMultiple(of: 2) ? 4 : 0)
+        }
+        return minHeight + level * usable
+    }
+}
+
+@MainActor
+private final class VoiceLevelMeter: ObservableObject {
+    static let barCount = 10
+
+    @Published private(set) var samples: [CGFloat] = Array(repeating: 0, count: VoiceLevelMeter.barCount)
+
+    func push(_ level: CGFloat) {
+        var next = samples
+        next.removeFirst()
+        next.append(max(0, min(1, level)))
+        samples = next
+    }
+
+    func reset() {
+        samples = Array(repeating: 0, count: VoiceLevelMeter.barCount)
     }
 }
 
@@ -837,28 +1080,59 @@ private final class VoiceInputController: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var errorMessage: String?
 
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh_CN"))
+    // 音量计单独成对象：波形按 buffer 频率刷新，只让 VoiceWaveformView 订阅它，
+    // 避免高频 level 变化把整个 ComposerView 一起重绘。
+    let levelMeter = VoiceLevelMeter()
+
+    private let recognizer = VoiceInputController.makeRecognizer()
     private let audioEngine = AVAudioEngine()
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var finishHandler: (() -> Void)?
+    private var startRequestID: UUID?
+    private var hasDeliveredTranscript = false
+
+    private static func makeRecognizer() -> SFSpeechRecognizer? {
+        // 当前 App 默认中文任务场景更多，先用中文识别，失败再回退系统语言。
+        let candidates = [
+            Locale(identifier: "zh_CN"),
+            Locale.current
+        ]
+            .compactMap { SFSpeechRecognizer(locale: $0) }
+        return candidates.first { $0.supportsOnDeviceRecognition } ?? candidates.first
+    }
 
     func start(onTranscript: @escaping (String) -> Void, onFinish: @escaping () -> Void) {
         guard !isRecording else {
             return
         }
+        let requestID = UUID()
+        startRequestID = requestID
         finishHandler = onFinish
+        hasDeliveredTranscript = false
         errorMessage = nil
 
         Task {
+            // 按住说话时权限弹窗可能晚于松手返回；用 requestID 防止松手后又启动录音。
             guard await requestPermissions() else {
+                guard startRequestID == requestID else {
+                    return
+                }
                 errorMessage = "语音权限未开启"
                 finish()
+                return
+            }
+            guard startRequestID == requestID else {
+                // 首次授权弹窗期间用户已松手：授权此刻才完成，提示再次按住即可录音。
+                errorMessage = "已获授权，再次按住即可开始说话"
                 return
             }
             do {
                 try startRecognition(onTranscript: onTranscript)
             } catch {
+                guard startRequestID == requestID else {
+                    return
+                }
                 errorMessage = error.localizedDescription
                 finish()
             }
@@ -866,13 +1140,24 @@ private final class VoiceInputController: NSObject, ObservableObject {
     }
 
     func stop() {
+        let shouldFinishImmediately = !isRecording && recognitionRequest == nil
+        startRequestID = nil
         recognitionRequest?.endAudio()
-        finish()
+        stopAudioCapture()
+        isRecording = false
+        levelMeter.reset()
+        if shouldFinishImmediately {
+            finishHandler?()
+            finishHandler = nil
+        }
     }
 
     private func startRecognition(onTranscript: @escaping (String) -> Void) throws {
         guard let recognizer, recognizer.isAvailable else {
             throw VoiceInputError.unavailable
+        }
+        guard recognizer.supportsOnDeviceRecognition else {
+            throw VoiceInputError.onDeviceRecognitionUnavailable
         }
         recognitionTask?.cancel()
         recognitionTask = nil
@@ -883,13 +1168,20 @@ private final class VoiceInputController: NSObject, ObservableObject {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.addsPunctuation = true
+        request.requiresOnDeviceRecognition = true
         recognitionRequest = request
 
         let inputNode = audioEngine.inputNode
         inputNode.removeTap(onBus: 0)
         let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, weak request] buffer, _ in
             request?.append(buffer)
+            // 在音频线程算 RMS（纯标量、不持有 buffer），再回主线程喂给音量计驱动波形。
+            let level = VoiceInputController.normalizedPower(from: buffer)
+            Task { @MainActor in
+                self?.levelMeter.push(level)
+            }
         }
 
         audioEngine.prepare()
@@ -903,11 +1195,15 @@ private final class VoiceInputController: NSObject, ObservableObject {
                         return
                     }
                     if let result {
-                        onTranscript(result.bestTranscription.formattedString)
+                        let transcript = result.bestTranscription.formattedString
+                        if !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            self.hasDeliveredTranscript = true
+                            onTranscript(transcript)
+                        }
                     }
                     if result?.isFinal == true || error != nil {
                         if let error {
-                            self.errorMessage = error.localizedDescription
+                            self.errorMessage = self.userFacingSpeechError(error)
                         }
                         self.finish()
                     }
@@ -941,25 +1237,68 @@ private final class VoiceInputController: NSObject, ObservableObject {
     }
 
     private func finish() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-        }
+        stopAudioCapture()
         recognitionRequest = nil
         recognitionTask?.cancel()
         recognitionTask = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        startRequestID = nil
         isRecording = false
+        levelMeter.reset()
         finishHandler?()
         finishHandler = nil
+    }
+
+    private func stopAudioCapture() {
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func userFacingSpeechError(_ error: Error) -> String? {
+        if hasDeliveredTranscript {
+            return nil
+        }
+        let message = error.localizedDescription
+        if message.localizedCaseInsensitiveContains("no speech") {
+            return "没听清，请按住后再说一遍"
+        }
+        return message
+    }
+
+    nonisolated private static func normalizedPower(from buffer: AVAudioPCMBuffer) -> CGFloat {
+        guard let channelData = buffer.floatChannelData?[0] else {
+            return 0
+        }
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else {
+            return 0
+        }
+        var sumSquares: Float = 0
+        for index in 0..<frameLength {
+            let sample = channelData[index]
+            sumSquares += sample * sample
+        }
+        let rms = sqrt(sumSquares / Float(frameLength))
+        // RMS → 分贝 → 归一化到 0…1，-60dB 视作静音地板。
+        let db = 20 * log10(max(rms, 1e-7))
+        let clamped = max(-60, min(0, db))
+        return CGFloat((clamped + 60) / 60)
     }
 }
 
 private enum VoiceInputError: LocalizedError {
     case unavailable
+    case onDeviceRecognitionUnavailable
 
     var errorDescription: String? {
-        "当前设备不可用语音识别"
+        switch self {
+        case .unavailable:
+            return "当前设备不可用语音识别"
+        case .onDeviceRecognitionUnavailable:
+            return "当前设备不支持本地语音转写"
+        }
     }
 }
 

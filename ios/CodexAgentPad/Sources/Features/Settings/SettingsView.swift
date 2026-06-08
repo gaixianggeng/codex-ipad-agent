@@ -12,7 +12,9 @@ struct SettingsView: View {
 
     @State private var endpoint = ""
     @State private var token = ""
-    @State private var pairingLink = ""
+    @State private var isShowingQRCodeScanner = false
+    @State private var isShowingConnectionSuccess = false
+    @State private var connectionSuccessMessage = ""
     @State private var isSavingConnection = false
     @State private var localError: String?
 
@@ -24,6 +26,19 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Button {
+                        isShowingQRCodeScanner = true
+                    } label: {
+                        Label("扫码连接", systemImage: "qrcode.viewfinder")
+                    }
+                    .disabled(isSavingConnection)
+                } header: {
+                    Text("连接")
+                } footer: {
+                    Text("扫描 agentd 启动时输出的二维码后会自动测试连接；测试成功后点击“保存并加载”。")
+                }
+
+                Section {
                     TextField("http://100.x.x.x:8787", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
@@ -32,24 +47,9 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {
-                    Text("连接")
+                    Text("手动备用")
                 } footer: {
-                    Text("iPad 客户端固定使用 Codex app-server JSON-RPC 直连链路。MVP 只建议在本机或 Tailscale 网络中使用。")
-                }
-
-                Section {
-                    TextField("codexagentpad://pair?...", text: $pairingLink)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-                    Button {
-                        applyPairingLink()
-                    } label: {
-                        Label("导入配对链接", systemImage: "link.badge.plus")
-                    }
-                    .disabled(isSavingConnection || pairingLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                } header: {
-                    Text("配对")
+                    Text("二维码不可用时再输入 Endpoint 和 Token。MVP 只建议在本机或 Tailscale 网络中使用。")
                 }
 
                 Section {
@@ -58,6 +58,7 @@ struct SettingsView: View {
                     } label: {
                         Label("测试连接", systemImage: "bolt.horizontal.circle")
                     }
+                    .disabled(isSavingConnection || endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button {
                         Task { await save() }
@@ -118,6 +119,16 @@ struct SettingsView: View {
                 endpoint = appStore.endpoint
                 token = appStore.token
             }
+            .sheet(isPresented: $isShowingQRCodeScanner) {
+                QRCodeScannerSheet { rawValue in
+                    Task { await applyScannedConnection(rawValue) }
+                }
+            }
+            .alert("测试连接成功", isPresented: $isShowingConnectionSuccess) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(connectionSuccessMessage)
+            }
             .tint(tokens.accent)
             // 设置页是 sheet 内的独立 presentation；系统模式下也显式解析成当前系统深/浅色，避免从浅色切回默认时停在旧环境。
             .preferredColorScheme(resolvedColorScheme)
@@ -146,6 +157,7 @@ struct SettingsView: View {
             endpoint = appStore.endpoint
             token = appStore.token
             sessionStore.resetConnectionForSettingsChange(clearData: true)
+            connectionSuccessMessage = ""
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
             if !isInitialSetup {
@@ -158,28 +170,20 @@ struct SettingsView: View {
         }
     }
 
-    private func applyPairingLink() {
-        Task { await importPairingLink() }
-    }
-
-    private func importPairingLink() async {
+    private func applyScannedConnection(_ rawValue: String) async {
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
-            let raw = pairingLink.trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = URL(string: raw) else {
                 throw PairingLinkError.unsupportedURL
             }
-            try await appStore.validateAndSavePairingURL(url)
-            endpoint = appStore.endpoint
-            token = appStore.token
-            pairingLink = ""
-            sessionStore.resetConnectionForSettingsChange(clearData: true)
+            let credentials = try await appStore.validatePairingURL(url)
+            endpoint = credentials.endpoint
+            token = credentials.token
+            connectionSuccessMessage = "\(credentials.endpoint) 可以连接，现在可以保存并加载。"
+            isShowingConnectionSuccess = true
             localError = nil
-            await sessionStore.refreshAll(autoAttach: true)
-            if !isInitialSetup {
-                dismiss()
-            }
         } catch {
             appStore.connectionStatus = .failed(error.localizedDescription)
             appStore.lastError = error.localizedDescription
@@ -192,7 +196,7 @@ struct SettingsView: View {
             try appStore.clearPairing()
             endpoint = appStore.endpoint
             token = appStore.token
-            pairingLink = ""
+            connectionSuccessMessage = ""
             sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
             if !isInitialSetup {

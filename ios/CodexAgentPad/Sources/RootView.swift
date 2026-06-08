@@ -53,6 +53,61 @@ struct RootView: View {
                 splitLayout(layout: layout)
             }
         }
+        .overlay {
+            initialConnectionOverlay
+        }
+    }
+
+    @ViewBuilder
+    private var initialConnectionOverlay: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        if appStore.isConfigured,
+           sessionStore.sidebarProjects.isEmpty,
+           sessionStore.selectedProjectID == nil,
+           sessionStore.selectedSessionID == nil,
+           sessionStore.isLoading || sessionStore.errorMessage != nil {
+            VStack(spacing: 14) {
+                if sessionStore.isLoading {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(tokens.accent)
+                    Text("正在连接 Mac 上的 agentd")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text("如果刚启动 Tailscale 或 agentd，这里会自动重试。")
+                        .font(themeStore.uiFont(.callout))
+                        .foregroundStyle(tokens.secondaryText)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(tokens.warning)
+                    Text("无法连接 agentd")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(sessionStore.errorMessage ?? "请检查 Mac 端 agentd 和网络连接。")
+                        .font(themeStore.uiFont(.callout))
+                        .foregroundStyle(tokens.secondaryText)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("打开设置", systemImage: "gearshape")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 360)
+            .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(tokens.border, lineWidth: 1)
+            }
+            .padding()
+            .transition(.opacity)
+        }
     }
 
     private func compactLayout(layout: WorkbenchLayout) -> some View {

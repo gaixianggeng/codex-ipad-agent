@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/codexhistory"
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
-	sessionpkg "github.com/gaixiaotongxue/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/codexhistory"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	sessionpkg "github.com/gaixianggeng/codex-ipad-agent/internal/session"
 )
 
 type agentMessage struct {

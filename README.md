@@ -49,17 +49,16 @@ Codex core / 本机凭证 / 项目目录
 推荐公开发布后让用户只走这一条路径：
 
 ```bash
-brew tap gaixianggeng/tap
-brew install codex-ipad-agent
+brew update
+brew install gaixianggeng/tap/codex-ipad-agent
 
 codex --version
 codex app-server --help
 
 agentd setup
 agentd doctor --check-port
-brew services start codex-ipad-agent
+agentd start
 agentd doctor
-agentd pair
 ```
 
 `agentd setup` 会生成：
@@ -74,19 +73,23 @@ agentd pair
 
 如果 Mac 已安装并登录 Tailscale，`setup` 会优先把 `agentd` 绑定到 Tailscale IP；否则会使用 `127.0.0.1:8787` 并给出真机 iPad 不可直连的警告。
 
-`agentd pair` 会输出：
+`agentd start` 会调用 `brew services start codex-ipad-agent` 后台启动服务，等待 `/healthz` 可用，然后在当前终端输出扫码连接二维码。`agentd serve` 只有在交互式前台终端运行时才会输出二维码；作为 Homebrew service 后台运行时不会把 Token 写入服务日志。`agentd setup` 和 `agentd pair` 会输出同一份连接信息：
 
 ```text
 Endpoint：http://100.x.x.x:8787
 Token：<随机 token>
-配对链接：codexagentpad://pair?endpoint=...&token=...
+连接链接：mimi://connect?endpoint=...&token=...
+配对链接：mimi://pair?endpoint=...&token=...
 ```
 
-iPad App 首次启动后可以手填 Endpoint/Token，也可以粘贴或打开配对链接。配对链接只包含 iPad 访问 `agentd` 的外侧 Token，不包含本机 app-server upstream token。
+iPad App 首次启动后优先点“扫码连接”，扫描二维码会自动填入 Endpoint/Token 并测试连接；测试成功后点击“保存并加载”。二维码和连接链接只包含 iPad 访问 `agentd` 的外侧 Token，不包含本机 app-server upstream token。扫码不可用时再手动输入 Endpoint/Token。
 
 常用命令：
 
 ```bash
+# 启动 Homebrew 后台服务，并在当前终端显示扫码二维码
+agentd start
+
 # 重新生成配置和 token
 agentd setup --force
 
@@ -115,12 +118,12 @@ Homebrew service 会执行：
 agentd serve
 ```
 
-`agentd serve` 默认读取当前系统的用户配置目录；也可以用 `AGENTD_CONFIG=/path/to/config.json` 覆盖。在 `app_server.transport=ws` 且 `app_server.managed=true` 时，`agentd` 会自动启动并托管本机 loopback `codex app-server`，用户不需要手动再开一个终端。
+`brew services start codex-ipad-agent` 本身不会把服务 stdout 回传到当前终端，所以想要“后台运行但终端显示二维码”时请用 `agentd start`。为避免 Token 留在后台服务日志里，Homebrew service 模式不会打印二维码。`agentd serve` 默认读取当前系统的用户配置目录；也可以用 `AGENTD_CONFIG=/path/to/config.json` 覆盖。在 `app_server.transport=ws` 且 `app_server.managed=true` 时，`agentd` 会自动启动并托管本机 loopback `codex app-server`，用户不需要手动再开一个终端。
 
 ### 1.1 开发构建
 
 ```bash
-cd /Users/gaixiaotongxue/code/codex-ipad-agent
+cd "$HOME/code/codex-ipad-agent"
 go build -o bin/agentd ./cmd/agentd
 ```
 
@@ -137,7 +140,7 @@ ios/CodexAgentPad
 先用 XcodeGen 生成 Xcode 工程：
 
 ```bash
-cd /Users/gaixiaotongxue/code/codex-ipad-agent/ios/CodexAgentPad
+cd "$HOME/code/codex-ipad-agent/ios/CodexAgentPad"
 xcodegen generate
 ```
 
@@ -229,8 +232,8 @@ DEVICE_NAME="盖吃饭的iPad" ./scripts/deploy-ipad.sh
 # 指定设备 UDID，适合同名设备或设备名不稳定时使用
 DEVICE_ID="00008103-000125C00ED3401E" ./scripts/deploy-ipad.sh
 
-# 指定 Apple Developer Team，默认使用当前开发机已验证过的 9HZ89R58PZ
-IOS_DEVELOPMENT_TEAM="9HZ89R58PZ" ./scripts/deploy-ipad.sh
+# 指定 Apple Developer Team
+IOS_DEVELOPMENT_TEAM="YOUR_TEAM_ID" ./scripts/deploy-ipad.sh
 
 # 只安装不启动
 SKIP_LAUNCH=1 ./scripts/deploy-ipad.sh
@@ -244,7 +247,7 @@ SKIP_LAUNCH=1 ./scripts/deploy-ipad.sh
 
 ```bash
 export AGENTD_TOKEN="$(openssl rand -hex 32)"
-export AGENTD_SCAN_ROOTS="/Users/gaixiaotongxue/code"
+export AGENTD_SCAN_ROOTS="$HOME/code"
 
 ./bin/agentd serve
 ```
@@ -255,7 +258,7 @@ export AGENTD_SCAN_ROOTS="/Users/gaixiaotongxue/code"
 curl http://127.0.0.1:8787/healthz
 ```
 
-原生 iPad App 固定走 direct app-server 链路，设置页里填写 `agentd` Endpoint 和 `AGENTD_TOKEN`。
+原生 iPad App 固定走 direct app-server 链路。设置页优先扫码连接；二维码不可用时再填写 `agentd` Endpoint 和 `AGENTD_TOKEN`。
 
 使用 `agentd setup` 生成的配置时，`agentd serve` 会自动托管 loopback `codex app-server`，原生 iPad App 只需要连接 `agentd`。手动环境变量启动主要用于开发和调试。
 
@@ -286,9 +289,10 @@ AGENTD_APP_SERVER_MANAGED=false \
 iPad direct 模式启动步骤：
 
 1. 推荐先运行 `agentd setup`，让 `agentd` 自动生成 token file 和托管 loopback app-server。
-2. 用 `brew services start codex-ipad-agent` 或 `agentd serve` 启动 `agentd`。
-3. iPad App 设置页点击“测试连接”，确认能读取 `/api/app-server/config` 且 gateway 可用。
-4. 点击“保存并加载”，会断开现有 WebSocket 并按 direct 模式重新拉取项目和会话。
+2. 用 `agentd start` 启动 Homebrew 后台服务并显示二维码；源码调试时用 `agentd serve` 前台启动。
+3. iPad App 设置页点击“扫码连接”，扫描终端二维码并自动测试连接。
+4. 如果扫码不可用，手动输入 Endpoint 和 Token 后点击“测试连接”，确认能读取 `/api/app-server/config` 且 gateway 可用。
+5. 点击“保存并加载”，会断开现有 WebSocket 并按 direct 模式重新拉取项目和会话。
 
 ### 3. Tailscale 启动
 
@@ -304,7 +308,7 @@ tailscale ip -4
 ```bash
 export MAC_TS_IP="$(tailscale ip -4)"
 export AGENTD_TOKEN="$(openssl rand -hex 32)"
-export AGENTD_SCAN_ROOTS="/Users/gaixiaotongxue/code"
+export AGENTD_SCAN_ROOTS="$HOME/code"
 
 AGENTD_BIND="$MAC_TS_IP" \
 AGENTD_PORT=8787 \
@@ -361,7 +365,7 @@ AGENTD_OUTPUT_BUFFER_BYTES
 
 ```bash
 AGENTD_TOKEN=test-token \
-AGENTD_SCAN_ROOTS="/Users/gaixiaotongxue/code" \
+AGENTD_SCAN_ROOTS="$HOME/code" \
 ./bin/agentd doctor
 ```
 
@@ -462,7 +466,6 @@ go run github.com/goreleaser/goreleaser/v2@v2.9.0 release --snapshot --clean --s
 
 后续优化：
 
-- iPad 内置二维码扫描配对。
 - 多 Mac 配置。
 - 持久化会话和对话消息。
 - 加 session 历史和 diff 视图。

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
 )
 
 // ThreadStore 把 Codex 的 SQLite 线程元数据和 rollout 消息读取收在同一个边界里。

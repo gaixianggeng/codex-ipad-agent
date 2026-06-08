@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaixiaotongxue/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
 )
 
 const defaultAgentDPort = "8787"
@@ -32,6 +32,7 @@ type Result struct {
 	ConfigPath         string   `json:"config_path"`
 	Endpoint           string   `json:"endpoint"`
 	Token              string   `json:"token"`
+	ConnectURL         string   `json:"connect_url"`
 	PairURL            string   `json:"pair_url"`
 	ScanRoot           string   `json:"scan_root"`
 	AppServerListen    string   `json:"app_server_listen"`
@@ -140,6 +141,10 @@ func Pair(ctx context.Context, configPath string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	return ResultFromConfig(ctx, cfgPath, cfg), nil
+}
+
+func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
 	endpoint, warnings := endpointForListen(ctx, cfg.Listen)
 	token := strings.TrimSpace(cfg.Auth.Token)
 	if token == "" {
@@ -150,22 +155,31 @@ func Pair(ctx context.Context, configPath string) (Result, error) {
 		scanRoot = cfg.ScanRoots[0]
 	}
 	return Result{
-		ConfigPath:         cfgPath,
+		ConfigPath:         configPath,
 		Endpoint:           endpoint,
 		Token:              token,
+		ConnectURL:         ConnectURL(endpoint, token),
 		PairURL:            PairURL(endpoint, token),
 		ScanRoot:           scanRoot,
 		AppServerListen:    cfg.AppServer.Listen,
 		AppServerTokenFile: cfg.AppServer.WSTokenFile,
 		Warnings:           warnings,
-	}, nil
+	}
+}
+
+func ConnectURL(endpoint, token string) string {
+	return connectionURL("connect", endpoint, token)
 }
 
 func PairURL(endpoint, token string) string {
+	return connectionURL("pair", endpoint, token)
+}
+
+func connectionURL(route, endpoint, token string) string {
 	values := url.Values{}
 	values.Set("endpoint", endpoint)
 	values.Set("token", token)
-	return "codexagentpad://pair?" + values.Encode()
+	return "mimi://" + route + "?" + values.Encode()
 }
 
 func resolveConfigPath(path string) (string, error) {
