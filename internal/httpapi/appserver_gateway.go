@@ -23,9 +23,11 @@ import (
 )
 
 const (
-	appServerGatewayPath        = "/api/app-server/ws"
-	appServerPolicyErrorCode    = -32080
-	appServerGatewayWriteWindow = 10 * time.Second
+	appServerGatewayPath           = "/api/app-server/ws"
+	appServerPolicyErrorCode       = -32080
+	appServerGatewayWriteWindow    = 10 * time.Second
+	appServerGatewayThreadCacheMax = 2048
+	appServerGatewayThreadCacheTTL = 24 * time.Hour
 )
 
 var appServerAllowedMethods = map[string]struct{}{
@@ -95,10 +97,18 @@ type appServerGatewayPendingThreadRequest struct {
 	projectID string
 }
 
+type appServerGatewayValidatedParams struct {
+	cwd          string
+	hasCWD       bool
+	cwdProject   projects.Project
+	cwdProjectOK bool
+}
+
 type appServerGatewayAllowedThread struct {
 	id        string
 	cwd       string
 	projectID string
+	lastSeen  time.Time
 }
 
 type appServerGatewayThreadWire struct {
@@ -369,25 +379,20 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 	if err != nil {
 		return &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if err := p.router.validateGatewayPolicyParams(method, params); err != nil {
+	validated, err := p.router.validateGatewayPolicyParams(method, params)
+	if err != nil {
 		return &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if err := p.validateThreadCapability(&frame, method, params); err != nil {
+	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		return &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
 	return nil
 }
 
-func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any) error {
-	cwd, hasCWD := gatewayStringParam(params, "cwd")
-	project := projects.Project{}
-	projectOK := false
-	if hasCWD {
-		project, projectOK = p.router.projectForGatewayPath(cwd)
-		if !projectOK {
-			return fmt.Errorf("%s.cwd 必须来自 projects allowlist", method)
-		}
-	}
+func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewayFrame, method string, params map[string]any, validated appServerGatewayValidatedParams) error {
+	cwd := validated.cwd
+	project := validated.cwdProject
+	projectOK := validated.cwdProjectOK
 
 	switch method {
 	case "thread/list", "thread/start":
@@ -463,14 +468,28 @@ func (r *Router) gatewayThread(threadID string) (appServerGatewayAllowedThread, 
 	if threadID == "" {
 		return appServerGatewayAllowedThread{}, false
 	}
+	now := time.Now()
 	r.gatewayThreadsMu.Lock()
 	defer r.gatewayThreadsMu.Unlock()
 	thread, ok := r.gatewayThreads[threadID]
+	if !ok {
+		return appServerGatewayAllowedThread{}, false
+	}
+	if gatewayThreadCacheExpired(thread, now) {
+		delete(r.gatewayThreads, threadID)
+		return appServerGatewayAllowedThread{}, false
+	}
+	// 全局授权表只服务断线重连的短期恢复；命中时刷新 lastSeen，让活跃 thread 不被容量裁剪误删。
+	thread.lastSeen = now
+	r.gatewayThreads[threadID] = thread
 	return thread, ok
 }
 
 func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload []byte) {
 	if messageType != websocket.TextMessage {
+		return
+	}
+	if !p.hasPendingThreadResponses() {
 		return
 	}
 	var frame appServerGatewayFrame
@@ -497,6 +516,12 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	for _, thread := range p.threadsFromResult(frame.Result, pending) {
 		p.allowThread(thread)
 	}
+}
+
+func (p *appServerGatewayPolicy) hasPendingThreadResponses() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.pendingThreads) > 0
 }
 
 func (p *appServerGatewayPolicy) forgetPending(id *json.RawMessage) {
@@ -563,6 +588,7 @@ func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThrea
 	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.projectID) == "" {
 		return
 	}
+	thread.lastSeen = time.Now()
 	p.mu.Lock()
 	p.allowedThreads[thread.id] = thread
 	p.mu.Unlock()
@@ -573,9 +599,45 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.projectID) == "" {
 		return
 	}
+	now := time.Now()
+	thread.lastSeen = now
 	r.gatewayThreadsMu.Lock()
 	r.gatewayThreads[thread.id] = thread
+	r.pruneGatewayThreadsLocked(now)
 	r.gatewayThreadsMu.Unlock()
+}
+
+func (r *Router) pruneGatewayThreadsLocked(now time.Time) {
+	for id, thread := range r.gatewayThreads {
+		if gatewayThreadCacheExpired(thread, now) {
+			delete(r.gatewayThreads, id)
+		}
+	}
+	for len(r.gatewayThreads) > appServerGatewayThreadCacheMax {
+		oldestID := ""
+		oldestSeen := time.Time{}
+		for id, thread := range r.gatewayThreads {
+			seen := thread.lastSeen
+			if seen.IsZero() {
+				seen = now.Add(-appServerGatewayThreadCacheTTL - time.Nanosecond)
+			}
+			if oldestID == "" || seen.Before(oldestSeen) {
+				oldestID = id
+				oldestSeen = seen
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(r.gatewayThreads, oldestID)
+	}
+}
+
+func gatewayThreadCacheExpired(thread appServerGatewayAllowedThread, now time.Time) bool {
+	if thread.lastSeen.IsZero() {
+		return false
+	}
+	return now.Sub(thread.lastSeen) > appServerGatewayThreadCacheTTL
 }
 
 func gatewayRequestIDKey(id *json.RawMessage) string {
@@ -599,43 +661,59 @@ func decodeGatewayParams(raw json.RawMessage) (map[string]any, error) {
 	return params, nil
 }
 
-func (r *Router) validateGatewayPolicyParams(method string, params map[string]any) error {
+func (r *Router) validateGatewayPolicyParams(method string, params map[string]any) (appServerGatewayValidatedParams, error) {
+	validated := appServerGatewayValidatedParams{}
 	if hasApprovalPolicyNever(params) {
-		return fmt.Errorf("approvalPolicy=never 不允许远程使用")
+		return validated, fmt.Errorf("approvalPolicy=never 不允许远程使用")
 	}
 	if hasDangerFullAccess(params) {
-		return fmt.Errorf("dangerFullAccess 不允许远程使用")
+		return validated, fmt.Errorf("dangerFullAccess 不允许远程使用")
 	}
 	if hasNetworkAccessEnabled(params) {
-		return fmt.Errorf("networkAccess=true 不允许远程使用")
+		return validated, fmt.Errorf("networkAccess=true 不允许远程使用")
+	}
+	if cwd, ok := gatewayStringParam(params, "cwd"); ok {
+		project, projectOK := r.projectForGatewayPath(cwd)
+		if !projectOK {
+			return validated, fmt.Errorf("%s.cwd 必须来自 projects allowlist", method)
+		}
+		validated.cwd = cwd
+		validated.hasCWD = true
+		validated.cwdProject = project
+		validated.cwdProjectOK = true
 	}
 	if requiresGatewayCWD(method) {
-		cwd, ok := gatewayStringParam(params, "cwd")
-		if !ok || !r.pathInProjectAllowlist(cwd) {
-			return fmt.Errorf("%s.cwd 必须来自 projects allowlist", method)
+		if !validated.hasCWD {
+			return validated, fmt.Errorf("%s.cwd 必须来自 projects allowlist", method)
 		}
-	} else if cwd, ok := gatewayStringParam(params, "cwd"); ok && !r.pathInProjectAllowlist(cwd) {
-		return fmt.Errorf("%s.cwd 必须来自 projects allowlist", method)
 	}
 	roots, err := collectWritableRoots(params)
 	if err != nil {
-		return err
+		return validated, err
 	}
+	seenRoots := map[string]struct{}{}
 	for _, root := range roots {
-		if !r.pathInProjectAllowlist(root) {
-			return fmt.Errorf("sandboxPolicy.writableRoots 必须来自 projects allowlist")
+		if root == validated.cwd && validated.cwdProjectOK {
+			continue
+		}
+		if _, seen := seenRoots[root]; seen {
+			continue
+		}
+		seenRoots[root] = struct{}{}
+		if _, ok := r.projectForGatewayPath(root); !ok {
+			return validated, fmt.Errorf("sandboxPolicy.writableRoots 必须来自 projects allowlist")
 		}
 	}
 	inputPaths, err := collectUserInputPaths(params)
 	if err != nil {
-		return err
+		return validated, err
 	}
 	for _, path := range inputPaths {
-		if !r.pathInProjectAllowlist(path) {
-			return fmt.Errorf("turn/start.input path 必须来自 projects allowlist")
+		if _, ok := r.projectForGatewayPath(path); !ok {
+			return validated, fmt.Errorf("turn/start.input path 必须来自 projects allowlist")
 		}
 	}
-	return nil
+	return validated, nil
 }
 
 func requiresGatewayCWD(method string) bool {
@@ -693,11 +771,6 @@ func collectUserInputPaths(params map[string]any) ([]string, error) {
 		}
 	}
 	return paths, nil
-}
-
-func (r *Router) pathInProjectAllowlist(raw string) bool {
-	_, ok := r.projectForGatewayPath(raw)
-	return ok
 }
 
 func (r *Router) projectForGatewayPath(raw string) (projects.Project, bool) {

@@ -308,6 +308,79 @@ func TestAppServerGatewayKeepsAuthorizedThreadAcrossReconnects(t *testing.T) {
 	}
 }
 
+func TestAppServerGatewayThreadCachePrunesExpiredEntries(t *testing.T) {
+	router := &Router{gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	expiredAt := time.Now().Add(-appServerGatewayThreadCacheTTL - time.Second)
+	router.gatewayThreads["thread-expired"] = appServerGatewayAllowedThread{
+		id:        "thread-expired",
+		projectID: "demo",
+		lastSeen:  expiredAt,
+	}
+
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-fresh", projectID: "demo"})
+
+	if _, ok := router.gatewayThreads["thread-expired"]; ok {
+		t.Fatal("过期 gateway thread 授权应在写入新授权时被裁剪")
+	}
+	if _, ok := router.gatewayThread("thread-fresh"); !ok {
+		t.Fatal("新写入的 gateway thread 授权不应被裁剪")
+	}
+}
+
+func TestAppServerGatewayThreadCachePrunesOldestWhenFull(t *testing.T) {
+	router := &Router{gatewayThreads: map[string]appServerGatewayAllowedThread{}}
+	baseSeen := time.Now().Add(-time.Hour)
+	for i := 0; i < appServerGatewayThreadCacheMax; i++ {
+		id := fmt.Sprintf("thread-%04d", i)
+		router.gatewayThreads[id] = appServerGatewayAllowedThread{
+			id:        id,
+			projectID: "demo",
+			lastSeen:  baseSeen.Add(time.Duration(i) * time.Second),
+		}
+	}
+
+	router.allowGatewayThread(appServerGatewayAllowedThread{id: "thread-new", projectID: "demo"})
+
+	if len(router.gatewayThreads) > appServerGatewayThreadCacheMax {
+		t.Fatalf("gateway thread 授权缓存应有容量上限，got=%d max=%d", len(router.gatewayThreads), appServerGatewayThreadCacheMax)
+	}
+	if _, ok := router.gatewayThreads["thread-0000"]; ok {
+		t.Fatal("容量超限时应裁剪最久未使用的 gateway thread 授权")
+	}
+	if _, ok := router.gatewayThread("thread-new"); !ok {
+		t.Fatal("新写入的 gateway thread 授权应保留")
+	}
+}
+
+func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing.T) {
+	_, registry, _, _, projectDir := appServerGatewayBaseFixture(t)
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"id":42,"result":{"data":[{"id":"thread-pending","cwd":%q}]}}`,
+		projectDir,
+	))
+
+	policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if _, ok := router.gatewayThread("thread-pending"); ok {
+		t.Fatal("没有 pending thread 请求时，上游业务帧不应创建授权")
+	}
+
+	id := json.RawMessage("42")
+	policy.rememberPendingThreadResponse(&id, "thread/list", projectDir, "demo")
+	policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if _, ok := router.gatewayThread("thread-pending"); !ok {
+		t.Fatal("存在 pending thread 请求时，上游响应仍必须创建授权")
+	}
+}
+
 func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 	upstreamURL, received, _ := fakeAppServerUpstream(t, nil)
 	handler, projectDir := appServerGatewayRouterFixture(t, upstreamURL)
