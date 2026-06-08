@@ -37,18 +37,6 @@ struct CodexAgentPadApp: App {
                 .environmentObject(logStore)
                 .environmentObject(contextStore)
                 .environmentObject(themeStore)
-                .onOpenURL { url in
-                    Task { @MainActor in
-                        do {
-                            try await appStore.validateAndSavePairingURL(url)
-                            sessionStore.resetConnectionForSettingsChange(clearData: true)
-                            await sessionStore.refreshAll(autoAttach: true)
-                        } catch {
-                            appStore.connectionStatus = .failed(error.localizedDescription)
-                            appStore.lastError = error.localizedDescription
-                        }
-                    }
-                }
         }
     }
 }

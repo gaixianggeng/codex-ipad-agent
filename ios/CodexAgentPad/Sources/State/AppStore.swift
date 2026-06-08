@@ -28,6 +28,7 @@ final class AppStore: ObservableObject {
     @Published var token: String
     @Published var connectionStatus: ConnectionStatus = .idle
     @Published var lastError: String?
+    @Published var pendingPairingCredentials: PairingCredentials?
 
     private let endpointKey = "agentd.endpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
@@ -39,7 +40,7 @@ final class AppStore: ObservableObject {
     init() {
         self.endpoint = UserDefaults.standard.string(forKey: endpointKey) ?? defaultEndpoint
         self.token = tokenStore.load()
-        // 当前 iPad 客户端只保留 Codex app-server JSON-RPC 直连链路；旧版本写入的连接模式配置直接清理掉。
+        // 当前客户端只保留 Codex app-server JSON-RPC 直连链路；旧版本写入的连接模式配置直接清理掉。
         UserDefaults.standard.removeObject(forKey: retiredConnectionModeKey)
     }
 
@@ -59,10 +60,31 @@ final class AppStore: ObservableObject {
     }
 
     func makeSessionWebSocketClient() -> any SessionWebSocketClient {
-        CodexAppServerSessionWebSocketClient(runtime: runtime(
-            endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
-            token: token
-        ))
+        do {
+            let endpoint = try Self.validatedEndpoint(endpoint)
+            return CodexAppServerSessionWebSocketClient(runtime: runtime(
+                endpoint: endpoint,
+                token: token
+            ))
+        } catch {
+            return InvalidConfigurationSessionWebSocketClient(message: error.localizedDescription)
+        }
+    }
+
+    private func runtime(endpoint: String, token: String) -> CodexAppServerSessionRuntime {
+        let identity = "\(endpoint)\n\(token)"
+        if let directRuntime, directRuntimeIdentity == identity {
+            return directRuntime
+        }
+        let runtime = CodexAppServerSessionRuntime(endpoint: endpoint, token: token)
+        directRuntime = runtime
+        directRuntimeIdentity = identity
+        return runtime
+    }
+
+    private func resetDirectRuntime() {
+        directRuntime = nil
+        directRuntimeIdentity = nil
     }
 
     func save(endpoint: String, token: String) throws {
@@ -83,10 +105,13 @@ final class AppStore: ObservableObject {
         lastError = nil
     }
 
-    func validateAndSavePairingURL(_ url: URL) async throws {
-        let credentials = try Self.pairingCredentials(from: url)
-        // 配对链接只写入 agentd 外侧访问 token；app-server upstream token 仍只保存在 Mac 本机配置里。
-        try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
+    func preparePairingURL(_ url: URL) throws {
+        pendingPairingCredentials = try Self.pairingCredentials(from: url)
+    }
+
+    func consumePendingPairingCredentials() -> PairingCredentials? {
+        defer { pendingPairingCredentials = nil }
+        return pendingPairingCredentials
     }
 
     func clearPairing() throws {
@@ -170,25 +195,48 @@ final class AppStore: ObservableObject {
         else {
             throw AgentAPIError.invalidEndpoint
         }
+        if components.scheme == "http", !AgentAPIClient.isTrustedPlaintextHost(components.host ?? "") {
+            throw AgentAPIError.insecurePlaintextEndpoint
+        }
         guard let url = components.url else {
             throw AgentAPIError.invalidEndpoint
         }
         return url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    private func runtime(endpoint: String, token: String) -> CodexAppServerSessionRuntime {
-        let identity = "\(endpoint)\n\(token)"
-        if let directRuntime, directRuntimeIdentity == identity {
-            return directRuntime
-        }
-        let runtime = CodexAppServerSessionRuntime(endpoint: endpoint, token: token)
-        directRuntime = runtime
-        directRuntimeIdentity = identity
-        return runtime
+}
+
+private final class InvalidConfigurationSessionWebSocketClient: SessionWebSocketClient {
+    var onEvent: ((AgentEvent) -> Void)?
+    var onStatus: ((WebSocketStatus) -> Void)?
+    var onSendFailure: ((ClientMessageID?, String) -> Void)?
+
+    private let message: String
+
+    init(message: String) {
+        self.message = message
     }
 
-    private func resetDirectRuntime() {
-        directRuntime = nil
-        directRuntimeIdentity = nil
+    func connect(sessionID: SessionID) {
+        onStatus?(.failed(message))
+    }
+
+    func disconnect() {
+        onStatus?(.disconnected)
+    }
+
+    func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {
+        onSendFailure?(clientMessageID, message)
+        return false
+    }
+
+    func sendCtrlC() -> Bool {
+        onSendFailure?(nil, message)
+        return false
+    }
+
+    func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool {
+        onSendFailure?(nil, self.message)
+        return false
     }
 }

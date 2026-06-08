@@ -98,17 +98,20 @@ private struct SessionListRow: View {
             .foregroundStyle(tokens.tertiaryText)
 
             if !metricChips.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(metricChips, id: \.text) { chip in
-                        Label(chip.text, systemImage: chip.symbol)
-                            .font(themeStore.uiFont(size: 11, weight: .medium))
-                            .lineLimit(1)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(chip.tint.opacity(0.12), in: Capsule())
-                            .foregroundStyle(chip.tint)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(metricChips, id: \.text) { chip in
+                            Label(chip.text, systemImage: chip.symbol)
+                                .font(themeStore.uiFont(size: 11, weight: .medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(chip.tint.opacity(0.12), in: Capsule())
+                                .foregroundStyle(chip.tint)
+                        }
                     }
                 }
+                .allowsHitTesting(false)
             }
         }
         .padding(.vertical, 6)

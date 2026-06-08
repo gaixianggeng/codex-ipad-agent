@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var pairingLink = ""
     @State private var isSavingConnection = false
     @State private var localError: String?
+    @FocusState private var focusedField: SettingsField?
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -28,13 +29,26 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($focusedField, equals: .endpoint)
+                        .onSubmit {
+                            focusedField = .token
+                        }
                     SecureField("agentd Token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .submitLabel(.go)
+                        .focused($focusedField, equals: .token)
+                        .onSubmit {
+                            guard canSaveConnection else {
+                                return
+                            }
+                            Task { await save() }
+                        }
                 } header: {
                     Text("连接")
                 } footer: {
-                    Text("iPad 客户端固定使用 Codex app-server JSON-RPC 直连链路。MVP 只建议在本机或 Tailscale 网络中使用。")
+                    Text("客户端固定使用 Codex app-server JSON-RPC 直连链路。MVP 只建议在本机、局域网或 Tailscale 网络中使用。")
                 }
 
                 Section {
@@ -42,10 +56,15 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
+                        .submitLabel(.go)
+                        .focused($focusedField, equals: .pairingLink)
+                        .onSubmit {
+                            applyPairingLink()
+                        }
                     Button {
                         applyPairingLink()
                     } label: {
-                        Label("导入配对链接", systemImage: "link.badge.plus")
+                        Label("填入配对链接", systemImage: "link.badge.plus")
                     }
                     .disabled(isSavingConnection || pairingLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } header: {
@@ -64,7 +83,8 @@ struct SettingsView: View {
                     } label: {
                         Label("保存并加载", systemImage: "checkmark.circle")
                     }
-                    .disabled(isSavingConnection || endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSaveConnection)
                 }
 
                 Section {
@@ -115,8 +135,10 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
-                endpoint = appStore.endpoint
-                token = appStore.token
+                loadFormValues()
+            }
+            .onChange(of: appStore.pendingPairingCredentials) { _, _ in
+                applyPendingPairingCredentials()
             }
             .tint(tokens.accent)
             // 设置页是 sheet 内的独立 presentation；系统模式下也显式解析成当前系统深/浅色，避免从浅色切回默认时停在旧环境。
@@ -138,7 +160,33 @@ struct SettingsView: View {
         }
     }
 
+    private var canSaveConnection: Bool {
+        !isSavingConnection &&
+        !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func loadFormValues() {
+        endpoint = appStore.endpoint
+        token = appStore.token
+        applyPendingPairingCredentials()
+    }
+
+    private func applyPendingPairingCredentials() {
+        guard let credentials = appStore.consumePendingPairingCredentials() else {
+            return
+        }
+        endpoint = credentials.endpoint
+        token = credentials.token
+        pairingLink = ""
+        localError = nil
+        appStore.lastError = nil
+    }
+
     private func save() async {
+        guard canSaveConnection else {
+            return
+        }
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
@@ -159,6 +207,9 @@ struct SettingsView: View {
     }
 
     private func applyPairingLink() {
+        guard !isSavingConnection, !pairingLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
         Task { await importPairingLink() }
     }
 
@@ -170,16 +221,9 @@ struct SettingsView: View {
             guard let url = URL(string: raw) else {
                 throw PairingLinkError.unsupportedURL
             }
-            try await appStore.validateAndSavePairingURL(url)
-            endpoint = appStore.endpoint
-            token = appStore.token
+            try appStore.preparePairingURL(url)
+            applyPendingPairingCredentials()
             pairingLink = ""
-            sessionStore.resetConnectionForSettingsChange(clearData: true)
-            localError = nil
-            await sessionStore.refreshAll(autoAttach: true)
-            if !isInitialSetup {
-                dismiss()
-            }
         } catch {
             appStore.connectionStatus = .failed(error.localizedDescription)
             appStore.lastError = error.localizedDescription
@@ -202,6 +246,12 @@ struct SettingsView: View {
             localError = error.localizedDescription
         }
     }
+}
+
+private enum SettingsField: Hashable {
+    case endpoint
+    case token
+    case pairingLink
 }
 
 struct AppearanceView: View {
@@ -236,7 +286,7 @@ struct AppearanceView: View {
             } header: {
                 Text("深浅色")
             } footer: {
-                Text("系统模式会跟随 iPad 当前外观；浅色和深色会固定 App 外观。")
+                Text("系统模式会跟随当前设备外观；浅色和深色会固定 App 外观。")
             }
 
             Section {

@@ -67,12 +67,15 @@ struct ProjectSidebarView: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.borderless)
+                    .help("刷新项目")
                     Button {
                         isPresentingOpenWorkspace = true
                     } label: {
                         Image(systemName: "folder.badge.plus")
                     }
                     .buttonStyle(.borderless)
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .help("打开路径")
                     .accessibilityLabel("打开路径")
                 }
             }
@@ -107,6 +110,10 @@ private struct OpenWorkspaceSheet: View {
                     TextField("/Users/me/code/project", text: $path)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .submitLabel(.go)
+                        .onSubmit {
+                            Task { await open(path: path) }
+                        }
                     Button {
                         Task { await open(path: path) }
                     } label: {
@@ -157,6 +164,9 @@ private struct OpenWorkspaceSheet: View {
     }
 
     private func open(path: String) async {
+        guard !isOpening, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
         isOpening = true
         defer { isOpening = false }
         if await sessionStore.openWorkspace(path: path) {
@@ -187,46 +197,50 @@ private struct ProjectSessionRows: View {
         }
 
         ForEach(snapshot.visibleSessions) { session in
-            SessionRow(session: session, isSelected: session.id == selectedSessionID)
-                .equatable()
-                // List 行内的 Button 会被 UICollectionView 的 delaysContentTouches 拖慢高亮，
-                // 改用 contentShape + onTapGesture，让点击在抬手时立即响应。
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    Task { await sessionStore.selectSession(session) }
-                }
+            Button {
+                Task { await sessionStore.selectSession(session) }
+            } label: {
+                SessionRow(session: session, isSelected: session.id == selectedSessionID)
+                    .equatable()
+            }
+                .buttonStyle(.plain)
+                .help("打开会话")
+                .accessibilityLabel("打开会话 \(session.title)")
                 .padding(.leading, 34)
                 .sidebarListRow()
         }
 
         if snapshot.shouldShowActionRow {
-            HStack(spacing: 6) {
-                if snapshot.isLoadingMore {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(tokens.tertiaryText)
-                } else {
-                    Image(systemName: snapshot.isShowingAll && !snapshot.canLoadMore ? "chevron.up" : "ellipsis")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+            Button {
+                guard !snapshot.isLoadingMore else {
+                    return
                 }
-                Text(snapshot.actionTitle)
-                    .lineLimit(1)
+                Task {
+                    if snapshot.isShowingAll && snapshot.canLoadMore {
+                        await sessionStore.loadMoreSessions(projectID: project.id)
+                    } else {
+                        await sessionStore.toggleSessionListExpansion(projectID: project.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    if snapshot.isLoadingMore {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(tokens.tertiaryText)
+                    } else {
+                        Image(systemName: snapshot.isShowingAll && !snapshot.canLoadMore ? "chevron.up" : "ellipsis")
+                            .font(themeStore.uiFont(size: 12, weight: .semibold))
+                    }
+                    Text(snapshot.actionTitle)
+                        .lineLimit(1)
+                }
+                .font(themeStore.uiFont(size: 12, weight: .medium))
+                .foregroundStyle(tokens.tertiaryText)
             }
-            .font(themeStore.uiFont(size: 12, weight: .medium))
-            .foregroundStyle(tokens.tertiaryText)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard !snapshot.isLoadingMore else {
-                        return
-                    }
-                    Task {
-                        if snapshot.isShowingAll && snapshot.canLoadMore {
-                            await sessionStore.loadMoreSessions(projectID: project.id)
-                        } else {
-                            await sessionStore.toggleSessionListExpansion(projectID: project.id)
-                        }
-                    }
-                }
+                .buttonStyle(.plain)
+                .disabled(snapshot.isLoadingMore)
+                .help(snapshot.actionTitle)
                 .padding(.leading, 42)
                 .padding(.vertical, 5)
                 .sidebarListRow()
@@ -261,42 +275,46 @@ private struct ProjectRow: View, Equatable {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(spacing: 8) {
-            // 整块左侧区域作为展开/收起的点击目标。用 onTapGesture 绕开 List 行内 Button
-            // 在 UICollectionView 下的 delaysContentTouches 高亮延迟。
-            HStack(spacing: 10) {
-                Image(systemName: isUnavailable ? "exclamationmark.triangle.fill" : (isActiveProject || isExpanded ? "folder.fill" : "folder"))
-                    .frame(width: 20)
-                    .foregroundStyle(isUnavailable ? Color.orange : (isActiveProject ? tokens.accent : tokens.secondaryText))
-                Text(project.name)
-                    .font(themeStore.uiFont(size: 16, weight: .semibold))
-                    .foregroundStyle(isUnavailable ? tokens.tertiaryText : tokens.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                if isUnavailable {
-                    Text("不可用")
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
-                        .foregroundStyle(.orange)
-                } else if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(tokens.tertiaryText)
-                } else {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
-                        .foregroundStyle(tokens.tertiaryText)
+            Button(action: onToggle) {
+                HStack(spacing: 10) {
+                    Image(systemName: isUnavailable ? "exclamationmark.triangle.fill" : (isActiveProject || isExpanded ? "folder.fill" : "folder"))
+                        .frame(width: 20)
+                        .foregroundStyle(isUnavailable ? Color.orange : (isActiveProject ? tokens.accent : tokens.secondaryText))
+                    Text(project.name)
+                        .font(themeStore.uiFont(size: 16, weight: .semibold))
+                        .foregroundStyle(isUnavailable ? tokens.tertiaryText : tokens.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .layoutPriority(1)
+                    Spacer(minLength: 8)
+                    if isUnavailable {
+                        Text("不可用")
+                            .font(themeStore.uiFont(size: 11, weight: .semibold))
+                            .foregroundStyle(.orange)
+                    } else if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(tokens.tertiaryText)
+                    } else {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(themeStore.uiFont(size: 12, weight: .semibold))
+                            .foregroundStyle(tokens.tertiaryText)
+                    }
                 }
             }
-            .contentShape(Rectangle())
-            .onTapGesture(perform: onToggle)
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(isExpanded ? "收起项目" : "展开项目")
+            .accessibilityLabel(isExpanded ? "收起 \(project.name)" : "展开 \(project.name)")
 
-            Image(systemName: "square.and.pencil")
-                .font(themeStore.uiFont(size: 15, weight: .medium))
-                .foregroundStyle(tokens.primaryText.opacity(0.86))
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onNewSession)
+            Button(action: onNewSession) {
+                Image(systemName: "square.and.pencil")
+                    .font(themeStore.uiFont(size: 15, weight: .medium))
+                    .foregroundStyle(tokens.primaryText.opacity(0.86))
+                    .frame(width: 28, height: 28)
+            }
+                .buttonStyle(.plain)
+                .help("新建会话")
                 .accessibilityLabel("新建会话")
 
             Menu {
@@ -315,6 +333,7 @@ private struct ProjectRow: View, Equatable {
                     .frame(width: 24, height: 28)
             }
             .menuStyle(.button)
+            .help("更多操作")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

@@ -38,7 +38,7 @@ agentd pair
 - Token，也就是 `AGENTD_TOKEN`
 - 配对链接，例如 `codexagentpad://pair?endpoint=...&token=...`
 
-Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。
+Token 存入 Keychain，Endpoint 存入 UserDefaults。客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。
 
 direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。`agentd setup` 会生成独立 upstream token file；Mac 侧由 `agentd` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
 
@@ -68,7 +68,7 @@ Sources/
 - direct 模式由 Swift JSON-RPC client 处理 app-server request/response、notification 和 server request。
 - app-server 事件先投影成内部 `AgentEvent`，再由 `EventReducer` 分发给消息层和日志层；`SessionStore` 只协调低频 session 状态。
 - `LogStore` 先批量合并 output，再以 120ms 节流刷新 UI；内部保留 120000 字符，界面渲染最近 80000 字符。
-- app-server runtime 不依赖终端尺寸，不跟随 iPad 键盘或布局变化频繁发送 resize。
+- app-server runtime 不依赖终端尺寸，不跟随移动端键盘或布局变化频繁发送 resize。
 - direct 模式不把终端文本作为主消息来源；消息以 app-server 结构化事件为准。
 
 ## 构建
@@ -130,7 +130,7 @@ xcodebuild \
 
 外观验收：
 
-- 外观模式支持 `系统`、`浅色`、`深色`；系统模式跟随 iPad 当前外观，手动浅色/深色不跟随系统变化。
+- 外观模式支持 `系统`、`浅色`、`深色`；系统模式跟随当前设备外观，手动浅色/深色不跟随系统变化。
 - 主题预设先支持 `Codex`、`Xcode`、`Gruvbox`，覆盖聊天背景、气泡、代码块、侧栏选中态、日志和 Inspector 常用面板。
 - 字体设置支持 UI 字体、代码字体和 85%-135% 字体大小；超出范围会自动 clamp。
 - 外观设置只写入本机 `UserDefaults`，不触发连接重置，不影响 Endpoint、Token、会话、日志和 app-server runtime。

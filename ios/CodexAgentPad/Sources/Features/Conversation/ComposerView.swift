@@ -206,7 +206,7 @@ struct ComposerView: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(isCompactComposer || !showLabels ? .small : .regular)
-        .keyboardShortcut(.return, modifiers: .command)
+        .help("发送")
         .disabled(!canSubmitDraft)
         .accessibilityLabel("发送")
     }
@@ -362,10 +362,16 @@ private final class CommandSubmitTextView: UITextView {
 
     override var keyCommands: [UIKeyCommand]? {
         let submit = UIKeyCommand(
+            title: "发送",
+            image: nil,
+            action: #selector(handleCommandReturn),
             input: "\r",
             modifierFlags: .command,
-            action: #selector(handleCommandReturn),
-            discoverabilityTitle: "发送"
+            propertyList: nil,
+            alternates: [],
+            discoverabilityTitle: "发送",
+            attributes: [],
+            state: .off
         )
         return (super.keyCommands ?? []) + [submit]
     }

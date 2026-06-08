@@ -37,6 +37,9 @@ struct RootView: View {
                 await sessionStore.resumeFromForeground()
             }
         }
+        .onOpenURL { url in
+            handlePairingURL(url)
+        }
         .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
         .tint(tokens.accent)
@@ -68,6 +71,8 @@ struct RootView: View {
                             Label("设置", systemImage: "gearshape")
                         }
                         .labelStyle(.iconOnly)
+                        .keyboardShortcut(",", modifiers: .command)
+                        .help("设置")
                         .accessibilityLabel("设置")
                     }
                 }
@@ -144,6 +149,7 @@ struct RootView: View {
                         } label: {
                             Label("显示项目栏", systemImage: "sidebar.left")
                         }
+                        .help("显示项目栏")
                         .accessibilityLabel("显示项目栏")
                     }
                 }
@@ -154,6 +160,7 @@ struct RootView: View {
                         } label: {
                             Label("回到项目", systemImage: "xmark.circle")
                         }
+                        .help("回到项目")
                         .accessibilityLabel("回到项目")
                     }
                 }
@@ -171,6 +178,8 @@ struct RootView: View {
                             Label(layout.usesAttachedInspector ? "日志" : "会话详情", systemImage: layout.usesAttachedInspector ? "terminal" : "sidebar.right")
                         }
                         .labelStyle(.iconOnly)
+                        .keyboardShortcut("i", modifiers: [.command, .option])
+                        .help(layout.usesAttachedInspector ? "切换日志" : "切换会话详情")
                         .accessibilityLabel(showingLogInspector ? "隐藏详情" : "显示详情")
                     }
                     Button {
@@ -179,6 +188,8 @@ struct RootView: View {
                         Label("设置", systemImage: "gearshape")
                     }
                     .labelStyle(.iconOnly)
+                    .keyboardShortcut(",", modifiers: .command)
+                    .help("设置")
                     .accessibilityLabel("设置")
                 }
             }
@@ -202,6 +213,8 @@ struct RootView: View {
                     .foregroundStyle(.orange)
             }
             .buttonStyle(.plain)
+            .keyboardShortcut("r", modifiers: .command)
+            .help(sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话")
             .accessibilityLabel(sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话")
         }
     }
@@ -259,6 +272,9 @@ struct RootView: View {
             return
         }
         guard layout.prefersDetailOnly else {
+            if columnVisibility == .detailOnly {
+                columnVisibility = .all
+            }
             return
         }
         columnVisibility = .detailOnly
@@ -273,6 +289,16 @@ struct RootView: View {
             }
             sessionStore.returnToSessionList()
         })
+    }
+
+    private func handlePairingURL(_ url: URL) {
+        do {
+            try appStore.preparePairingURL(url)
+            showingSettings = appStore.isConfigured
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+        }
     }
 }
 

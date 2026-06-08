@@ -2,6 +2,7 @@ import Foundation
 
 enum CodexAppServerSessionRuntimeError: LocalizedError {
     case invalidGatewayURL
+    case untrustedGatewayURL
     case gatewayUnavailable
     case projectNotFound(String)
     case projectRequired
@@ -13,6 +14,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
         switch self {
         case .invalidGatewayURL:
             return "app-server gateway URL 无效"
+        case .untrustedGatewayURL:
+            return "app-server gateway URL 不可信"
         case .gatewayUnavailable:
             return "agentd 未启用 app-server gateway，请先配置 loopback app-server WebSocket upstream"
         case .projectNotFound(let projectID):
@@ -421,7 +424,7 @@ actor CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidEndpoint
         }
         components.path = "/api/app-server/ws"
-        components.queryItems = [URLQueryItem(name: "thread_id", value: sessionID)]
+        components.queryItems = sessionID.isEmpty ? nil : [URLQueryItem(name: "thread_id", value: sessionID)]
         guard let url = components.url else {
             throw AgentAPIError.invalidEndpoint
         }
@@ -545,13 +548,73 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func gatewayURL(from config: CodexAppServerConfigResponse) throws -> URL {
-        if let url = URL(string: config.gatewayWSURL), !config.gatewayWSURL.isEmpty {
+        let rawGatewayURL = config.gatewayWSURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rawGatewayURL.isEmpty {
+            guard let url = URL(string: rawGatewayURL) else {
+                throw CodexAppServerSessionRuntimeError.invalidGatewayURL
+            }
+            try Self.validateGatewayURL(url, endpoint: endpoint)
             return url
         }
-        guard let url = URL(string: try Self.gatewayURL(endpoint: endpoint, sessionID: "").absoluteString) else {
+        return try Self.gatewayURL(endpoint: endpoint, sessionID: "")
+    }
+
+    private static func validateGatewayURL(_ url: URL, endpoint: String) throws {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "ws" || scheme == "wss",
+              let gatewayHost = components.host,
+              !gatewayHost.isEmpty,
+              components.path == "/api/app-server/ws",
+              components.user == nil,
+              components.password == nil,
+              components.queryItems == nil,
+              components.fragment == nil
+        else {
             throw CodexAppServerSessionRuntimeError.invalidGatewayURL
         }
-        return url
+        guard let endpointComponents = URLComponents(string: AgentAPIClient.normalizedEndpoint(endpoint)),
+              let endpointScheme = endpointComponents.scheme?.lowercased(),
+              let endpointHost = endpointComponents.host
+        else {
+            throw AgentAPIError.invalidEndpoint
+        }
+        let sameEndpointHost = normalizedHost(gatewayHost) == normalizedHost(endpointHost)
+        let trustedLocalHost = AgentAPIClient.isTrustedPlaintextHost(gatewayHost)
+        guard sameEndpointHost else {
+            throw CodexAppServerSessionRuntimeError.untrustedGatewayURL
+        }
+        if endpointScheme == "https", scheme != "wss" {
+            throw CodexAppServerSessionRuntimeError.untrustedGatewayURL
+        }
+        if scheme == "ws", !trustedLocalHost {
+            throw CodexAppServerSessionRuntimeError.untrustedGatewayURL
+        }
+        if !trustedLocalHost,
+           effectivePort(for: endpointScheme, explicitPort: endpointComponents.port) != effectivePort(for: scheme, explicitPort: components.port) {
+            throw CodexAppServerSessionRuntimeError.untrustedGatewayURL
+        }
+    }
+
+    private static func effectivePort(for scheme: String, explicitPort: Int?) -> Int? {
+        if let explicitPort {
+            return explicitPort
+        }
+        switch scheme {
+        case "http", "ws":
+            return 80
+        case "https", "wss":
+            return 443
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedHost(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
     }
 
     private func handle(_ notification: CodexAppServerNotification) {

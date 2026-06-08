@@ -21,7 +21,7 @@ enum ThemeMode: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .system:
-            return "跟随 iPad 当前外观"
+            return "跟随当前设备外观"
         case .light:
             return "明亮阅读界面"
         case .dark:

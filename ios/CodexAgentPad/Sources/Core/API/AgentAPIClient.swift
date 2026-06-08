@@ -2,6 +2,7 @@ import Foundation
 
 enum AgentAPIError: LocalizedError {
     case invalidEndpoint
+    case insecurePlaintextEndpoint
     case invalidResponse
     case server(status: Int, message: String)
     case decoding(Error)
@@ -10,6 +11,8 @@ enum AgentAPIError: LocalizedError {
         switch self {
         case .invalidEndpoint:
             return "Endpoint 无效"
+        case .insecurePlaintextEndpoint:
+            return "HTTP Endpoint 仅允许本机、局域网或 Tailscale 地址；公网地址请使用 HTTPS"
         case .invalidResponse:
             return "agentd 返回了无效响应"
         case .server(let status, let message):
@@ -125,6 +128,53 @@ struct AgentAPIClient {
             return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         }
         return "http://" + trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    static func isTrustedPlaintextHost(_ rawHost: String) -> Bool {
+        let host = rawHost
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        guard !host.isEmpty else {
+            return false
+        }
+        if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".ts.net") {
+            return true
+        }
+        if host.contains(":") {
+            return host == "::1" || host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd")
+        }
+        return isTrustedPlaintextIPv4(host)
+    }
+
+    private static func isTrustedPlaintextIPv4(_ host: String) -> Bool {
+        let octets = host.split(separator: ".")
+        guard octets.count == 4 else {
+            return false
+        }
+        let values = octets.compactMap { part -> Int? in
+            guard let value = Int(part), (0...255).contains(value) else {
+                return nil
+            }
+            return value
+        }
+        guard values.count == 4 else {
+            return false
+        }
+        switch values[0] {
+        case 10, 127:
+            return true
+        case 169:
+            return values[1] == 254
+        case 172:
+            return (16...31).contains(values[1])
+        case 192:
+            return values[1] == 168
+        case 100:
+            return (64...127).contains(values[1])
+        default:
+            return false
+        }
     }
 
     static let decoder: JSONDecoder = {

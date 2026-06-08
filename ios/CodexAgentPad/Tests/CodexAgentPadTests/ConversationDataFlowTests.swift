@@ -4326,6 +4326,54 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
+    func testCodexAppServerRuntimeRejectsUntrustedGatewayURLBeforeConnecting() async throws {
+        let project = AgentProject(id: "proj_direct", name: "Direct", path: "/tmp/direct")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayWSURL: "ws://evil.example/api/app-server/ws"
+        )
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://100.64.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            configProvider: { config }
+        )
+
+        do {
+            try await runtime.validateDirectGateway()
+            XCTFail("Expected untrusted gateway URL to be rejected")
+        } catch CodexAppServerSessionRuntimeError.untrustedGatewayURL {
+            XCTAssertNil(pool.transport(at: 0))
+        } catch {
+            XCTFail("Expected untrustedGatewayURL, got \(error)")
+        }
+    }
+
+    func testCodexAppServerRuntimeRejectsPublicGatewayOnDifferentPortBeforeConnecting() async throws {
+        let project = AgentProject(id: "proj_direct", name: "Direct", path: "/tmp/direct")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            gatewayWSURL: "wss://agent.example.com:9443/api/app-server/ws"
+        )
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "https://agent.example.com",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            configProvider: { config }
+        )
+
+        do {
+            try await runtime.validateDirectGateway()
+            XCTFail("Expected gateway URL with mismatched public port to be rejected")
+        } catch CodexAppServerSessionRuntimeError.untrustedGatewayURL {
+            XCTAssertNil(pool.transport(at: 0))
+        } catch {
+            XCTFail("Expected untrustedGatewayURL, got \(error)")
+        }
+    }
+
     func testDirectRuntimeClearsApprovalWhenResolvedNotificationOnlyHasRequestID() async throws {
         let project = AgentProject(id: "proj_resolved", name: "Resolved", path: "/tmp/resolved")
         let transport = FakeCodexAppServerTransport()
@@ -5702,9 +5750,13 @@ private func waitForRuntimeConnectionToBecomeUnavailable(
     XCTFail("Timed out waiting for app-server runtime connection to become unavailable", file: file, line: line)
 }
 
-private func makeDirectAppServerConfig(project: AgentProject, gatewayAvailable: Bool = true) -> CodexAppServerConfigResponse {
+private func makeDirectAppServerConfig(
+    project: AgentProject,
+    gatewayAvailable: Bool = true,
+    gatewayWSURL: String? = nil
+) -> CodexAppServerConfigResponse {
     CodexAppServerConfigResponse(
-        gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
+        gatewayWSURL: gatewayWSURL ?? (gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : ""),
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
             transport: "ws",
