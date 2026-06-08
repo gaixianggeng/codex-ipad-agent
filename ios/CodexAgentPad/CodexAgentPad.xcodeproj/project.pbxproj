@@ -580,14 +580,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
 				PRODUCT_MODULE_NAME = CodexAgentPad;
 				PRODUCT_NAME = mimi;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Release;
 		};
@@ -604,7 +604,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiTests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 2;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/mimi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/mimi";
 			};
 			name = Release;
@@ -621,14 +621,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
 				PRODUCT_MODULE_NAME = CodexAgentPad;
 				PRODUCT_NAME = mimi;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Debug;
 		};
@@ -645,7 +645,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiTests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 2;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/mimi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/mimi";
 			};
 			name = Debug;
