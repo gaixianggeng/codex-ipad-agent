@@ -29,7 +29,7 @@ done
 	process, result, err := StartManaged(startCtx, ManagedOptions{
 		CodexBin:   fakeCodex,
 		Env:        map[string]string{"FAKE_CODEX_ARG_LOG": argLog},
-		ClientInfo: ClientInfo{Name: "codex_ipad_agent", Title: "Codex iPad Agent", Version: "test"},
+		ClientInfo: ClientInfo{Name: "mimi_remote", Title: "Mimi Remote", Version: "test"},
 	})
 	cancel()
 	if err != nil {

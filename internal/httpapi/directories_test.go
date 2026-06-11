@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func listDirectories(t *testing.T, handler http.Handler, path string) (*httptest.ResponseRecorder, map[string]any) {

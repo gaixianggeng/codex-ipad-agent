@@ -70,7 +70,7 @@ func NewClient(stdout io.Reader, stdin io.Writer, options ClientOptions) *Client
 		options.OverloadRetries = 0
 	}
 	if options.ClientInfo.Name == "" {
-		options.ClientInfo = ClientInfo{Name: "codex_ipad_agent", Title: "Codex iPad Agent", Version: "0.1.0"}
+		options.ClientInfo = ClientInfo{Name: "mimi_remote", Title: "Mimi Remote", Version: "0.1.0"}
 	}
 	return &Client{
 		reader:        bufio.NewReader(stdout),

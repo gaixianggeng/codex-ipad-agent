@@ -27,7 +27,7 @@
 		48A1E9482ECC50F5E51C86DB /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 368F5024CC51BCFD41D95D99 /* SessionListView.swift */; };
 		4928B47A442FBC0B1F1BCDA8 /* MarkdownRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70763DD1E0EFC77A63F7FF83 /* MarkdownRenderingTests.swift */; };
 		513E593137191B27D30E64B2 /* testConversationBubbleAlignment.1.png in Resources */ = {isa = PBXBuildFile; fileRef = C88CBA6847D568BF38F25D48 /* testConversationBubbleAlignment.1.png */; };
-		5733FF7ABB67E169245B8DA7 /* CodexAgentPadApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B9987B4175D880D0A03CC81 /* CodexAgentPadApp.swift */; };
+		5733FF7ABB67E169245B8DA7 /* MimiRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B9987B4175D880D0A03CC81 /* MimiRemoteApp.swift */; };
 		5B278A998D63FF1CA900DC6F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 290B7A5AC69DF8B358B4DE27 /* SettingsView.swift */; };
 		5CEC1A78B36B55118353C89B /* LogStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15115216BE08F4A4CE030BF0 /* LogStoreTests.swift */; };
 		5DBA2AF0C09441F19FD34556 /* SessionIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C338EFD0F01A91A4FF4E68F /* SessionIndexStore.swift */; };
@@ -71,7 +71,7 @@
 			containerPortal = 86A11B2E1FCB8E58266A339F /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 48DD0545984E472C585DD8A2;
-			remoteInfo = CodexAgentPad;
+			remoteInfo = MimiRemote;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -91,13 +91,13 @@
 		290B7A5AC69DF8B358B4DE27 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		3660BF894297A00A475C4BBF /* SessionContextSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextSidebarView.swift; sourceTree = "<group>"; };
 		368F5024CC51BCFD41D95D99 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
-		380EBF3B6493A6D78FCAA9BB /* mimi.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mimi.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		380EBF3B6493A6D78FCAA9BB /* MimiRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MimiRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3829C0B0B3F998D871354E6F /* testProjectSessionDashboard.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testProjectSessionDashboard.1.png; sourceTree = "<group>"; };
 		4D361ECAF79996C05BDC2B18 /* MarkdownStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownStyle.swift; sourceTree = "<group>"; };
 		52CB4BD9E6102179AA6A6E5D /* SessionContextModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionContextModels.swift; sourceTree = "<group>"; };
 		5904108E6945E63ECCCB737E /* DiffPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffPanelView.swift; sourceTree = "<group>"; };
 		5B8D226D98D17D8C7C8D96EE /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
-		5B9987B4175D880D0A03CC81 /* CodexAgentPadApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAgentPadApp.swift; sourceTree = "<group>"; };
+		5B9987B4175D880D0A03CC81 /* MimiRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiRemoteApp.swift; sourceTree = "<group>"; };
 		5BA09AF7F84AF95256BE81DB /* AgentAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIClient.swift; sourceTree = "<group>"; };
 		5C79953C6AF2BC510C0748C6 /* ThemeStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStoreTests.swift; sourceTree = "<group>"; };
 		6792ABF5575C5DC1D7F690CD /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
@@ -125,7 +125,7 @@
 		C70E016E422ECC27016A2031 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
 		C88CBA6847D568BF38F25D48 /* testConversationBubbleAlignment.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testConversationBubbleAlignment.1.png; sourceTree = "<group>"; };
 		DB533B4C2882D91131DCF99A /* QRCodeScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeScannerSheet.swift; sourceTree = "<group>"; };
-		DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexAgentPadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC743165735458C29D31762 /* MimiRemoteTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MimiRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DF61887CD387C60719C6E7F2 /* AgentEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentEvent.swift; sourceTree = "<group>"; };
 		E732124724C5AD07CEDE2BE2 /* EventReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventReducer.swift; sourceTree = "<group>"; };
 		F4A0BFC46BCC1556CD7C551C /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -207,13 +207,13 @@
 		5588B3A078969BDF8A89B5F6 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				380EBF3B6493A6D78FCAA9BB /* mimi.app */,
-				DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */,
+				380EBF3B6493A6D78FCAA9BB /* MimiRemote.app */,
+				DBC743165735458C29D31762 /* MimiRemoteTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
-		5BCF06D960363C74E45FFD78 /* CodexAgentPadTests */ = {
+		5BCF06D960363C74E45FFD78 /* MimiRemoteTests */ = {
 			isa = PBXGroup;
 			children = (
 				746EFE6829B049C1D9445747 /* CodexAppServerProtocolTests.swift */,
@@ -226,7 +226,7 @@
 				C1D15E5A0DEFC5F0F723FFDD /* __Snapshots__ */,
 				D37C025D1E5C514CDF67A654 /* Fixtures */,
 			);
-			path = CodexAgentPadTests;
+			path = MimiRemoteTests;
 			sourceTree = "<group>";
 		};
 		5C5C965B55603A7A3A4C7210 /* Conversation */ = {
@@ -245,7 +245,7 @@
 		6A4A8565E2A2985139094379 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
-				5BCF06D960363C74E45FFD78 /* CodexAgentPadTests */,
+				5BCF06D960363C74E45FFD78 /* MimiRemoteTests */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -328,7 +328,7 @@
 		AA193A44EAA9CFB8E75C9A6D /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				5B9987B4175D880D0A03CC81 /* CodexAgentPadApp.swift */,
+				5B9987B4175D880D0A03CC81 /* MimiRemoteApp.swift */,
 				F4A0BFC46BCC1556CD7C551C /* RootView.swift */,
 				9D51DE696798C939E6A5F6B7 /* Core */,
 				F479C30685C7248DF49B7602 /* Features */,
@@ -397,9 +397,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		13483C9EC856F460432534E9 /* CodexAgentPadTests */ = {
+		13483C9EC856F460432534E9 /* MimiRemoteTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BAEC1AF0BD6C9F8812C423A4 /* Build configuration list for PBXNativeTarget "CodexAgentPadTests" */;
+			buildConfigurationList = BAEC1AF0BD6C9F8812C423A4 /* Build configuration list for PBXNativeTarget "MimiRemoteTests" */;
 			buildPhases = (
 				3835052EF893F5424520D549 /* Sources */,
 				D1CB02E632B391A7BA68C724 /* Resources */,
@@ -410,17 +410,17 @@
 			dependencies = (
 				7CAF9066661B51CBD6988EB4 /* PBXTargetDependency */,
 			);
-			name = CodexAgentPadTests;
+			name = MimiRemoteTests;
 			packageProductDependencies = (
 				5AA664AE3B55F3D0366F8CB8 /* SnapshotTesting */,
 			);
-			productName = CodexAgentPadTests;
-			productReference = DBC743165735458C29D31762 /* CodexAgentPadTests.xctest */;
+			productName = MimiRemoteTests;
+			productReference = DBC743165735458C29D31762 /* MimiRemoteTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		48DD0545984E472C585DD8A2 /* CodexAgentPad */ = {
+		48DD0545984E472C585DD8A2 /* MimiRemote */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D24EE47DFFD38E014803119A /* Build configuration list for PBXNativeTarget "CodexAgentPad" */;
+			buildConfigurationList = D24EE47DFFD38E014803119A /* Build configuration list for PBXNativeTarget "MimiRemote" */;
 			buildPhases = (
 				084EA343BB3396438A49DA2B /* Sources */,
 				633901B18E1C4F998211CA53 /* Frameworks */,
@@ -430,12 +430,12 @@
 			);
 			dependencies = (
 			);
-			name = CodexAgentPad;
+			name = MimiRemote;
 			packageProductDependencies = (
 				78FD77B84DF24D500EF8B9CA /* Markdown */,
 			);
-			productName = CodexAgentPad;
-			productReference = 380EBF3B6493A6D78FCAA9BB /* mimi.app */;
+			productName = MimiRemote;
+			productReference = 380EBF3B6493A6D78FCAA9BB /* MimiRemote.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -447,7 +447,7 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2700;
 			};
-			buildConfigurationList = F876F88A7F1E391827FBD4BE /* Build configuration list for PBXProject "CodexAgentPad" */;
+			buildConfigurationList = F876F88A7F1E391827FBD4BE /* Build configuration list for PBXProject "MimiRemote" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -465,8 +465,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				48DD0545984E472C585DD8A2 /* CodexAgentPad */,
-				13483C9EC856F460432534E9 /* CodexAgentPadTests */,
+				48DD0545984E472C585DD8A2 /* MimiRemote */,
+				13483C9EC856F460432534E9 /* MimiRemoteTests */,
 			);
 		};
 /* End PBXProject section */
@@ -508,7 +508,7 @@
 				3F838D138B4E471C8C493861 /* AppStore.swift in Sources */,
 				A00EEEDAEF54C34FFD3D9564 /* ApprovalCardView.swift in Sources */,
 				000B18635F373F5A635B80E7 /* AssistantTextNormalizer.swift in Sources */,
-				5733FF7ABB67E169245B8DA7 /* CodexAgentPadApp.swift in Sources */,
+				5733FF7ABB67E169245B8DA7 /* MimiRemoteApp.swift in Sources */,
 				18364845DFB4797D379AA124 /* CodexAppServerSessionRuntime.swift in Sources */,
 				81376F490BCD656E737B5129 /* CodexAppServerTransport.swift in Sources */,
 				1DDD74E4FA466FE54BF026EC /* ComposerState.swift in Sources */,
@@ -562,7 +562,7 @@
 /* Begin PBXTargetDependency section */
 		7CAF9066661B51CBD6988EB4 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 48DD0545984E472C585DD8A2 /* CodexAgentPad */;
+			target = 48DD0545984E472C585DD8A2 /* MimiRemote */;
 			targetProxy = 0DEA7C85BCF0FF4066437895 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -580,9 +580,9 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
-				PRODUCT_MODULE_NAME = CodexAgentPad;
-				PRODUCT_NAME = mimi;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiremote;
+				PRODUCT_MODULE_NAME = MimiRemote;
+				PRODUCT_NAME = MimiRemote;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -600,11 +600,11 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiremoteTests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				TARGETED_DEVICE_FAMILY = 2;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/mimi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/mimi";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MimiRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MimiRemote";
 			};
 			name = Release;
 		};
@@ -620,9 +620,9 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
-				PRODUCT_MODULE_NAME = CodexAgentPad;
-				PRODUCT_NAME = mimi;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiremote;
+				PRODUCT_MODULE_NAME = MimiRemote;
+				PRODUCT_NAME = MimiRemote;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -640,11 +640,11 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimiremoteTests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				TARGETED_DEVICE_FAMILY = 2;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/mimi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/mimi";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MimiRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MimiRemote";
 			};
 			name = Debug;
 		};
@@ -776,7 +776,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		BAEC1AF0BD6C9F8812C423A4 /* Build configuration list for PBXNativeTarget "CodexAgentPadTests" */ = {
+		BAEC1AF0BD6C9F8812C423A4 /* Build configuration list for PBXNativeTarget "MimiRemoteTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				87657C9C92AFB2E9B42AB8C5 /* Debug */,
@@ -785,7 +785,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		D24EE47DFFD38E014803119A /* Build configuration list for PBXNativeTarget "CodexAgentPad" */ = {
+		D24EE47DFFD38E014803119A /* Build configuration list for PBXNativeTarget "MimiRemote" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				55A1C26E929E36755EAFCC91 /* Debug */,
@@ -794,7 +794,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		F876F88A7F1E391827FBD4BE /* Build configuration list for PBXProject "CodexAgentPad" */ = {
+		F876F88A7F1E391827FBD4BE /* Build configuration list for PBXProject "MimiRemote" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				9EF010250FBB895C6D90F81F /* Debug */,

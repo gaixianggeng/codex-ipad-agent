@@ -3,9 +3,9 @@ package httpapi
 import (
 	"context"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/codexhistory"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 type SessionRuntime interface {

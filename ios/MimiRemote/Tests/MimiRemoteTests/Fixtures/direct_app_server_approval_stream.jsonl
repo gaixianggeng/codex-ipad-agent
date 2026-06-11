@@ -3,5 +3,5 @@
 {"method":"item/agentMessage/delta","params":{"threadId":"thr_fixture_stream","turnId":"turn_fixture_stream","itemId":"assistant_fixture","delta":"真实 app-server "}}
 {"method":"item/agentMessage/delta","params":{"threadId":"thr_fixture_stream","turnId":"turn_fixture_stream","itemId":"assistant_fixture","delta":"事件流。"}}
 {"method":"item/completed","params":{"threadId":"thr_fixture_stream","turnId":"turn_fixture_stream","item":{"type":"agentMessage","id":"assistant_fixture","text":"第一段：真实 app-server 事件流。"}}}
-{"id":501,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_fixture_stream","turnId":"turn_fixture_stream","itemId":"cmd_fixture_approval","command":"go test ./ios/CodexAgentPad","reason":"验证 fixture 回放"}}
+{"id":501,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_fixture_stream","turnId":"turn_fixture_stream","itemId":"cmd_fixture_approval","command":"go test ./ios/MimiRemote","reason":"验证 fixture 回放"}}
 {"method":"turn/completed","params":{"threadId":"thr_fixture_stream","turnId":"turn_fixture_stream"}}

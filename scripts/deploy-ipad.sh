@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_PATH="${PROJECT_PATH:-$ROOT_DIR/ios/CodexAgentPad/CodexAgentPad.xcodeproj}"
-SCHEME="${SCHEME:-CodexAgentPad}"
+PROJECT_PATH="${PROJECT_PATH:-$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj}"
+SCHEME="${SCHEME:-MimiRemote}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 DEVICE_NAME="${DEVICE_NAME:-iPad Pro}"
 DEVICE_ID="${DEVICE_ID:-}"
-BUNDLE_ID="${BUNDLE_ID:-com.gaixianggeng.mimi}"
+BUNDLE_ID="${BUNDLE_ID:-com.gaixianggeng.mimiremote}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
-DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/ios/CodexAgentPad/build/deploy-derived}"
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/ios/MimiRemote/build/deploy-derived}"
 SKIP_LAUNCH="${SKIP_LAUNCH:-0}"
 REFRESH_INSTALL="${REFRESH_INSTALL:-0}"
 ALLOW_PROVISIONING_UPDATES="${ALLOW_PROVISIONING_UPDATES:-1}"
@@ -18,7 +18,7 @@ CODE_SIGN_STYLE="${CODE_SIGN_STYLE:-Automatic}"
 
 if [[ ! -d "$PROJECT_PATH" ]]; then
   echo "找不到 Xcode 工程：$PROJECT_PATH" >&2
-  echo "如果刚改过 project.yml，请先运行：xcodegen generate --spec ios/CodexAgentPad/project.yml --project ios/CodexAgentPad" >&2
+  echo "如果刚改过 project.yml，请先运行：xcodegen generate --spec ios/MimiRemote/project.yml --project ios/MimiRemote" >&2
   exit 1
 fi
 
@@ -43,7 +43,7 @@ if [[ -n "$IOS_DEVELOPMENT_TEAM" ]]; then
   SIGNING_ARGS+=("DEVELOPMENT_TEAM=$IOS_DEVELOPMENT_TEAM" "CODE_SIGN_STYLE=$CODE_SIGN_STYLE")
 fi
 
-APP_PATH="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION-iphoneos/mimi.app"
+APP_PATH="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION-iphoneos/MimiRemote.app"
 
 echo "==> 构建 $SCHEME ($CONFIGURATION)"
 echo "    destination: $DESTINATION"

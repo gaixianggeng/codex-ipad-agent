@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 import XCTest
-@testable import CodexAgentPad
+@testable import MimiRemote
 
 @MainActor
 final class ThemeStoreTests: XCTestCase {

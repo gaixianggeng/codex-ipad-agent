@@ -1,8 +1,8 @@
-# Mimi Console / codex-ipad-agent
+# Mimi Remote / mimi-remote
 
 ## 目标
 
-Mimi Console 是一个原生 iPad 控制台，用来连接用户自己 Mac 上运行的 `agentd`。仓库和后端 formula 仍使用 `codex-ipad-agent` 这个工程名，用户侧产品名优先使用 `Mimi` / `咪咪`。
+Mimi Remote 是一个原生 iPad 控制台，用来连接用户自己 Mac 上运行的 `agentd`。仓库、Go module 和后端 formula 统一使用 `mimi-remote`，用户侧产品名统一使用 `Mimi Remote`。
 
 在 Mac 上启动一个单机 `agentd` 控制面，让 iPad 原生 App 通过 Tailscale 选择本机项目，并直接使用 Codex app-server JSON-RPC 协议远程运行用户自己的本机开发环境。核心目标是减少“每个项目都要手动启动服务”的重复操作，同时避免 Go 后端长期维护一套自定义 Codex 业务协议。
 
@@ -61,7 +61,7 @@ Codex core / 本机凭证 / 项目目录
 
 ```bash
 brew update
-brew install gaixianggeng/tap/codex-ipad-agent
+brew install gaixianggeng/tap/mimi-remote
 
 codex --version
 codex app-server --help
@@ -74,7 +74,7 @@ agentd doctor
 
 `agentd setup` 会生成：
 
-- 用户配置，macOS 默认在 `~/Library/Application Support/codex-ipad-agent/config.json`，Linux 默认在 `~/.config/codex-ipad-agent/config.json`
+- 用户配置，macOS 默认在 `~/Library/Application Support/mimi-remote/config.json`，Linux 默认在 `~/.config/mimi-remote/config.json`
 - iPad 访问 `agentd` 的随机 Token
 - `agentd` 访问本机 app-server upstream 的独立 capability token file
 - 默认项目扫描目录，优先 `~/code`，否则使用执行 `setup` 时所在目录
@@ -85,13 +85,13 @@ agentd doctor
 
 如果 Mac 已安装并登录 Tailscale，`setup` 会优先把 `agentd` 绑定到 Tailscale IP；否则会使用 `127.0.0.1:8787` 并给出真机 iPad 不可直连的警告。
 
-`agentd start` 会调用 `brew services start codex-ipad-agent` 后台启动服务，等待 `/healthz` 可用，然后在当前终端输出扫码连接二维码。`agentd serve` 只有在交互式前台终端运行时才会输出二维码；作为 Homebrew service 后台运行时不会把 Token 写入服务日志。`agentd setup` 和 `agentd pair` 会输出同一份连接信息：
+`agentd start` 会调用 `brew services start mimi-remote` 后台启动服务，等待 `/healthz` 可用，然后在当前终端输出扫码连接二维码。`agentd serve` 只有在交互式前台终端运行时才会输出二维码；作为 Homebrew service 后台运行时不会把 Token 写入服务日志。`agentd setup` 和 `agentd pair` 会输出同一份连接信息：
 
 ```text
 Endpoint：http://100.x.x.x:8787
 Token：<随机 token>
-连接链接：mimi://connect?endpoint=...&token=...
-配对链接：mimi://pair?endpoint=...&token=...
+连接链接：mimiremote://connect?endpoint=...&token=...
+配对链接：mimiremote://pair?endpoint=...&token=...
 ```
 
 iPad App 首次启动后优先点“扫码连接”，扫描二维码会自动填入 Endpoint/Token 并测试连接；测试成功后点击“保存并加载”。二维码和连接链接只包含 iPad 访问 `agentd` 的外侧 Token，不包含本机 app-server upstream token。扫码不可用时再手动输入 Endpoint/Token。
@@ -133,12 +133,12 @@ Homebrew service 会执行：
 agentd serve
 ```
 
-`brew services start codex-ipad-agent` 本身不会把服务 stdout 回传到当前终端，所以想要“后台运行但终端显示二维码”时请用 `agentd start`。为避免 Token 留在后台服务日志里，Homebrew service 模式不会打印二维码。`agentd serve` 默认读取当前系统的用户配置目录；也可以用 `AGENTD_CONFIG=/path/to/config.json` 覆盖。在 `app_server.transport=ws` 且 `app_server.managed=true` 时，`agentd` 会自动启动并托管本机 loopback `codex app-server`，用户不需要手动再开一个终端。
+`brew services start mimi-remote` 本身不会把服务 stdout 回传到当前终端，所以想要“后台运行但终端显示二维码”时请用 `agentd start`。为避免 Token 留在后台服务日志里，Homebrew service 模式不会打印二维码。`agentd serve` 默认读取当前系统的用户配置目录；也可以用 `AGENTD_CONFIG=/path/to/config.json` 覆盖。在 `app_server.transport=ws` 且 `app_server.managed=true` 时，`agentd` 会自动启动并托管本机 loopback `codex app-server`，用户不需要手动再开一个终端。
 
 ### 1.1 开发构建
 
 ```bash
-cd "$HOME/code/codex-ipad-agent"
+cd "$HOME/code/mimi-remote"
 go build -o bin/agentd ./cmd/agentd
 ```
 
@@ -147,7 +147,7 @@ go build -o bin/agentd ./cmd/agentd
 原生 App 工程位于：
 
 ```text
-ios/CodexAgentPad
+ios/MimiRemote
 ```
 
 目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。原生 App 的目标主链路是通过 `agentd` 薄网关或受控 endpoint 直接说 Codex app-server JSON-RPC；`agentd` 不再把 Codex 事件翻译成自定义移动端业务协议。
@@ -155,7 +155,7 @@ ios/CodexAgentPad
 先用 XcodeGen 生成 Xcode 工程：
 
 ```bash
-cd "$HOME/code/codex-ipad-agent/ios/CodexAgentPad"
+cd "$HOME/code/mimi-remote/ios/MimiRemote"
 xcodegen generate
 ```
 
@@ -163,8 +163,8 @@ xcodegen generate
 
 ```bash
 xcodebuild \
-  -project CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad \
+  -project MimiRemote.xcodeproj \
+  -scheme MimiRemote \
   -configuration Debug \
   -sdk iphoneos \
   CODE_SIGNING_ALLOWED=NO \
@@ -175,8 +175,8 @@ xcodebuild \
 
 ```bash
 xcodebuild \
-  -project CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad \
+  -project MimiRemote.xcodeproj \
+  -scheme MimiRemote \
   -configuration Debug \
   -sdk iphoneos \
   CODE_SIGNING_ALLOWED=NO \
@@ -187,8 +187,8 @@ xcodebuild \
 
 ```bash
 xcodebuild \
-  -project CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad \
+  -project MimiRemote.xcodeproj \
+  -scheme MimiRemote \
   -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' \
   clean build
 ```
@@ -197,8 +197,8 @@ xcodebuild \
 
 ```bash
 xcodebuild -showdestinations \
-  -project CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad
+  -project MimiRemote.xcodeproj \
+  -scheme MimiRemote
 ```
 
 App 首次启动会进入设置页：
@@ -236,7 +236,7 @@ network: enabled
 ./scripts/deploy-ipad.sh
 ```
 
-默认会构建 `CodexAgentPad` Debug 包，安装到名为 `iPad Pro` 的真机，并自动启动 App。
+默认会构建 `MimiRemote` Debug 包，安装到名为 `iPad Pro` 的真机，并自动启动 App。
 
 常用覆盖参数：
 
@@ -451,12 +451,12 @@ curl -H "Authorization: Bearer $AGENTD_TOKEN" \
 
 ## 发布
 
-发布使用 GoReleaser。Release workflow 固定使用已验证的 GoReleaser `v2.9.0`，原因是当前 Homebrew Formula + `brew services` 的发布方式需要稳定生成 `Formula/codex-ipad-agent.rb`。仓库 tag 形如 `v0.1.0` 时，GitHub Actions 会：
+发布使用 GoReleaser。Release workflow 固定使用已验证的 GoReleaser `v2.9.0`，原因是当前 Homebrew Formula + `brew services` 的发布方式需要稳定生成 `Formula/mimi-remote.rb`。仓库 tag 形如 `v0.1.0` 时，GitHub Actions 会：
 
 1. 运行 `go test ./...`
 2. 构建 darwin/linux 的 amd64/arm64 `agentd`
 3. 创建 GitHub Release 和 checksums
-4. 更新 `gaixianggeng/homebrew-tap` 里的 `Formula/codex-ipad-agent.rb`
+4. 更新 `gaixianggeng/homebrew-tap` 里的 `Formula/mimi-remote.rb`
 
 发布前置条件：
 

@@ -16,7 +16,7 @@ enum TokenStoreError: LocalizedError {
 }
 
 struct TokenStore {
-    private let service = "com.gaixianggeng.mimi"
+    private let service = "com.gaixianggeng.mimiremote"
     private let account = "agentd-token"
 
     func load() -> String {

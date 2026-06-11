@@ -30,8 +30,8 @@ build/
 xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
-ios/CodexAgentPad/build/
-ios/CodexAgentPad/build-test/
+ios/MimiRemote/build/
+ios/MimiRemote/build-test/
 
 # Local planning notes that are useful privately but noisy for public users
 docs/codex-app-server-runtime-refactor.md

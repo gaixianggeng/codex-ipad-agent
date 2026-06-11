@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct CodexAgentPadApp: App {
+struct MimiRemoteApp: App {
     @StateObject private var appStore: AppStore
     @StateObject private var conversationStore: ConversationStore
     @StateObject private var logStore: LogStore

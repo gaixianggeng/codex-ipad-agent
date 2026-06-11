@@ -16,10 +16,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/doctor"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
@@ -869,7 +869,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		assertGatewayParamsOnly(t, params)
 	}
 
-	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"codex_ipad_agent","title":"Codex iPad Agent","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"unknownFlag":true},` + dangerousTail + `}}`)
+	initialize := []byte(`{"id":67,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0","extra":"drop"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"unknownFlag":true},` + dangerousTail + `}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, initialize); err != nil {
 		t.Fatal(err)
 	}
@@ -880,7 +880,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		t.Fatalf("initialize 应保留 clientInfo：%v", initializeParams)
 	}
 	assertGatewayParamsOnly(t, clientInfo, "name", "title", "version")
-	if clientInfo["name"] != "codex_ipad_agent" || clientInfo["title"] != "Codex iPad Agent" || clientInfo["version"] != "0.1.0" {
+	if clientInfo["name"] != "mimi_remote" || clientInfo["title"] != "Mimi Remote" || clientInfo["version"] != "0.1.0" {
 		t.Fatalf("initialize clientInfo 内容异常：%v", clientInfo)
 	}
 	capabilities, ok := initializeParams["capabilities"].(map[string]any)

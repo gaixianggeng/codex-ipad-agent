@@ -17,13 +17,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/appserver"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/doctor"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/httpapi"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
-	agentsetup "github.com/gaixianggeng/codex-ipad-agent/internal/setup"
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/session"
+	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/skip2/go-qrcode"
 )
 

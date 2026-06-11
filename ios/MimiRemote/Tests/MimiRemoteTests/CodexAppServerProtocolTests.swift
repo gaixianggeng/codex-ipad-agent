@@ -1,5 +1,5 @@
 import XCTest
-@testable import CodexAgentPad
+@testable import MimiRemote
 
 final class CodexAppServerProtocolTests: XCTestCase {
     func testWireMessageClassifiesResponseNotificationAndServerRequest() throws {

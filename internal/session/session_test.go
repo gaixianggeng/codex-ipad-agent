@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/ring"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/ring"
 )
 
 func TestManagerCodexArgsForPromptAndResume(t *testing.T) {

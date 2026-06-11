@@ -2,7 +2,7 @@
 
 ## 目标
 
-Mimi Console / `agentd` 的默认安全边界是：用户自己的 iPad 连接用户自己的 Mac。它不是公网 SaaS，也不应该直接暴露给不可信网络。
+Mimi Remote / `agentd` 的默认安全边界是：用户自己的 iPad 连接用户自己的 Mac。它不是公网 SaaS，也不应该直接暴露给不可信网络。
 
 ## 支持范围
 

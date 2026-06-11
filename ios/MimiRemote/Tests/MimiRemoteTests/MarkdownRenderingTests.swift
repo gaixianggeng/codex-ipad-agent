@@ -1,5 +1,5 @@
 import XCTest
-@testable import CodexAgentPad
+@testable import MimiRemote
 
 @MainActor
 final class MarkdownRenderingTests: XCTestCase {

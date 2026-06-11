@@ -2,7 +2,7 @@
 
 ## 目标
 
-欢迎贡献能让 Mimi Console 更稳定、更安全、更容易安装的改动。优先级是可运行、低维护成本和清晰边界，不追求复杂架构。
+欢迎贡献能让 Mimi Remote 更稳定、更安全、更容易安装的改动。优先级是可运行、低维护成本和清晰边界，不追求复杂架构。
 
 ## 开发准备
 
@@ -17,7 +17,7 @@ go build -o bin/agentd ./cmd/agentd
 iOS 工程生成：
 
 ```bash
-cd ios/CodexAgentPad
+cd ios/MimiRemote
 xcodegen generate
 ```
 
@@ -25,8 +25,8 @@ Swift 编译检查：
 
 ```bash
 xcodebuild \
-  -project ios/CodexAgentPad/CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad \
+  -project ios/MimiRemote/MimiRemote.xcodeproj \
+  -scheme MimiRemote \
   -configuration Debug \
   -sdk iphoneos \
   CODE_SIGNING_ALLOWED=NO \
@@ -47,7 +47,7 @@ xcodebuild \
 - 参考开源项目时，在 PR 中说明来源、许可证和具体参考范围。
 - 不把本项目宣传成任何商业产品的免费替代品。
 - 不使用 OpenAI 官方 Logo 或容易造成官方背书误解的视觉元素。
-- App Store、README、Release Note 中优先使用 `Mimi` / `咪咪` 作为用户侧产品名；`codex-ipad-agent` 只作为仓库、formula 和工程名。
+- App Store、README、Release Note 中统一使用 `Mimi Remote` 作为用户侧产品名；`mimi-remote` 作为仓库、Go module 和 formula 名。
 
 ## PR 前自查
 

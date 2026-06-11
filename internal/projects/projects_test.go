@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func TestRegistryLoadsValidProject(t *testing.T) {

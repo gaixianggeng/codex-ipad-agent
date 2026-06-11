@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func TestRunCreatesConfigAndPairURL(t *testing.T) {
@@ -46,7 +46,7 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if connect.Scheme != "mimi" || connect.Host != "connect" {
+	if connect.Scheme != "mimiremote" || connect.Host != "connect" {
 		t.Fatalf("连接链接 scheme/host 异常：%s", result.ConnectURL)
 	}
 	if connect.Query().Get("endpoint") != result.Endpoint || connect.Query().Get("token") != result.Token {
@@ -56,7 +56,7 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Scheme != "mimi" || parsed.Host != "pair" {
+	if parsed.Scheme != "mimiremote" || parsed.Host != "pair" {
 		t.Fatalf("配对链接 scheme/host 异常：%s", result.PairURL)
 	}
 	if parsed.Query().Get("endpoint") != result.Endpoint || parsed.Query().Get("token") != result.Token {

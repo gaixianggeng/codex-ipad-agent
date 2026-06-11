@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const AppName = "codex-ipad-agent"
+const AppName = "mimi-remote"
 
 type Config struct {
 	Listen      string          `json:"listen"`

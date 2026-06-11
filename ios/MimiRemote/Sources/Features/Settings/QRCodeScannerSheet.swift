@@ -87,7 +87,7 @@ private struct QRCodeScannerView: UIViewControllerRepresentable {
 
 private final class QRCodeScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     private let captureSession = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "CodexAgentPad.QRCodeScanner.session")
+    private let sessionQueue = DispatchQueue(label: "MimiRemote.QRCodeScanner.session")
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var didReadCode = false
 

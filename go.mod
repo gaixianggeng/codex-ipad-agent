@@ -1,4 +1,4 @@
-module github.com/gaixianggeng/codex-ipad-agent
+module github.com/gaixianggeng/mimi-remote
 
 go 1.23.2
 

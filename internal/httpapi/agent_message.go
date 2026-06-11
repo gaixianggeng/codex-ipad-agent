@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/codexhistory"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
-	sessionpkg "github.com/gaixianggeng/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	sessionpkg "github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 type agentMessage struct {

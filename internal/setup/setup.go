@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 const defaultAgentDPort = "8787"
@@ -192,7 +192,7 @@ func connectionURL(route, endpoint, token string) string {
 	values := url.Values{}
 	values.Set("endpoint", endpoint)
 	values.Set("token", token)
-	return "mimi://" + route + "?" + values.Encode()
+	return "mimiremote://" + route + "?" + values.Encode()
 }
 
 func resolveConfigPath(path string) (string, error) {

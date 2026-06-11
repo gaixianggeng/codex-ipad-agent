@@ -1,4 +1,4 @@
-{"name":"initialize.request","direction":"client","message":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex_ipad_agent","title":"Codex iPad Agent","version":"0.1.0"}}}}
+{"name":"initialize.request","direction":"client","message":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"mimi_remote","title":"Mimi Remote","version":"0.1.0"}}}}
 {"name":"initialize.response","direction":"server","message":{"id":1,"result":{"userAgent":"codex/fake","platformFamily":"macos","platformOs":"darwin"}}}
 {"name":"initialized.notification","direction":"client","message":{"method":"initialized","params":{}}}
 {"name":"thread_list.request","direction":"client","message":{"id":2,"method":"thread/list","params":{"limit":20}}}

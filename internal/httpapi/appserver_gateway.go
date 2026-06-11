@@ -19,8 +19,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/appserver"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 const (

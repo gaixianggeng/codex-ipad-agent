@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/doctor"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/session"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/doctor"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gaixianggeng/codex-ipad-agent/internal/appserver"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/config"
-	"github.com/gaixianggeng/codex-ipad-agent/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 func TestCodexAppServerRuntimeListSessionsMapsThreadList(t *testing.T) {

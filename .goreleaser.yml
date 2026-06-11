@@ -1,6 +1,6 @@
 version: 2
 
-project_name: codex-ipad-agent
+project_name: mimi-remote
 
 builds:
   - id: agentd
@@ -49,7 +49,7 @@ changelog:
       - "^test:"
 
 brews:
-  - name: codex-ipad-agent
+  - name: mimi-remote
     ids:
       - agentd
     repository:
@@ -57,7 +57,7 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     directory: Formula
-    homepage: https://github.com/gaixianggeng/codex-ipad-agent
+    homepage: https://github.com/gaixianggeng/mimi-remote
     description: iPad companion agent for user-owned Mac developer environments
     install: |
       bin.install "agentd"
@@ -68,8 +68,8 @@ brews:
         run [opt_bin/"agentd", "serve"]
         environment_variables PATH: std_service_path_env
         keep_alive true
-        log_path var/"log/codex-ipad-agent.log"
-        error_log_path var/"log/codex-ipad-agent.log"
+        log_path var/"log/mimi-remote.log"
+        error_log_path var/"log/mimi-remote.log"
       end
     caveats: |
       首次使用：
@@ -80,4 +80,4 @@ brews:
         agentd start
         agentd doctor
 
-      iPad App 优先扫描 agentd start 输出的二维码；扫码不可用时再使用 Endpoint/Token。
+      Mimi Remote App 优先扫描 agentd start 输出的二维码；扫码不可用时再使用 Endpoint/Token。

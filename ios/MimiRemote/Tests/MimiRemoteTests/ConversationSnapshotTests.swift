@@ -2,7 +2,7 @@ import XCTest
 import SwiftUI
 import UIKit
 import SnapshotTesting
-@testable import CodexAgentPad
+@testable import MimiRemote
 
 @MainActor
 final class ConversationSnapshotTests: XCTestCase {
@@ -157,7 +157,7 @@ final class ConversationSnapshotTests: XCTestCase {
     }
 
     func testProjectSessionDashboard() async {
-        let project = AgentProject(id: "codex-ipad-agent", name: "codex-ipad-agent", path: "/Users/me/code/codex-ipad-agent")
+        let project = AgentProject(id: "mimi-remote", name: "mimi-remote", path: "/Users/me/code/mimi-remote")
         let themeStore = makeThemeStore()
         let appStore = AppStore()
         let sessions = [

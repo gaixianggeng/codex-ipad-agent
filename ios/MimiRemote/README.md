@@ -1,8 +1,8 @@
-# Mimi Console iPad App
+# Mimi Remote iPad App
 
 ## 目标
 
-Mimi Console 是原生 iPad SwiftUI 控制台。`CodexAgentPad` 只保留为 Xcode target、scheme 和源码目录名，不作为用户侧产品名。
+Mimi Remote 是原生 iPad SwiftUI 控制台。`MimiRemote` 只保留为 Xcode target、scheme 和源码目录名，不作为用户侧产品名。
 
 目标主链路是 iPad App 直接消费 Codex app-server JSON-RPC 协议；Mac 上的 `agentd` 只负责项目 allowlist、鉴权、健康诊断、app-server 启动和可选薄网关。这个 App 是独立第三方客户端，不隶属于 OpenAI，也不是任何商业产品的免费替代品。
 
@@ -37,7 +37,7 @@ agentd doctor
 
 - Endpoint，例如 `http://100.x.y.z:8787`
 - Token，也就是 `AGENTD_TOKEN`
-- 连接链接，例如 `mimi://connect?endpoint=...&token=...`
+- 连接链接，例如 `mimiremote://connect?endpoint=...&token=...`
 
 Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。MVP 支持 `http://100.x.x.x:8787` 这类 Tailscale 裸 IP；更推荐使用 MagicDNS 的 `http://<mac-hostname>.<tailnet>.ts.net:8787`，后续公开发布前应优先切到 HTTPS 或更严格的 ATS 策略。
 
@@ -77,16 +77,16 @@ Sources/
 生成 Xcode 工程：
 
 ```bash
-cd "$HOME/code/codex-ipad-agent"
-xcodegen generate --spec ios/CodexAgentPad/project.yml --project ios/CodexAgentPad
+cd "$HOME/code/mimi-remote"
+xcodegen generate --spec ios/MimiRemote/project.yml --project ios/MimiRemote
 ```
 
 命令行验证 Swift 代码可编译：
 
 ```bash
 xcodebuild \
-  -project ios/CodexAgentPad/CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad \
+  -project ios/MimiRemote/MimiRemote.xcodeproj \
+  -scheme MimiRemote \
   -configuration Debug \
   -sdk iphoneos \
   CODE_SIGNING_ALLOWED=NO \
@@ -97,8 +97,8 @@ xcodebuild \
 
 ```bash
 xcodebuild \
-  -project ios/CodexAgentPad/CodexAgentPad.xcodeproj \
-  -scheme CodexAgentPad \
+  -project ios/MimiRemote/MimiRemote.xcodeproj \
+  -scheme MimiRemote \
   -configuration Debug \
   -sdk iphoneos \
   CODE_SIGNING_ALLOWED=NO \
@@ -107,8 +107,8 @@ xcodebuild \
 
 真机运行：
 
-1. 用 Xcode 打开 `ios/CodexAgentPad/CodexAgentPad.xcodeproj`。
-2. 选择 `CodexAgentPad` scheme。
+1. 用 Xcode 打开 `ios/MimiRemote/MimiRemote.xcodeproj`。
+2. 选择 `MimiRemote` scheme。
 3. 选择 iPad 真机。
 4. 设置开发者 Team 和签名。
 5. Run。

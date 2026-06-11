@@ -132,7 +132,7 @@ final class AppStore: ObservableObject {
 
     static func pairingCredentials(from url: URL) throws -> PairingCredentials {
         let route = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard ["mimi", "codexagentpad"].contains(url.scheme?.lowercased() ?? ""),
+        guard ["mimiremote"].contains(url.scheme?.lowercased() ?? ""),
               route == "pair" || route == "connect"
         else {
             throw PairingLinkError.unsupportedURL

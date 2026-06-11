@@ -1,4 +1,4 @@
-name: CodexAgentPad
+name: MimiRemote
 options:
   bundleIdPrefix: com.gaixianggeng
   deploymentTarget:
@@ -17,7 +17,7 @@ packages:
     url: https://github.com/swiftlang/swift-markdown
     from: "0.8.0"
 targets:
-  CodexAgentPad:
+  MimiRemote:
     type: application
     platform: iOS
     sources:
@@ -29,9 +29,9 @@ targets:
         product: Markdown
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi
-        PRODUCT_NAME: mimi
-        PRODUCT_MODULE_NAME: CodexAgentPad
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiremote
+        PRODUCT_NAME: MimiRemote
+        PRODUCT_MODULE_NAME: MimiRemote
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SDKROOT: iphoneos
@@ -40,20 +40,20 @@ targets:
         SUPPORTS_MACCATALYST: "NO"
         CURRENT_PROJECT_VERSION: "3"
         MARKETING_VERSION: "1.0"
-  CodexAgentPadTests:
+  MimiRemoteTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: Tests
     dependencies:
-      - target: CodexAgentPad
+      - target: MimiRemote
       - package: SnapshotTesting
         product: SnapshotTesting
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiremoteTests
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         GENERATE_INFOPLIST_FILE: "YES"
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/mimi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/mimi"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MimiRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MimiRemote"
         BUNDLE_LOADER: "$(TEST_HOST)"

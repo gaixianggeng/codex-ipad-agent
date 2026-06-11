@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	agentsetup "github.com/gaixianggeng/codex-ipad-agent/internal/setup"
+	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 func TestVersionDoesNotRequireConfig(t *testing.T) {
@@ -41,7 +41,7 @@ func TestServeConnectionIsNotPrintedToRegularFile(t *testing.T) {
 	maybePrintServeConnection(file, agentsetup.Result{
 		Endpoint:   "http://127.0.0.1:8787",
 		Token:      "secret-token",
-		ConnectURL: "mimi://connect?endpoint=http%3A%2F%2F127.0.0.1%3A8787&token=secret-token",
+		ConnectURL: "mimiremote://connect?endpoint=http%3A%2F%2F127.0.0.1%3A8787&token=secret-token",
 	})
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestServeConnectionIsNotPrintedToRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := string(raw)
-	if strings.Contains(output, "secret-token") || strings.Contains(output, "mimi://connect") {
+	if strings.Contains(output, "secret-token") || strings.Contains(output, "mimiremote://connect") {
 		t.Fatalf("serve 不应把连接凭证写入非交互式日志输出：%q", output)
 	}
 }

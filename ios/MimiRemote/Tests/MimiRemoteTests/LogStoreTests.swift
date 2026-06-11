@@ -1,6 +1,6 @@
 import XCTest
 import Combine
-@testable import CodexAgentPad
+@testable import MimiRemote
 
 @MainActor
 final class LogStoreTests: XCTestCase {

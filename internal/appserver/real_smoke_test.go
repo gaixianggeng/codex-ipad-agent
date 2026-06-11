@@ -25,7 +25,7 @@ func TestRealCodexAppServerSmoke(t *testing.T) {
 	defer cancel()
 	process, _, err := StartManaged(ctx, ManagedOptions{
 		CodexBin:   os.Getenv("AGENTD_CODEX_BIN"),
-		ClientInfo: ClientInfo{Name: "codex_ipad_agent", Title: "Codex iPad Agent Smoke", Version: "test"},
+		ClientInfo: ClientInfo{Name: "mimi_remote", Title: "Mimi Remote Smoke", Version: "test"},
 	})
 	if err != nil {
 		t.Fatal(err)

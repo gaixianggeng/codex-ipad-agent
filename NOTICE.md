@@ -1,12 +1,12 @@
-# Mimi Console Notice
+# Mimi Remote Notice
 
 ## 目标
 
-这个文件说明 Mimi Console / `codex-ipad-agent` 的归属、第三方品牌边界和开源使用方式。
+这个文件说明 Mimi Remote / `mimi-remote` 的归属、第三方品牌边界和开源使用方式。
 
 ## 项目归属
 
-Mimi Console 是独立开发的第三方客户端。它连接用户自己 Mac 上运行的 `agentd`，再由 `agentd` 连接用户本机的 Codex CLI / app-server 环境。
+Mimi Remote 是独立开发的第三方客户端。它连接用户自己 Mac 上运行的 `agentd`，再由 `agentd` 连接用户本机的 Codex CLI / app-server 环境。
 
 本项目不隶属于 OpenAI，也没有获得 OpenAI 的赞助、背书或官方授权。`Codex`、`OpenAI` 等名称只用于描述兼容的用户自有工具链。
 

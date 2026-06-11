@@ -1,6 +1,6 @@
 import XCTest
 import Combine
-@testable import CodexAgentPad
+@testable import MimiRemote
 
 @MainActor
 final class ConversationDataFlowTests: XCTestCase {
@@ -1790,7 +1790,7 @@ final class ConversationDataFlowTests: XCTestCase {
         {
           "id": "sess_1",
           "project_id": "proj_1",
-          "project": "Codex iPad Agent",
+          "project": "Mimi Remote",
           "dir": "/tmp/project",
           "title": "数据流测试",
           "status": "running",
@@ -4179,7 +4179,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
         let pendingApproval = try XCTUnwrap(store.selectedSession?.pendingApproval)
         XCTAssertEqual(store.selectedSession?.status, "waiting_for_approval")
-        XCTAssertEqual(pendingApproval.title, "Codex 请求执行命令：go test ./ios/CodexAgentPad")
+        XCTAssertEqual(pendingApproval.title, "Codex 请求执行命令：go test ./ios/MimiRemote")
         XCTAssertTrue(conversationStore.messages(for: sessionID).contains { $0.kind == .approval && $0.content.contains("等待审批") })
 
         store.decideApproval(pendingApproval, accept: true)

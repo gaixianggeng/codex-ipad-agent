@@ -6,14 +6,14 @@
 
 ## 方案
 
-Mimi Console 的定位是：
+Mimi Remote 的定位是：
 
 - 用户自己 iPad 上的原生控制台。
 - 连接用户自己 Mac 上的 `agentd`。
 - 通过用户本机已安装、已登录的 Codex CLI / app-server 工作。
 - 不托管用户代码，不保存第三方账号凭证，不提供公网 SaaS。
 
-Mimi Console 的非目标是：
+Mimi Remote 的非目标是：
 
 - 不是 OpenAI 官方客户端。
 - 不是任何商业产品的免费替代品。
@@ -24,8 +24,8 @@ Mimi Console 的非目标是：
 
 ### 命名
 
-- 用户侧 App 名优先使用 `Mimi` / `咪咪`。
-- `codex-ipad-agent` 保留为仓库名、Go module、Homebrew formula 和后端工程名。
+- 用户侧 App 名统一使用 `Mimi Remote`。
+- `mimi-remote` 保留为仓库名、Go module、Homebrew formula 和后端工程名。
 - 文案中可以说明“连接用户自己 Mac 上的 Codex CLI / app-server”，但不要暗示官方授权或官方移动端。
 
 ### 文案
@@ -33,7 +33,7 @@ Mimi Console 的非目标是：
 推荐写法：
 
 ```text
-Mimi 是一个 iPad 原生客户端，用来连接你自己 Mac 上运行的 agentd。
+Mimi Remote 是一个 iPad 原生客户端，用来连接你自己 Mac 上运行的 agentd。
 ```
 
 ```text
@@ -80,6 +80,6 @@ Mimi 是一个 iPad 原生客户端，用来连接你自己 Mac 上运行的 age
 控制方式：
 
 - README 首屏固定展示独立第三方声明。
-- Release、App Store 和截图优先使用 `Mimi` 品牌。
+- Release、App Store 和截图统一使用 `Mimi Remote` 品牌。
 - PR 模板加入归属和品牌自查。
 - 对相似度争议提供专门 issue 模板，尽量把问题落到具体可改文件。
