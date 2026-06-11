@@ -1,0 +1,29 @@
+{
+  "listen": "127.0.0.1:8787",
+  "auth": {
+    "token": "change-me-run-agentd-setup",
+    "allow_query_token": false
+  },
+  "runtime": {
+    "type": "codex_app_server"
+  },
+  "app_server": {
+    "transport": "ws",
+    "managed": true,
+    "listen": "ws://127.0.0.1:4222",
+    "ws_token_file": "/Users/you/Library/Application Support/codex-ipad-agent/app-server-ws-token"
+  },
+  "codex": {
+    "bin": "codex",
+    "default_args": ["--no-alt-screen"],
+    "env": {
+      "TERM": "xterm-256color"
+    }
+  },
+  "session": {
+    "output_buffer_bytes": 131072
+  },
+  "scan_roots": [
+    "/Users/you/code"
+  ]
+}

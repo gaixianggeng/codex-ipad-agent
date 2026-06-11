@@ -1,0 +1,36 @@
+name: 归属、许可证或品牌混淆问题
+description: 反馈代码归属、许可证、UI 相似度、品牌混淆或宣传文案风险
+title: "[IP/Brand] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你直接指出问题。请尽量提供具体文件、截图、链接或 commit，方便我们快速判断和修正。
+  - type: textarea
+    id: concern
+    attributes:
+      label: 问题描述
+      description: 说明你认为存在归属、许可证、UI 相似度、品牌混淆或宣传文案风险的地方。
+    validations:
+      required: true
+  - type: textarea
+    id: locations
+    attributes:
+      label: 具体位置
+      description: 请贴出相关文件路径、截图、URL、commit 或对比链接。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望处理方式
+      description: 例如补充 attribution、调整文案、移除素材、重做交互、补许可证等。
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充上下文
+      description: 其他有助于判断的信息。
+    validations:
+      required: false

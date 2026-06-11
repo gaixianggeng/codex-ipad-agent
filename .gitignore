@@ -1,0 +1,45 @@
+.DS_Store
+
+# Local agent/workflow state kept out of public releases
+.claude/
+.codex/
+openspec/
+.local-archive/
+
+# Local environment and secrets
+.env
+.env.*
+config.json
+
+# Go build output
+bin/
+
+# Xcode and Swift build output
+DerivedData/
+.build/
+build/
+*.xcresult
+*.xcuserstate
+*.xctestrun
+*.ipa
+*.xcarchive/
+*.dSYM/
+*.mobileprovision
+*.logarchive/
+*.trace
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+ios/CodexAgentPad/build/
+ios/CodexAgentPad/build-test/
+
+# Local planning notes that are useful privately but noisy for public users
+docs/codex-app-server-runtime-refactor.md
+docs/codex-app-server-runtime-review-fixes.md
+docs/ios-markdown-rendering-design.md
+docs/release-plan.md
+
+# Logs and temporary files
+/logs/
+*.log
+*.tmp
