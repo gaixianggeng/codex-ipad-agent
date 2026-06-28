@@ -75,6 +75,54 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertGreaterThan(message.contentByteCount, initial.contentByteCount)
     }
 
+    func testSessionDisplayStatusUsesForegroundAndGoalProgress() {
+        let goal = ThreadGoal(
+            threadID: "session-1",
+            objective: "完成 iPad 对话体验优化",
+            status: .active,
+            tokenBudget: 1_000,
+            tokensUsed: 250,
+            timeUsedSeconds: 75
+        )
+        let session = AgentSession(
+            id: "session-1",
+            projectID: "project-1",
+            project: "Mimi",
+            dir: "/tmp/mimi",
+            title: "修复会话体验",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            activeTurnID: "turn-1",
+            goal: goal
+        )
+
+        XCTAssertEqual(session.displayStatus(foregroundActivity: .receivingAssistant).title, "正在回复")
+        XCTAssertEqual(goal.budgetPercentText, "25%")
+        XCTAssertEqual(try XCTUnwrap(goal.budgetProgressFraction), 0.25, accuracy: 0.001)
+        XCTAssertTrue(session.statusBadges(foregroundActivity: .receivingAssistant).contains { badge in
+            badge.title == "目标 运行中 25%"
+        })
+
+        let approvalSession = AgentSession(
+            id: "session-2",
+            projectID: "project-1",
+            project: "Mimi",
+            dir: "/tmp/mimi",
+            title: "审批会话",
+            status: SessionStatus.waitingForApproval.rawValue,
+            source: "codex",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            pendingApproval: ApprovalSummary(id: "approval-1", title: "写入文件", kind: "command", count: 1)
+        )
+
+        XCTAssertEqual(approvalSession.displayStatus(foregroundActivity: .receivingAssistant).title, "待审批")
+    }
+
     func testConversationFileReferenceDetectorFindsPreviewableAbsolutePaths() {
         let text = """
         已生成：
@@ -185,7 +233,7 @@ final class ConversationDataFlowTests: XCTestCase {
             return XCTFail("过程消息应聚合成已处理折叠组")
         }
         XCTAssertEqual(group.messages.map(\.content), ["命令：xcodebuild test", "文件变更：ConversationView.swift modified"])
-        XCTAssertEqual(group.title, "已处理 9s")
+        XCTAssertEqual(group.title, "已处理 2 步 · 9s")
         if case .message(let final) = items[2] {
             XCTAssertEqual(final.role, .assistant)
             XCTAssertEqual(final.content, "已完成，最终回答保持展开。")
@@ -266,7 +314,7 @@ final class ConversationDataFlowTests: XCTestCase {
             return XCTFail("迟到的过程消息应按 turnID 归到最终回复之前")
         }
         XCTAssertEqual(group.messages.map(\.content), ["文件变更：README.md modified"])
-        XCTAssertEqual(group.title, "已处理 4s")
+        XCTAssertEqual(group.title, "已处理 1 步 · 4s")
         if case .message(let final) = items[2] {
             XCTAssertEqual(final.content, "最终回答仍然完整展示。")
         } else {
@@ -1046,7 +1094,7 @@ final class ConversationDataFlowTests: XCTestCase {
             return XCTFail("history 过程消息应该折叠到最终 assistant 前")
         }
         XCTAssertEqual(group.messages.map(\.content), ["我先调用一个子 agent。", "让子 agent 生成一个短笑话。"])
-        XCTAssertEqual(group.title, "已处理 34s")
+        XCTAssertEqual(group.title, "已处理 2 步 · 34s")
         guard case .message(let final) = items[2] else {
             return XCTFail("最终 assistant 应保持独立展开")
         }
@@ -1068,6 +1116,65 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.count, 1)
         XCTAssertEqual(messages.first?.role, .user)
         XCTAssertEqual(messages.first?.content, "讲个笑话")
+    }
+
+    func testConversationMessagesTrackCreatedAndCompletedTimes() throws {
+        let store = ConversationStore()
+        let sessionID = "sess_message_times"
+        let startedAt = Date(timeIntervalSince1970: 100)
+        let completedAt = Date(timeIntervalSince1970: 140)
+        let startMetadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: sessionID,
+            turnID: "turn-times",
+            itemID: "assistant-times",
+            messageID: nil,
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: startedAt
+        )
+
+        store.applyAssistantDelta(
+            AgentDelta(text: "正在处理", role: .assistant, kind: .message),
+            metadata: startMetadata,
+            fallbackSessionID: sessionID
+        )
+
+        var assistant = try XCTUnwrap(store.messages(for: sessionID).first)
+        XCTAssertEqual(assistant.createdAt, startedAt)
+        XCTAssertNil(assistant.updatedAt)
+
+        let completionMetadata = AgentEventMetadata(
+            seq: 2,
+            sessionID: sessionID,
+            turnID: "turn-times",
+            itemID: "assistant-times",
+            messageID: nil,
+            clientMessageID: nil,
+            revision: 2,
+            createdAt: completedAt
+        )
+        store.markCurrentAssistantCompleted(metadata: completionMetadata, fallbackSessionID: sessionID)
+
+        assistant = try XCTUnwrap(store.messages(for: sessionID).first)
+        XCTAssertEqual(assistant.createdAt, startedAt)
+        XCTAssertEqual(assistant.updatedAt, completedAt)
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "history-assistant-times",
+                role: "assistant",
+                content: "历史回复",
+                createdAt: startedAt,
+                updatedAt: completedAt,
+                turnID: "history-turn",
+                itemID: "history-assistant-times"
+            )
+        ], sessionID: "sess_history_message_times")
+
+        let historyAssistant = try XCTUnwrap(store.messages(for: "sess_history_message_times").first)
+        XCTAssertEqual(historyAssistant.createdAt, startedAt)
+        XCTAssertEqual(historyAssistant.updatedAt, completedAt)
     }
 
     func testRepeatedUnstableHistoryProjectionKeepsMessageIdentity() {
@@ -4509,6 +4616,61 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(drainedAgain.isEmpty)
     }
 
+    func testDisconnectFlushesBufferedRuntimeEventsBeforeSwitchingSession() async throws {
+        let project = makeProject(id: "proj_ws_disconnect_flush")
+        let running = makeSession(id: "sess_ws_disconnect_flush", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let history = makeSession(id: "sess_ws_disconnect_history", projectID: project.id, title: "历史", status: "history", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running, history], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let assistant = try AgentAPIClient.decoder.decode(
+            AgentMessage.self,
+            from: Data("""
+            {
+              "id": "rollout:disconnect-flush",
+              "session_id": "\(running.id)",
+              "role": "assistant",
+              "kind": "message",
+              "content": "断开前最后一条回复",
+              "created_at": "2026-06-02T10:00:00Z",
+              "revision": 1,
+              "send_status": "confirmed"
+            }
+            """.utf8)
+        )
+        sockets[0].emitEvent(.messageCompleted(
+            assistant,
+            AgentEventMetadata(seq: 7, sessionID: running.id, turnID: "turn-flush", itemID: "item-flush", messageID: assistant.id, clientMessageID: nil, revision: 1, createdAt: nil)
+        ))
+
+        await store.selectSession(history)
+
+        let messages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
+            messages.contains { $0.role == .assistant && $0.content == "断开前最后一条回复" }
+        }
+        XCTAssertTrue(messages.contains { $0.role == .assistant && $0.content == "断开前最后一条回复" })
+        XCTAssertEqual(sockets[0].disconnectCallCount, 1)
+    }
+
     func testWebSocketFailureAutoReconnectsWithLatestReplayWatermark() async throws {
         let project = makeProject(id: "proj_ws_reconnect")
         let running = makeSession(id: "sess_ws_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
@@ -5144,6 +5306,42 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(acceptedMessages.first { $0.clientMessageID == "client-retry" }?.sendStatus, .sent)
     }
 
+    func testFailedRunningMessageRetryDoesNotResumeWhenWebSocketIsConnecting() async throws {
+        let project = makeProject(id: "proj_retry_connecting_guard")
+        let running = makeSession(id: "sess_retry_connecting_guard", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        try await waitForWebSocketStatus(.connecting, store: store)
+        conversationStore.appendLocalUser("重试不要新建会话", sessionID: running.id, clientMessageID: "client-retry-connecting", sendStatus: .failed)
+        let failedMessage = try XCTUnwrap(conversationStore.messages(for: running.id).first {
+            $0.clientMessageID == "client-retry-connecting"
+        })
+
+        let retried = await store.retryFailedUserMessage(failedMessage)
+
+        XCTAssertFalse(retried)
+        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+        XCTAssertTrue(client.createPayloads.isEmpty)
+        XCTAssertEqual(conversationStore.messages(for: running.id).first?.sendStatus, .failed)
+    }
+
     func testRetryFailedUserMessagePreservesStructuredTurnPayload() async throws {
         let project = makeProject(id: "proj_retry_payload")
         let running = makeSession(id: "sess_retry_payload", projectID: project.id, title: "Retry Payload", status: "running", source: "codex")
@@ -5242,6 +5440,46 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(payloadContainsImageURL(accepted.turnPayload, url: "https://example.test/diagram.png"))
         XCTAssertTrue(payloadContainsMention(accepted.turnPayload, name: "README"))
         XCTAssertEqual(accepted.turnPayload?.textPrompt, "看下这张图")
+    }
+
+    func testRunningSessionSendWaitsForConnectedWebSocket() async throws {
+        let project = makeProject(id: "proj_ws_connecting_guard")
+        let running = makeSession(id: "sess_ws_connecting_guard", projectID: project.id, title: "连接中", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        try await waitForWebSocketStatus(.connecting, store: store)
+
+        let sentWhileConnecting = await store.sendTurn(CodexAppServerTurnPayload(prompt: "不要在连接中发送"))
+
+        XCTAssertFalse(sentWhileConnecting)
+        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+        XCTAssertTrue(conversationStore.messages(for: running.id).isEmpty)
+        XCTAssertEqual(store.errorMessage, "WebSocket 正在连接，请稍后再发送")
+
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let sentAfterConnected = await store.sendTurn(CodexAppServerTurnPayload(prompt: "连接好后再发送"))
+
+        XCTAssertTrue(sentAfterConnected)
+        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "连接好后再发送")
     }
 
     func testWebSocketFailureMarksSendingUserMessagesFailedAndIgnoresStaleAccepted() async throws {
@@ -6977,6 +7215,36 @@ private func waitForConversationMessages(
     return messages
 }
 
+private func valuesOrTimeout(
+    _ task: Task<[Int], Never>,
+    expectedCount: Int,
+    timeoutNanoseconds: UInt64 = 1_000_000_000
+) async throws -> [Int] {
+    try await withThrowingTaskGroup(of: [Int]?.self) { group in
+        group.addTask {
+            await task.value
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            return nil
+        }
+        guard let result = try await group.next() else {
+            task.cancel()
+            return []
+        }
+        group.cancelAll()
+        guard let values = result else {
+            task.cancel()
+            XCTFail("事件流在超时前未拿齐 \(expectedCount) 条")
+            return []
+        }
+        if values.count < expectedCount {
+            XCTFail("事件流数量不足：expected=\(expectedCount), actual=\(values.count)")
+        }
+        return values
+    }
+}
+
 @MainActor
 private func waitForWebSocketStatus(_ expected: WebSocketStatus, store: SessionStore) async throws {
     for _ in 0..<80 {
@@ -7053,6 +7321,52 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(request?.id, .int(99))
         XCTAssertEqual(request?.method, "item/commandExecution/requestApproval")
         XCTAssertEqual(request?.params?["command"]?.stringValue, "go test ./...")
+    }
+
+    func testCodexAppServerConnectionBuffersInboundStreamsWithoutDroppingOldEvents() async throws {
+        let connection = CodexAppServerConnection(transport: FakeCodexAppServerTransport(), requestTimeout: 2)
+        let notificationStream = await connection.notifications()
+        let serverRequestStream = await connection.serverRequests()
+
+        for index in 0..<700 {
+            await connection.ingestTextForTesting(#"{"method":"turn/probe","params":{"index":\#(index)}}"#)
+        }
+        for index in 0..<180 {
+            await connection.ingestTextForTesting(#"{"id":\#(index + 1),"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_buffer","turnId":"turn_buffer","itemId":"cmd_\#(index)","index":\#(index)}}"#)
+        }
+
+        let notificationValuesTask = Task {
+            var iterator = notificationStream.makeAsyncIterator()
+            var values: [Int] = []
+            for _ in 0..<700 {
+                guard let item = await iterator.next() else {
+                    break
+                }
+                values.append(item.params?["index"]?.intValue ?? -1)
+            }
+            return values
+        }
+        let requestValuesTask = Task {
+            var iterator = serverRequestStream.makeAsyncIterator()
+            var values: [Int] = []
+            for _ in 0..<180 {
+                guard let item = await iterator.next() else {
+                    break
+                }
+                values.append(item.params?["index"]?.intValue ?? -1)
+            }
+            return values
+        }
+
+        let notificationValues = try await valuesOrTimeout(notificationValuesTask, expectedCount: 700)
+        let requestValues = try await valuesOrTimeout(requestValuesTask, expectedCount: 180)
+
+        XCTAssertEqual(notificationValues.count, 700)
+        XCTAssertEqual(notificationValues.first, 0)
+        XCTAssertEqual(notificationValues.last, 699)
+        XCTAssertEqual(requestValues.count, 180)
+        XCTAssertEqual(requestValues.first, 0)
+        XCTAssertEqual(requestValues.last, 179)
     }
 
     func testCodexAppServerConnectionMapsAppServerErrors() async throws {
@@ -7705,7 +8019,7 @@ extension ConversationDataFlowTests {
             return XCTFail("thread/read 过程 item 应折叠到最终 assistant 前")
         }
         XCTAssertEqual(group.messages.count, 4)
-        XCTAssertEqual(group.title, "已处理 34s")
+        XCTAssertEqual(group.title, "已处理 4 步 · 34s")
         guard case .message(let final) = items[2] else {
             return XCTFail("最终 assistant 应保持独立展开")
         }
@@ -8090,6 +8404,76 @@ extension ConversationDataFlowTests {
         let secondSentMessages = await secondTransport.sentMessages()
         XCTAssertEqual(firstSentMessages.count, 3)
         XCTAssertEqual(secondSentMessages.count, 4)
+    }
+
+    func testCodexAppServerSessionRuntimeRetiresConnectionAfterTurnStartTimeout() async throws {
+        let project = AgentProject(id: "proj_turn_timeout", name: "Turn Timeout", path: "/tmp/turn-timeout")
+        let pool = FakeCodexAppServerTransportPool()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { pool.make() },
+            requestTimeout: 0.05,
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let firstTransport = try await waitForFakeAppServerTransport(in: pool, index: 0)
+        let initializeMessages = try await waitForFakeAppServerMessages(firstTransport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transportResponse(firstTransport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+
+        let listMessages = try await waitForFakeAppServerMessages(firstTransport, count: 3)
+        let listRequest = try decodeAppServerRequest(listMessages[2])
+        XCTAssertEqual(listRequest.method, "thread/list")
+        transportResponse(firstTransport, id: listRequest.id, result: #"{"data":[{"id":"thr_turn_timeout","sessionId":"thr_turn_timeout","preview":"超时会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/turn-timeout","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"超时会话","turns":[]}],"nextCursor":null,"backwardsCursor":null}"#)
+        _ = try await pageTask.value
+
+        let timeoutTask = Task {
+            try await runtime.startTurn(sessionID: "thr_turn_timeout", prompt: "这次会超时", clientMessageID: "client_timeout")
+        }
+        let firstResumeMessages = try await waitForFakeAppServerMessages(firstTransport, count: 4)
+        let firstResume = try decodeAppServerRequest(firstResumeMessages[3])
+        XCTAssertEqual(firstResume.method, "thread/resume")
+        transportResponse(firstTransport, id: firstResume.id, result: #"{"thread":{"id":"thr_turn_timeout","sessionId":"thr_turn_timeout","preview":"超时会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490702,"status":{"type":"idle"},"path":null,"cwd":"/tmp/turn-timeout","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"超时会话","turns":[]}}"#)
+
+        let firstTurnMessages = try await waitForFakeAppServerMessages(firstTransport, count: 5)
+        let firstTurnStart = try decodeAppServerRequest(firstTurnMessages[4])
+        XCTAssertEqual(firstTurnStart.method, "turn/start")
+
+        do {
+            _ = try await timeoutTask.value
+            XCTFail("turn/start timeout should fail")
+        } catch CodexAppServerConnectionError.timeout(let method, _) {
+            XCTAssertEqual(method, "turn/start")
+        } catch {
+            XCTFail("Unexpected timeout error: \(error)")
+        }
+
+        let retryTask = Task {
+            try await runtime.startTurn(sessionID: "thr_turn_timeout", prompt: "新连接继续", clientMessageID: "client_after_timeout")
+        }
+        let secondTransport = try await waitForFakeAppServerTransport(in: pool, index: 1)
+        let secondInitializeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 1)
+        let secondInitialize = try decodeAppServerRequest(secondInitializeMessages[0])
+        transportResponse(secondTransport, id: secondInitialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+
+        let secondResumeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 3)
+        let secondResume = try decodeAppServerRequest(secondResumeMessages[2])
+        XCTAssertEqual(secondResume.method, "thread/resume")
+        XCTAssertEqual(secondResume.params?["threadId"]?.stringValue, "thr_turn_timeout")
+        transportResponse(secondTransport, id: secondResume.id, result: #"{"thread":{"id":"thr_turn_timeout","sessionId":"thr_turn_timeout","preview":"超时会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490703,"status":{"type":"idle"},"path":null,"cwd":"/tmp/turn-timeout","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"超时会话","turns":[]}}"#)
+
+        let secondTurnMessages = try await waitForFakeAppServerMessages(secondTransport, count: 4)
+        let secondTurnStart = try decodeAppServerRequest(secondTurnMessages[3])
+        XCTAssertEqual(secondTurnStart.method, "turn/start")
+        XCTAssertEqual(secondTurnStart.params?["clientUserMessageId"]?.stringValue, "client_after_timeout")
+        transportResponse(secondTransport, id: secondTurnStart.id, result: #"{"turn":{"id":"turn_after_timeout","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490704,"completedAt":null,"durationMs":null}}"#)
+
+        let retryTurnID = try await retryTask.value
+        XCTAssertEqual(retryTurnID, "turn_after_timeout")
     }
 
     func testCodexAppServerSessionRuntimeRefreshesUnavailableGatewayConfigBeforeConnecting() async throws {
@@ -9059,6 +9443,11 @@ private func loadDirectAppServerEventStreamFixture(
 private func jsonFragment(for id: CodexAppServerRequestID) throws -> String {
     let data = try JSONEncoder().encode(id)
     return String(decoding: data, as: UTF8.self)
+}
+
+private func transportResponse(_ transport: FakeCodexAppServerTransport, id: CodexAppServerRequestID, result: String) {
+    let encodedID = (try? jsonFragment(for: id)) ?? "null"
+    transport.enqueue(#"{"id":\#(encodedID),"result":\#(result)}"#)
 }
 
 private func makeProject(id: String) -> AgentProject {

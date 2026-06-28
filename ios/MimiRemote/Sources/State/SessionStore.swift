@@ -175,32 +175,6 @@ extension SessionStoreAPIClient {
 
 }
 
-enum SessionForegroundActivity: Equatable, Sendable {
-    case refreshing
-    case waitingForAssistant
-    case receivingAssistant
-
-    var title: String {
-        switch self {
-        case .refreshing:
-            return "同步中"
-        case .waitingForAssistant:
-            return "等待回复"
-        case .receivingAssistant:
-            return "正在回复"
-        }
-    }
-
-    var showsSpinner: Bool {
-        switch self {
-        case .refreshing, .waitingForAssistant:
-            return true
-        case .receivingAssistant:
-            return false
-        }
-    }
-}
-
 actor TerminalStreamStore {
     private let maxBatchSize: Int
     private var eventsBySessionID: [SessionID: [AgentEvent]] = [:]
@@ -648,8 +622,10 @@ final class SessionStore: ObservableObject {
     private let historyPageLimit = 120
     private static let optimisticSessionSource = "local"
     static let sessionPreviewLimit = 3
-    private static let initialSessionPageLimit = 80
-    private static let expandedSessionPageLimit = 120
+    // 远程/VPS 中转链路下，thread/list 的响应会经过 WebSocket + SSH 隧道。
+    // 首屏先拿较小窗口，避免弱网下为了预览历史会话而卡住整个工作台。
+    private static let initialSessionPageLimit = 20
+    private static let expandedSessionPageLimit = 50
     private static let commandActionHistoryLimit = 10
 
     init(
@@ -758,6 +734,13 @@ final class SessionStore: ObservableObject {
             return nil
         }
         return foregroundActivityBySessionID[selectedSessionID]
+    }
+
+    func foregroundActivity(for sessionID: SessionID) -> SessionForegroundActivity? {
+        guard sessionsByID[sessionID]?.isRunning == true else {
+            return nil
+        }
+        return foregroundActivityBySessionID[sessionID]
     }
 
     var selectedGitStatusPath: String? {
@@ -2203,8 +2186,10 @@ final class SessionStore: ObservableObject {
 
         if let session = selectedSession,
            session.isRunning,
-           let clientMessageID = message.clientMessageID,
-           let socket = readyWebSocket(for: session) {
+           let clientMessageID = message.clientMessageID {
+            guard let socket = readyWebSocket(for: session) else {
+                return false
+            }
             // 失败消息有 client_message_id 时直接复用原 row 重发，避免 timeline 里出现重复用户气泡。
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
@@ -3217,9 +3202,6 @@ final class SessionStore: ObservableObject {
         conversationStore.resetLiveTranscript(sessionID: session.id)
         runtimeEventFlushTasks[session.id]?.cancel()
         runtimeEventFlushTasks[session.id] = nil
-        Task { [terminalStreamStore] in
-            await terminalStreamStore.removeAll(sessionID: session.id)
-        }
         socket.connect(sessionID: session.id)
     }
 
@@ -3238,9 +3220,10 @@ final class SessionStore: ObservableObject {
 
     private func readyWebSocket(for session: AgentSession) -> (any SessionWebSocketClient)? {
         let shouldReconnect: Bool
-        if case .failed = webSocketStatus {
+        switch webSocketStatus {
+        case .failed, .disconnected:
             shouldReconnect = true
-        } else {
+        case .connecting, .connected:
             shouldReconnect = false
         }
         if connectedSessionID != session.id || webSocket == nil || shouldReconnect {
@@ -3248,6 +3231,10 @@ final class SessionStore: ObservableObject {
         }
         guard let webSocket, connectedSessionID == session.id else {
             setErrorMessage("WebSocket 正在重新接入，请稍后再发送")
+            return nil
+        }
+        guard webSocketStatus == .connected else {
+            setErrorMessage("WebSocket 正在连接，请稍后再发送")
             return nil
         }
         return webSocket
@@ -3298,6 +3285,16 @@ final class SessionStore: ObservableObject {
         if cancelReconnect {
             cancelWebSocketReconnect(resetAttempts: true)
         }
+        let sessionIDsToFlush = Set(([connectedSessionID].compactMap { $0 }) + Array(runtimeEventFlushTasks.keys))
+        for sessionID in sessionIDsToFlush {
+            runtimeEventFlushTasks[sessionID]?.cancel()
+            runtimeEventFlushTasks[sessionID] = nil
+            Task { [weak self] in
+                // 手动切会话/断开时，最后一个合并窗口里的事件已经在本地 actor 中；
+                // 先异步 drain，避免新连接启动时把尾包清掉。
+                await self?.flushRuntimeEvents(sessionID: sessionID)
+            }
+        }
         webSocketConnectionGeneration += 1
         let previousSessionID = connectedSessionID
         let socket = webSocket
@@ -3308,10 +3305,6 @@ final class SessionStore: ObservableObject {
             conversationStore.markSendingUserMessagesFailed(sessionID: previousSessionID)
         }
         pendingApprovalDecisionIDsBySessionID.removeAll()
-        for task in runtimeEventFlushTasks.values {
-            task.cancel()
-        }
-        runtimeEventFlushTasks.removeAll()
         setWebSocketStatus(.disconnected)
     }
 

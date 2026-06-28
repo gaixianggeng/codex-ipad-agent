@@ -47,15 +47,15 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil || model.foregroundActivity != nil {
+        if model.errorMessage != nil || model.statusDisplay != nil {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     Spacer(minLength: 0)
-                    foregroundStatus(model: model)
+                    statusStripContent(model: model)
                     Spacer(minLength: 0)
                 }
                 VStack(spacing: 8) {
-                    foregroundStatus(model: model)
+                    statusStripContent(model: model)
                 }
             }
             .padding(.horizontal, layout.horizontalInset)
@@ -65,37 +65,63 @@ struct ConversationView: View {
     }
 
     @ViewBuilder
-    private func foregroundStatus(model: ConversationScreenModel) -> some View {
-        if let message = model.errorMessage {
-            Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red)
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.86)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(statusChipBackground)
-                .clipShape(Capsule())
-        } else if let activity = model.foregroundActivity {
-            HStack(spacing: 7) {
-                if activity.showsSpinner {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.green)
-                } else {
-                    Circle()
-                        .fill(.green)
-                        .frame(width: 7, height: 7)
+    private func statusStripContent(model: ConversationScreenModel) -> some View {
+        let status = model.statusDisplay
+        let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if status != nil || message?.isEmpty == false {
+            HStack(spacing: 8) {
+                if let status {
+                    statusChip(status)
                 }
-                Text(activity.title)
+                if let message, !message.isEmpty {
+                    Label("错误：\(message)", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(themeStore.uiFont(.caption, weight: .medium))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.86)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(statusChipBackground)
+                        .clipShape(Capsule())
+                }
             }
-            .font(themeStore.uiFont(.caption, weight: .medium))
-            .foregroundStyle(workbenchSecondaryText)
-            .lineLimit(1)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(statusChipBackground)
-                .clipShape(Capsule())
+        }
+    }
+
+    private func statusChip(_ status: AgentSessionDisplayStatus) -> some View {
+        HStack(spacing: 7) {
+            if status.showsSpinner {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(tint(for: status.tone))
+            } else {
+                Image(systemName: status.systemImage)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+            }
+            Text("当前：\(status.title)")
+        }
+        .font(themeStore.uiFont(.caption, weight: .medium))
+        .foregroundStyle(tint(for: status.tone))
+        .lineLimit(1)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(statusChipBackground)
+        .clipShape(Capsule())
+    }
+
+    private func tint(for tone: AgentSessionStatusTone) -> Color {
+        switch tone {
+        case .active:
+            return .green
+        case .warning:
+            return .orange
+        case .danger:
+            return .red
+        case .complete:
+            return .blue
+        case .neutral:
+            return workbenchSecondaryText
         }
     }
 
@@ -113,6 +139,7 @@ struct ConversationScreenModel: Equatable {
     let title: String
     let subtitle: String
     let foregroundActivity: SessionForegroundActivity?
+    let statusDisplay: AgentSessionDisplayStatus?
     let errorMessage: String?
 
     init(
@@ -125,7 +152,27 @@ struct ConversationScreenModel: Equatable {
         self.title = selectedSession?.title ?? selectedProject?.name ?? "会话"
         self.subtitle = selectedSession?.dir ?? selectedProject?.path ?? ""
         self.foregroundActivity = foregroundActivity
+        self.statusDisplay = Self.visibleStatusDisplay(for: selectedSession, foregroundActivity: foregroundActivity)
         self.errorMessage = errorMessage
+    }
+
+    private static func visibleStatusDisplay(
+        for session: AgentSession?,
+        foregroundActivity: SessionForegroundActivity?
+    ) -> AgentSessionDisplayStatus? {
+        guard let session else {
+            return nil
+        }
+        guard session.isRunning ||
+            foregroundActivity != nil ||
+            session.pendingApproval != nil ||
+            session.status == SessionStatus.failed.rawValue ||
+            session.status == SessionStatus.waitingForInput.rawValue ||
+            session.status == SessionStatus.waitingForApproval.rawValue
+        else {
+            return nil
+        }
+        return session.displayStatus(foregroundActivity: foregroundActivity)
     }
 }
 
@@ -155,17 +202,11 @@ struct ProcessedConversationGroup: Identifiable, Equatable {
 
     var title: String {
         let durationText = Self.compactDuration(duration)
-        guard !durationText.isEmpty else {
-            return "已处理"
-        }
-        return "已处理 \(durationText)"
+        return "已处理 \(messages.count) 步 · \(durationText)"
     }
 
     private static func compactDuration(_ duration: TimeInterval) -> String {
         let seconds = max(0, Int(duration.rounded()))
-        guard seconds > 0 else {
-            return ""
-        }
         let minutes = seconds / 60
         let remainingSeconds = seconds % 60
         if minutes > 0 {
@@ -699,6 +740,8 @@ private struct MessageRow: View, Equatable {
             && lhs.message.kind == rhs.message.kind
             && lhs.message.sendStatus == rhs.message.sendStatus
             && lhs.message.revision == rhs.message.revision
+            && lhs.message.createdAt == rhs.message.createdAt
+            && lhs.message.updatedAt == rhs.message.updatedAt
             && lhs.message.renderFingerprint == rhs.message.renderFingerprint
             && lhs.message.turnPayload == rhs.message.turnPayload
             && lhs.themeVersion == rhs.themeVersion
@@ -764,7 +807,7 @@ private struct MessageRow: View, Equatable {
             if isCenteredSystemNotice {
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    SystemNotice(text: message.content, layout: layout)
+                    SystemNotice(message: message, layout: layout)
                     Spacer(minLength: 0)
                 }
             } else {
@@ -820,7 +863,7 @@ private struct MessageBubble: View {
     @State private var previewError: String?
 
     var body: some View {
-        renderContent
+        contentWithTimestamp
             .foregroundStyle(foreground)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -828,6 +871,14 @@ private struct MessageBubble: View {
             .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
             .opacity(message.sendStatus == .sending ? 0.72 : 1)
             .quickLookPreview($previewURL)
+    }
+
+    private var contentWithTimestamp: some View {
+        ZStack(alignment: .bottomTrailing) {
+            renderContent
+                .padding(.bottom, 16)
+            MessageTimestampCaption(text: message.timestampCaptionText)
+        }
     }
 
     @ViewBuilder
@@ -1139,21 +1190,25 @@ private struct FileReferencePreviewStrip: View {
 private struct SystemNotice: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    let text: String
+    let message: ConversationMessage
     let layout: ConversationLayout
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        Text(text)
-            .font(themeStore.uiFont(.caption))
-            .foregroundStyle(tokens.secondaryText)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(tokens.systemBubble, in: Capsule())
-            .frame(maxWidth: layout.systemMaxWidth)
+        ZStack(alignment: .bottomTrailing) {
+            Text(message.content)
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 14)
+            MessageTimestampCaption(text: message.timestampCaptionText)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(tokens.systemBubble, in: Capsule())
+        .frame(maxWidth: layout.systemMaxWidth)
     }
 }
 
@@ -1179,6 +1234,10 @@ private struct RuntimeSummaryCard: View {
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(3)
                     .textSelection(.enabled)
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    MessageTimestampCaption(text: message.timestampCaptionText)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1286,5 +1345,54 @@ private struct RuntimeSummaryCard: View {
 
     private var tokens: ThemeTokens {
         themeStore.tokens(for: colorScheme)
+    }
+}
+
+private struct MessageTimestampCaption: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(themeStore.uiFont(.caption2, weight: .medium))
+            .foregroundStyle(themeStore.tokens(for: colorScheme).tertiaryText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.88)
+            .accessibilityLabel("消息时间 \(text)")
+    }
+}
+
+private extension ConversationMessage {
+    var timestampCaptionText: String {
+        switch role {
+        case .user:
+            return "发出 \(Self.compactTime(createdAt))"
+        case .assistant:
+            guard sendStatus != .sending else {
+                return "开始 \(Self.compactTime(createdAt))"
+            }
+            let completedAt = updatedAt ?? createdAt
+            let started = Self.compactTime(createdAt)
+            let completed = Self.compactTime(completedAt)
+            // 同一分钟内开始和完成显示相同时间时，只保留完成时间，减少气泡右下角噪音。
+            if started == completed {
+                return "完成 \(completed)"
+            }
+            return "开始 \(started) · 完成 \(completed)"
+        case .system:
+            if let updatedAt, Self.compactTime(updatedAt) != Self.compactTime(createdAt) {
+                return "\(Self.compactTime(createdAt)) · \(Self.compactTime(updatedAt))"
+            }
+            return Self.compactTime(createdAt)
+        }
+    }
+
+    private static func compactTime(_ date: Date) -> String {
+        let calendar = Calendar.autoupdatingCurrent
+        if calendar.isDateInToday(date) {
+            return date.formatted(.dateTime.hour().minute())
+        }
+        return date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())
     }
 }

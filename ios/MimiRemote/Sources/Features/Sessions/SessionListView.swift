@@ -20,7 +20,11 @@ struct SessionListView: View {
                     Button {
                         Task { await sessionStore.selectSession(session) }
                     } label: {
-                        SessionListRow(session: session, isSelected: session.id == sessionStore.selectedSessionID)
+                        SessionListRow(
+                            session: session,
+                            foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+                            isSelected: session.id == sessionStore.selectedSessionID
+                        )
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -68,6 +72,7 @@ private struct SessionListRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let session: AgentSession
+    let foregroundActivity: SessionForegroundActivity?
     let isSelected: Bool
 
     var body: some View {
@@ -84,7 +89,7 @@ private struct SessionListRow: View {
                     .lineLimit(2)
                     .layoutPriority(1)
                 Spacer(minLength: 8)
-                StatusPill(text: statusText, kind: statusKind)
+                StatusPill(text: statusSummary.title, kind: statusKind)
                     .fixedSize(horizontal: true, vertical: false)
             }
 
@@ -107,14 +112,14 @@ private struct SessionListRow: View {
 
             if !metricChips.isEmpty {
                 HStack(spacing: 6) {
-                    ForEach(metricChips, id: \.text) { chip in
-                        Label(chip.text, systemImage: chip.symbol)
+                    ForEach(metricChips) { chip in
+                        Label(chip.title, systemImage: chip.systemImage)
                             .font(themeStore.uiFont(size: 11, weight: .medium))
                             .lineLimit(1)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
-                            .background(chip.tint.opacity(0.12), in: Capsule())
-                            .foregroundStyle(chip.tint)
+                            .background(tint(for: chip.tone).opacity(0.12), in: Capsule())
+                            .foregroundStyle(tint(for: chip.tone))
                     }
                 }
             }
@@ -128,17 +133,17 @@ private struct SessionListRow: View {
         }
     }
 
-    private var statusText: String {
-        session.displayStatusText
+    private var statusSummary: AgentSessionDisplayStatus {
+        session.displayStatus(foregroundActivity: foregroundActivity)
     }
 
     private var statusKind: StatusPill.Kind {
-        switch session.status {
-        case "running":
+        switch statusSummary.tone {
+        case .active, .complete:
             return .success
-        case "failed", "waiting_for_approval":
+        case .warning, .danger:
             return .warning
-        default:
+        case .neutral:
             return .neutral
         }
     }
@@ -163,35 +168,21 @@ private struct SessionListRow: View {
         }
     }
 
-    private var metricChips: [(text: String, symbol: String, tint: Color)] {
-        var chips: [(text: String, symbol: String, tint: Color)] = []
-        if session.activeTurnID != nil {
-            chips.append(("active turn", "bolt.fill", .green))
-        }
-        if let approval = session.pendingApproval {
-            chips.append(("审批 \(approval.title)", "checkmark.seal", .orange))
-        }
-        if let goal = session.goal {
-            chips.append(("目标 \(goal.status.displayText)", "target", goalTint(for: goal.status)))
-        }
-        if let usage = session.usage?.compactText {
-            chips.append((usage, "gauge.with.dots.needle.33percent", .secondary))
-        }
-        if let rateLimit = session.rateLimit?.compactText {
-            chips.append((rateLimit, "speedometer", .secondary))
-        }
-        return chips
+    private var metricChips: [AgentSessionStatusBadge] {
+        session.statusBadges(foregroundActivity: foregroundActivity)
     }
 
-    private func goalTint(for status: ThreadGoalStatus) -> Color {
-        switch status {
+    private func tint(for tone: AgentSessionStatusTone) -> Color {
+        switch tone {
         case .active:
             return .green
-        case .blocked, .usageLimited, .budgetLimited:
+        case .warning:
             return .orange
+        case .danger:
+            return .red
         case .complete:
             return .blue
-        case .paused:
+        case .neutral:
             return .secondary
         }
     }

@@ -934,6 +934,7 @@ struct MessagesResponse: Codable {
                     role: $0.role.rawValue,
                     content: $0.content,
                     createdAt: $0.createdAt,
+                    updatedAt: $0.updatedAt,
                     clientMessageID: $0.clientMessageID,
                     turnID: $0.turnID,
                     itemID: $0.itemID,

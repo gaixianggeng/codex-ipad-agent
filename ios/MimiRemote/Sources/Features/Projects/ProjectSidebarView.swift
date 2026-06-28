@@ -480,8 +480,10 @@ private struct ProjectSessionRows: View {
             let isPinned = sessionStore.isSessionPinned(session.id)
             let isArchived = sessionStore.isSessionArchived(session.id)
             let reminder = sessionStore.sessionReminder(for: session.id)
+            let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             SessionRow(
                 session: session,
+                foregroundActivity: foregroundActivity,
                 isSelected: session.id == selectedSessionID,
                 isPinned: isPinned,
                 isArchived: isArchived,
@@ -688,6 +690,7 @@ private struct SessionRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let session: AgentSession
+    let foregroundActivity: SessionForegroundActivity?
     let isSelected: Bool
     let isPinned: Bool
     let isArchived: Bool
@@ -695,6 +698,7 @@ private struct SessionRow: View, Equatable {
 
     static func == (lhs: SessionRow, rhs: SessionRow) -> Bool {
         lhs.session == rhs.session
+            && lhs.foregroundActivity == rhs.foregroundActivity
             && lhs.isSelected == rhs.isSelected
             && lhs.isPinned == rhs.isPinned
             && lhs.isArchived == rhs.isArchived
@@ -743,6 +747,15 @@ private struct SessionRow: View, Equatable {
                     .foregroundStyle(isSelected ? tokens.secondaryText : tokens.tertiaryText)
                     .lineLimit(1)
             }
+
+            if shouldShowStatusLine {
+                HStack(spacing: 6) {
+                    statusCapsule(statusSummary)
+                    ForEach(Array(statusBadges.prefix(2))) { badge in
+                        statusCapsule(badge)
+                    }
+                }
+            }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
@@ -760,16 +773,18 @@ private struct SessionRow: View, Equatable {
     private var trailingMetadata: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        if session.pendingApproval != nil {
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
-                .foregroundStyle(.orange)
-                .accessibilityLabel("等待审批")
-        } else if session.activeTurnID != nil || session.isRunning {
-            Image(systemName: "circle.dotted")
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
-                .foregroundStyle(.green)
-                .accessibilityLabel(session.displayStatusText)
+        if shouldShowStatusLine {
+            if statusSummary.showsSpinner {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(tint(for: statusSummary.tone))
+                    .accessibilityLabel(statusSummary.title)
+            } else {
+                Image(systemName: statusSummary.systemImage)
+                    .font(themeStore.uiFont(size: 13, weight: .semibold))
+                    .foregroundStyle(tint(for: statusSummary.tone))
+                    .accessibilityLabel(statusSummary.title)
+            }
         } else if let updatedAt = session.updatedAt {
             Text(updatedAt, style: .relative)
                 .font(themeStore.uiFont(size: 12, weight: .medium))
@@ -779,23 +794,70 @@ private struct SessionRow: View, Equatable {
         }
     }
 
-    private var statusKind: StatusPill.Kind {
-        switch session.status {
-        case "running":
-            return .success
-        case "failed", "waiting_for_approval":
-            return .warning
-        default:
-            return .neutral
-        }
+    private var statusSummary: AgentSessionDisplayStatus {
+        session.displayStatus(foregroundActivity: foregroundActivity)
     }
 
     private var statusDotColor: Color {
-        switch statusKind {
-        case .success:
+        tint(for: statusSummary.tone)
+    }
+
+    private var statusBadges: [AgentSessionStatusBadge] {
+        session.statusBadges(foregroundActivity: foregroundActivity).filter { badge in
+            // 主胶囊已经展示当前阶段；下方只保留补充信息，避免一行里重复“等待回复”。
+            badge.id != "foreground-\(foregroundActivity?.title ?? "")"
+        }
+    }
+
+    private var shouldShowStatusLine: Bool {
+        session.isRunning
+            || foregroundActivity != nil
+            || session.pendingApproval != nil
+            || session.status == SessionStatus.waitingForInput.rawValue
+            || session.status == SessionStatus.waitingForApproval.rawValue
+            || session.status == SessionStatus.failed.rawValue
+            || session.goal != nil
+    }
+
+    private func statusCapsule(_ status: AgentSessionDisplayStatus) -> some View {
+        HStack(spacing: 4) {
+            if status.showsSpinner {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(tint(for: status.tone))
+            } else {
+                Image(systemName: status.systemImage)
+            }
+            Text(status.title)
+                .lineLimit(1)
+        }
+        .font(themeStore.uiFont(size: 11, weight: .medium))
+        .foregroundStyle(tint(for: status.tone))
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(tint(for: status.tone).opacity(0.10), in: Capsule())
+    }
+
+    private func statusCapsule(_ badge: AgentSessionStatusBadge) -> some View {
+        Label(badge.title, systemImage: badge.systemImage)
+            .font(themeStore.uiFont(size: 11, weight: .medium))
+            .lineLimit(1)
+            .foregroundStyle(tint(for: badge.tone))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint(for: badge.tone).opacity(0.10), in: Capsule())
+    }
+
+    private func tint(for tone: AgentSessionStatusTone) -> Color {
+        switch tone {
+        case .active:
             return .green
         case .warning:
             return .orange
+        case .danger:
+            return .red
+        case .complete:
+            return .blue
         case .neutral:
             return .secondary.opacity(0.55)
         }

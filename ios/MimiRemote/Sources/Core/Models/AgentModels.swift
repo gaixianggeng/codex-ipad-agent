@@ -110,27 +110,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     }
 
     var displayStatusText: String {
-        // UI 只展示短状态，避免 iPad 侧栏里出现 waiting_for_approval 这类长英文撑破布局。
-        switch status {
-        case "running":
-            return "运行中"
-        case "history":
-            return "历史"
-        case "waiting_for_input":
-            return "待输入"
-        case "waiting_for_approval":
-            return "待审批"
-        case "completed":
-            return "完成"
-        case "failed":
-            return "失败"
-        case "closed":
-            return "已结束"
-        case "idle":
-            return "空闲"
-        default:
-            return status.replacingOccurrences(of: "_", with: " ")
-        }
+        displayStatus(foregroundActivity: nil).title
     }
 
     init(
@@ -225,6 +205,127 @@ struct AgentSession: Identifiable, Codable, Hashable {
     }
 }
 
+enum SessionForegroundActivity: Equatable, Sendable {
+    case refreshing
+    case waitingForAssistant
+    case receivingAssistant
+
+    var title: String {
+        switch self {
+        case .refreshing:
+            return "同步中"
+        case .waitingForAssistant:
+            return "等待回复"
+        case .receivingAssistant:
+            return "正在回复"
+        }
+    }
+
+    var showsSpinner: Bool {
+        switch self {
+        case .refreshing, .waitingForAssistant:
+            return true
+        case .receivingAssistant:
+            return false
+        }
+    }
+
+    var displayStatus: AgentSessionDisplayStatus {
+        switch self {
+        case .refreshing:
+            return AgentSessionDisplayStatus(title: title, systemImage: "arrow.triangle.2.circlepath", tone: .neutral, showsSpinner: true)
+        case .waitingForAssistant:
+            return AgentSessionDisplayStatus(title: title, systemImage: "hourglass", tone: .active, showsSpinner: true)
+        case .receivingAssistant:
+            return AgentSessionDisplayStatus(title: title, systemImage: "ellipsis.message.fill", tone: .active, showsSpinner: false)
+        }
+    }
+}
+
+enum AgentSessionStatusTone: String, Hashable {
+    case active
+    case warning
+    case danger
+    case complete
+    case neutral
+}
+
+struct AgentSessionDisplayStatus: Hashable {
+    let title: String
+    let systemImage: String
+    let tone: AgentSessionStatusTone
+    let showsSpinner: Bool
+}
+
+struct AgentSessionStatusBadge: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let systemImage: String
+    let tone: AgentSessionStatusTone
+}
+
+extension AgentSession {
+    func displayStatus(foregroundActivity: SessionForegroundActivity?) -> AgentSessionDisplayStatus {
+        // 侧栏和对话顶部共用这套优先级，避免同一个会话在不同入口显示成两种状态。
+        // 审批/输入是需要用户处理的状态，优先级高于流式输出；foreground activity 负责区分等待回复和正在回复。
+        if status == SessionStatus.waitingForApproval.rawValue || pendingApproval != nil {
+            return AgentSessionDisplayStatus(title: "待审批", systemImage: "checkmark.seal.fill", tone: .warning, showsSpinner: false)
+        }
+        if status == SessionStatus.waitingForInput.rawValue {
+            return AgentSessionDisplayStatus(title: "待输入", systemImage: "keyboard", tone: .warning, showsSpinner: false)
+        }
+        if let foregroundActivity {
+            return foregroundActivity.displayStatus
+        }
+        if activeTurnID != nil {
+            return AgentSessionDisplayStatus(title: "处理中", systemImage: "bolt.fill", tone: .active, showsSpinner: false)
+        }
+
+        switch status {
+        case SessionStatus.running.rawValue:
+            return AgentSessionDisplayStatus(title: "运行中", systemImage: "circle.dotted", tone: .active, showsSpinner: true)
+        case SessionStatus.history.rawValue:
+            return AgentSessionDisplayStatus(title: "历史", systemImage: "clock.arrow.circlepath", tone: .neutral, showsSpinner: false)
+        case SessionStatus.completed.rawValue:
+            return AgentSessionDisplayStatus(title: "完成", systemImage: "checkmark.circle", tone: .complete, showsSpinner: false)
+        case SessionStatus.failed.rawValue:
+            return AgentSessionDisplayStatus(title: "失败", systemImage: "exclamationmark.triangle.fill", tone: .danger, showsSpinner: false)
+        case SessionStatus.closed.rawValue:
+            return AgentSessionDisplayStatus(title: "已结束", systemImage: "checkmark.circle", tone: .neutral, showsSpinner: false)
+        case SessionStatus.idle.rawValue:
+            return AgentSessionDisplayStatus(title: "空闲", systemImage: "pause.circle", tone: .neutral, showsSpinner: false)
+        default:
+            let text = status.replacingOccurrences(of: "_", with: " ")
+            return AgentSessionDisplayStatus(title: text, systemImage: "circle", tone: .neutral, showsSpinner: false)
+        }
+    }
+
+    func statusBadges(foregroundActivity: SessionForegroundActivity?) -> [AgentSessionStatusBadge] {
+        var badges: [AgentSessionStatusBadge] = []
+        if activeTurnID != nil {
+            badges.append(AgentSessionStatusBadge(id: "active-turn", title: "回合处理中", systemImage: "bolt.fill", tone: .active))
+        }
+        if let approval = pendingApproval {
+            badges.append(AgentSessionStatusBadge(id: "approval-\(approval.id)", title: "审批 \(approval.title)", systemImage: "checkmark.seal", tone: .warning))
+        } else if status == SessionStatus.waitingForInput.rawValue {
+            badges.append(AgentSessionStatusBadge(id: "waiting-input", title: "等待输入", systemImage: "keyboard", tone: .warning))
+        }
+        if let foregroundActivity {
+            badges.append(AgentSessionStatusBadge(id: "foreground-\(foregroundActivity.title)", title: foregroundActivity.title, systemImage: foregroundActivity.displayStatus.systemImage, tone: foregroundActivity.displayStatus.tone))
+        }
+        if let goal {
+            badges.append(AgentSessionStatusBadge(id: "goal-\(goal.threadID)-\(goal.status.rawValue)", title: "目标 \(goal.sidebarProgressText)", systemImage: "target", tone: goal.status.sessionStatusTone))
+        }
+        if let usage = usage?.compactText {
+            badges.append(AgentSessionStatusBadge(id: "usage-\(usage)", title: usage, systemImage: "gauge.with.dots.needle.33percent", tone: .neutral))
+        }
+        if let rateLimit = rateLimit?.compactText {
+            badges.append(AgentSessionStatusBadge(id: "rate-\(rateLimit)", title: rateLimit, systemImage: "speedometer", tone: .neutral))
+        }
+        return badges
+    }
+}
+
 enum ThreadGoalStatus: String, Codable, Hashable, CaseIterable {
     case active
     case paused
@@ -260,6 +361,19 @@ enum ThreadGoalStatus: String, Codable, Hashable, CaseIterable {
             return "complete"
         case .paused:
             return "neutral"
+        }
+    }
+
+    var sessionStatusTone: AgentSessionStatusTone {
+        switch self {
+        case .active:
+            return .active
+        case .blocked, .usageLimited, .budgetLimited:
+            return .warning
+        case .complete:
+            return .complete
+        case .paused:
+            return .neutral
         }
     }
 }
@@ -369,6 +483,30 @@ struct ThreadGoal: Identifiable, Codable, Hashable {
         return "\(Self.compactNumber(tokensUsed)) / \(Self.compactNumber(tokenBudget)) tokens"
     }
 
+    var budgetProgressFraction: Double? {
+        guard let tokenBudget, tokenBudget > 0 else {
+            return nil
+        }
+        // 进度条只接受 0...1；百分比另算，保留超预算的真实比例提示。
+        let ratio = Double(max(0, tokensUsed)) / Double(tokenBudget)
+        return min(max(ratio, 0), 1)
+    }
+
+    var budgetPercentText: String? {
+        guard let tokenBudget, tokenBudget > 0 else {
+            return nil
+        }
+        let ratio = Double(max(0, tokensUsed)) / Double(tokenBudget)
+        return "\(Int((ratio * 100).rounded()))%"
+    }
+
+    var sidebarProgressText: String {
+        if let budgetPercentText {
+            return "\(status.displayText) \(budgetPercentText)"
+        }
+        return status.displayText
+    }
+
     var elapsedText: String {
         Self.durationText(seconds: timeUsedSeconds)
     }
@@ -474,6 +612,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     let kind: MessageKind
     let content: String
     let createdAt: Date?
+    let updatedAt: Date?
     let clientMessageID: ClientMessageID?
     let turnID: TurnID?
     let itemID: AgentItemID?
@@ -487,6 +626,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         kind: MessageKind = .message,
         content: String,
         createdAt: Date?,
+        updatedAt: Date? = nil,
         clientMessageID: ClientMessageID? = nil,
         turnID: TurnID? = nil,
         itemID: AgentItemID? = nil,
@@ -499,6 +639,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         self.kind = kind
         self.content = content
         self.createdAt = createdAt
+        self.updatedAt = updatedAt
         self.clientMessageID = clientMessageID
         self.turnID = turnID
         self.itemID = itemID
@@ -513,6 +654,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         case kind
         case content
         case createdAt = "created_at"
+        case updatedAt = "updated_at"
         case clientMessageID = "client_message_id"
         case turnID = "turn_id"
         case itemID = "item_id"
@@ -526,6 +668,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         let role = try container.decode(String.self, forKey: .role)
         let content = try container.decode(String.self, forKey: .content)
         let createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        let updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
         let clientMessageID = try container.decodeIfPresent(ClientMessageID.self, forKey: .clientMessageID)
         self.init(
             id: try container.decodeIfPresent(MessageID.self, forKey: .id) ?? clientMessageID ?? UUID().uuidString,
@@ -533,6 +676,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
             kind: try container.decodeIfPresent(MessageKind.self, forKey: .kind) ?? .message,
             content: content,
             createdAt: createdAt,
+            updatedAt: updatedAt,
             clientMessageID: clientMessageID,
             turnID: try container.decodeIfPresent(TurnID.self, forKey: .turnID),
             itemID: try container.decodeIfPresent(AgentItemID.self, forKey: .itemID),
@@ -910,6 +1054,7 @@ struct ConversationMessage: Identifiable, Hashable {
         }
     }
     let createdAt: Date
+    var updatedAt: Date?
     var sendStatus: MessageSendStatus
     var revision: ModelRevision?
     var turnPayload: CodexAppServerTurnPayload?
@@ -935,6 +1080,7 @@ struct ConversationMessage: Identifiable, Hashable {
         kind: MessageKind = .message,
         content: String,
         createdAt: Date = Date(),
+        updatedAt: Date? = nil,
         sendStatus: MessageSendStatus = .sent,
         revision: ModelRevision? = nil,
         turnPayload: CodexAppServerTurnPayload? = nil
@@ -948,6 +1094,7 @@ struct ConversationMessage: Identifiable, Hashable {
         self.kind = kind
         self.content = content
         self.createdAt = createdAt
+        self.updatedAt = updatedAt
         self.sendStatus = sendStatus
         self.revision = revision
         self.turnPayload = turnPayload
@@ -966,6 +1113,7 @@ struct ConversationMessage: Identifiable, Hashable {
             && lhs.role == rhs.role
             && lhs.kind == rhs.kind
             && lhs.createdAt == rhs.createdAt
+            && lhs.updatedAt == rhs.updatedAt
             && lhs.sendStatus == rhs.sendStatus
             && lhs.revision == rhs.revision
             && lhs.contentDigest == rhs.contentDigest
@@ -981,6 +1129,7 @@ struct ConversationMessage: Identifiable, Hashable {
         hasher.combine(role)
         hasher.combine(kind)
         hasher.combine(createdAt)
+        hasher.combine(updatedAt)
         hasher.combine(sendStatus)
         hasher.combine(revision)
         hasher.combine(contentDigest)

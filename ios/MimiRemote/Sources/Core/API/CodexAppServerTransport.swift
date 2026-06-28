@@ -150,7 +150,9 @@ actor CodexAppServerConnection {
 
     func notifications() -> AsyncStream<CodexAppServerNotification> {
         var continuation: AsyncStream<CodexAppServerNotification>.Continuation?
-        let stream = AsyncStream<CodexAppServerNotification>(bufferingPolicy: .bufferingNewest(512)) {
+        // app-server 通知包含 delta、完成态和审批状态，任何一条被丢都会让 iPad 时间线和真实
+        // thread 状态不一致；这里宁可让连接级队列短暂增大，也不静默丢旧事件。
+        let stream = AsyncStream<CodexAppServerNotification>(bufferingPolicy: .unbounded) {
             continuation = $0
         }
         notificationContinuation = continuation
@@ -159,7 +161,8 @@ actor CodexAppServerConnection {
 
     func serverRequests() -> AsyncStream<CodexAppServerServerRequest> {
         var continuation: AsyncStream<CodexAppServerServerRequest>.Continuation?
-        let stream = AsyncStream<CodexAppServerServerRequest>(bufferingPolicy: .bufferingNewest(128)) {
+        // 审批 request 必须逐条处理，丢掉旧 request 会导致 app-server 一直等待移动端响应。
+        let stream = AsyncStream<CodexAppServerServerRequest>(bufferingPolicy: .unbounded) {
             continuation = $0
         }
         serverRequestContinuation = continuation

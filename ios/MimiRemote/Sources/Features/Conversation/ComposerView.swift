@@ -121,12 +121,16 @@ struct ComposerView: View {
     @State private var attachmentErrorMessage: String?
     @State private var isVoicePressActive = false
     @State private var isVoiceTranscribing = false
+    @State private var voiceTranscriptionTask: Task<Void, Never>?
+    @State private var activeVoiceTranscriptionContext: VoiceTranscriptionContext?
+    @State private var voicePressStartedAt: Date?
     @State private var retryableVoiceTranscription: RetryableVoiceTranscription?
     @State private var measuredComposerTextHeight: CGFloat = 0
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(VoiceInputLanguage.storageKey) private var selectedVoiceLanguageID = VoiceInputLanguage.automatic.rawValue
 
     private static let minimumUsableVoiceDuration: TimeInterval = 0.35
+    private static let minimumVoicePressDuration: TimeInterval = 0.45
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -194,18 +198,19 @@ struct ComposerView: View {
         .onChange(of: selectedVoiceLanguageID) { _, _ in
             clearVoiceTransientStatus()
         }
+        .onChange(of: sessionStore.selectedSessionID) { _, _ in
+            cancelVoiceInteraction(clearStatus: true)
+        }
         .task(id: voiceInput.errorMessage) {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .task {
             voiceInput.prewarm()
             await sessionStore.refreshAppServerModelOptions()
+            await sessionStore.refreshCapabilities()
         }
         .onDisappear {
-            voiceInput.stop()
-            isVoicePressActive = false
-            isVoiceTranscribing = false
-            composerState.endVoiceInput()
+            cancelVoiceInteraction(clearStatus: true)
         }
     }
 
@@ -218,6 +223,7 @@ struct ComposerView: View {
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
+        cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
         Task {
             let accepted = await sessionStore.sendTurn(submitted.payload)
@@ -244,6 +250,7 @@ struct ComposerView: View {
             composerState.restore(submitted)
             return false
         }
+        cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
         Task {
             let accepted = await sessionStore.startGoalTurn(payload: submitted.payload, objective: objective)
@@ -527,6 +534,7 @@ struct ComposerView: View {
     private var toolbarMenuRow: some View {
         let menus = HStack(spacing: 8) {
             addContentButton
+            skillShortcutMenu
             goalButton
             voiceLanguageMenu
             permissionMenu
@@ -599,6 +607,61 @@ struct ComposerView: View {
             .environmentObject(themeStore)
             .presentationCompactAdaptation(.sheet)
         }
+    }
+
+    private var skillShortcutMenu: some View {
+        Menu {
+            let skills = enabledSkillShortcuts
+            if skills.isEmpty {
+                if let error = sessionStore.capabilityErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+                    Text("Skill 列表不可用：\(error)")
+                } else {
+                    Text("暂无可用 Skill")
+                }
+            } else {
+                Section("可用 Skill") {
+                    ForEach(skills.prefix(12)) { skill in
+                        Button {
+                            addSkillAttachment(skill)
+                        } label: {
+                            Label(skill.name, systemImage: "wand.and.stars")
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button {
+                Task { await sessionStore.refreshCapabilities() }
+            } label: {
+                Label(sessionStore.isRefreshingCapabilities ? "刷新中" : "刷新 Skill 列表", systemImage: "arrow.clockwise")
+            }
+            .disabled(sessionStore.isRefreshingCapabilities)
+            Button {
+                openManualInput(.skill)
+            } label: {
+                Label("手动添加 Skill", systemImage: "square.and.pencil")
+            }
+        } label: {
+            Label("Skill", systemImage: "wand.and.stars")
+        }
+        .buttonStyle(.bordered)
+        .keyboardShortcut("k", modifiers: [.command, .shift])
+        .help("从 capabilities.skills 一键插入 .skill(name:path)")
+    }
+
+    private var enabledSkillShortcuts: [SkillCapability] {
+        // 菜单直接消费 agentd capabilities，避免写死技能短语；排序后截断，保证菜单稳定且不拖慢 body。
+        (sessionStore.capabilityList?.skills ?? [])
+            .filter(\.enabled)
+            .sorted { lhs, rhs in
+                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private func addSkillAttachment(_ skill: SkillCapability) {
+        composerState.addAttachment(.skill(name: skill.name, path: skill.path))
+        clearVoiceTransientStatus()
+        showsAddContentPanel = false
     }
 
     private var goalButton: some View {
@@ -1012,7 +1075,7 @@ struct ComposerView: View {
         }
         var items: [(text: String, symbol: String, tint: Color)] = []
         if session.activeTurnID != nil {
-            items.append(("active turn", "bolt.fill", .green))
+            items.append(("回合处理中", "bolt.fill", .green))
         }
         if let lastSeq = session.lastSeq {
             items.append(("seq \(lastSeq)", "number", .secondary))
@@ -1165,21 +1228,38 @@ struct ComposerView: View {
     }
 
     private func beginHoldToTalk() {
-        guard !isVoicePressActive && !voiceInput.isPreparing && !voiceInput.isRecording && !isVoiceTranscribing else {
+        guard !isVoicePressActive &&
+            !voiceInput.isPreparing &&
+            !voiceInput.isRecording &&
+            !isVoiceTranscribing &&
+            voiceTranscriptionTask == nil
+        else {
             return
         }
         clearVoiceTransientStatus()
         isVoicePressActive = true
+        voicePressStartedAt = Date()
         composerState.beginVoiceInput()
         let language = selectedVoiceLanguage
+        let context = VoiceTranscriptionContext(sessionID: sessionStore.selectedSessionID)
+        activeVoiceTranscriptionContext = context
         voiceInput.start { recording in
             isVoicePressActive = false
+            voicePressStartedAt = nil
             guard let recording else {
+                if activeVoiceTranscriptionContext == context {
+                    activeVoiceTranscriptionContext = nil
+                }
                 composerState.endVoiceInput()
                 return
             }
-            Task {
-                await transcribeVoiceRecording(recording, language: language)
+            guard isVoiceTranscriptionContextCurrent(context) else {
+                try? FileManager.default.removeItem(at: recording.fileURL)
+                composerState.endVoiceInput()
+                return
+            }
+            voiceTranscriptionTask = Task {
+                await transcribeVoiceRecording(recording, language: language, context: context)
             }
         }
     }
@@ -1188,8 +1268,18 @@ struct ComposerView: View {
         guard isVoicePressActive || voiceInput.isPreparing || voiceInput.isRecording else {
             return
         }
+        let pressDuration = voicePressStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         let releasedBeforeRecording = voiceInput.isPreparing && !voiceInput.isRecording
         isVoicePressActive = false
+        voicePressStartedAt = nil
+        if pressDuration < Self.minimumVoicePressDuration {
+            // 很短的点按大多是误触，直接取消录音，不再发起一次必失败的转写请求。
+            voiceInput.cancel()
+            activeVoiceTranscriptionContext = nil
+            composerState.endVoiceInput()
+            voiceInput.setNoticeMessage("按住说话，松手转写")
+            return
+        }
         voiceInput.stop()
         if releasedBeforeRecording {
             voiceInput.setErrorMessage("麦克风还没准备好，请按住到出现“正在听”后再说")
@@ -1212,6 +1302,28 @@ struct ComposerView: View {
         retryableVoiceTranscription = nil
         voiceInput.setErrorMessage(nil)
         voiceInput.setNoticeMessage(nil)
+    }
+
+    @MainActor
+    private func cancelVoiceInteraction(clearStatus: Bool) {
+        // 切会话、离开页面或发送草稿时取消当前录音/转写；旧请求即使晚返回，也不能写入新会话的输入框。
+        voiceTranscriptionTask?.cancel()
+        voiceTranscriptionTask = nil
+        activeVoiceTranscriptionContext = nil
+        voicePressStartedAt = nil
+        if isVoicePressActive || voiceInput.isPreparing || voiceInput.isRecording {
+            voiceInput.cancel()
+        }
+        isVoicePressActive = false
+        isVoiceTranscribing = false
+        composerState.endVoiceInput()
+        if clearStatus {
+            clearVoiceTransientStatus()
+        }
+    }
+
+    private func isVoiceTranscriptionContextCurrent(_ context: VoiceTranscriptionContext) -> Bool {
+        activeVoiceTranscriptionContext == context && sessionStore.selectedSessionID == context.sessionID
     }
 
     @MainActor
@@ -1239,14 +1351,26 @@ struct ComposerView: View {
     }
 
     @MainActor
-    private func transcribeVoiceRecording(_ recording: VoiceRecordingResult, language: VoiceInputLanguage) async {
+    private func transcribeVoiceRecording(
+        _ recording: VoiceRecordingResult,
+        language: VoiceInputLanguage,
+        context: VoiceTranscriptionContext
+    ) async {
+        guard isVoiceTranscriptionContextCurrent(context) else {
+            try? FileManager.default.removeItem(at: recording.fileURL)
+            return
+        }
         isVoiceTranscribing = true
         retryableVoiceTranscription = nil
         voiceInput.setErrorMessage(nil)
         var retryCandidate: RetryableVoiceTranscription?
         defer {
-            isVoiceTranscribing = false
-            composerState.endVoiceInput()
+            if isVoiceTranscriptionContextCurrent(context) {
+                isVoiceTranscribing = false
+                activeVoiceTranscriptionContext = nil
+                voiceTranscriptionTask = nil
+                composerState.endVoiceInput()
+            }
             try? FileManager.default.removeItem(at: recording.fileURL)
         }
         do {
@@ -1254,6 +1378,10 @@ struct ComposerView: View {
             async let durationTask = Self.safeVoiceRecordingDuration(recording.fileURL)
             let data = try await dataTask
             let assetDuration = await durationTask
+            try Task.checkCancellation()
+            guard isVoiceTranscriptionContextCurrent(context) else {
+                return
+            }
             let usableDuration = max(recording.recordedDuration, assetDuration)
             if data.count < 1_024 || usableDuration < Self.minimumUsableVoiceDuration {
                 voiceInput.setErrorMessage(shortVoiceRecordingMessage(recording: recording, usableDuration: usableDuration))
@@ -1265,7 +1393,8 @@ struct ComposerView: View {
                 audioData: data,
                 language: language,
                 recordedDuration: usableDuration,
-                pressDuration: recording.pressDuration
+                pressDuration: recording.pressDuration,
+                sessionID: context.sessionID
             )
             let response = try await sessionStore.transcribeVoice(
                 filename: recording.fileURL.lastPathComponent,
@@ -1274,7 +1403,13 @@ struct ComposerView: View {
                 language: language.transcriptionLanguageCode,
                 prompt: language.transcriptionPrompt
             )
+            try Task.checkCancellation()
+            guard isVoiceTranscriptionContextCurrent(context) else {
+                return
+            }
             composerState.applyVoiceTranscript(response.text)
+            retryableVoiceTranscription = nil
+        } catch is CancellationError {
             retryableVoiceTranscription = nil
         } catch {
             voiceInput.setErrorMessage(userFacingVoiceTranscriptionError(error, recording: recording))
@@ -1289,22 +1424,36 @@ struct ComposerView: View {
     }
 
     private func retryVoiceTranscription() {
-        guard let retryableVoiceTranscription, !isVoiceTranscribing else {
+        guard let retryableVoiceTranscription, !isVoiceTranscribing, voiceTranscriptionTask == nil else {
             return
         }
-        Task {
-            await transcribeCachedVoiceRecording(retryableVoiceTranscription)
+        guard retryableVoiceTranscription.sessionID == sessionStore.selectedSessionID else {
+            self.retryableVoiceTranscription = nil
+            voiceInput.setErrorMessage("会话已切换，请重新录音")
+            return
+        }
+        let context = VoiceTranscriptionContext(sessionID: retryableVoiceTranscription.sessionID)
+        activeVoiceTranscriptionContext = context
+        voiceTranscriptionTask = Task {
+            await transcribeCachedVoiceRecording(retryableVoiceTranscription, context: context)
         }
     }
 
     @MainActor
-    private func transcribeCachedVoiceRecording(_ cached: RetryableVoiceTranscription) async {
+    private func transcribeCachedVoiceRecording(_ cached: RetryableVoiceTranscription, context: VoiceTranscriptionContext) async {
+        guard isVoiceTranscriptionContextCurrent(context) else {
+            return
+        }
         isVoiceTranscribing = true
         composerState.beginVoiceInput()
         voiceInput.setErrorMessage(nil)
         defer {
-            isVoiceTranscribing = false
-            composerState.endVoiceInput()
+            if isVoiceTranscriptionContextCurrent(context) {
+                isVoiceTranscribing = false
+                activeVoiceTranscriptionContext = nil
+                voiceTranscriptionTask = nil
+                composerState.endVoiceInput()
+            }
         }
         do {
             let response = try await sessionStore.transcribeVoice(
@@ -1314,11 +1463,19 @@ struct ComposerView: View {
                 language: cached.language.transcriptionLanguageCode,
                 prompt: cached.language.transcriptionPrompt
             )
+            try Task.checkCancellation()
+            guard isVoiceTranscriptionContextCurrent(context) else {
+                return
+            }
             composerState.applyVoiceTranscript(response.text)
             if retryableVoiceTranscription?.id == cached.id {
                 retryableVoiceTranscription = nil
             }
             voiceInput.setNoticeMessage("语音已重新转写，请确认草稿后发送")
+        } catch is CancellationError {
+            if retryableVoiceTranscription?.id == cached.id {
+                retryableVoiceTranscription = nil
+            }
         } catch {
             voiceInput.setErrorMessage(userFacingVoiceTranscriptionError(error))
             if Self.isRetryableVoiceTranscriptionError(error) {
@@ -1656,11 +1813,21 @@ private struct ActiveGoalStatusBar: View {
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(isExpanded ? 3 : 1)
 
+            if let progress = goal.budgetProgressFraction {
+                ProgressView(value: progress)
+                    .tint(statusTint)
+                    .frame(maxWidth: 220)
+                    .accessibilityLabel("目标 token 预算进度")
+                    .accessibilityValue(goal.budgetPercentText ?? goal.progressText)
+            }
+
             HStack(spacing: 8) {
-                if goal.timeUsedSeconds > 0 {
-                    Label(goal.elapsedText, systemImage: "timer")
+                if let percent = goal.budgetPercentText {
+                    Label("\(percent) · \(goal.progressText)", systemImage: "gauge.with.dots.needle.33percent")
+                } else {
+                    Label(goal.progressText, systemImage: "gauge.with.dots.needle.33percent")
                 }
-                Label(goal.progressText, systemImage: "gauge.with.dots.needle.33percent")
+                Label(goal.elapsedText, systemImage: "timer")
             }
             .font(themeStore.uiFont(.caption2, weight: .medium))
             .foregroundStyle(tokens.secondaryText)
@@ -1748,9 +1915,10 @@ private struct ActiveGoalStatusBar: View {
         VStack(alignment: .leading, spacing: 5) {
             goalDetailRow(symbol: "circle.dashed", title: "状态", value: goal.status.displayText, tokens: tokens)
             goalDetailRow(symbol: "gauge.with.dots.needle.33percent", title: "进度", value: goal.progressText, tokens: tokens)
-            if goal.timeUsedSeconds > 0 {
-                goalDetailRow(symbol: "timer", title: "用时", value: goal.elapsedText, tokens: tokens)
+            if let percent = goal.budgetPercentText {
+                goalDetailRow(symbol: "percent", title: "预算", value: percent, tokens: tokens)
             }
+            goalDetailRow(symbol: "timer", title: "用时", value: goal.elapsedText, tokens: tokens)
             if let updatedAt = goal.updatedAt {
                 goalDetailRow(symbol: "clock", title: "更新", value: updatedAt.formatted(date: .omitted, time: .shortened), tokens: tokens)
             }
@@ -2614,6 +2782,16 @@ private final class VoiceInputController: NSObject, ObservableObject {
         finish(fileURL: recordingURL)
     }
 
+    func cancel() {
+        let fileURL = recordingURL
+        startRequestID = nil
+        finishHandler = nil
+        finish(fileURL: nil)
+        if let fileURL {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
+
     func setErrorMessage(_ message: String?) {
         errorMessage = message
         if message != nil {
@@ -2781,6 +2959,11 @@ private struct VoiceRecordingResult {
     let pressDuration: TimeInterval
 }
 
+private struct VoiceTranscriptionContext: Equatable {
+    let id = UUID()
+    let sessionID: SessionID?
+}
+
 private struct RetryableVoiceTranscription: Identifiable {
     let id = UUID()
     let filename: String
@@ -2789,6 +2972,7 @@ private struct RetryableVoiceTranscription: Identifiable {
     let language: VoiceInputLanguage
     let recordedDuration: TimeInterval
     let pressDuration: TimeInterval
+    let sessionID: SessionID?
 }
 
 private enum VoiceRecordPermissionState {

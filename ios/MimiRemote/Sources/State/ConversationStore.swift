@@ -30,6 +30,7 @@ final class ConversationStore: ObservableObject {
         let clientMessageID: ClientMessageID?
         let turnID: TurnID?
         let itemID: AgentItemID?
+        let createdAt: Date?
         var text: String
         var revision: ModelRevision?
     }
@@ -46,6 +47,7 @@ final class ConversationStore: ObservableObject {
         let kind: MessageKind
         let content: String
         let createdAt: Date?
+        let updatedAt: Date?
         let clientMessageID: ClientMessageID?
         let turnID: TurnID?
         let itemID: AgentItemID?
@@ -70,6 +72,7 @@ final class ConversationStore: ObservableObject {
         let kind: MessageKind
         let content: String
         let createdAt: Date
+        let updatedAt: Date?
         let sendStatus: MessageSendStatus
         let revision: ModelRevision?
     }
@@ -159,6 +162,7 @@ final class ConversationStore: ObservableObject {
             list[index].content = text
             list[index].sendStatus = sendStatus
             list[index].turnPayload = turnPayload ?? list[index].turnPayload
+            list[index].updatedAt = Date()
             setMessages(list, sessionID: sessionID, rebuildIndexes: false)
             return
         }
@@ -181,6 +185,7 @@ final class ConversationStore: ObservableObject {
             return
         }
         list[index].sendStatus = status
+        list[index].updatedAt = Date()
         setMessages(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
@@ -191,6 +196,7 @@ final class ConversationStore: ObservableObject {
         var changed = false
         for index in list.indices where list[index].role == .user && list[index].sendStatus == .sending {
             list[index].sendStatus = .failed
+            list[index].updatedAt = Date()
             changed = true
         }
         guard changed else {
@@ -246,6 +252,7 @@ final class ConversationStore: ObservableObject {
             message.kind == .approval && message.content.contains(approval.title)
         }) {
             list[index].content = text
+            list[index].updatedAt = Date()
             setMessages(list, sessionID: sessionID, rebuildIndexes: false)
             return
         }
@@ -263,6 +270,7 @@ final class ConversationStore: ObservableObject {
         // 用中性文案收口，避免时间线长期停在“等待审批”。
         let title = pendingApprovalTitle(from: list[index].content)
         list[index].content = title.isEmpty ? "审批已解决" : "审批已解决：\(title)"
+        list[index].updatedAt = Date()
         setMessages(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
@@ -357,6 +365,7 @@ final class ConversationStore: ObservableObject {
             clientMessageID: metadata.clientMessageID,
             turnID: metadata.turnID,
             itemID: metadata.itemID,
+            createdAt: metadata.createdAt,
             revision: metadata.revision,
             sessionID: sessionID
         )
@@ -369,6 +378,7 @@ final class ConversationStore: ObservableObject {
         clientMessageID: ClientMessageID?,
         turnID: TurnID?,
         itemID: AgentItemID?,
+        createdAt: Date?,
         revision: ModelRevision?,
         sessionID: String
     ) {
@@ -385,6 +395,7 @@ final class ConversationStore: ObservableObject {
                 clientMessageID: clientMessageID,
                 turnID: turnID,
                 itemID: itemID,
+                createdAt: createdAt,
                 revision: revision,
                 sessionID: sessionID
             )
@@ -404,6 +415,7 @@ final class ConversationStore: ObservableObject {
                 clientMessageID: clientMessageID,
                 turnID: turnID,
                 itemID: itemID,
+                createdAt: createdAt,
                 text: text,
                 revision: revision
             )
@@ -449,6 +461,7 @@ final class ConversationStore: ObservableObject {
             list[index].content = message.content
             list[index].sendStatus = message.sendStatus == .failed ? .failed : .confirmed
             list[index].revision = message.revision
+            list[index].updatedAt = message.updatedAt ?? metadata.createdAt ?? Date()
             if clientMessageID != nil, message.sendStatus != .failed {
                 let retained = list[index].turnPayload?.retainedAfterAcceptedSend()
                 if list[index].turnPayload != retained {
@@ -467,6 +480,7 @@ final class ConversationStore: ObservableObject {
                 kind: displayKind,
                 content: message.content,
                 createdAt: message.createdAt ?? Date(),
+                updatedAt: message.updatedAt ?? metadata.createdAt,
                 sendStatus: message.sendStatus,
                 revision: message.revision
             ))
@@ -490,6 +504,7 @@ final class ConversationStore: ObservableObject {
             return
         }
         list[index].sendStatus = .confirmed
+        list[index].updatedAt = metadata.createdAt ?? Date()
         if let revision = metadata.revision {
             list[index].revision = revision
         }
@@ -556,6 +571,7 @@ final class ConversationStore: ObservableObject {
         clientMessageID: ClientMessageID?,
         turnID: TurnID?,
         itemID: AgentItemID?,
+        createdAt: Date?,
         revision: ModelRevision?,
         sessionID: String
     ) {
@@ -568,6 +584,7 @@ final class ConversationStore: ObservableObject {
             itemID: itemID,
             role: .assistant,
             content: text,
+            createdAt: createdAt ?? Date(),
             sendStatus: .sending,
             revision: revision
         )
@@ -616,6 +633,7 @@ final class ConversationStore: ObservableObject {
             itemID: pending.itemID,
             role: .assistant,
             content: pending.text,
+            createdAt: pending.createdAt ?? Date(),
             sendStatus: .sending,
             revision: pending.revision
         )
@@ -705,6 +723,7 @@ final class ConversationStore: ObservableObject {
             && lhs.role == rhs.role
             && lhs.kind == rhs.kind
             && lhs.createdAt == rhs.createdAt
+            && lhs.updatedAt == rhs.updatedAt
             && lhs.sendStatus == rhs.sendStatus
             && lhs.revision == rhs.revision
             && lhs.contentDigest == rhs.contentDigest
@@ -938,6 +957,7 @@ final class ConversationStore: ObservableObject {
                       kind: item.kind,
                       content: item.content,
                       createdAt: createdAt,
+                      updatedAt: item.updatedAt,
                       sendStatus: sendStatus,
                       revision: item.revision,
                       buckets: &unstableReuseBuckets
@@ -956,6 +976,7 @@ final class ConversationStore: ObservableObject {
             kind: item.kind,
             content: item.content,
             createdAt: createdAt,
+            updatedAt: item.updatedAt,
             sendStatus: sendStatus,
             revision: item.revision
         )
@@ -1016,6 +1037,7 @@ final class ConversationStore: ObservableObject {
             kind: message.kind,
             content: message.content,
             createdAt: message.createdAt,
+            updatedAt: message.updatedAt,
             sendStatus: message.sendStatus,
             revision: message.revision
         )
@@ -1026,6 +1048,7 @@ final class ConversationStore: ObservableObject {
         kind: MessageKind,
         content: String,
         createdAt: Date,
+        updatedAt: Date?,
         sendStatus: MessageSendStatus,
         revision: ModelRevision?,
         buckets: inout [UnstableHistoryReuseKey: UnstableHistoryReuseBucket]
@@ -1035,6 +1058,7 @@ final class ConversationStore: ObservableObject {
             kind: kind,
             content: content,
             createdAt: createdAt,
+            updatedAt: updatedAt,
             sendStatus: sendStatus,
             revision: revision
         )
@@ -1064,6 +1088,7 @@ final class ConversationStore: ObservableObject {
             kind: item.kind,
             content: item.content,
             createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
             clientMessageID: item.clientMessageID,
             turnID: item.turnID,
             itemID: item.itemID,
