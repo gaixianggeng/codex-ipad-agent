@@ -241,7 +241,9 @@ final class AppStore: ObservableObject {
         case 192:
             return parts[1] == 168
         default:
-            return false
+            // 允许手动填写自建 VPS / 公网 IPv4 中转地址。
+            // 仍然拒绝 http://example.com 这类公网域名，建议域名走 HTTPS。
+            return 1...223 ~= parts[0]
         }
     }
 

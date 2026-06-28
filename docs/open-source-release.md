@@ -71,7 +71,7 @@
 - 仓库名：`mimi-remote`
 - Go module：`github.com/gaixianggeng/mimi-remote`
 - iOS target / scheme：`MimiRemote`
-- iOS bundle id：`com.gaixianggeng.mimiremote`
+- iOS bundle id：`com.gaixianggeng.mimi`
 - URL scheme：`mimiremote://`
 - Homebrew formula：`mimi-remote`
 

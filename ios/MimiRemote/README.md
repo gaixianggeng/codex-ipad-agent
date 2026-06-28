@@ -35,11 +35,11 @@ agentd doctor
 
 `agentd start` 会通过 Homebrew 后台启动服务，并在当前终端输出扫码连接二维码；后台服务本身不会把 Token 写入日志。然后在设置页优先点“扫码连接”，扫描后会自动测试连接。二维码不可用时再手动输入：
 
-- Endpoint，例如 `http://100.x.y.z:8787`
+- Endpoint，例如 `http://100.x.y.z:8787`、`http://14.103.53.126`
 - Token，也就是 `AGENTD_TOKEN`
 - 连接链接，例如 `mimiremote://connect?endpoint=...&token=...`
 
-Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。MVP 支持 `http://100.x.x.x:8787` 这类 Tailscale 裸 IP；更推荐使用 MagicDNS 的 `http://<mac-hostname>.<tailnet>.ts.net:8787`，后续公开发布前应优先切到 HTTPS 或更严格的 ATS 策略。
+Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。MVP 支持 `http://100.x.x.x:8787` 这类 Tailscale 裸 IP，也支持手动填写自建 VPS 的公网 IPv4 中转地址；更推荐使用 MagicDNS 的 `http://<mac-hostname>.<tailnet>.ts.net:8787`，后续公开发布前应优先切到 HTTPS 或更严格的 ATS 策略。
 
 direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server upstream token。`agentd setup` 会生成独立 upstream token file；Mac 侧由 `agentd` 读取并注入上游 `Authorization`，iPad 不接触这个 token。
 
@@ -158,7 +158,7 @@ REFRESH_INSTALL=1 ./scripts/deploy-ipad.sh
 - direct 模式仍需要 app-server WebSocket transport 或 agentd 薄网关。
 - 每个 session 当前只允许一个 iOS WebSocket attach。
 - app-server runtime 走结构化事件；iOS 不再用 PTY/TUI 文本启发式解析消息气泡。
-- 当前后端是 HTTP，App 通过 ATS 例外访问，仅建议本机或 Tailscale 使用。
+- 当前后端是 HTTP，App 通过 ATS 例外访问；本机/局域网/Tailscale 风险最低，自建 VPS 中转应优先限制 token 暴露并尽快升级到域名 + HTTPS。
 
 后续优化：
 

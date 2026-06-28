@@ -127,7 +127,7 @@ private struct ConnectionSettingsSections: View {
 
             Section {
                 DisclosureGroup(isExpanded: $isShowingAdvancedManualConnection) {
-                    TextField("http://100.x.x.x:8787", text: $endpoint)
+                    TextField("http://IP:端口", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
@@ -140,7 +140,7 @@ private struct ConnectionSettingsSections: View {
             } header: {
                 Text("备用")
             } footer: {
-                Text("只有二维码不可用时才需要手动输入地址和访问码。Mimi 只建议在本机、局域网或 Tailscale 中使用。")
+                Text("只有二维码不可用时才需要手动输入地址和访问码。支持本机、局域网、Tailscale 或自建 VPS 中转。")
             }
 
             Section {
@@ -233,7 +233,7 @@ private struct ConnectionSettingsSections: View {
             return "这台 iPad 没有通过 Mac 助手验证，请重新扫码连接。"
         }
         if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {
-            return "iPad 暂时找不到这台 Mac。请确认 Mimi Mac 助手正在运行，并且 iPad 和 Mac 在同一网络或 Tailscale 中。"
+            return "iPad 暂时找不到这台 Mac。请确认 Mimi Mac 助手正在运行，并且 iPad 能访问局域网、Tailscale 或自建 VPS 中转地址。"
         }
         if raw.contains("Endpoint") || raw.contains("连接链接") {
             return raw

@@ -83,8 +83,19 @@ final class PairingLinkTests: XCTestCase {
         }
     }
 
+    func testAllowsPublicHTTPIPv4RelayHost() throws {
+        XCTAssertEqual(try AppStore.validatedEndpoint("http://14.103.53.126"), "http://14.103.53.126")
+        XCTAssertEqual(try AppStore.validatedEndpoint("14.103.53.126:80"), "http://14.103.53.126:80")
+    }
+
     func testRejectsSingleLabelHTTPHost() throws {
         XCTAssertThrowsError(try AppStore.validatedEndpoint("http://macbook:8787")) { error in
+            XCTAssertTrue(error is AgentAPIError)
+        }
+    }
+
+    func testRejectsInvalidHTTPIPv4Host() throws {
+        XCTAssertThrowsError(try AppStore.validatedEndpoint("http://0.0.0.0:8787")) { error in
             XCTAssertTrue(error is AgentAPIError)
         }
     }
