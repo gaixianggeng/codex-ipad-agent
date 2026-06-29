@@ -58,6 +58,7 @@ func (r *Router) capabilityListHandler(w http.ResponseWriter, req *http.Request)
 
 	path := strings.TrimSpace(payload.Path)
 	var realPath string
+	var boundaryPath string
 	if path != "" {
 		scope, ok := r.gatewayScopeForPath(path)
 		if !ok {
@@ -74,19 +75,23 @@ func (r *Router) capabilityListHandler(w http.ResponseWriter, req *http.Request)
 			writeError(w, http.StatusBadRequest, "路径不是目录")
 			return
 		}
+		boundaryPath = r.commandActionScopeRoot(scope)
+		if boundaryPath == "" {
+			boundaryPath = realPath
+		}
 	}
 
 	writeJSON(w, http.StatusOK, capabilityListResponse{
 		Path:       realPath,
-		Skills:     discoverSkillCapabilities(realPath),
-		MCPServers: discoverMCPCapabilities(realPath),
+		Skills:     discoverSkillCapabilities(realPath, boundaryPath),
+		MCPServers: discoverMCPCapabilities(realPath, boundaryPath),
 	})
 }
 
-func discoverSkillCapabilities(realPath string) []skillCapability {
+func discoverSkillCapabilities(realPath string, boundaryPath string) []skillCapability {
 	var roots []capabilityRoot
 	if realPath != "" {
-		for _, dir := range projectCapabilityDirs(realPath) {
+		for _, dir := range projectCapabilityDirs(realPath, boundaryPath) {
 			roots = append(roots, capabilityRoot{path: filepath.Join(dir, ".agents", "skills"), scope: "repo"})
 			roots = append(roots, capabilityRoot{path: filepath.Join(dir, ".codex", "skills"), scope: "repo"})
 		}
@@ -196,10 +201,10 @@ func parseSimpleYAMLScalar(line string) (string, string, bool) {
 	return key, value, key != ""
 }
 
-func discoverMCPCapabilities(realPath string) []mcpServerCapability {
+func discoverMCPCapabilities(realPath string, boundaryPath string) []mcpServerCapability {
 	var configs []capabilityRoot
 	if realPath != "" {
-		for _, dir := range projectCapabilityDirs(realPath) {
+		for _, dir := range projectCapabilityDirs(realPath, boundaryPath) {
 			configs = append(configs, capabilityRoot{path: filepath.Join(dir, ".codex", "config.toml"), scope: "repo"})
 		}
 	}
@@ -435,19 +440,23 @@ func parseTOMLString(raw string) string {
 	return ""
 }
 
-func projectCapabilityDirs(realPath string) []string {
+func projectCapabilityDirs(realPath string, boundaryPath string) []string {
 	if realPath == "" {
 		return nil
 	}
 	gitRoot := nearestGitRoot(realPath)
+	boundary := cleanCapabilityBoundary(boundaryPath)
 	if gitRoot == "" {
 		return []string{filepath.Clean(realPath)}
+	}
+	if boundary != "" && realPathWithin(boundary, filepath.Clean(realPath)) && !realPathWithin(boundary, gitRoot) {
+		gitRoot = boundary
 	}
 	var dirs []string
 	current := filepath.Clean(realPath)
 	for {
 		dirs = append(dirs, current)
-		if current == gitRoot {
+		if current == gitRoot || current == boundary {
 			break
 		}
 		parent := filepath.Dir(current)
@@ -457,6 +466,21 @@ func projectCapabilityDirs(realPath string) []string {
 		current = parent
 	}
 	return dirs
+}
+
+func cleanCapabilityBoundary(boundaryPath string) string {
+	value := strings.TrimSpace(boundaryPath)
+	if value == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(value)
+	if err != nil {
+		return filepath.Clean(value)
+	}
+	if realPath, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(realPath)
+	}
+	return filepath.Clean(abs)
 }
 
 func nearestGitRoot(realPath string) string {

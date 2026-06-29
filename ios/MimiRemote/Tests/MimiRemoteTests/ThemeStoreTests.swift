@@ -127,6 +127,60 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(store.tokens(for: .light).resolvedScheme, .dark)
     }
 
+    func testDefaultCodexPresetUsesWhitePurplePalette() {
+        let store = ThemeStore(defaults: defaults)
+
+        let lightTokens = store.tokens(for: .light)
+        let darkTokens = store.tokens(for: .dark)
+        let lightBackground = rgba(lightTokens.background)
+        let lightSurface = rgba(lightTokens.surface)
+        let lightAccent = rgba(lightTokens.accent)
+        let lightSuccess = rgba(lightTokens.success)
+        let lightUserBubble = rgba(lightTokens.userBubble)
+        let darkBackground = rgba(darkTokens.background)
+        let darkAccent = rgba(darkTokens.accent)
+        let darkSuccess = rgba(darkTokens.success)
+        let darkUserBubble = rgba(darkTokens.userBubble)
+
+        XCTAssertEqual(ThemePreset.codex.subtitle, "白色界面配紫色重点，适合长时间对话")
+
+        XCTAssertGreaterThan(lightBackground.red, 0.97)
+        XCTAssertGreaterThan(lightBackground.green, 0.96)
+        XCTAssertGreaterThan(lightBackground.blue, 0.97)
+        XCTAssertGreaterThan(lightSurface.red, 0.99)
+        XCTAssertGreaterThan(lightSurface.green, 0.99)
+        XCTAssertGreaterThan(lightSurface.blue, 0.99)
+
+        XCTAssertGreaterThan(lightAccent.red, 0.30)
+        XCTAssertLessThan(lightAccent.green, 0.20)
+        XCTAssertGreaterThan(lightAccent.blue, 0.35)
+        XCTAssertGreaterThan(lightAccent.blue, lightAccent.red)
+        XCTAssertGreaterThan(lightSuccess.blue, 0.70)
+        XCTAssertGreaterThan(lightSuccess.red, 0.25)
+        XCTAssertLessThan(lightSuccess.green, lightSuccess.blue)
+
+        XCTAssertEqual(lightUserBubble.red, 0.25, accuracy: 0.01)
+        XCTAssertEqual(lightUserBubble.green, 0.13, accuracy: 0.01)
+        XCTAssertEqual(lightUserBubble.blue, 0.42, accuracy: 0.01)
+        XCTAssertGreaterThan(lightUserBubble.alpha, 0.99)
+
+        XCTAssertLessThan(darkBackground.red, 0.12)
+        XCTAssertLessThan(darkBackground.green, 0.10)
+        XCTAssertLessThan(darkBackground.blue, 0.13)
+        XCTAssertGreaterThan(darkAccent.red, 0.70)
+        XCTAssertGreaterThan(darkAccent.green, 0.50)
+        XCTAssertGreaterThan(darkAccent.blue, 0.80)
+        XCTAssertGreaterThan(darkAccent.blue, darkAccent.red)
+        XCTAssertGreaterThan(darkSuccess.blue, 0.90)
+        XCTAssertGreaterThan(darkSuccess.red, 0.45)
+        XCTAssertLessThan(darkSuccess.green, darkSuccess.blue)
+
+        XCTAssertEqual(darkUserBubble.red, 0.25, accuracy: 0.01)
+        XCTAssertEqual(darkUserBubble.green, 0.13, accuracy: 0.01)
+        XCTAssertEqual(darkUserBubble.blue, 0.42, accuracy: 0.01)
+        XCTAssertGreaterThan(darkUserBubble.alpha, 0.99)
+    }
+
     func testXcodePresetKeepsEditorInspiredContrastAndAccents() {
         let store = ThemeStore(defaults: defaults)
         store.preset = .xcode
@@ -174,6 +228,28 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(darkTokens.resolvedScheme, .dark)
     }
 
+    func testPrimaryColorPresetsKeepVoiceRecordingAlignedWithAccent() {
+        let store = ThemeStore(defaults: defaults)
+
+        for preset in [ThemePreset.codex, .github, .xcode] {
+            store.preset = preset
+
+            for scheme in [ColorScheme.light, .dark] {
+                let tokens = store.tokens(for: scheme)
+                let voice = rgba(tokens.voiceRecording)
+                let accent = rgba(tokens.accent)
+                let warning = rgba(tokens.warning)
+
+                // 语音录音态要保留“正在听”的差异感，但默认/代码主题里应贴近主色，而不是跳成警告色。
+                XCTAssertLessThan(
+                    colorDistance(voice, accent),
+                    colorDistance(voice, warning),
+                    "\(preset.title) \(scheme) voice color should stay closer to accent than warning"
+                )
+            }
+        }
+    }
+
     func testThemeVersionIncrementsWhenVisualStateChanges() {
         let store = ThemeStore(defaults: defaults)
         let originalVersion = store.themeVersion
@@ -190,6 +266,16 @@ final class ThemeStoreTests: XCTestCase {
         var alpha: CGFloat = 0
         XCTAssertTrue(UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha))
         return (red, green, blue, alpha)
+    }
+
+    private func colorDistance(
+        _ lhs: (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat),
+        _ rhs: (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)
+    ) -> CGFloat {
+        let red = lhs.red - rhs.red
+        let green = lhs.green - rhs.green
+        let blue = lhs.blue - rhs.blue
+        return sqrt(red * red + green * green + blue * blue)
     }
 }
 

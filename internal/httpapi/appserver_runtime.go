@@ -477,9 +477,15 @@ func completedAgentMessageEvent(base runtimeStreamEvent, item map[string]any) (r
 	if item == nil || stringParam(item, "type") != "agentMessage" {
 		return runtimeStreamEvent{}, false
 	}
-	text := strings.TrimSpace(stringParam(item, "text"))
+	text := strings.TrimSpace(firstNonEmpty(stringParam(item, "text"), stringParam(item, "content")))
 	if text == "" {
 		return runtimeStreamEvent{}, false
+	}
+	role := "assistant"
+	kind := "message"
+	if stringParam(item, "phase") == "commentary" {
+		role = "system"
+		kind = "reasoning_summary"
 	}
 	base.Type = "message_completed"
 	base.ItemID = firstNonEmpty(base.ItemID, stringParam(item, "id"))
@@ -491,8 +497,8 @@ func completedAgentMessageEvent(base runtimeStreamEvent, item map[string]any) (r
 		SessionID:  base.SessionID,
 		TurnID:     base.TurnID,
 		ItemID:     base.ItemID,
-		Role:       "assistant",
-		Kind:       "message",
+		Role:       role,
+		Kind:       kind,
 		Content:    text,
 		CreatedAt:  time.Now().UTC(),
 		SendStatus: "confirmed",
@@ -1149,9 +1155,10 @@ func appServerThreadStatusValueToSessionStatus(status appServerThreadStatus) str
 func safeThreadStartParams(project projects.Project) map[string]any {
 	return map[string]any{
 		"cwd":               project.RealPath,
+		"model":             defaultCodexAppServerModel,
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
-		"sandbox":           "workspace-write",
+		"sandbox":           "danger-full-access",
 		"ephemeral":         false,
 	}
 }
@@ -1175,12 +1182,11 @@ func safeTurnStartParams(threadID string, project projects.Project, prompt strin
 		}},
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
+		"model":             defaultCodexAppServerModel,
+		"effort":            defaultCodexReasoningEffort,
 		"sandboxPolicy": map[string]any{
-			"type":                "workspaceWrite",
-			"writableRoots":       []string{project.RealPath},
-			"networkAccess":       false,
-			"excludeTmpdirEnvVar": false,
-			"excludeSlashTmp":     false,
+			"type":          "dangerFullAccess",
+			"networkAccess": false,
 		},
 	}
 	if strings.TrimSpace(clientMessageID) != "" {

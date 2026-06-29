@@ -81,7 +81,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .codex:
-            return "清爽中性，适合长时间对话"
+            return "白色界面配紫色重点，适合长时间对话"
         case .github:
             return "接近 GitHub Primer 的代码审阅配色"
         case .xcode:
@@ -94,7 +94,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var swatchForeground: Color {
         switch self {
         case .codex:
-            return Color(red: 0.10, green: 0.46, blue: 0.92)
+            return Color(red: 0.38, green: 0.12, blue: 0.41)
         case .github:
             return Color(red: 0.03, green: 0.41, blue: 0.85)
         case .xcode:
@@ -107,7 +107,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var swatchBackground: Color {
         switch self {
         case .codex:
-            return Color(red: 0.91, green: 0.95, blue: 1.00)
+            return Color(red: 0.97, green: 0.94, blue: 0.98)
         case .github:
             return Color(red: 0.96, green: 0.97, blue: 0.98)
         case .xcode:
@@ -191,8 +191,29 @@ struct ThemeTokens {
     let accent: Color
     let warning: Color
     let success: Color
+    let goalActive: Color
+    let voiceRecording: Color
+    let voiceWaveformGradient: [Color]
     let border: Color
     let selectionFill: Color
+}
+
+extension ThemeTokens {
+    func tint(for tone: AgentSessionStatusTone) -> Color {
+        switch tone {
+        case .active:
+            // 运行态使用主题内的成功/活动色，避免 Default 紫色界面跳出系统绿。
+            return success
+        case .warning:
+            return warning
+        case .danger:
+            return .red
+        case .complete:
+            return accent
+        case .neutral:
+            return secondaryText
+        }
+    }
 }
 
 @MainActor
@@ -374,22 +395,29 @@ final class ThemeStore: ObservableObject {
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .light,
-            background: Color(red: 0.97, green: 0.98, blue: 0.99),
-            surface: .white,
-            elevatedSurface: Color(red: 0.93, green: 0.95, blue: 0.97),
-            userBubble: Color(red: 0.16, green: 0.42, blue: 0.92).opacity(0.16),
+            background: Color(red: 0.99, green: 0.98, blue: 0.99),
+            surface: Color(red: 1.00, green: 1.00, blue: 1.00),
+            elevatedSurface: Color(red: 0.96, green: 0.94, blue: 0.97),
+            userBubble: Color(red: 0.25, green: 0.13, blue: 0.42),
             assistantBubble: .white,
-            systemBubble: Color(red: 0.91, green: 0.94, blue: 0.97),
+            systemBubble: Color(red: 0.95, green: 0.93, blue: 0.96),
             codeBlock: Color(red: 0.11, green: 0.13, blue: 0.16),
             codeText: Color(red: 0.94, green: 0.96, blue: 0.98),
-            primaryText: Color(red: 0.08, green: 0.10, blue: 0.13),
-            secondaryText: Color(red: 0.36, green: 0.40, blue: 0.46),
-            tertiaryText: Color(red: 0.52, green: 0.56, blue: 0.62),
-            accent: Color(red: 0.16, green: 0.42, blue: 0.92),
+            primaryText: Color(red: 0.11, green: 0.10, blue: 0.11),
+            secondaryText: Color(red: 0.38, green: 0.36, blue: 0.38),
+            tertiaryText: Color(red: 0.53, green: 0.49, blue: 0.54),
+            accent: Color(red: 0.38, green: 0.12, blue: 0.41),
             warning: Color(red: 0.88, green: 0.48, blue: 0.08),
-            success: Color(red: 0.10, green: 0.55, blue: 0.28),
-            border: Color(red: 0.78, green: 0.82, blue: 0.86),
-            selectionFill: Color(red: 0.16, green: 0.42, blue: 0.92).opacity(0.14)
+            success: Color(red: 0.30, green: 0.31, blue: 0.78),
+            goalActive: Color(red: 0.48, green: 0.18, blue: 0.52),
+            voiceRecording: Color(red: 0.56, green: 0.24, blue: 0.61),
+            voiceWaveformGradient: [
+                Color(red: 0.38, green: 0.12, blue: 0.41),
+                Color(red: 0.56, green: 0.24, blue: 0.61),
+                Color(red: 0.77, green: 0.56, blue: 0.84)
+            ],
+            border: Color(red: 0.88, green: 0.84, blue: 0.90),
+            selectionFill: Color(red: 0.38, green: 0.12, blue: 0.41).opacity(0.12)
         )
     }
 
@@ -397,22 +425,29 @@ final class ThemeStore: ObservableObject {
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .dark,
-            background: Color(red: 0.06, green: 0.07, blue: 0.09),
-            surface: Color(red: 0.10, green: 0.12, blue: 0.15),
-            elevatedSurface: Color(red: 0.15, green: 0.17, blue: 0.20),
-            userBubble: Color(red: 0.22, green: 0.48, blue: 0.96).opacity(0.34),
-            assistantBubble: Color(red: 0.12, green: 0.14, blue: 0.17),
-            systemBubble: Color(red: 0.18, green: 0.20, blue: 0.23),
-            codeBlock: Color(red: 0.02, green: 0.03, blue: 0.04),
-            codeText: Color(red: 0.88, green: 0.93, blue: 0.98),
-            primaryText: Color(red: 0.94, green: 0.95, blue: 0.96),
-            secondaryText: Color(red: 0.70, green: 0.73, blue: 0.76),
-            tertiaryText: Color(red: 0.54, green: 0.58, blue: 0.63),
-            accent: Color(red: 0.38, green: 0.62, blue: 1.00),
+            background: Color(red: 0.07, green: 0.05, blue: 0.08),
+            surface: Color(red: 0.12, green: 0.09, blue: 0.13),
+            elevatedSurface: Color(red: 0.17, green: 0.13, blue: 0.19),
+            userBubble: Color(red: 0.25, green: 0.13, blue: 0.42),
+            assistantBubble: Color(red: 0.10, green: 0.08, blue: 0.11),
+            systemBubble: Color(red: 0.15, green: 0.11, blue: 0.17),
+            codeBlock: Color(red: 0.02, green: 0.02, blue: 0.03),
+            codeText: Color(red: 0.92, green: 0.90, blue: 0.94),
+            primaryText: Color(red: 0.95, green: 0.93, blue: 0.96),
+            secondaryText: Color(red: 0.78, green: 0.72, blue: 0.80),
+            tertiaryText: Color(red: 0.59, green: 0.53, blue: 0.62),
+            accent: Color(red: 0.77, green: 0.56, blue: 0.84),
             warning: Color(red: 1.00, green: 0.66, blue: 0.22),
-            success: Color(red: 0.36, green: 0.82, blue: 0.50),
-            border: Color(red: 0.28, green: 0.31, blue: 0.36),
-            selectionFill: Color(red: 0.38, green: 0.62, blue: 1.00).opacity(0.18)
+            success: Color(red: 0.55, green: 0.60, blue: 1.00),
+            goalActive: Color(red: 0.83, green: 0.64, blue: 0.90),
+            voiceRecording: Color(red: 0.85, green: 0.65, blue: 0.91),
+            voiceWaveformGradient: [
+                Color(red: 0.93, green: 0.74, blue: 0.98),
+                Color(red: 0.77, green: 0.56, blue: 0.84),
+                Color(red: 0.56, green: 0.24, blue: 0.61)
+            ],
+            border: Color(red: 0.30, green: 0.23, blue: 0.33),
+            selectionFill: Color(red: 0.77, green: 0.56, blue: 0.84).opacity(0.18)
         )
     }
 
@@ -434,6 +469,13 @@ final class ThemeStore: ObservableObject {
             accent: Color(red: 0.03, green: 0.41, blue: 0.85),
             warning: Color(red: 0.60, green: 0.40, blue: 0.00),
             success: Color(red: 0.10, green: 0.50, blue: 0.22),
+            goalActive: Color(red: 0.03, green: 0.41, blue: 0.85),
+            voiceRecording: Color(red: 0.10, green: 0.48, blue: 0.78),
+            voiceWaveformGradient: [
+                Color(red: 0.32, green: 0.68, blue: 0.96),
+                Color(red: 0.03, green: 0.41, blue: 0.85),
+                Color(red: 0.02, green: 0.30, blue: 0.64)
+            ],
             border: Color(red: 0.82, green: 0.84, blue: 0.87),
             selectionFill: Color(red: 0.03, green: 0.41, blue: 0.85).opacity(0.12)
         )
@@ -457,13 +499,20 @@ final class ThemeStore: ObservableObject {
             accent: Color(red: 0.18, green: 0.51, blue: 0.97),
             warning: Color(red: 0.82, green: 0.60, blue: 0.13),
             success: Color(red: 0.25, green: 0.73, blue: 0.31),
+            goalActive: Color(red: 0.42, green: 0.68, blue: 1.00),
+            voiceRecording: Color(red: 0.36, green: 0.64, blue: 1.00),
+            voiceWaveformGradient: [
+                Color(red: 0.58, green: 0.80, blue: 1.00),
+                Color(red: 0.18, green: 0.51, blue: 0.97),
+                Color(red: 0.10, green: 0.36, blue: 0.76)
+            ],
             border: Color(red: 0.19, green: 0.22, blue: 0.25),
             selectionFill: Color(red: 0.18, green: 0.51, blue: 0.97).opacity(0.18)
         )
     }
 
     private var xcodeLightTokens: ThemeTokens {
-        // Xcode 预设按编辑器体验处理：浅色代码区保持明亮，蓝色只用于选中/焦点，橙绿负责状态点缀。
+        // Xcode 预设按编辑器体验处理：浅色代码区保持明亮，蓝色负责选中/焦点/语音态，橙绿负责状态点缀。
         ThemeTokens(
             preset: .xcode,
             resolvedScheme: .light,
@@ -481,6 +530,13 @@ final class ThemeStore: ObservableObject {
             accent: Color(red: 0.00, green: 0.48, blue: 1.00),
             warning: Color(red: 1.00, green: 0.58, blue: 0.00),
             success: Color(red: 0.12, green: 0.72, blue: 0.30),
+            goalActive: Color(red: 0.00, green: 0.44, blue: 0.86),
+            voiceRecording: Color(red: 0.00, green: 0.46, blue: 0.92),
+            voiceWaveformGradient: [
+                Color(red: 0.28, green: 0.68, blue: 1.00),
+                Color(red: 0.00, green: 0.48, blue: 1.00),
+                Color(red: 0.00, green: 0.34, blue: 0.78)
+            ],
             border: Color(red: 0.80, green: 0.83, blue: 0.87),
             selectionFill: Color(red: 0.00, green: 0.48, blue: 1.00).opacity(0.13)
         )
@@ -505,6 +561,13 @@ final class ThemeStore: ObservableObject {
             accent: Color(red: 0.04, green: 0.52, blue: 1.00),
             warning: Color(red: 1.00, green: 0.62, blue: 0.04),
             success: Color(red: 0.19, green: 0.82, blue: 0.35),
+            goalActive: Color(red: 0.35, green: 0.68, blue: 1.00),
+            voiceRecording: Color(red: 0.42, green: 0.70, blue: 1.00),
+            voiceWaveformGradient: [
+                Color(red: 0.62, green: 0.84, blue: 1.00),
+                Color(red: 0.04, green: 0.52, blue: 1.00),
+                Color(red: 0.18, green: 0.46, blue: 0.88)
+            ],
             border: Color(red: 0.25, green: 0.26, blue: 0.29),
             selectionFill: Color(red: 0.04, green: 0.52, blue: 1.00).opacity(0.21)
         )
@@ -528,6 +591,13 @@ final class ThemeStore: ObservableObject {
             accent: Color(red: 0.69, green: 0.38, blue: 0.10),
             warning: Color(red: 0.80, green: 0.42, blue: 0.10),
             success: Color(red: 0.49, green: 0.53, blue: 0.17),
+            goalActive: Color(red: 0.03, green: 0.40, blue: 0.47),
+            voiceRecording: Color(red: 0.80, green: 0.42, blue: 0.10),
+            voiceWaveformGradient: [
+                Color(red: 0.86, green: 0.52, blue: 0.15),
+                Color(red: 0.80, green: 0.42, blue: 0.10),
+                Color(red: 0.59, green: 0.31, blue: 0.08)
+            ],
             border: Color(red: 0.72, green: 0.64, blue: 0.50),
             selectionFill: Color(red: 0.69, green: 0.38, blue: 0.10).opacity(0.17)
         )
@@ -551,6 +621,13 @@ final class ThemeStore: ObservableObject {
             accent: Color(red: 0.84, green: 0.55, blue: 0.22),
             warning: Color(red: 0.98, green: 0.56, blue: 0.25),
             success: Color(red: 0.72, green: 0.73, blue: 0.36),
+            goalActive: Color(red: 0.51, green: 0.65, blue: 0.60),
+            voiceRecording: Color(red: 0.98, green: 0.56, blue: 0.25),
+            voiceWaveformGradient: [
+                Color(red: 0.98, green: 0.66, blue: 0.28),
+                Color(red: 0.98, green: 0.56, blue: 0.25),
+                Color(red: 0.75, green: 0.39, blue: 0.18)
+            ],
             border: Color(red: 0.38, green: 0.35, blue: 0.29),
             selectionFill: Color(red: 0.84, green: 0.55, blue: 0.22).opacity(0.20)
         )

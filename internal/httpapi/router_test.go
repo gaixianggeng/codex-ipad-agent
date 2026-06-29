@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -105,7 +106,7 @@ func TestLoggingRedactsQueryTokens(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/projects?Token=secret-token&access_token=secret-access&Authorization=secret-auth&limit=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/projects?Token=secret-token&access_token=secret-access&Authorization=secret-auth&pair_sig=secret-pair&limit=1", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	server.handler.ServeHTTP(rec, req)
 
@@ -113,13 +114,60 @@ func TestLoggingRedactsQueryTokens(t *testing.T) {
 		t.Fatalf("请求应成功，got=%d body=%s", rec.Code, rec.Body.String())
 	}
 	text := logs.String()
-	for _, secret := range []string{"secret-token", "secret-access", "secret-auth"} {
+	for _, secret := range []string{"secret-token", "secret-access", "secret-auth", "secret-pair"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("日志不应包含敏感 query 值 %q：%s", secret, text)
 		}
 	}
 	if !strings.Contains(text, "redacted") {
 		t.Fatalf("日志应包含脱敏占位：%s", text)
+	}
+}
+
+func TestPairingClaimExchangesValidTicketWithoutBearerToken(t *testing.T) {
+	server := newTestServer(t)
+	issuedAt := time.Now().UTC().Add(-time.Minute)
+	expiresAt := time.Now().UTC().Add(9 * time.Minute)
+	req := authedRequest(t, http.MethodPost, "/api/pair/claim", pairingClaimRequest{
+		Endpoint:  "http://100.64.0.1:8787",
+		IssuedAt:  issuedAt.Format(time.RFC3339),
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+		Signature: auth.SignPairingTicket(testToken, "http://100.64.0.1:8787", issuedAt.Format(time.RFC3339), expiresAt.Format(time.RFC3339)),
+	})
+	req.Header.Del("Authorization")
+	rec := httptest.NewRecorder()
+
+	server.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("合法配对票据应可无 Bearer 兑换，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response pairingClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("响应不是 pairingClaimResponse：%v", err)
+	}
+	if response.Endpoint != "http://100.64.0.1:8787" || response.Token != testToken {
+		t.Fatalf("pair claim 响应异常：%+v", response)
+	}
+}
+
+func TestPairingClaimRejectsExpiredTicket(t *testing.T) {
+	server := newTestServer(t)
+	issuedAt := time.Now().UTC().Add(-20 * time.Minute)
+	expiresAt := time.Now().UTC().Add(-10 * time.Minute)
+	req := authedRequest(t, http.MethodPost, "/api/pair/claim", pairingClaimRequest{
+		Endpoint:  "http://100.64.0.1:8787",
+		IssuedAt:  issuedAt.Format(time.RFC3339),
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+		Signature: auth.SignPairingTicket(testToken, "http://100.64.0.1:8787", issuedAt.Format(time.RFC3339), expiresAt.Format(time.RFC3339)),
+	})
+	req.Header.Del("Authorization")
+	rec := httptest.NewRecorder()
+
+	server.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("过期配对票据应被拒绝，got=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -440,6 +488,42 @@ func TestGitCommitCreatesLocalCommitFromStagedFiles(t *testing.T) {
 	}
 	if status.StatusText != "" || status.StagedDiff != "" || status.UnstagedDiff != "" || len(status.Files) != 0 {
 		t.Fatalf("commit 后工作区应干净：%+v", status)
+	}
+}
+
+func TestGitCommitRejectsStagedFilesOutsideWorkspaceScope(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	appDir := filepath.Join(repo, "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("outside scope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, repo, "add", "app/main.go", "README.md")
+
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "app", Name: "App", Path: appDir}}
+	})
+	rec := httptest.NewRecorder()
+	req := authedRequest(t, http.MethodPost, "/api/git/commit", gitCommitRequest{
+		Path:    appDir,
+		Message: "update app",
+	})
+	server.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("scope 外暂存文件应拒绝提交，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "不在当前工作区范围内") {
+		t.Fatalf("错误应解释 scope 外暂存文件，body=%s", rec.Body.String())
+	}
+	if head := gitTestOutput(t, repo, "rev-parse", "--short", "HEAD"); head == "" {
+		t.Fatal("拒绝提交后仓库 HEAD 应仍可读取")
 	}
 }
 
@@ -1073,6 +1157,37 @@ func TestCommandActionRunExecutesConfiguredCommand(t *testing.T) {
 	}
 }
 
+func TestCommandActionRunRequiresExplicitConfirmation(t *testing.T) {
+	projectDir := t.TempDir()
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
+		cfg.Actions = []config.ActionConfig{
+			{ID: "deploy", Name: "Deploy", Command: "/bin/echo", Args: []string{"ship"}, RequiresConfirmation: true},
+		}
+	})
+
+	rec := httptest.NewRecorder()
+	req := authedRequest(t, http.MethodPost, "/api/actions/run", commandActionRunRequest{Path: projectDir, ID: "deploy"})
+	server.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("未确认的高风险 action 应被拒绝，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = authedRequest(t, http.MethodPost, "/api/actions/run", commandActionRunRequest{Path: projectDir, ID: "deploy", Confirmed: true})
+	server.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("显式确认后 action 应可执行，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response commandActionRunResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("响应不是 commandActionRunResponse：%v", err)
+	}
+	if !response.Success || strings.TrimSpace(response.Output) != "ship" {
+		t.Fatalf("确认 action 执行结果异常：%+v", response)
+	}
+}
+
 func TestCommandActionRunReturnsNonZeroExitWithoutHTTPFailure(t *testing.T) {
 	projectDir := t.TempDir()
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
@@ -1206,6 +1321,50 @@ url = "https://docs.example.invalid/mcp"
 	data, _ := json.Marshal(response)
 	if strings.Contains(string(data), "should-not-leak") {
 		t.Fatalf("capability 响应不应暴露 env secret：%s", string(data))
+	}
+}
+
+func TestCapabilityListDoesNotReadRepoConfigAboveAuthorizedWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(repoRoot, "packages", "ipad")
+	if err := os.MkdirAll(filepath.Join(workspace, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootCodex := filepath.Join(repoRoot, ".codex")
+	if err := os.MkdirAll(rootCodex, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootCodex, "config.toml"), []byte("[mcp_servers.root]\ncommand = \"root-mcp\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".codex", "config.toml"), []byte("[mcp_servers.workspace]\ncommand = \"missing-workspace-mcp\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "ipad", Name: "iPad", Path: workspace}}
+	})
+	rec := httptest.NewRecorder()
+	req := authedRequest(t, http.MethodPost, "/api/capabilities/list", capabilityListRequest{Path: workspace})
+	server.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capability list 应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response capabilityListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("响应不是 capabilityListResponse：%v", err)
+	}
+	if containsMCP(response.MCPServers, "root", "", "stdio", true) || findMCP(response.MCPServers, "root", "") != nil {
+		t.Fatalf("不应读取授权 workspace 上层 Git 根的 MCP 配置：%+v", response.MCPServers)
+	}
+	if findMCP(response.MCPServers, "workspace", "") == nil {
+		t.Fatalf("应保留授权 workspace 内的 MCP 配置：%+v", response.MCPServers)
 	}
 }
 

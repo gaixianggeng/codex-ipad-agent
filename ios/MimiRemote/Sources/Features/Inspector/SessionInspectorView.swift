@@ -238,6 +238,8 @@ private struct RuntimeActivityPanelView: View {
             return "文件变更"
         case .approval:
             return "审批"
+        case .userInput:
+            return "补充信息"
         case .error:
             return "运行异常"
         case .message:
@@ -255,6 +257,8 @@ private struct RuntimeActivityPanelView: View {
             return "doc.text.magnifyingglass"
         case .approval:
             return "checkmark.seal"
+        case .userInput:
+            return "questionmark.bubble"
         case .error:
             return "exclamationmark.triangle"
         case .message:
@@ -266,6 +270,8 @@ private struct RuntimeActivityPanelView: View {
         switch kind {
         case .approval:
             return tokens.warning
+        case .userInput:
+            return tokens.accent
         case .error:
             return .red
         case .fileChangeSummary:

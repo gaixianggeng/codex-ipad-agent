@@ -32,6 +32,11 @@ struct AgentAPIClient {
         try await request(path: "/healthz", method: "GET", requiresAuth: false, body: Optional<Data>.none)
     }
 
+    func claimPairing(_ claim: PairingClaimRequest) async throws -> PairingClaimResponse {
+        let body = try JSONEncoder().encode(claim)
+        return try await request(path: "/api/pair/claim", method: "POST", requiresAuth: false, body: body)
+    }
+
     func version() async throws -> VersionResponse {
         try await request(path: "/api/version", method: "GET", body: Optional<Data>.none)
     }
@@ -96,8 +101,8 @@ struct AgentAPIClient {
         return response.actions
     }
 
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse {
-        let body = try JSONEncoder().encode(CommandActionRunRequest(path: path, id: id))
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse {
+        let body = try JSONEncoder().encode(CommandActionRunRequest(path: path, id: id, confirmed: confirmed))
         return try await request(path: "/api/actions/run", method: "POST", body: body)
     }
 

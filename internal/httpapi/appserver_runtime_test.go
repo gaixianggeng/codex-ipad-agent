@@ -208,8 +208,11 @@ func TestCodexAppServerRuntimeCreateSessionStartsThreadWithAllowlistedCWD(t *tes
 			if _, ok := params["runtimeWorkspaceRoots"]; ok {
 				t.Fatalf("thread/start 不能发送需要 experimentalApi 的 runtimeWorkspaceRoots：%v", params)
 			}
-			if params["approvalPolicy"] == "never" || params["sandbox"] == "danger-full-access" {
-				t.Fatalf("移动端入口不能启用高危 policy：%v", params)
+			if params["approvalPolicy"] != "on-request" || params["sandbox"] != "danger-full-access" {
+				t.Fatalf("移动端入口必须使用用户批准 + 完全访问默认值：%v", params)
+			}
+			if params["model"] != "gpt-5.5" {
+				t.Fatalf("thread/start 必须默认使用最强模型：%v", params)
 			}
 			*(result.(*appServerThreadEnvelope)) = appServerThreadEnvelope{Thread: appServerThread{
 				ID:        "thread-new",
@@ -467,15 +470,18 @@ func TestCodexAppServerRuntimeRejectsDisallowedMethods(t *testing.T) {
 	}
 }
 
-func TestCodexAppServerRuntimeSafeParamsNeverExposeDangerousPolicies(t *testing.T) {
+func TestCodexAppServerRuntimeSafeParamsUseFullAccessWithApproval(t *testing.T) {
 	_, project := appServerRuntimeFixture(t)
 
 	start := safeThreadStartParams(project)
-	if start["approvalPolicy"] == "never" || start["sandbox"] == "danger-full-access" {
-		t.Fatalf("thread/start 不能暴露危险策略：%v", start)
+	if start["approvalPolicy"] != "on-request" || start["sandbox"] != "danger-full-access" {
+		t.Fatalf("thread/start 必须使用用户批准 + 完全访问默认值：%v", start)
 	}
 	if start["cwd"] != project.RealPath {
 		t.Fatalf("thread/start 必须使用 allowlist cwd：%v", start)
+	}
+	if start["model"] != "gpt-5.5" {
+		t.Fatalf("thread/start 必须默认使用最强模型：%v", start)
 	}
 	if _, ok := start["runtimeWorkspaceRoots"]; ok {
 		t.Fatalf("thread/start 不能发送需要 experimentalApi 的 runtimeWorkspaceRoots：%v", start)
@@ -485,16 +491,18 @@ func TestCodexAppServerRuntimeSafeParamsNeverExposeDangerousPolicies(t *testing.
 	if turn["approvalPolicy"] == "never" {
 		t.Fatalf("turn/start 不能暴露 approvalPolicy=never：%v", turn)
 	}
+	if turn["model"] != "gpt-5.5" || turn["effort"] != "xhigh" {
+		t.Fatalf("turn/start 必须默认使用最强模型和超高思考：%v", turn)
+	}
 	sandbox, ok := turn["sandboxPolicy"].(map[string]any)
 	if !ok {
-		t.Fatalf("turn/start 必须包含 workspaceWrite sandboxPolicy：%v", turn)
+		t.Fatalf("turn/start 必须包含 sandboxPolicy：%v", turn)
 	}
-	if sandbox["type"] != "workspaceWrite" || sandbox["networkAccess"] != false {
-		t.Fatalf("turn/start sandbox 必须限制为 workspaceWrite 且默认禁网：%v", sandbox)
+	if sandbox["type"] != "dangerFullAccess" || sandbox["networkAccess"] != false {
+		t.Fatalf("turn/start sandbox 必须使用完全访问且默认禁网：%v", sandbox)
 	}
-	roots, ok := sandbox["writableRoots"].([]string)
-	if !ok || len(roots) != 1 || roots[0] != project.RealPath {
-		t.Fatalf("writableRoots 必须只包含 allowlist 项目路径：%v", sandbox)
+	if _, ok := sandbox["writableRoots"]; ok {
+		t.Fatalf("dangerFullAccess 不应携带 writableRoots：%v", sandbox)
 	}
 }
 
@@ -653,6 +661,33 @@ func TestCodexAppServerRuntimeMapsCommandExecutionOutputDelta(t *testing.T) {
 	})
 	if len(events) != 1 || events[0].Type != "log_delta" || events[0].Data != "go test output\n" {
 		t.Fatalf("命令输出应映射为 log_delta：%+v", events)
+	}
+}
+
+func TestCodexAppServerRuntimeMapsCompletedAgentMessageContentAndCommentary(t *testing.T) {
+	registry, _ := appServerRuntimeFixture(t)
+	runtime := NewCodexAppServerRuntime(registry, &fakeAppServerRPC{})
+
+	events := runtime.eventsFromNotification(appserver.Notification{
+		Method: "item/completed",
+		Params: []byte(`{"threadId":"thread-complete","turnId":"turn-1","item":{"type":"agentMessage","id":"assistant-1","content":"final from content"}}`),
+	})
+	if len(events) != 1 || events[0].Type != "message_completed" || events[0].Message == nil {
+		t.Fatalf("agentMessage content 应映射为 message_completed：%+v", events)
+	}
+	if events[0].Message.Content != "final from content" || events[0].Message.Role != "assistant" || events[0].Message.Kind != "message" {
+		t.Fatalf("assistant 完整消息字段异常：%+v", events[0].Message)
+	}
+
+	commentary := runtime.eventsFromNotification(appserver.Notification{
+		Method: "item/completed",
+		Params: []byte(`{"threadId":"thread-complete","turnId":"turn-1","item":{"type":"agentMessage","id":"commentary-1","text":"我先检查上下文。","phase":"commentary"}}`),
+	})
+	if len(commentary) != 1 || commentary[0].Type != "message_completed" || commentary[0].Message == nil {
+		t.Fatalf("commentary agentMessage 应映射为 message_completed：%+v", commentary)
+	}
+	if commentary[0].Message.Role != "system" || commentary[0].Message.Kind != "reasoning_summary" {
+		t.Fatalf("commentary 应作为 system reasoning summary 展示：%+v", commentary[0].Message)
 	}
 }
 

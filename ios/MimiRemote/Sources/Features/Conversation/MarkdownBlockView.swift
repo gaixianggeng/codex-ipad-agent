@@ -67,7 +67,6 @@ struct MarkdownBlockView: View {
             .foregroundStyle(style.textColor)
             .tint(style.linkColor)
             .lineSpacing(style.textLineSpacing)
-            .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
 
         if expand {
@@ -163,7 +162,6 @@ struct MarkdownBlockView: View {
                     .font(style.codeFont)
                     .foregroundStyle(style.codeForeground)
                     .lineSpacing(1.5)
-                    .textSelection(.enabled)
                     .fixedSize(horizontal: true, vertical: false)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -411,7 +409,6 @@ struct ConversationImagePreview: View {
                 .font(style.captionFont)
                 .lineLimit(2)
                 .truncationMode(.middle)
-                .textSelection(.enabled)
         }
         .foregroundStyle(style.secondaryColor)
         .padding(10)

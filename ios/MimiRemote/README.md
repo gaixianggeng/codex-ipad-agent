@@ -38,6 +38,7 @@ agentd doctor
 - Endpoint，例如 `http://100.x.y.z:8787`、`http://14.103.53.126`
 - Token，也就是 `AGENTD_TOKEN`
 - 连接链接，例如 `mimiremote://connect?endpoint=...&token=...`
+- 配对二维码使用 `mimiremote://pair?endpoint=...&issued_at=...&expires_at=...&pair_sig=...`，不直接携带长期 Token
 
 Token 存入 Keychain，Endpoint 存入 UserDefaults。iPad 客户端固定使用直连模式，旧版本保存过的兼容模式配置会在启动时自动清理。MVP 支持 `http://100.x.x.x:8787` 这类 Tailscale 裸 IP，也支持手动填写自建 VPS 的公网 IPv4 中转地址；更推荐使用 MagicDNS 的 `http://<mac-hostname>.<tailnet>.ts.net:8787`，后续公开发布前应优先切到 HTTPS 或更严格的 ATS 策略。
 
@@ -46,7 +47,7 @@ direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server up
 直连要求：
 
 1. 推荐用 `agentd setup` 生成配置；`agentd serve` 会在 `app_server.managed=true` 时自动托管 loopback `codex app-server`。
-2. 设置页扫码连接会先填入 Endpoint/Token，再校验 `/api/app-server/config` 和 gateway 可用性。
+2. 设置页扫码连接会先用短期配对票据兑换 Endpoint/Token，再校验 `/api/app-server/config` 和 gateway 可用性。
 3. 点击“保存并加载”会断开旧 WebSocket，重新创建 direct API client 和 WebSocket client。
 
 ## 实现

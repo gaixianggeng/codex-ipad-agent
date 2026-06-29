@@ -31,13 +31,67 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let params = try XCTUnwrap(request.params?.objectValue)
         XCTAssertEqual(request.method, "turn/start")
         XCTAssertEqual(params["cwd"]?.stringValue, "/Users/me/repo")
+        XCTAssertEqual(params["model"]?.stringValue, "gpt-5.5")
+        XCTAssertEqual(params["effort"]?.stringValue, "xhigh")
         XCTAssertEqual(params["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client-1")
 
         let sandbox = try XCTUnwrap(params["sandboxPolicy"]?.objectValue)
-        XCTAssertEqual(sandbox["type"]?.stringValue, "workspaceWrite")
+        XCTAssertEqual(sandbox["type"]?.stringValue, "dangerFullAccess")
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
-        XCTAssertEqual(sandbox["writableRoots"]?.arrayValue?.first?.stringValue, "/Users/me/repo")
+        XCTAssertNil(sandbox["writableRoots"])
+    }
+
+    func testTurnStartBuilderAddsCollaborationModeOnlyForPlanMode() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        var planOptions = CodexAppServerTurnOptions.default
+        planOptions.model = "gpt-5-codex"
+        planOptions.reasoningEffort = .high
+        planOptions.collaborationMode = .plan
+        planOptions.planGuidanceEnabled = true
+        let planPayload = CodexAppServerTurnPayload(prompt: "先做方案", options: planOptions)
+        let planRequest = try builder.turnStart(threadID: "thread-1", projectID: project.id, payload: planPayload)
+        let planParams = try XCTUnwrap(planRequest.params?.objectValue)
+        let collaborationMode = try XCTUnwrap(planParams["collaborationMode"]?.objectValue)
+        XCTAssertEqual(collaborationMode["mode"]?.stringValue, "plan")
+        let settings = try XCTUnwrap(collaborationMode["settings"]?.objectValue)
+        XCTAssertEqual(settings["model"]?.stringValue, "gpt-5-codex")
+        XCTAssertEqual(settings["reasoning_effort"]?.stringValue, "high")
+        XCTAssertEqual(settings["developer_instructions"], .null)
+
+        let standardPayload = CodexAppServerTurnPayload(prompt: "直接做", options: .default)
+        let standardRequest = try builder.turnStart(threadID: "thread-1", projectID: project.id, payload: standardPayload)
+        XCTAssertNil(standardRequest.params?.objectValue?["collaborationMode"])
+    }
+
+    func testTurnSteerBuilderUsesActiveTurnPreconditionWithoutStartOptions() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        var options = CodexAppServerTurnOptions.default
+        options.collaborationMode = .plan
+        options.model = "gpt-5-codex"
+
+        let payload = CodexAppServerTurnPayload(prompt: "这条直接引导当前回复", options: options)
+        let request = try builder.turnSteer(
+            threadID: "thread-1",
+            cwd: project.path,
+            payload: payload,
+            clientMessageID: "client-steer",
+            expectedTurnID: "turn-active"
+        )
+        let params = try XCTUnwrap(request.params?.objectValue)
+
+        XCTAssertEqual(request.method, "turn/steer")
+        XCTAssertEqual(params["threadId"]?.stringValue, "thread-1")
+        XCTAssertEqual(params["clientUserMessageId"]?.stringValue, "client-steer")
+        XCTAssertEqual(params["expectedTurnId"]?.stringValue, "turn-active")
+        XCTAssertEqual(params["input"]?.arrayValue?.first?.objectValue?["text"]?.stringValue, "这条直接引导当前回复")
+        XCTAssertNil(params["cwd"])
+        XCTAssertNil(params["collaborationMode"])
+        XCTAssertNil(params["model"])
+        XCTAssertNil(params["approvalPolicy"])
     }
 
     func testRequestBuilderForwardsStructuredInputAndAdvancedOptions() throws {
@@ -102,33 +156,29 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
     }
 
-    func testRequestBuilderRejectsFullAccessSandbox() throws {
+    func testRequestBuilderAllowsFullAccessSandboxWithApproval() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
         var options = CodexAppServerTurnOptions.default
         options.sandboxMode = .dangerFullAccess
 
-        XCTAssertThrowsError(try builder.threadStart(projectID: project.id, options: options)) { error in
-            guard case CodexAppServerRequestBuilderError.unsafeParameter(let reason) = error else {
-                XCTFail("Expected unsafeParameter, got \(error)")
-                return
-            }
-            XCTAssertTrue(reason.contains("danger-full-access"))
-        }
+        let threadStart = try builder.threadStart(projectID: project.id, options: options)
+        let threadParams = try XCTUnwrap(threadStart.params?.objectValue)
+        XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(threadParams["sandbox"]?.stringValue, "danger-full-access")
 
         let payload = CodexAppServerTurnPayload(prompt: "hi", options: options)
-        XCTAssertThrowsError(try builder.turnStart(
+        let turnStart = try builder.turnStart(
             threadID: "thread-1",
             projectID: project.id,
             payload: payload,
             clientMessageID: nil
-        )) { error in
-            guard case CodexAppServerRequestBuilderError.unsafeParameter(let reason) = error else {
-                XCTFail("Expected unsafeParameter, got \(error)")
-                return
-            }
-            XCTAssertTrue(reason.contains("danger-full-access"))
-        }
+        )
+        let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
+        let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)
+        XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(sandbox["type"]?.stringValue, "dangerFullAccess")
+        XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
     }
 
     func testModelListBuilderAndFlexibleParser() throws {
@@ -283,6 +333,38 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(approval.kind, "command")
         XCTAssertTrue(approval.title.contains("go test"))
         XCTAssertTrue(approval.body?.contains("验证改动") == true)
+    }
+
+    func testProjectorMapsUserInputServerRequestSeparatelyFromApproval() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("request-1"),
+            method: "item/tool/requestUserInput",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "turnId": .string("turn-1"),
+                "itemId": .string("input-1"),
+                "questions": .array([
+                    .object([
+                        "id": .string("scope"),
+                        "header": .string("范围"),
+                        "question": .string("先做哪一部分？"),
+                        "isOther": .bool(true),
+                        "isSecret": .bool(false),
+                        "options": .array([
+                            .object(["label": .string("后端"), "description": .string("先落 API")])
+                        ])
+                    ])
+                ])
+            ])
+        )
+        var projector = CodexAppServerEventProjector()
+        guard case .userInputRequest(let userInput, let metadata) = projector.project(request) else {
+            return XCTFail("expected user input request")
+        }
+        XCTAssertEqual(metadata.sessionID, "thread-1")
+        XCTAssertEqual(userInput.id, "input-1")
+        XCTAssertEqual(userInput.questions.first?.id, "scope")
+        XCTAssertEqual(userInput.questions.first?.options.first?.label, "后端")
     }
 
     func testProjectorMapsThreadGoalNotifications() throws {

@@ -15,6 +15,8 @@ enum AgentEvent {
     case diffUpdated(FileChangeSummary, AgentEventMetadata)
     case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
     case approvalResolved(AgentEventMetadata)
+    case userInputRequest(AgentUserInputRequest, AgentEventMetadata)
+    case userInputResolved(AgentEventMetadata, skipped: Bool)
     case turnCompleted(AgentEventMetadata)
     case warning(AgentErrorPayload, AgentEventMetadata)
     case error(String)
@@ -35,6 +37,8 @@ extension AgentEvent: Decodable {
         case message
         case diff
         case approval
+        case userInput = "user_input"
+        case skipped
         case meta
         case seq
         case sessionID = "session_id"
@@ -90,6 +94,10 @@ extension AgentEvent: Decodable {
             self = .approvalRequest(try container.decode(AgentApprovalRequest.self, forKey: .approval), metadata)
         case "approval_resolved":
             self = .approvalResolved(metadata)
+        case "user_input_request":
+            self = .userInputRequest(try container.decode(AgentUserInputRequest.self, forKey: .userInput), metadata)
+        case "user_input_resolved":
+            self = .userInputResolved(metadata, skipped: try container.decodeIfPresent(Bool.self, forKey: .skipped) ?? false)
         case "turn_completed":
             self = .turnCompleted(metadata)
         case "warning":
@@ -153,6 +161,8 @@ enum StructuredAgentEvent: Decodable, Hashable {
     case diffUpdated(FileChangeSummary, AgentEventMetadata)
     case approvalRequest(AgentApprovalRequest, AgentEventMetadata)
     case approvalResolved(AgentEventMetadata)
+    case userInputRequest(AgentUserInputRequest, AgentEventMetadata)
+    case userInputResolved(AgentEventMetadata, skipped: Bool)
     case turnCompleted(AgentEventMetadata)
     case warning(AgentErrorPayload, AgentEventMetadata)
     case error(AgentErrorPayload, AgentEventMetadata)
@@ -167,6 +177,8 @@ enum StructuredAgentEvent: Decodable, Hashable {
         case log
         case diff
         case approval
+        case userInput = "user_input"
+        case skipped
         case error
         case warning
         case meta
@@ -228,6 +240,10 @@ enum StructuredAgentEvent: Decodable, Hashable {
             self = .approvalRequest(try container.decode(AgentApprovalRequest.self, forKey: .approval), metadata)
         case "approval_resolved":
             self = .approvalResolved(metadata)
+        case "user_input_request":
+            self = .userInputRequest(try container.decode(AgentUserInputRequest.self, forKey: .userInput), metadata)
+        case "user_input_resolved":
+            self = .userInputResolved(metadata, skipped: try container.decodeIfPresent(Bool.self, forKey: .skipped) ?? false)
         case "turn_completed":
             self = .turnCompleted(metadata)
         case "warning":
@@ -333,6 +349,14 @@ struct CodexAppServerEventProjector {
     }
 
     mutating func project(_ request: CodexAppServerServerRequest) -> AgentEvent? {
+        if request.method == "item/tool/requestUserInput" {
+            let params = request.params?.objectValue ?? [:]
+            let metadata = makeMetadata(from: params)
+            guard let request = userInputRequest(from: params, requestID: request.id.description, metadata: metadata) else {
+                return nil
+            }
+            return .userInputRequest(request, metadata)
+        }
         guard isApprovalLike(method: request.method) else {
             return nil
         }
@@ -734,9 +758,54 @@ struct CodexAppServerEventProjector {
         params[key]?.objectValue?[nestedKey]?.stringValue
     }
 
+    private func userInputRequest(
+        from params: [String: CodexAppServerJSONValue],
+        requestID: String,
+        metadata: AgentEventMetadata
+    ) -> AgentUserInputRequest? {
+        guard let threadID = metadata.sessionID ?? firstString(in: params, keys: ["threadId", "sessionId", "session_id"]) else {
+            return nil
+        }
+        let itemID = metadata.itemID ?? firstString(in: params, keys: ["itemId", "item_id"]) ?? requestID
+        let questions = (params["questions"]?.arrayValue ?? []).compactMap(userInputQuestion(from:))
+        return AgentUserInputRequest(
+            id: itemID,
+            threadID: threadID,
+            turnID: metadata.turnID ?? firstString(in: params, keys: ["turnId", "turn_id"]),
+            itemID: itemID,
+            questions: questions
+        )
+    }
+
+    private func userInputQuestion(from value: CodexAppServerJSONValue) -> AgentUserInputQuestion? {
+        guard let object = value.objectValue,
+              let id = object["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !id.isEmpty else {
+            return nil
+        }
+        let options = (object["options"]?.arrayValue ?? []).compactMap(userInputOption(from:))
+        return AgentUserInputQuestion(
+            id: id,
+            header: object["header"]?.stringValue ?? "",
+            question: object["question"]?.stringValue ?? "",
+            isOther: object["isOther"]?.boolValue ?? object["is_other"]?.boolValue ?? false,
+            isSecret: object["isSecret"]?.boolValue ?? object["is_secret"]?.boolValue ?? false,
+            options: options
+        )
+    }
+
+    private func userInputOption(from value: CodexAppServerJSONValue) -> AgentUserInputOption? {
+        guard let object = value.objectValue,
+              let label = object["label"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !label.isEmpty else {
+            return nil
+        }
+        return AgentUserInputOption(label: label, description: object["description"]?.stringValue)
+    }
+
     private func isApprovalLike(method: String) -> Bool {
         let lower = method.lowercased()
-        return lower.contains("approval") || lower.contains("requestuserinput")
+        return lower.contains("approval")
     }
 
     private func approvalKind(method: String) -> String {
@@ -746,9 +815,6 @@ struct CodexAppServerEventProjector {
         }
         if lower.contains("permission") {
             return "permission"
-        }
-        if lower.contains("requestuserinput") {
-            return "user_input"
         }
         return "command"
     }

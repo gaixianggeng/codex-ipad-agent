@@ -6,14 +6,24 @@ protocol SessionWebSocketClient: AnyObject {
     var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
     var onSendFailure: ((ClientMessageID?, String) -> Void)? { get set }
     var onApprovalDecisionFailure: ((String, String) -> Void)? { get set }
+    var onUserInputResponseFailure: ((String, String) -> Void)? { get set }
     var onControlFailure: ((String) -> Void)? { get set }
 
     func connect(sessionID: SessionID)
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool)
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
+    func sendGuidance(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID) -> Bool
     func sendCtrlC() -> Bool
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool
+    func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool
+}
+
+extension SessionWebSocketClient {
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
+        connect(sessionID: sessionID)
+    }
 }
 
 enum WebSocketMessageLimits {

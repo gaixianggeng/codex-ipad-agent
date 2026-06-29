@@ -12,6 +12,7 @@ import (
 )
 
 func TestRunCreatesConfigAndPairURL(t *testing.T) {
+	clearSetupEnv(t)
 	scanRoot := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 
@@ -59,8 +60,14 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if parsed.Scheme != "mimiremote" || parsed.Host != "pair" {
 		t.Fatalf("配对链接 scheme/host 异常：%s", result.PairURL)
 	}
-	if parsed.Query().Get("endpoint") != result.Endpoint || parsed.Query().Get("token") != result.Token {
-		t.Fatalf("配对链接未包含 endpoint/token：%s", result.PairURL)
+	if parsed.Query().Get("endpoint") != result.Endpoint || parsed.Query().Get("pair_sig") == "" {
+		t.Fatalf("配对链接未包含 endpoint/pair_sig：%s", result.PairURL)
+	}
+	if parsed.Query().Get("token") != "" {
+		t.Fatalf("配对二维码不应携带长期 token：%s", result.PairURL)
+	}
+	if parsed.Query().Get("expires_at") == "" {
+		t.Fatalf("配对链接应包含 expires_at：%s", result.PairURL)
 	}
 
 	cfg, err := config.Load(cfgPath)
@@ -101,6 +108,7 @@ func TestDefaultBrowseRootDefaultsToHome(t *testing.T) {
 }
 
 func TestRunWritesBrowseRoots(t *testing.T) {
+	clearSetupEnv(t)
 	scanRoot := t.TempDir()
 	browseRoot := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
@@ -130,6 +138,7 @@ func TestRunWritesBrowseRoots(t *testing.T) {
 }
 
 func TestRunKeepsExistingConfigWithoutForce(t *testing.T) {
+	clearSetupEnv(t)
 	scanRoot := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	first, err := Run(context.Background(), Options{
@@ -157,6 +166,7 @@ func TestRunKeepsExistingConfigWithoutForce(t *testing.T) {
 }
 
 func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
+	clearSetupEnv(t)
 	scanRoot := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	result, err := Run(context.Background(), Options{
@@ -169,6 +179,41 @@ func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
 	}
 	if !hasWarning(result.Warnings, "本机地址") {
 		t.Fatalf("loopback endpoint 应提示真机 iPad 风险：%+v", result.Warnings)
+	}
+}
+
+func clearSetupEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"AGENTD_CONFIG",
+		"AGENTD_LISTEN",
+		"AGENTD_BIND",
+		"AGENTD_PORT",
+		"AGENTD_TOKEN",
+		"AGENTD_ALLOW_QUERY_TOKEN",
+		"AGENTD_CODEX_BIN",
+		"AGENTD_CODEX_ARGS",
+		"AGENTD_APP_SERVER_TRANSPORT",
+		"AGENTD_APP_SERVER_LISTEN",
+		"AGENTD_APP_SERVER_WS_TOKEN_FILE",
+		"AGENTD_APP_SERVER_MANAGED",
+		"AGENTD_TRANSCRIPTION_PROVIDER",
+		"AGENTD_TRANSCRIPTION_MODEL",
+		"AGENTD_TRANSCRIPTION_BASE_URL",
+		"AGENTD_TRANSCRIPTION_API_KEY",
+		"AGENTD_CODEX_TRANSCRIPTION_BASE_URL",
+		"AGENTD_CODEX_AUTH_FILE",
+		"OPENAI_API_KEY",
+		"CODEX_API_BASE_URL",
+		"AGENTD_DEBUG_CODEX_HISTORY",
+		"AGENTD_DEV_INSECURE",
+		"AGENTD_OUTPUT_BUFFER_BYTES",
+		"AGENTD_PROJECTS",
+		"AGENTD_SCAN_ROOTS",
+		"AGENTD_BROWSE_ROOTS",
+		"AGENTD_WORKTREES_ROOT",
+	} {
+		t.Setenv(key, "")
 	}
 }
 

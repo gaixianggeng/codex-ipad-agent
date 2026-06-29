@@ -8,6 +8,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     case sessionNotFound(SessionID)
     case missingActiveTurn(SessionID)
     case approvalNotFound(String)
+    case userInputRequestNotFound(String)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return "当前会话没有可中断的 active turn：\(sessionID)"
         case .approvalNotFound(let approvalID):
             return "审批请求已失效：\(approvalID)"
+        case .userInputRequestNotFound(let requestID):
+            return "补充信息请求已失效：\(requestID)"
         }
     }
 }
@@ -39,6 +42,16 @@ private struct CodexAppServerPreparedConnection {
     let connection: CodexAppServerConnection
     let notifications: AsyncStream<CodexAppServerNotification>
     let serverRequests: AsyncStream<CodexAppServerServerRequest>
+}
+
+private struct CodexAppServerResolvedServerRequests {
+    var approvalSessionIDs: [SessionID] = []
+    var userInputSessionIDs: [SessionID] = []
+}
+
+enum CodexAppServerBufferedEventReplayPolicy {
+    case all
+    case stateOnly
 }
 
 actor CodexAppServerSessionRuntime {
@@ -59,6 +72,8 @@ actor CodexAppServerSessionRuntime {
     private var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
     private var eventContinuationsBySessionID: [SessionID: AsyncStream<AgentEvent>.Continuation] = [:]
     private var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
+    private var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
+    private var userInputPromptsEnabledBySessionID: [SessionID: Bool] = [:]
     // 正在 startTurn 中的 thread：turn/start 请求挂起期间，actor 会重入处理 server-request，
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
@@ -225,9 +240,9 @@ actor CodexAppServerSessionRuntime {
         try await AgentAPIClient(endpoint: endpoint, token: token).commandActions(path: path)
     }
 
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse {
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse {
         // 执行动作会改变本机状态或产生副作用，统一交给 agentd 做路径和 action ID 校验。
-        try await AgentAPIClient(endpoint: endpoint, token: token).runCommandAction(path: path, id: id)
+        try await AgentAPIClient(endpoint: endpoint, token: token).runCommandAction(path: path, id: id, confirmed: confirmed)
     }
 
     func gitStatus(path: String) async throws -> GitStatusResponse {
@@ -521,16 +536,19 @@ actor CodexAppServerSessionRuntime {
         )
     }
 
-    func attachEvents(sessionID: SessionID) -> AsyncStream<AgentEvent> {
+    func attachEvents(
+        sessionID: SessionID,
+        replayPolicy: CodexAppServerBufferedEventReplayPolicy = .all
+    ) -> AsyncStream<AgentEvent> {
         var continuation: AsyncStream<AgentEvent>.Continuation?
-        // 这里承接的是已经投影好的 thread 事件；delta、turn/completed、approval 都不可丢。
-        // UI 层再做 80ms 合并刷新，runtime 层只负责保序交付。
+        // 这里承接的是已经投影好的 thread 事件；正常连接完整保序交付，切回会话的 backlog
+        // 可降级为状态级回放，避免历史输出在消息区重新直播一遍。
         let stream = AsyncStream<AgentEvent>(bufferingPolicy: .unbounded) {
             continuation = $0
         }
         if let continuation {
             eventContinuationsBySessionID[sessionID] = continuation
-            for event in bufferedEventsBySessionID.removeValue(forKey: sessionID) ?? [] {
+            for event in bufferedEvents(sessionID: sessionID, replayPolicy: replayPolicy) {
                 continuation.yield(event)
             }
             continuation.onTermination = { [weak self] _ in
@@ -540,6 +558,48 @@ actor CodexAppServerSessionRuntime {
             }
         }
         return stream
+    }
+
+    private func bufferedEvents(
+        sessionID: SessionID,
+        replayPolicy: CodexAppServerBufferedEventReplayPolicy
+    ) -> [AgentEvent] {
+        let events = bufferedEventsBySessionID.removeValue(forKey: sessionID) ?? []
+        switch replayPolicy {
+        case .all:
+            return events
+        case .stateOnly:
+            // 切回运行会话前已经用 thread/read 快照补齐消息区；旧 delta、日志和过程项不再逐条补播。
+            // 但审批、补充信息、turn 完成和会话状态仍要回放，避免丢掉当前可操作状态。
+            return events.filter(shouldReplayBufferedStateEvent)
+        }
+    }
+
+    private func shouldReplayBufferedStateEvent(_ event: AgentEvent) -> Bool {
+        switch event {
+        case .session,
+             .sessionRow,
+             .sessionStatus,
+             .sessionContext,
+             .goalUpdated,
+             .goalCleared,
+             .turnStarted,
+             .approvalRequest,
+             .approvalResolved,
+             .userInputRequest,
+             .userInputResolved,
+             .turnCompleted,
+             .warning,
+             .error,
+             .unknown:
+            return true
+        case .assistantDelta,
+             .messageCompleted,
+             .processItemCompleted,
+             .logDelta,
+             .diffUpdated:
+            return false
+        }
     }
 
     func connectForEvents(sessionID: SessionID) async throws {
@@ -600,6 +660,9 @@ actor CodexAppServerSessionRuntime {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
+        // request_user_input 是 turn 内部的补充信息请求；是否展示由本地发送选项决定，
+        // 不和目标模式绑定。运行中“引导对话”另走 turn/steer。
+        userInputPromptsEnabledBySessionID[sessionID] = payload.options.planGuidanceEnabled
         sessionsStartingTurn.insert(sessionID)
         defer {
             sessionsStartingTurn.remove(sessionID)
@@ -628,6 +691,38 @@ actor CodexAppServerSessionRuntime {
             item.activeTurnID = turnID
         }
         return turnID
+    }
+
+    func steerTurn(
+        sessionID: SessionID,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID?,
+        expectedTurnID: TurnID
+    ) async throws {
+        guard !payload.isEmpty else {
+            return
+        }
+        guard let context = contextsBySessionID[sessionID] else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        guard context.activeTurnID == expectedTurnID else {
+            throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
+        }
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
+        let connection = try await ensureConnection()
+        do {
+            try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+            _ = try await connection.send(try builder.turnSteer(
+                threadID: sessionID,
+                cwd: context.cwd,
+                payload: payload,
+                clientMessageID: clientMessageID,
+                expectedTurnID: expectedTurnID
+            ))
+        } catch {
+            await retireCurrentConnectionAfterRecoverableError(connection, error: error)
+            throw error
+        }
     }
 
     private func clearTurnStartTask(sessionID: SessionID, token: UUID) {
@@ -702,6 +797,14 @@ actor CodexAppServerSessionRuntime {
         let normalized = normalizeApprovalDecision(decision)
         let result = approvalResponse(method: request.method, params: request.params?.objectValue ?? [:], decision: normalized)
         try await ensureConnection().respond(to: request, result: result)
+    }
+
+    func respondToUserInput(sessionID: SessionID? = nil, requestID: String, answers: [String: [String]]) async throws {
+        let lookupKeys = pendingUserInputLookupKeys(sessionID: sessionID, requestID: requestID)
+        guard let request = lookupKeys.compactMap({ pendingUserInputRequestsByID[$0] }).first else {
+            throw CodexAppServerSessionRuntimeError.userInputRequestNotFound(requestID)
+        }
+        try await ensureConnection().respond(to: request, result: userInputResponse(answers: answers))
     }
 
     static func gatewayURL(endpoint: String, sessionID: SessionID) throws -> URL {
@@ -826,9 +929,12 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask = nil
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
-        let affectedSessionIDs = clearAllPendingApprovalRequests()
-        for sessionID in affectedSessionIDs {
+        let affected = clearAllPendingServerRequests()
+        for sessionID in affected.approvalSessionIDs {
             emitApprovalResolved(sessionID: sessionID)
+        }
+        for sessionID in affected.userInputSessionIDs {
+            emitUserInputResolved(sessionID: sessionID, skipped: false)
         }
         await stale.disconnect()
     }
@@ -874,21 +980,31 @@ actor CodexAppServerSessionRuntime {
 
     private func handle(_ notification: CodexAppServerNotification) {
         updateContext(from: notification)
-        let affectedSessionIDs = clearResolvedServerRequest(from: notification)
+        let resolved = clearResolvedServerRequest(from: notification)
         guard let event = projector.project(notification) else {
-            for sessionID in affectedSessionIDs {
+            for sessionID in resolved.approvalSessionIDs {
                 emitApprovalResolved(sessionID: sessionID)
+            }
+            for sessionID in resolved.userInputSessionIDs {
+                emitUserInputResolved(sessionID: sessionID, skipped: false)
             }
             return
         }
         emit(event)
         let emittedSessionID = sessionID(from: event)
-        for sessionID in affectedSessionIDs where sessionID != emittedSessionID {
+        for sessionID in resolved.approvalSessionIDs where sessionID != emittedSessionID {
             emitApprovalResolved(sessionID: sessionID)
+        }
+        for sessionID in resolved.userInputSessionIDs where sessionID != emittedSessionID {
+            emitUserInputResolved(sessionID: sessionID, skipped: false)
         }
     }
 
     private func handle(_ request: CodexAppServerServerRequest) {
+        if isUserInputServerRequest(request.method) {
+            handleUserInputRequest(request)
+            return
+        }
         if isStaleReplayedApproval(request) {
             // app-server 在 resume 时会把"仍未应答"的 server request 重新投递给新连接。如果这个审批属于
             // 一个本地权威状态已经空闲、且没有活跃 turn 的 thread，它必然是某个被放弃的旧 turn 残留下来的
@@ -902,6 +1018,34 @@ actor CodexAppServerSessionRuntime {
             return
         }
         emit(event)
+    }
+
+    private func handleUserInputRequest(_ request: CodexAppServerServerRequest) {
+        let sessionID = approvalSessionID(for: request)
+        if let sessionID, userInputPromptsEnabledBySessionID[sessionID] == false {
+            autoResolveUserInputRequest(request, sessionID: sessionID)
+            return
+        }
+        rememberPendingUserInputRequest(request)
+        guard let event = projector.project(request) else {
+            return
+        }
+        emit(event)
+    }
+
+    private func autoResolveUserInputRequest(_ request: CodexAppServerServerRequest, sessionID: SessionID?) {
+        removePendingUserInputRequest(request)
+        guard let connection else {
+            return
+        }
+        Task { [connection, sessionID] in
+            do {
+                try await connection.respond(to: request, result: self.userInputResponse(answers: [:]))
+                if let sessionID {
+                    self.emitUserInputResolved(sessionID: sessionID, skipped: true)
+                }
+            } catch {}
+        }
     }
 
     private func isStaleReplayedApproval(_ request: CodexAppServerServerRequest) -> Bool {
@@ -1006,6 +1150,8 @@ actor CodexAppServerSessionRuntime {
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
              .approvalResolved(let metadata),
+             .userInputRequest(_, let metadata),
+             .userInputResolved(let metadata, _),
              .turnCompleted(let metadata),
              .warning(_, let metadata):
             return metadata.sessionID
@@ -1187,14 +1333,18 @@ actor CodexAppServerSessionRuntime {
             ?? "Thread \(id.prefix(8))"
         let cached = contextsBySessionID[id]?.session
         // thread/list 可能不带 turns，此时沿用本地 activeTurnID；但 thread/read/resume 一旦带回
-        // turns，就让服务端最新的 inProgress turn 覆盖旧缓存。现场曾出现旧审批 turn 长期保持
-        // inProgress，同时后面又有新的 inProgress turn；如果缓存优先，会把旧审批误当当前审批。
+        // turns，就以服务端 turns 为准。即使 turns 里没有 inProgress，也要清掉旧缓存，避免引导发到旧 turn。
         let remoteActiveTurnID = activeTurnID(from: thread)
-        let activeTurnID = remoteActiveTurnID ?? cached?.activeTurnID
+        let activeTurnID: TurnID?
+        if let remoteActiveTurnID {
+            activeTurnID = remoteActiveTurnID
+        } else {
+            activeTurnID = cached?.activeTurnID
+        }
         // 列表/历史读偶发把正在执行的 turn 读成 history。只有本地确实记着一个进行中的 turn（activeTurnID
         // 非空）时，才在这一瞬间保留运行态，避免侧栏角标抖动；没有活跃 turn 的残留态（例如被放弃的审批
         // 等待）必须允许权威 history 把它降级，否则 stale 审批态会一直挂着清不掉。
-        let effectiveStatus = (cached?.activeTurnID != nil && status == "history") ? (cached?.status ?? status) : status
+        let effectiveStatus = (activeTurnID != nil && status == "history") ? (cached?.status ?? status) : status
         let goal = thread["goal"]?.objectValue.flatMap { ThreadGoal(object: $0) } ?? cached?.goal
         let context = sessionContext(
             from: thread,
@@ -1575,11 +1725,14 @@ actor CodexAppServerSessionRuntime {
         return parts.joined(separator: ", ")
     }
 
-    private func activeTurnID(from thread: [String: CodexAppServerJSONValue]) -> TurnID? {
-        let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        return turns.last { turn in
+    private func activeTurnID(from thread: [String: CodexAppServerJSONValue]) -> TurnID?? {
+        guard let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) else {
+            return nil
+        }
+        let activeTurnID = turns.last { turn in
             turn["status"]?.stringValue == "inProgress"
         }?["id"]?.stringValue
+        return .some(activeTurnID)
     }
 
     private func historyMessages(from thread: [String: CodexAppServerJSONValue], sessionID: SessionID) -> [CodexHistoryMessage] {
@@ -1608,7 +1761,7 @@ actor CodexAppServerSessionRuntime {
         switch type {
         case "userMessage":
             let text = userMessageText(from: item).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else {
+            guard !text.isEmpty, isVisibleUserHistoryMessage(text) else {
                 return nil
             }
             return CodexHistoryMessage(
@@ -1659,6 +1812,20 @@ actor CodexAppServerSessionRuntime {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
+    }
+
+    private func isVisibleUserHistoryMessage(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return false
+        }
+        let hiddenPrefixes = [
+            "<subagent_notification>",
+            "<turn_aborted>",
+            "<environment_context>",
+            "<codex_internal_context>"
+        ]
+        return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
     }
 
     private func commandExecutionHistoryText(from item: [String: CodexAppServerJSONValue]) -> String {
@@ -1752,6 +1919,15 @@ actor CodexAppServerSessionRuntime {
             ?? request.id.description
     }
 
+    private func userInputRequestID(for request: CodexAppServerServerRequest) -> String? {
+        let params = request.params?.objectValue ?? [:]
+        return params["itemId"]?.stringValue
+            ?? params["item_id"]?.stringValue
+            ?? params["requestId"]?.stringValue
+            ?? params["request_id"]?.stringValue
+            ?? request.id.description
+    }
+
     private func rememberPendingApprovalRequest(_ request: CodexAppServerServerRequest) {
         guard isApprovalLikeServerRequest(request.method) else {
             return
@@ -1767,9 +1943,24 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    private func clearResolvedServerRequest(from notification: CodexAppServerNotification) -> [SessionID] {
+    private func rememberPendingUserInputRequest(_ request: CodexAppServerServerRequest) {
+        guard isUserInputServerRequest(request.method) else {
+            return
+        }
+        for key in pendingUserInputStorageKeys(for: request) {
+            pendingUserInputRequestsByID[key] = request
+        }
+    }
+
+    private func removePendingUserInputRequest(_ request: CodexAppServerServerRequest) {
+        for key in pendingUserInputStorageKeys(for: request) {
+            pendingUserInputRequestsByID.removeValue(forKey: key)
+        }
+    }
+
+    private func clearResolvedServerRequest(from notification: CodexAppServerNotification) -> CodexAppServerResolvedServerRequests {
         guard notification.method == "serverRequest/resolved" else {
-            return []
+            return CodexAppServerResolvedServerRequests()
         }
         let params = notification.params?.objectValue ?? [:]
         let sessionID = approvalSessionID(from: params)
@@ -1782,29 +1973,43 @@ actor CodexAppServerSessionRuntime {
             params["item_id"]?.stringValue
         ].compactMap { $0 })
 
-        var affectedSessionIDs: [SessionID] = []
+        var resolved = CodexAppServerResolvedServerRequests()
         for id in ids {
             for key in pendingApprovalLookupKeys(sessionID: sessionID, approvalID: id) {
                 if let request = pendingApprovalRequestsByID.removeValue(forKey: key) {
-                    if let affected = approvalSessionID(for: request), !affectedSessionIDs.contains(affected) {
-                        affectedSessionIDs.append(affected)
+                    if let affected = approvalSessionID(for: request), !resolved.approvalSessionIDs.contains(affected) {
+                        resolved.approvalSessionIDs.append(affected)
                     }
                     removePendingApprovalRequest(request)
                 }
             }
+            for key in pendingUserInputLookupKeys(sessionID: sessionID, requestID: id) {
+                if let request = pendingUserInputRequestsByID.removeValue(forKey: key) {
+                    if let affected = approvalSessionID(for: request), !resolved.userInputSessionIDs.contains(affected) {
+                        resolved.userInputSessionIDs.append(affected)
+                    }
+                    removePendingUserInputRequest(request)
+                }
+            }
         }
-        if let sessionID, !affectedSessionIDs.contains(sessionID) {
-            affectedSessionIDs.append(sessionID)
+        if let sessionID,
+           !resolved.approvalSessionIDs.contains(sessionID),
+           !resolved.userInputSessionIDs.contains(sessionID) {
+            resolved.approvalSessionIDs.append(sessionID)
         }
-        return affectedSessionIDs
+        return resolved
     }
 
-    private func clearAllPendingApprovalRequests() -> [SessionID] {
-        let affectedSessionIDs = uniqueStrings(pendingApprovalRequestsByID.values.compactMap { request in
+    private func clearAllPendingServerRequests() -> CodexAppServerResolvedServerRequests {
+        let approvalSessionIDs = uniqueStrings(pendingApprovalRequestsByID.values.compactMap { request in
+            approvalSessionID(for: request)
+        })
+        let userInputSessionIDs = uniqueStrings(pendingUserInputRequestsByID.values.compactMap { request in
             approvalSessionID(for: request)
         })
         pendingApprovalRequestsByID.removeAll(keepingCapacity: false)
-        return affectedSessionIDs
+        pendingUserInputRequestsByID.removeAll(keepingCapacity: false)
+        return CodexAppServerResolvedServerRequests(approvalSessionIDs: approvalSessionIDs, userInputSessionIDs: userInputSessionIDs)
     }
 
     private func emitApprovalResolved(sessionID: SessionID) {
@@ -1818,6 +2023,19 @@ actor CodexAppServerSessionRuntime {
             revision: nil,
             createdAt: Date()
         )))
+    }
+
+    private func emitUserInputResolved(sessionID: SessionID, skipped: Bool) {
+        emit(.userInputResolved(AgentEventMetadata(
+            seq: nil,
+            sessionID: sessionID,
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date()
+        ), skipped: skipped))
     }
 
     private func pendingApprovalStorageKeys(for request: CodexAppServerServerRequest) -> [String] {
@@ -1842,6 +2060,28 @@ actor CodexAppServerSessionRuntime {
         return "\(sessionID)#\(approvalID)"
     }
 
+    private func pendingUserInputStorageKeys(for request: CodexAppServerServerRequest) -> [String] {
+        let sessionID = approvalSessionID(for: request)
+        let ids = uniqueStrings([userInputRequestID(for: request), request.id.description].compactMap { $0 })
+        return ids.flatMap { id in
+            pendingUserInputLookupKeys(sessionID: sessionID, requestID: id)
+        }
+    }
+
+    private func pendingUserInputLookupKeys(sessionID: SessionID?, requestID: String) -> [String] {
+        uniqueStrings([
+            pendingUserInputScopedKey(sessionID: sessionID, requestID: requestID),
+            requestID
+        ].compactMap { $0 })
+    }
+
+    private func pendingUserInputScopedKey(sessionID: SessionID?, requestID: String) -> String? {
+        guard let sessionID, !sessionID.isEmpty else {
+            return nil
+        }
+        return "\(sessionID)#\(requestID)"
+    }
+
     private func approvalSessionID(for request: CodexAppServerServerRequest) -> SessionID? {
         approvalSessionID(from: request.params?.objectValue ?? [:])
     }
@@ -1862,7 +2102,11 @@ actor CodexAppServerSessionRuntime {
 
     private func isApprovalLikeServerRequest(_ method: String) -> Bool {
         let lower = method.lowercased()
-        return lower.contains("approval") || lower.contains("requestuserinput")
+        return lower.contains("approval")
+    }
+
+    private func isUserInputServerRequest(_ method: String) -> Bool {
+        method == "item/tool/requestUserInput"
     }
 
     private func uniqueStrings(_ values: [String]) -> [String] {
@@ -1886,10 +2130,6 @@ actor CodexAppServerSessionRuntime {
                 "strictAutoReview": .bool(true)
             ])
         }
-        if method == "item/tool/requestUserInput" {
-            // 当前 iPad UI 还没有动态表单；返回空答案比构造伪输入更安全。
-            return .object(["answers": .object([:])])
-        }
         if method == "mcpServer/elicitation/request" {
             return .object([
                 "action": .string(decision == "accept" ? "accept" : decision == "cancel" ? "cancel" : "decline"),
@@ -1898,6 +2138,16 @@ actor CodexAppServerSessionRuntime {
             ])
         }
         return .object(["decision": .string(decision)])
+    }
+
+    private func userInputResponse(answers: [String: [String]]) -> CodexAppServerJSONValue {
+        .object([
+            "answers": .object(answers.mapValues { values in
+                .object([
+                    "answers": .array(values.map { .string($0) })
+                ])
+            })
+        ])
     }
 
     private func normalizeApprovalDecision(_ decision: String) -> String {
@@ -2011,8 +2261,8 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.commandActions(path: path)
     }
 
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse {
-        try await runtime.runCommandAction(path: path, id: id)
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse {
+        try await runtime.runCommandAction(path: path, id: id, confirmed: confirmed)
     }
 
     func gitStatus(path: String) async throws -> GitStatusResponse {
@@ -2112,6 +2362,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
@@ -2123,15 +2374,20 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID threadID: SessionID) {
+        connect(sessionID: threadID, replayBufferedEvents: true)
+    }
+
+    func connect(sessionID threadID: SessionID, replayBufferedEvents: Bool) {
         sessionID = threadID
         onStatus?(.connecting)
         eventPumpTask?.cancel()
         let statusHandler = onStatus
         let eventHandler = onEvent
+        let replayPolicy: CodexAppServerBufferedEventReplayPolicy = replayBufferedEvents ? .all : .stateOnly
         eventPumpTask = Task { [runtime] in
             do {
                 try await runtime.connectForEvents(sessionID: threadID)
-                let events = await runtime.attachEvents(sessionID: threadID)
+                let events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
                 await MainActor.run {
                     statusHandler?(.connected)
                 }
@@ -2193,6 +2449,37 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     @discardableResult
+    func sendGuidance(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID) -> Bool {
+        guard let sessionID else {
+            onSendFailure?(clientMessageID, "direct WebSocket 未连接")
+            return false
+        }
+        guard !payload.isEmpty else {
+            return true
+        }
+        let acceptedHandler = onSendAccepted
+        let failureHandler = onSendFailure
+        Task { [runtime, sessionID] in
+            do {
+                try await runtime.steerTurn(
+                    sessionID: sessionID,
+                    payload: payload,
+                    clientMessageID: clientMessageID,
+                    expectedTurnID: expectedTurnID
+                )
+                await MainActor.run {
+                    acceptedHandler?(clientMessageID)
+                }
+            } catch {
+                await MainActor.run {
+                    failureHandler?(clientMessageID, error.localizedDescription)
+                }
+            }
+        }
+        return true
+    }
+
+    @discardableResult
     func sendCtrlC() -> Bool {
         guard let sessionID else {
             onControlFailure?("direct WebSocket 未连接")
@@ -2224,6 +2511,25 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             } catch {
                 await MainActor.run {
                     failureHandler?(approvalID, error.localizedDescription)
+                }
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool {
+        guard let sessionID else {
+            onUserInputResponseFailure?(requestID, "direct WebSocket 未连接")
+            return false
+        }
+        let failureHandler = onUserInputResponseFailure
+        Task { [runtime, sessionID] in
+            do {
+                try await runtime.respondToUserInput(sessionID: sessionID, requestID: requestID, answers: answers)
+            } catch {
+                await MainActor.run {
+                    failureHandler?(requestID, error.localizedDescription)
                 }
             }
         }

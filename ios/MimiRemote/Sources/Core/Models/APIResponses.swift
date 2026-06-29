@@ -424,6 +424,26 @@ struct CommandActionListRequest: Encodable {
 struct CommandActionRunRequest: Encodable {
     let path: String
     let id: String
+    let confirmed: Bool
+}
+
+struct PairingClaimRequest: Encodable, Equatable {
+    let endpoint: String
+    let issuedAt: String
+    let expiresAt: String
+    let pairSignature: String
+
+    enum CodingKeys: String, CodingKey {
+        case endpoint
+        case issuedAt = "issued_at"
+        case expiresAt = "expires_at"
+        case pairSignature = "pair_sig"
+    }
+}
+
+struct PairingClaimResponse: Decodable, Equatable {
+    let endpoint: String
+    let token: String
 }
 
 struct CommandActionListResponse: Codable, Hashable {
@@ -1260,6 +1280,11 @@ enum CodexAppServerPersonality: String, Codable, CaseIterable, Hashable, Identif
     var id: String { rawValue }
 }
 
+private enum CodexAppServerDefaults {
+    static let model = "gpt-5.5"
+    static let reasoningEffort: CodexAppServerReasoningEffort = .xhigh
+}
+
 enum CodexAppServerApprovalPolicy: String, Codable, CaseIterable, Hashable, Identifiable {
     case untrusted
     case onFailure = "on-failure"
@@ -1288,6 +1313,11 @@ enum CodexAppServerSandboxMode: String, Codable, CaseIterable, Hashable, Identif
 }
 
 struct CodexAppServerTurnOptions: Codable, Hashable {
+    enum CollaborationMode: String, Codable, Hashable {
+        case plan
+        case `default`
+    }
+
     var model: String?
     var modelProvider: String?
     var serviceTier: String?
@@ -1305,6 +1335,9 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     var serviceName: String?
     var sessionStartSource: String?
     var threadSource: String?
+    // 只在 iPad 发起 turn/start 时消费的本地发送配置；不模拟 prompt，不影响 thread/start。
+    var collaborationMode: CollaborationMode?
+    var planGuidanceEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -1324,17 +1357,86 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         case serviceName = "service_name"
         case sessionStartSource = "session_start_source"
         case threadSource = "thread_source"
+        case collaborationMode = "collaboration_mode"
+        case planGuidanceEnabled = "plan_guidance_enabled"
+    }
+
+    init(
+        model: String? = CodexAppServerDefaults.model,
+        modelProvider: String? = nil,
+        serviceTier: String? = nil,
+        reasoningEffort: CodexAppServerReasoningEffort? = CodexAppServerDefaults.reasoningEffort,
+        reasoningSummary: CodexAppServerReasoningSummary? = nil,
+        approvalPolicy: CodexAppServerApprovalPolicy = .onRequest,
+        approvalsReviewer: String = "user",
+        sandboxMode: CodexAppServerSandboxMode = .dangerFullAccess,
+        networkAccess: Bool = false,
+        personality: CodexAppServerPersonality? = nil,
+        config: CodexAppServerJSONValue? = nil,
+        baseInstructions: String? = nil,
+        developerInstructions: String? = nil,
+        outputSchema: CodexAppServerJSONValue? = nil,
+        serviceName: String? = nil,
+        sessionStartSource: String? = nil,
+        threadSource: String? = nil,
+        collaborationMode: CollaborationMode? = nil,
+        planGuidanceEnabled: Bool = false
+    ) {
+        self.model = model
+        self.modelProvider = modelProvider
+        self.serviceTier = serviceTier
+        self.reasoningEffort = reasoningEffort
+        self.reasoningSummary = reasoningSummary
+        self.approvalPolicy = approvalPolicy
+        self.approvalsReviewer = approvalsReviewer
+        self.sandboxMode = sandboxMode
+        self.networkAccess = networkAccess
+        self.personality = personality
+        self.config = config
+        self.baseInstructions = baseInstructions
+        self.developerInstructions = developerInstructions
+        self.outputSchema = outputSchema
+        self.serviceName = serviceName
+        self.sessionStartSource = sessionStartSource
+        self.threadSource = threadSource
+        self.collaborationMode = collaborationMode
+        self.planGuidanceEnabled = planGuidanceEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            model: try container.decodeIfPresent(String.self, forKey: .model) ?? CodexAppServerDefaults.model,
+            modelProvider: try container.decodeIfPresent(String.self, forKey: .modelProvider),
+            serviceTier: try container.decodeIfPresent(String.self, forKey: .serviceTier),
+            reasoningEffort: try container.decodeIfPresent(CodexAppServerReasoningEffort.self, forKey: .reasoningEffort) ?? CodexAppServerDefaults.reasoningEffort,
+            reasoningSummary: try container.decodeIfPresent(CodexAppServerReasoningSummary.self, forKey: .reasoningSummary),
+            approvalPolicy: try container.decodeIfPresent(CodexAppServerApprovalPolicy.self, forKey: .approvalPolicy) ?? .onRequest,
+            approvalsReviewer: try container.decodeIfPresent(String.self, forKey: .approvalsReviewer) ?? "user",
+            sandboxMode: try container.decodeIfPresent(CodexAppServerSandboxMode.self, forKey: .sandboxMode) ?? .dangerFullAccess,
+            networkAccess: try container.decodeIfPresent(Bool.self, forKey: .networkAccess) ?? false,
+            personality: try container.decodeIfPresent(CodexAppServerPersonality.self, forKey: .personality),
+            config: try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .config),
+            baseInstructions: try container.decodeIfPresent(String.self, forKey: .baseInstructions),
+            developerInstructions: try container.decodeIfPresent(String.self, forKey: .developerInstructions),
+            outputSchema: try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .outputSchema),
+            serviceName: try container.decodeIfPresent(String.self, forKey: .serviceName),
+            sessionStartSource: try container.decodeIfPresent(String.self, forKey: .sessionStartSource),
+            threadSource: try container.decodeIfPresent(String.self, forKey: .threadSource),
+            collaborationMode: try container.decodeIfPresent(CollaborationMode.self, forKey: .collaborationMode),
+            planGuidanceEnabled: try container.decodeIfPresent(Bool.self, forKey: .planGuidanceEnabled) ?? false
+        )
     }
 
     static let `default` = CodexAppServerTurnOptions(
-        model: nil,
+        model: CodexAppServerDefaults.model,
         modelProvider: nil,
         serviceTier: nil,
-        reasoningEffort: nil,
+        reasoningEffort: CodexAppServerDefaults.reasoningEffort,
         reasoningSummary: nil,
         approvalPolicy: .onRequest,
         approvalsReviewer: "user",
-        sandboxMode: .workspaceWrite,
+        sandboxMode: .dangerFullAccess,
         networkAccess: false,
         personality: nil,
         config: nil,
@@ -1343,7 +1445,9 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         outputSchema: nil,
         serviceName: nil,
         sessionStartSource: nil,
-        threadSource: nil
+        threadSource: nil,
+        collaborationMode: nil,
+        planGuidanceEnabled: false
     )
 
     func sanitizedForStandardComposer() -> CodexAppServerTurnOptions {
@@ -1360,6 +1464,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sanitized.serviceName = nil
         sanitized.sessionStartSource = nil
         sanitized.threadSource = nil
+        sanitized.collaborationMode = nil
+        sanitized.planGuidanceEnabled = false
         return sanitized
     }
 
@@ -1395,7 +1501,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             "approvalsReviewer": .string(approvalsReviewer),
             "sandboxPolicy": sandboxPolicy(projectPath: projectPath),
             "personality": personality.map { .string($0.rawValue) },
-            "outputSchema": outputSchema
+            "outputSchema": outputSchema,
+            "collaborationMode": collaborationMode.map { collaborationModePayload(mode: $0) }
         ]
     }
 
@@ -1454,6 +1561,19 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     private func nonEmptyString(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : value
+    }
+
+    private func collaborationModePayload(mode: CollaborationMode) -> CodexAppServerJSONValue {
+        // app-server 的 Plan Mode 需要 settings 里显式带 model/reasoning_effort/developer_instructions。
+        // developer_instructions 固定 null，表示使用 Codex 内置的 Plan Mode 指令，避免移动端透传危险自定义指令。
+        .object([
+            "mode": .string(mode.rawValue),
+            "settings": .object([
+                "model": .string(nonEmptyString(model ?? "") ?? CodexAppServerDefaults.model),
+                "reasoning_effort": reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                "developer_instructions": .null
+            ])
+        ])
     }
 }
 
@@ -1555,6 +1675,7 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
     }
 
     static let builtInFallback: [CodexAppServerModelOption] = [
+        CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5"),
         CodexAppServerModelOption(id: "gpt-5-codex", title: "gpt-5-codex"),
         CodexAppServerModelOption(id: "gpt-5.1-codex", title: "gpt-5.1-codex"),
         CodexAppServerModelOption(id: "gpt-5", title: "gpt-5"),
@@ -2182,6 +2303,26 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "turn/start", params: .object(params.compactMapValues { $0 }))
     }
 
+    func turnSteer(
+        threadID: String,
+        cwd: String,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID? = nil,
+        expectedTurnID: TurnID
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        let params: [String: CodexAppServerJSONValue?] = [
+            "threadId": .string(threadID),
+            "input": payload.appServerInput,
+            "clientUserMessageId": clientMessageID.map { .string($0) },
+            "expectedTurnId": .string(expectedTurnID)
+        ]
+        // steer 是对当前 active turn 的补充输入，不携带模型/权限等 turn 启动参数；
+        // 这里只复用结构化输入校验，确保附件路径仍然来自 allowlist。
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(method: "turn/steer", params: .object(params.compactMapValues { $0 }))
+    }
+
     func turnInterrupt(threadID: String, turnID: String) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "turn/interrupt", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID),
@@ -2218,7 +2359,7 @@ struct CodexAppServerRequestBuilder {
             // thread/start 只建立 app-server thread，使用 proven app-server 字段，不发送 runtimeWorkspaceRoots。
             "approvalPolicy": .string("on-request"),
             "approvalsReviewer": .string("user"),
-            "sandbox": .string("workspace-write"),
+            "sandbox": .string("danger-full-access"),
             "ephemeral": .bool(false)
         ]
     }
@@ -2230,19 +2371,11 @@ struct CodexAppServerRequestBuilder {
         if normalizedDangerToken(params["approvalPolicy"]??.stringValue) == "never" {
             throw CodexAppServerRequestBuilderError.unsafeParameter("approvalPolicy=never 被禁止")
         }
-        if normalizedDangerToken(params["sandbox"]??.stringValue) == "dangerfullaccess" ||
-            normalizedDangerToken(params["sandboxMode"]??.stringValue) == "dangerfullaccess" ||
-            normalizedDangerToken(params["sandbox_mode"]??.stringValue) == "dangerfullaccess" {
-            throw CodexAppServerRequestBuilderError.unsafeParameter("远程不允许 danger-full-access")
-        }
         try validateNoDangerousConfig(params["config"] ?? nil)
         guard let sandbox = params["sandboxPolicy"]??.objectValue else {
             return
         }
-        // 远程 app-server 只允许受控沙箱，避免 iOS 端把本机 full-access 权限透传到 Mac。
-        if normalizedDangerToken(sandbox["type"]?.stringValue) == "dangerfullaccess" {
-            throw CodexAppServerRequestBuilderError.unsafeParameter("远程不允许 danger-full-access")
-        }
+        // 默认允许用户批准下的最高文件系统权限，但仍不默认打开网络访问。
         if sandbox["networkAccess"]?.boolValue == true {
             throw CodexAppServerRequestBuilderError.unsafeParameter("远程默认禁止网络访问")
         }

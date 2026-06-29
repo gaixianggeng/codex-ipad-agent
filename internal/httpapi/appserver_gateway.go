@@ -29,6 +29,8 @@ const (
 	appServerGatewayWriteWindow    = 10 * time.Second
 	appServerGatewayThreadCacheMax = 2048
 	appServerGatewayThreadCacheTTL = 24 * time.Hour
+	defaultCodexAppServerModel     = "gpt-5.5"
+	defaultCodexReasoningEffort    = "xhigh"
 )
 
 var (
@@ -55,6 +57,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"thread/goal/set":         {},
 	"thread/goal/clear":       {},
 	"turn/start":              {},
+	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
 	"account/rateLimits/read": {},
@@ -304,6 +307,9 @@ func isLoopbackGatewayHost(host string) bool {
 func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
 	tokenFile := strings.TrimSpace(r.cfg.AppServer.WSTokenFile)
 	if tokenFile == "" {
+		if r.cfg.AppServer.Managed {
+			return nil, fmt.Errorf("app_server.ws_token_file 未配置；managed app-server 必须使用独立 upstream token")
+		}
 		return nil, nil
 	}
 	raw, err := os.ReadFile(tokenFile)
@@ -567,6 +573,21 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !scopeOK || scope.id != thread.scopeID {
 			return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
 		}
+	case "turn/steer":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if _, ok := gatewayStringParam(params, "expectedTurnId"); !ok {
+			return fmt.Errorf("%s.expectedTurnId 不能为空", method)
+		}
+		if err := p.validateThreadInputPaths(method, params, thread); err != nil {
+			return err
+		}
 	case "turn/interrupt":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
@@ -575,6 +596,32 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if _, ok := p.allowedThread(threadID); !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
+	}
+	return nil
+}
+
+func (p *appServerGatewayPolicy) validateThreadInputPaths(method string, params map[string]any, thread appServerGatewayAllowedThread) error {
+	inputPaths, err := collectUserInputPaths(method, params)
+	if err != nil {
+		return err
+	}
+	if len(inputPaths) == 0 {
+		return nil
+	}
+	var scope gatewayScope
+	var scopeOK bool
+	if strings.TrimSpace(thread.cwd) != "" {
+		scope, scopeOK = p.router.gatewayScopeForPath(thread.cwd)
+	}
+	for _, path := range inputPaths {
+		if _, ok := p.router.projectForGatewayPath(path); ok {
+			continue
+		}
+		// turn/steer 不携带 cwd，只能根据已授权 thread 的 cwd 还原 browse/worktree 精确边界。
+		if scopeOK && scope.id == thread.scopeID && (scope.browse || scope.managed) && gatewayScopeContainsPath(scope, path) {
+			continue
+		}
+		return fmt.Errorf("%s.input path 必须来自 projects allowlist", method)
 	}
 	return nil
 }
@@ -644,6 +691,8 @@ func rewriteGatewaySafeDefaults(payload []byte, method string, params map[string
 		sanitized = sanitizedGatewayThreadParams(method, params)
 	case "turn/start":
 		sanitized = sanitizedGatewayTurnParams(params, validated.cwd)
+	case "turn/steer":
+		sanitized = sanitizedGatewayTurnSteerParams(params)
 	case "turn/interrupt":
 		sanitized = copyGatewayParams(params, "threadId", "turnId")
 	default:
@@ -755,6 +804,9 @@ func sanitizedGatewayThreadParams(method string, params map[string]any) map[stri
 	}
 	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params)
 	safe["sandbox"] = sanitizedGatewayThreadSandbox(params)
+	if model, ok := gatewayStringParam(safe, "model"); !ok || strings.TrimSpace(model) == "" {
+		safe["model"] = defaultCodexAppServerModel
+	}
 	return safe
 }
 
@@ -762,17 +814,58 @@ func sanitizedGatewayThreadSandbox(params map[string]any) string {
 	if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "readonly" {
 		return "read-only"
 	}
+	if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "workspacewrite" {
+		return "workspace-write"
+	}
 	if sandbox, ok := gatewayStringParam(params, "sandbox"); ok && normalizePolicyValue(sandbox) == "dangerfullaccess" {
 		return "danger-full-access"
 	}
-	return "workspace-write"
+	return "danger-full-access"
 }
 
 func sanitizedGatewayTurnParams(params map[string]any, cwd string) map[string]any {
 	safe := copyGatewayParams(params, "threadId", "cwd", "input", "clientUserMessageId", "model", "serviceTier", "effort", "summary", "personality")
+	if collaborationMode, ok := sanitizedGatewayCollaborationMode(params["collaborationMode"]); ok {
+		safe["collaborationMode"] = collaborationMode
+	}
 	safe["approvalPolicy"], safe["approvalsReviewer"] = sanitizedGatewayApproval(params)
 	safe["sandboxPolicy"] = sanitizedGatewaySandboxPolicy(params["sandboxPolicy"], cwd)
+	if model, ok := gatewayStringParam(safe, "model"); !ok || strings.TrimSpace(model) == "" {
+		safe["model"] = defaultCodexAppServerModel
+	}
+	if effort, ok := gatewayStringParam(safe, "effort"); !ok || strings.TrimSpace(effort) == "" {
+		safe["effort"] = defaultCodexReasoningEffort
+	}
 	return safe
+}
+
+func sanitizedGatewayTurnSteerParams(params map[string]any) map[string]any {
+	return copyGatewayParams(params, "threadId", "input", "clientUserMessageId", "expectedTurnId")
+}
+
+func sanitizedGatewayCollaborationMode(raw any) (map[string]any, bool) {
+	mode, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	modeValue, ok := gatewayStringParam(mode, "mode")
+	if !ok {
+		return nil, false
+	}
+	settings, _ := mode["settings"].(map[string]any)
+	model, _ := gatewayStringParam(settings, "model")
+	safeSettings := map[string]any{
+		"model":                  model,
+		"reasoning_effort":       nil,
+		"developer_instructions": nil,
+	}
+	if effort, ok := settings["reasoning_effort"]; ok {
+		safeSettings["reasoning_effort"] = effort
+	}
+	return map[string]any{
+		"mode":     modeValue,
+		"settings": safeSettings,
+	}, true
 }
 
 func sanitizedGatewayApproval(params map[string]any) (string, string) {
@@ -802,9 +895,16 @@ func sanitizedGatewaySandboxPolicy(raw any, cwd string) map[string]any {
 			"networkAccess": false,
 		}
 	}
+	if normalizedType == "workspacewrite" {
+		return map[string]any{
+			"type":          "workspaceWrite",
+			"writableRoots": []any{cwd},
+			"networkAccess": false,
+		}
+	}
+	// 默认权限模式是“用户批准 + 完全访问”；网络仍默认关闭，避免无意放开外连能力。
 	return map[string]any{
-		"type":          "workspaceWrite",
-		"writableRoots": []any{cwd},
+		"type":          "dangerFullAccess",
 		"networkAccess": false,
 	}
 }
@@ -1141,6 +1241,11 @@ func (r *Router) validateGatewayPolicyParams(method string, params map[string]an
 	if hasNetworkAccessEnabled(params) {
 		return validated, fmt.Errorf("networkAccess=true 不允许远程使用")
 	}
+	if value, ok := params["collaborationMode"]; ok {
+		if err := validateGatewayCollaborationMode(value); err != nil {
+			return validated, err
+		}
+	}
 	if cwd, ok := gatewayStringParam(params, "cwd"); ok {
 		scope, scopeOK := r.gatewayScopeForPath(cwd)
 		if !scopeOK {
@@ -1175,20 +1280,22 @@ func (r *Router) validateGatewayPolicyParams(method string, params map[string]an
 			return validated, fmt.Errorf("sandboxPolicy.writableRoots 必须来自 projects allowlist")
 		}
 	}
-	inputPaths, err := collectUserInputPaths(params)
+	inputPaths, err := collectUserInputPaths(method, params)
 	if err != nil {
 		return validated, err
 	}
-	for _, path := range inputPaths {
-		if _, ok := r.projectForGatewayPath(path); ok {
-			continue
+	if method != "turn/steer" {
+		for _, path := range inputPaths {
+			if _, ok := r.projectForGatewayPath(path); ok {
+				continue
+			}
+			// browse/worktree workspace 的结构化输入（图片/mention/skill）允许引用绑定目录内的文件，
+			// 但不允许引用允许根下的 sibling 目录，保持和 cwd 一样的精确边界。
+			if validated.cwdScopeOK && (validated.cwdScope.browse || validated.cwdScope.managed) && gatewayScopeContainsPath(validated.cwdScope, path) {
+				continue
+			}
+			return validated, fmt.Errorf("%s.input path 必须来自 projects allowlist", method)
 		}
-		// browse/worktree workspace 的结构化输入（图片/mention/skill）允许引用绑定目录内的文件，
-		// 但不允许引用允许根下的 sibling 目录，保持和 cwd 一样的精确边界。
-		if validated.cwdScopeOK && (validated.cwdScope.browse || validated.cwdScope.managed) && gatewayScopeContainsPath(validated.cwdScope, path) {
-			continue
-		}
-		return validated, fmt.Errorf("turn/start.input path 必须来自 projects allowlist")
 	}
 	return validated, nil
 }
@@ -1211,43 +1318,88 @@ func gatewayStringParam(params map[string]any, key string) (string, bool) {
 	return strings.TrimSpace(text), ok && strings.TrimSpace(text) != ""
 }
 
-func collectUserInputPaths(params map[string]any) ([]string, error) {
+func collectUserInputPaths(method string, params map[string]any) ([]string, error) {
 	raw, ok := params["input"]
 	if !ok {
 		return nil, nil
 	}
 	items, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("turn/start.input 必须是数组")
+		return nil, fmt.Errorf("%s.input 必须是数组", method)
 	}
 	paths := []string{}
 	for _, item := range items {
 		obj, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("turn/start.input item 必须是 object")
+			return nil, fmt.Errorf("%s.input item 必须是 object", method)
 		}
 		inputType, _ := gatewayStringParam(obj, "type")
 		switch inputType {
 		case "localImage", "skill", "mention":
 			path, ok := gatewayStringParam(obj, "path")
 			if !ok {
-				return nil, fmt.Errorf("turn/start.input.%s.path 不能为空", inputType)
+				return nil, fmt.Errorf("%s.input.%s.path 不能为空", method, inputType)
 			}
 			paths = append(paths, path)
 		case "image":
 			url, ok := gatewayStringParam(obj, "url")
 			if !ok {
-				return nil, fmt.Errorf("turn/start.input.image.url 不能为空")
+				return nil, fmt.Errorf("%s.input.image.url 不能为空", method)
 			}
 			if strings.HasPrefix(strings.ToLower(url), "file:") {
-				return nil, fmt.Errorf("turn/start.input.image.url 不允许 file URL，请使用 localImage.path")
+				return nil, fmt.Errorf("%s.input.image.url 不允许 file URL，请使用 localImage.path", method)
 			}
 		case "text":
 		default:
-			return nil, fmt.Errorf("turn/start.input 类型不支持：%s", inputType)
+			return nil, fmt.Errorf("%s.input 类型不支持：%s", method, inputType)
 		}
 	}
 	return paths, nil
+}
+
+func validateGatewayCollaborationMode(value any) error {
+	mode, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("collaborationMode 必须是 object")
+	}
+	if hasDangerousConfigSandbox(mode) {
+		return fmt.Errorf("collaborationMode 不允许 dangerFullAccess")
+	}
+	modeValue, ok := gatewayStringParam(mode, "mode")
+	if !ok {
+		return fmt.Errorf("collaborationMode.mode 必须是 plan/default")
+	}
+	switch modeValue {
+	case "plan", "default":
+	default:
+		return fmt.Errorf("collaborationMode.mode 不支持：%s", modeValue)
+	}
+	settings, ok := mode["settings"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("collaborationMode.settings 必须是 object")
+	}
+	model, ok := gatewayStringParam(settings, "model")
+	if !ok || model == "" {
+		return fmt.Errorf("collaborationMode.settings.model 必须是非空字符串")
+	}
+	if developerInstructions, ok := settings["developer_instructions"]; ok && developerInstructions != nil {
+		return fmt.Errorf("collaborationMode.settings.developer_instructions 只能是 null")
+	}
+	if developerInstructions, ok := settings["developerInstructions"]; ok && developerInstructions != nil {
+		return fmt.Errorf("collaborationMode.settings.developerInstructions 只能是 null")
+	}
+	if effort, ok := settings["reasoning_effort"]; ok && effort != nil {
+		text, ok := effort.(string)
+		if !ok {
+			return fmt.Errorf("collaborationMode.settings.reasoning_effort 必须是字符串或 null")
+		}
+		switch text {
+		case "none", "minimal", "low", "medium", "high", "xhigh":
+		default:
+			return fmt.Errorf("collaborationMode.settings.reasoning_effort 不支持：%s", text)
+		}
+	}
+	return nil
 }
 
 func (r *Router) projectForGatewayPath(raw string) (projects.Project, bool) {

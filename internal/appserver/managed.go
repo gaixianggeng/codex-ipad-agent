@@ -52,6 +52,9 @@ type ManagedWebSocketProcess struct {
 	waitCh chan error
 	doneCh chan struct{}
 
+	waitErrMu sync.Mutex
+	waitErr   error
+
 	tailMu     sync.Mutex
 	stderrTail []string
 
@@ -142,7 +145,11 @@ func StartManagedWebSocket(ctx context.Context, options ManagedWebSocketOptions)
 	process := &ManagedWebSocketProcess{cmd: cmd, waitCh: make(chan error, 1), doneCh: make(chan struct{})}
 	go process.captureStderr(stderr)
 	go func() {
-		process.waitCh <- cmd.Wait()
+		err := cmd.Wait()
+		process.waitErrMu.Lock()
+		process.waitErr = err
+		process.waitErrMu.Unlock()
+		process.waitCh <- err
 		close(process.doneCh)
 	}()
 	// 启动失败通常会很快退出；给慢机器/CI 留一点窗口，避免把坏配置误判为启动成功。
@@ -196,6 +203,24 @@ func (p *ManagedWebSocketProcess) Diagnostics() Diagnostics {
 	diag.StderrTail = append([]string(nil), p.stderrTail...)
 	p.tailMu.Unlock()
 	return diag
+}
+
+func (p *ManagedWebSocketProcess) Done() <-chan struct{} {
+	if p == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	return p.doneCh
+}
+
+func (p *ManagedWebSocketProcess) ExitError() error {
+	if p == nil {
+		return nil
+	}
+	p.waitErrMu.Lock()
+	defer p.waitErrMu.Unlock()
+	return p.waitErr
 }
 
 func (p *ManagedProcess) Shutdown(ctx context.Context) error {

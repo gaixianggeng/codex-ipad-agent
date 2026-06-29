@@ -14,7 +14,7 @@ protocol SessionStoreAPIClient {
     func listDirectories(path: String) async throws -> DirectoryListResponse
     func readFile(path: String) async throws -> FileReadResponse
     func commandActions(path: String) async throws -> [AgentCommandAction]
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse
     func gitStatus(path: String) async throws -> GitStatusResponse
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse
     func gitPatchAction(path: String, action: GitActionKind, patch: String) async throws -> GitStatusResponse
@@ -116,7 +116,7 @@ extension SessionStoreAPIClient {
         throw AgentAPIError.invalidResponse
     }
 
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse {
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse {
         // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/actions/run。
         throw AgentAPIError.invalidResponse
     }
@@ -202,6 +202,7 @@ actor TerminalStreamStore {
 private struct QueuedCommandActionRun: Equatable {
     let path: String
     let id: String
+    let confirmed: Bool
 }
 
 struct ProjectSessionListSnapshot: Equatable {
@@ -259,6 +260,60 @@ struct SessionListPreferenceStore {
     func save(_ preferences: SessionListPreferences, endpoint: String) {
         var storage = storage()
         storage.byEndpoint[normalizedEndpoint(endpoint)] = preferences
+        persist(storage)
+    }
+
+    private func storage() -> Storage {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(Storage.self, from: data)
+        else {
+            return Storage()
+        }
+        return decoded
+    }
+
+    private func persist(_ storage: Storage) {
+        guard let data = try? JSONEncoder().encode(storage) else {
+            return
+        }
+        defaults.set(data, forKey: key)
+    }
+
+    private func normalizedEndpoint(_ endpoint: String) -> String {
+        AgentAPIClient.normalizedEndpoint(endpoint)
+    }
+}
+
+enum SessionControlState: String, Codable, Equatable {
+    case ipadOwned
+    case takenOver
+    case observing
+
+    var isControllable: Bool {
+        self == .ipadOwned || self == .takenOver
+    }
+}
+
+struct SessionControlStateStore {
+    private struct Storage: Codable {
+        var byEndpoint: [String: [SessionID: SessionControlState]] = [:]
+    }
+
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = "agentd.sessionControlStates") {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func load(endpoint: String) -> [SessionID: SessionControlState] {
+        storage().byEndpoint[normalizedEndpoint(endpoint)] ?? [:]
+    }
+
+    func save(_ states: [SessionID: SessionControlState], endpoint: String) {
+        var storage = storage()
+        storage.byEndpoint[normalizedEndpoint(endpoint)] = states
         persist(storage)
     }
 
@@ -486,6 +541,25 @@ enum FilePreviewStoreError: LocalizedError {
     }
 }
 
+private struct SessionListProjection: Equatable {
+    enum Source: Equatable {
+        case localUser
+        case localAssistant
+    }
+
+    let preview: String
+    let updatedAt: Date
+    let baseRemoteUpdatedAt: Date?
+    let basePreview: String?
+    let source: Source
+    let clientMessageID: ClientMessageID?
+}
+
+enum RunningTurnDelivery {
+    case queued
+    case guided
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var projects: [AgentProject] = [] {
@@ -568,7 +642,10 @@ final class SessionStore: ObservableObject {
     @Published private(set) var pullRequestStatusErrorByPath: [String: String] = [:]
     @Published private(set) var isRefreshingPullRequestStatus = false
     @Published private var pendingApprovalDecisionIDsBySessionID: [SessionID: Set<String>] = [:]
+    @Published private var pendingUserInputResponseIDsBySessionID: [SessionID: Set<String>] = [:]
     @Published private var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
+    @Published private var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
+    @Published private var sessionControlStateByID: [SessionID: SessionControlState] = [:]
 
     private let appStore: AppStore
     private let conversationStore: ConversationStore
@@ -577,6 +654,7 @@ final class SessionStore: ObservableObject {
     private let eventReducer: EventReducer
     private let recentWorkspaceStore: RecentWorkspaceStore
     private let sessionListPreferenceStore: SessionListPreferenceStore
+    private let sessionControlStateStore: SessionControlStateStore
     private let sessionReminderStore: SessionReminderStore
     private let sessionReminderScheduler: any SessionReminderScheduling
     private let terminalStreamStore = TerminalStreamStore()
@@ -593,6 +671,7 @@ final class SessionStore: ObservableObject {
     private var runtimeEventFlushTasks: [SessionID: Task<Void, Never>] = [:]
     private var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
     private var deliveredRuntimeNotificationIDs: Set<String> = []
+    private var listProjectionBySessionID: [SessionID: SessionListProjection] = [:]
     private var queuedCommandActionRuns: [QueuedCommandActionRun] = []
     private var projectsByID: [String: AgentProject] = [:]
     private var workspacesByID: [String: AgentWorkspace] = [:]
@@ -619,6 +698,7 @@ final class SessionStore: ObservableObject {
 
     private let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
     private let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
+    private let sessionListPollingDelayNanoseconds: UInt64 = 8_000_000_000
     private let historyPageLimit = 120
     private static let optimisticSessionSource = "local"
     static let sessionPreviewLimit = 3
@@ -635,6 +715,7 @@ final class SessionStore: ObservableObject {
         contextStore: SessionContextStore? = nil,
         recentWorkspaceStore: RecentWorkspaceStore? = nil,
         sessionListPreferenceStore: SessionListPreferenceStore? = nil,
+        sessionControlStateStore: SessionControlStateStore? = nil,
         sessionReminderStore: SessionReminderStore? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
@@ -662,6 +743,14 @@ final class SessionStore: ObservableObject {
         } else {
             self.sessionListPreferenceStore = SessionListPreferenceStore()
         }
+        if let sessionControlStateStore {
+            self.sessionControlStateStore = sessionControlStateStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(suiteName: "SessionStore.SessionControlStates.\(UUID().uuidString)") ?? .standard
+            self.sessionControlStateStore = SessionControlStateStore(defaults: defaults)
+        } else {
+            self.sessionControlStateStore = SessionControlStateStore()
+        }
         if let sessionReminderStore {
             self.sessionReminderStore = sessionReminderStore
         } else if clientFactory != nil {
@@ -681,6 +770,7 @@ final class SessionStore: ObservableObject {
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
         reloadSessionListPreferences()
+        reloadSessionControlStates()
         reloadSessionReminders()
     }
 
@@ -720,7 +810,10 @@ final class SessionStore: ObservableObject {
     }
 
     var selectedThreadGoal: ThreadGoal? {
-        selectedSession?.goal ?? contextStore.context(for: selectedSessionID)?.goal
+        guard let session = selectedSession else {
+            return nil
+        }
+        return Self.matchingThreadGoal(for: session, context: contextStore.context(for: session.id))
     }
 
     var selectedForegroundActivity: SessionForegroundActivity? {
@@ -736,11 +829,28 @@ final class SessionStore: ObservableObject {
         return foregroundActivityBySessionID[selectedSessionID]
     }
 
+    var selectedRuntimeActivitySnapshot: RuntimeActivitySnapshot? {
+        guard let selectedSessionID else {
+            return nil
+        }
+        guard selectedSession?.isRunning == true else {
+            return nil
+        }
+        return runtimeActivityBySessionID[selectedSessionID]
+    }
+
     func foregroundActivity(for sessionID: SessionID) -> SessionForegroundActivity? {
         guard sessionsByID[sessionID]?.isRunning == true else {
             return nil
         }
         return foregroundActivityBySessionID[sessionID]
+    }
+
+    func runtimeActivitySnapshot(for sessionID: SessionID) -> RuntimeActivitySnapshot? {
+        guard sessionsByID[sessionID]?.isRunning == true else {
+            return nil
+        }
+        return runtimeActivityBySessionID[sessionID]
     }
 
     var selectedGitStatusPath: String? {
@@ -908,6 +1018,60 @@ final class SessionStore: ObservableObject {
 
     func sessionListSnapshot(forProjectID projectID: String) -> ProjectSessionListSnapshot {
         sessionListSnapshotsByProjectID[projectID] ?? makeProjectSessionListSnapshot(forProjectID: projectID)
+    }
+
+    func controlState(for session: AgentSession) -> SessionControlState {
+        if let state = sessionControlStateByID[session.id] {
+            return state
+        }
+        return session.isRunning ? .observing : .takenOver
+    }
+
+    func canControlSession(_ session: AgentSession?) -> Bool {
+        guard let session else {
+            return true
+        }
+        guard session.isRunning else {
+            return true
+        }
+        return controlState(for: session).isControllable
+    }
+
+    var canSendInSelectedSession: Bool {
+        canControlSession(selectedSession)
+    }
+
+    var isSelectedSessionObserving: Bool {
+        guard let session = selectedSession else {
+            return false
+        }
+        return isSessionObserving(session)
+    }
+
+    func isSessionObserving(_ session: AgentSession) -> Bool {
+        session.isRunning && !canControlSession(session)
+    }
+
+    var selectedSessionControlNotice: String? {
+        guard isSelectedSessionObserving else {
+            return nil
+        }
+        return "这个会话正在其他客户端运行，iPad 当前仅观察。接管后才会发送新消息或处理审批。"
+    }
+
+    func takeOverSession(_ session: AgentSession) {
+        setSessionControlState(.takenOver, sessionID: session.id)
+        if session.id == selectedSessionID, session.isRunning {
+            connectWebSocket(session)
+        }
+        setStatusMessage("已接管到 iPad")
+    }
+
+    func takeOverSelectedSession() {
+        guard let session = selectedSession else {
+            return
+        }
+        takeOverSession(session)
     }
 
     func canLoadEarlierHistory(sessionID: SessionID?) -> Bool {
@@ -1432,17 +1596,17 @@ final class SessionStore: ObservableObject {
         else {
             return
         }
-        await runCommandAction(path: path, id: action.id)
+        await runCommandAction(path: path, id: action.id, confirmed: action.requiresConfirmation)
     }
 
-    func runCommandAction(path: String, id: String) async {
+    func runCommandAction(path: String, id: String, confirmed: Bool = false) async {
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let actionID = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetPath.isEmpty, !actionID.isEmpty else {
             return
         }
 
-        let run = QueuedCommandActionRun(path: targetPath, id: actionID)
+        let run = QueuedCommandActionRun(path: targetPath, id: actionID, confirmed: confirmed)
         if isRunningCommandAction {
             enqueueCommandActionRun(run)
             return
@@ -1491,7 +1655,7 @@ final class SessionStore: ObservableObject {
             runningCommandActionID = nil
         }
         do {
-            let response = try await clientFactory().runCommandAction(path: run.path, id: run.id)
+            let response = try await clientFactory().runCommandAction(path: run.path, id: run.id, confirmed: run.confirmed)
             commandActionResultByPath[run.path] = response
             var history = commandActionHistoryByPath[run.path] ?? []
             // 执行历史只做本地短缓存，不写后端，避免命令输出长期留存在配置服务里。
@@ -1885,11 +2049,25 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func refreshSelectedProjectSessions() async {
+    func refreshSelectedProjectSessions(showLoading: Bool = true) async {
         guard let selectedProjectID else {
             return
         }
-        await refreshSessions(forProjectID: selectedProjectID)
+        await refreshSessions(forProjectID: selectedProjectID, showLoading: showLoading)
+    }
+
+    func pollSelectedProjectSessionsWhileVisible() async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: sessionListPollingDelayNanoseconds)
+            } catch {
+                return
+            }
+            guard appStore.isConfigured, selectedProjectID != nil else {
+                continue
+            }
+            await refreshSelectedProjectSessions(showLoading: false)
+        }
     }
 
     func refreshCurrentContext() async {
@@ -1979,6 +2157,7 @@ final class SessionStore: ObservableObject {
             && webSocket == nil
             && webSocketStatus == .disconnected
             && pendingApprovalDecisionIDsBySessionID.isEmpty
+            && pendingUserInputResponseIDsBySessionID.isEmpty
         guard !wasAlreadyOnList else {
             return
         }
@@ -2008,11 +2187,13 @@ final class SessionStore: ObservableObject {
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
 
-        await loadHistoryIfNeeded(for: session)
-
-        if session.isRunning {
-            connectWebSocket(session)
+        if session.isRunning && canControlSession(session) {
+            // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
+            // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
+            let didRefreshHistory = await loadHistory(for: session)
+            connectWebSocket(session, replayBufferedEvents: !didRefreshHistory)
         } else {
+            await loadHistoryIfNeeded(for: session)
             disconnectWebSocket()
         }
     }
@@ -2044,7 +2225,8 @@ final class SessionStore: ObservableObject {
     func startGoalTurn(
         payload: CodexAppServerTurnPayload,
         objective: String,
-        tokenBudget: Int64? = nil
+        tokenBudget: Int64? = nil,
+        runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
         let normalizedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedObjective.isEmpty else {
@@ -2071,7 +2253,7 @@ final class SessionStore: ObservableObject {
             ) else {
                 return false
             }
-            let sent = await sendTurn(payload)
+            let sent = await sendTurn(payload, runningDelivery: runningDelivery)
             if sent {
                 setStatusMessage("目标任务已启动")
             }
@@ -2108,24 +2290,47 @@ final class SessionStore: ObservableObject {
     }
 
     @discardableResult
-    func sendTurn(_ payload: CodexAppServerTurnPayload) async -> Bool {
+    func sendTurn(_ payload: CodexAppServerTurnPayload, runningDelivery: RunningTurnDelivery = .queued) async -> Bool {
         guard !payload.isEmpty else {
             return false
         }
         let prompt = payload.previewText
 
         if let session = selectedSession, session.isRunning {
+            guard canControlSession(session) else {
+                setErrorMessage("这个会话正在其他客户端运行。请先接管到 iPad，再继续发送。")
+                return false
+            }
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
             let clientMessageID = UUID().uuidString
             conversationStore.appendLocalUser(prompt, sessionID: session.id, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
+            setSessionListProjection(sessionID: session.id, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-            guard socket.sendTurn(payload, clientMessageID: clientMessageID) else {
+            let didAcceptLocally: Bool
+            switch runningDelivery {
+            case .queued:
+                didAcceptLocally = socket.sendTurn(payload, clientMessageID: clientMessageID)
+            case .guided:
+                guard let activeTurnID = session.activeTurnID else {
+                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
+                    clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
+                    clearForegroundActivity(sessionID: session.id)
+                    setErrorMessage("引导对话失败：当前会话没有活跃 turn")
+                    return false
+                }
+                didAcceptLocally = socket.sendGuidance(payload, clientMessageID: clientMessageID, expectedTurnID: activeTurnID)
+            }
+            guard didAcceptLocally else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
+                clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage("发送失败：WebSocket 未连接")
                 return false
+            }
+            Task { [weak self] in
+                await self?.refreshSessions(forProjectID: session.projectID)
             }
             return true
         }
@@ -2140,7 +2345,7 @@ final class SessionStore: ObservableObject {
     }
 
     func sendCtrlC() {
-        guard let session = selectedSession, session.isRunning, let socket = readyWebSocket(for: session) else {
+        guard let session = selectedSession, session.isRunning, canControlSession(session), let socket = readyWebSocket(for: session) else {
             return
         }
         if !socket.sendCtrlC() {
@@ -2149,7 +2354,15 @@ final class SessionStore: ObservableObject {
     }
 
     func decideApproval(_ approval: ApprovalSummary, accept: Bool) {
-        guard let session = selectedSession, session.isRunning, let socket = readyWebSocket(for: session) else {
+        guard let session = selectedSession, session.isRunning else {
+            setErrorMessage("审批失败：WebSocket 未连接")
+            return
+        }
+        guard canControlSession(session) else {
+            setErrorMessage("这个会话正在其他客户端运行。请先接管到 iPad，再处理审批。")
+            return
+        }
+        guard let socket = readyWebSocket(for: session) else {
             setErrorMessage("审批失败：WebSocket 未连接")
             return
         }
@@ -2174,6 +2387,39 @@ final class SessionStore: ObservableObject {
         return isApprovalDecisionPending(approval, sessionID: sessionID)
     }
 
+    func respondToUserInput(_ request: AgentUserInputRequest, answers: [String: [String]]) {
+        guard let session = selectedSession, session.isRunning else {
+            setErrorMessage("补充信息发送失败：WebSocket 未连接")
+            return
+        }
+        guard canControlSession(session) else {
+            setErrorMessage("这个会话正在其他客户端运行。请先接管到 iPad，再提交输入。")
+            return
+        }
+        guard let socket = readyWebSocket(for: session) else {
+            setErrorMessage("补充信息发送失败：WebSocket 未连接")
+            return
+        }
+        guard !isUserInputResponsePending(request, sessionID: session.id) else {
+            setStatusMessage("补充信息正在发送")
+            return
+        }
+        markUserInputResponsePending(request.id, sessionID: session.id)
+        guard socket.sendUserInputResponse(requestID: request.id, answers: answers) else {
+            clearPendingUserInputResponse(sessionID: session.id, requestID: request.id)
+            setErrorMessage("补充信息发送失败：WebSocket 未连接")
+            return
+        }
+        setStatusMessage("补充信息已发送，等待 Codex 继续")
+    }
+
+    func isUserInputResponsePending(_ request: AgentUserInputRequest) -> Bool {
+        guard let sessionID = selectedSession?.id else {
+            return false
+        }
+        return isUserInputResponsePending(request, sessionID: sessionID)
+    }
+
     @discardableResult
     func retryFailedUserMessage(_ message: ConversationMessage) async -> Bool {
         guard message.role == .user, message.sendStatus == .failed else {
@@ -2187,18 +2433,27 @@ final class SessionStore: ObservableObject {
         if let session = selectedSession,
            session.isRunning,
            let clientMessageID = message.clientMessageID {
+            guard canControlSession(session) else {
+                setErrorMessage("这个会话正在其他客户端运行。请先接管到 iPad，再继续发送。")
+                return false
+            }
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
             // 失败消息有 client_message_id 时直接复用原 row 重发，避免 timeline 里出现重复用户气泡。
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
+            setSessionListProjection(sessionID: session.id, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
             let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
             guard socket.sendTurn(payload, clientMessageID: clientMessageID) else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
+                clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage("重试失败：WebSocket 未连接")
                 return false
+            }
+            Task { [weak self] in
+                await self?.refreshSessions(forProjectID: session.projectID)
             }
             return true
         }
@@ -2220,6 +2475,10 @@ final class SessionStore: ObservableObject {
         guard let session = selectedSession else {
             return
         }
+        guard canControlSession(session) else {
+            setErrorMessage("这个会话正在其他客户端运行。请先接管到 iPad，再停止。")
+            return
+        }
         do {
             let client = try clientFactory()
             try await client.stopSession(id: session.id)
@@ -2229,6 +2488,7 @@ final class SessionStore: ObservableObject {
                 item.activeTurnID = nil
             }
             clearForegroundActivity(sessionID: session.id)
+            clearRuntimeActivity(sessionID: session.id)
             conversationStore.appendSystem("会话已停止。", sessionID: session.id)
             disconnectWebSocket()
             setStatusMessage("已停止会话")
@@ -2362,6 +2622,7 @@ final class SessionStore: ObservableObject {
             setSelectedSessionID(optimisticSessionID)
             insertExpandedProjectID(projectID)
             conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
+            setSessionListProjection(sessionID: optimisticSessionID, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: optimisticSessionID)
         }
 
@@ -2387,12 +2648,15 @@ final class SessionStore: ObservableObject {
                 // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
                 // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
                 conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
+                moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
                 migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
+                migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
                 if resume == nil {
                     removeSession(optimisticSessionID)
                 }
             }
             upsert(responseSession)
+            setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
             setSelectedProjectID(responseSession.projectID)
             setSelectedSessionID(responseSession.id)
             insertExpandedProjectID(responseSession.projectID)
@@ -2419,6 +2683,7 @@ final class SessionStore: ObservableObject {
             if let firstMessage = response.firstMessage {
                 conversationStore.completeMessage(firstMessage, metadata: .empty, fallbackSessionID: responseSession.id)
                 if firstMessage.role == .assistant {
+                    setSessionListProjection(sessionID: responseSession.id, preview: firstMessage.content, source: .localAssistant, clientMessageID: nil)
                     clearForegroundActivity(sessionID: responseSession.id)
                 }
             }
@@ -2433,6 +2698,7 @@ final class SessionStore: ObservableObject {
             if let optimisticSessionID,
                let clientMessageID {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: optimisticSessionID, status: .failed)
+                clearSessionListProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
                 updateSession(optimisticSessionID) { item in
                     item.status = "failed"
                 }
@@ -2443,38 +2709,42 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func loadHistoryIfNeeded(for session: AgentSession) async {
+    @discardableResult
+    private func loadHistoryIfNeeded(for session: AgentSession) async -> Bool {
         guard !conversationStore.hasLoadedHistory(sessionID: session.id) else {
-            return
+            return true
         }
         guard !initialHistoryLoadingSessionIDs.contains(session.id) else {
-            return
+            return false
         }
         // 自动选择历史会话时只需要一个首屏请求；手动刷新仍会绕过这里拿最新 rollout。
         initialHistoryLoadingSessionIDs.insert(session.id)
         defer {
             initialHistoryLoadingSessionIDs.remove(session.id)
         }
-        await loadHistory(for: session)
+        return await loadHistory(for: session)
     }
 
-    private func loadHistory(for session: AgentSession) async {
+    @discardableResult
+    private func loadHistory(for session: AgentSession) async -> Bool {
         let requestToken = beginHistoryPageRequest(sessionID: session.id)
         do {
             let client = try clientFactory()
             // 历史文件可能很大，移动端默认只加载最近一段上下文，避免打开会话时卡住 UI。
             let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
             guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
-                return
+                return false
             }
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
+            return true
         } catch {
             guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
-                return
+                return false
             }
             setStatusMessage("历史消息读取失败：\(error.localizedDescription)")
+            return false
         }
     }
 
@@ -2500,6 +2770,7 @@ final class SessionStore: ObservableObject {
                     upsert(refreshed)
                     if !refreshed.isRunning {
                         clearForegroundActivity(sessionID: session.id)
+                        clearRuntimeActivity(sessionID: session.id)
                     }
                     if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
                         // recent_output 只作为诊断日志展示；对话内容以 app-server 结构化 history/event 为准。
@@ -2511,6 +2782,7 @@ final class SessionStore: ObservableObject {
                 }
             } else {
                 clearForegroundActivity(sessionID: session.id)
+                clearRuntimeActivity(sessionID: session.id)
                 await refreshSessions(forProjectID: session.projectID)
             }
             setStatusMessage("当前会话已刷新")
@@ -2520,7 +2792,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func refreshSessions(forProjectID projectID: String) async {
+    private func refreshSessions(forProjectID projectID: String, showLoading: Bool = true) async {
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             setErrorMessage("工作区已失效，请重新打开")
@@ -2530,8 +2802,14 @@ final class SessionStore: ObservableObject {
         if selectedProjectID != projectID {
             setSelectedProjectID(projectID)
         }
-        isLoading = true
-        defer { isLoading = false }
+        if showLoading {
+            isLoading = true
+        }
+        defer {
+            if showLoading {
+                isLoading = false
+            }
+        }
         var requestToken: Int?
         do {
             let client = try clientFactory()
@@ -2564,8 +2842,10 @@ final class SessionStore: ObservableObject {
     private func prepareSelectedSessionAfterRefresh(_ session: AgentSession, autoAttach: Bool) async {
         await loadHistoryIfNeeded(for: session)
         if session.isRunning {
-            if autoAttach {
+            if autoAttach && canControlSession(session) {
                 connectWebSocket(session)
+            } else if !canControlSession(session) {
+                disconnectWebSocket()
             }
         } else if connectedSessionID != nil {
             disconnectWebSocket()
@@ -2577,7 +2857,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func replaceSessionsIfChanged(with fresh: [AgentSession], projectID: String?) {
-        let nextFresh = fresh.map(sessionPreservingActiveApproval)
+        let nextFresh = fresh.map(sessionPreparedForStorage)
         let next = Self.replacingSessions(sessions, with: nextFresh, projectID: projectID)
         ingestSessionContexts(next)
         guard next != sessions else {
@@ -2664,7 +2944,7 @@ final class SessionStore: ObservableObject {
         guard !pageSessions.isEmpty else {
             return
         }
-        let pageSessions = pageSessions.map(sessionPreservingActiveApproval)
+        let pageSessions = pageSessions.map(sessionPreparedForStorage)
         ingestSessionContexts(pageSessions)
         var next = sessions
         var indexByID = sessionIndexByID
@@ -2712,6 +2992,106 @@ final class SessionStore: ObservableObject {
             historyPreviousCursorBySessionID.removeValue(forKey: sessionID)
             historyHasMoreBeforeBySessionID[sessionID] = false
         }
+    }
+
+    private func setSessionListProjection(
+        sessionID: SessionID,
+        preview rawPreview: String,
+        source: SessionListProjection.Source,
+        clientMessageID: ClientMessageID?
+    ) {
+        let preview = rawPreview
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !preview.isEmpty else {
+            return
+        }
+
+        let existingProjection = listProjectionBySessionID[sessionID]
+        let existingSession = sessionsByID[sessionID]
+        let projection = SessionListProjection(
+            preview: preview,
+            updatedAt: Date(),
+            baseRemoteUpdatedAt: existingProjection?.baseRemoteUpdatedAt ?? existingSession?.updatedAt,
+            basePreview: existingProjection?.basePreview ?? existingSession?.preview,
+            source: source,
+            clientMessageID: clientMessageID
+        )
+        listProjectionBySessionID[sessionID] = projection
+        updateSession(sessionID) { item in
+            item.preview = projection.preview
+            item.updatedAt = projection.updatedAt
+        }
+    }
+
+    private func clearSessionListProjection(sessionID: SessionID, clientMessageID: ClientMessageID?) {
+        guard let projection = listProjectionBySessionID[sessionID] else {
+            return
+        }
+        if let clientMessageID,
+           let projectionClientID = projection.clientMessageID,
+           projectionClientID != clientMessageID {
+            return
+        }
+        listProjectionBySessionID.removeValue(forKey: sessionID)
+        updateSession(sessionID) { item in
+            item.preview = projection.basePreview
+            item.updatedAt = projection.baseRemoteUpdatedAt ?? item.updatedAt
+        }
+    }
+
+    private func moveSessionListProjection(from sourceSessionID: SessionID, to targetSessionID: SessionID, clientMessageID: ClientMessageID?) {
+        guard sourceSessionID != targetSessionID,
+              let projection = listProjectionBySessionID[sourceSessionID]
+        else {
+            return
+        }
+        if let clientMessageID,
+           let projectionClientID = projection.clientMessageID,
+           projectionClientID != clientMessageID {
+            return
+        }
+        listProjectionBySessionID.removeValue(forKey: sourceSessionID)
+        let existing = sessionsByID[targetSessionID]
+        listProjectionBySessionID[targetSessionID] = SessionListProjection(
+            preview: projection.preview,
+            updatedAt: projection.updatedAt,
+            baseRemoteUpdatedAt: existing?.updatedAt,
+            basePreview: existing?.preview,
+            source: projection.source,
+            clientMessageID: projection.clientMessageID
+        )
+    }
+
+    private func sessionPreparedForStorage(_ incoming: AgentSession) -> AgentSession {
+        sessionApplyingListProjection(sessionPreservingActiveApproval(incoming))
+    }
+
+    private func sessionApplyingListProjection(_ incoming: AgentSession) -> AgentSession {
+        guard let projection = listProjectionBySessionID[incoming.id] else {
+            return incoming
+        }
+        if shouldClearListProjection(projection, remoteUpdatedAt: incoming.updatedAt) {
+            listProjectionBySessionID.removeValue(forKey: incoming.id)
+            return incoming
+        }
+        var projected = incoming
+        projected.preview = projection.preview
+        projected.updatedAt = projection.updatedAt
+        return projected
+    }
+
+    private func shouldClearListProjection(_ projection: SessionListProjection, remoteUpdatedAt: Date?) -> Bool {
+        guard let remoteUpdatedAt else {
+            return false
+        }
+        guard let baseRemoteUpdatedAt = projection.baseRemoteUpdatedAt else {
+            return true
+        }
+        return remoteUpdatedAt > baseRemoteUpdatedAt
     }
 
     private func optimisticSessionID(
@@ -2768,6 +3148,7 @@ final class SessionStore: ObservableObject {
         var next = sessions
         next.remove(at: index)
         sessions = next
+        clearRuntimeActivity(sessionID: id)
     }
 
     private func migrateForegroundActivity(from sourceSessionID: SessionID, to targetSessionID: SessionID) {
@@ -2779,6 +3160,15 @@ final class SessionStore: ObservableObject {
         foregroundActivityBySessionID[targetSessionID] = activity
         foregroundActivityClearTasks[targetSessionID]?.cancel()
         foregroundActivityClearTasks[targetSessionID] = foregroundActivityClearTasks.removeValue(forKey: sourceSessionID)
+    }
+
+    private func migrateRuntimeActivity(from sourceSessionID: SessionID, to targetSessionID: SessionID) {
+        guard sourceSessionID != targetSessionID,
+              let activity = runtimeActivityBySessionID[sourceSessionID] else {
+            return
+        }
+        runtimeActivityBySessionID.removeValue(forKey: sourceSessionID)
+        runtimeActivityBySessionID[targetSessionID] = activity
     }
 
     // 会话列表请求是按 project 并发的：用户快速切项目、刷新、展开加载更多时，
@@ -3043,6 +3433,10 @@ final class SessionStore: ObservableObject {
         if foregroundActivities != foregroundActivityBySessionID {
             foregroundActivityBySessionID = foregroundActivities
         }
+        let runtimeActivities = runtimeActivityBySessionID.filter { validSessionIDs.contains($0.key) }
+        if runtimeActivities != runtimeActivityBySessionID {
+            runtimeActivityBySessionID = runtimeActivities
+        }
     }
 
     private static func sortedSessions(_ items: [AgentSession]) -> [AgentSession] {
@@ -3105,7 +3499,11 @@ final class SessionStore: ObservableObject {
         return ids
     }
 
-    private func connectWebSocket(_ session: AgentSession, isReconnectAttempt: Bool = false) {
+    private func connectWebSocket(
+        _ session: AgentSession,
+        isReconnectAttempt: Bool = false,
+        replayBufferedEvents: Bool = true
+    ) {
         guard session.isRunning else {
             return
         }
@@ -3174,7 +3572,9 @@ final class SessionStore: ObservableObject {
                     return
                 }
                 if let clientMessageID {
-                    self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
+                    guard self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed) == true else {
+                        return
+                    }
                 }
                 self?.clearForegroundActivity(sessionID: session.id)
                 self?.setErrorMessage("发送失败：\(message)")
@@ -3189,6 +3589,15 @@ final class SessionStore: ObservableObject {
                 self?.setErrorMessage("审批发送失败：\(message)")
             }
         }
+        socket.onUserInputResponseFailure = { [weak self] requestID, message in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                self?.clearPendingUserInputResponse(sessionID: session.id, requestID: requestID)
+                self?.setErrorMessage("补充信息发送失败：\(message)")
+            }
+        }
         socket.onControlFailure = { [weak self] message in
             Task { @MainActor in
                 guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
@@ -3200,9 +3609,10 @@ final class SessionStore: ObservableObject {
         webSocket = socket
         connectedSessionID = session.id
         conversationStore.resetLiveTranscript(sessionID: session.id)
+        syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[session.id]?.cancel()
         runtimeEventFlushTasks[session.id] = nil
-        socket.connect(sessionID: session.id)
+        socket.connect(sessionID: session.id, replayBufferedEvents: replayBufferedEvents)
     }
 
     private func replayWatermark(for sessionID: SessionID) -> EventSequence? {
@@ -3255,6 +3665,7 @@ final class SessionStore: ObservableObject {
             }
             conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
             clearPendingApprovalDecisions(sessionID: sessionID)
+            clearPendingUserInputResponses(sessionID: sessionID)
             clearForegroundActivity(sessionID: sessionID)
             if canReconnect {
                 scheduleWebSocketReconnect(sessionID: sessionID, reason: message)
@@ -3305,6 +3716,7 @@ final class SessionStore: ObservableObject {
             conversationStore.markSendingUserMessagesFailed(sessionID: previousSessionID)
         }
         pendingApprovalDecisionIDsBySessionID.removeAll()
+        pendingUserInputResponseIDsBySessionID.removeAll()
         setWebSocketStatus(.disconnected)
     }
 
@@ -3447,6 +3859,7 @@ final class SessionStore: ObservableObject {
         if let metadata = metadata(for: event) {
             recordEventWatermark(metadata, fallbackSessionID: sessionID)
         }
+        recordRuntimeActivity(for: event, fallbackSessionID: sessionID)
         let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
         let output = await eventReducer.reduce(
             event,
@@ -3454,6 +3867,14 @@ final class SessionStore: ObservableObject {
             outputIdleClearDelay: foregroundOutputIdleClearDelay
         )
         applyEventReducerOutput(output)
+        if case .turnCompleted(let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let projectID = sessionsByID[id]?.projectID {
+                Task { [weak self] in
+                    await self?.refreshSessions(forProjectID: projectID)
+                }
+            }
+        }
         await scheduleRuntimeNotificationIfNeeded(runtimeNotification)
     }
 
@@ -3481,7 +3902,13 @@ final class SessionStore: ObservableObject {
             updateSession(id) { item in
                 item.status = status
             }
+            if !Self.isRunningStatus(status) {
+                clearRuntimeActivity(sessionID: id)
+            }
             contextStore.updateStatus(sessionID: id, status: status)
+        }
+        for mutation in output.activeTurnMutations {
+            applyActiveTurnMutation(mutation)
         }
         for (id, approval) in output.pendingApprovalUpdates {
             if approval == nil {
@@ -3489,6 +3916,14 @@ final class SessionStore: ObservableObject {
             }
             updateSession(id) { item in
                 item.pendingApproval = approval
+            }
+        }
+        for (id, userInput) in output.pendingUserInputUpdates {
+            if userInput == nil {
+                clearPendingUserInputResponses(sessionID: id)
+            }
+            updateSession(id) { item in
+                item.pendingUserInput = userInput
             }
         }
         for (context, fallbackSessionID) in output.contextUpdates {
@@ -3527,16 +3962,43 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    private func applyActiveTurnMutation(_ mutation: EventReducerActiveTurnMutation) {
+        switch mutation {
+        case .set(let sessionID, let turnID):
+            updateSession(sessionID) { item in
+                item.activeTurnID = turnID
+            }
+        case .clear(let sessionID, let completedTurnID):
+            updateSession(sessionID) { item in
+                // 完成事件可能延迟到达；带 turn id 时只清理对应的活跃回合，避免误伤随后开始的新回合。
+                guard completedTurnID == nil || item.activeTurnID == nil || item.activeTurnID == completedTurnID else {
+                    return
+                }
+                item.activeTurnID = nil
+            }
+        }
+    }
+
     private func applyMessageMutation(_ mutation: EventReducerMessageMutation) {
         switch mutation {
         case .assistantDelta(let delta, let metadata, let fallbackSessionID):
             conversationStore.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: fallbackSessionID)
         case .completed(let message, let metadata, let fallbackSessionID):
             conversationStore.completeMessage(message, metadata: metadata, fallbackSessionID: fallbackSessionID)
+            if message.role == .assistant {
+                setSessionListProjection(
+                    sessionID: metadata.sessionID ?? message.sessionID,
+                    preview: message.content,
+                    source: .localAssistant,
+                    clientMessageID: nil
+                )
+            }
         case .system(let text, let sessionID, let kind, let metadata):
             conversationStore.appendSystem(text, sessionID: sessionID, kind: kind, metadata: metadata)
         case .resolveLatestPendingApproval(let sessionID):
             conversationStore.resolveLatestPendingApproval(sessionID: sessionID)
+        case .resolveLatestPendingUserInput(let sessionID, let skipped):
+            conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: skipped)
         case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):
             conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID)
         }
@@ -3559,6 +4021,8 @@ final class SessionStore: ObservableObject {
              .diffUpdated(_, let metadata),
              .approvalRequest(_, let metadata),
              .approvalResolved(let metadata),
+             .userInputRequest(_, let metadata),
+             .userInputResolved(let metadata, _),
              .turnCompleted(let metadata),
              .warning(_, let metadata):
             return metadata
@@ -3575,6 +4039,15 @@ final class SessionStore: ObservableObject {
                 id: "approval:\(sessionID):\(request.id)",
                 sessionID: sessionID,
                 title: "等待审批",
+                body: "\(sessionDisplayTitle(sessionID: sessionID))：\(request.title)",
+                kind: .approval
+            )
+        case .userInputRequest(let request, let metadata):
+            let sessionID = metadata.sessionID ?? request.threadID
+            return SessionRuntimeNotification(
+                id: "user-input:\(sessionID):\(request.id)",
+                sessionID: sessionID,
+                title: "等待补充信息",
                 body: "\(sessionDisplayTitle(sessionID: sessionID))：\(request.title)",
                 kind: .approval
             )
@@ -3640,6 +4113,91 @@ final class SessionStore: ObservableObject {
         historySnapshotSeqBySessionID[sessionID] = seq
     }
 
+    private func recordRuntimeActivity(for event: AgentEvent, fallbackSessionID: SessionID) {
+        let now = Date()
+        switch event {
+        case .turnStarted(let metadata):
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            recordRuntimeActivity(sessionID: sessionID, turnStartedAt: metadata.createdAt ?? now, activityAt: now)
+        case .assistantDelta(_, let metadata),
+             .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
+             .logDelta(_, let metadata),
+             .diffUpdated(_, let metadata),
+             .approvalRequest(_, let metadata),
+             .approvalResolved(let metadata),
+             .userInputRequest(_, let metadata),
+             .userInputResolved(let metadata, _),
+             .warning(_, let metadata):
+            recordRuntimeActivity(sessionID: metadata.sessionID ?? fallbackSessionID, activityAt: now)
+        case .turnCompleted(let metadata):
+            clearRuntimeActivity(sessionID: metadata.sessionID ?? fallbackSessionID)
+        case .sessionStatus(let status, let metadata):
+            guard let sessionID = metadata.sessionID else {
+                return
+            }
+            if Self.isRunningStatus(status), runtimeActivityBySessionID[sessionID] != nil {
+                recordRuntimeActivity(sessionID: sessionID, activityAt: now)
+            } else if !Self.isRunningStatus(status) {
+                clearRuntimeActivity(sessionID: sessionID)
+            }
+        case .error:
+            clearRuntimeActivity(sessionID: fallbackSessionID)
+        case .session(let session):
+            syncRuntimeActivity(with: session)
+        case .sessionRow(let row, _):
+            syncRuntimeActivity(with: AgentSession(row: row))
+        case .sessionContext, .goalUpdated, .goalCleared, .unknown:
+            return
+        }
+    }
+
+    private func recordRuntimeActivity(
+        sessionID: SessionID,
+        turnStartedAt: Date? = nil,
+        activityAt: Date
+    ) {
+        let existing = runtimeActivityBySessionID[sessionID]
+        let resolvedStart = turnStartedAt ?? existing?.turnStartedAt ?? activityAt
+        let next = RuntimeActivitySnapshot(turnStartedAt: resolvedStart, lastActivityAt: activityAt)
+        guard existing != next else {
+            return
+        }
+        runtimeActivityBySessionID[sessionID] = next
+    }
+
+    private func syncRuntimeActivity(with session: AgentSession) {
+        guard session.isRunning else {
+            clearRuntimeActivity(sessionID: session.id)
+            return
+        }
+        guard session.activeTurnID != nil, runtimeActivityBySessionID[session.id] == nil else {
+            return
+        }
+        let activityAt = session.updatedAt ?? Date()
+        // 列表/快照只告诉我们“有活跃 turn”，不保证携带 turn 开始时间；
+        // 这里用最近更新时间兜底，让用户至少能看到当前连接是否持续有事件。
+        recordRuntimeActivity(sessionID: session.id, turnStartedAt: activityAt, activityAt: activityAt)
+    }
+
+    private func clearRuntimeActivity(sessionID: SessionID) {
+        guard runtimeActivityBySessionID[sessionID] != nil else {
+            return
+        }
+        runtimeActivityBySessionID.removeValue(forKey: sessionID)
+    }
+
+    private static func isRunningStatus(_ status: String?) -> Bool {
+        switch status {
+        case .some(SessionStatus.running.rawValue),
+             .some(SessionStatus.waitingForApproval.rawValue),
+             .some(SessionStatus.waitingForInput.rawValue):
+            return true
+        default:
+            return false
+        }
+    }
+
     private func isNoOpHistorySelection(_ session: AgentSession) -> Bool {
         selectedSessionID == session.id
             && selectedProjectID == session.projectID
@@ -3689,6 +4247,7 @@ final class SessionStore: ObservableObject {
     private func reloadRecentWorkspaces() {
         setRecentWorkspacesIfChanged(recentWorkspaceStore.load(endpoint: appStore.endpoint))
         reloadSessionListPreferences()
+        reloadSessionControlStates()
         reloadSessionReminders()
     }
 
@@ -3707,6 +4266,26 @@ final class SessionStore: ObservableObject {
             SessionListPreferences(pinnedSessionIDs: pinnedSessionIDs, archivedSessionIDs: archivedSessionIDs),
             endpoint: appStore.endpoint
         )
+    }
+
+    private func reloadSessionControlStates() {
+        let states = sessionControlStateStore.load(endpoint: appStore.endpoint)
+        guard sessionControlStateByID != states else {
+            return
+        }
+        sessionControlStateByID = states
+    }
+
+    private func saveSessionControlStates() {
+        sessionControlStateStore.save(sessionControlStateByID, endpoint: appStore.endpoint)
+    }
+
+    private func setSessionControlState(_ state: SessionControlState, sessionID: SessionID) {
+        guard sessionControlStateByID[sessionID] != state else {
+            return
+        }
+        sessionControlStateByID[sessionID] = state
+        saveSessionControlStates()
     }
 
     private func reloadSessionReminders() {
@@ -3966,7 +4545,10 @@ final class SessionStore: ObservableObject {
         initialHistoryLoadingSessionIDs = []
         loadingEarlierHistorySessionIDs = []
         lastSeenEventSeqBySessionID = [:]
+        listProjectionBySessionID = [:]
+        reloadSessionControlStates()
         foregroundActivityBySessionID = [:]
+        runtimeActivityBySessionID = [:]
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
         runtimeEventFlushTasks = [:]
         foregroundActivityClearTasks.values.forEach { $0.cancel() }
@@ -3975,7 +4557,8 @@ final class SessionStore: ObservableObject {
     }
 
     private func upsert(_ session: AgentSession) {
-        let session = sessionPreservingActiveApproval(alignSessionToKnownWorkspace(session))
+        let session = sessionPreparedForStorage(alignSessionToKnownWorkspace(session))
+        syncRuntimeActivity(with: session)
         contextStore.upsert(from: session)
         if let index = sessionIndexByID[session.id] {
             guard sessions[index] != session else {
@@ -4070,12 +4653,40 @@ final class SessionStore: ObservableObject {
         pendingApprovalDecisionIDsBySessionID[sessionID]?.contains(approval.id) == true
     }
 
-    private static func normalizedSession(_ session: AgentSession) -> AgentSession {
-        guard session.status != "waiting_for_approval", session.pendingApproval != nil else {
-            return session
+    private func markUserInputResponsePending(_ requestID: String, sessionID: SessionID) {
+        var ids = pendingUserInputResponseIDsBySessionID[sessionID] ?? []
+        ids.insert(requestID)
+        pendingUserInputResponseIDsBySessionID[sessionID] = ids
+    }
+
+    private func clearPendingUserInputResponse(sessionID: SessionID, requestID: String) {
+        guard var ids = pendingUserInputResponseIDsBySessionID[sessionID] else {
+            return
         }
+        ids.remove(requestID)
+        if ids.isEmpty {
+            pendingUserInputResponseIDsBySessionID.removeValue(forKey: sessionID)
+        } else {
+            pendingUserInputResponseIDsBySessionID[sessionID] = ids
+        }
+    }
+
+    private func clearPendingUserInputResponses(sessionID: SessionID) {
+        pendingUserInputResponseIDsBySessionID.removeValue(forKey: sessionID)
+    }
+
+    private func isUserInputResponsePending(_ request: AgentUserInputRequest, sessionID: SessionID) -> Bool {
+        pendingUserInputResponseIDsBySessionID[sessionID]?.contains(request.id) == true
+    }
+
+    private static func normalizedSession(_ session: AgentSession) -> AgentSession {
         var next = session
-        next.pendingApproval = nil
+        if next.status != "waiting_for_approval" {
+            next.pendingApproval = nil
+        }
+        if next.status != "waiting_for_input" {
+            next.pendingUserInput = nil
+        }
         return next
     }
 
@@ -4085,20 +4696,79 @@ final class SessionStore: ObservableObject {
 
     private func sessionPreservingActiveApproval(_ incoming: AgentSession, existing: AgentSession?) -> AgentSession {
         var next = Self.normalizedSession(incoming)
-        if next.goal == nil {
-            next.goal = existing?.goal ?? contextStore.context(for: next.id)?.goal
-        }
-        guard next.pendingApproval == nil,
-              let existingApproval = existing?.pendingApproval,
-              Self.canPreservePendingApproval(whileStatusIs: next.status)
-        else {
+        // goal 是 thread 级元数据；列表刷新或上下文回填时必须按当前 thread 身份校验，
+        // 否则同项目内切换对话会短暂显示另一个 thread 的目标状态。
+        next.goal = Self.matchingThreadGoal(
+            for: next,
+            existingGoal: existing?.goal,
+            context: contextStore.context(for: next.id)
+        )
+        if next.pendingApproval == nil,
+           let existingApproval = existing?.pendingApproval,
+           Self.canPreservePendingApproval(whileStatusIs: next.status) {
+            // 列表/历史刷新拿到的 session 可能只是通用 running 快照；本地已有明确 approval_request 时，
+            // 以实时事件为准保留审批入口，直到 approval_resolved/turn_completed/error 显式清理。
+            next.status = "waiting_for_approval"
+            next.pendingApproval = existingApproval
             return next
         }
-        // 列表/历史刷新拿到的 session 可能只是通用 running 快照；本地已有明确 approval_request 时，
-        // 以实时事件为准保留审批入口，直到 approval_resolved/turn_completed/error 显式清理。
-        next.status = "waiting_for_approval"
-        next.pendingApproval = existingApproval
+        if next.pendingUserInput == nil,
+           let existingInput = existing?.pendingUserInput,
+           Self.canPreservePendingApproval(whileStatusIs: next.status) {
+            next.status = "waiting_for_input"
+            next.pendingUserInput = existingInput
+        }
         return next
+    }
+
+    private static func matchingThreadGoal(
+        for session: AgentSession,
+        existingGoal: ThreadGoal? = nil,
+        context: SessionContextSnapshot?
+    ) -> ThreadGoal? {
+        if let goal = session.goal, threadGoal(goal, belongsTo: session, context: context) {
+            return goal
+        }
+        if let goal = existingGoal, threadGoal(goal, belongsTo: session, context: context) {
+            return goal
+        }
+        if let goal = context?.goal, threadGoal(goal, belongsTo: session, context: context) {
+            return goal
+        }
+        return nil
+    }
+
+    private static func threadGoal(
+        _ goal: ThreadGoal,
+        belongsTo session: AgentSession,
+        context: SessionContextSnapshot?
+    ) -> Bool {
+        guard let goalThreadID = nonEmptyThreadIdentity(goal.threadID) else {
+            return false
+        }
+        return threadIdentityCandidates(for: session, context: context).contains(goalThreadID)
+    }
+
+    private static func threadIdentityCandidates(
+        for session: AgentSession,
+        context: SessionContextSnapshot?
+    ) -> Set<SessionID> {
+        var candidates: Set<SessionID> = []
+        for value in [session.id, session.resumeID, context?.threadID] {
+            if let identity = nonEmptyThreadIdentity(value) {
+                candidates.insert(identity)
+            }
+        }
+        return candidates
+    }
+
+    private static func nonEmptyThreadIdentity(_ value: String?) -> SessionID? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func canPreservePendingApproval(whileStatusIs status: String) -> Bool {

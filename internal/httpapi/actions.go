@@ -25,8 +25,9 @@ type commandActionListRequest struct {
 }
 
 type commandActionRunRequest struct {
-	Path string `json:"path"`
-	ID   string `json:"id"`
+	Path      string `json:"path"`
+	ID        string `json:"id"`
+	Confirmed bool   `json:"confirmed,omitempty"`
 }
 
 type commandActionDescriptor struct {
@@ -121,6 +122,10 @@ func (r *Router) commandActionRunHandler(w http.ResponseWriter, req *http.Reques
 	action, ok := r.commandActionByID(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "action 不存在")
+		return
+	}
+	if action.RequiresConfirmation && !payload.Confirmed {
+		writeError(w, http.StatusForbidden, "action 需要确认后才能执行")
 		return
 	}
 	realPath, scope, ok := r.validatedActionBaseDirectory(w, payload.Path)

@@ -521,10 +521,69 @@ func (r *Router) gitCommit(ctx context.Context, realPath string, message string)
 	}
 
 	// commit 只提交 index 中已有内容；用户必须先显式 stage，避免把工作区改动一股脑写进历史。
+	if err := validateGitCommitScope(ctx, realPath); err != nil {
+		return gitStatusResponse{}, err
+	}
 	if _, _, err := runGitCommand(ctx, realPath, 32*1024, "commit", "-m", message); err != nil {
 		return gitStatusResponse{}, err
 	}
 	return r.gitStatus(ctx, realPath)
+}
+
+func validateGitCommitScope(ctx context.Context, realPath string) error {
+	repoRootRaw, _, err := runGitReadOnly(ctx, realPath, 16*1024, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return err
+	}
+	repoRoot, err := filepath.EvalSymlinks(strings.TrimSpace(repoRootRaw))
+	if err != nil {
+		return fmt.Errorf("无法解析 Git 仓库根目录：%w", err)
+	}
+	scopeRoot, err := filepath.EvalSymlinks(realPath)
+	if err != nil {
+		return fmt.Errorf("无法解析当前工作区目录：%w", err)
+	}
+	scopeRel, err := filepath.Rel(repoRoot, scopeRoot)
+	if err != nil || scopeRel == ".." || strings.HasPrefix(scopeRel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("当前工作区不在 Git 仓库内")
+	}
+	stagedRaw, _, err := runGitReadOnly(ctx, realPath, gitStatusOutputLimit, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return err
+	}
+	stagedFiles := parseGitNULPaths(stagedRaw)
+	if len(stagedFiles) == 0 {
+		return fmt.Errorf("没有已暂存改动可提交")
+	}
+	if scopeRel == "." {
+		return nil
+	}
+	scopePrefix := filepath.ToSlash(filepath.Clean(scopeRel))
+	for _, path := range stagedFiles {
+		clean := filepath.ToSlash(filepath.Clean(path))
+		if clean == scopePrefix || strings.HasPrefix(clean, scopePrefix+"/") {
+			continue
+		}
+		// git commit 默认提交整个 index；从子目录或工作区视角提交前必须挡住 scope 外的暂存内容。
+		return fmt.Errorf("已暂存文件 %s 不在当前工作区范围内，请先取消暂存或切到仓库根目录提交", path)
+	}
+	return nil
+}
+
+func parseGitNULPaths(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, "\x00")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		path := strings.TrimSpace(part)
+		if path == "" {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 func (r *Router) gitPush(ctx context.Context, realPath string, remote string) (gitPushResponse, error) {

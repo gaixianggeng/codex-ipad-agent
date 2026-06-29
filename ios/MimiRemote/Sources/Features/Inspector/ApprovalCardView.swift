@@ -51,7 +51,7 @@ struct ApprovalCardView: View {
 
     private func tint(for message: ConversationMessage) -> Color {
         if isApproved(message) {
-            return .green
+            return themeStore.tokens(for: colorScheme).success
         }
         if isDeclined(message) {
             return .red

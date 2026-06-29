@@ -558,11 +558,17 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 
 	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		log.Printf("agentd listening on http://%s", cfg.Listen)
 		errCh <- server.Serve(listener)
 	}()
+	if appServerWSProcess != nil {
+		go func() {
+			<-appServerWSProcess.Done()
+			errCh <- managedAppServerExitedError(appServerWSProcess)
+		}()
+	}
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
@@ -583,6 +589,22 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	}
 }
 
+func managedAppServerExitedError(process *appserver.ManagedWebSocketProcess) error {
+	if process == nil {
+		return fmt.Errorf("托管 codex app-server WebSocket 已退出")
+	}
+	exitErr := process.ExitError()
+	message := "托管 codex app-server WebSocket 已退出"
+	if exitErr != nil {
+		message += "：" + exitErr.Error()
+	}
+	diag := process.Diagnostics()
+	if len(diag.StderrTail) > 0 {
+		message += "\n最近 stderr：\n  " + strings.Join(diag.StderrTail, "\n  ")
+	}
+	return fmt.Errorf("%s", message)
+}
+
 func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess) {
 	// HTTP 端口绑定失败或收到退出信号时，都必须回收托管子进程，避免孤儿进程继续占用 app-server 端口。
 	manager.Shutdown()
@@ -594,6 +616,9 @@ func shutdownServeResources(manager *session.Manager, appServerWSProcess *appser
 }
 
 func startManagedAppServerWebSocket(cfg config.Config) (*appserver.ManagedWebSocketProcess, error) {
+	if strings.TrimSpace(cfg.AppServer.WSTokenFile) == "" {
+		return nil, fmt.Errorf("app_server.ws_token_file 未配置；请运行 agentd setup --force 生成独立 app-server upstream token")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return appserver.StartManagedWebSocket(ctx, appserver.ManagedWebSocketOptions{
@@ -757,7 +782,7 @@ func printSetupResult(w io.Writer, result agentsetup.Result) {
 	if result.AppServerTokenFile != "" {
 		fmt.Fprintf(w, "app-server token file：%s\n", result.AppServerTokenFile)
 	}
-	printConnectionQRCode(w, result.ConnectURL)
+	printConnectionQRCode(w, result.PairURL)
 	printWarnings(w, result.Warnings)
 	fmt.Fprintln(w, "\n下一步：")
 	fmt.Fprintln(w, "  1. agentd doctor --check-port")
@@ -774,14 +799,14 @@ func printPairResult(w io.Writer, result agentsetup.Result) {
 	if result.PairExpiresAt != "" {
 		fmt.Fprintf(w, "二维码有效期至：%s\n", result.PairExpiresAt)
 	}
-	printConnectionQRCode(w, result.ConnectURL)
+	printConnectionQRCode(w, result.PairURL)
 	printWarnings(w, result.Warnings)
 }
 
 func printServeConnection(w io.Writer, result agentsetup.Result) {
 	printWarnings(w, result.Warnings)
 	fmt.Fprintln(w, "\n用 iPad 扫这个二维码连接这台 Mac：")
-	printConnectionQRCode(w, result.ConnectURL)
+	printConnectionQRCode(w, result.PairURL)
 	if result.PairExpiresAt != "" {
 		fmt.Fprintf(w, "二维码 10 分钟内有效，有效期至：%s\n", result.PairExpiresAt)
 	}
@@ -815,7 +840,7 @@ func printConnectionQRCode(w io.Writer, connectURL string) {
 	if strings.TrimSpace(connectURL) == "" {
 		return
 	}
-	// 二维码只承载外侧 agentd 访问凭证，不包含本机 app-server upstream token。
+	// 二维码只承载短期配对票据，不包含长期 agentd token 或本机 app-server upstream token。
 	code, err := qrcode.New(connectURL, qrcode.Medium)
 	if err != nil {
 		fmt.Fprintf(w, "二维码生成失败：%v\n", err)

@@ -42,7 +42,7 @@ Codex core / 本机凭证 / 项目目录
 - `agentd` 运行在开发机本地，Codex 凭证不离开开发机。
 - iPhone / iPad 原生 App 从 `agentd` 获取项目 allowlist，只能使用配置中的项目路径。
 - `browse_roots`（默认用户 Home，不开放 `/`）只扩大“目录浏览 + 打开 workspace”的范围，不参与项目发现；browse workspace 的会话被绑定到打开时的具体目录（canonical 路径），`turn/start` 切到同根下其他目录会被 gateway 拒绝。
-- direct app-server 请求必须使用远程安全默认值：`approvalPolicy=on-request`、`workspace-write` sandbox、默认禁网。
+- direct app-server 请求必须使用远程默认值：`model=gpt-5.5`、`effort=xhigh`、`approvalPolicy=on-request`、`danger-full-access` sandbox、默认禁网。
 - API、control-plane 和 gateway 都需要 Bearer Token。
 - 默认不接受 URL query token，避免 token 出现在浏览器历史、日志或 Referer 里。
 - MVP 不建议公网暴露，只建议本机或 Tailscale 使用。
@@ -90,11 +90,11 @@ agentd up
 Endpoint：http://100.x.x.x:8787
 Token：<随机 token>
 连接链接：mimiremote://connect?endpoint=...&token=...
-配对链接：mimiremote://pair?endpoint=...&token=...
+配对链接：mimiremote://pair?endpoint=...&issued_at=...&expires_at=...&pair_sig=...
 二维码有效期至：<UTC 时间>
 ```
 
-iPad App 首次启动后优先点“扫描 Mac 上的配对二维码”，扫描二维码会自动填入 Endpoint/Token 并测试连接；测试成功后点击“保存并加载”。二维码和连接链接只包含 iPad 访问 `agentd` 的外侧 Token，不包含本机 app-server upstream token。二维码过期后重新运行 `agentd pair` 刷新；扫码不可用时再展开“高级手动连接”输入 Endpoint/Token。
+iPad App 首次启动后优先点“扫描 Mac 上的配对二维码”，扫描二维码会先用短期签名票据向 Mac 兑换 Endpoint/Token，再自动测试连接；测试成功后点击“保存并加载”。二维码和配对链接不包含长期 `agentd` Token，也不包含本机 app-server upstream token；手动连接用的 Token 和 `connect` 链接仍作为扫码不可用时的 fallback。二维码过期后重新运行 `agentd pair` 刷新；扫码不可用时再展开“高级手动连接”输入 Endpoint/Token。
 
 常用命令：
 
@@ -609,7 +609,7 @@ go run github.com/goreleaser/goreleaser/v2@v2.9.0 release --snapshot --clean --s
 - direct 模式下，`agentd` 只做 app-server 启动、鉴权、安全校验和转发，不做业务协议转换。
 - direct gateway 到 app-server upstream 使用独立 capability token file，不暴露给 iPad。
 - 审批请求默认应 fail closed：超时、断线、未知类型都拒绝。
-- 不允许移动端启用 `dangerFullAccess` 或 `approvalPolicy=never`。
+- 移动端默认使用用户批准下的 `dangerFullAccess`；仍不允许 `approvalPolicy=never`，网络访问默认关闭。
 - 结构化 runtime 展示 token usage / rate limit，便于控制成本和排查配额。
 
 当前 MVP 限制：

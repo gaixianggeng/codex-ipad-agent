@@ -741,6 +741,45 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(composerState.turnOptions.networkAccess)
     }
 
+    func testComposerCanInitializeWithGlobalDefaultPermissionMode() {
+        let composerState = ComposerState(defaultPermissionMode: .requestApproval)
+
+        XCTAssertEqual(composerState.permissionMode, .requestApproval)
+        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .onRequest)
+        XCTAssertEqual(composerState.turnOptions.approvalsReviewer, "user")
+        XCTAssertEqual(composerState.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertFalse(composerState.turnOptions.networkAccess)
+        XCTAssertEqual(ComposerPermissionMode.stored("missing"), .fullAccess)
+    }
+
+    func testComposerDefaultsToFullAccessWithApproval() {
+        let composerState = ComposerState()
+
+        XCTAssertEqual(composerState.turnOptions.model, "gpt-5.5")
+        XCTAssertEqual(composerState.turnOptions.reasoningEffort, .xhigh)
+        XCTAssertEqual(composerState.permissionMode, .fullAccess)
+        XCTAssertEqual(composerState.turnOptions.approvalPolicy, .onRequest)
+        XCTAssertEqual(composerState.turnOptions.approvalsReviewer, "user")
+        XCTAssertEqual(composerState.turnOptions.sandboxMode, .dangerFullAccess)
+        XCTAssertFalse(composerState.turnOptions.networkAccess)
+    }
+
+    func testComposerStateResetsTransientSendModeForSessionSwitch() {
+        var composerState = ComposerState()
+
+        composerState.toggleGoalMode()
+        XCTAssertTrue(composerState.isGoalModeSelected)
+        composerState.resetTransientSendMode()
+        XCTAssertFalse(composerState.isGoalModeSelected)
+        XCTAssertEqual(composerState.sendMode, .standard)
+
+        composerState.togglePlanMode()
+        XCTAssertTrue(composerState.isPlanModeSelected)
+        composerState.resetTransientSendMode()
+        XCTAssertFalse(composerState.isPlanModeSelected)
+        XCTAssertEqual(composerState.sendMode, .standard)
+    }
+
     func testComposerStateCanSubmitWithStandardModeSanitizedOptions() throws {
         var composerState = ComposerState()
         composerState.draft = "用标准模式提交"
@@ -887,6 +926,107 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(VoiceInputLanguage.chineseSimplified.localeCandidates.first?.identifier, "zh_CN")
         XCTAssertNil(VoiceInputLanguage.automatic.transcriptionLanguageCode)
         XCTAssertEqual(VoiceInputLanguage.chineseSimplified.transcriptionLanguageCode, "zh")
+    }
+
+    func testTextSelectionPolicyMovesExternalAppendCaretToEnd() {
+        let first = TextSelectionPolicy.rangeAfterExternalTextSync(
+            previousText: "",
+            nextText: "第一段",
+            previousRange: NSRange(location: 0, length: 0)
+        )
+        XCTAssertEqual(first.location, ("第一段" as NSString).length)
+        XCTAssertEqual(first.length, 0)
+
+        let previous = "第一段"
+        let next = "第一段\n第二段"
+        let second = TextSelectionPolicy.rangeAfterExternalTextSync(
+            previousText: previous,
+            nextText: next,
+            previousRange: NSRange(location: (previous as NSString).length, length: 0)
+        )
+        XCTAssertEqual(second.location, (next as NSString).length)
+        XCTAssertEqual(second.length, 0)
+    }
+
+    func testTextSelectionPolicyPreservesMiddleCaretForEndpointEditing() {
+        let endpoint = "http://192.168.1.20:8787"
+        let range = TextSelectionPolicy.rangeAfterExternalTextSync(
+            previousText: endpoint,
+            nextText: endpoint,
+            previousRange: NSRange(location: 12, length: 0)
+        )
+
+        XCTAssertEqual(range.location, 12)
+        XCTAssertEqual(range.length, 0)
+    }
+
+    func testVoiceWaveformLevelMappingBoostsQuietSpeechWithoutAnimatingSilence() {
+        XCTAssertEqual(VoiceWaveformLevelMapping.visualLevel(for: 0), 0, accuracy: 0.001)
+        XCTAssertEqual(VoiceWaveformLevelMapping.visualLevel(for: 0.02), 0, accuracy: 0.001)
+
+        let quiet = VoiceWaveformLevelMapping.visualLevel(for: 0.10)
+        let normal = VoiceWaveformLevelMapping.visualLevel(for: 0.35)
+        let loud = VoiceWaveformLevelMapping.visualLevel(for: 0.75)
+
+        XCTAssertGreaterThan(quiet, 0.30)
+        XCTAssertGreaterThan(normal, quiet)
+        XCTAssertGreaterThan(normal - quiet, 0.20)
+        XCTAssertGreaterThan(loud, 0.85)
+        XCTAssertLessThanOrEqual(VoiceWaveformLevelMapping.visualLevel(for: 2), 1)
+    }
+
+    func testVoiceWaveformSampleShapeUsesCurrentLevelWithoutScrollingHistory() {
+        let silence = VoiceWaveformSampleShape.samples(for: 0.01, count: 9)
+        XCTAssertEqual(silence, Array(repeating: 0, count: 9))
+
+        let first = VoiceWaveformSampleShape.samples(for: 0.45, count: 9)
+        let second = VoiceWaveformSampleShape.samples(for: 0.45, count: 9)
+
+        XCTAssertEqual(first, second)
+        XCTAssertGreaterThan(first[4], first[0])
+        XCTAssertGreaterThan(first[4], first[8])
+        XCTAssertEqual(first[0], first[8], accuracy: 0.001)
+        XCTAssertEqual(first[1], first[7], accuracy: 0.001)
+    }
+
+    func testRuntimeActivityDisplayTiersExposeLastEventEvidence() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let snapshot = RuntimeActivitySnapshot(
+            turnStartedAt: startedAt,
+            lastActivityAt: startedAt.addingTimeInterval(70)
+        )
+
+        let fresh = RuntimeActivityDisplay.make(
+            snapshot: snapshot,
+            webSocketStatus: .connected,
+            now: startedAt.addingTimeInterval(80)
+        )
+        XCTAssertEqual(fresh?.tone, .active)
+        XCTAssertEqual(fresh?.detailText, "运行 01:20 · 最后活动 10 秒前")
+
+        let waiting = RuntimeActivityDisplay.make(
+            snapshot: snapshot,
+            webSocketStatus: .connected,
+            now: startedAt.addingTimeInterval(140)
+        )
+        XCTAssertEqual(waiting?.tone, .neutral)
+        XCTAssertTrue(waiting?.detailText.contains("等待输出") == true)
+
+        let stale = RuntimeActivityDisplay.make(
+            snapshot: snapshot,
+            webSocketStatus: .connected,
+            now: startedAt.addingTimeInterval(180)
+        )
+        XCTAssertEqual(stale?.tone, .warning)
+        XCTAssertTrue(stale?.detailText.contains("连接正常") == true)
+
+        let disconnected = RuntimeActivityDisplay.make(
+            snapshot: snapshot,
+            webSocketStatus: .disconnected,
+            now: startedAt.addingTimeInterval(80)
+        )
+        XCTAssertEqual(disconnected?.tone, .warning)
+        XCTAssertTrue(disconnected?.detailText.contains("连接断开") == true)
     }
 
     func testHistoryMergeDeduplicatesLocalEchoByRoleAndContent() {
@@ -1965,6 +2105,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.content, "帮我跑测试")
         XCTAssertEqual(messages.first?.sendStatus, .confirmed)
         XCTAssertEqual(messages.first?.revision, 1)
+        let confirmedMessageID = try XCTUnwrap(messages.first?.id)
 
         let replay = try JSONDecoder().decode(
             AgentMessage.self,
@@ -1985,6 +2126,24 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(replayedMessages.count, 1)
         XCTAssertEqual(replayedMessages.first?.stableID, "client:\(clientMessageID)")
         XCTAssertEqual(replayedMessages.first?.revision, 2)
+        XCTAssertEqual(replayedMessages.first?.id, confirmedMessageID)
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "client:\(clientMessageID)",
+                role: "user",
+                content: "帮我跑测试",
+                createdAt: Date(timeIntervalSince1970: 2),
+                clientMessageID: clientMessageID,
+                revision: 2,
+                sendStatus: .confirmed
+            )
+        ], sessionID: sessionID)
+
+        let hydratedMessages = store.messages(for: sessionID)
+        XCTAssertEqual(hydratedMessages.count, 1)
+        XCTAssertEqual(hydratedMessages.first?.stableID, "client:\(clientMessageID)")
+        XCTAssertEqual(hydratedMessages.first?.id, confirmedMessageID)
     }
 
     func testStructuredEventsDecodeFallbackPayloadsAndApprovalContext() throws {
@@ -2552,9 +2711,130 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(store.selectedSessionID, running.id)
         XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertTrue(store.isSelectedSessionObserving)
+        XCTAssertTrue(sockets.isEmpty)
+        XCTAssertEqual(store.webSocketStatus, .disconnected)
+    }
+
+    func testSelectingRunningSessionRefreshesHistoryAndSuppressesBufferedMessageReplay() async throws {
+        let project = makeProject(id: "proj_live_resume")
+        let running = makeSession(id: "sess_live_resume", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let refreshedHistory = [
+            CodexHistoryMessage(
+                id: "live-user",
+                role: "user",
+                content: "开始长任务",
+                createdAt: Date(timeIntervalSince1970: 10)
+            ),
+            CodexHistoryMessage(
+                id: "live-assistant",
+                role: "assistant",
+                content: "离开期间已经完成的最新回答",
+                createdAt: Date(timeIntervalSince1970: 20),
+                updatedAt: Date(timeIntervalSince1970: 30),
+                turnID: "turn-live",
+                itemID: "assistant-live",
+                sendStatus: .confirmed
+            )
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [running],
+            historyPages: [running.id: HistoryMessagesPage(messages: refreshedHistory)]
+        )
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory([
+            CodexHistoryMessage(
+                id: "stale-assistant",
+                role: "assistant",
+                content: "旧回答",
+                createdAt: Date(timeIntervalSince1970: 1)
+            )
+        ], sessionID: running.id)
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.takeOverSession(running)
+        await store.selectSession(running)
+
+        XCTAssertEqual(client.requestedMessageSessionIDs, [running.id])
+        XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(sockets.count, 1)
-        XCTAssertEqual(sockets.first?.connectedSessionIDs.first, running.id)
-        try await waitForWebSocketStatus(.connecting, store: store)
+        XCTAssertEqual(sockets[0].replayBufferedEventsByConnect, [false])
+        XCTAssertEqual(conversationStore.messages(for: running.id).suffix(refreshedHistory.count).map(\.content), refreshedHistory.map(\.content))
+    }
+
+    func testSessionStoreSendsUserInputAnswersThroughExistingSocket() async throws {
+        let project = makeProject(id: "proj_user_input")
+        let request = AgentUserInputRequest(
+            id: "input-1",
+            threadID: "sess_user_input",
+            turnID: "turn-1",
+            itemID: "input-1",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "scope",
+                    header: "范围",
+                    question: "先做哪一部分？",
+                    isOther: true,
+                    isSecret: false,
+                    options: [AgentUserInputOption(label: "后端", description: "先落 API")]
+                )
+            ]
+        )
+        let running = AgentSession(
+            id: request.threadID,
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "等待引导",
+            status: "waiting_for_input",
+            source: "codex",
+            resumeID: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            pendingUserInput: request
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        for _ in 0..<50 where sockets.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(sockets.count, 1)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        store.respondToUserInput(request, answers: ["scope": ["后端", "只做最小闭环"]])
+
+        XCTAssertEqual(sockets[0].sentUserInputResponses.count, 1)
+        XCTAssertEqual(sockets[0].sentUserInputResponses.first?.requestID, "input-1")
+        XCTAssertEqual(sockets[0].sentUserInputResponses.first?.answers["scope"], ["后端", "只做最小闭环"])
+        XCTAssertTrue(store.isUserInputResponsePending(request))
     }
 
     func testSessionStoreReturnToListDoesNotPublishWhenAlreadyCleared() {
@@ -3061,7 +3341,8 @@ final class ConversationDataFlowTests: XCTestCase {
             command: "go",
             args: ["test", "./..."],
             workingDir: session.dir,
-            timeoutSeconds: 20
+            timeoutSeconds: 20,
+            requiresConfirmation: true
         )
         let result = CommandActionRunResponse(
             id: action.id,
@@ -3097,7 +3378,7 @@ final class ConversationDataFlowTests: XCTestCase {
         await store.runSelectedCommandAction(action)
 
         XCTAssertEqual(client.requestedCommandActionPaths, [session.dir])
-        XCTAssertEqual(client.requestedCommandActionRuns, [RequestedCommandActionRun(path: session.dir, id: action.id)])
+        XCTAssertEqual(client.requestedCommandActionRuns, [RequestedCommandActionRun(path: session.dir, id: action.id, confirmed: true)])
         XCTAssertEqual(store.selectedCommandActions, [action])
         XCTAssertEqual(store.selectedCommandActionResult, result)
         XCTAssertEqual(store.selectedCommandActionHistory, [result])
@@ -3181,7 +3462,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
         await store.runSelectedCommandAction(secondAction)
 
-        XCTAssertEqual(client.requestedCommandActionRuns, [RequestedCommandActionRun(path: session.dir, id: firstAction.id)])
+        XCTAssertEqual(client.requestedCommandActionRuns, [RequestedCommandActionRun(path: session.dir, id: firstAction.id, confirmed: false)])
         XCTAssertEqual(store.selectedQueuedCommandActionIDs, [secondAction.id])
 
         client.resolveRun(at: 0)
@@ -3199,8 +3480,8 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(
             client.requestedCommandActionRuns,
             [
-                RequestedCommandActionRun(path: session.dir, id: firstAction.id),
-                RequestedCommandActionRun(path: session.dir, id: secondAction.id)
+                RequestedCommandActionRun(path: session.dir, id: firstAction.id, confirmed: false),
+                RequestedCommandActionRun(path: session.dir, id: secondAction.id, confirmed: false)
             ]
         )
         XCTAssertEqual(store.selectedCommandActionHistory, [secondResult, firstResult])
@@ -4111,6 +4392,382 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [running.id, history.id])
     }
 
+    func testLocalSendUpdatesSessionPreviewAfterRemoteMacPreview() async throws {
+        let project = makeProject(id: "proj_projection_send")
+        let remoteUpdatedAt = Date(timeIntervalSince1970: 20)
+        let running = makeSession(
+            id: "sess_projection_send",
+            projectID: project.id,
+            title: "混合端会话",
+            status: "running",
+            source: "codex",
+            preview: "Mac 端刚回复的摘要",
+            updatedAt: remoteUpdatedAt
+        )
+        let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let didSend = await store.sendPrompt("iPad 继续下一步")
+        XCTAssertTrue(didSend)
+
+        XCTAssertEqual(store.selectedSession?.preview, "iPad 继续下一步")
+        XCTAssertEqual(store.sessions(forProjectID: project.id).first?.preview, "iPad 继续下一步")
+    }
+
+    func testStaleRemoteSnapshotDoesNotOverwriteLocalProjection() async throws {
+        let project = makeProject(id: "proj_projection_stale")
+        let remoteUpdatedAt = Date(timeIntervalSince1970: 20)
+        let running = makeSession(
+            id: "sess_projection_stale",
+            projectID: project.id,
+            title: "混合端会话",
+            status: "running",
+            source: "codex",
+            preview: "Mac 端旧摘要",
+            updatedAt: remoteUpdatedAt
+        )
+        let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let didSend = await store.sendPrompt("iPad 新输入")
+        XCTAssertTrue(didSend)
+
+        client.page = SessionsPage(sessions: [
+            makeSession(
+                id: running.id,
+                projectID: project.id,
+                title: running.title,
+                status: "running",
+                source: running.source,
+                preview: "Mac 端旧摘要",
+                updatedAt: remoteUpdatedAt
+            )
+        ])
+        await store.refreshSelectedProjectSessions()
+
+        XCTAssertEqual(store.selectedSession?.preview, "iPad 新输入")
+    }
+
+    func testFreshRemoteSnapshotClearsLocalProjection() async throws {
+        let project = makeProject(id: "proj_projection_fresh")
+        let remoteUpdatedAt = Date(timeIntervalSince1970: 20)
+        let running = makeSession(
+            id: "sess_projection_fresh",
+            projectID: project.id,
+            title: "混合端会话",
+            status: "running",
+            source: "codex",
+            preview: "Mac 端旧摘要",
+            updatedAt: remoteUpdatedAt
+        )
+        let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let didSend = await store.sendPrompt("iPad 新输入")
+        XCTAssertTrue(didSend)
+
+        client.page = SessionsPage(sessions: [
+            makeSession(
+                id: running.id,
+                projectID: project.id,
+                title: running.title,
+                status: "running",
+                source: running.source,
+                preview: "后端已经追上的摘要",
+                updatedAt: Date(timeIntervalSince1970: 21)
+            )
+        ])
+        await store.refreshSelectedProjectSessions()
+
+        for _ in 0..<80 where store.selectedSession?.preview != "后端已经追上的摘要" {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(store.selectedSession?.preview, "后端已经追上的摘要")
+    }
+
+    func testFailedSocketSendRevertsLocalProjection() async throws {
+        let project = makeProject(id: "proj_projection_fail")
+        let running = makeSession(
+            id: "sess_projection_fail",
+            projectID: project.id,
+            title: "失败回滚",
+            status: "running",
+            source: "codex",
+            preview: "远端摘要",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                socket.sendTurnResult = false
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let didSend = await store.sendPrompt("会失败的新输入")
+        XCTAssertFalse(didSend)
+        XCTAssertEqual(store.selectedSession?.preview, "远端摘要")
+    }
+
+    func testAssistantFinalUpdatesSessionPreview() async throws {
+        let project = makeProject(id: "proj_projection_assistant")
+        let running = makeSession(
+            id: "sess_projection_assistant",
+            projectID: project.id,
+            title: "助手摘要",
+            status: "running",
+            source: "codex",
+            preview: "旧摘要"
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        sockets[0].emitEvent(.messageCompleted(
+            AgentMessage(id: "assistant-final", sessionID: running.id, role: .assistant, content: "助手最终回复摘要", revision: 1),
+            AgentEventMetadata(seq: 1, sessionID: running.id, turnID: "turn-1", itemID: "item-1", messageID: "assistant-final", clientMessageID: nil, revision: 1, createdAt: nil)
+        ))
+        try await Task.sleep(nanoseconds: 120_000_000)
+
+        XCTAssertEqual(store.selectedSession?.preview, "助手最终回复摘要")
+    }
+
+    func testObservingRunningSessionBlocksSendTurn() async {
+        let project = makeProject(id: "proj_observing")
+        let running = makeSession(id: "sess_observing", projectID: project.id, title: "Mac 运行中", status: "running", source: "codex")
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+
+        XCTAssertTrue(store.isSelectedSessionObserving)
+        let didSend = await store.sendPrompt("不应该发送")
+        XCTAssertFalse(didSend)
+        XCTAssertTrue(sockets.isEmpty)
+        XCTAssertEqual(store.errorMessage, "这个会话正在其他客户端运行。请先接管到 iPad，再继续发送。")
+    }
+
+    func testTakenOverRunningSessionAllowsSendTurn() async throws {
+        let project = makeProject(id: "proj_takeover")
+        let running = makeSession(id: "sess_takeover", projectID: project.id, title: "接管运行中", status: "running", source: "codex")
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let didSend = await store.sendPrompt("接管后发送")
+        XCTAssertTrue(didSend)
+        XCTAssertEqual(sockets[0].sentTurns.map { $0.payload.previewText }, ["接管后发送"])
+    }
+
+    func testHistorySessionContinueMarksTakenOver() async throws {
+        let project = makeProject(id: "proj_history_takeover")
+        let history = makeSession(
+            id: "sess_history_takeover",
+            projectID: project.id,
+            title: "历史",
+            status: "history",
+            source: "codex",
+            resumeID: "sess_history_takeover"
+        )
+        let resumed = makeSession(
+            id: history.id,
+            projectID: project.id,
+            title: history.title,
+            status: "running",
+            source: "codex",
+            resumeID: history.id
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            createSessionResponse: try makeCreateSessionResponse(session: resumed)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+
+        let didSend = await store.sendPrompt("继续历史")
+        XCTAssertTrue(didSend)
+        XCTAssertEqual(store.controlState(for: resumed), .takenOver)
+        XCTAssertTrue(store.canControlSession(store.selectedSession))
+    }
+
+    func testRuntimeEventsDoNotBecomeSessionPreview() async throws {
+        let project = makeProject(id: "proj_runtime_preview")
+        let running = makeSession(
+            id: "sess_runtime_preview",
+            projectID: project.id,
+            title: "运行日志",
+            status: "running",
+            source: "codex",
+            preview: "用户可见摘要"
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        sockets[0].emitEvent(.logDelta(
+            LogDelta(text: "tool output should stay in log", stream: "stdout"),
+            AgentEventMetadata(seq: 1, sessionID: running.id, turnID: "turn-1", itemID: "cmd-1", messageID: nil, clientMessageID: nil, revision: 1, createdAt: nil)
+        ))
+        try await Task.sleep(nanoseconds: 120_000_000)
+
+        XCTAssertEqual(store.selectedSession?.preview, "用户可见摘要")
+    }
+
+    func testUTCBoundaryDisplaysUsingLocalDate() throws {
+        let message = try AgentAPIClient.decoder.decode(
+            CodexHistoryMessage.self,
+            from: Data("""
+            {
+              "id": "utc-boundary",
+              "role": "user",
+              "content": "跨 UTC 午夜",
+              "created_at": "2026-06-28T16:02:16Z"
+            }
+            """.utf8)
+        )
+        let createdAt = try XCTUnwrap(message.createdAt)
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
+        XCTAssertEqual(formatter.string(from: createdAt), "2026-06-29 00:02:16")
+    }
+
     func testSessionStoreIndexedUpsertReplacesExistingSessionWithoutDuplicate() async throws {
         let project = makeProject(id: "proj_1")
         let running = makeSession(
@@ -4520,6 +5177,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
 
@@ -4638,6 +5296,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -4694,6 +5353,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
         XCTAssertEqual(sockets[0].connectedSessionIDs, [running.id])
@@ -4734,6 +5394,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
         sockets[0].emitStatus(.connected)
@@ -4773,6 +5434,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -4823,6 +5485,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -4870,6 +5533,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -4919,6 +5583,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -4953,6 +5618,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -4982,6 +5648,83 @@ final class ConversationDataFlowTests: XCTestCase {
         store.selectedSessionID = running.id
 
         XCTAssertNil(store.selectedForegroundActivity)
+    }
+
+    func testRuntimeActivityTracksTurnEventsAndClearsOnCompletion() async throws {
+        let project = makeProject(id: "proj_runtime_activity")
+        let running = makeSession(id: "sess_runtime_activity", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        XCTAssertNil(store.selectedRuntimeActivitySnapshot)
+
+        sockets[0].emitEvent(.turnStarted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn-runtime",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+
+        let started = try await waitForRuntimeActivity(in: store, sessionID: running.id)
+        XCTAssertLessThanOrEqual(started.turnStartedAt, started.lastActivityAt)
+        try await waitForSelectedActiveTurnID("turn-runtime", store: store)
+
+        try await Task.sleep(nanoseconds: 120_000_000)
+        sockets[0].emitEvent(.logDelta(
+            LogDelta(text: "still working\n", stream: "stdout"),
+            AgentEventMetadata(
+                seq: 2,
+                sessionID: running.id,
+                turnID: "turn-runtime",
+                itemID: "cmd-1",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )
+        ))
+
+        let updated = try await waitForRuntimeActivity(in: store, sessionID: running.id) { snapshot in
+            snapshot.lastActivityAt > started.lastActivityAt
+        }
+        XCTAssertEqual(updated.turnStartedAt, started.turnStartedAt)
+
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 3,
+            sessionID: running.id,
+            turnID: "turn-runtime",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+
+        try await waitForRuntimeActivityCleared(in: store, sessionID: running.id)
+        try await waitForSelectedActiveTurnID(nil, store: store)
     }
 
     func testSendingPromptCreatesWaitingForegroundActivity() async throws {
@@ -5067,6 +5810,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -5085,6 +5829,66 @@ final class ConversationDataFlowTests: XCTestCase {
         ])
         XCTAssertEqual(sockets[0].sentTurns.count, 1)
         XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "修复 iPad 目标入口")
+    }
+
+    func testSelectedThreadGoalStaysScopedToSelectedThread() async throws {
+        let project = makeProject(id: "proj_goal_scope")
+        let goal = ThreadGoal(
+            threadID: "thread-with-goal",
+            objective: "只属于对话一的目标",
+            status: .active,
+            tokenBudget: 50_000
+        )
+        let goalSession = AgentSession(
+            id: "codex_thread_with_goal",
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "对话一",
+            status: "closed",
+            source: "codex",
+            resumeID: goal.threadID,
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 2),
+            goal: goal
+        )
+        let staleContext = SessionContextSnapshot(
+            sessionID: "thread-without-goal",
+            threadID: "thread-without-goal",
+            goal: goal,
+            updatedAt: Date(timeIntervalSince1970: 3)
+        )
+        let plainSession = AgentSession(
+            id: "thread-without-goal",
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "对话二",
+            status: "closed",
+            source: "codex",
+            resumeID: "thread-without-goal",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 3),
+            context: staleContext
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [goalSession, plainSession], messagesResult: [])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+
+        await store.selectSession(goalSession)
+        XCTAssertEqual(store.selectedThreadGoal?.threadID, goal.threadID)
+        XCTAssertEqual(store.selectedThreadGoal?.objective, "只属于对话一的目标")
+
+        await store.selectSession(plainSession)
+        XCTAssertNil(store.selectedThreadGoal)
+        XCTAssertNil(store.selectedSession?.goal)
     }
 
     func testStartGoalTurnForNewSessionCarriesInitialGoalObjective() async throws {
@@ -5278,6 +6082,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
         sockets[0].emitStatus(.connected)
@@ -5327,6 +6132,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         try await waitForWebSocketStatus(.connecting, store: store)
         conversationStore.appendLocalUser("重试不要新建会话", sessionID: running.id, clientMessageID: "client-retry-connecting", sendStatus: .failed)
@@ -5363,6 +6169,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -5409,6 +6216,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -5442,6 +6250,267 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(accepted.turnPayload?.textPrompt, "看下这张图")
     }
 
+    func testRunningTurnLifecycleKeepsEchoAndFinalAssistantStable() async throws {
+        let project = makeProject(id: "proj_turn_lifecycle")
+        let running = makeSession(id: "sess_turn_lifecycle", projectID: project.id, title: "Lifecycle", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let sent = await store.sendTurn(CodexAppServerTurnPayload(prompt: "从输入框提交"))
+        XCTAssertTrue(sent)
+        let localEcho = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.role == .user })
+        let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
+        XCTAssertEqual(localEcho.sendStatus, .sending)
+        XCTAssertEqual(sockets[0].sentTurns.first?.clientMessageID, clientMessageID)
+
+        sockets[0].onSendAccepted?(clientMessageID)
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
+            messages.contains { $0.clientMessageID == clientMessageID && $0.sendStatus == .sent }
+        }
+
+        sockets[0].emitEvent(.turnStarted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn-lifecycle",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID("turn-lifecycle", store: store)
+
+        sockets[0].emitEvent(.messageCompleted(
+            AgentMessage(
+                id: "client:\(clientMessageID)",
+                sessionID: running.id,
+                clientMessageID: clientMessageID,
+                turnID: "turn-lifecycle",
+                itemID: "user-lifecycle",
+                role: .user,
+                content: "从输入框提交",
+                revision: 2,
+                sendStatus: .confirmed
+            ),
+            AgentEventMetadata(
+                seq: 2,
+                sessionID: running.id,
+                turnID: "turn-lifecycle",
+                itemID: "user-lifecycle",
+                messageID: "client:\(clientMessageID)",
+                clientMessageID: clientMessageID,
+                revision: 2,
+                createdAt: nil
+            )
+        ))
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
+            messages.filter { $0.clientMessageID == clientMessageID }.count == 1 &&
+                messages.contains { $0.clientMessageID == clientMessageID && $0.sendStatus == .confirmed }
+        }
+
+        // 已确认的用户 echo 不能被后到 accepted/failure callback 降级。
+        sockets[0].onSendAccepted?(clientMessageID)
+        sockets[0].onSendFailure?(clientMessageID, "late failure")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(
+            conversationStore.messages(for: running.id).first { $0.clientMessageID == clientMessageID }?.sendStatus,
+            .confirmed
+        )
+
+        let assistantMetadata = AgentEventMetadata(
+            seq: 3,
+            sessionID: running.id,
+            turnID: "turn-lifecycle",
+            itemID: "assistant-lifecycle",
+            messageID: "assistant-final",
+            clientMessageID: nil,
+            revision: 7,
+            createdAt: nil
+        )
+        sockets[0].emitEvent(.assistantDelta(
+            AgentDelta(text: "阶段性片段", role: .assistant, kind: .message),
+            assistantMetadata
+        ))
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
+            messages.contains { $0.stableID == "assistant-final" && $0.content == "阶段性片段" && $0.sendStatus == .sending }
+        }
+
+        sockets[0].emitEvent(.messageCompleted(
+            AgentMessage(
+                id: "assistant-final",
+                sessionID: running.id,
+                turnID: "turn-lifecycle",
+                itemID: "assistant-lifecycle",
+                role: .assistant,
+                content: "最终完整回答",
+                revision: 7,
+                sendStatus: .confirmed
+            ),
+            AgentEventMetadata(
+                seq: 4,
+                sessionID: running.id,
+                turnID: "turn-lifecycle",
+                itemID: "assistant-lifecycle",
+                messageID: "assistant-final",
+                clientMessageID: nil,
+                revision: 7,
+                createdAt: nil
+            )
+        ))
+        _ = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
+            messages.filter { $0.stableID == "assistant-final" }.count == 1 &&
+                messages.contains { $0.stableID == "assistant-final" && $0.content == "最终完整回答" && $0.sendStatus == .confirmed }
+        }
+
+        sockets[0].emitEvent(.assistantDelta(
+            AgentDelta(text: "迟到增量", role: .assistant, kind: .message),
+            AgentEventMetadata(
+                seq: 5,
+                sessionID: running.id,
+                turnID: "turn-lifecycle",
+                itemID: "assistant-lifecycle",
+                messageID: "assistant-final",
+                clientMessageID: nil,
+                revision: 8,
+                createdAt: nil
+            )
+        ))
+        try await Task.sleep(nanoseconds: 160_000_000)
+        XCTAssertEqual(
+            conversationStore.messages(for: running.id).first { $0.stableID == "assistant-final" }?.content,
+            "最终完整回答"
+        )
+        XCTAssertEqual(
+            conversationStore.messages(for: running.id).first { $0.stableID == "assistant-final" }?.sendStatus,
+            .confirmed
+        )
+
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 6,
+            sessionID: running.id,
+            turnID: "turn-lifecycle",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID(nil, store: store)
+        XCTAssertNil(store.selectedForegroundActivity)
+    }
+
+    func testRunningSessionGuidedDeliverySteersActiveTurn() async throws {
+        let project = makeProject(id: "proj_ws_guided")
+        let running = makeSession(
+            id: "sess_ws_guided",
+            projectID: project.id,
+            title: "Running",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn_active_guided"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "排队下一轮"))
+        let guided = await store.sendTurn(CodexAppServerTurnPayload(prompt: "直接引导当前回复"), runningDelivery: .guided)
+
+        XCTAssertTrue(queued)
+        XCTAssertTrue(guided)
+        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "排队下一轮")
+        XCTAssertEqual(sockets[0].sentGuidance.count, 1)
+        XCTAssertEqual(sockets[0].sentGuidance.first?.payload.textPrompt, "直接引导当前回复")
+        XCTAssertEqual(sockets[0].sentGuidance.first?.expectedTurnID, "turn_active_guided")
+    }
+
+    func testRunningSessionGuidedDeliveryUsesTurnStartedActiveTurn() async throws {
+        let project = makeProject(id: "proj_ws_guided_event")
+        let running = makeSession(id: "sess_ws_guided_event", projectID: project.id, title: "Running", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        sockets[0].emitEvent(.turnStarted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn_from_event",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID("turn_from_event", store: store)
+
+        let guided = await store.sendTurn(CodexAppServerTurnPayload(prompt: "继续按这个方向"), runningDelivery: .guided)
+
+        XCTAssertTrue(guided)
+        XCTAssertEqual(sockets[0].sentGuidance.count, 1)
+        XCTAssertEqual(sockets[0].sentGuidance.first?.payload.textPrompt, "继续按这个方向")
+        XCTAssertEqual(sockets[0].sentGuidance.first?.expectedTurnID, "turn_from_event")
+    }
+
     func testRunningSessionSendWaitsForConnectedWebSocket() async throws {
         let project = makeProject(id: "proj_ws_connecting_guard")
         let running = makeSession(id: "sess_ws_connecting_guard", projectID: project.id, title: "连接中", status: "running", source: "codex")
@@ -5463,6 +6532,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         try await waitForWebSocketStatus(.connecting, store: store)
 
@@ -5504,6 +6574,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -5572,6 +6643,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(waiting)
         await store.selectSession(waiting)
         XCTAssertEqual(sockets.count, 1)
         sockets[0].emitStatus(.connected)
@@ -5640,6 +6712,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
         sockets[0].emitStatus(.connected)
@@ -5713,6 +6786,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -5783,6 +6857,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -5950,6 +7025,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
         await store.selectSession(running)
         XCTAssertEqual(sockets.count, 1)
         sockets[0].emitStatus(.connected)
@@ -6042,6 +7118,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         await store.refreshAll(autoAttach: false)
+        store.takeOverSession(waiting)
         await store.selectSession(waiting)
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
@@ -6193,16 +7270,29 @@ private final class MockWebSocketClient: SessionWebSocketClient {
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
+    var onUserInputResponseFailure: ((String, String) -> Void)?
     var onControlFailure: ((String) -> Void)?
 
     private(set) var connectedSessionIDs: [SessionID] = []
+    private(set) var replayBufferedEventsByConnect: [Bool] = []
     private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
+    private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
+    private(set) var sentUserInputResponses: [(requestID: String, answers: [String: [String]])] = []
     private(set) var disconnectCallCount = 0
+    var sendTurnResult = true
+    var sendGuidanceResult = true
 
     func connect(sessionID: SessionID) {
         connectedSessionIDs.append(sessionID)
+        replayBufferedEventsByConnect.append(true)
+        onStatus?(.connecting)
+    }
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
+        connectedSessionIDs.append(sessionID)
+        replayBufferedEventsByConnect.append(replayBufferedEvents)
         onStatus?(.connecting)
     }
 
@@ -6218,7 +7308,12 @@ private final class MockWebSocketClient: SessionWebSocketClient {
 
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool {
         sentTurns.append((payload, clientMessageID))
-        return true
+        return sendTurnResult
+    }
+
+    func sendGuidance(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID) -> Bool {
+        sentGuidance.append((payload, clientMessageID, expectedTurnID))
+        return sendGuidanceResult
     }
 
     func sendCtrlC() -> Bool {
@@ -6227,6 +7322,11 @@ private final class MockWebSocketClient: SessionWebSocketClient {
 
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool {
         sentApprovals.append((approvalID, decision, message))
+        return true
+    }
+
+    func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool {
+        sentUserInputResponses.append((requestID, answers))
         return true
     }
 
@@ -6350,6 +7450,7 @@ private struct RequestedGitPullRequest: Equatable {
 private struct RequestedCommandActionRun: Equatable {
     let path: String
     let id: String
+    let confirmed: Bool
 }
 
 private struct RequestedWorktreeCreate: Equatable {
@@ -6675,8 +7776,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         }
     }
 
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse {
-        requestedCommandActionRuns.append(RequestedCommandActionRun(path: path, id: id))
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse {
+        requestedCommandActionRuns.append(RequestedCommandActionRun(path: path, id: id, confirmed: confirmed))
         let key = "\(path)#\(id)"
         switch commandActionRunResults[key] ?? commandActionRunResults[id] {
         case .success(let response):
@@ -7023,8 +8124,8 @@ private final class DelayedCommandActionClient: SessionStoreAPIClient {
         return actionsByPath[path] ?? []
     }
 
-    func runCommandAction(path: String, id: String) async throws -> CommandActionRunResponse {
-        requestedCommandActionRuns.append(RequestedCommandActionRun(path: path, id: id))
+    func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse {
+        requestedCommandActionRuns.append(RequestedCommandActionRun(path: path, id: id, confirmed: confirmed))
         return try await withCheckedThrowingContinuation { continuation in
             runContinuations.append(continuation)
             notifyRequestCountWaiters()
@@ -7254,6 +8355,44 @@ private func waitForWebSocketStatus(_ expected: WebSocketStatus, store: SessionS
         try await Task.sleep(nanoseconds: 10_000_000)
     }
     XCTFail("WebSocket 状态未变为 \(expected)，当前为 \(store.webSocketStatus)")
+}
+
+@MainActor
+private func waitForRuntimeActivity(
+    in store: SessionStore,
+    sessionID: SessionID,
+    matching predicate: (RuntimeActivitySnapshot) -> Bool = { _ in true }
+) async throws -> RuntimeActivitySnapshot {
+    for _ in 0..<80 {
+        if let snapshot = store.runtimeActivitySnapshot(for: sessionID), predicate(snapshot) {
+            return snapshot
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("runtime activity snapshot 未在超时前更新")
+    throw MockError.timeout
+}
+
+@MainActor
+private func waitForRuntimeActivityCleared(in store: SessionStore, sessionID: SessionID) async throws {
+    for _ in 0..<80 {
+        if store.runtimeActivitySnapshot(for: sessionID) == nil {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("runtime activity snapshot 未在超时前清理")
+}
+
+@MainActor
+private func waitForSelectedActiveTurnID(_ expected: TurnID?, store: SessionStore) async throws {
+    for _ in 0..<80 {
+        if store.selectedSession?.activeTurnID == expected {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("activeTurnID 未在超时前变为 \(expected ?? "nil")，当前为 \(store.selectedSession?.activeTurnID ?? "nil")")
 }
 
 @MainActor
@@ -7631,6 +8770,54 @@ extension ConversationDataFlowTests {
         XCTAssertNil(permissionsResponse.result?["decision"])
 
         socket.disconnect()
+    }
+
+    func testDirectRuntimeAutoSkipsUserInputWhenPlanGuidanceDisabled() async throws {
+        let project = AgentProject(id: "proj_plan_skip", name: "Plan Skip", path: "/tmp/plan-skip")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        var options = CodexAppServerTurnOptions.default
+        options.model = "gpt-5-codex"
+        options.collaborationMode = .plan
+        options.planGuidanceEnabled = false
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "先规划",
+                turnOptions: options,
+                resumeID: "",
+                clientMessageID: "client_plan_skip"
+            ))
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        XCTAssertEqual(initialize.method, "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_plan_skip","sessionId":"thr_plan_skip","preview":"先规划","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/tmp/plan-skip","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"计划跳过","turns":[]}}}"#)
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let turnStart = try decodeAppServerRequest(turnMessages[3])
+        XCTAssertEqual(turnStart.method, "turn/start")
+        let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
+        XCTAssertEqual(turnParams["collaborationMode"]?.objectValue?["mode"]?.stringValue, "plan")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_plan_skip","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490102,"completedAt":null,"durationMs":null}}}"#)
+        _ = try await createTask.value
+
+        transport.enqueue(#"{"id":501,"method":"item/tool/requestUserInput","params":{"threadId":"thr_plan_skip","turnId":"turn_plan_skip","itemId":"input_skip","questions":[{"id":"scope","header":"范围","question":"要补充吗？","isOther":true,"isSecret":false,"options":[{"label":"后端","description":"先做 API"}]}]}}"#)
+        let response = try await waitForFakeAppServerResponse(transport, id: .int(501))
+        XCTAssertEqual(response.result?["answers"]?.objectValue?.isEmpty, true)
     }
 
     func testDirectSocketEmitsSendAcceptedOnlyAfterTurnStartSucceeds() async throws {
@@ -9063,9 +10250,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(threadStart.method, "thread/start")
         let threadParams = try XCTUnwrap(threadStart.params?.objectValue)
         XCTAssertEqual(threadParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(threadParams["model"]?.stringValue, "gpt-5.5")
         XCTAssertEqual(threadParams["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(threadParams["approvalsReviewer"]?.stringValue, "user")
-        XCTAssertEqual(threadParams["sandbox"]?.stringValue, "workspace-write")
+        XCTAssertEqual(threadParams["sandbox"]?.stringValue, "danger-full-access")
         XCTAssertNil(threadParams["runtimeWorkspaceRoots"])
 
         let turnStart = try builder.turnStart(
@@ -9077,13 +10265,15 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(turnStart.method, "turn/start")
         let turnParams = try XCTUnwrap(turnStart.params?.objectValue)
         XCTAssertEqual(turnParams["cwd"]?.stringValue, project.path)
+        XCTAssertEqual(turnParams["model"]?.stringValue, "gpt-5.5")
+        XCTAssertEqual(turnParams["effort"]?.stringValue, "xhigh")
         XCTAssertEqual(turnParams["approvalPolicy"]?.stringValue, "on-request")
         XCTAssertEqual(turnParams["approvalsReviewer"]?.stringValue, "user")
         XCTAssertEqual(turnParams["clientUserMessageId"]?.stringValue, "client_safe")
         let sandbox = try XCTUnwrap(turnParams["sandboxPolicy"]?.objectValue)
-        XCTAssertEqual(sandbox["type"]?.stringValue, "workspaceWrite")
+        XCTAssertEqual(sandbox["type"]?.stringValue, "dangerFullAccess")
         XCTAssertEqual(sandbox["networkAccess"]?.boolValue, false)
-        XCTAssertEqual(sandbox["writableRoots"]?.arrayValue?.compactMap(\.stringValue), [project.path])
+        XCTAssertNil(sandbox["writableRoots"])
 
         XCTAssertThrowsError(try builder.threadStart(cwd: "/tmp/not-allowlisted"))
         XCTAssertThrowsError(try builder.turnStart(threadID: "thr_safe", cwd: "/tmp/not-allowlisted", prompt: "hi"))
@@ -9091,7 +10281,7 @@ extension ConversationDataFlowTests {
             .object(["cwd": .string(project.path), "approvalPolicy": .string("never")]),
             projectPath: project.path
         ))
-        XCTAssertThrowsError(try builder.validateRemoteSafeParams(
+        XCTAssertNoThrow(try builder.validateRemoteSafeParams(
             .object(["cwd": .string(project.path), "sandbox": .string("danger-full-access")]),
             projectPath: project.path
         ))
@@ -9155,6 +10345,7 @@ private final class FlakyBootstrapClient: SessionStoreAPIClient {
 
 private enum MockError: Error {
     case unimplemented
+    case timeout
 }
 
 private enum FakeCodexAppServerTransportError: LocalizedError {
@@ -9578,6 +10769,7 @@ private func makeSession(
     source: String,
     resumeID: String? = nil,
     preview: String? = nil,
+    activeTurnID: TurnID? = nil,
     updatedAt: Date = Date(timeIntervalSince1970: 2)
 ) -> AgentSession {
     AgentSession(
@@ -9591,6 +10783,7 @@ private func makeSession(
         resumeID: resumeID,
         createdAt: Date(timeIntervalSince1970: 1),
         updatedAt: updatedAt,
-        preview: preview
+        preview: preview,
+        activeTurnID: activeTurnID
     )
 }

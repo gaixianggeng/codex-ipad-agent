@@ -90,14 +90,15 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let source: String
     let resumeID: String?
     let createdAt: Date?
-    let updatedAt: Date?
-    let preview: String?
+    var updatedAt: Date?
+    var preview: String?
     var activeTurnID: TurnID?
     let lastSeq: EventSequence?
     let revision: ModelRevision?
     let usage: UsageSummary?
     let rateLimit: RateLimitSummary?
     var pendingApproval: ApprovalSummary?
+    var pendingUserInput: AgentUserInputRequest?
     var goal: ThreadGoal?
     let context: SessionContextSnapshot?
 
@@ -131,6 +132,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         usage: UsageSummary? = nil,
         rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil,
+        pendingUserInput: AgentUserInputRequest? = nil,
         goal: ThreadGoal? = nil,
         context: SessionContextSnapshot? = nil
     ) {
@@ -153,6 +155,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         // pendingApproval 只在真实等待审批状态下有效；历史快照偶发带回旧值时，
         // 这里先做归一化，避免输入框展示已经失效的审批卡。
         self.pendingApproval = status == "waiting_for_approval" ? pendingApproval : nil
+        self.pendingUserInput = status == "waiting_for_input" ? pendingUserInput : nil
         self.goal = goal ?? context?.goal
         self.context = context
     }
@@ -177,6 +180,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
             usage: row.usage,
             rateLimit: row.rateLimit,
             pendingApproval: row.pendingApproval,
+            pendingUserInput: nil,
             goal: row.context?.goal,
             context: row.context
         )
@@ -200,6 +204,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case usage
         case rateLimit = "rate_limit"
         case pendingApproval = "pending_approval"
+        case pendingUserInput = "pending_user_input"
         case goal
         case context
     }
@@ -264,6 +269,95 @@ struct AgentSessionStatusBadge: Identifiable, Hashable {
     let tone: AgentSessionStatusTone
 }
 
+struct RuntimeActivitySnapshot: Equatable {
+    let turnStartedAt: Date
+    let lastActivityAt: Date
+}
+
+struct RuntimeActivityDisplay: Equatable {
+    let detailText: String
+    let tone: AgentSessionStatusTone
+    let systemImage: String
+
+    static let freshThreshold: TimeInterval = 20
+    static let staleThreshold: TimeInterval = 90
+
+    static func make(
+        snapshot: RuntimeActivitySnapshot?,
+        webSocketStatus: WebSocketStatus,
+        now: Date = Date()
+    ) -> RuntimeActivityDisplay? {
+        guard let snapshot else {
+            return nil
+        }
+        // 这里表达的是“最近收到 runtime 事件”的证据，不判断命令是否真的卡死。
+        // 长命令无输出时，用户看到的是无新事件时长和连接状态，避免误报。
+        let runningText = "运行 \(compactClockDuration(now.timeIntervalSince(snapshot.turnStartedAt)))"
+        let idleSeconds = max(0, now.timeIntervalSince(snapshot.lastActivityAt))
+
+        switch webSocketStatus {
+        case .connected:
+            if idleSeconds <= freshThreshold {
+                return RuntimeActivityDisplay(
+                    detailText: "\(runningText) · 最后活动 \(relativeDurationText(idleSeconds))前",
+                    tone: .active,
+                    systemImage: "dot.radiowaves.left.and.right"
+                )
+            }
+            if idleSeconds <= staleThreshold {
+                return RuntimeActivityDisplay(
+                    detailText: "\(runningText) · 等待输出 · \(relativeDurationText(idleSeconds))无新事件",
+                    tone: .neutral,
+                    systemImage: "hourglass"
+                )
+            }
+            return RuntimeActivityDisplay(
+                detailText: "\(runningText) · 连接正常 · \(relativeDurationText(idleSeconds))无新事件",
+                tone: .warning,
+                systemImage: "exclamationmark.triangle"
+            )
+        case .connecting:
+            return RuntimeActivityDisplay(
+                detailText: "\(runningText) · 正在重连 · 无法确认运行状态",
+                tone: .warning,
+                systemImage: "antenna.radiowaves.left.and.right.slash"
+            )
+        case .disconnected, .failed:
+            return RuntimeActivityDisplay(
+                detailText: "\(runningText) · 连接断开 · 无法确认运行状态",
+                tone: .warning,
+                systemImage: "wifi.slash"
+            )
+        }
+    }
+
+    static func compactClockDuration(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration.rounded()))
+        let hours = seconds / 3_600
+        let minutes = seconds / 60 % 60
+        let remainingSeconds = seconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+
+    static func relativeDurationText(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration.rounded()))
+        if seconds < 60 {
+            return "\(seconds) 秒"
+        }
+        let minutes = seconds / 60
+        let remainingSeconds = seconds % 60
+        if minutes < 60 {
+            return remainingSeconds == 0 ? "\(minutes) 分钟" : "\(minutes)m \(remainingSeconds)s"
+        }
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        return remainingMinutes == 0 ? "\(hours) 小时" : "\(hours)h \(remainingMinutes)m"
+    }
+}
+
 extension AgentSession {
     func displayStatus(foregroundActivity: SessionForegroundActivity?) -> AgentSessionDisplayStatus {
         // 侧栏和对话顶部共用这套优先级，避免同一个会话在不同入口显示成两种状态。
@@ -271,7 +365,7 @@ extension AgentSession {
         if status == SessionStatus.waitingForApproval.rawValue || pendingApproval != nil {
             return AgentSessionDisplayStatus(title: "待审批", systemImage: "checkmark.seal.fill", tone: .warning, showsSpinner: false)
         }
-        if status == SessionStatus.waitingForInput.rawValue {
+        if status == SessionStatus.waitingForInput.rawValue || pendingUserInput != nil {
             return AgentSessionDisplayStatus(title: "待输入", systemImage: "keyboard", tone: .warning, showsSpinner: false)
         }
         if let foregroundActivity {
@@ -307,6 +401,8 @@ extension AgentSession {
         }
         if let approval = pendingApproval {
             badges.append(AgentSessionStatusBadge(id: "approval-\(approval.id)", title: "审批 \(approval.title)", systemImage: "checkmark.seal", tone: .warning))
+        } else if let userInput = pendingUserInput {
+            badges.append(AgentSessionStatusBadge(id: "input-\(userInput.id)", title: "引导 \(userInput.title)", systemImage: "questionmark.bubble", tone: .warning))
         } else if status == SessionStatus.waitingForInput.rawValue {
             badges.append(AgentSessionStatusBadge(id: "waiting-input", title: "等待输入", systemImage: "keyboard", tone: .warning))
         }
@@ -1182,6 +1278,7 @@ enum MessageKind: String, Codable, Hashable {
     case commandSummary = "command_summary"
     case fileChangeSummary = "file_change_summary"
     case approval
+    case userInput = "user_input"
     case error
 }
 
@@ -1248,6 +1345,44 @@ struct ApprovalSummary: Codable, Hashable {
     let title: String
     let kind: String
     let count: Int?
+}
+
+struct AgentUserInputRequest: Identifiable, Codable, Hashable {
+    let id: String
+    let threadID: SessionID
+    let turnID: TurnID?
+    let itemID: AgentItemID
+    let questions: [AgentUserInputQuestion]
+
+    var title: String {
+        if let first = questions.first {
+            let header = first.header.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !header.isEmpty {
+                return header
+            }
+            let question = first.question.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !question.isEmpty {
+                return question
+            }
+        }
+        return "补充输入"
+    }
+}
+
+struct AgentUserInputQuestion: Identifiable, Codable, Hashable {
+    let id: String
+    let header: String
+    let question: String
+    let isOther: Bool
+    let isSecret: Bool
+    let options: [AgentUserInputOption]
+}
+
+struct AgentUserInputOption: Identifiable, Codable, Hashable {
+    let label: String
+    let description: String?
+
+    var id: String { label }
 }
 
 enum SessionDataFlow {

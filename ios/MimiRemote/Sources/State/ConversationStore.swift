@@ -159,11 +159,17 @@ final class ConversationStore: ObservableObject {
         if let clientMessageID,
            var list = messagesBySessionID[sessionID],
            let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) {
+            let didChange = list[index].content != text ||
+                list[index].sendStatus != sendStatus ||
+                (turnPayload != nil && list[index].turnPayload != turnPayload)
+            guard didChange else {
+                return
+            }
             list[index].content = text
             list[index].sendStatus = sendStatus
             list[index].turnPayload = turnPayload ?? list[index].turnPayload
             list[index].updatedAt = Date()
-            setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
             return
         }
         append(
@@ -179,14 +185,19 @@ final class ConversationStore: ObservableObject {
         )
     }
 
-    func updateSendStatus(clientMessageID: ClientMessageID, sessionID: String, status: MessageSendStatus) {
+    @discardableResult
+    func updateSendStatus(clientMessageID: ClientMessageID, sessionID: String, status: MessageSendStatus) -> Bool {
         guard var list = messagesBySessionID[sessionID],
               let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) else {
-            return
+            return false
+        }
+        guard shouldTransitionSendStatus(from: list[index].sendStatus, to: status) else {
+            return false
         }
         list[index].sendStatus = status
         list[index].updatedAt = Date()
-        setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+        return true
     }
 
     func markSendingUserMessagesFailed(sessionID: String) {
@@ -202,7 +213,7 @@ final class ConversationStore: ObservableObject {
         guard changed else {
             return
         }
-        setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
     func compactTurnPayloadAfterSendAccepted(clientMessageID: ClientMessageID, sessionID: String) {
@@ -253,7 +264,7 @@ final class ConversationStore: ObservableObject {
         }) {
             list[index].content = text
             list[index].updatedAt = Date()
-            setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
             return
         }
         appendSystem(text, sessionID: sessionID, kind: .approval)
@@ -271,7 +282,25 @@ final class ConversationStore: ObservableObject {
         let title = pendingApprovalTitle(from: list[index].content)
         list[index].content = title.isEmpty ? "审批已解决" : "审批已解决：\(title)"
         list[index].updatedAt = Date()
-        setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+    }
+
+    func resolveLatestPendingUserInput(sessionID: String, skipped: Bool) {
+        guard var list = messagesBySessionID[sessionID],
+              let index = list.lastIndex(where: { message in
+                  message.kind == .userInput
+                      && (message.content.hasPrefix("等待补充信息：") || message.content.hasPrefix("等待引导输入："))
+              }) else {
+            if skipped {
+                appendSystem("已跳过补充信息，继续执行", sessionID: sessionID, kind: .userInput)
+            }
+            return
+        }
+        let title = pendingApprovalTitle(from: list[index].content)
+        let prefix = skipped ? "已跳过补充信息" : "补充信息已提交"
+        list[index].content = title.isEmpty ? prefix : "\(prefix)：\(title)"
+        list[index].updatedAt = Date()
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
     func moveLocalEcho(clientMessageID: ClientMessageID, from sourceSessionID: String, to targetSessionID: String) {
@@ -320,7 +349,7 @@ final class ConversationStore: ObservableObject {
         }) {
             if list[index].content != text {
                 list[index].content = text
-                setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+                replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
             }
             return true
         }
@@ -401,6 +430,11 @@ final class ConversationStore: ObservableObject {
             )
             return
         }
+        if let index,
+           messagesBySessionID[sessionID]?[index].sendStatus == .confirmed {
+            // item/completed 是权威最终内容；它落地后迟到的 delta 不能再把气泡改回 streaming。
+            return
+        }
 
         // 第一段 delta 已经创建了可见气泡；后续文本先合并到 per-session buffer，
         // 以固定节奏批量发布，避免每个 token/分片都触发 SwiftUI 列表重绘。
@@ -424,13 +458,13 @@ final class ConversationStore: ObservableObject {
     }
 
     func completeMessage(_ message: AgentMessage, metadata: AgentEventMetadata, fallbackSessionID: String) {
-        let sessionID = metadata.sessionID ?? message.sessionID
+        let sessionID = firstNonEmpty(metadata.sessionID, message.sessionID, fallbackSessionID)
         guard shouldAccept(metadata: metadata, sessionID: sessionID) else {
             return
         }
         flushPendingAssistantDelta(sessionID: sessionID)
         let stableID = message.id
-        guard shouldApplyRevision(max(metadata.revision ?? message.revision, message.revision), stableID: stableID, sessionID: sessionID) else {
+        guard shouldApplyCompletedRevision(max(metadata.revision ?? message.revision, message.revision), stableID: stableID, sessionID: sessionID) else {
             return
         }
 
@@ -450,11 +484,8 @@ final class ConversationStore: ObservableObject {
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
 
         var list = messagesBySessionID[sessionID] ?? []
-        var requiresUnconditionalWrite = false
-        let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
-        let uuid = messageUUIDByStableMessageID[key] ?? UUID()
-        messageUUIDByStableMessageID[key] = uuid
         if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
+            let previous = list[index]
             list[index].stableID = stableID
             list[index].role = role
             list[index].kind = displayKind
@@ -466,11 +497,16 @@ final class ConversationStore: ObservableObject {
                 let retained = list[index].turnPayload?.retainedAfterAcceptedSend()
                 if list[index].turnPayload != retained {
                     list[index].turnPayload = retained
-                    requiresUnconditionalWrite = true
                 }
             }
+            messageUUIDByStableMessageID[stableCacheKey(stableID: stableID, sessionID: sessionID)] = list[index].id
+            removeMessageIndex(previous, at: index, sessionID: sessionID)
+            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+            indexMessage(list[index], at: index, sessionID: sessionID)
         } else {
-            list.append(ConversationMessage(
+            let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
+            let uuid = messageUUIDByStableMessageID[key] ?? UUID()
+            let completedMessage = ConversationMessage(
                 id: uuid,
                 stableID: stableID,
                 clientMessageID: clientMessageID,
@@ -483,12 +519,10 @@ final class ConversationStore: ObservableObject {
                 updatedAt: message.updatedAt ?? metadata.createdAt,
                 sendStatus: message.sendStatus,
                 revision: message.revision
-            ))
-        }
-        if requiresUnconditionalWrite {
-            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID)
-        } else {
-            setMessages(list, sessionID: sessionID)
+            )
+            messageUUIDByStableMessageID[key] = completedMessage.id
+            list.append(completedMessage)
+            appendMessageWithIndex(completedMessage, list: list, sessionID: sessionID)
         }
     }
 
@@ -508,7 +542,7 @@ final class ConversationStore: ObservableObject {
         if let revision = metadata.revision {
             list[index].revision = revision
         }
-        setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
     private func append(_ message: ConversationMessage, sessionID: String) {
@@ -541,6 +575,41 @@ final class ConversationStore: ObservableObject {
         }
         revisionByStableMessageID[key] = revision
         return true
+    }
+
+    private func shouldApplyCompletedRevision(_ revision: ModelRevision?, stableID: String, sessionID: String) -> Bool {
+        guard let revision else {
+            return true
+        }
+        let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
+        if let last = revisionByStableMessageID[key], revision < last {
+            return false
+        }
+        revisionByStableMessageID[key] = revision
+        return true
+    }
+
+    private func shouldTransitionSendStatus(from current: MessageSendStatus, to next: MessageSendStatus) -> Bool {
+        guard current != next else {
+            return false
+        }
+        switch current {
+        case .confirmed:
+            return false
+        case .sent:
+            // send accepted 已经表示服务端收到；后到的 failure/sending callback 不能让 UI 倒退。
+            return next == .confirmed
+        case .failed:
+            return next == .sending
+        case .sending, .local:
+            return true
+        }
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String {
+        values
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
     }
 
     private func stableCacheKey(stableID: MessageID, sessionID: String) -> StableMessageCacheKey {
@@ -621,7 +690,7 @@ final class ConversationStore: ObservableObject {
             list[index].content += pending.text
             list[index].sendStatus = .sending
             list[index].revision = pending.revision ?? list[index].revision
-            setMessages(list, sessionID: sessionID, rebuildIndexes: false)
+            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
             return
         }
 
@@ -644,9 +713,7 @@ final class ConversationStore: ObservableObject {
     private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
         // 普通流式/本地追加总是发生在尾部。像 Codex/Litter 的 live projection 一样只补新行索引，
         // 避免长会话里每个 append 都 O(n) 重建 stable/client/uuid 三套字典。
-        guard setMessages(list, sessionID: sessionID, rebuildIndexes: false) else {
-            return
-        }
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
         indexMessage(message, at: list.count - 1, sessionID: sessionID)
     }
 
@@ -795,6 +862,23 @@ final class ConversationStore: ObservableObject {
         // client_message_id 只索引 user 行，避免 runtime 过程事件误用同一个 client id 后影响 retry/status。
         if message.role == .user, let clientMessageID = message.clientMessageID {
             messageIndexByClientMessageIDBySessionID[sessionID, default: [:]][clientMessageID] = index
+        }
+    }
+
+    private func removeMessageIndex(_ message: ConversationMessage, at index: Int, sessionID: String) {
+        if messageIndexByUUIDBySessionID[sessionID]?[message.id] == index {
+            messageIndexByUUIDBySessionID[sessionID]?[message.id] = nil
+        }
+        if let stableID = message.stableID,
+           messageIndexByStableIDBySessionID[sessionID]?[stableID] == index {
+            messageIndexByStableIDBySessionID[sessionID]?[stableID] = nil
+        }
+        // 原地确认本地 echo 时 stableID 会从临时 client id 变成服务端 id；
+        // 只删除旧行自己的 client 索引，再由 indexMessage 写回更新后的 user 行索引。
+        if message.role == .user,
+           let clientMessageID = message.clientMessageID,
+           messageIndexByClientMessageIDBySessionID[sessionID]?[clientMessageID] == index {
+            messageIndexByClientMessageIDBySessionID[sessionID]?[clientMessageID] = nil
         }
     }
 

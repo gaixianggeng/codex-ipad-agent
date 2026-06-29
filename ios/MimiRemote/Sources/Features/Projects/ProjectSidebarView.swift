@@ -94,6 +94,7 @@ struct ProjectSidebarView: View {
         .contentMargins(.bottom, 12, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .background(tokens.background)
+        .tint(tokens.accent)
         .searchable(text: $sessionStore.sessionSearchQuery, placement: searchPlacement, prompt: "搜索会话")
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet()
@@ -493,7 +494,8 @@ private struct ProjectSessionRows: View {
                 isSelected: session.id == selectedSessionID,
                 isPinned: isPinned,
                 isArchived: isArchived,
-                reminder: reminder
+                reminder: reminder,
+                isObserving: sessionStore.isSessionObserving(session)
             )
                 .equatable()
                 // List 行内的 Button 会被 UICollectionView 的 delaysContentTouches 拖慢高亮，
@@ -503,6 +505,14 @@ private struct ProjectSessionRows: View {
                     Task { await sessionStore.selectSession(session) }
                 }
                 .contextMenu {
+                    if sessionStore.isSessionObserving(session) {
+                        Button {
+                            sessionStore.takeOverSession(session)
+                        } label: {
+                            Label("接管到 iPad", systemImage: "hand.raised.fill")
+                        }
+                    }
+
                     Button {
                         sessionStore.toggleSessionPinned(session)
                     } label: {
@@ -701,6 +711,7 @@ private struct SessionRow: View, Equatable {
     let isPinned: Bool
     let isArchived: Bool
     let reminder: SessionReminder?
+    let isObserving: Bool
 
     static func == (lhs: SessionRow, rhs: SessionRow) -> Bool {
         lhs.session == rhs.session
@@ -709,6 +720,7 @@ private struct SessionRow: View, Equatable {
             && lhs.isPinned == rhs.isPinned
             && lhs.isArchived == rhs.isArchived
             && lhs.reminder == rhs.reminder
+            && lhs.isObserving == rhs.isObserving
     }
 
     var body: some View {
@@ -792,7 +804,7 @@ private struct SessionRow: View, Equatable {
                     .accessibilityLabel(statusSummary.title)
             }
         } else if let updatedAt = session.updatedAt {
-            Text(updatedAt, style: .relative)
+            Text(Self.minuteTimeFormatter.string(from: updatedAt))
                 .font(themeStore.uiFont(size: 12, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .lineLimit(1)
@@ -801,7 +813,10 @@ private struct SessionRow: View, Equatable {
     }
 
     private var statusSummary: AgentSessionDisplayStatus {
-        session.displayStatus(foregroundActivity: foregroundActivity)
+        if isObserving {
+            return AgentSessionDisplayStatus(title: "观察中", systemImage: "eye", tone: .neutral, showsSpinner: false)
+        }
+        return session.displayStatus(foregroundActivity: foregroundActivity)
     }
 
     private var statusDotColor: Color {
@@ -855,19 +870,16 @@ private struct SessionRow: View, Equatable {
     }
 
     private func tint(for tone: AgentSessionStatusTone) -> Color {
-        switch tone {
-        case .active:
-            return .green
-        case .warning:
-            return .orange
-        case .danger:
-            return .red
-        case .complete:
-            return .blue
-        case .neutral:
-            return .secondary.opacity(0.55)
-        }
+        themeStore.tokens(for: colorScheme).tint(for: tone)
     }
+
+    // 左侧列表只展示到分钟，避免 relative 时间按秒触发刷新。
+    private static let minuteTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }
 
 private struct SidebarSelectionBackground: View {
@@ -1200,7 +1212,7 @@ private struct WorktreeManagerRow: View {
                 if isRunning {
                     Text("运行中")
                         .font(themeStore.uiFont(size: 11, weight: .semibold))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(tokens.success)
                 }
             }
 

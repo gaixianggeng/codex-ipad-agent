@@ -25,6 +25,22 @@ struct PairingCredentials: Equatable {
     let token: String
 }
 
+struct PairingTicket: Equatable {
+    let endpoint: String
+    let issuedAt: String
+    let expiresAt: String
+    let pairSignature: String
+
+    var claimRequest: PairingClaimRequest {
+        PairingClaimRequest(
+            endpoint: endpoint,
+            issuedAt: issuedAt,
+            expiresAt: expiresAt,
+            pairSignature: pairSignature
+        )
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var endpoint: String
@@ -87,12 +103,22 @@ final class AppStore: ObservableObject {
     }
 
     func validateAndSavePairingURL(_ url: URL) async throws {
+        if let ticket = try Self.pairingTicket(from: url) {
+            let credentials = try await claimPairing(ticket)
+            try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
+            return
+        }
         let credentials = try Self.pairingCredentials(from: url)
-        // 配对链接只写入 agentd 外侧访问 token；app-server upstream token 仍只保存在 Mac 本机配置里。
+        // 兼容旧版 connect 链接；新版 pair 二维码只携带短期签名票据。
         try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
     }
 
     func validatePairingURL(_ url: URL) async throws -> PairingCredentials {
+        if let ticket = try Self.pairingTicket(from: url) {
+            let credentials = try await claimPairing(ticket)
+            let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
+            return PairingCredentials(endpoint: normalized, token: credentials.token)
+        }
         let credentials = try Self.pairingCredentials(from: url)
         // 手动调用时只测试外侧 agentd 连接；首次扫码路径会直接保存，减少一次确认。
         let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
@@ -133,7 +159,18 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func claimPairing(_ ticket: PairingTicket) async throws -> PairingCredentials {
+        let response = try await AgentAPIClient(endpoint: ticket.endpoint, token: "").claimPairing(ticket.claimRequest)
+        return PairingCredentials(
+            endpoint: try Self.validatedEndpoint(response.endpoint.isEmpty ? ticket.endpoint : response.endpoint),
+            token: response.token
+        )
+    }
+
     static func pairingCredentials(from url: URL) throws -> PairingCredentials {
+        if try pairingTicket(from: url) != nil {
+            throw PairingLinkError.missingToken
+        }
         let route = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let allowedSchemes = ["mimiremote", "mimi"]
         // 兼容早期 agentd 二进制输出的 mimi:// 短链接；新版仍以 mimiremote:// 为主。
@@ -164,6 +201,46 @@ final class AppStore: ObservableObject {
             }
         }
         return PairingCredentials(endpoint: try validatedEndpoint(endpoint), token: token)
+    }
+
+    static func pairingTicket(from url: URL) throws -> PairingTicket? {
+        let route = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let allowedSchemes = ["mimiremote", "mimi"]
+        guard allowedSchemes.contains(url.scheme?.lowercased() ?? ""),
+              route == "pair" || route == "connect"
+        else {
+            throw PairingLinkError.unsupportedURL
+        }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let pairSignature = components?.queryItems?.first(where: { $0.name == "pair_sig" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !pairSignature.isEmpty else {
+            return nil
+        }
+        let endpoint = components?.queryItems?.first(where: { $0.name == "endpoint" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let issuedAt = components?.queryItems?.first(where: { $0.name == "issued_at" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let expiresAt = components?.queryItems?.first(where: { $0.name == "expires_at" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !endpoint.isEmpty else {
+            throw PairingLinkError.missingEndpoint
+        }
+        guard !issuedAt.isEmpty, !expiresAt.isEmpty else {
+            throw PairingLinkError.unsupportedURL
+        }
+        guard let expiryDate = pairingDate(from: expiresAt) else {
+            throw PairingLinkError.unsupportedURL
+        }
+        if expiryDate <= Date() {
+            throw PairingLinkError.expired
+        }
+        return PairingTicket(
+            endpoint: try validatedEndpoint(endpoint),
+            issuedAt: issuedAt,
+            expiresAt: expiresAt,
+            pairSignature: pairSignature
+        )
     }
 
     private static func pairingDate(from raw: String) -> Date? {

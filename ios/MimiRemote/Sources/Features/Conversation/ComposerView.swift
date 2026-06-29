@@ -13,19 +13,6 @@ private struct ComposerChipItem: Identifiable {
     let tint: Color
 }
 
-private extension Color {
-    // 录音状态统一用这支紫色（类似 Slack 的茄紫/靛紫系）：用于麦克风按钮、输入框描边、胶囊等
-    // 单色场景，和下面波形的渐变同源，整组语音 UI 看起来协调。
-    static let voiceRecording = Color(red: 0.45, green: 0.37, blue: 0.92)
-
-    // 波形从左到右的渐变：左端靛紫、中段紫、右端紫粉，参考豆包语音输入法那种明亮的横向渐变。
-    static let voiceWaveformGradient: [Color] = [
-        Color(red: 0.36, green: 0.40, blue: 0.95),
-        Color(red: 0.55, green: 0.36, blue: 0.96),
-        Color(red: 0.80, green: 0.43, blue: 0.97)
-    ]
-}
-
 enum VoiceInputLanguage: String, CaseIterable, Identifiable {
     case automatic
     case chineseSimplified
@@ -118,6 +105,7 @@ struct ComposerView: View {
     @State private var previewingAttachment: CodexAppServerUserInput?
     @State private var goalEditor: ThreadGoalEditorDraft?
     @State private var isGoalStatusExpanded = false
+    @State private var hiddenCompletedGoalIDs: Set<SessionID> = []
     @State private var attachmentErrorMessage: String?
     @State private var isVoicePressActive = false
     @State private var isVoiceTranscribing = false
@@ -127,12 +115,15 @@ struct ComposerView: View {
     @State private var retryableVoiceTranscription: RetryableVoiceTranscription?
     @State private var measuredComposerTextHeight: CGFloat = 0
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
+    @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
+    @State private var guidedFollowUpEnabled = false
     @AppStorage(VoiceInputLanguage.storageKey) private var selectedVoiceLanguageID = VoiceInputLanguage.automatic.rawValue
 
     var availableWidth: CGFloat?
 
     private static let minimumUsableVoiceDuration: TimeInterval = 0.35
     private static let minimumVoicePressDuration: TimeInterval = 0.45
+    private static let completedGoalAutoHideDelayNanoseconds: UInt64 = 3_500_000_000
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -141,8 +132,10 @@ struct ComposerView: View {
         // 这里只保留一个真正的输入卡片，避免“框中框”的视觉堆叠。
         VStack(alignment: .leading, spacing: 10) {
             foregroundActivityRow
+            sessionControlNotice
             activeGoalStatusBar
             pendingApprovalAction
+            pendingUserInputAction
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
@@ -197,16 +190,31 @@ struct ComposerView: View {
             composerState.turnOptions = composerState.turnOptions.sanitizedForStandardComposer()
             showsAdvancedOptionsSheet = false
         }
+        .onChange(of: defaultPermissionModeID) { _, _ in
+            applyDefaultPermissionMode()
+        }
         .onChange(of: selectedVoiceLanguageID) { _, _ in
             clearVoiceTransientStatus()
         }
         .onChange(of: sessionStore.selectedSessionID) { _, _ in
             cancelVoiceInteraction(clearStatus: true)
+            composerState.resetTransientSendMode()
+            applyDefaultPermissionMode()
+            guidedFollowUpEnabled = false
+        }
+        .onChange(of: canUseGuidedFollowUp) { _, canUse in
+            if !canUse {
+                guidedFollowUpEnabled = false
+            }
+        }
+        .onChange(of: sessionStore.selectedThreadGoal) { _, goal in
+            syncGoalStatusBarVisibility(for: goal)
         }
         .task(id: voiceInput.errorMessage) {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .task {
+            applyDefaultPermissionMode()
             voiceInput.prewarm()
             await sessionStore.refreshAppServerModelOptions()
             await sessionStore.refreshCapabilities()
@@ -221,17 +229,22 @@ struct ComposerView: View {
         if composerState.isGoalModeSelected {
             return submitGoalDraft()
         }
-        let options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
+        let options = preparedTurnOptionsForSubmit()
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
+        let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
         Task {
-            let accepted = await sessionStore.sendTurn(submitted.payload)
+            let accepted = await sessionStore.sendTurn(submitted.payload, runningDelivery: runningDelivery)
             if !accepted {
                 await MainActor.run {
                     composerState.restore(submitted)
+                }
+            } else {
+                await MainActor.run {
+                    guidedFollowUpEnabled = false
                 }
             }
         }
@@ -240,7 +253,8 @@ struct ComposerView: View {
 
     @discardableResult
     private func submitGoalDraft() -> Bool {
-        let options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
+        var options = preparedTurnOptionsForSubmit()
+        options.collaborationMode = nil
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
             turnOptionsOverride: options
@@ -252,16 +266,22 @@ struct ComposerView: View {
             composerState.restore(submitted)
             return false
         }
+        let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
         Task {
-            let accepted = await sessionStore.startGoalTurn(payload: submitted.payload, objective: objective)
+            let accepted = await sessionStore.startGoalTurn(
+                payload: submitted.payload,
+                objective: objective,
+                runningDelivery: runningDelivery
+            )
             if !accepted {
                 await MainActor.run {
                     composerState.restore(submitted)
                 }
             } else {
                 await MainActor.run {
+                    guidedFollowUpEnabled = false
                     composerState.resetSendModeAfterSubmit()
                 }
             }
@@ -269,15 +289,38 @@ struct ComposerView: View {
         return true
     }
 
+    private func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
+        var options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
+        if composerState.isPlanModeSelected {
+            options.collaborationMode = .plan
+            options.planGuidanceEnabled = true
+        } else {
+            options.collaborationMode = nil
+            options.planGuidanceEnabled = false
+        }
+        return options
+    }
+
+    private var canUseGuidedFollowUp: Bool {
+        guard let session = sessionStore.selectedSession else {
+            return false
+        }
+        return session.isRunning && session.activeTurnID != nil && sessionStore.canControlSession(session)
+    }
+
+    private var runningTurnDeliveryForSubmit: RunningTurnDelivery {
+        canUseGuidedFollowUp && guidedFollowUpEnabled ? .guided : .queued
+    }
+
     private var canSubmitDraft: Bool {
         if composerState.isGoalModeSelected {
             return canSubmitGoalDraft
         }
-        return composerState.canSubmit(isLoading: sessionStore.isLoading)
+        return sessionStore.canSendInSelectedSession && composerState.canSubmit(isLoading: sessionStore.isLoading)
     }
 
     private var canSubmitGoalDraft: Bool {
-        composerState.hasNonWhitespaceDraft && !sessionStore.isLoading && !sessionStore.isUpdatingThreadGoal
+        sessionStore.canSendInSelectedSession && composerState.hasNonWhitespaceDraft && !sessionStore.isLoading && !sessionStore.isUpdatingThreadGoal
     }
 
     private var isCompactComposer: Bool {
@@ -292,13 +335,44 @@ struct ComposerView: View {
         }
     }
 
+    @ViewBuilder
+    private var sessionControlNotice: some View {
+        if let notice = sessionStore.selectedSessionControlNotice {
+            let tokens = themeStore.tokens(for: colorScheme)
+            HStack(spacing: 8) {
+                Image(systemName: "eye")
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                Text(notice)
+                    .lineLimit(2)
+                    .layoutPriority(1)
+                Button {
+                    sessionStore.takeOverSelectedSession()
+                } label: {
+                    Label("接管", systemImage: "hand.raised.fill")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+            }
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(tokens.border)
+            }
+        }
+    }
+
     // 输入框上方收敛成一行：左＝常驻只读信息（模型/权限 + seq/usage 等），中＝录音波形，
     // 右＝会话运行时的 Ctrl-C / 停止。三者各就各位，不再各自独占一整行往上堆。
     @ViewBuilder
     private var composerStatusRow: some View {
         let chips = displayChipItems
         let showWave = isVoiceActive
-        let showControls = sessionStore.selectedSession?.isRunning == true
+        let showControls = sessionStore.selectedSession?.isRunning == true && sessionStore.canControlSession(sessionStore.selectedSession)
         if !chips.isEmpty || showWave || showControls {
             HStack(spacing: 10) {
                 if !chips.isEmpty {
@@ -385,7 +459,7 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var activeGoalStatusBar: some View {
-        if let goal = sessionStore.selectedThreadGoal {
+        if let goal = sessionStore.selectedThreadGoal, shouldShowGoalStatusBar(goal) {
             ActiveGoalStatusBar(
                 goal: goal,
                 isExpanded: isGoalStatusExpanded,
@@ -410,6 +484,53 @@ struct ComposerView: View {
                 }
             )
             .environmentObject(themeStore)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .task(id: completedGoalAutoHideTaskID(for: goal)) {
+                await autoHideCompletedGoalIfNeeded(goal)
+            }
+        }
+    }
+
+    private func shouldShowGoalStatusBar(_ goal: ThreadGoal) -> Bool {
+        goal.status != .complete || !hiddenCompletedGoalIDs.contains(goal.threadID)
+    }
+
+    private func completedGoalAutoHideTaskID(for goal: ThreadGoal) -> String {
+        [
+            goal.threadID,
+            goal.status.rawValue,
+            goal.updatedAt.map { String($0.timeIntervalSince1970) } ?? "no-update"
+        ].joined(separator: "#")
+    }
+
+    private func syncGoalStatusBarVisibility(for goal: ThreadGoal?) {
+        guard let goal else {
+            isGoalStatusExpanded = false
+            return
+        }
+        // 目标重新进入非完成态时，恢复 composer 上方的常驻状态条。
+        if goal.status != .complete {
+            hiddenCompletedGoalIDs.remove(goal.threadID)
+        }
+    }
+
+    private func autoHideCompletedGoalIfNeeded(_ goal: ThreadGoal) async {
+        guard goal.status == .complete else {
+            return
+        }
+        try? await Task.sleep(nanoseconds: Self.completedGoalAutoHideDelayNanoseconds)
+        guard !Task.isCancelled else {
+            return
+        }
+        await MainActor.run {
+            guard sessionStore.selectedThreadGoal?.threadID == goal.threadID,
+                  sessionStore.selectedThreadGoal?.status == .complete else {
+                return
+            }
+            withAnimation(.easeInOut(duration: 0.18)) {
+                hiddenCompletedGoalIDs.insert(goal.threadID)
+                isGoalStatusExpanded = false
+            }
         }
     }
 
@@ -423,14 +544,15 @@ struct ComposerView: View {
     }
 
     private func composerCard(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: composerCardSpacing) {
             composerTextArea(tokens: tokens)
             voiceReviewNotice
             composerToolbar(tokens: tokens)
         }
-        .padding(12)
+        .padding(composerCardPadding)
         .frame(maxWidth: .infinity)
         .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .tint(tokens.accent)
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
@@ -488,9 +610,9 @@ struct ComposerView: View {
 
     private func composerCardBorderColor(_ tokens: ThemeTokens) -> Color {
         if voiceInput.isRecording {
-            // 录音时只给输入框一圈很淡的玫瑰红描边作为氛围提示，真正“正在录音”的强调交给
-            // 上方那条带波形的胶囊；不再用浓红粗框把整个输入框圈起来。
-            return Color.voiceRecording.opacity(0.4)
+            // 录音时只给输入框一圈很淡的主题色描边作为氛围提示，真正“正在录音”的强调交给
+            // 上方那条带波形的胶囊；不再让整个输入框被强描边抢走注意力。
+            return tokens.voiceRecording.opacity(0.4)
         }
         if voiceInput.isPreparing || isVoicePressActive {
             return tokens.accent.opacity(0.55)
@@ -504,6 +626,12 @@ struct ComposerView: View {
     private var composerPlaceholderText: String {
         if composerState.isGoalModeSelected {
             return sessionStore.selectedThreadGoal == nil ? "描述目标任务" : "要求目标后续变更"
+        }
+        if composerState.isPlanModeSelected {
+            return "描述要先规划的问题"
+        }
+        if canUseGuidedFollowUp {
+            return guidedFollowUpEnabled ? "引导当前回复" : "追加下一轮指令"
         }
         if sessionStore.selectedThreadGoal != nil {
             return "要求后续变更"
@@ -528,6 +656,7 @@ struct ComposerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             voiceMicControl
+            followUpDeliverySendMenu(showLabels: !isCompactComposer)
             sendButton(showLabels: !isCompactComposer)
         }
     }
@@ -538,6 +667,7 @@ struct ComposerView: View {
             addContentButton
             skillShortcutMenu
             goalButton
+            planButton
             voiceLanguageMenu
             permissionMenu
             runSettingsMenu
@@ -588,8 +718,10 @@ struct ComposerView: View {
             showsAddContentPanel.toggle()
         } label: {
             Label("添加", systemImage: "plus.circle")
+                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
         }
         .buttonStyle(.bordered)
+        .tint(themeStore.tokens(for: colorScheme).accent)
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
                 selectedPhotoItem: $selectedPhotoItem,
@@ -645,8 +777,10 @@ struct ComposerView: View {
             }
         } label: {
             Label("Skill", systemImage: "wand.and.stars")
+                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
         }
         .buttonStyle(.bordered)
+        .tint(themeStore.tokens(for: colorScheme).accent)
         .keyboardShortcut("k", modifiers: [.command, .shift])
         .help("从 capabilities.skills 一键插入 .skill(name:path)")
     }
@@ -668,18 +802,112 @@ struct ComposerView: View {
 
     private var goalButton: some View {
         let selected = composerState.isGoalModeSelected
-        return Button {
-            composerState.toggleGoalMode()
-        } label: {
-            Label("目标", systemImage: "target")
-        }
-        .buttonStyle(.bordered)
-        .tint(selected ? themeStore.tokens(for: colorScheme).accent : nil)
+        return composerModeButton(
+            title: "目标",
+            systemImage: "target",
+            selected: selected,
+            accessibilityLabel: "目标任务模式",
+            action: {
+                composerState.toggleGoalMode()
+            }
+        )
         .keyboardShortcut("g", modifiers: [.command, .shift])
         .help(selected ? "关闭目标任务发送模式" : "将下一次发送设为目标任务")
-        .accessibilityLabel("目标任务模式")
-        .accessibilityValue(selected ? "已选择" : "未选择")
-        .accessibilityHint("只切换发送模式，不会立即发送")
+    }
+
+    private var planButton: some View {
+        let selected = composerState.isPlanModeSelected
+        return composerModeButton(
+            title: "计划",
+            systemImage: "list.clipboard",
+            selected: selected,
+            accessibilityLabel: "计划模式",
+            action: {
+                composerState.togglePlanMode()
+            }
+        )
+        .keyboardShortcut("p", modifiers: [.command, .shift])
+        .help(selected ? "关闭计划模式" : "将下一次发送设为 Codex 计划模式")
+    }
+
+    @ViewBuilder
+    private func composerModeButton(
+        title: String,
+        systemImage: String,
+        selected: Bool,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        if selected {
+            Button(action: action) {
+                Label(title, systemImage: systemImage)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(tokens.accent)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue("已选择")
+            .accessibilityHint("只切换发送模式，不会立即发送")
+        } else {
+            Button(action: action) {
+                Label(title, systemImage: systemImage)
+                    .foregroundStyle(tokens.accent)
+            }
+            .buttonStyle(.bordered)
+            .tint(tokens.accent)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue("未选择")
+            .accessibilityHint("只切换发送模式，不会立即发送")
+        }
+    }
+
+    @ViewBuilder
+    private func followUpDeliverySendMenu(showLabels: Bool) -> some View {
+        if canUseGuidedFollowUp {
+            let tokens = themeStore.tokens(for: colorScheme)
+            Menu {
+                Button {
+                    guidedFollowUpEnabled = false
+                } label: {
+                    Label("排队下一轮", systemImage: guidedFollowUpEnabled ? "clock" : "checkmark")
+                }
+                Button {
+                    guidedFollowUpEnabled = true
+                } label: {
+                    Label("引导当前回复", systemImage: guidedFollowUpEnabled ? "checkmark" : "text.bubble")
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: guidedFollowUpEnabled ? "text.bubble.fill" : "clock")
+                        .font(themeStore.uiFont(size: 16, weight: .bold))
+                    if showLabels {
+                        Text(guidedFollowUpEnabled ? "引导" : "排队")
+                            .font(themeStore.uiFont(.callout, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    Image(systemName: "chevron.up")
+                        .font(themeStore.uiFont(size: 10, weight: .bold))
+                        .opacity(0.72)
+                }
+                .foregroundStyle(guidedFollowUpEnabled ? tokens.accent : tokens.secondaryText)
+                .frame(height: 44)
+                .padding(.horizontal, showLabels ? 12 : 8)
+                .frame(minWidth: showLabels ? 76 : 48)
+                .background(
+                    guidedFollowUpEnabled ? tokens.accent.opacity(0.12) : tokens.elevatedSurface,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(guidedFollowUpEnabled ? tokens.accent.opacity(0.42) : tokens.border)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help(guidedFollowUpEnabled ? "运行中发送会直接引导当前回复" : "运行中发送会排队为下一轮消息")
+            .accessibilityLabel("运行中追加方式")
+            .accessibilityValue(guidedFollowUpEnabled ? "引导当前回复" : "排队下一轮")
+        }
     }
 
     @ViewBuilder
@@ -718,8 +946,10 @@ struct ComposerView: View {
             }
         } label: {
             Label(selectedVoiceLanguage.title, systemImage: "globe")
+                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
         }
         .buttonStyle(.bordered)
+        .tint(themeStore.tokens(for: colorScheme).accent)
     }
 
     private var runSettingsMenu: some View {
@@ -738,8 +968,10 @@ struct ComposerView: View {
             }
         } label: {
             Label("运行", systemImage: "gearshape")
+                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
         }
         .buttonStyle(.bordered)
+        .tint(themeStore.tokens(for: colorScheme).accent)
     }
 
     private var modelOptionsMenu: some View {
@@ -812,7 +1044,7 @@ struct ComposerView: View {
             Section("权限模式") {
                 ForEach(ComposerPermissionMode.allCases) { mode in
                     Button {
-                        composerState.applyPermissionMode(mode)
+                        setPermissionMode(mode)
                     } label: {
                         Label(
                             mode.title,
@@ -850,9 +1082,9 @@ struct ComposerView: View {
                 }
             }
         } else if voiceInput.isRecording {
-            voiceActivityCapsule(tint: .voiceRecording, emphasized: true) {
-                VoiceWaveformView(meter: voiceInput.levelMeter, isActive: true)
-                    .frame(width: isCompactComposer ? 110 : 168, height: 28)
+            voiceActivityCapsule(tint: tokens.voiceRecording, emphasized: true) {
+                VoiceWaveformView(meter: voiceInput.levelMeter, isActive: true, colors: tokens.voiceWaveformGradient)
+                    .frame(width: isCompactComposer ? 124 : 190, height: isCompactComposer ? 32 : 34)
                 if !isCompactComposer {
                     Text("正在听，松手转写 · \(selectedVoiceLanguage.title)")
                         .lineLimit(1)
@@ -882,7 +1114,7 @@ struct ComposerView: View {
         .font(themeStore.uiFont(.caption, weight: .medium))
         .foregroundStyle(tint)
         .padding(.horizontal, 12)
-        .frame(height: 36)
+        .frame(height: emphasized ? 40 : 36)
         .background(tint.opacity(emphasized ? 0.12 : 0.1), in: Capsule())
         .overlay {
             Capsule().strokeBorder(tint.opacity(emphasized ? 0.4 : 0.32))
@@ -896,12 +1128,26 @@ struct ComposerView: View {
         sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
     }
 
+    private func applyDefaultPermissionMode() {
+        composerState.applyPermissionMode(ComposerPermissionMode.stored(defaultPermissionModeID))
+    }
+
+    private func setPermissionMode(_ mode: ComposerPermissionMode) {
+        defaultPermissionModeID = mode.rawValue
+        composerState.applyPermissionMode(mode)
+    }
+
     private var turnOptionChipItems: [ComposerChipItem] {
         var items: [ComposerChipItem] = []
         if composerState.isGoalModeSelected {
             items.append(ComposerChipItem(id: "send-goal", text: "目标任务", symbol: "target", tint: themeStore.tokens(for: colorScheme).accent))
         }
-        items.append(ComposerChipItem(id: "model", text: selectedModelSummaryTitle, symbol: "cpu", tint: themeStore.tokens(for: colorScheme).accent))
+        if composerState.isPlanModeSelected {
+            items.append(ComposerChipItem(id: "send-plan", text: "计划模式", symbol: "list.clipboard", tint: themeStore.tokens(for: colorScheme).accent))
+        }
+        if hasSelectedModelOverride {
+            items.append(ComposerChipItem(id: "model", text: selectedModelSummaryTitle, symbol: "cpu", tint: themeStore.tokens(for: colorScheme).accent))
+        }
         items.append(
             ComposerChipItem(
                 id: "permission",
@@ -927,6 +1173,10 @@ struct ComposerView: View {
             items.append(ComposerChipItem(id: "advanced", text: "高级已应用", symbol: "ellipsis.circle", tint: .orange))
         }
         return items
+    }
+
+    private var hasSelectedModelOverride: Bool {
+        composerState.turnOptions.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     private var selectedModelSummaryTitle: String {
@@ -1077,7 +1327,7 @@ struct ComposerView: View {
         }
         var items: [(text: String, symbol: String, tint: Color)] = []
         if session.activeTurnID != nil {
-            items.append(("回合处理中", "bolt.fill", .green))
+            items.append(("回合处理中", "bolt.fill", themeStore.tokens(for: colorScheme).success))
         }
         if let lastSeq = session.lastSeq {
             items.append(("seq \(lastSeq)", "number", .secondary))
@@ -1093,7 +1343,7 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var pendingApprovalAction: some View {
-        if let approval = sessionStore.selectedSession?.pendingApproval {
+        if !sessionStore.isSelectedSessionObserving, let approval = sessionStore.selectedSession?.pendingApproval {
             PendingApprovalActionCard(
                 approval: approval,
                 isSendingDecision: sessionStore.isApprovalDecisionPending(approval),
@@ -1103,11 +1353,31 @@ struct ComposerView: View {
         }
     }
 
+    @ViewBuilder
+    private var pendingUserInputAction: some View {
+        if !sessionStore.isSelectedSessionObserving, let request = sessionStore.selectedSession?.pendingUserInput {
+            PendingUserInputActionCard(
+                request: request,
+                isSubmitting: sessionStore.isUserInputResponsePending(request),
+                onSubmit: { answers in
+                    sessionStore.respondToUserInput(request, answers: answers)
+                }
+            )
+        }
+    }
+
     private func sendButton(showLabels: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let isGoalMode = composerState.isGoalModeSelected
-        let title = composerState.voiceDraftNeedsReview ? (isGoalMode ? "确认目标" : "确认发送") : (isGoalMode ? "发送目标" : "发送")
-        let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : "paperplane.fill")
+        let isPlanMode = composerState.isPlanModeSelected
+        let isGuidedFollowUp = !isGoalMode && !isPlanMode && canUseGuidedFollowUp && guidedFollowUpEnabled
+        let title: String
+        if composerState.voiceDraftNeedsReview {
+            title = isGoalMode ? "确认目标" : isPlanMode ? "确认计划" : isGuidedFollowUp ? "确认引导" : "确认发送"
+        } else {
+            title = isGoalMode ? "发送目标" : isPlanMode ? "生成计划" : isGuidedFollowUp ? "引导" : "发送"
+        }
+        let symbol = composerState.voiceDraftNeedsReview ? "checkmark.circle.fill" : (isGoalMode ? "target" : isPlanMode ? "list.clipboard" : isGuidedFollowUp ? "text.bubble.fill" : "paperplane.fill")
         let enabled = canSubmitDraft
 
         // 自绘成与“按住说话”同高同圆角的实心主按钮，让语音/发送成为右侧一组协调的主操作，
@@ -1161,13 +1431,16 @@ struct ComposerView: View {
         case .readOnly:
             return .secondary
         case .autoApprove:
-            return .green
+            return themeStore.tokens(for: colorScheme).success
         case .fullAccess:
             return .red
         }
     }
 
     private var composerMinHeight: CGFloat {
+        if usesCollapsedComposerTextHeight {
+            return isCompactComposer ? 38 : 34
+        }
         if isCompactComposer {
             return 60
         }
@@ -1182,8 +1455,24 @@ struct ComposerView: View {
     }
 
     private var composerTextHeight: CGFloat {
+        if usesCollapsedComposerTextHeight {
+            return composerMinHeight
+        }
         let measured = measuredComposerTextHeight > 0 ? measuredComposerTextHeight : composerMinHeight
         return min(max(measured, composerMinHeight), composerMaxHeight)
+    }
+
+    private var usesCollapsedComposerTextHeight: Bool {
+        // 空输入时先保持轻量高度；一旦有文字/附件/语音草稿，才恢复更像命令面板的多行空间。
+        composerState.isEmpty && !composerState.voiceDraftNeedsReview
+    }
+
+    private var composerCardPadding: CGFloat {
+        usesCollapsedComposerTextHeight ? 10 : 12
+    }
+
+    private var composerCardSpacing: CGFloat {
+        usesCollapsedComposerTextHeight ? 8 : 12
     }
 
     private var composerUIFont: UIFont {
@@ -1205,14 +1494,15 @@ struct ComposerView: View {
     }
 
     private func composerActivity(_ activity: SessionForegroundActivity) -> some View {
-        HStack(spacing: 7) {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return HStack(spacing: 7) {
             if activity.showsSpinner {
                 ProgressView()
                     .controlSize(.small)
-                    .tint(.green)
+                    .tint(tokens.success)
             } else {
                 Circle()
-                    .fill(.green)
+                    .fill(tokens.success)
                     .frame(width: 7, height: 7)
             }
             Text(activity.title)
@@ -1220,7 +1510,7 @@ struct ComposerView: View {
             Spacer(minLength: 0)
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
-        .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+        .foregroundStyle(tokens.secondaryText)
     }
 
     private func openManualInput(_ kind: ManualInputKind) {
@@ -1862,7 +2152,7 @@ private struct ActiveGoalStatusBar: View {
             goalActionButton(
                 title: "标记完成",
                 systemImage: "checkmark.circle",
-                tint: .green,
+                tint: tokens.success,
                 isDisabled: isUpdating || goal.status == .complete,
                 action: onComplete
             )
@@ -1956,13 +2246,13 @@ private struct ActiveGoalStatusBar: View {
     private var statusTint: Color {
         switch goal.status {
         case .active:
-            return .green
+            return themeStore.tokens(for: colorScheme).goalActive
         case .paused:
             return .secondary
         case .blocked, .usageLimited, .budgetLimited:
-            return .orange
+            return themeStore.tokens(for: colorScheme).warning
         case .complete:
-            return .blue
+            return themeStore.tokens(for: colorScheme).accent
         }
     }
 }
@@ -2256,9 +2546,9 @@ private struct VoiceMicButton: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let isActive = isPreparing || isRecording || isTranscribing
-        let foreground = isRecording ? Color.voiceRecording : tokens.accent
-        let background = isRecording ? Color.voiceRecording.opacity(0.15) : tokens.accent.opacity(isActive ? 0.14 : 0.10)
-        let border = isRecording ? Color.voiceRecording.opacity(0.5) : tokens.accent.opacity(isActive ? 0.54 : 0.42)
+        let foreground = isRecording ? tokens.voiceRecording : tokens.accent
+        let background = isRecording ? tokens.voiceRecording.opacity(0.15) : tokens.accent.opacity(isActive ? 0.14 : 0.10)
+        let border = isRecording ? tokens.voiceRecording.opacity(0.5) : tokens.accent.opacity(isActive ? 0.54 : 0.42)
 
         HStack(spacing: 8) {
             if isPreparing {
@@ -2283,7 +2573,7 @@ private struct VoiceMicButton: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(border)
         }
-        .shadow(color: isRecording ? Color.voiceRecording.opacity(0.14) : .clear, radius: 10, y: 3)
+        .shadow(color: isRecording ? tokens.voiceRecording.opacity(0.14) : .clear, radius: 10, y: 3)
         .scaleEffect(isActive ? 1.04 : 1)
         .animation(.easeInOut(duration: 0.15), value: isActive)
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -2340,9 +2630,51 @@ private struct VoiceMicButton: View {
     }
 }
 
+struct VoiceWaveformLevelMapping {
+    static let noiseGate: CGFloat = 0.035
+    static let responseCurve: Double = 0.42
+    static let audibleFloor: CGFloat = 0.10
+
+    static func visualLevel(for rawLevel: CGFloat) -> CGFloat {
+        let clamped = max(0, min(1, rawLevel))
+        guard clamped > noiseGate else {
+            return 0
+        }
+        // 低音量区做更明显的视觉增益：静音仍被 gate 压住，一开口就能看到清楚的上下起伏。
+        let normalized = (clamped - noiseGate) / (1 - noiseGate)
+        let boosted = pow(Double(normalized), responseCurve)
+        let lifted = audibleFloor + CGFloat(boosted) * (1 - audibleFloor)
+        return max(0, min(1, lifted))
+    }
+}
+
+struct VoiceWaveformSampleShape {
+    static let barCount = 22
+
+    static func samples(for rawLevel: CGFloat, count: Int = Self.barCount) -> [CGFloat] {
+        let clamped = max(0, min(1, rawLevel))
+        guard count > 0 else {
+            return []
+        }
+        guard VoiceWaveformLevelMapping.visualLevel(for: clamped) > 0 else {
+            return Array(repeating: 0, count: count)
+        }
+
+        return (0..<count).map { index in
+            // 固定条位生成一个中间波峰：每一帧只反映“此刻声音大小”，不再把历史音量往前滚动。
+            let progress = count == 1 ? 0.5 : CGFloat(index) / CGFloat(count - 1)
+            let distanceFromCenter = abs(progress - 0.5) * 2
+            let bell = CGFloat(exp(-pow(Double(distanceFromCenter / 0.48), 2)))
+            let shoulder: CGFloat = 0.16
+            return min(1, clamped * (shoulder + bell * (1 - shoulder)))
+        }
+    }
+}
+
 private struct VoiceWaveformView: View {
     @ObservedObject var meter: VoiceLevelMeter
     let isActive: Bool
+    let colors: [Color]
 
     var body: some View {
         GeometryReader { proxy in
@@ -2350,12 +2682,12 @@ private struct VoiceWaveformView: View {
             let spacing: CGFloat = 3
             let count = max(samples.count, 1)
             let availableWidth = max(0, proxy.size.width - spacing * CGFloat(max(count - 1, 0)))
-            let barWidth = max(2.5, min(4, availableWidth / CGFloat(count)))
+            let barWidth = max(2.7, min(5.2, availableWidth / CGFloat(count)))
 
             // 用一条铺满整个宽度的横向渐变，再用竖条形状做 mask：每根条只露出它所在位置的渐变色，
-            // 于是整组波形从左到右是平滑的紫色渐变，而不是每根单独着色拼出来的硬边。
+            // 于是整组波形从左到右是平滑的主题渐变，而不是每根单独着色拼出来的硬边。
             LinearGradient(
-                colors: Color.voiceWaveformGradient,
+                colors: colors,
                 startPoint: .leading,
                 endPoint: .trailing
             )
@@ -2380,38 +2712,36 @@ private struct VoiceWaveformView: View {
             // 静止时给一点高低错落，避免看起来像坏掉的直线。
             return minHeight + (index.isMultiple(of: 2) ? 3 : 0)
         }
-        // 线性铺满整段高度，不再额外做幂次压缩：安静时贴近底部、说话时直接冲到顶，
-        // 上下起伏拉满，用户一眼能看出“到底有没有采到声音”。
-        let visibleLevel = max(level, 0.05)
+        let visibleLevel = VoiceWaveformLevelMapping.visualLevel(for: level)
         return minHeight + visibleLevel * usable
     }
 }
 
 @MainActor
 private final class VoiceLevelMeter: ObservableObject {
-    static let barCount = 22
+    static let barCount = VoiceWaveformSampleShape.barCount
 
     @Published private(set) var samples: [CGFloat] = Array(repeating: 0, count: VoiceLevelMeter.barCount)
+    private var previousLevel: CGFloat = 0
 
     func push(_ level: CGFloat) {
-        var next = samples
-        next.removeFirst()
-        // 直接存归一化后的电平，不再做 pow 压缩：压缩会把小信号抬高、削掉动态对比，
-        // 正是导致“波形上下几乎不动”的元凶。动态范围交给 normalizedPower 的 dB 映射控制。
-        next.append(max(0, min(1, level)))
-        samples = next
+        let clamped = max(0, min(1, level))
+        let risingDelta = max(0, clamped - previousLevel)
+        // 只对“正在变大”的瞬间做一点 attack 增强；不保留历史队列，所以视觉不会横向滚动。
+        let emphasizedLevel = min(1, clamped + risingDelta * 0.35)
+        samples = VoiceWaveformSampleShape.samples(for: emphasizedLevel, count: Self.barCount)
+        previousLevel = clamped
     }
 
     func prepareForRecording() {
-        // 录音器刚启动时 meter 还没吐出第一帧；先给一个很低的基线，用户按下后立刻能看到细条，
-        // 一开口就会明显窜高，形成清晰的“静默 → 说话”落差。
-        samples = (0..<Self.barCount).map { index in
-            index.isMultiple(of: 3) ? 0.12 : 0.07
-        }
+        // 录音器刚启动但还没检测到声音时保持平线；一开口再按当前音量抬起中心波峰。
+        samples = Array(repeating: 0, count: Self.barCount)
+        previousLevel = 0
     }
 
     func reset() {
         samples = Array(repeating: 0, count: VoiceLevelMeter.barCount)
+        previousLevel = 0
     }
 }
 
@@ -2944,12 +3274,11 @@ private final class VoiceInputController: NSObject, ObservableObject {
     }
 
     nonisolated private static func normalizedPower(average: Float, peak: Float) -> CGFloat {
-        // 以峰值为主、平均值兜底：峰值让波形对说话的瞬态更灵敏，平均值压住静音段的底噪抖动。
-        // 人声说话时峰值常窜到 -20...-3 dBFS，安静时落在 -45 以下；把映射区间收紧到 [-45, -3]，
-        // 让“安静≈0、说话≈铺满”的落差最大化，解决波形上下几乎不动的问题。
-        let floorDB: Float = -45
-        let ceilDB: Float = -3
-        let blended = max(average, peak - 6)
+        // 以峰值为主、平均值兜底：峰值跟住人声爆破音，平均值避免纯底噪把波形误拉高。
+        // 映射区间略收紧到 [-50, -4] dBFS，轻声会更早动起来，正常说话会明显上下波动。
+        let floorDB: Float = -50
+        let ceilDB: Float = -4
+        let blended = max(average + 2, peak - 4)
         let clamped = max(floorDB, min(ceilDB, blended))
         return CGFloat((clamped - floorDB) / (ceilDB - floorDB))
     }
@@ -2991,6 +3320,29 @@ private enum VoiceInputError: LocalizedError {
         case .recordingFailed:
             return "录音启动失败"
         }
+    }
+}
+
+struct TextSelectionPolicy {
+    static func rangeAfterExternalTextSync(previousText: String, nextText: String, previousRange: NSRange) -> NSRange {
+        let previousLength = utf16Length(of: previousText)
+        let nextLength = utf16Length(of: nextText)
+        let caretWasAtPreviousEnd = previousRange.length == 0 && previousRange.location >= previousLength
+        if caretWasAtPreviousEnd {
+            return NSRange(location: nextLength, length: 0)
+        }
+        return clampedRange(previousRange, in: nextText)
+    }
+
+    static func clampedRange(_ range: NSRange, in text: String) -> NSRange {
+        let length = utf16Length(of: text)
+        let location = min(max(0, range.location), length)
+        let remaining = max(0, length - location)
+        return NSRange(location: location, length: min(max(0, range.length), remaining))
+    }
+
+    private static func utf16Length(of text: String) -> Int {
+        (text as NSString).length
     }
 }
 
@@ -3066,24 +3418,22 @@ private struct ComposerTextView: UIViewRepresentable {
 
         // 外部清空/恢复草稿时才同步 UIKit 文本；用户正常输入由 delegate 单向写回，
         // 避免中文 marked text 和光标位置在 SwiftUI 重算时被反复重置。
+        let previousText = uiView.text ?? ""
         let selectedRange = uiView.selectedRange
         context.coordinator.isApplyingExternalText = true
         uiView.text = text
         context.coordinator.lastSyncedText = text
         context.coordinator.isApplyingExternalText = false
-        uiView.selectedRange = clampedRange(selectedRange, in: uiView.text)
+        uiView.selectedRange = TextSelectionPolicy.rangeAfterExternalTextSync(
+            previousText: previousText,
+            nextText: text,
+            previousRange: selectedRange
+        )
         context.coordinator.reportContentHeight(for: uiView)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
-    }
-
-    private func clampedRange(_ range: NSRange, in text: String) -> NSRange {
-        let length = (text as NSString).length
-        let location = min(range.location, length)
-        let remaining = max(0, length - location)
-        return NSRange(location: location, length: min(range.length, remaining))
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -3320,5 +3670,182 @@ private struct PendingApprovalActionCard: View {
             .controlSize(.large)
             .disabled(isSendingDecision)
         }
+    }
+}
+
+private struct PendingUserInputActionCard: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let request: AgentUserInputRequest
+    let isSubmitting: Bool
+    let onSubmit: ([String: [String]]) -> Void
+
+    @State private var selectedAnswers: [String: String] = [:]
+    @State private var freeformAnswers: [String: String] = [:]
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 12) {
+            header
+
+            ForEach(request.questions) { question in
+                questionBlock(question)
+            }
+
+            Button {
+                onSubmit(answerPayload)
+            } label: {
+                if isSubmitting {
+                    Label("提交中", systemImage: "hourglass")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                } else {
+                    Label("提交补充信息", systemImage: "arrow.up.circle.fill")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(tokens.accent)
+            .controlSize(.large)
+            .disabled(isSubmitting || !canSubmit)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(tokens.accent.opacity(0.28), lineWidth: 1)
+        }
+    }
+
+    private var header: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "questionmark.bubble")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(tokens.accent)
+                .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("补充信息")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tokens.accent)
+                Text(request.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                if isSubmitting {
+                    Label("答案已发送", systemImage: "hourglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func questionBlock(_ question: AgentUserInputQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !question.header.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(question.header)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            if !question.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(question.question)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !question.options.isEmpty {
+                optionButtons(for: question)
+            }
+            if question.isOther || question.options.isEmpty {
+                answerField(for: question)
+            }
+        }
+    }
+
+    private func optionButtons(for question: AgentUserInputQuestion) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .leading)], alignment: .leading, spacing: 8) {
+            ForEach(question.options) { option in
+                let isSelected = selectedAnswers[question.id] == option.label
+                Button {
+                    selectedAnswers[question.id] = option.label
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(option.label, systemImage: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                        if let description = option.description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
+                            Text(description)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .tint(isSelected ? tokens.accent : nil)
+                .disabled(isSubmitting)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func answerField(for question: AgentUserInputQuestion) -> some View {
+        if question.isSecret {
+            SecureField("Other", text: binding(for: question.id))
+                .textFieldStyle(.roundedBorder)
+                .disabled(isSubmitting)
+        } else {
+            TextField("Other", text: binding(for: question.id), axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...3)
+                .disabled(isSubmitting)
+        }
+    }
+
+    private func binding(for questionID: String) -> Binding<String> {
+        Binding(
+            get: { freeformAnswers[questionID] ?? "" },
+            set: { freeformAnswers[questionID] = $0 }
+        )
+    }
+
+    private var answerPayload: [String: [String]] {
+        var payload: [String: [String]] = [:]
+        for question in request.questions {
+            let answers = answers(for: question)
+            if !answers.isEmpty {
+                payload[question.id] = answers
+            }
+        }
+        return payload
+    }
+
+    private var canSubmit: Bool {
+        if request.questions.isEmpty {
+            return true
+        }
+        return request.questions.allSatisfy { !answers(for: $0).isEmpty }
+    }
+
+    private func answers(for question: AgentUserInputQuestion) -> [String] {
+        var values: [String] = []
+        if let selected = selectedAnswers[question.id]?.trimmingCharacters(in: .whitespacesAndNewlines), !selected.isEmpty {
+            values.append(selected)
+        }
+        let freeform = (freeformAnswers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !freeform.isEmpty {
+            values.append(freeform)
+        }
+        return values
     }
 }

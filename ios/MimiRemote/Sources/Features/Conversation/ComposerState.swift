@@ -13,7 +13,14 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     case autoApprove
     case fullAccess
 
+    static let defaultStorageKey = "composer.defaultPermissionMode"
+    static let defaultMode: ComposerPermissionMode = .fullAccess
+
     var id: String { rawValue }
+
+    static func stored(_ rawValue: String) -> ComposerPermissionMode {
+        ComposerPermissionMode(rawValue: rawValue) ?? defaultMode
+    }
 
     init(options: CodexAppServerTurnOptions) {
         let reviewer = options.approvalsReviewer.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,7 +64,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .requestApproval:
-            return "写工作区前由你确认"
+            return "可写当前工作区，执行前由你确认"
         case .readOnly:
             return "默认不写文件"
         case .autoApprove:
@@ -100,7 +107,9 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
 
     var sandboxMode: CodexAppServerSandboxMode {
         switch self {
-        case .requestApproval, .autoApprove:
+        case .autoApprove:
+            return .workspaceWrite
+        case .requestApproval:
             return .workspaceWrite
         case .readOnly:
             return .readOnly
@@ -123,6 +132,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
 enum ComposerSendMode: String, CaseIterable, Identifiable {
     case standard
     case goal
+    case plan
 
     var id: String { rawValue }
 }
@@ -144,6 +154,10 @@ struct ComposerState {
     private var voiceDraftBase: String?
     private var voiceLastRenderedDraft: String?
 
+    init(defaultPermissionMode: ComposerPermissionMode = .defaultMode) {
+        defaultPermissionMode.apply(to: &turnOptions)
+    }
+
     var isEmpty: Bool {
         !hasNonWhitespaceDraft && attachments.isEmpty
     }
@@ -164,12 +178,25 @@ struct ComposerState {
         sendMode == .goal
     }
 
+    var isPlanModeSelected: Bool {
+        sendMode == .plan
+    }
+
     mutating func toggleGoalMode() {
         // 目标是发送形态，不是立即动作；toggle 只改变下一次普通发送按钮的行为。
         sendMode = isGoalModeSelected ? .standard : .goal
     }
 
+    mutating func togglePlanMode() {
+        sendMode = isPlanModeSelected ? .standard : .plan
+    }
+
     mutating func resetSendModeAfterSubmit() {
+        resetTransientSendMode()
+    }
+
+    mutating func resetTransientSendMode() {
+        // 目标/计划是下一次发送的临时模式，跟具体对话相关；切换 thread 时不能沿用到新对话。
         sendMode = .standard
     }
 

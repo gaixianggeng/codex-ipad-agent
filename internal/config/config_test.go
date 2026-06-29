@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoadWithEnvOverrides(t *testing.T) {
+	clearAgentdEnv(t)
 	t.Setenv("AGENTD_TOKEN", "0123456789abcdef0123456789abcdef")
 	t.Setenv("AGENTD_PROJECTS", filepath.Join(t.TempDir(), "demo"))
 	projectDir := os.Getenv("AGENTD_PROJECTS")

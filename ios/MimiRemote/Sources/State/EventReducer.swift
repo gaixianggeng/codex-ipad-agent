@@ -4,11 +4,13 @@ struct EventReducerOutput {
     var upsertSessions: [AgentSession] = []
     var statusUpdates: [(SessionID, String)] = []
     var pendingApprovalUpdates: [(SessionID, ApprovalSummary?)] = []
+    var pendingUserInputUpdates: [(SessionID, AgentUserInputRequest?)] = []
     var goalUpdates: [(SessionID, ThreadGoal?)] = []
     var pendingApprovalTaskClears: [SessionID] = []
     var contextUpdates: [(SessionContextSnapshot, SessionID?)] = []
     var foregroundUpdates: [(SessionID, SessionForegroundActivity, UInt64?)] = []
     var foregroundClears: [SessionID] = []
+    var activeTurnMutations: [EventReducerActiveTurnMutation] = []
     var messageMutations: [EventReducerMessageMutation] = []
     var logAppends: [EventReducerLogAppend] = []
     var statusMessage: String?
@@ -16,11 +18,17 @@ struct EventReducerOutput {
     var disconnectWebSocket = false
 }
 
+enum EventReducerActiveTurnMutation {
+    case set(SessionID, TurnID)
+    case clear(SessionID, TurnID?)
+}
+
 enum EventReducerMessageMutation {
     case assistantDelta(AgentDelta, AgentEventMetadata, SessionID)
     case completed(AgentMessage, AgentEventMetadata, SessionID)
     case system(String, SessionID, MessageKind, AgentEventMetadata?)
     case resolveLatestPendingApproval(SessionID)
+    case resolveLatestPendingUserInput(SessionID, skipped: Bool)
     case markCurrentAssistantCompleted(AgentEventMetadata, SessionID)
 }
 
@@ -64,6 +72,12 @@ actor EventReducer {
             if shouldClearPendingApproval(for: status) {
                 output.pendingApprovalUpdates.append((id, nil))
             }
+            if shouldClearPendingUserInput(for: status) {
+                output.pendingUserInputUpdates.append((id, nil))
+            }
+            if !isRunningStatus(status) {
+                output.activeTurnMutations.append(.clear(id, nil))
+            }
             output.contextUpdates.append((
                 SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: contextStatusType(from: status)), updatedAt: Date()),
                 id
@@ -89,10 +103,11 @@ actor EventReducer {
             }
             output.goalUpdates.append((id, nil))
         case .turnStarted(let metadata):
-            guard let id = metadata.sessionID else {
-                return output
-            }
+            let id = metadata.sessionID ?? fallbackSessionID
             output.statusUpdates.append((id, "running"))
+            if let turnID = metadata.turnID {
+                output.activeTurnMutations.append(.set(id, turnID))
+            }
             output.contextUpdates.append((
                 SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: "active"), updatedAt: Date()),
                 id
@@ -164,16 +179,43 @@ actor EventReducer {
             ))
             output.pendingApprovalTaskClears.append(id)
             output.messageMutations.append(.resolveLatestPendingApproval(id))
+        case .userInputRequest(let request, let metadata):
+            let id = metadata.sessionID ?? request.threadID
+            output.statusUpdates.append((id, "waiting_for_input"))
+            // request_user_input 是 turn 内部的补充信息阻塞点；写入 session 后输入框上方渲染补充信息卡。
+            output.pendingUserInputUpdates.append((id, request))
+            output.contextUpdates.append((
+                SessionContextSnapshot(
+                    sessionID: id,
+                    status: SessionContextStatus(type: "active", activeFlags: ["waitingOnUserInput"]),
+                    tasks: [SessionContextTask(id: request.id, kind: "user_input", title: request.title, subtitle: nil, status: "waiting")],
+                    updatedAt: Date()
+                ),
+                id
+            ))
+            output.messageMutations.append(.system("等待补充信息：\(request.title)", id, .userInput, metadata))
+        case .userInputResolved(let metadata, let skipped):
+            let id = metadata.sessionID ?? fallbackSessionID
+            output.pendingUserInputUpdates.append((id, nil))
+            output.statusUpdates.append((id, "running"))
+            output.contextUpdates.append((
+                SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: "active"), updatedAt: Date()),
+                id
+            ))
+            output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: skipped))
         case .turnCompleted(let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
             output.pendingApprovalUpdates.append((id, nil))
+            output.pendingUserInputUpdates.append((id, nil))
             output.contextUpdates.append((
                 SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: "active"), updatedAt: Date()),
                 id
             ))
             output.pendingApprovalTaskClears.append(id)
             output.messageMutations.append(.resolveLatestPendingApproval(id))
+            output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
             output.messageMutations.append(.markCurrentAssistantCompleted(metadata, fallbackSessionID))
+            output.activeTurnMutations.append(.clear(id, metadata.turnID))
             output.foregroundClears.append(id)
         case .warning(let payload, let metadata):
             output.logAppends.append(EventReducerLogAppend(
@@ -184,7 +226,9 @@ actor EventReducer {
             output.messageMutations.append(.system("运行警告：\(payload.message)", fallbackSessionID, .error, metadata))
         case .error(let message):
             output.foregroundClears.append(fallbackSessionID)
+            output.activeTurnMutations.append(.clear(fallbackSessionID, nil))
             output.pendingApprovalUpdates.append((fallbackSessionID, nil))
+            output.pendingUserInputUpdates.append((fallbackSessionID, nil))
             output.errorMessage = message
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] \(message)\n",
@@ -223,6 +267,25 @@ actor EventReducer {
             return false
         default:
             return true
+        }
+    }
+
+    private func shouldClearPendingUserInput(for status: String) -> Bool {
+        switch status {
+        case "running", "waiting_for_approval", "waiting_for_input":
+            // 和审批一致：泛化 running/active 事件不能抹掉仍在等待的补充信息卡。
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func isRunningStatus(_ status: String) -> Bool {
+        switch status {
+        case "running", "waiting_for_approval", "waiting_for_input":
+            return true
+        default:
+            return false
         }
     }
 }

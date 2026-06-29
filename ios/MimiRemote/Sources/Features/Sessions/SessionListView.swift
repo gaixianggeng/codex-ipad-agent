@@ -23,11 +23,20 @@ struct SessionListView: View {
                         SessionListRow(
                             session: session,
                             foregroundActivity: sessionStore.foregroundActivity(for: session.id),
-                            isSelected: session.id == sessionStore.selectedSessionID
+                            isSelected: session.id == sessionStore.selectedSessionID,
+                            isObserving: sessionStore.isSessionObserving(session)
                         )
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        if sessionStore.isSessionObserving(session) {
+                            Button {
+                                sessionStore.takeOverSession(session)
+                            } label: {
+                                Label("接管到 iPad", systemImage: "hand.raised.fill")
+                            }
+                        }
+
                         Button {
                             Task { await sessionStore.handoffSessionToWorktree(session) }
                         } label: {
@@ -74,6 +83,7 @@ private struct SessionListRow: View {
     let session: AgentSession
     let foregroundActivity: SessionForegroundActivity?
     let isSelected: Bool
+    let isObserving: Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -104,7 +114,7 @@ private struct SessionListRow: View {
                 Text(sourceText)
                 Spacer()
                 if let updatedAt = session.updatedAt {
-                    Text(updatedAt, style: .relative)
+                    Text(Self.minuteTimeFormatter.string(from: updatedAt))
                 }
             }
             .font(themeStore.uiFont(size: 12))
@@ -134,7 +144,10 @@ private struct SessionListRow: View {
     }
 
     private var statusSummary: AgentSessionDisplayStatus {
-        session.displayStatus(foregroundActivity: foregroundActivity)
+        if isObserving {
+            return AgentSessionDisplayStatus(title: "观察中", systemImage: "eye", tone: .neutral, showsSpinner: false)
+        }
+        return session.displayStatus(foregroundActivity: foregroundActivity)
     }
 
     private var statusKind: StatusPill.Kind {
@@ -149,11 +162,12 @@ private struct SessionListRow: View {
     }
 
     private var statusDotColor: Color {
+        let tokens = themeStore.tokens(for: colorScheme)
         switch statusKind {
         case .success:
-            return .green
+            return tokens.success
         case .warning:
-            return .orange
+            return tokens.warning
         case .neutral:
             return .secondary.opacity(0.55)
         }
@@ -173,17 +187,14 @@ private struct SessionListRow: View {
     }
 
     private func tint(for tone: AgentSessionStatusTone) -> Color {
-        switch tone {
-        case .active:
-            return .green
-        case .warning:
-            return .orange
-        case .danger:
-            return .red
-        case .complete:
-            return .blue
-        case .neutral:
-            return .secondary
-        }
+        themeStore.tokens(for: colorScheme).tint(for: tone)
     }
+
+    // 左侧列表只需要分钟级时间；避免 SwiftUI relative 文本按秒刷新导致整列跳动。
+    private static let minuteTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }

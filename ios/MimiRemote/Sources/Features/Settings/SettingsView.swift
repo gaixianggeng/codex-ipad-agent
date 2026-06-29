@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -25,6 +26,12 @@ struct SettingsView: View {
                         AppearanceView()
                     } label: {
                         Label("外观", systemImage: "paintpalette")
+                    }
+
+                    NavigationLink {
+                        DefaultPermissionView()
+                    } label: {
+                        Label("默认权限", systemImage: "lock.shield")
                     }
 
                     NavigationLink {
@@ -72,8 +79,85 @@ struct SettingsView: View {
     }
 }
 
+private struct DefaultPermissionView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                ForEach(ComposerPermissionMode.allCases) { mode in
+                    PermissionModeRow(
+                        mode: mode,
+                        isSelected: selectedMode == mode,
+                        tokens: tokens
+                    ) {
+                        defaultPermissionModeID = mode.rawValue
+                    }
+                }
+            } header: {
+                Text("新对话默认权限")
+            } footer: {
+                Text("用于新输入区和切换会话后的默认运行权限。输入区里的权限按钮也会同步更新这个全局默认值。")
+            }
+        }
+        .navigationTitle("默认权限")
+        .tint(tokens.accent)
+    }
+
+    private var selectedMode: ComposerPermissionMode {
+        ComposerPermissionMode.stored(defaultPermissionModeID)
+    }
+}
+
+private struct PermissionModeRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    let mode: ComposerPermissionMode
+    let isSelected: Bool
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
+                    Image(systemName: mode.systemImage)
+                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(mode.title)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(mode.detail)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(tokens.accent)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct ConnectionSettingsSections: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -127,10 +211,8 @@ private struct ConnectionSettingsSections: View {
 
             Section {
                 DisclosureGroup(isExpanded: $isShowingAdvancedManualConnection) {
-                    TextField("http://IP:端口", text: $endpoint)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
+                    StableEndpointTextField(placeholder: "http://IP:端口", text: $endpoint)
+                        .frame(minHeight: 28)
                     SecureField("访问 Token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -207,11 +289,11 @@ private struct ConnectionSettingsSections: View {
     private var statusColor: Color {
         switch appStore.connectionStatus {
         case .connected:
-            return .green
+            return themeStore.tokens(for: colorScheme).success
         case .failed:
             return .red
         case .testing:
-            return .orange
+            return themeStore.tokens(for: colorScheme).warning
         case .idle:
             return .secondary
         }
@@ -317,6 +399,7 @@ private struct ConnectionSettingsSections: View {
 }
 
 private struct CapabilitiesView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -441,9 +524,9 @@ private struct CapabilitiesView: View {
     private func serverStatusColor(_ server: MCPCapability) -> Color {
         switch server.status {
         case "ready":
-            return .green
+            return themeStore.tokens(for: colorScheme).success
         case "missing_command", "invalid":
-            return .orange
+            return themeStore.tokens(for: colorScheme).warning
         default:
             return .secondary
         }
@@ -488,6 +571,7 @@ private struct CapabilityValueRow: View {
 
 private struct CapabilityItemRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     let symbolName: String
     let title: String
     let subtitle: String?
@@ -515,10 +599,12 @@ private struct CapabilityItemRow: View {
     }
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: symbolName)
                 .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(isEnabled ? Color.accentColor : Color.secondary)
+                .foregroundStyle(isEnabled ? tokens.accent : Color.secondary)
                 .frame(width: 20, height: 20)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -850,6 +936,97 @@ private struct AppearanceConversationPreview: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(tokens.border, lineWidth: 1)
+        }
+    }
+}
+
+private struct StableEndpointTextField: UIViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField()
+        textField.placeholder = placeholder
+        textField.text = text
+        context.coordinator.lastSyncedText = text
+        textField.delegate = context.coordinator
+        textField.keyboardType = .URL
+        textField.autocapitalizationType = .none
+        textField.autocorrectionType = .no
+        textField.spellCheckingType = .no
+        textField.clearButtonMode = .whileEditing
+        textField.returnKeyType = .done
+        textField.addTarget(context.coordinator, action: #selector(Coordinator.textDidChange(_:)), for: .editingChanged)
+        textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textField
+    }
+
+    func updateUIView(_ uiView: UITextField, context: Context) {
+        context.coordinator.parent = self
+        uiView.placeholder = placeholder
+
+        guard context.coordinator.lastSyncedText != text else {
+            return
+        }
+
+        let previousText = uiView.text ?? ""
+        let selectedRange = context.coordinator.selectedRange(in: uiView)
+        uiView.text = text
+        context.coordinator.lastSyncedText = text
+        context.coordinator.setSelectedRange(
+            TextSelectionPolicy.rangeAfterExternalTextSync(
+                previousText: previousText,
+                nextText: text,
+                previousRange: selectedRange
+            ),
+            in: uiView
+        )
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: StableEndpointTextField
+        var lastSyncedText = ""
+
+        init(_ parent: StableEndpointTextField) {
+            self.parent = parent
+        }
+
+        @objc func textDidChange(_ textField: UITextField) {
+            let next = textField.text ?? ""
+            guard next != lastSyncedText else {
+                return
+            }
+            lastSyncedText = next
+            parent.text = next
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            textField.resignFirstResponder()
+            return true
+        }
+
+        func selectedRange(in textField: UITextField) -> NSRange {
+            guard let selectedTextRange = textField.selectedTextRange else {
+                let length = ((textField.text ?? "") as NSString).length
+                return NSRange(location: length, length: 0)
+            }
+            let location = textField.offset(from: textField.beginningOfDocument, to: selectedTextRange.start)
+            let length = textField.offset(from: selectedTextRange.start, to: selectedTextRange.end)
+            return NSRange(location: location, length: length)
+        }
+
+        func setSelectedRange(_ range: NSRange, in textField: UITextField) {
+            guard
+                let start = textField.position(from: textField.beginningOfDocument, offset: range.location),
+                let end = textField.position(from: start, offset: range.length)
+            else {
+                return
+            }
+            textField.selectedTextRange = textField.textRange(from: start, to: end)
         }
     }
 }

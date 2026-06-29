@@ -66,6 +66,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
 	mux.HandleFunc("/api/health", r.healthz)
+	mux.HandleFunc("/api/pair/claim", r.pairingClaimHandler)
 	mux.Handle("/api/readyz", r.auth.Middleware(http.HandlerFunc(r.readyz)))
 	mux.Handle("/api/version", r.auth.Middleware(http.HandlerFunc(r.versionHandler)))
 	mux.Handle("/api/doctor", r.auth.Middleware(http.HandlerFunc(r.doctorHandler)))
@@ -129,7 +130,7 @@ func redactedRequestURI(u *url.URL) string {
 	query := next.Query()
 	for key := range query {
 		switch strings.ToLower(key) {
-		case "token", "access_token", "authorization":
+		case "token", "access_token", "authorization", "pair_sig":
 			query.Set(key, "<redacted>")
 		}
 	}

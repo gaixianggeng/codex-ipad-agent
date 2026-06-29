@@ -21,17 +21,25 @@ struct MarkdownStyle: Equatable {
         tokens: ThemeTokens? = nil
     ) -> MarkdownStyle {
         let isUser = role == .user
+        let fallbackAccent = colorScheme == .dark
+            ? Color(red: 0.77, green: 0.56, blue: 0.84)
+            : Color(red: 0.38, green: 0.12, blue: 0.41)
+        // 默认白紫主题的用户气泡是深紫底，需要单独使用浅色文字；其它主题继续走自身 token。
+        let usesDarkUserBubble = isUser && (tokens?.preset == .codex || tokens == nil)
+        let userText = Color(red: 0.97, green: 0.94, blue: 0.99)
         return MarkdownStyle(
             role: role,
-            textColor: tokens?.primaryText ?? (isUser ? .white : .primary),
-            secondaryColor: tokens?.secondaryText ?? (isUser ? Color.white.opacity(0.74) : .secondary),
-            linkColor: tokens?.accent ?? (isUser ? Color.white : Color.accentColor),
-            codeForeground: tokens?.codeText ?? (isUser ? .white : .primary),
-            codeBackground: tokens?.codeBlock ?? (isUser ? Color.white.opacity(0.16) : Color(.tertiarySystemBackground)),
-            tableBackground: tokens?.elevatedSurface ?? (isUser ? Color.white.opacity(0.16) : Color(.secondarySystemBackground)),
-            quoteBar: tokens?.accent.opacity(colorScheme == .dark ? 0.76 : 0.64)
-                ?? (isUser ? Color.white.opacity(0.56) : Color.accentColor.opacity(colorScheme == .dark ? 0.76 : 0.64)),
-            dividerColor: tokens?.border ?? (isUser ? Color.white.opacity(0.24) : Color(.separator)),
+            textColor: usesDarkUserBubble ? userText : (tokens?.primaryText ?? .primary),
+            secondaryColor: usesDarkUserBubble ? userText.opacity(0.74) : (tokens?.secondaryText ?? .secondary),
+            linkColor: usesDarkUserBubble ? userText : (tokens?.accent ?? fallbackAccent),
+            codeForeground: usesDarkUserBubble ? userText : (tokens?.codeText ?? .primary),
+            codeBackground: usesDarkUserBubble ? Color.white.opacity(0.16) : (tokens?.codeBlock ?? Color(.tertiarySystemBackground)),
+            tableBackground: usesDarkUserBubble ? Color.white.opacity(0.16) : (tokens?.elevatedSurface ?? Color(.secondarySystemBackground)),
+            quoteBar: usesDarkUserBubble
+                ? Color.white.opacity(0.56)
+                : (tokens?.accent.opacity(colorScheme == .dark ? 0.76 : 0.64)
+                    ?? fallbackAccent.opacity(colorScheme == .dark ? 0.76 : 0.64)),
+            dividerColor: tokens?.border ?? (usesDarkUserBubble ? Color.white.opacity(0.24) : Color(.separator)),
             // 对话气泡里的 Markdown 按“阅读辅助”处理，字号比文档页面克制，避免回复显得笨重。
             blockSpacing: 7,
             textLineSpacing: 2,

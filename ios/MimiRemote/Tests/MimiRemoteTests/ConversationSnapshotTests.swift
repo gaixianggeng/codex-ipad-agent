@@ -41,7 +41,7 @@ final class ConversationSnapshotTests: XCTestCase {
             fallbackSessionID: sessionID
         )
         conversationStore.appendUser(
-            "这是一条比较长的用户消息，用来验证多行情况下蓝色气泡依然贴右对齐，而不是漂到屏幕中间。",
+            "这是一条比较长的用户消息，用来验证多行情况下紫色气泡依然贴右对齐，而不是漂到屏幕中间。",
             sessionID: sessionID
         )
         // 发送失败：验证红色状态标记出现在用户气泡左侧。

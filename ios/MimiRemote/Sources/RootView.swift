@@ -27,6 +27,9 @@ struct RootView: View {
         .task {
             await sessionStore.bootstrap()
         }
+        .task(id: sessionStore.selectedProjectID) {
+            await sessionStore.pollSelectedProjectSessionsWhileVisible()
+        }
         .onAppear(perform: applyIdleTimerPolicy)
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
@@ -321,11 +324,12 @@ struct RootView: View {
     }
 
     private var connectionBadgeColor: Color {
+        let tokens = themeStore.tokens(for: colorScheme)
         switch connectionBadgeKind {
         case .success:
-            return .green
+            return tokens.success
         case .warning:
-            return .orange
+            return tokens.warning
         case .neutral:
             return .secondary
         }
@@ -472,7 +476,7 @@ private struct AgentWorkbenchTitle: View {
         if sessionStore.selectedForegroundActivity != nil {
             ProgressView()
                 .controlSize(.small)
-                .tint(.green)
+                .tint(themeStore.tokens(for: colorScheme).success)
         } else {
             Circle()
                 .fill(dotColor)
@@ -481,11 +485,12 @@ private struct AgentWorkbenchTitle: View {
     }
 
     private var dotColor: Color {
+        let tokens = themeStore.tokens(for: colorScheme)
         if sessionStore.selectedSession?.isRunning == true, sessionStore.webSocketStatus == .connected {
-            return .green
+            return tokens.success
         }
         if case .failed = sessionStore.webSocketStatus {
-            return .orange
+            return tokens.warning
         }
         return .secondary.opacity(0.65)
     }

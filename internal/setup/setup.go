@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -176,7 +177,7 @@ func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config)
 		Endpoint:           endpoint,
 		Token:              token,
 		ConnectURL:         connectionURL("connect", endpoint, token, now, expiresAt),
-		PairURL:            connectionURL("pair", endpoint, token, now, expiresAt),
+		PairURL:            pairingURL(endpoint, token, now, expiresAt),
 		PairIssuedAt:       now.Format(time.RFC3339),
 		PairExpiresAt:      expiresAt.Format(time.RFC3339),
 		ScanRoot:           scanRoot,
@@ -194,7 +195,7 @@ func ConnectURL(endpoint, token string) string {
 
 func PairURL(endpoint, token string) string {
 	now := time.Now().UTC()
-	return connectionURL("pair", endpoint, token, now, now.Add(defaultPairingURLTTL))
+	return pairingURL(endpoint, token, now, now.Add(defaultPairingURLTTL))
 }
 
 func connectionURL(route, endpoint, token string, issuedAt, expiresAt time.Time) string {
@@ -208,6 +209,16 @@ func connectionURL(route, endpoint, token string, issuedAt, expiresAt time.Time)
 		values.Set("expires_at", expiresAt.UTC().Format(time.RFC3339))
 	}
 	return "mimiremote://" + route + "?" + values.Encode()
+}
+
+func pairingURL(endpoint, token string, issuedAt, expiresAt time.Time) string {
+	ticket := auth.NewPairingTicket(endpoint, token, issuedAt, expiresAt)
+	values := url.Values{}
+	values.Set("endpoint", ticket.Endpoint)
+	values.Set("issued_at", ticket.IssuedAt)
+	values.Set("expires_at", ticket.ExpiresAt)
+	values.Set("pair_sig", ticket.Signature)
+	return "mimiremote://pair?" + values.Encode()
 }
 
 func resolveConfigPath(path string) (string, error) {

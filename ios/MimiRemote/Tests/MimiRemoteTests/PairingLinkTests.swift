@@ -29,6 +29,20 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(credentials.endpoint, "http://100.64.0.1:8787")
     }
 
+    func testParsesSignedPairingTicketWithoutLongTermToken() throws {
+        let url = try XCTUnwrap(URL(string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787&issued_at=2026-06-29T10%3A00%3A00Z&expires_at=4102444800&pair_sig=abcdef"))
+
+        let ticket = try XCTUnwrap(AppStore.pairingTicket(from: url))
+
+        XCTAssertEqual(ticket.endpoint, "http://100.64.0.1:8787")
+        XCTAssertEqual(ticket.issuedAt, "2026-06-29T10:00:00Z")
+        XCTAssertEqual(ticket.expiresAt, "4102444800")
+        XCTAssertEqual(ticket.pairSignature, "abcdef")
+        XCTAssertThrowsError(try AppStore.pairingCredentials(from: url)) { error in
+            XCTAssertEqual(error as? PairingLinkError, .missingToken)
+        }
+    }
+
     func testRejectsExpiredPairingURL() throws {
         let url = try XCTUnwrap(URL(string: "mimiremote://connect?endpoint=http%3A%2F%2F100.64.0.1%3A8787&token=0123456789abcdef0123456789abcdef&expires_at=1"))
 

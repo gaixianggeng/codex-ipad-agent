@@ -14,6 +14,8 @@ struct ConversationView: View {
             selectedSession: sessionStore.selectedSession,
             selectedProject: sessionStore.selectedProject,
             foregroundActivity: sessionStore.selectedForegroundActivity,
+            runtimeActivitySnapshot: sessionStore.selectedRuntimeActivitySnapshot,
+            webSocketStatus: sessionStore.webSocketStatus,
             errorMessage: sessionStore.errorMessage
         )
 
@@ -48,14 +50,14 @@ struct ConversationView: View {
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
         if model.errorMessage != nil || model.statusDisplay != nil {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    Spacer(minLength: 0)
-                    statusStripContent(model: model)
-                    Spacer(minLength: 0)
-                }
-                VStack(spacing: 8) {
-                    statusStripContent(model: model)
+            Group {
+                if model.runtimeActivitySnapshot != nil {
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        statusStripContainer(model: model, now: timeline.date)
+                    }
+                } else {
+                    // 只有运行心跳需要秒级刷新；普通错误/状态条保持静态，减少整页重算。
+                    statusStripContainer(model: model, now: Date())
                 }
             }
             .padding(.horizontal, layout.horizontalInset)
@@ -65,64 +67,99 @@ struct ConversationView: View {
     }
 
     @ViewBuilder
-    private func statusStripContent(model: ConversationScreenModel) -> some View {
+    private func statusStripContainer(model: ConversationScreenModel, now: Date) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                statusStripContent(model: model, now: now, stacksVertically: false)
+                Spacer(minLength: 0)
+            }
+            statusStripContent(model: model, now: now, stacksVertically: true)
+        }
+    }
+
+    @ViewBuilder
+    private func statusStripContent(model: ConversationScreenModel, now: Date, stacksVertically: Bool) -> some View {
         let status = model.statusDisplay
         let message = model.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let runtimeDisplay = RuntimeActivityDisplay.make(
+            snapshot: model.runtimeActivitySnapshot,
+            webSocketStatus: model.webSocketStatus,
+            now: now
+        )
 
         if status != nil || message?.isEmpty == false {
-            HStack(spacing: 8) {
-                if let status {
-                    statusChip(status)
+            if stacksVertically {
+                VStack(spacing: 8) {
+                    statusStripChips(status: status, message: message, runtimeDisplay: runtimeDisplay)
                 }
-                if let message, !message.isEmpty {
-                    Label("错误：\(message)", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                        .font(themeStore.uiFont(.caption, weight: .medium))
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.86)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(statusChipBackground)
-                        .clipShape(Capsule())
+                .frame(maxWidth: .infinity)
+            } else {
+                HStack(spacing: 8) {
+                    statusStripChips(status: status, message: message, runtimeDisplay: runtimeDisplay)
                 }
             }
         }
     }
 
-    private func statusChip(_ status: AgentSessionDisplayStatus) -> some View {
-        HStack(spacing: 7) {
+    @ViewBuilder
+    private func statusStripChips(
+        status: AgentSessionDisplayStatus?,
+        message: String?,
+        runtimeDisplay: RuntimeActivityDisplay?
+    ) -> some View {
+        if let status {
+            statusChip(status, runtimeDisplay: runtimeDisplay)
+        }
+        if let message, !message.isEmpty {
+            errorChip(message)
+        }
+    }
+
+    private func errorChip(_ message: String) -> some View {
+        Label("错误：\(message)", systemImage: "exclamationmark.triangle")
+            .foregroundStyle(.red)
+            .font(themeStore.uiFont(.caption, weight: .medium))
+            .lineLimit(2)
+            .minimumScaleFactor(0.86)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(statusChipBackground)
+            .clipShape(Capsule())
+    }
+
+    private func statusChip(_ status: AgentSessionDisplayStatus, runtimeDisplay: RuntimeActivityDisplay?) -> some View {
+        let displayTone = runtimeDisplay?.tone ?? status.tone
+        return HStack(spacing: 7) {
             if status.showsSpinner {
                 ProgressView()
                     .controlSize(.small)
-                    .tint(tint(for: status.tone))
+                    .tint(tint(for: displayTone))
             } else {
-                Image(systemName: status.systemImage)
+                Image(systemName: runtimeDisplay?.systemImage ?? status.systemImage)
                     .font(themeStore.uiFont(.caption, weight: .semibold))
             }
-            Text("当前：\(status.title)")
+            Text(statusText(status, runtimeDisplay: runtimeDisplay))
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
-        .foregroundStyle(tint(for: status.tone))
+        .foregroundStyle(tint(for: displayTone))
         .lineLimit(1)
+        .minimumScaleFactor(0.82)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(statusChipBackground)
         .clipShape(Capsule())
     }
 
-    private func tint(for tone: AgentSessionStatusTone) -> Color {
-        switch tone {
-        case .active:
-            return .green
-        case .warning:
-            return .orange
-        case .danger:
-            return .red
-        case .complete:
-            return .blue
-        case .neutral:
-            return workbenchSecondaryText
+    private func statusText(_ status: AgentSessionDisplayStatus, runtimeDisplay: RuntimeActivityDisplay?) -> String {
+        if let runtimeDisplay {
+            return "当前：\(status.title) · \(runtimeDisplay.detailText)"
         }
+        return "当前：\(status.title)"
+    }
+
+    private func tint(for tone: AgentSessionStatusTone) -> Color {
+        themeStore.tokens(for: colorScheme).tint(for: tone)
     }
 
     private var statusChipBackground: Color {
@@ -139,6 +176,8 @@ struct ConversationScreenModel: Equatable {
     let title: String
     let subtitle: String
     let foregroundActivity: SessionForegroundActivity?
+    let runtimeActivitySnapshot: RuntimeActivitySnapshot?
+    let webSocketStatus: WebSocketStatus
     let statusDisplay: AgentSessionDisplayStatus?
     let errorMessage: String?
 
@@ -146,12 +185,16 @@ struct ConversationScreenModel: Equatable {
         selectedSession: AgentSession?,
         selectedProject: AgentProject?,
         foregroundActivity: SessionForegroundActivity?,
+        runtimeActivitySnapshot: RuntimeActivitySnapshot?,
+        webSocketStatus: WebSocketStatus,
         errorMessage: String?
     ) {
         self.sessionID = selectedSession?.id
         self.title = selectedSession?.title ?? selectedProject?.name ?? "会话"
         self.subtitle = selectedSession?.dir ?? selectedProject?.path ?? ""
         self.foregroundActivity = foregroundActivity
+        self.runtimeActivitySnapshot = runtimeActivitySnapshot
+        self.webSocketStatus = webSocketStatus
         self.statusDisplay = Self.visibleStatusDisplay(for: selectedSession, foregroundActivity: foregroundActivity)
         self.errorMessage = errorMessage
     }
@@ -274,7 +317,7 @@ struct ConversationTimelineItemBuilder {
             return false
         }
         switch message.kind {
-        case .reasoningSummary, .commandSummary, .fileChangeSummary, .approval:
+        case .reasoningSummary, .commandSummary, .fileChangeSummary, .approval, .userInput:
             return true
         case .error, .message:
             return false
@@ -395,7 +438,8 @@ struct ConversationLayout: Equatable {
         // 气泡宽度按实际容器收缩，保留左右身份感，同时避免 iPhone/mini 竖屏横向溢出。
         let rowAvailableWidth = max(240, containerWidth - horizontalInset * 2 - messageSideSpacer)
         userBubbleMaxWidth = min(isCompactWidth ? 420 : 560, rowAvailableWidth)
-        assistantBubbleMaxWidth = min(isCompactWidth ? 520 : 660, rowAvailableWidth)
+        let assistantWidthCap: CGFloat = isCompactWidth ? 520 : (isTightPadWidth ? 760 : 840)
+        assistantBubbleMaxWidth = min(assistantWidthCap, rowAvailableWidth)
         systemMaxWidth = min(520, max(240, containerWidth - horizontalInset * 2))
         runtimeCardMaxWidth = min(560, max(260, containerWidth - horizontalInset * 2))
         emptyStateMaxWidth = min(420, max(260, containerWidth - horizontalInset * 2))
@@ -413,14 +457,16 @@ struct ConversationTimelineView: View {
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
     @State private var expandedProcessedGroupIDs: Set<String> = []
+    @State private var timelineItemCache = ConversationTimelineItemCache()
 
     private let messageTailFollowThreshold: CGFloat = 120
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
-        let timelineItems = ConversationTimelineItemBuilder.items(from: messages)
+        let timelineItems = timelineItemCache.items(from: messages)
         let timelineItemIDs = timelineItems.map(\.id)
+        let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: messages)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 // 用 List（底层 UITableView）替代 ScrollView + LazyVStack：行高是真实测量值、
@@ -444,7 +490,7 @@ struct ConversationTimelineView: View {
                         ForEach(timelineItems) { item in
                             // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
                             // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                            timelineRow(item)
+                            timelineRow(item, activeUserDeliveryMessageID: activeUserDeliveryMessageID)
                                 .id(item.id)
                                 .listRowSeparator(.hidden)
                                 .listRowInsets(layout.messageRowInsets)
@@ -489,6 +535,7 @@ struct ConversationTimelineView: View {
                 hasUnseenTailMessage = false
                 isPreservingHistoryScroll = false
                 expandedProcessedGroupIDs.removeAll()
+                timelineItemCache.removeAll()
             }
             .onChange(of: messages.last?.id) { _, newID in
                 guard newID != nil else {
@@ -522,10 +569,15 @@ struct ConversationTimelineView: View {
     }
 
     @ViewBuilder
-    private func timelineRow(_ item: ConversationTimelineItem) -> some View {
+    private func timelineRow(_ item: ConversationTimelineItem, activeUserDeliveryMessageID: UUID?) -> some View {
         switch item {
         case .message(let message):
-            MessageRow(message: message, themeVersion: themeStore.themeVersion, layout: layout)
+            MessageRow(
+                message: message,
+                themeVersion: themeStore.themeVersion,
+                layout: layout,
+                showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID
+            )
                 .equatable()
         case .processed(let group):
             ProcessedTurnRow(
@@ -541,6 +593,22 @@ struct ConversationTimelineView: View {
                 }
             )
         }
+    }
+
+    private static func activeUserDeliveryMessageID(in messages: [ConversationMessage]) -> UUID? {
+        // 只把“最新一条还没看到 assistant 回复的用户输入”标成活跃发送态；
+        // assistant 气泡一出现，等待文案就收起，避免旧消息长期挂着“等待回复”。
+        for message in messages.reversed() {
+            if message.role == .assistant && message.kind == .message {
+                return nil
+            }
+            if message.role == .user,
+               message.kind == .message,
+               message.sendStatus == .sending || message.sendStatus == .sent || message.sendStatus == .failed {
+                return message.id
+            }
+        }
+        return nil
     }
 
     private func loadEarlierRow(proxy: ScrollViewProxy, timelineItems: [ConversationTimelineItem]) -> some View {
@@ -670,6 +738,59 @@ struct ConversationTimelineView: View {
     }
 }
 
+private final class ConversationTimelineItemCache {
+    private var keys: [ConversationTimelineCacheKey] = []
+    private var cachedItems: [ConversationTimelineItem] = []
+
+    func items(from messages: [ConversationMessage]) -> [ConversationTimelineItem] {
+        let nextKeys = messages.map { ConversationTimelineCacheKey(message: $0) }
+        guard nextKeys != keys else {
+            return cachedItems
+        }
+        let nextItems = ConversationTimelineItemBuilder.items(from: messages)
+        keys = nextKeys
+        cachedItems = nextItems
+        return nextItems
+    }
+
+    func removeAll() {
+        keys.removeAll()
+        cachedItems.removeAll()
+    }
+}
+
+private struct ConversationTimelineCacheKey: Equatable {
+    let id: UUID
+    let stableID: MessageID?
+    let clientMessageID: ClientMessageID?
+    let turnID: TurnID?
+    let itemID: AgentItemID?
+    let role: ConversationMessage.Role
+    let kind: MessageKind
+    let createdAt: Date
+    let updatedAt: Date?
+    let sendStatus: MessageSendStatus
+    let revision: ModelRevision?
+    let renderFingerprint: ConversationMessageRenderFingerprint
+    let turnPayload: CodexAppServerTurnPayload?
+
+    init(message: ConversationMessage) {
+        self.id = message.id
+        self.stableID = message.stableID
+        self.clientMessageID = message.clientMessageID
+        self.turnID = message.turnID
+        self.itemID = message.itemID
+        self.role = message.role
+        self.kind = message.kind
+        self.createdAt = message.createdAt
+        self.updatedAt = message.updatedAt
+        self.sendStatus = message.sendStatus
+        self.revision = message.revision
+        self.renderFingerprint = message.renderFingerprint
+        self.turnPayload = message.turnPayload
+    }
+}
+
 private struct ProcessedTurnRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -734,6 +855,7 @@ private struct MessageRow: View, Equatable {
     let message: ConversationMessage
     let themeVersion: Int
     let layout: ConversationLayout
+    let showsActiveDeliveryStatus: Bool
 
     // 只有内容 fingerprint / 状态变化时才重绘；长消息内容本身不参与这里的逐行比较。
     static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
@@ -748,6 +870,7 @@ private struct MessageRow: View, Equatable {
             && lhs.message.turnPayload == rhs.message.turnPayload
             && lhs.themeVersion == rhs.themeVersion
             && lhs.layout == rhs.layout
+            && lhs.showsActiveDeliveryStatus == rhs.showsActiveDeliveryStatus
     }
 
     var body: some View {
@@ -762,29 +885,6 @@ private struct MessageRow: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: rowAlignment)
-        .contextMenu {
-            Button {
-                UIPasteboard.general.string = message.content
-            } label: {
-                Label("复制", systemImage: "doc.on.doc")
-            }
-
-            if message.role == .user && message.sendStatus == .failed {
-                Button {
-                    Task { await sessionStore.retryFailedUserMessage(message) }
-                } label: {
-                    Label("重试", systemImage: "arrow.clockwise")
-                }
-            }
-
-            if message.role == .assistant && message.sendStatus == .sending {
-                Button(role: .destructive) {
-                    sessionStore.sendCtrlC()
-                } label: {
-                    Label("停止", systemImage: "stop.circle")
-                }
-            }
-        }
     }
 
     private var userRow: some View {
@@ -834,12 +934,22 @@ private struct MessageRow: View, Equatable {
                 .font(themeStore.uiFont(.caption2))
                 .foregroundStyle(.red)
         case .sending:
-            Text("发送中…")
-                .font(themeStore.uiFont(.caption2))
-                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+            deliveryCaption("发送中…")
+        case .sent:
+            if showsActiveDeliveryStatus {
+                deliveryCaption("已送达，等待回复")
+            }
+        case .local:
+            deliveryCaption("待发送")
         default:
             EmptyView()
         }
+    }
+
+    private func deliveryCaption(_ text: String) -> some View {
+        Text(text)
+            .font(themeStore.uiFont(.caption2))
+            .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
     }
 
     private var rowAlignment: Alignment {
@@ -865,21 +975,44 @@ private struct MessageBubble: View {
     @State private var previewError: String?
 
     var body: some View {
+        bubbleSurface
+            .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
+            .opacity(message.sendStatus == .sending ? 0.72 : 1)
+            .quickLookPreview($previewURL)
+    }
+
+    private var bubbleSurface: some View {
+        bubbleChrome
+            // 长按菜单必须锚定在实际气泡上，不能挂到外层全宽行，否则 iPad 上菜单预览会撑满整行。
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .messageContextMenu(
+                for: message,
+                retry: {
+                    Task { await sessionStore.retryFailedUserMessage(message) }
+                },
+                stop: {
+                    sessionStore.sendCtrlC()
+                },
+                preview: {
+                    bubbleChrome
+                        .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
+                }
+            )
+    }
+
+    private var bubbleChrome: some View {
         contentWithTimestamp
             .foregroundStyle(foreground)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
-            .opacity(message.sendStatus == .sending ? 0.72 : 1)
-            .quickLookPreview($previewURL)
     }
 
     private var contentWithTimestamp: some View {
         ZStack(alignment: .bottomTrailing) {
             renderContent
                 .padding(.bottom, 16)
-            MessageTimestampCaption(text: message.timestampCaptionText)
+            MessageTimestampCaption(text: message.timestampCaptionText, foreground: timestampForeground)
         }
     }
 
@@ -916,7 +1049,6 @@ private struct MessageBubble: View {
         } else {
             Text(message.content)
                 .font(themeStore.uiFont(.body))
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -927,7 +1059,6 @@ private struct MessageBubble: View {
             if !text.isEmpty {
                 Text(text)
                     .font(style.bodyFont)
-                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -960,7 +1091,6 @@ private struct MessageBubble: View {
                 Text(accessoryText)
                     .font(style.captionFont)
                     .foregroundStyle(style.secondaryColor)
-                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -972,7 +1102,6 @@ private struct MessageBubble: View {
         if plan.isSinglePlainParagraph, case let .paragraph(inline) = plan.blocks.first?.kind {
             Text(inline.plain)
                 .font(style.bodyFont)
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             VStack(alignment: .leading, spacing: style.blockSpacing) {
@@ -1130,7 +1259,23 @@ private struct MessageBubble: View {
     }
 
     private var foreground: Color {
-        themeStore.tokens(for: colorScheme).primaryText
+        let tokens = themeStore.tokens(for: colorScheme)
+        if message.role == .user, tokens.preset == .codex {
+            return userBubbleForeground
+        }
+        return tokens.primaryText
+    }
+
+    private var timestampForeground: Color? {
+        let tokens = themeStore.tokens(for: colorScheme)
+        guard message.role == .user, tokens.preset == .codex else {
+            return nil
+        }
+        return userBubbleForeground.opacity(0.72)
+    }
+
+    private var userBubbleForeground: Color {
+        Color(red: 0.97, green: 0.94, blue: 0.99)
     }
 }
 
@@ -1196,9 +1341,19 @@ private struct SystemNotice: View {
     let layout: ConversationLayout
 
     var body: some View {
+        noticeSurface
+            .contentShape(Capsule())
+            .messageContextMenu(for: message) {
+                noticeSurface
+                    .frame(maxWidth: layout.systemMaxWidth)
+            }
+            .frame(maxWidth: layout.systemMaxWidth)
+    }
+
+    private var noticeSurface: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        ZStack(alignment: .bottomTrailing) {
+        return ZStack(alignment: .bottomTrailing) {
             Text(message.content)
                 .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.secondaryText)
@@ -1210,7 +1365,6 @@ private struct SystemNotice: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(tokens.systemBubble, in: Capsule())
-        .frame(maxWidth: layout.systemMaxWidth)
     }
 }
 
@@ -1221,6 +1375,16 @@ private struct RuntimeSummaryCard: View {
     let layout: ConversationLayout
 
     var body: some View {
+        cardSurface
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .messageContextMenu(for: message) {
+                cardSurface
+                    .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
+            }
+            .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
+    }
+
+    private var cardSurface: some View {
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: symbolName)
                 .font(themeStore.uiFont(.caption, weight: .semibold))
@@ -1235,7 +1399,6 @@ private struct RuntimeSummaryCard: View {
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(3)
-                    .textSelection(.enabled)
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
                     MessageTimestampCaption(text: message.timestampCaptionText)
@@ -1245,7 +1408,6 @@ private struct RuntimeSummaryCard: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
         .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1269,6 +1431,14 @@ private struct RuntimeSummaryCard: View {
                 return "审批已拒绝"
             }
             return "等待审批"
+        case .userInput:
+            if message.content.hasPrefix("已跳过补充信息") || message.content.hasPrefix("已跳过引导输入") {
+                return "补充信息已跳过"
+            }
+            if message.content.hasPrefix("补充信息已提交") || message.content.hasPrefix("引导输入已提交") {
+                return "补充信息已提交"
+            }
+            return "等待补充信息"
         case .error:
             return "运行异常"
         case .message:
@@ -1292,6 +1462,8 @@ private struct RuntimeSummaryCard: View {
                 return "xmark.circle"
             }
             return "exclamationmark.shield"
+        case .userInput:
+            return "questionmark.bubble"
         case .error:
             return "exclamationmark.triangle"
         case .message:
@@ -1303,12 +1475,14 @@ private struct RuntimeSummaryCard: View {
         switch message.kind {
         case .approval:
             if isApprovedApproval {
-                return .green
+                return tokens.success
             }
             if isDeclinedApproval {
                 return .red
             }
             return tokens.warning
+        case .userInput:
+            return tokens.accent
         case .error:
             return .red
         case .fileChangeSummary:
@@ -1322,7 +1496,7 @@ private struct RuntimeSummaryCard: View {
         switch message.kind {
         case .approval:
             if isApprovedApproval {
-                return Color.green.opacity(0.10)
+                return tokens.success.opacity(0.10)
             }
             if isDeclinedApproval {
                 return Color.red.opacity(0.10)
@@ -1350,15 +1524,48 @@ private struct RuntimeSummaryCard: View {
     }
 }
 
+private extension View {
+    func messageContextMenu<Preview: View>(
+        for message: ConversationMessage,
+        retry: (() -> Void)? = nil,
+        stop: (() -> Void)? = nil,
+        @ViewBuilder preview: @escaping () -> Preview
+    ) -> some View {
+        _ = preview
+        // iPadOS 对 contextMenu 自定义预览会重新构建复杂 Markdown/图片气泡，长按时容易触发 SwiftUI 内部崩溃；
+        // 这里保留复制/重试/停止动作，禁用预览来换取稳定性。
+        return contextMenu {
+            Button {
+                UIPasteboard.general.string = message.content
+            } label: {
+                Label("复制", systemImage: "doc.on.doc")
+            }
+
+            if message.role == .user && message.sendStatus == .failed, let retry {
+                Button(action: retry) {
+                    Label("重试", systemImage: "arrow.clockwise")
+                }
+            }
+
+            if message.role == .assistant && message.sendStatus == .sending, let stop {
+                Button(role: .destructive, action: stop) {
+                    Label("停止", systemImage: "stop.circle")
+                }
+            }
+        }
+    }
+}
+
 private struct MessageTimestampCaption: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let text: String
+    var foreground: Color?
 
     var body: some View {
         Text(text)
             .font(themeStore.uiFont(.caption2, weight: .medium))
-            .foregroundStyle(themeStore.tokens(for: colorScheme).tertiaryText)
+            .foregroundStyle(foreground ?? themeStore.tokens(for: colorScheme).tertiaryText)
             .lineLimit(1)
             .minimumScaleFactor(0.88)
             .accessibilityLabel("消息时间 \(text)")
