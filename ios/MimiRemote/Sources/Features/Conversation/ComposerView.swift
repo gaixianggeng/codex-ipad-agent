@@ -245,6 +245,7 @@ struct ComposerView: View {
             } else {
                 await MainActor.run {
                     guidedFollowUpEnabled = false
+                    composerState.resetSendModeAfterSubmit()
                 }
             }
         }

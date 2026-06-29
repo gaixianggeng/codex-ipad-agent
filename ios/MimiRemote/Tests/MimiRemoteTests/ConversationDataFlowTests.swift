@@ -8406,7 +8406,7 @@ extension ConversationDataFlowTests {
 
         let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
         let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
+        assertInitializeEnablesExperimentalAPI(initialize)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
         try await connectTask.value
 
@@ -8674,7 +8674,7 @@ extension ConversationDataFlowTests {
 
         let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
         let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
+        assertInitializeEnablesExperimentalAPI(initialize)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
 
         let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
@@ -8799,7 +8799,7 @@ extension ConversationDataFlowTests {
 
         let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
         let initialize = try decodeAppServerRequest(initializeMessages[0])
-        XCTAssertEqual(initialize.method, "initialize")
+        assertInitializeEnablesExperimentalAPI(initialize)
         transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
 
         let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
@@ -10527,6 +10527,20 @@ private func waitForFakeAppServerRequest(
     throw MockError.unimplemented
 }
 
+private func assertInitializeEnablesExperimentalAPI(
+    _ initialize: CodexAppServerRequest,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    XCTAssertEqual(initialize.method, "initialize", file: file, line: line)
+    let params = initialize.params?.objectValue
+    let capabilities = params?["capabilities"]?.objectValue
+    // collaborationMode 是 app-server 的 experimental turn/start 字段；
+    // 初始化时必须声明 experimentalApi，否则计划模式会被真实服务端拒绝或降级。
+    XCTAssertEqual(capabilities?["experimentalApi"]?.boolValue, true, file: file, line: line)
+    XCTAssertEqual(capabilities?["requestAttestation"]?.boolValue, false, file: file, line: line)
+}
+
 private func waitForFakeAppServerResponse(
     _ transport: FakeCodexAppServerTransport,
     id: CodexAppServerRequestID,
@@ -10563,7 +10577,7 @@ private func connectFakeAppServer(
     }
     let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
     let initialize = try decodeAppServerRequest(initializeMessages[0])
-    XCTAssertEqual(initialize.method, "initialize")
+    assertInitializeEnablesExperimentalAPI(initialize)
     transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
     try await connectTask.value
 
