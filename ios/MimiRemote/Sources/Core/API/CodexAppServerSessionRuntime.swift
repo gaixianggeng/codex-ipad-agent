@@ -364,15 +364,20 @@ actor CodexAppServerSessionRuntime {
             projects = baseProjects
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
+        var threadOptions = payload.turnOptions
+        // thread/start 和 thread/resume 只负责把当前连接绑定到工作目录/线程；
+        // model 属于 turn/start 的本次发送参数，放在线程请求上会触发部分 app-server 版本校验失败。
+        threadOptions.model = nil
+        threadOptions.modelProvider = nil
         let spec: CodexAppServerRequestSpec
         if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             spec = projectPath?.isEmpty == false
-                ? try builder.threadStart(cwd: project.path, options: payload.turnOptions)
-                : try builder.threadStart(projectID: payload.projectID, options: payload.turnOptions)
+                ? try builder.threadStart(cwd: project.path, options: threadOptions)
+                : try builder.threadStart(projectID: payload.projectID, options: threadOptions)
         } else {
             spec = projectPath?.isEmpty == false
-                ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path, options: payload.turnOptions)
-                : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: payload.turnOptions)
+                ? try builder.threadResume(threadID: payload.resumeID, cwd: project.path, options: threadOptions)
+                : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: threadOptions)
         }
 
         let result = try await sendRecoveringFromStaleInitialization(spec)
