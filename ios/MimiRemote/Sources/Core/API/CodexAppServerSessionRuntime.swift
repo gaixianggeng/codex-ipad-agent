@@ -772,7 +772,20 @@ actor CodexAppServerSessionRuntime {
         guard !threadsResumedOnConnection.contains(sessionID) else {
             return
         }
-        let result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd))
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd))
+        } catch {
+            if isNoRolloutFoundError(error) {
+                // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
+                // -32600 "no rollout found"。这类线程已经在本连接上被 thread/start 绑定，resume 只是冗余；
+                // 标记为已 resume 并放行，等首个 turn/start 落盘 rollout 后事件自然回流。否则空会话开屏即
+                // 因 connectForEvents 抛错进入“WebSocket 断开，正在自动重连”的死循环。
+                threadsResumedOnConnection.insert(sessionID)
+                return
+            }
+            throw error
+        }
         if let thread = threadObject(from: result),
            let session = try? agentSession(
             from: thread,
@@ -1045,6 +1058,18 @@ actor CodexAppServerSessionRuntime {
     private func isStaleInitializationAppServerError(_ error: CodexAppServerError) -> Bool {
         error.code == -32600
             && error.message.range(of: "not initialized", options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    // thread/resume 命中“no rollout found for thread id …”：线程已存在于 app-server，但还没有任何 turn
+    // 落盘 rollout（新建空会话的典型状态）。不同 app-server 版本回的 code 不一致（实测 -32600，旧 mock 用
+    // -32000），所以只认消息、不锁 code，避免漏判。仅用于 thread/resume 这类“绑定监听”路径的良性放行；
+    // turn/start 自身回的 no rollout 仍按业务错误向上抛。
+    private func isNoRolloutFoundError(_ error: Error) -> Bool {
+        guard let error = error as? CodexAppServerConnectionError,
+              case .appServer(let appServerError) = error else {
+            return false
+        }
+        return appServerError.message.range(of: "no rollout found", options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
     func hasReadyConnectionForTesting() async -> Bool {

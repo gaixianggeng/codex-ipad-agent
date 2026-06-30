@@ -9595,12 +9595,16 @@ extension ConversationDataFlowTests {
 
         let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
         XCTAssertEqual(resume.params?.objectValue?["threadId"]?.stringValue, "thr_empty_direct")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_empty_direct","sessionId":"thr_empty_direct","preview":"","ephemeral":false,"modelProvider":"openai","createdAt":1780490600,"updatedAt":1780490602,"status":{"type":"idle"},"path":null,"cwd":"/tmp/empty-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"空会话","turns":[]}}}"#)
+        // 真实 app-server：刚 thread/start、还没跑过 turn 的空线程没有 rollout 文件，thread/resume 回
+        // -32600 "no rollout found"。监听不能因此报错重连，必须吞掉并照常进入 connected。
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"error":{"code":-32600,"message":"no rollout found for thread id thr_empty_direct"}}"#)
 
         for _ in 0..<200 where !statuses.contains(.connected) {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertTrue(statuses.contains(.connected))
+        XCTAssertFalse(statuses.contains { if case .failed = $0 { return true } else { return false } },
+                       "空会话 resume 命中 no rollout found 不应让 WebSocket 进入 failed/重连")
 
         XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "第一条消息"), clientMessageID: "client_empty_first"))
         let turnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: 4)
