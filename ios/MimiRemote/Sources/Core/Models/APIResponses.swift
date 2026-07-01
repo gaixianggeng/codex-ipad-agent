@@ -2215,6 +2215,22 @@ struct CodexAppServerRequestBuilder {
         ]))
     }
 
+    func threadTurnsList(
+        threadID: String,
+        cursor: String? = nil,
+        limit: Int? = 40,
+        sortDirection: String = "desc",
+        itemsView: String = "full"
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/turns/list", params: CodexAppServerJSONValue.objectValue([
+            "threadId": .string(threadID),
+            "cursor": cursor.map { .string($0) },
+            "limit": limit.map { .int(Int64($0)) },
+            "sortDirection": .string(sortDirection),
+            "itemsView": .string(itemsView)
+        ]))
+    }
+
     func threadGoalGet(threadID: String) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/goal/get", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID)

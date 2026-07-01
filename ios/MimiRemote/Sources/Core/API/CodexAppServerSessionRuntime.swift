@@ -85,6 +85,7 @@ actor CodexAppServerSessionRuntime {
     // thread/read 没有分页参数，一次会返回整段 thread。把上次整段读取缓存下来，翻看更早历史时直接
     // 从缓存切窗口，避免每次翻页都在 Tailscale 这类慢链路上重新拉一遍大会话（会很慢甚至超时）。
     private var threadHistoryCacheBySessionID: [SessionID: [CodexHistoryMessage]] = [:]
+    private var threadTurnsListUnavailable = false
     private var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
     // thread/list 在远程/VPS 中转链路上可能要扫本机 Codex 历史并传回较大的 JSON。
     // 只给列表请求放宽超时，避免影响 turn/start 等交互命令的失败反馈速度。
@@ -478,8 +479,40 @@ actor CodexAppServerSessionRuntime {
     // thread/read 是整段历史的批量拉取，慢链路（Tailscale）下比交互式请求耗时得多；给它一个更宽的
     // 超时，避免大会话首屏因为 20s 的默认请求超时而直接报错。
     private static let bulkReadTimeout: TimeInterval = 60
+    private static let threadTurnsCursorPrefix = "turns:"
 
     func messagesPage(sessionID: SessionID, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        let config = try await ensureConfig()
+        if shouldUseThreadTurnsList(config: config) {
+            do {
+                return try await messagesPageFromTurnPages(
+                    sessionID: sessionID,
+                    before: before,
+                    limit: limit,
+                    projects: config.projects
+                )
+            } catch {
+                if shouldFallbackFromThreadTurnsList(error) {
+                    threadTurnsListUnavailable = true
+                } else {
+                    throw error
+                }
+            }
+        }
+        return try await messagesPageFromFullThreadRead(
+            sessionID: sessionID,
+            before: before,
+            limit: limit,
+            projects: config.projects
+        )
+    }
+
+    private func messagesPageFromFullThreadRead(
+        sessionID: SessionID,
+        before: String?,
+        limit: Int?,
+        projects: [AgentProject]
+    ) async throws -> HistoryMessagesPage {
         // 翻看更早历史：老 turn 不会变，直接用上次整段读取的缓存切窗口，不再重复拉整段 thread。
         if before != nil, let cached = threadHistoryCacheBySessionID[sessionID] {
             return Self.paginateHistory(
@@ -489,7 +522,6 @@ actor CodexAppServerSessionRuntime {
                 context: contextsBySessionID[sessionID]?.session.context
             )
         }
-        let projects = try await projects()
         let result = try await sendRecoveringFromStaleInitialization(
             CodexAppServerRequestBuilder(allowlistedProjects: projects).threadRead(threadID: sessionID, includeTurns: true),
             timeout: Self.bulkReadTimeout
@@ -509,6 +541,159 @@ actor CodexAppServerSessionRuntime {
         }
         threadHistoryCacheBySessionID[sessionID] = messages
         return Self.paginateHistory(messages, before: before, limit: limit, context: context)
+    }
+
+    private func messagesPageFromTurnPages(
+        sessionID: SessionID,
+        before: String?,
+        limit: Int?,
+        projects: [AgentProject]
+    ) async throws -> HistoryMessagesPage {
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
+        let cursor = Self.decodeThreadTurnsCursor(before)
+        let metadata = try await threadMetadataForHistoryPage(
+            sessionID: sessionID,
+            builder: builder,
+            projects: projects,
+            shouldRefresh: before == nil || contextsBySessionID[sessionID] == nil
+        )
+        let result = try await sendRecoveringFromStaleInitialization(
+            builder.threadTurnsList(
+                threadID: sessionID,
+                cursor: cursor,
+                limit: Self.threadTurnPageLimit(forMessageLimit: limit),
+                sortDirection: "desc",
+                itemsView: "full"
+            ),
+            timeout: requestTimeout
+        )
+        let object = result?.objectValue ?? [:]
+        let turns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let chronologicalTurns = Array(turns.reversed())
+        var thread = metadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
+        thread["turns"] = .array(chronologicalTurns.map { .object($0) })
+        let messages = historyMessages(fromTurns: chronologicalTurns, sessionID: sessionID)
+        let context = contextForHistoryThread(thread, sessionID: sessionID, projects: projects)
+        let nextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
+        return HistoryMessagesPage(
+            messages: messages,
+            previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
+            hasMoreBefore: nextCursor != nil,
+            context: context
+        )
+    }
+
+    private func threadMetadataForHistoryPage(
+        sessionID: SessionID,
+        builder: CodexAppServerRequestBuilder,
+        projects: [AgentProject],
+        shouldRefresh: Bool
+    ) async throws -> [String: CodexAppServerJSONValue]? {
+        if !shouldRefresh {
+            return nil
+        }
+        let result = try await sendRecoveringFromStaleInitialization(
+            builder.threadRead(threadID: sessionID, includeTurns: false),
+            timeout: requestTimeout
+        )
+        guard let thread = threadObject(from: result) else {
+            throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
+        }
+        if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
+            contextsBySessionID[sessionID] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return thread
+    }
+
+    private func contextForHistoryThread(
+        _ thread: [String: CodexAppServerJSONValue],
+        sessionID: SessionID,
+        projects: [AgentProject]
+    ) -> SessionContextSnapshot? {
+        if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
+            contextsBySessionID[sessionID] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+            return session.context
+        }
+        return contextsBySessionID[sessionID]?.session.context
+    }
+
+    private func historyThreadShell(
+        sessionID: SessionID,
+        projects: [AgentProject]
+    ) -> [String: CodexAppServerJSONValue] {
+        if let cached = contextsBySessionID[sessionID]?.session {
+            return [
+                "id": .string(cached.id),
+                "sessionId": .string(cached.id),
+                "cwd": .string(cached.dir),
+                "name": .string(cached.title),
+                "preview": cached.preview.map { .string($0) } ?? .null,
+                "status": .object(["type": .string(cached.isRunning ? "active" : "notLoaded")]),
+                "modelProvider": .string("openai")
+            ]
+        }
+        let project = projects.first
+        let cwd: CodexAppServerJSONValue
+        if let path = project?.path {
+            cwd = .string(path)
+        } else {
+            cwd = .null
+        }
+        return [
+            "id": .string(sessionID),
+            "sessionId": .string(sessionID),
+            "cwd": cwd,
+            "name": .string("Thread \(sessionID.prefix(8))"),
+            "status": .object(["type": .string("notLoaded")]),
+            "modelProvider": .string("openai")
+        ]
+    }
+
+    private func shouldUseThreadTurnsList(config: CodexAppServerConfigResponse) -> Bool {
+        !threadTurnsListUnavailable && config.policy.allowedMethods.contains("thread/turns/list")
+    }
+
+    private func shouldFallbackFromThreadTurnsList(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else {
+            return false
+        }
+        let message = appError.message.lowercased()
+        return appError.code == -32601
+            || message.contains("unsupported")
+            || message.contains("not supported")
+            || message.contains("method not found")
+            || message.contains("method 不允许")
+            || message.contains("experimentalapi")
+    }
+
+    private static func threadTurnPageLimit(forMessageLimit limit: Int?) -> Int {
+        let requestedMessages = max(1, limit ?? 120)
+        return max(10, min(80, (requestedMessages + 1) / 2))
+    }
+
+    private static func encodeThreadTurnsCursor(_ cursor: String) -> String {
+        threadTurnsCursorPrefix + Data(cursor.utf8).base64EncodedString()
+    }
+
+    private static func decodeThreadTurnsCursor(_ cursor: String?) -> String? {
+        guard let cursor,
+              cursor.hasPrefix(threadTurnsCursorPrefix)
+        else {
+            return nil
+        }
+        let encoded = String(cursor.dropFirst(threadTurnsCursorPrefix.count))
+        guard let data = Data(base64Encoded: encoded) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     // thread/read 一次性返回整段 thread 历史；分页只能在客户端做。按消息稳定 id 切窗口，并回填
@@ -1579,6 +1764,16 @@ actor CodexAppServerSessionRuntime {
         return ""
     }
 
+    private func firstString(in object: [String: CodexAppServerJSONValue], keys: [String]) -> String? {
+        for key in keys {
+            if let value = object[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
     private func sessionStatus(from value: CodexAppServerJSONValue?, forceRunning: Bool) -> String {
         if forceRunning {
             return "running"
@@ -1848,6 +2043,13 @@ actor CodexAppServerSessionRuntime {
 
     private func historyMessages(from thread: [String: CodexAppServerJSONValue], sessionID: SessionID) -> [CodexHistoryMessage] {
         let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        return historyMessages(fromTurns: turns, sessionID: sessionID)
+    }
+
+    private func historyMessages(
+        fromTurns turns: [[String: CodexAppServerJSONValue]],
+        sessionID: SessionID
+    ) -> [CodexHistoryMessage] {
         return turns.flatMap { turn -> [CodexHistoryMessage] in
             let turnID = turn["id"]?.stringValue
             let startedAt = date(from: turn["startedAt"])

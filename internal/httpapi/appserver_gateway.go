@@ -50,6 +50,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"thread/resume":           {},
 	"thread/fork":             {},
 	"thread/read":             {},
+	"thread/turns/list":       {},
 	"thread/archive":          {},
 	"thread/unarchive":        {},
 	"thread/goal/get":         {},
@@ -533,7 +534,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if err := p.rememberPendingThreadResponse(frame.ID, method, cwd, scope.id); err != nil {
 			return err
 		}
-	case "thread/read", "thread/goal/get", "thread/goal/set", "thread/goal/clear":
+	case "thread/read", "thread/turns/list", "thread/goal/get", "thread/goal/set", "thread/goal/clear":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
@@ -543,6 +544,11 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		if method == "thread/read" {
 			if err := p.rememberPendingThreadResponse(frame.ID, method, "", ""); err != nil {
+				return err
+			}
+		}
+		if method == "thread/turns/list" {
+			if err := validateGatewayThreadTurnsListParams(params); err != nil {
 				return err
 			}
 		}
@@ -681,6 +687,8 @@ func rewriteGatewaySafeDefaults(payload []byte, method string, params map[string
 		sanitized = copyGatewayParams(params, "cwd", "limit", "cursor")
 	case "thread/read":
 		sanitized = copyGatewayParams(params, "threadId", "includeTurns")
+	case "thread/turns/list":
+		sanitized = copyGatewayParams(params, "threadId", "limit", "cursor", "sortDirection", "itemsView")
 	case "thread/goal/get", "thread/goal/clear":
 		sanitized = copyGatewayParams(params, "threadId")
 	case "thread/goal/set":
@@ -761,6 +769,45 @@ func validateGatewayGoalSetParams(params map[string]any) error {
 	return nil
 }
 
+func validateGatewayThreadTurnsListParams(params map[string]any) error {
+	if value, ok := params["limit"]; ok {
+		if value != nil && !gatewayPositiveJSONNumber(value) {
+			return fmt.Errorf("thread/turns/list.limit 必须是正整数")
+		}
+		if gatewayJSONNumberGreaterThan(value, 200) {
+			return fmt.Errorf("thread/turns/list.limit 不能超过 200")
+		}
+	}
+	if value, ok := params["cursor"]; ok && value != nil {
+		if text, ok := value.(string); !ok || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("thread/turns/list.cursor 必须是非空字符串")
+		}
+	}
+	if value, ok := params["sortDirection"]; ok && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("thread/turns/list.sortDirection 必须是字符串")
+		}
+		switch strings.TrimSpace(text) {
+		case "asc", "desc":
+		default:
+			return fmt.Errorf("thread/turns/list.sortDirection 不支持：%s", text)
+		}
+	}
+	if value, ok := params["itemsView"]; ok && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("thread/turns/list.itemsView 必须是字符串")
+		}
+		switch strings.TrimSpace(text) {
+		case "notLoaded", "summary", "full":
+		default:
+			return fmt.Errorf("thread/turns/list.itemsView 不支持：%s", text)
+		}
+	}
+	return nil
+}
+
 func gatewayPositiveJSONNumber(value any) bool {
 	switch typed := value.(type) {
 	case json.Number:
@@ -772,6 +819,22 @@ func gatewayPositiveJSONNumber(value any) bool {
 		return typed > 0
 	case int64:
 		return typed > 0
+	default:
+		return false
+	}
+}
+
+func gatewayJSONNumberGreaterThan(value any, max int64) bool {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Int64()
+		return err == nil && number > max
+	case float64:
+		return typed > float64(max)
+	case int:
+		return int64(typed) > max
+	case int64:
+		return typed > max
 	default:
 		return false
 	}

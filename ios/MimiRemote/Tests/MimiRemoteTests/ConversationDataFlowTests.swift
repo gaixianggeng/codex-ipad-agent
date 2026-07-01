@@ -10304,6 +10304,73 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
     }
 
+    func testDirectRuntimeUsesPagedThreadTurnsListWhenGatewayAllowsIt() async throws {
+        let project = AgentProject(id: "proj_turn_pages", name: "Turn Pages", path: "/tmp/turn-pages")
+        let transport = FakeCodexAppServerTransport()
+        let allowedMethods = [
+            "initialize",
+            "initialized",
+            "thread/list",
+            "thread/start",
+            "thread/read",
+            "thread/turns/list",
+            "turn/start",
+            "turn/interrupt"
+        ]
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project, allowedMethods: allowedMethods) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let firstPageTask = Task {
+            try await client.messagesPage(sessionID: "thr_turn_pages", before: nil, limit: 120)
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let metadataRead = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        XCTAssertEqual(metadataRead.params?.objectValue?["includeTurns"]?.boolValue, false)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: metadataRead.id)),"result":{"thread":{"id":"thr_turn_pages","sessionId":"thr_turn_pages","preview":"turn pages","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"notLoaded"},"path":null,"cwd":"/tmp/turn-pages","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"turn pages","turns":[]}}}"#)
+
+        let firstTurnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 60)
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_new","startedAt":1780490302,"items":[{"type":"userMessage","id":"item_3","content":[{"type":"text","text":"m3"}]},{"type":"agentMessage","id":"item_4","text":"m4","phase":"final_answer"}]},{"id":"turn_old","startedAt":1780490300,"items":[{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}]}],"nextCursor":"older-cursor","backwardsCursor":"newer-cursor"}}"#)
+
+        let firstPage = try await firstPageTask.value
+        XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2", "m3", "m4"])
+        XCTAssertTrue(firstPage.hasMoreBefore)
+        let cursor = try XCTUnwrap(firstPage.previousCursor)
+
+        let sentBeforeEarlierPage = await transport.sentMessages().count
+        let earlierPageTask = Task {
+            try await client.messagesPage(sessionID: "thr_turn_pages", before: cursor, limit: 120)
+        }
+        let earlierTurnsRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: sentBeforeEarlierPage
+        )
+        XCTAssertEqual(earlierTurnsRequest.params?.objectValue?["cursor"]?.stringValue, "older-cursor")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: earlierTurnsRequest.id)),"result":{"data":[{"id":"turn_earliest","startedAt":1780490200,"items":[{"type":"userMessage","id":"item_0","content":[{"type":"text","text":"m0"}]}]}],"nextCursor":null,"backwardsCursor":"mid-cursor"}}"#)
+
+        let earlierPage = try await earlierPageTask.value
+        XCTAssertEqual(earlierPage.messages.map(\.content), ["m0"])
+        XCTAssertFalse(earlierPage.hasMoreBefore)
+
+        let sent = await transport.sentMessages()
+        let requests = sent.compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(requests.filter { $0.method == "thread/turns/list" }.count, 2)
+        XCTAssertFalse(requests.contains { request in
+            request.method == "thread/read" && request.params?.objectValue?["includeTurns"]?.boolValue == true
+        })
+    }
+
     func testDirectRuntimeThreadReadBackfillsHistoryContextFromTurns() async throws {
         let project = AgentProject(id: "proj_context", name: "Context", path: "/tmp/context")
         let transport = FakeCodexAppServerTransport()
@@ -11812,8 +11879,13 @@ private func waitForRuntimeConnectionToBecomeUnavailable(
     XCTFail("Timed out waiting for app-server runtime connection to become unavailable", file: file, line: line)
 }
 
-private func makeDirectAppServerConfig(project: AgentProject, gatewayAvailable: Bool = true) -> CodexAppServerConfigResponse {
-    CodexAppServerConfigResponse(
+private func makeDirectAppServerConfig(
+    project: AgentProject,
+    gatewayAvailable: Bool = true,
+    allowedMethods: [String]? = nil
+) -> CodexAppServerConfigResponse {
+    let defaultAllowedMethods = ["initialize", "initialized", "thread/list", "thread/start", "thread/read", "turn/start", "turn/interrupt"]
+    return CodexAppServerConfigResponse(
         gatewayWSURL: gatewayAvailable ? "ws://127.0.0.1:7777/api/app-server/ws" : "",
         runtime: CodexAppServerRuntimeMetadata(
             type: "codex_app_server",
@@ -11827,7 +11899,7 @@ private func makeDirectAppServerConfig(project: AgentProject, gatewayAvailable: 
         ),
         projects: [project],
         policy: CodexAppServerPolicyMetadata(
-            allowedMethods: ["initialize", "initialized", "thread/list", "thread/start", "thread/read", "turn/start", "turn/interrupt"],
+            allowedMethods: allowedMethods ?? defaultAllowedMethods,
             projectsSource: "agentd_allowlist"
         )
     )

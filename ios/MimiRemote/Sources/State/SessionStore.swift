@@ -560,6 +560,16 @@ enum RunningTurnDelivery {
     case guided
 }
 
+struct HistoryLoadProgress: Equatable {
+    let sessionID: SessionID
+    var title: String
+    var fraction: Double
+
+    var percentText: String {
+        "\(Int((min(max(fraction, 0), 1) * 100).rounded()))%"
+    }
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var projects: [AgentProject] = [] {
@@ -697,6 +707,7 @@ final class SessionStore: ObservableObject {
     private var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
     private var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     private var initialHistoryLoadingSessionIDs: Set<SessionID> = []
+    @Published private var historyLoadProgressBySessionID: [SessionID: HistoryLoadProgress] = [:]
     private var appServerModelOptionsLastRefresh: Date?
     @Published private var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
@@ -1091,6 +1102,13 @@ final class SessionStore: ObservableObject {
             return false
         }
         return loadingEarlierHistorySessionIDs.contains(sessionID)
+    }
+
+    func historyLoadProgress(sessionID: SessionID?) -> HistoryLoadProgress? {
+        guard let sessionID else {
+            return nil
+        }
+        return historyLoadProgressBySessionID[sessionID]
     }
 
     func bootstrap() async {
@@ -2170,14 +2188,19 @@ final class SessionStore: ObservableObject {
             return
         }
         loadingEarlierHistorySessionIDs.insert(session.id)
+        setHistoryLoadProgress(sessionID: session.id, title: "加载更早消息", fraction: 0.18)
         defer {
             loadingEarlierHistorySessionIDs.remove(session.id)
+            clearHistoryLoadProgress(sessionID: session.id)
         }
         do {
             let client = try clientFactory()
+            setHistoryLoadProgress(sessionID: session.id, title: "请求历史分页", fraction: 0.42)
             let page = try await client.messagesPage(sessionID: session.id, before: cursor, limit: historyPageLimit)
+            setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.76)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
+            setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.94)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
             setErrorMessage(nil)
         } catch {
@@ -2773,15 +2796,22 @@ final class SessionStore: ObservableObject {
     @discardableResult
     private func loadHistory(for session: AgentSession) async -> Bool {
         let requestToken = beginHistoryPageRequest(sessionID: session.id)
+        setHistoryLoadProgress(sessionID: session.id, title: "准备加载历史", fraction: 0.08)
+        defer {
+            clearHistoryLoadProgress(sessionID: session.id)
+        }
         do {
             let client = try clientFactory()
             // 历史文件可能很大，移动端默认只加载最近一段上下文，避免打开会话时卡住 UI。
+            setHistoryLoadProgress(sessionID: session.id, title: "请求最近消息", fraction: 0.32)
             let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
             guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
                 return false
             }
+            setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.74)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
+            setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.94)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
             return true
         } catch {
@@ -2801,12 +2831,18 @@ final class SessionStore: ObservableObject {
             let client = try clientFactory()
             // 手动刷新必须绕过 hasLoadedHistory 缓存，Mac/iPad 混合使用时 app-server 历史可能已经更新。
             let requestToken = beginHistoryPageRequest(sessionID: session.id)
+            setHistoryLoadProgress(sessionID: session.id, title: "刷新历史消息", fraction: 0.18)
+            defer {
+                clearHistoryLoadProgress(sessionID: session.id)
+            }
             let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
             guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
                 return
             }
+            setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.72)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
+            setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.92)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
             if session.isRunning {
                 do {
@@ -3476,6 +3512,7 @@ final class SessionStore: ObservableObject {
         historyHasMoreBeforeBySessionID = historyHasMoreBeforeBySessionID.filter { validSessionIDs.contains($0.key) }
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
+        historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }
         initialHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
 
         let loadingEarlierSessionIDs = loadingEarlierHistorySessionIDs.intersection(validSessionIDs)
@@ -4601,6 +4638,19 @@ final class SessionStore: ObservableObject {
         errorMessage = value
     }
 
+    private func setHistoryLoadProgress(sessionID: SessionID, title: String, fraction: Double) {
+        let bounded = min(max(fraction, 0), 1)
+        let next = HistoryLoadProgress(sessionID: sessionID, title: title, fraction: bounded)
+        guard historyLoadProgressBySessionID[sessionID] != next else {
+            return
+        }
+        historyLoadProgressBySessionID[sessionID] = next
+    }
+
+    private func clearHistoryLoadProgress(sessionID: SessionID) {
+        historyLoadProgressBySessionID.removeValue(forKey: sessionID)
+    }
+
     private func setWebSocketStatus(_ value: WebSocketStatus) {
         guard webSocketStatus != value else {
             return
@@ -4629,6 +4679,7 @@ final class SessionStore: ObservableObject {
         historySnapshotSeqBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
         initialHistoryLoadingSessionIDs = []
+        historyLoadProgressBySessionID = [:]
         loadingEarlierHistorySessionIDs = []
         lastSeenEventSeqBySessionID = [:]
         listProjectionBySessionID = [:]

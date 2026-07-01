@@ -69,7 +69,7 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("allowed_methods metadata 异常：%v", policy)
 	}
-	for _, method := range []string{"thread/goal/get", "thread/goal/set", "thread/goal/clear", "turn/steer"} {
+	for _, method := range []string{"thread/turns/list", "thread/goal/get", "thread/goal/set", "thread/goal/clear", "turn/steer"} {
 		if !containsAnyString(allowedMethods, method) {
 			t.Fatalf("allowed_methods 应包含 %s：%v", method, allowedMethods)
 		}
@@ -213,6 +213,11 @@ func TestAppServerGatewayRejectsUnauthorizedThreadIDWithoutForwarding(t *testing
 			want:    "threadId 未由当前 gateway 连接授权",
 		},
 		{
+			name:    "thread turns list",
+			payload: `{"id":110,"method":"thread/turns/list","params":{"threadId":"thread-outside","limit":40,"sortDirection":"desc","itemsView":"full"}}`,
+			want:    "threadId 未由当前 gateway 连接授权",
+		},
+		{
 			name:    "thread archive",
 			payload: `{"id":111,"method":"thread/archive","params":{"threadId":"thread-outside"}}`,
 			want:    "threadId 未由当前 gateway 连接授权",
@@ -329,6 +334,19 @@ func TestAppServerGatewayAuthorizesThreadIDsFromThreadListResponse(t *testing.T)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到已授权 thread/read")
+	}
+
+	turnsFrame := []byte(`{"id":32,"method":"thread/turns/list","params":{"threadId":"thread-authorized","limit":40,"sortDirection":"desc","itemsView":"full"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, turnsFrame); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, turnsFrame) {
+			t.Fatalf("已授权 thread/turns/list 必须原样转发：got=%s want=%s", got, turnsFrame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到已授权 thread/turns/list")
 	}
 }
 
@@ -1545,6 +1563,20 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	assertGatewayParamsOnly(t, threadReadParams, "threadId", "includeTurns")
 	if threadReadParams["threadId"] != "thread-sanitize" || threadReadParams["includeTurns"] != true {
 		t.Fatalf("thread/read 合法参数应保留：%v", threadReadParams)
+	}
+
+	threadTurnsList := []byte(`{"id":650,"method":"thread/turns/list","params":{"threadId":"thread-sanitize","limit":40,"cursor":"older","sortDirection":"desc","itemsView":"full",` + dangerousTail + `}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, threadTurnsList); err != nil {
+		t.Fatal(err)
+	}
+	threadTurnsListParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+	assertGatewayParamsOnly(t, threadTurnsListParams, "threadId", "limit", "cursor", "sortDirection", "itemsView")
+	if threadTurnsListParams["threadId"] != "thread-sanitize" ||
+		threadTurnsListParams["limit"] != float64(40) ||
+		threadTurnsListParams["cursor"] != "older" ||
+		threadTurnsListParams["sortDirection"] != "desc" ||
+		threadTurnsListParams["itemsView"] != "full" {
+		t.Fatalf("thread/turns/list 合法参数应保留：%v", threadTurnsListParams)
 	}
 
 	goalGet := []byte(`{"id":651,"method":"thread/goal/get","params":{"threadId":"thread-sanitize",` + dangerousTail + `}}`)

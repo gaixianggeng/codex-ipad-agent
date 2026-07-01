@@ -470,6 +470,7 @@ struct ConversationTimelineView: View {
         let timelineItems = timelineItemCache.items(from: messages)
         let timelineItemIDs = timelineItems.map(\.id)
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: messages)
+        let historyProgress = sessionStore.historyLoadProgress(sessionID: sessionStore.selectedSessionID)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 // 用 List（底层 UITableView）替代 ScrollView + LazyVStack：行高是真实测量值、
@@ -477,13 +478,25 @@ struct ConversationTimelineView: View {
                 // “空白要手滑一下”的竞态，右侧滚动条也不再因 LazyVStack 高度估算而长度/位置乱跳。
                 List {
                     if timelineItems.isEmpty {
-                        emptyState
+                        Group {
+                            if let historyProgress {
+                                historyLoadingState(historyProgress)
+                            } else {
+                                emptyState
+                            }
+                        }
                             .padding(.top, 80)
                             .frame(maxWidth: .infinity)
                             .listRowSeparator(.hidden)
                             .listRowInsets(layout.messageRowInsets)
                             .listRowBackground(Color.clear)
                     } else {
+                        if let historyProgress {
+                            historyProgressRow(historyProgress)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(layout.messageRowInsets)
+                                .listRowBackground(Color.clear)
+                        }
                         if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
                             loadEarlierRow(proxy: proxy, timelineItems: timelineItems)
                                 .listRowSeparator(.hidden)
@@ -668,6 +681,60 @@ struct ConversationTimelineView: View {
             .background(statusChipBackground, in: Capsule())
             Spacer()
         }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func historyProgressRow(_ progress: HistoryLoadProgress) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(workbenchSecondaryText)
+                Text(progress.title)
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(workbenchPrimaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(progress.percentText)
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .foregroundStyle(workbenchSecondaryText)
+                    .monospacedDigit()
+            }
+            ProgressView(value: progress.fraction)
+                .progressViewStyle(.linear)
+                .tint(themeStore.tokens(for: colorScheme).accent)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(statusChipBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(maxWidth: min(layout.systemMaxWidth, 420))
+        .frame(maxWidth: .infinity)
+    }
+
+    private func historyLoadingState(_ progress: HistoryLoadProgress) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(themeStore.uiFont(.title2))
+                .foregroundStyle(workbenchSecondaryText)
+            Text(progress.title)
+                .font(themeStore.uiFont(.headline, weight: .semibold))
+                .foregroundStyle(workbenchPrimaryText)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("历史加载")
+                    Spacer()
+                    Text(progress.percentText)
+                        .monospacedDigit()
+                }
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .foregroundStyle(workbenchSecondaryText)
+                ProgressView(value: progress.fraction)
+                    .progressViewStyle(.linear)
+                    .tint(themeStore.tokens(for: colorScheme).accent)
+            }
+            .frame(maxWidth: layout.emptyStateMaxWidth)
+        }
+        .padding(.vertical, 40)
         .frame(maxWidth: .infinity)
     }
 
