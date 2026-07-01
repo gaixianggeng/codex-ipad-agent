@@ -5124,6 +5124,36 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(conversationStore.messages(for: history.id).contains { $0.content == "历史回答" })
     }
 
+    func testRefreshCurrentContextDoesNotWaitForSessionListReconciliation() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = BlockingSessionListRefreshClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+
+        var refreshFinished = false
+        let refreshTask = Task { @MainActor in
+            await store.refreshCurrentContext()
+            refreshFinished = true
+        }
+
+        await client.waitForBlockedSessionListRefresh()
+        let finishedBeforeListRelease = refreshFinished
+        client.releaseBlockedSessionListRefresh()
+        await refreshTask.value
+
+        XCTAssertTrue(finishedBeforeListRelease)
+        XCTAssertEqual(client.requestedMessageCursors, [nil, nil])
+    }
+
     func testSelectingHistoryWhileInitialPageLoadingDoesNotDuplicateRequest() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
@@ -8757,6 +8787,91 @@ private final class MutableSessionPageClient: SessionStoreAPIClient {
             return page
         }
         return HistoryMessagesPage(messages: [])
+    }
+}
+
+private final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
+    let projectsResult: [AgentProject]
+    let page: SessionsPage
+    private(set) var requestedMessageCursors: [String?] = []
+    private var sessionsPageCallCount = 0
+    private var blockedListRefreshCount = 0
+    private var blockedListContinuation: CheckedContinuation<SessionsPage, Never>?
+    private var blockedListWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(projects: [AgentProject], page: SessionsPage) {
+        self.projectsResult = projects
+        self.page = page
+    }
+
+    func projects() async throws -> [AgentProject] {
+        projectsResult
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        page.sessions
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        sessionsPageCallCount += 1
+        guard sessionsPageCallCount > 1 else {
+            return page
+        }
+        // 第二次列表请求模拟慢 thread/list：当前会话刷新不应该等它结束。
+        return await withCheckedContinuation { continuation in
+            blockedListContinuation = continuation
+            blockedListRefreshCount += 1
+            notifyBlockedListWaiters()
+        }
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        let page = try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+        return page.messages
+    }
+
+    func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        requestedMessageCursors.append(before)
+        return HistoryMessagesPage(
+            messages: [
+                CodexHistoryMessage(id: "rollout:100", role: "assistant", content: "历史回答", createdAt: Date(timeIntervalSince1970: 2))
+            ]
+        )
+    }
+
+    func waitForBlockedSessionListRefresh() async {
+        guard blockedListRefreshCount == 0 else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            guard blockedListRefreshCount == 0 else {
+                continuation.resume()
+                return
+            }
+            blockedListWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedSessionListRefresh() {
+        blockedListContinuation?.resume(returning: page)
+        blockedListContinuation = nil
+    }
+
+    private func notifyBlockedListWaiters() {
+        blockedListWaiters.forEach { $0.resume() }
+        blockedListWaiters = []
     }
 }
 

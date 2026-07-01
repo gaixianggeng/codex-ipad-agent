@@ -2844,28 +2844,13 @@ final class SessionStore: ObservableObject {
             conversationStore.setHistory(page.messages, sessionID: session.id)
             setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.92)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
-            if session.isRunning {
-                do {
-                    let response = try await client.session(id: session.id, afterSeq: logStore.lastSeq(for: session.id))
-                    let refreshed = self.session(response.session, in: workspaceForSession(session))
-                    upsert(refreshed)
-                    if !refreshed.isRunning {
-                        clearForegroundActivity(sessionID: session.id)
-                        clearRuntimeActivity(sessionID: session.id)
-                    }
-                    if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
-                        // recent_output 只作为诊断日志展示；对话内容以 app-server 结构化 history/event 为准。
-                        logStore.append(recentOutput, sessionID: session.id, seq: response.lastSeq)
-                    }
-                } catch {
-                    // 运行态快照读取失败时，用列表刷新重新同步 app-server 线程状态。
-                    await refreshSessions(forProjectID: session.projectID)
-                }
-            } else {
+            if !session.isRunning {
                 clearForegroundActivity(sessionID: session.id)
                 clearRuntimeActivity(sessionID: session.id)
-                await refreshSessions(forProjectID: session.projectID)
             }
+            // 手动刷新当前会话只等待历史页接口；列表/运行态校准放到后台，
+            // 避免 thread/list 之类的慢接口把“刷新历史”按钮继续卡住。
+            scheduleSessionStateReconciliationAfterHistoryRefresh(session)
             setStatusMessage("当前会话已刷新")
             setErrorMessage(nil)
         } catch {
@@ -2873,10 +2858,58 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    private func scheduleSessionStateReconciliationAfterHistoryRefresh(_ session: AgentSession) {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.reconcileSessionStateAfterHistoryRefresh(session)
+        }
+    }
+
+    private func reconcileSessionStateAfterHistoryRefresh(_ session: AgentSession) async {
+        if session.isRunning {
+            do {
+                let client = try clientFactory()
+                let response = try await client.session(id: session.id, afterSeq: logStore.lastSeq(for: session.id))
+                let refreshed = self.session(response.session, in: workspaceForSession(session))
+                upsert(refreshed)
+                if !refreshed.isRunning {
+                    clearForegroundActivity(sessionID: session.id)
+                    clearRuntimeActivity(sessionID: session.id)
+                }
+                if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
+                    // recent_output 只作为诊断日志展示；对话内容以 app-server 结构化 history/event 为准。
+                    logStore.append(recentOutput, sessionID: session.id, seq: response.lastSeq)
+                }
+            } catch {
+                // 运行态快照读取失败时，后台静默用列表刷新重新同步 app-server 线程状态。
+                await refreshSessionListQuietlyIfStillSelected(projectID: session.projectID)
+            }
+        } else {
+            await refreshSessionListQuietlyIfStillSelected(projectID: session.projectID)
+        }
+    }
+
+    private func refreshSessionListQuietlyIfStillSelected(projectID: String) async {
+        guard selectedProjectID == projectID else {
+            return
+        }
+        await refreshSessions(
+            forProjectID: projectID,
+            showLoading: false,
+            clearErrorOnSuccess: false,
+            updateStatusMessage: false,
+            reportErrorOnFailure: false
+        )
+    }
+
     private func refreshSessions(
         forProjectID projectID: String,
         showLoading: Bool = true,
-        clearErrorOnSuccess: Bool = true
+        clearErrorOnSuccess: Bool = true,
+        updateStatusMessage: Bool = true,
+        reportErrorOnFailure: Bool = true
     ) async {
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
@@ -2912,7 +2945,9 @@ final class SessionStore: ObservableObject {
             replaceSessionsIfChanged(with: pageSessionsPreservingSelection(pageSessions, projectID: projectID), projectID: projectID)
             updateSessionPageState(projectID: projectID, page: page)
             clearWorkspaceUnavailable(projectID)
-            setStatusMessage("已加载 \(filteredSessions.count) 个会话")
+            if updateStatusMessage {
+                setStatusMessage("已加载 \(filteredSessions.count) 个会话")
+            }
             // 手动刷新/切换工作区成功时可以清掉旧错误；发送后的后台刷新不能抢掉刚产生的发送失败提示。
             if clearErrorOnSuccess {
                 setErrorMessage(nil)
@@ -2921,7 +2956,7 @@ final class SessionStore: ObservableObject {
             if let requestToken, !isCurrentSessionPageRequest(projectID: projectID, token: requestToken) {
                 return
             }
-            if selectedProjectID == projectID {
+            if reportErrorOnFailure, selectedProjectID == projectID {
                 await handleWorkspaceLoadFailure(workspace: workspace, error: error)
             }
         }
