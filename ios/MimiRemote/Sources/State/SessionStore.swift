@@ -4932,6 +4932,12 @@ final class SessionStore: ObservableObject {
 
     private func sessionPreservingActiveApproval(_ incoming: AgentSession, existing: AgentSession?) -> AgentSession {
         var next = Self.normalizedSession(incoming)
+        if shouldPreserveConnectedRunningSessionAgainstHistorySnapshot(incoming: next, existing: existing) {
+            next.status = existing?.status ?? next.status
+            next.activeTurnID = existing?.activeTurnID ?? next.activeTurnID
+            next.pendingApproval = existing?.pendingApproval ?? next.pendingApproval
+            next.pendingUserInput = existing?.pendingUserInput ?? next.pendingUserInput
+        }
         if let userInput = next.pendingUserInput,
            isUserInputResponsePending(userInput, sessionID: next.id) {
             // 列表刷新可能读到补充信息提交前的旧快照；已在本地提交中的 request 不应重新顶回可见表单。
@@ -4962,6 +4968,26 @@ final class SessionStore: ObservableObject {
             next.pendingUserInput = existingInput
         }
         return next
+    }
+
+    private func shouldPreserveConnectedRunningSessionAgainstHistorySnapshot(incoming: AgentSession, existing: AgentSession?) -> Bool {
+        guard incoming.status == SessionStatus.history.rawValue,
+              let existing,
+              existing.isRunning,
+              incoming.id == selectedSessionID,
+              connectedSessionID == incoming.id,
+              webSocket != nil
+        else {
+            return false
+        }
+        switch webSocketStatus {
+        case .connecting, .connected:
+            // 长任务运行中，thread/list 偶尔会返回滞后的 idle/notLoaded 快照。
+            // 当前 iPad 仍有活动实时连接时，以本地运行态为准，避免下一次发送误走历史 resume。
+            return true
+        case .disconnected, .failed:
+            return false
+        }
     }
 
     private static func matchingThreadGoal(

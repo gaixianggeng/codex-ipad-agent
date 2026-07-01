@@ -5751,6 +5751,61 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(sockets[1].sentTurns.count, 1)
     }
 
+    func testConnectedRunningSessionIgnoresStaleHistoryRefreshBeforeNextSend() async throws {
+        let project = makeProject(id: "proj_ws_stale_history")
+        let running = makeSession(
+            id: "sess_ws_stale_history",
+            projectID: project.id,
+            title: "长任务运行中",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-long-running"
+        )
+        let staleHistory = makeSession(
+            id: running.id,
+            projectID: project.id,
+            title: running.title,
+            status: "history",
+            source: "codex",
+            resumeID: running.id
+        )
+        let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        var sockets: [MockWebSocketClient] = []
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        client.page = SessionsPage(sessions: [staleHistory])
+        await store.refreshAll(autoAttach: false)
+
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-long-running")
+
+        let sent = await store.sendTurn(CodexAppServerTurnPayload(prompt: "继续当前长任务"))
+
+        XCTAssertTrue(sent)
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        XCTAssertFalse(conversationStore.messages(for: running.id).contains { $0.content == "已继续这个历史会话。" })
+    }
+
     func testWebSocketReconnectStopsCleanlyWhenSnapshotIsNoLongerRunning() async throws {
         let project = makeProject(id: "proj_ws_ended_reconnect")
         let running = makeSession(id: "sess_ws_ended_reconnect", projectID: project.id, title: "运行中", status: "running", source: "codex")
