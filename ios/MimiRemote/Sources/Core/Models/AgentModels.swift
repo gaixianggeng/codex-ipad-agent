@@ -715,6 +715,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     let seq: EventSequence?
     let revision: ModelRevision?
     let sendStatus: MessageSendStatus?
+    let isTimestampFallback: Bool
 
     init(
         id: MessageID = UUID().uuidString,
@@ -728,7 +729,8 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         itemID: AgentItemID? = nil,
         seq: EventSequence? = nil,
         revision: ModelRevision? = nil,
-        sendStatus: MessageSendStatus? = nil
+        sendStatus: MessageSendStatus? = nil,
+        isTimestampFallback: Bool = false
     ) {
         self.id = id
         self.role = role
@@ -742,6 +744,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         self.seq = seq
         self.revision = revision
         self.sendStatus = sendStatus
+        self.isTimestampFallback = isTimestampFallback
     }
 
     enum CodingKeys: String, CodingKey {
@@ -757,6 +760,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         case seq
         case revision
         case sendStatus = "send_status"
+        case isTimestampFallback = "is_timestamp_fallback"
     }
 
     init(from decoder: Decoder) throws {
@@ -778,7 +782,26 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
             itemID: try container.decodeIfPresent(AgentItemID.self, forKey: .itemID),
             seq: try container.decodeIfPresent(EventSequence.self, forKey: .seq),
             revision: try container.decodeIfPresent(ModelRevision.self, forKey: .revision),
-            sendStatus: try container.decodeIfPresent(MessageSendStatus.self, forKey: .sendStatus)
+            sendStatus: try container.decodeIfPresent(MessageSendStatus.self, forKey: .sendStatus),
+            isTimestampFallback: try container.decodeIfPresent(Bool.self, forKey: .isTimestampFallback) ?? false
+        )
+    }
+
+    func withTimestampFallback(createdAt: Date, updatedAt: Date? = nil) -> CodexHistoryMessage {
+        CodexHistoryMessage(
+            id: id,
+            role: role,
+            kind: kind,
+            content: content,
+            createdAt: createdAt,
+            updatedAt: updatedAt ?? self.updatedAt,
+            clientMessageID: clientMessageID,
+            turnID: turnID,
+            itemID: itemID,
+            seq: seq,
+            revision: revision,
+            sendStatus: sendStatus,
+            isTimestampFallback: true
         )
     }
 }
@@ -1154,6 +1177,7 @@ struct ConversationMessage: Identifiable, Hashable {
     var sendStatus: MessageSendStatus
     var revision: ModelRevision?
     var turnPayload: CodexAppServerTurnPayload?
+    var isTimestampFallback: Bool
     private(set) var contentRevision: UInt64
     private(set) var contentDigest: UInt64
     private(set) var contentByteCount: Int
@@ -1179,7 +1203,8 @@ struct ConversationMessage: Identifiable, Hashable {
         updatedAt: Date? = nil,
         sendStatus: MessageSendStatus = .sent,
         revision: ModelRevision? = nil,
-        turnPayload: CodexAppServerTurnPayload? = nil
+        turnPayload: CodexAppServerTurnPayload? = nil,
+        isTimestampFallback: Bool = false
     ) {
         self.id = id
         self.stableID = stableID
@@ -1194,6 +1219,7 @@ struct ConversationMessage: Identifiable, Hashable {
         self.sendStatus = sendStatus
         self.revision = revision
         self.turnPayload = turnPayload
+        self.isTimestampFallback = isTimestampFallback
         let fingerprint = Self.makeRenderFingerprint(for: content)
         self.contentRevision = 0
         self.contentDigest = fingerprint.digest
@@ -1212,6 +1238,7 @@ struct ConversationMessage: Identifiable, Hashable {
             && lhs.updatedAt == rhs.updatedAt
             && lhs.sendStatus == rhs.sendStatus
             && lhs.revision == rhs.revision
+            && lhs.isTimestampFallback == rhs.isTimestampFallback
             && lhs.contentDigest == rhs.contentDigest
             && lhs.contentByteCount == rhs.contentByteCount
     }
@@ -1228,6 +1255,7 @@ struct ConversationMessage: Identifiable, Hashable {
         hasher.combine(updatedAt)
         hasher.combine(sendStatus)
         hasher.combine(revision)
+        hasher.combine(isTimestampFallback)
         hasher.combine(contentDigest)
         hasher.combine(contentByteCount)
     }
@@ -1500,6 +1528,7 @@ struct AgentMessage: Identifiable, Codable, Hashable {
     var seq: EventSequence?
     var revision: ModelRevision
     var sendStatus: MessageSendStatus
+    var isTimestampFallback: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -1516,6 +1545,7 @@ struct AgentMessage: Identifiable, Codable, Hashable {
         case seq
         case revision
         case sendStatus = "send_status"
+        case isTimestampFallback = "is_timestamp_fallback"
     }
 
     init(
@@ -1532,7 +1562,8 @@ struct AgentMessage: Identifiable, Codable, Hashable {
         updatedAt: Date? = nil,
         seq: EventSequence? = nil,
         revision: ModelRevision = 0,
-        sendStatus: MessageSendStatus = .confirmed
+        sendStatus: MessageSendStatus = .confirmed,
+        isTimestampFallback: Bool = false
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -1548,6 +1579,7 @@ struct AgentMessage: Identifiable, Codable, Hashable {
         self.seq = seq
         self.revision = revision
         self.sendStatus = sendStatus
+        self.isTimestampFallback = isTimestampFallback
     }
 
     init(from decoder: Decoder) throws {
@@ -1566,6 +1598,7 @@ struct AgentMessage: Identifiable, Codable, Hashable {
         self.seq = try container.decodeIfPresent(EventSequence.self, forKey: .seq)
         self.revision = try container.decodeIfPresent(ModelRevision.self, forKey: .revision) ?? 0
         self.sendStatus = try container.decodeIfPresent(MessageSendStatus.self, forKey: .sendStatus) ?? .confirmed
+        self.isTimestampFallback = try container.decodeIfPresent(Bool.self, forKey: .isTimestampFallback) ?? false
     }
 }
 

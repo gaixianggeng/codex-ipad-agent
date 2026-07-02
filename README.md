@@ -13,6 +13,7 @@ Mimi Remote 是一个原生 iPhone / iPad 控制台，用来连接用户自己 M
 - `Codex`、`OpenAI` 等名称只用于说明兼容的用户自有工具链；项目不会使用官方 Logo 或容易造成混淆的品牌元素。
 - 如果后续参考其他开源项目的代码、设计或文案，必须保留许可证和归属说明，并优先做出自己的产品取舍。
 - 许可证、归属和品牌边界见 [LICENSE](LICENSE)、[NOTICE.md](NOTICE.md) 和 [docs/ip-and-brand-policy.md](docs/ip-and-brand-policy.md)；从私有开发仓库整理到公开仓库的流程见 [docs/open-source-release.md](docs/open-source-release.md)。
+- 当前个人部署使用公网 VPS + SSH 反向隧道访问本机 `agentd`；迁移记录、架构说明和排障命令见 [docs/relay-vps-ops.md](docs/relay-vps-ops.md)。
 
 ## 方案
 

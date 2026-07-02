@@ -862,6 +862,7 @@ private struct ConversationTimelineCacheKey: Equatable {
     let revision: ModelRevision?
     let renderFingerprint: ConversationMessageRenderFingerprint
     let turnPayload: CodexAppServerTurnPayload?
+    let isTimestampFallback: Bool
 
     init(message: ConversationMessage) {
         self.id = message.id
@@ -877,6 +878,7 @@ private struct ConversationTimelineCacheKey: Equatable {
         self.revision = message.revision
         self.renderFingerprint = message.renderFingerprint
         self.turnPayload = message.turnPayload
+        self.isTimestampFallback = message.isTimestampFallback
     }
 }
 
@@ -1101,7 +1103,7 @@ private struct MessageBubble: View {
         ZStack(alignment: .bottomTrailing) {
             renderContent
                 .padding(.bottom, 16)
-            MessageTimestampCaption(text: message.timestampCaptionText, foreground: timestampForeground)
+            MessageTimestampCaption(text: message.timestampCaptionText, isFallback: message.isTimestampFallback, foreground: timestampForeground)
         }
     }
 
@@ -1449,7 +1451,7 @@ private struct SystemNotice: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 14)
-            MessageTimestampCaption(text: message.timestampCaptionText)
+            MessageTimestampCaption(text: message.timestampCaptionText, isFallback: message.isTimestampFallback)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -1487,7 +1489,7 @@ private struct RuntimeSummaryCard: View {
                 contentView
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    MessageTimestampCaption(text: message.timestampCaptionText)
+                    MessageTimestampCaption(text: message.timestampCaptionText, isFallback: message.isTimestampFallback)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1698,41 +1700,48 @@ private struct MessageTimestampCaption: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let text: String
+    var isFallback = false
     var foreground: Color?
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
         Text(text)
             .font(themeStore.uiFont(.caption2, weight: .medium))
-            .foregroundStyle(foreground ?? themeStore.tokens(for: colorScheme).tertiaryText)
+            .foregroundStyle(isFallback ? tokens.warning : (foreground ?? tokens.tertiaryText))
             .lineLimit(1)
             .minimumScaleFactor(0.88)
-            .accessibilityLabel("消息时间 \(text)")
+            .accessibilityLabel(isFallback ? "消息时间 兜底估算 \(text)" : "消息时间 \(text)")
     }
 }
 
-private extension ConversationMessage {
+extension ConversationMessage {
     var timestampCaptionText: String {
+        let text: String
         switch role {
         case .user:
-            return "发出 \(Self.compactTime(createdAt))"
+            text = "发出 \(Self.compactTime(createdAt))"
         case .assistant:
             guard sendStatus != .sending else {
-                return "开始 \(Self.compactTime(createdAt))"
+                let sendingText = "开始 \(Self.compactTime(createdAt))"
+                return sendingText
             }
             let completedAt = updatedAt ?? createdAt
             let started = Self.compactTime(createdAt)
             let completed = Self.compactTime(completedAt)
             // 同一分钟内开始和完成显示相同时间时，只保留完成时间，减少气泡右下角噪音。
             if started == completed {
-                return "完成 \(completed)"
+                text = "完成 \(completed)"
+            } else {
+                text = "开始 \(started) · 完成 \(completed)"
             }
-            return "开始 \(started) · 完成 \(completed)"
         case .system:
             if let updatedAt, Self.compactTime(updatedAt) != Self.compactTime(createdAt) {
-                return "\(Self.compactTime(createdAt)) · \(Self.compactTime(updatedAt))"
+                text = "\(Self.compactTime(createdAt)) · \(Self.compactTime(updatedAt))"
+            } else {
+                text = Self.compactTime(createdAt)
             }
-            return Self.compactTime(createdAt)
         }
+        return text
     }
 
     private static func compactTime(_ date: Date) -> String {

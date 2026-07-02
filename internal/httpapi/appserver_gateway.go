@@ -241,8 +241,11 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 	// ECONNREFUSED，只有“端口已开但还没接受握手”才会卡到这里。把超时收紧到 4s，让 iPad 端能更快
 	// 拿到 502 重试，而不是每次都白等 10s。
 	dialer := websocket.Dialer{HandshakeTimeout: 4 * time.Second}
+	dialStart := time.Now()
 	upstream, _, err := dialer.DialContext(req.Context(), upstreamURL, upstreamHeaders)
+	dialDuration := time.Since(dialStart)
 	if err != nil {
+		r.monitor.recordGatewayDialFailure(dialDuration)
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("连接 app-server gateway 上游失败：%v", err))
 		return
 	}
@@ -256,7 +259,8 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 	defer client.Close()
 
 	log.Printf("app-server gateway connected upstream=%s", sanitizeGatewayURL(upstreamURL))
-	r.proxyAppServerGateway(req.Context(), client, upstream)
+	monitor := r.monitor.startGatewayConnection(requestRemoteHost(req), req.Host, sanitizeGatewayURL(upstreamURL), dialDuration)
+	r.proxyAppServerGateway(req.Context(), client, upstream, monitor)
 }
 
 func (r *Router) appServerUpstreamWebSocketURL() (string, error) {
@@ -326,10 +330,10 @@ func (r *Router) appServerUpstreamHeaders() (http.Header, error) {
 	return headers, nil
 }
 
-func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn) {
+func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Conn, upstream *websocket.Conn, monitor *relayGatewayConnMonitor) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan struct{}, 3)
+	done := make(chan string, 3)
 	var clientWriteMu sync.Mutex
 	var upstreamWriteMu sync.Mutex
 	configureGatewayReadConn(client)
@@ -342,22 +346,21 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	}
 
 	go func() {
-		defer func() { done <- struct{}{} }()
-		r.copyClientFramesToAppServer(client, upstream, &clientWriteMu, &upstreamWriteMu, policy)
+		done <- r.copyClientFramesToAppServer(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
 	go func() {
-		defer func() { done <- struct{}{} }()
-		copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy)
+		done <- copyWebSocketFrames(ctx, upstream, client, &upstreamWriteMu, &clientWriteMu, policy, monitor)
 	}()
 	go func() {
-		defer func() { done <- struct{}{} }()
 		pingGatewayConnections(ctx, client, upstream, &clientWriteMu, &upstreamWriteMu)
+		done <- "ping_failed_or_context_done"
 	}()
 
-	<-done
+	reason := <-done
 	cancel()
 	_ = client.Close()
 	_ = upstream.Close()
+	monitor.finish(reason)
 }
 
 func configureGatewayReadConn(conn *websocket.Conn) {
@@ -387,51 +390,69 @@ func pingGatewayConnections(ctx context.Context, client *websocket.Conn, upstrea
 	}
 }
 
-func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy) {
+func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *websocket.Conn, clientWriteMu *sync.Mutex, upstreamWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
 		if err != nil {
-			return
+			return gatewayCloseReason("client_read", err)
 		}
+		policyStart := time.Now()
 		forwardPayload, policyErr := policy.validateClientFrame(messageType, payload)
+		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
+			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
 			// 非法请求只回 JSON-RPC error，不把高危帧送到 app-server。
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
-				return
+				return "client_policy_error_write_failed"
 			}
 			continue
 		}
+		writeStart := time.Now()
 		if err := writeWebSocketFrame(upstream, upstreamWriteMu, messageType, forwardPayload); err != nil {
-			return
+			return gatewayCloseReason("upstream_write", err)
 		}
+		monitor.recordForward("client_to_upstream", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
 	}
 }
 
-func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, fromWriteMu *sync.Mutex, toWriteMu *sync.Mutex, policy *appServerGatewayPolicy) {
+func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocket.Conn, fromWriteMu *sync.Mutex, toWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return "context_done"
 		default:
 		}
 		messageType, payload, err := from.ReadMessage()
 		if err != nil {
-			return
+			return gatewayCloseReason("upstream_read", err)
 		}
+		policyStart := time.Now()
 		forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
+		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
+			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
 			if !writeGatewayPolicyError(from, fromWriteMu, policyErr) {
-				return
+				return "upstream_policy_error_write_failed"
 			}
 			continue
 		}
 		if !forward {
+			monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
 			continue
 		}
+		writeStart := time.Now()
 		if err := writeWebSocketFrame(to, toWriteMu, messageType, payload); err != nil {
-			return
+			return gatewayCloseReason("client_write", err)
 		}
+		monitor.recordForward("upstream_to_client", len(payload), len(payload), policyDuration, time.Since(writeStart), payload)
 	}
+}
+
+func gatewayCloseReason(prefix string, err error) string {
+	if err == nil {
+		return prefix
+	}
+	return prefix + ": " + trimRelayString(err.Error(), 120)
 }
 
 func writeWebSocketFrame(conn *websocket.Conn, mu *sync.Mutex, messageType int, payload []byte) error {

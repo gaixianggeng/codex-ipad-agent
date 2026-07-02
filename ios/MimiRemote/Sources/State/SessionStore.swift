@@ -2406,7 +2406,14 @@ final class SessionStore: ObservableObject {
     }
 
     func sendCtrlC() {
-        guard let session = selectedSession, session.isRunning, canControlSession(session), let socket = readyWebSocket(for: session) else {
+        guard let session = selectedSession, session.isRunning, canControlSession(session) else {
+            return
+        }
+        guard session.activeTurnID != nil else {
+            setStatusMessage("当前没有可中断的活动回合")
+            return
+        }
+        guard let socket = readyWebSocket(for: session) else {
             return
         }
         if !socket.sendCtrlC() {
@@ -2730,7 +2737,7 @@ final class SessionStore: ObservableObject {
             insertExpandedProjectID(responseSession.projectID)
 
             // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
-            await loadHistoryIfNeeded(for: responseSession)
+            let didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
             if !prompt.isEmpty {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
@@ -2758,7 +2765,10 @@ final class SessionStore: ObservableObject {
             if resume != nil {
                 conversationStore.appendSystem("已继续这个历史会话。", sessionID: responseSession.id)
             }
-            connectWebSocket(responseSession)
+            // 历史已成为 canonical 快照后，WS 只需要补连接状态；否则 buffered content replay
+            // 会把同一 turn 的过程卡再次 append 到时间线。历史加载失败时仍保留 replay，避免漏消息。
+            let shouldReplayBufferedEvents = resume == nil || !didLoadInitialHistory
+            connectWebSocket(responseSession, replayBufferedEvents: shouldReplayBufferedEvents)
             setStatusMessage("会话已启动")
             setErrorMessage(nil)
             return true

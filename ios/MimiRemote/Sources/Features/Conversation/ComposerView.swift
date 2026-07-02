@@ -89,6 +89,14 @@ enum VoiceInputLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ComposerCardHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -117,6 +125,7 @@ struct ComposerView: View {
     @State private var voicePressStartedAt: Date?
     @State private var retryableVoiceTranscription: RetryableVoiceTranscription?
     @State private var measuredComposerTextHeight: CGFloat = 0
+    @State private var measuredComposerCardHeight: CGFloat = 0
     @State private var isComposerTextComposing = false
     @State private var composerTextSubmitBridge = ComposerTextSubmitBridge()
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
@@ -146,7 +155,7 @@ struct ComposerView: View {
             attachmentErrorNotice
             attachmentStrip
             composerStatusRow
-            composerCard(tokens: tokens)
+            composerInputRow(tokens: tokens)
             voiceKeyboardShortcutButton
                 .overlay {
                     composerKeyboardShortcutButtons
@@ -207,8 +216,8 @@ struct ComposerView: View {
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
         }
-        .onChange(of: canUseGuidedFollowUp) { _, canUse in
-            if !canUse {
+        .onChange(of: canUseGuidedFollowUp) { _, canGuide in
+            if !canGuide {
                 guidedFollowUpEnabled = false
             }
         }
@@ -356,6 +365,7 @@ struct ComposerView: View {
         activeComposerDraftScope = nextScope
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
+        measuredComposerCardHeight = 0
         isComposerTextComposing = false
     }
 
@@ -409,11 +419,20 @@ struct ComposerView: View {
         return options
     }
 
+    private var canChooseRunningFollowUpDelivery: Bool {
+        guard let session = sessionStore.selectedSession else {
+            return false
+        }
+        return session.isRunning &&
+            composerState.sendMode == .standard &&
+            sessionStore.canControlSession(session)
+    }
+
     private var canUseGuidedFollowUp: Bool {
         guard let session = sessionStore.selectedSession else {
             return false
         }
-        return session.isRunning && session.activeTurnID != nil && sessionStore.canControlSession(session)
+        return canChooseRunningFollowUpDelivery && session.activeTurnID != nil
     }
 
     private var runningTurnDeliveryForSubmit: RunningTurnDelivery {
@@ -486,7 +505,7 @@ struct ComposerView: View {
     private var composerStatusRow: some View {
         let chips = displayChipItems
         let showWave = isVoiceActive
-        let showControls = sessionStore.selectedSession?.isRunning == true && sessionStore.canControlSession(sessionStore.selectedSession)
+        let showControls = canShowRunningControls
         if !chips.isEmpty || showWave || showControls {
             HStack(spacing: 10) {
                 if !chips.isEmpty {
@@ -515,6 +534,20 @@ struct ComposerView: View {
 
     private var isVoiceActive: Bool {
         voiceInput.isRecording || voiceInput.isPreparing || isVoicePressActive || isVoiceTranscribing
+    }
+
+    private var canShowRunningControls: Bool {
+        sessionStore.selectedSession?.isRunning == true && sessionStore.canControlSession(sessionStore.selectedSession)
+    }
+
+    private var canInterruptSelectedSession: Bool {
+        guard let session = sessionStore.selectedSession else {
+            return false
+        }
+        return session.isRunning &&
+            session.activeTurnID != nil &&
+            sessionStore.canControlSession(session) &&
+            sessionStore.webSocketStatus == .connected
     }
 
     // 常驻的只读状态标签：刻意做成扁平、中性底、小字，和底部那排“可点的” bordered 选项按钮
@@ -549,14 +582,16 @@ struct ComposerView: View {
 
     private var runningControls: some View {
         HStack(spacing: 8) {
-            Button {
-                sessionStore.sendCtrlC()
-            } label: {
-                Label("Ctrl-C", systemImage: "stop.circle")
+            if canInterruptSelectedSession {
+                Button {
+                    sessionStore.sendCtrlC()
+                } label: {
+                    Label("Ctrl-C", systemImage: "stop.circle")
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+                .accessibilityLabel("发送 Ctrl-C")
             }
-            .buttonStyle(.bordered)
-            .tint(.secondary)
-            .accessibilityLabel("发送 Ctrl-C")
 
             Button(role: .destructive) {
                 Task { await sessionStore.stopSelectedSession() }
@@ -657,6 +692,28 @@ struct ComposerView: View {
         }
     }
 
+    private func composerInputRow(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .top, spacing: composerInputRowSpacing) {
+            composerCard(tokens: tokens)
+                .layoutPriority(1)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(key: ComposerCardHeightPreferenceKey.self, value: proxy.size.height)
+                    }
+                }
+
+            composerVoiceActionColumn
+        }
+        .onPreferenceChange(ComposerCardHeightPreferenceKey.self) { height in
+            guard height > 0, abs(measuredComposerCardHeight - height) > 0.5 else {
+                return
+            }
+            // 右侧语音入口跟随输入卡片高度，保证“文字输入”和“语音输入”是同一层级的两个主入口。
+            measuredComposerCardHeight = height
+        }
+    }
+
     private func composerCard(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: composerCardSpacing) {
             composerTextArea(tokens: tokens)
@@ -751,8 +808,8 @@ struct ComposerView: View {
         if composerState.isPlanModeSelected {
             return "描述要先规划的问题"
         }
-        if canUseGuidedFollowUp {
-            return guidedFollowUpEnabled ? "引导当前回复" : "追加下一轮指令"
+        if canChooseRunningFollowUpDelivery {
+            return guidedFollowUpEnabled && canUseGuidedFollowUp ? "引导当前回复" : "追加下一轮指令"
         }
         if sessionStore.selectedThreadGoal != nil {
             return "要求后续变更"
@@ -776,7 +833,6 @@ struct ComposerView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            voiceMicControl
             followUpDeliverySendMenu(showLabels: !isCompactComposer)
             sendButton(showLabels: !isCompactComposer)
         }
@@ -784,17 +840,28 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var toolbarMenuRow: some View {
-        // 默认工具栏只保留高频路径：添加、发送模式状态、更多设置。
-        // Goal/Plan/权限/运行参数都还在，但不再和输入主路径抢常驻空间。
+        // 这里保留输入框内部的内容/设置入口；目标和计划是高频模式，放到右侧语音入口上方。
         HStack(spacing: 8) {
             addContentButton
-            if composerState.sendMode != .standard {
-                sendModeMenu
-            }
             composerMoreMenu
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
         .controlSize(.small)
+    }
+
+    private var composerVoiceActionColumn: some View {
+        VStack(alignment: .trailing, spacing: voiceActionColumnSpacing) {
+            HStack(spacing: 6) {
+                goalButton
+                planButton
+            }
+            .font(themeStore.uiFont(.caption, weight: .medium))
+            .controlSize(.small)
+            .frame(height: voiceModeRowHeight, alignment: .trailing)
+
+            voiceMicControl
+        }
+        .frame(width: voiceActionColumnWidth, alignment: .trailing)
     }
 
     private var voiceMicControl: some View {
@@ -802,9 +869,9 @@ struct ComposerView: View {
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
             isTranscribing: isVoiceTranscribing,
-            // 底部默认态只保留图标主操作；录音/转写的长文案交给上方状态胶囊，
-            // 避免 Composer 在宽屏下又退回“控制台按钮排布”。
-            isCompact: true,
+            width: voiceButtonWidth,
+            height: voiceButtonHeight,
+            showsTitle: voiceButtonShowsTitle,
             onPressChanged: { pressed in
                 if pressed {
                     beginHoldToTalk()
@@ -813,7 +880,7 @@ struct ComposerView: View {
                 }
             }
         )
-        .layoutPriority(1)
+        .layoutPriority(0)
     }
 
     private var voiceKeyboardShortcutButton: some View {
@@ -923,8 +990,6 @@ struct ComposerView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Menu {
-            sendModeMenuSection
-            Divider()
             permissionMenu
             runSettingsMenu
             voiceLanguageMenu
@@ -944,64 +1009,11 @@ struct ComposerView: View {
         .contentShape(Capsule())
         .accessibilityLabel("更多设置")
         .accessibilityValue(moreMenuAccessibilitySummary)
-        .help("发送模式、权限、运行设置和语音语言")
-    }
-
-    private var sendModeMenu: some View {
-        Menu {
-            sendModeMenuSection
-        } label: {
-            Label(activeSendModeTitle, systemImage: activeSendModeSystemImage)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(themeStore.tokens(for: colorScheme).accent)
-        .accessibilityLabel("发送模式")
-        .accessibilityValue(activeSendModeTitle)
-        .accessibilityHint("只切换下一次发送方式，不会立即发送")
-    }
-
-    private var sendModeMenuSection: some View {
-        Section("发送模式") {
-            Button {
-                setSendMode(.standard)
-            } label: {
-                Label("普通发送", systemImage: composerState.sendMode == .standard ? "checkmark" : "paperplane")
-            }
-            Button {
-                setSendMode(.goal)
-            } label: {
-                Label("目标任务", systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
-            }
-            Button {
-                setSendMode(.plan)
-            } label: {
-                Label("计划模式", systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
-            }
-        }
-    }
-
-    private var activeSendModeTitle: String {
-        if composerState.isGoalModeSelected {
-            return "目标"
-        }
-        if composerState.isPlanModeSelected {
-            return "计划"
-        }
-        return "发送"
-    }
-
-    private var activeSendModeSystemImage: String {
-        if composerState.isGoalModeSelected {
-            return "target"
-        }
-        if composerState.isPlanModeSelected {
-            return "list.clipboard"
-        }
-        return "paperplane"
+        .help("权限、运行设置和语音语言")
     }
 
     private var moreMenuAccessibilitySummary: String {
-        "\(activeSendModeTitle)，\(composerState.permissionMode.title)，语音 \(selectedVoiceLanguage.title)"
+        "\(composerState.permissionMode.title)，运行，语音 \(selectedVoiceLanguage.title)"
     }
 
     private var skillShortcutMenu: some View {
@@ -1089,8 +1101,9 @@ struct ComposerView: View {
             systemImage: "target",
             selected: selected,
             accessibilityLabel: "目标任务模式",
+            showsTitle: composerModeButtonShowsTitle,
             action: {
-                composerState.toggleGoalMode()
+                setSendMode(selected ? .standard : .goal)
             }
         )
         .keyboardShortcut("g", modifiers: [.command, .shift])
@@ -1104,12 +1117,17 @@ struct ComposerView: View {
             systemImage: "list.clipboard",
             selected: selected,
             accessibilityLabel: "计划模式",
+            showsTitle: composerModeButtonShowsTitle,
             action: {
-                composerState.togglePlanMode()
+                setSendMode(selected ? .standard : .plan)
             }
         )
         .keyboardShortcut("p", modifiers: [.command, .shift])
         .help(selected ? "关闭计划模式" : "将下一次发送设为 Codex 计划模式")
+    }
+
+    private var composerModeButtonShowsTitle: Bool {
+        !isCompactComposer
     }
 
     @ViewBuilder
@@ -1118,12 +1136,13 @@ struct ComposerView: View {
         systemImage: String,
         selected: Bool,
         accessibilityLabel: String,
+        showsTitle: Bool,
         action: @escaping () -> Void
     ) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         if selected {
             Button(action: action) {
-                Label(title, systemImage: systemImage)
+                composerModeButtonLabel(title: title, systemImage: systemImage, showsTitle: showsTitle)
             }
             .buttonStyle(.borderedProminent)
             .tint(tokens.accent)
@@ -1132,7 +1151,7 @@ struct ComposerView: View {
             .accessibilityHint("只切换发送模式，不会立即发送")
         } else {
             Button(action: action) {
-                Label(title, systemImage: systemImage)
+                composerModeButtonLabel(title: title, systemImage: systemImage, showsTitle: showsTitle)
                     .foregroundStyle(tokens.accent)
             }
             .buttonStyle(.bordered)
@@ -1144,26 +1163,42 @@ struct ComposerView: View {
     }
 
     @ViewBuilder
+    private func composerModeButtonLabel(title: String, systemImage: String, showsTitle: Bool) -> some View {
+        if showsTitle {
+            Label(title, systemImage: systemImage)
+        } else {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
+                .frame(width: 22, height: 22)
+        }
+    }
+
+    @ViewBuilder
     private func followUpDeliverySendMenu(showLabels: Bool) -> some View {
-        if canUseGuidedFollowUp {
+        if canChooseRunningFollowUpDelivery {
             let tokens = themeStore.tokens(for: colorScheme)
+            let isGuidedAvailable = canUseGuidedFollowUp
+            let isGuidedSelected = guidedFollowUpEnabled && isGuidedAvailable
             Menu {
                 Button {
                     guidedFollowUpEnabled = false
                 } label: {
-                    Label("排队下一轮", systemImage: guidedFollowUpEnabled ? "clock" : "checkmark")
+                    Label("排队下一轮", systemImage: isGuidedSelected ? "clock" : "checkmark")
                 }
                 Button {
-                    guidedFollowUpEnabled = true
+                    if isGuidedAvailable {
+                        guidedFollowUpEnabled = true
+                    }
                 } label: {
-                    Label("引导当前回复", systemImage: guidedFollowUpEnabled ? "checkmark" : "text.bubble")
+                    Label(isGuidedAvailable ? "引导当前回复" : "引导当前回复（等待回合）", systemImage: isGuidedSelected ? "checkmark" : "text.bubble")
                 }
+                .disabled(!isGuidedAvailable)
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: guidedFollowUpEnabled ? "text.bubble.fill" : "clock")
+                    Image(systemName: isGuidedSelected ? "text.bubble.fill" : "clock")
                         .font(themeStore.uiFont(size: 16, weight: .bold))
                     if showLabels {
-                        Text(guidedFollowUpEnabled ? "引导" : "排队")
+                        Text(isGuidedSelected ? "引导" : "排队")
                             .font(themeStore.uiFont(.callout, weight: .semibold))
                             .lineLimit(1)
                     }
@@ -1171,24 +1206,24 @@ struct ComposerView: View {
                         .font(themeStore.uiFont(size: 10, weight: .bold))
                         .opacity(0.72)
                 }
-                .foregroundStyle(guidedFollowUpEnabled ? tokens.accent : tokens.secondaryText)
+                .foregroundStyle(isGuidedSelected ? tokens.accent : tokens.secondaryText)
                 .frame(height: 44)
                 .padding(.horizontal, showLabels ? 12 : 8)
                 .frame(minWidth: showLabels ? 76 : 48)
                 .background(
-                    guidedFollowUpEnabled ? tokens.accent.opacity(0.12) : tokens.elevatedSurface,
+                    isGuidedSelected ? tokens.accent.opacity(0.12) : tokens.elevatedSurface,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(guidedFollowUpEnabled ? tokens.accent.opacity(0.42) : tokens.border)
+                        .strokeBorder(isGuidedSelected ? tokens.accent.opacity(0.42) : tokens.border)
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .help(guidedFollowUpEnabled ? "运行中发送会直接引导当前回复" : "运行中发送会排队为下一轮消息")
+            .help(isGuidedSelected ? "运行中发送会直接引导当前回复" : "运行中发送会排队为下一轮消息")
             .accessibilityLabel("运行中追加方式")
-            .accessibilityValue(guidedFollowUpEnabled ? "引导当前回复" : "排队下一轮")
+            .accessibilityValue(isGuidedSelected ? "引导当前回复" : "排队下一轮")
         }
     }
 
@@ -1427,9 +1462,7 @@ struct ComposerView: View {
         if composerState.isPlanModeSelected {
             items.append(ComposerChipItem(id: "send-plan", text: "计划模式", symbol: "list.clipboard", tint: themeStore.tokens(for: colorScheme).accent))
         }
-        if hasSelectedModelOverride {
-            items.append(ComposerChipItem(id: "model", text: selectedModelSummaryTitle, symbol: "cpu", tint: themeStore.tokens(for: colorScheme).accent))
-        }
+        items.append(ComposerChipItem(id: "model", text: selectedModelSummaryTitle, symbol: "cpu", tint: themeStore.tokens(for: colorScheme).accent))
         items.append(
             ComposerChipItem(
                 id: "permission",
@@ -1460,13 +1493,9 @@ struct ComposerView: View {
         return items
     }
 
-    private var hasSelectedModelOverride: Bool {
-        composerState.turnOptions.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
     private var selectedModelSummaryTitle: String {
         guard let model = composerState.turnOptions.model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else {
-            return "默认模型"
+            return defaultModelSummaryTitle
         }
         if let option = modelOptionsForMenu.first(where: { item in
             item.model == model && (composerState.turnOptions.modelProvider == nil || item.provider == composerState.turnOptions.modelProvider)
@@ -1477,6 +1506,13 @@ struct ComposerView: View {
             return "\(model) · \(provider)"
         }
         return model
+    }
+
+    private var defaultModelSummaryTitle: String {
+        guard let option = modelOptionsForMenu.first(where: \.isDefault) ?? modelOptionsForMenu.first else {
+            return "默认模型"
+        }
+        return developerModeEnabled ? option.menuTitle : option.title
     }
 
     private var hasAdvancedTurnOptions: Bool {
@@ -1750,6 +1786,50 @@ struct ComposerView: View {
     private var usesCollapsedComposerTextHeight: Bool {
         // 空输入时先保持轻量高度；一旦有文字/附件/语音草稿，才恢复更像命令面板的多行空间。
         composerState.isEmpty && !composerState.voiceDraftNeedsReview
+    }
+
+    private var composerInputRowSpacing: CGFloat {
+        (availableWidth ?? 920) < 360 ? 6 : 8
+    }
+
+    private var voiceActionColumnWidth: CGFloat {
+        if (availableWidth ?? 920) < 360 {
+            return 92
+        }
+        if isCompactComposer {
+            return 96
+        }
+        return 154
+    }
+
+    private var voiceActionColumnSpacing: CGFloat {
+        (availableWidth ?? 920) < 360 ? 6 : 8
+    }
+
+    private var voiceModeRowHeight: CGFloat {
+        composerModeButtonShowsTitle ? 34 : 32
+    }
+
+    private var voiceButtonWidth: CGFloat {
+        let width = availableWidth ?? 920
+        if width < 360 {
+            return 60
+        }
+        if isCompactComposer {
+            return 68
+        }
+        return 112
+    }
+
+    private var voiceButtonHeight: CGFloat {
+        let availableHeight = measuredComposerCardHeight > 0
+            ? measuredComposerCardHeight - voiceModeRowHeight - voiceActionColumnSpacing
+            : 108
+        return max(72, availableHeight)
+    }
+
+    private var voiceButtonShowsTitle: Bool {
+        voiceButtonWidth >= 96 && !isCompactComposer
     }
 
     private var composerCardPadding: CGFloat {
@@ -2859,7 +2939,9 @@ private struct VoiceMicButton: View {
     let isPreparing: Bool
     let isRecording: Bool
     let isTranscribing: Bool
-    let isCompact: Bool
+    let width: CGFloat
+    let height: CGFloat
+    let showsTitle: Bool
     let onPressChanged: (Bool) -> Void
 
     var body: some View {
@@ -2869,16 +2951,16 @@ private struct VoiceMicButton: View {
         let background = isRecording ? tokens.voiceRecording.opacity(0.15) : tokens.accent.opacity(isActive ? 0.14 : 0.10)
         let border = isRecording ? tokens.voiceRecording.opacity(0.5) : tokens.accent.opacity(isActive ? 0.54 : 0.42)
 
-        HStack(spacing: 8) {
+        VStack(spacing: showsTitle ? 8 : 0) {
             if isPreparing {
                 ProgressView()
-                    .controlSize(.small)
+                    .controlSize(showsTitle ? .regular : .small)
                     .tint(foreground)
             } else {
                 Image(systemName: isTranscribing ? "wand.and.stars" : isRecording ? "waveform.circle.fill" : "mic.fill")
-                    .font(themeStore.uiFont(size: 18, weight: .bold))
+                    .font(themeStore.uiFont(size: showsTitle ? 25 : 24, weight: .bold))
             }
-            if !isCompact {
+            if showsTitle {
                 Text(buttonTitle)
                     .font(themeStore.uiFont(.callout, weight: .semibold))
                     .lineLimit(1)
@@ -2886,17 +2968,17 @@ private struct VoiceMicButton: View {
             }
         }
         .foregroundStyle(foreground)
-        .frame(width: isCompact ? 44 : 132, height: 44)
-        .background(background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(width: width, height: height)
+        .background(background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(border)
         }
         .shadow(color: isRecording ? tokens.voiceRecording.opacity(0.14) : .clear, radius: 10, y: 3)
-        .scaleEffect(isActive ? 1.04 : 1)
+        .scaleEffect(isActive ? 1.015 : 1)
         .animation(.easeInOut(duration: 0.15), value: isActive)
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        // 放在横向 ScrollView 外面，长按手势不会和工具栏滚动相互抢占。
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // 语音入口已经从工具栏里独立出来，长按手势只绑定在右侧整块主按钮上。
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in

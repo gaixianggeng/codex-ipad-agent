@@ -47,6 +47,7 @@ final class AppStore: ObservableObject {
     @Published var token: String
     @Published var connectionStatus: ConnectionStatus = .idle
     @Published var lastError: String?
+    @Published var lastConnectionTestDurationMillis: Int?
 
     private let endpointKey = "agentd.endpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
@@ -134,12 +135,19 @@ final class AppStore: ObservableObject {
         token = ""
         connectionStatus = .idle
         lastError = nil
+        lastConnectionTestDurationMillis = nil
     }
 
     @discardableResult
     func validateConnection(endpoint: String, token: String) async throws -> String {
+        let startedAt = Date()
         connectionStatus = .testing
         lastError = nil
+        lastConnectionTestDurationMillis = nil
+        defer {
+            // 用完整验证链路的端到端耗时做“延迟”展示：HTTP 健康检查、版本接口和 direct gateway 都要走通。
+            lastConnectionTestDurationMillis = Self.elapsedMilliseconds(since: startedAt)
+        }
         let normalized = try Self.validatedEndpoint(endpoint)
         let client = AgentAPIClient(endpoint: normalized, token: token)
         _ = try await client.health()
@@ -157,6 +165,22 @@ final class AppStore: ObservableObject {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
         }
+    }
+
+    static func connectionTestDurationText(milliseconds: Int) -> String {
+        let milliseconds = max(0, milliseconds)
+        if milliseconds < 1_000 {
+            return "\(milliseconds) ms"
+        }
+        if milliseconds < 10_000 {
+            return String(format: "%.1f 秒", Double(milliseconds) / 1_000)
+        }
+        return "\(Int((Double(milliseconds) / 1_000).rounded())) 秒"
+    }
+
+    private static func elapsedMilliseconds(since startDate: Date) -> Int {
+        let elapsed = Date().timeIntervalSince(startDate)
+        return max(0, Int((elapsed * 1_000).rounded()))
     }
 
     private func claimPairing(_ ticket: PairingTicket) async throws -> PairingCredentials {

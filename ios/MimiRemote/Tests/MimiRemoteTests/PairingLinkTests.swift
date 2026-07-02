@@ -135,4 +135,10 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(credentials.endpoint, "http://192.168.31.163:8787")
         XCTAssertEqual(credentials.token, "0123456789abcdef0123456789abcdef")
     }
+
+    func testFormatsConnectionTestDuration() {
+        XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 98), "98 ms")
+        XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 1_250), "1.2 秒")
+        XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 12_400), "12 秒")
+    }
 }

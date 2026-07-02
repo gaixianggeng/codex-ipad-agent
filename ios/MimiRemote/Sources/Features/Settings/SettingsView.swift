@@ -229,7 +229,10 @@ private struct ConnectionSettingsSections: View {
                 Button {
                     Task { await appStore.testConnection(endpoint: endpoint, token: token) }
                 } label: {
-                    Label("测试连接", systemImage: "bolt.horizontal.circle")
+                    Label(
+                        isConnectionTesting ? "正在测试" : "测试连接",
+                        systemImage: isConnectionTesting ? "timer" : "bolt.horizontal.circle"
+                    )
                 }
                 .disabled(!canSubmit)
 
@@ -245,8 +248,21 @@ private struct ConnectionSettingsSections: View {
                 HStack {
                     Text("连接")
                     Spacer()
+                    if isConnectionTesting {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                     Text(appStore.connectionStatus.title)
                         .foregroundStyle(statusColor)
+                }
+                if let connectionTestDurationText {
+                    HStack {
+                        Text("测试耗时")
+                        Spacer()
+                        Text(connectionTestDurationText)
+                            .monospacedDigit()
+                            .foregroundStyle(statusColor)
+                    }
                 }
                 if let message = displayErrorMessage {
                     Text(message)
@@ -282,8 +298,23 @@ private struct ConnectionSettingsSections: View {
 
     private var canSubmit: Bool {
         !isSavingConnection &&
+        !isConnectionTesting &&
         !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isConnectionTesting: Bool {
+        if case .testing = appStore.connectionStatus {
+            return true
+        }
+        return false
+    }
+
+    private var connectionTestDurationText: String? {
+        guard let milliseconds = appStore.lastConnectionTestDurationMillis else {
+            return nil
+        }
+        return AppStore.connectionTestDurationText(milliseconds: milliseconds)
     }
 
     private var statusColor: Color {

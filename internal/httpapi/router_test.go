@@ -216,6 +216,43 @@ func TestCodexHistoryDebugCanBeEnabled(t *testing.T) {
 	}
 }
 
+func TestRelayDiagnosticsRequiresAuthAndReportsHTTPMetrics(t *testing.T) {
+	server := newTestServer(t)
+
+	unauthorized := httptest.NewRecorder()
+	server.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/diagnostics/relay", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("relay diagnostics 必须要求 Bearer Token，got=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/projects", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("预置 /api/projects 请求应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	diag := httptest.NewRecorder()
+	server.handler.ServeHTTP(diag, authedRequest(t, http.MethodGet, "/api/diagnostics/relay", nil))
+	if diag.Code != http.StatusOK {
+		t.Fatalf("relay diagnostics 应返回 200，got=%d body=%s", diag.Code, diag.Body.String())
+	}
+	body := decodeJSON(t, diag)
+	httpStats, ok := body["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostics 应包含 http 指标：%v", body)
+	}
+	if got := int(httpStats["total_requests"].(float64)); got < 1 {
+		t.Fatalf("http total_requests 应记录已完成 API 请求，got=%d body=%v", got, httpStats)
+	}
+	recent, ok := httpStats["recent"].([]any)
+	if !ok || len(recent) == 0 {
+		t.Fatalf("http recent 应包含最近请求样本：%v", httpStats)
+	}
+	if guide, ok := body["guide"].(map[string]any); !ok || guide["bandwidth_signal"] == "" || guide["server_signal"] == "" {
+		t.Fatalf("diagnostics 应返回读数说明：%v", body["guide"])
+	}
+}
+
 func TestGitStatusReturnsReadonlyDiffForAllowedWorkspace(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)

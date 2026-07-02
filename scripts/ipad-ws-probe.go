@@ -134,7 +134,7 @@ func main() {
 	var findThreadPrefix string
 
 	defaultConfig := filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "codex-ipad-agent", "config.json")
-	flag.StringVar(&endpoint, "endpoint", "http://14.103.53.126", "agentd endpoint，例如 http://14.103.53.126")
+	flag.StringVar(&endpoint, "endpoint", "http://124.221.80.250", "agentd endpoint，例如 http://124.221.80.250")
 	flag.StringVar(&token, "token", os.Getenv("AGENTD_TOKEN"), "agentd Bearer token；默认读 AGENTD_TOKEN 或 config")
 	flag.StringVar(&configPath, "config", defaultConfig, "本机 agentd config.json，用于读取 token")
 	flag.StringVar(&cwd, "cwd", "", "目标项目 cwd；为空时优先使用当前目录命中的 allowlist 项目")

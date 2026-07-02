@@ -109,6 +109,26 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: processSummary))
     }
 
+    func testTimestampCaptionMarksFallbackTimes() {
+        let fallback = ConversationMessage(
+            role: .assistant,
+            content: "历史时间缺失",
+            createdAt: Date(timeIntervalSince1970: 100),
+            sendStatus: .confirmed,
+            isTimestampFallback: true
+        )
+        let normal = ConversationMessage(
+            role: .assistant,
+            content: "历史时间可信",
+            createdAt: Date(timeIntervalSince1970: 100),
+            sendStatus: .confirmed
+        )
+
+        XCTAssertEqual(fallback.timestampCaptionText, normal.timestampCaptionText)
+        XCTAssertTrue(fallback.isTimestampFallback)
+        XCTAssertFalse(normal.isTimestampFallback)
+    }
+
     func testSessionDisplayStatusUsesForegroundAndGoalProgress() {
         let goal = ThreadGoal(
             threadID: "session-1",
@@ -1421,6 +1441,95 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.first?.content, answer)
     }
 
+    func testHistoryDeduplicatesLiveProcessMessagesWhenThreadReadRenumbersItemID() {
+        // 过程卡和最终 assistant 一样会遇到 thread/read 重排 item id；同一 turn、同一类过程卡、
+        // 同一文本应保留历史快照，丢弃 websocket replay 的直播副本。
+        let store = ConversationStore()
+        let sessionID = "thread_process_renumber"
+        let turnID = "turn_process_renumber"
+        let liveItemID = "msg_live_reasoning"
+        let historyItemID = "item-5"
+        let summary = "我先确认历史数据与实时 replay 的边界。"
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:\(turnID):\(liveItemID)",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: liveItemID,
+                role: .system,
+                kind: .reasoningSummary,
+                content: summary,
+                createdAt: Date(timeIntervalSince1970: 20),
+                seq: 1,
+                revision: 1,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: liveItemID,
+                messageID: "appserver:\(turnID):\(liveItemID)",
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):\(historyItemID)",
+                role: "system",
+                kind: .reasoningSummary,
+                content: summary,
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: historyItemID,
+                revision: 1,
+                sendStatus: .confirmed
+            )
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.role, .system)
+        XCTAssertEqual(messages.first?.kind, .reasoningSummary)
+        XCTAssertEqual(messages.first?.content, summary)
+        XCTAssertEqual(messages.first?.createdAt, Date(timeIntervalSince1970: 10), "去重后应保留历史时间，避免 replay 版本显示成刚刚发生")
+    }
+
+    func testHistoryKeepsDistinctProcessMessagesInSameTurn() {
+        let store = ConversationStore()
+        let sessionID = "thread_process_distinct"
+        let turnID = "turn_process_distinct"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "先读取本地实现。",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1"
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-2",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "再和 Codex CLI 对齐。",
+                createdAt: Date(timeIntervalSince1970: 11),
+                turnID: turnID,
+                itemID: "item-2"
+            )
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.map(\.content), ["先读取本地实现。", "再和 Codex CLI 对齐。"])
+    }
+
     func testStructuredHistoryProcessMessagesCollapseBeforeFinalAssistant() throws {
         let store = ConversationStore()
         let sessionID = "sess_history_processed"
@@ -1642,6 +1751,7 @@ final class ConversationDataFlowTests: XCTestCase {
     func testPrependingUndatedHistoryReusesExistingSuffixRows() {
         let store = ConversationStore()
         let sessionID = "sess_prepend_undated_history"
+        let beforeLoad = Date()
 
         store.setHistory([
             CodexHistoryMessage(role: "assistant", content: "现有回答", createdAt: nil)
@@ -1649,6 +1759,9 @@ final class ConversationDataFlowTests: XCTestCase {
         guard let existing = store.messages(for: sessionID).first else {
             return XCTFail("首屏历史应生成一条消息")
         }
+        XCTAssertTrue(existing.isTimestampFallback)
+        XCTAssertLessThan(existing.createdAt, beforeLoad.addingTimeInterval(-60), "历史缺时间时不能兜底成当前加载时间")
+        XCTAssertFalse(existing.timestampCaptionText.hasPrefix("估 "))
 
         store.setHistory([
             CodexHistoryMessage(role: "user", content: "更早问题", createdAt: nil),
@@ -1660,6 +1773,8 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(reused?.id, existing.id)
         XCTAssertEqual(reused?.createdAt, existing.createdAt)
+        XCTAssertEqual(reused?.isTimestampFallback, true)
+        XCTAssertTrue(messages.allSatisfy(\.isTimestampFallback))
         XCTAssertTrue(messages.contains { $0.content == "更早问题" })
     }
 
@@ -1935,7 +2050,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 "content": "本地回显",
                 "seq": 7,
                 "revision": 1,
-                "send_status": "confirmed"
+                "send_status": "confirmed",
+                "is_timestamp_fallback": true
               }
             ],
             "next_cursor": "next",
@@ -1955,6 +2071,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(response.messages.first?.seq, 7)
         XCTAssertEqual(response.messages.first?.revision, 1)
         XCTAssertEqual(response.messages.first?.sendStatus, .confirmed)
+        XCTAssertEqual(response.messages.first?.isTimestampFallback, true)
         XCTAssertEqual(response.nextCursor, "next")
         XCTAssertEqual(response.previousCursor, "prev")
         XCTAssertEqual(response.hasMoreBefore, true)
@@ -5033,6 +5150,69 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(store.canControlSession(store.selectedSession))
     }
 
+    func testHistorySessionContinueSuppressesBufferedMessageReplayAfterHistoryLoad() async throws {
+        let project = makeProject(id: "proj_history_resume_replay")
+        let history = makeSession(
+            id: "sess_history_resume_replay",
+            projectID: project.id,
+            title: "历史",
+            status: "history",
+            source: "codex",
+            resumeID: "sess_history_resume_replay"
+        )
+        let resumed = makeSession(
+            id: history.id,
+            projectID: project.id,
+            title: history.title,
+            status: "running",
+            source: "codex",
+            resumeID: history.id
+        )
+        let historyMessages = [
+            CodexHistoryMessage(
+                id: "appserver:turn-resume:item-1",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "历史中已有的过程卡",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: "turn-resume",
+                itemID: "item-1"
+            )
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            createSessionResponse: try makeCreateSessionResponse(session: resumed),
+            historyPages: [resumed.id: HistoryMessagesPage(messages: historyMessages)]
+        )
+        var sockets: [MockWebSocketClient] = []
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+
+        let didSend = await store.sendPrompt("继续历史")
+
+        XCTAssertTrue(didSend)
+        XCTAssertEqual(client.requestedMessageSessionIDs, [resumed.id])
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(sockets[0].replayBufferedEventsByConnect, [false])
+        XCTAssertTrue(conversationStore.hasLoadedHistory(sessionID: resumed.id))
+        XCTAssertEqual(conversationStore.messages(for: resumed.id).filter { $0.kind == .reasoningSummary }.map(\.content), ["历史中已有的过程卡"])
+    }
+
     func testRuntimeEventsDoNotBecomeSessionPreview() async throws {
         let project = makeProject(id: "proj_runtime_preview")
         let running = makeSession(
@@ -7154,6 +7334,125 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(sockets[0].sentGuidance.first?.expectedTurnID, "turn_active_guided")
     }
 
+    func testRunningQueuedDeliveryWorksWithoutActiveTurnButGuidedDoesNot() async throws {
+        let project = makeProject(id: "proj_ws_queued_without_active_turn")
+        let running = makeSession(
+            id: "sess_ws_queued_without_active_turn",
+            projectID: project.id,
+            title: "Running Without Active Turn",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "排队下一轮"))
+        let guided = await store.sendTurn(CodexAppServerTurnPayload(prompt: "尝试引导"), runningDelivery: .guided)
+
+        XCTAssertTrue(queued)
+        XCTAssertFalse(guided)
+        XCTAssertEqual(sockets[0].sentTurns.count, 1)
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "排队下一轮")
+        XCTAssertTrue(sockets[0].sentGuidance.isEmpty)
+        XCTAssertEqual(store.errorMessage, "引导对话失败：当前会话没有活跃 turn")
+    }
+
+    func testSendCtrlCIgnoresRunningSessionWithoutActiveTurn() async throws {
+        let project = makeProject(id: "proj_ctrl_c_without_active_turn")
+        let running = makeSession(
+            id: "sess_ctrl_c_without_active_turn",
+            projectID: project.id,
+            title: "No Active Turn",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        store.sendCtrlC()
+
+        XCTAssertEqual(sockets[0].sentCtrlCCount, 0)
+        XCTAssertEqual(store.statusMessage, "当前没有可中断的活动回合")
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testSendCtrlCSendsForConnectedActiveTurn() async throws {
+        let project = makeProject(id: "proj_ctrl_c_active_turn")
+        let running = makeSession(
+            id: "sess_ctrl_c_active_turn",
+            projectID: project.id,
+            title: "Active Turn",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn_ctrl_c"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        store.sendCtrlC()
+
+        XCTAssertEqual(sockets[0].sentCtrlCCount, 1)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testRunningSessionGuidedDeliveryUsesTurnStartedActiveTurn() async throws {
         let project = makeProject(id: "proj_ws_guided_event")
         let running = makeSession(id: "sess_ws_guided_event", projectID: project.id, title: "Running", status: "running", source: "codex")
@@ -8021,11 +8320,13 @@ private final class MockWebSocketClient: SessionWebSocketClient {
     private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
+    private(set) var sentCtrlCCount = 0
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
     private(set) var sentUserInputResponses: [(requestID: String, answers: [String: [String]])] = []
     private(set) var disconnectCallCount = 0
     var sendTurnResult = true
     var sendGuidanceResult = true
+    var sendCtrlCResult = true
 
     func connect(sessionID: SessionID) {
         connectedSessionIDs.append(sessionID)
@@ -8060,7 +8361,8 @@ private final class MockWebSocketClient: SessionWebSocketClient {
     }
 
     func sendCtrlC() -> Bool {
-        true
+        sentCtrlCCount += 1
+        return sendCtrlCResult
     }
 
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool {
@@ -10470,13 +10772,17 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
 
         let read = try await waitForFakeAppServerRequest(transport, method: "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_dates","sessionId":"thr_hist_dates","preview":"hist dates","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-dates","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist dates","turns":[{"id":"turn_iso","startedAt":"2026-07-01T18:16:00.000Z","completedAt":"2026-07-01T18:16:01.154Z","items":[{"type":"userMessage","id":"user_iso","content":[{"type":"text","text":"iso user"}]},{"type":"agentMessage","id":"assistant_iso","text":"iso assistant","phase":"final_answer"}]},{"id":"turn_ms","startedAt":1782929761154,"completedAt":"1782929762123","items":[{"type":"userMessage","id":"user_ms","content":[{"type":"text","text":"ms user"}]},{"type":"agentMessage","id":"assistant_ms","text":"ms assistant","phase":"final_answer"}]}]}}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_dates","sessionId":"thr_hist_dates","preview":"hist dates","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-dates","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist dates","turns":[{"id":"turn_iso","startedAt":"2026-07-01T18:16:00.000Z","completedAt":"2026-07-01T18:16:01.154Z","items":[{"type":"userMessage","id":"user_iso","content":[{"type":"text","text":"iso user"}]},{"type":"agentMessage","id":"assistant_iso","text":"iso assistant","phase":"final_answer"}]},{"id":"turn_ms","startedAt":1782929761154,"completedAt":"1782929762123","items":[{"type":"userMessage","id":"user_ms","content":[{"type":"text","text":"ms user"}]},{"type":"agentMessage","id":"assistant_ms","text":"ms assistant","phase":"final_answer"}]},{"id":"turn_snake","started_at":"2026-07-01T19:00:00.000Z","completed_at":"2026-07-01T19:00:02.000Z","items":[{"type":"userMessage","id":"user_snake","content":[{"type":"text","text":"snake user"}]},{"type":"agentMessage","id":"assistant_snake","text":"snake assistant","phase":"final_answer"}]},{"id":"turn_item_only","items":[{"type":"userMessage","id":"user_item","created_at":1782932403,"content":[{"type":"text","text":"item user"}]},{"type":"agentMessage","id":"assistant_item","updated_at":"2026-07-01T19:00:04.500Z","text":"item assistant","phase":"final_answer"}]}]}}}"#)
 
         let page = try await pageTask.value
         let isoUser = try XCTUnwrap(page.messages.first { $0.content == "iso user" })
         let isoAssistant = try XCTUnwrap(page.messages.first { $0.content == "iso assistant" })
         let msUser = try XCTUnwrap(page.messages.first { $0.content == "ms user" })
         let msAssistant = try XCTUnwrap(page.messages.first { $0.content == "ms assistant" })
+        let snakeUser = try XCTUnwrap(page.messages.first { $0.content == "snake user" })
+        let snakeAssistant = try XCTUnwrap(page.messages.first { $0.content == "snake assistant" })
+        let itemUser = try XCTUnwrap(page.messages.first { $0.content == "item user" })
+        let itemAssistant = try XCTUnwrap(page.messages.first { $0.content == "item assistant" })
 
         XCTAssertEqual(try XCTUnwrap(isoUser.createdAt).timeIntervalSince1970, 1_782_929_760, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(isoAssistant.createdAt).timeIntervalSince1970, 1_782_929_761.154, accuracy: 0.001)
@@ -10484,6 +10790,39 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(try XCTUnwrap(msUser.createdAt).timeIntervalSince1970, 1_782_929_761.154, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(msAssistant.createdAt).timeIntervalSince1970, 1_782_929_762.123, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(msAssistant.updatedAt).timeIntervalSince1970, 1_782_929_762.123, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snakeUser.createdAt).timeIntervalSince1970, 1_782_932_400, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(snakeAssistant.createdAt).timeIntervalSince1970, 1_782_932_402, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(itemUser.createdAt).timeIntervalSince1970, 1_782_932_403, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(itemAssistant.createdAt).timeIntervalSince1970, 1_782_932_404.5, accuracy: 0.001)
+        XCTAssertFalse(page.messages.contains { $0.isTimestampFallback })
+    }
+
+    func testDirectRuntimeMarksMissingHistoryTimestampsAsFallback() async throws {
+        let project = AgentProject(id: "proj_hist_fallback", name: "Hist Fallback", path: "/tmp/hist-fallback")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(sessionID: "thr_hist_fallback", before: nil, limit: 10)
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let read = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_fallback","sessionId":"thr_hist_fallback","preview":"hist fallback","ephemeral":false,"modelProvider":"openai","createdAt":1780490400,"updatedAt":1780490500,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist fallback","turns":[{"id":"turn_missing","items":[{"type":"userMessage","id":"user_missing","content":[{"type":"text","text":"missing user"}]},{"type":"agentMessage","id":"assistant_missing","text":"missing assistant","phase":"final_answer"}]}]}}}"#)
+
+        let page = try await pageTask.value
+        XCTAssertEqual(page.messages.map(\.content), ["missing user", "missing assistant"])
+        XCTAssertTrue(page.messages.allSatisfy(\.isTimestampFallback))
+        XCTAssertEqual(try XCTUnwrap(page.messages.first?.createdAt).timeIntervalSince1970, 1_780_490_500, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(page.messages.last?.createdAt).timeIntervalSince1970, 1_780_490_500, accuracy: 0.001)
     }
 
     func testDirectRuntimeUsesPagedThreadTurnsListWhenGatewayAllowsIt() async throws {
@@ -10522,10 +10861,12 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 60)
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_new","startedAt":1780490302,"items":[{"type":"userMessage","id":"item_3","content":[{"type":"text","text":"m3"}]},{"type":"agentMessage","id":"item_4","text":"m4","phase":"final_answer"}]},{"id":"turn_old","startedAt":1780490300,"items":[{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}]}],"nextCursor":"older-cursor","backwardsCursor":"newer-cursor"}}"#)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_new","items":[{"type":"userMessage","id":"item_3","created_at":1780490302,"content":[{"type":"text","text":"m3"}]},{"type":"agentMessage","id":"item_4","updated_at":1780490303,"text":"m4","phase":"final_answer"}]},{"id":"turn_old","started_at":1780490300,"completed_at":1780490301,"items":[{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}]}],"nextCursor":"older-cursor","backwardsCursor":"newer-cursor"}}"#)
 
         let firstPage = try await firstPageTask.value
         XCTAssertEqual(firstPage.messages.map(\.content), ["m1", "m2", "m3", "m4"])
+        XCTAssertEqual(try XCTUnwrap(firstPage.messages.first { $0.content == "m4" }?.createdAt).timeIntervalSince1970, 1_780_490_303, accuracy: 0.001)
+        XCTAssertFalse(firstPage.messages.contains { $0.isTimestampFallback })
         XCTAssertTrue(firstPage.hasMoreBefore)
         let cursor = try XCTUnwrap(firstPage.previousCursor)
 

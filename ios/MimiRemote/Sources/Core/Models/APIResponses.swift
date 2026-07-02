@@ -960,7 +960,8 @@ struct MessagesResponse: Codable {
                     itemID: $0.itemID,
                     seq: $0.seq,
                     revision: $0.revision,
-                    sendStatus: $0.sendStatus
+                    sendStatus: $0.sendStatus,
+                    isTimestampFallback: $0.isTimestampFallback
                 )
             }
             self.nextCursor = page.nextCursor

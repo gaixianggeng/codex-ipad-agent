@@ -572,7 +572,12 @@ actor CodexAppServerSessionRuntime {
         let chronologicalTurns = Array(turns.reversed())
         var thread = metadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
         thread["turns"] = .array(chronologicalTurns.map { .object($0) })
-        let messages = historyMessages(fromTurns: chronologicalTurns, sessionID: sessionID)
+        let messages = historyMessages(
+            fromTurns: chronologicalTurns,
+            sessionID: sessionID,
+            threadCreatedAt: firstDate(in: thread, keys: ["createdAt", "created_at"]),
+            threadUpdatedAt: firstDate(in: thread, keys: ["updatedAt", "updated_at"])
+        )
         let context = contextForHistoryThread(thread, sessionID: sessionID, projects: projects)
         let nextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
         return HistoryMessagesPage(
@@ -637,7 +642,9 @@ actor CodexAppServerSessionRuntime {
                 "name": .string(cached.title),
                 "preview": cached.preview.map { .string($0) } ?? .null,
                 "status": .object(["type": .string(cached.isRunning ? "active" : "notLoaded")]),
-                "modelProvider": .string("openai")
+                "modelProvider": .string("openai"),
+                "createdAt": cached.createdAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                "updatedAt": cached.updatedAt.map { .double($0.timeIntervalSince1970) } ?? .null
             ]
         }
         let project = projects.first
@@ -2043,22 +2050,54 @@ actor CodexAppServerSessionRuntime {
 
     private func historyMessages(from thread: [String: CodexAppServerJSONValue], sessionID: SessionID) -> [CodexHistoryMessage] {
         let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        return historyMessages(fromTurns: turns, sessionID: sessionID)
+        return historyMessages(
+            fromTurns: turns,
+            sessionID: sessionID,
+            threadCreatedAt: firstDate(in: thread, keys: ["createdAt", "created_at"]),
+            threadUpdatedAt: firstDate(in: thread, keys: ["updatedAt", "updated_at"])
+        )
     }
 
     private func historyMessages(
         fromTurns turns: [[String: CodexAppServerJSONValue]],
-        sessionID: SessionID
+        sessionID: SessionID,
+        threadCreatedAt: Date? = nil,
+        threadUpdatedAt: Date? = nil
     ) -> [CodexHistoryMessage] {
-        return turns.flatMap { turn -> [CodexHistoryMessage] in
+        var messages: [CodexHistoryMessage] = []
+        messages.reserveCapacity(turns.reduce(0) { count, turn in
+            count + (turn["items"]?.arrayValue?.count ?? 0)
+        })
+        var lastResolvedAt = threadUpdatedAt ?? threadCreatedAt
+
+        for turn in turns {
             let turnID = turn["id"]?.stringValue
-            let startedAt = date(from: turn["startedAt"])
-            let completedAt = date(from: turn["completedAt"])
+            let startedAt = firstDate(in: turn, keys: ["startedAt", "started_at", "createdAt", "created_at", "timestamp"])
+            let completedAt = firstDate(in: turn, keys: ["completedAt", "completed_at", "updatedAt", "updated_at", "finishedAt", "finished_at"])
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
-            return items.compactMap { item in
-                historyMessage(from: item, sessionID: sessionID, turnID: turnID, startedAt: startedAt, completedAt: completedAt)
+            for item in items {
+                guard var message = historyMessage(
+                    from: item,
+                    sessionID: sessionID,
+                    turnID: turnID,
+                    startedAt: startedAt,
+                    completedAt: completedAt
+                ) else {
+                    continue
+                }
+                if message.createdAt == nil {
+                    // 历史消息缺少 item/turn 级时间时不能兜底成当前加载时间；用上游 thread
+                    // 时间或前一条已解析时间维持稳定排序，同时显式标记为估算。
+                    let fallback = lastResolvedAt ?? threadUpdatedAt ?? threadCreatedAt ?? Self.stableHistoryFallbackDate(index: messages.count)
+                    message = message.withTimestampFallback(createdAt: fallback)
+                }
+                if let resolvedAt = message.updatedAt ?? message.createdAt {
+                    lastResolvedAt = resolvedAt
+                }
+                messages.append(message)
             }
         }
+        return messages
     }
 
     private func historyMessage(
@@ -2071,6 +2110,8 @@ actor CodexAppServerSessionRuntime {
         let type = item["type"]?.stringValue
         let itemID = item["id"]?.stringValue ?? UUID().uuidString
         let messageID = appServerHistoryMessageID(turnID: turnID, itemID: itemID)
+        let itemCreatedAt = firstDate(in: item, keys: ["createdAt", "created_at", "startedAt", "started_at", "timestamp"])
+        let itemCompletedAt = firstDate(in: item, keys: ["completedAt", "completed_at", "updatedAt", "updated_at", "finishedAt", "finished_at", "timestamp"])
         switch type {
         case "userMessage":
             let text = userMessageText(from: item).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2081,7 +2122,7 @@ actor CodexAppServerSessionRuntime {
                 id: messageID,
                 role: "user",
                 content: text,
-                createdAt: startedAt,
+                createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt,
                 clientMessageID: item["clientId"]?.stringValue,
                 turnID: turnID,
                 itemID: itemID
@@ -2092,27 +2133,28 @@ actor CodexAppServerSessionRuntime {
                 return nil
             }
             if item["phase"]?.stringValue == "commentary" {
-                return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+                return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt, turnID: turnID, itemID: itemID)
             }
-            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: completedAt ?? startedAt, updatedAt: completedAt, turnID: turnID, itemID: itemID)
+            let completed = itemCompletedAt ?? completedAt
+            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: completed ?? itemCreatedAt ?? startedAt, updatedAt: completed, turnID: turnID, itemID: itemID)
         case "plan":
             let text = item["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "system", kind: .plan, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .plan, content: text, createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt, turnID: turnID, itemID: itemID)
         case "reasoning":
             let text = reasoningHistoryText(from: item)
             guard !text.isEmpty else {
                 return nil
             }
-            return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: startedAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .reasoningSummary, content: text, createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt, turnID: turnID, itemID: itemID)
         case "commandExecution":
-            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: commandExecutionHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: commandExecutionHistoryText(from: item), createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt, turnID: turnID, itemID: itemID)
         case "fileChange":
-            return CodexHistoryMessage(id: messageID, role: "system", kind: .fileChangeSummary, content: fileChangeHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .fileChangeSummary, content: fileChangeHistoryText(from: item), createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt, turnID: turnID, itemID: itemID)
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
-            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: toolHistoryText(from: item), createdAt: startedAt, turnID: turnID, itemID: itemID)
+            return CodexHistoryMessage(id: messageID, role: "system", kind: .commandSummary, content: toolHistoryText(from: item), createdAt: itemCreatedAt ?? startedAt ?? itemCompletedAt ?? completedAt, turnID: turnID, itemID: itemID)
         default:
             return nil
         }
@@ -2505,6 +2547,15 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
+    private func firstDate(in object: [String: CodexAppServerJSONValue], keys: [String]) -> Date? {
+        for key in keys {
+            if let parsed = date(from: object[key]) {
+                return parsed
+            }
+        }
+        return nil
+    }
+
     private static func date(from text: String) -> Date? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let number = Double(trimmed) {
@@ -2521,6 +2572,10 @@ actor CodexAppServerSessionRuntime {
         // app-server / JSON 桥接历史上出现过秒和毫秒两种数字形态，按数量级兼容。
         let seconds = value > 10_000_000_000 ? value / 1_000 : value
         return Date(timeIntervalSince1970: seconds)
+    }
+
+    private static func stableHistoryFallbackDate(index: Int) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(max(0, index)) / 1_000)
     }
 
     private static let iso8601Fractional: ISO8601DateFormatter = {

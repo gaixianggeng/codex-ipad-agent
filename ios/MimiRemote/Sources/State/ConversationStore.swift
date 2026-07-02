@@ -54,6 +54,7 @@ final class ConversationStore: ObservableObject {
         let seq: EventSequence?
         let revision: ModelRevision?
         let sendStatus: MessageSendStatus?
+        let isTimestampFallback: Bool
     }
 
     private struct StableMessageCacheKey: Hashable {
@@ -75,6 +76,7 @@ final class ConversationStore: ObservableObject {
         let updatedAt: Date?
         let sendStatus: MessageSendStatus
         let revision: ModelRevision?
+        let isTimestampFallback: Bool
     }
 
     private struct UnstableHistoryReuseBucket {
@@ -96,6 +98,7 @@ final class ConversationStore: ObservableObject {
     }
 
     private let nearbyHistoryEchoMergeWindow: TimeInterval = 10 * 60
+    private static let undatedHistoryFallbackDate = Date(timeIntervalSince1970: 0)
 
     func messages(for sessionID: String?) -> [ConversationMessage] {
         guard let sessionID else {
@@ -522,6 +525,7 @@ final class ConversationStore: ObservableObject {
             list[index].sendStatus = message.sendStatus == .failed ? .failed : .confirmed
             list[index].revision = message.revision
             list[index].updatedAt = message.updatedAt ?? metadata.createdAt ?? Date()
+            list[index].isTimestampFallback = message.isTimestampFallback
             if clientMessageID != nil, message.sendStatus != .failed {
                 let retained = list[index].turnPayload?.retainedAfterAcceptedSend()
                 if list[index].turnPayload != retained {
@@ -547,7 +551,8 @@ final class ConversationStore: ObservableObject {
                 createdAt: message.createdAt ?? Date(),
                 updatedAt: message.updatedAt ?? metadata.createdAt,
                 sendStatus: message.sendStatus,
-                revision: message.revision
+                revision: message.revision,
+                isTimestampFallback: message.isTimestampFallback
             )
             messageUUIDByStableMessageID[key] = completedMessage.id
             list.append(completedMessage)
@@ -984,6 +989,7 @@ final class ConversationStore: ObservableObject {
 
     private func projectedHistoryMessages(_ history: [CodexHistoryMessage], sessionID: String) -> [ConversationMessage] {
         let keys = history.map { historyProjectionKey(for: $0) }
+        let fallbackCreatedAts = deterministicHistoryCreatedAtFallbacks(for: history)
         // Litter 的 ConversationScreenModel 会缓存“hydrated -> UI item”的投影结果；
         // 这里也把历史 JSON 消息到本地 ConversationMessage 的转换缓存住。这样手动刷新、
         // 前后台恢复拿到同一页历史时，不会因为缺少稳定 id 的历史项而反复生成新 UUID。
@@ -998,13 +1004,19 @@ final class ConversationStore: ObservableObject {
             converted = incrementallyProjectedHistoryMessages(
                 history,
                 keys: keys,
+                fallbackCreatedAts: fallbackCreatedAts,
                 cached: cached,
                 sessionID: sessionID
             )
         } else {
             var unstableReuseBuckets = unstableHistoryReuseBuckets(sessionID: sessionID)
-            converted = history.map { item in
-                projectHistoryMessage(item, sessionID: sessionID, unstableReuseBuckets: &unstableReuseBuckets)
+            converted = history.indices.map { index in
+                projectHistoryMessage(
+                    history[index],
+                    sessionID: sessionID,
+                    fallbackCreatedAt: fallbackCreatedAts[index],
+                    unstableReuseBuckets: &unstableReuseBuckets
+                )
             }
         }
         historyProjectionCacheBySessionID[sessionID] = HistoryProjectionCache(keys: keys, messages: converted)
@@ -1014,6 +1026,7 @@ final class ConversationStore: ObservableObject {
     private func incrementallyProjectedHistoryMessages(
         _ history: [CodexHistoryMessage],
         keys: [HistoryProjectionKey],
+        fallbackCreatedAts: [Date],
         cached: HistoryProjectionCache,
         sessionID: String
     ) -> [ConversationMessage] {
@@ -1043,7 +1056,12 @@ final class ConversationStore: ObservableObject {
 
         if prefixCount < changedUpperBound {
             for index in prefixCount..<changedUpperBound {
-                converted.append(projectHistoryMessage(history[index], sessionID: sessionID, unstableReuseBuckets: &unstableReuseBuckets))
+                converted.append(projectHistoryMessage(
+                    history[index],
+                    sessionID: sessionID,
+                    fallbackCreatedAt: fallbackCreatedAts[index],
+                    unstableReuseBuckets: &unstableReuseBuckets
+                ))
             }
         }
 
@@ -1054,11 +1072,13 @@ final class ConversationStore: ObservableObject {
     private func projectHistoryMessage(
         _ item: CodexHistoryMessage,
         sessionID: String,
+        fallbackCreatedAt: Date,
         unstableReuseBuckets: inout [UnstableHistoryReuseKey: UnstableHistoryReuseBucket]
     ) -> ConversationMessage {
         let stableID = historyStableID(for: item)
         let role = messageRole(item.role)
-        let createdAt = item.createdAt ?? Date()
+        let createdAt = item.createdAt ?? fallbackCreatedAt
+        let isTimestampFallback = item.isTimestampFallback || item.createdAt == nil
         let sendStatus = item.sendStatus ?? .confirmed
         let id: UUID
         if let stableID,
@@ -1073,6 +1093,7 @@ final class ConversationStore: ObservableObject {
                       updatedAt: item.updatedAt,
                       sendStatus: sendStatus,
                       revision: item.revision,
+                      isTimestampFallback: isTimestampFallback,
                       buckets: &unstableReuseBuckets
                   ) {
             id = reused.id
@@ -1091,8 +1112,41 @@ final class ConversationStore: ObservableObject {
             createdAt: createdAt,
             updatedAt: item.updatedAt,
             sendStatus: sendStatus,
-            revision: item.revision
+            revision: item.revision,
+            isTimestampFallback: isTimestampFallback
         )
+    }
+
+    private func deterministicHistoryCreatedAtFallbacks(for history: [CodexHistoryMessage]) -> [Date] {
+        guard !history.isEmpty else {
+            return []
+        }
+        var nextKnown = Array<Date?>(repeating: nil, count: history.count)
+        var upcoming: Date?
+        for index in stride(from: history.count - 1, through: 0, by: -1) {
+            nextKnown[index] = upcoming
+            if let createdAt = history[index].createdAt {
+                upcoming = createdAt
+            }
+        }
+
+        var fallbacks: [Date] = []
+        fallbacks.reserveCapacity(history.count)
+        var previousKnown: Date?
+        for index in history.indices {
+            if let createdAt = history[index].createdAt {
+                fallbacks.append(createdAt)
+                previousKnown = createdAt
+            } else if let previousKnown {
+                fallbacks.append(previousKnown.addingTimeInterval(0.001))
+            } else if let next = nextKnown[index] {
+                fallbacks.append(next.addingTimeInterval(-0.001))
+            } else {
+                // 历史缺时间时必须使用稳定值，不能用 Date()；否则旧消息会被投影成“刚刚加载”。
+                fallbacks.append(Self.undatedHistoryFallbackDate)
+            }
+        }
+        return fallbacks
     }
 
     private func commonPrefixCount(lhs: [HistoryProjectionKey], rhs: [HistoryProjectionKey]) -> Int {
@@ -1152,7 +1206,8 @@ final class ConversationStore: ObservableObject {
             createdAt: message.createdAt,
             updatedAt: message.updatedAt,
             sendStatus: message.sendStatus,
-            revision: message.revision
+            revision: message.revision,
+            isTimestampFallback: message.isTimestampFallback
         )
     }
 
@@ -1164,6 +1219,7 @@ final class ConversationStore: ObservableObject {
         updatedAt: Date?,
         sendStatus: MessageSendStatus,
         revision: ModelRevision?,
+        isTimestampFallback: Bool,
         buckets: inout [UnstableHistoryReuseKey: UnstableHistoryReuseBucket]
     ) -> ConversationMessage? {
         let key = UnstableHistoryReuseKey(
@@ -1173,7 +1229,8 @@ final class ConversationStore: ObservableObject {
             createdAt: createdAt,
             updatedAt: updatedAt,
             sendStatus: sendStatus,
-            revision: revision
+            revision: revision,
+            isTimestampFallback: isTimestampFallback
         )
         guard var bucket = buckets[key] else {
             return nil
@@ -1207,7 +1264,8 @@ final class ConversationStore: ObservableObject {
             itemID: item.itemID,
             seq: item.seq,
             revision: item.revision,
-            sendStatus: item.sendStatus
+            sendStatus: item.sendStatus,
+            isTimestampFallback: item.isTimestampFallback
         )
     }
 
@@ -1257,20 +1315,36 @@ final class ConversationStore: ObservableObject {
         return "appserver:\(turnID):\(itemID)"
     }
 
-    // thread/read 把 assistant 的 item id 重排成整条线程的全局顺序号(item-N)，与流式 msg_… 永远对不上，
-    // 仅靠 appserver:<turnId>:<itemId> 无法把直播气泡和历史副本判为同一条。turnId 两边一致、最终文本也一致，
-    // 于是补一个 (turnId, 规范化文本) 的键，专门收敛已 confirmed 助手消息在手动刷新后的重复；只认 assistant，
-    // 避免误伤 user(走 clientMessageId 合并)和各类 system 提示。
+    // thread/read 会把部分 item id 重排成整条线程的全局顺序号(item-N)，与流式 msg_… 对不上。
+    // 仅靠 appserver:<turnId>:<itemId> 无法把直播副本和历史快照判为同一条，所以补一个
+    // (turnId, 语义类型, 规范化文本) 的兜底键。这里只覆盖最终 assistant 和可折叠过程卡，
+    // user 继续走 clientMessageId，approval/error/userInput 等交互状态不能按文本合并。
     private func turnScopedTextMergeKey(for item: ConversationMessage) -> String? {
-        guard item.role == .assistant,
-              let turnID = item.turnID, !turnID.isEmpty else {
+        guard let turnID = item.turnID, !turnID.isEmpty else {
+            return nil
+        }
+        let semanticKind: String
+        if item.role == .assistant {
+            semanticKind = "assistant"
+        } else if item.role == .system, let processKind = processMessageMergeKind(for: item.kind) {
+            semanticKind = processKind
+        } else {
             return nil
         }
         let normalized = normalizedAssistantTextForDedup(item.content)
         guard !normalized.isEmpty else {
             return nil
         }
-        return "turn:\(turnID):assistant:\(normalized)"
+        return "turn:\(turnID):\(semanticKind):\(normalized)"
+    }
+
+    private func processMessageMergeKind(for kind: MessageKind) -> String? {
+        switch kind {
+        case .reasoningSummary, .plan, .commandSummary, .fileChangeSummary:
+            return kind.rawValue
+        case .message, .approval, .userInput, .error:
+            return nil
+        }
     }
 
     private func shouldMergeAsNearbyHistoryEcho(_ item: ConversationMessage, candidates: [NearbyHistoryEchoCandidate]) -> Bool {

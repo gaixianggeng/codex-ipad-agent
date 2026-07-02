@@ -34,6 +34,7 @@ type Router struct {
 	auth     auth.Authenticator
 	version  string
 	upgrader websocket.Upgrader
+	monitor  *relayMonitor
 
 	gatewayThreadsMu   sync.Mutex
 	gatewayThreads     map[string]appServerGatewayAllowedThread
@@ -59,6 +60,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 		upgrader: websocket.Upgrader{
 			CheckOrigin: sameOriginOrNoOrigin,
 		},
+		monitor:          newRelayMonitor(),
 		gatewayThreads:   map[string]appServerGatewayAllowedThread{},
 		managedWorktrees: map[string]managedWorktree{},
 	}
@@ -70,6 +72,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/readyz", r.auth.Middleware(http.HandlerFunc(r.readyz)))
 	mux.Handle("/api/version", r.auth.Middleware(http.HandlerFunc(r.versionHandler)))
 	mux.Handle("/api/doctor", r.auth.Middleware(http.HandlerFunc(r.doctorHandler)))
+	mux.Handle("/api/diagnostics/relay", r.auth.Middleware(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	if cfg.Debug.EnableCodexHistory {
 		mux.Handle("/api/debug/codex-history", r.auth.Middleware(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {
@@ -96,7 +99,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/voice/transcribe", r.auth.Middleware(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
-	return logging(mux)
+	return logging(mux, r.monitor)
 }
 
 func sameOriginOrNoOrigin(r *http.Request) bool {
@@ -111,13 +114,31 @@ func sameOriginOrNoOrigin(r *http.Request) bool {
 	return strings.EqualFold(parsed.Host, r.Host)
 }
 
-func logging(next http.Handler) http.Handler {
+func logging(next http.Handler, monitor *relayMonitor) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		if strings.HasPrefix(r.URL.Path, "/api/") && monitor != nil {
+			monitor.beginHTTP()
+		}
 		next.ServeHTTP(rec, r)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			log.Printf("%s %s remote=%s host=%s status=%d bytes=%d duration=%s", r.Method, redactedRequestURI(r.URL), requestRemoteHost(r), r.Host, rec.status, rec.bytes, time.Since(start).Round(time.Millisecond))
+			duration := time.Since(start)
+			log.Printf("%s %s remote=%s host=%s status=%d bytes=%d duration=%s write_duration=%s write_calls=%d", r.Method, redactedRequestURI(r.URL), requestRemoteHost(r), r.Host, rec.status, rec.bytes, duration.Round(time.Millisecond), rec.writeDuration.Round(time.Millisecond), rec.writeCalls)
+			if monitor != nil {
+				monitor.recordHTTP(relayHTTPSample{
+					EndedAt:        time.Now().UTC(),
+					Method:         r.Method,
+					Path:           redactedRequestURI(r.URL),
+					Remote:         requestRemoteHost(r),
+					Host:           r.Host,
+					Status:         rec.status,
+					ResponseBytes:  rec.bytes,
+					DurationMillis: duration.Milliseconds(),
+					WriteMillis:    rec.writeDuration.Milliseconds(),
+					WriteCalls:     rec.writeCalls,
+				})
+			}
 		}
 	})
 }
@@ -148,8 +169,11 @@ func requestRemoteHost(r *http.Request) string {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
-	bytes  int
+	status        int
+	bytes         int
+	writeDuration time.Duration
+	writeMax      time.Duration
+	writeCalls    int
 }
 
 func (r *statusRecorder) WriteHeader(status int) {
@@ -158,8 +182,15 @@ func (r *statusRecorder) WriteHeader(status int) {
 }
 
 func (r *statusRecorder) Write(data []byte) (int, error) {
+	start := time.Now()
 	n, err := r.ResponseWriter.Write(data)
+	elapsed := time.Since(start)
 	r.bytes += n
+	r.writeDuration += elapsed
+	if elapsed > r.writeMax {
+		r.writeMax = elapsed
+	}
+	r.writeCalls++
 	return n, err
 }
 

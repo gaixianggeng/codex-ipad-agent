@@ -130,6 +130,68 @@ func TestAppServerGatewaySendsConfiguredUpstreamToken(t *testing.T) {
 	}
 }
 
+func TestRelayDiagnosticsReportsAppServerGatewayMetrics(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-monitor")
+	})
+	handler, fixtureProjectDir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = fixtureProjectDir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-monitor")
+
+	var body map[string]any
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/diagnostics/relay", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("relay diagnostics 应返回 200，got=%d body=%s", rec.Code, rec.Body.String())
+		}
+		body = decodeJSON(t, rec)
+		gateway := body["app_server_gateway"].(map[string]any)
+		clientToUpstream := gateway["client_to_upstream"].(map[string]any)
+		upstreamToClient := gateway["upstream_to_client"].(map[string]any)
+		rpc := gateway["rpc"].(map[string]any)
+		if clientToUpstream["frames"].(float64) >= 1 && upstreamToClient["frames"].(float64) >= 1 && rpc["responses"].(float64) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == nil {
+		t.Fatal("未读取到 relay diagnostics")
+	}
+	gateway := body["app_server_gateway"].(map[string]any)
+	if got := int(gateway["total_connections"].(float64)); got < 1 {
+		t.Fatalf("gateway total_connections 应记录连接，got=%d body=%v", got, gateway)
+	}
+	if got := int(gateway["active_connections"].(float64)); got < 1 {
+		t.Fatalf("gateway active_connections 应包含当前 WS，got=%d body=%v", got, gateway)
+	}
+	clientToUpstream := gateway["client_to_upstream"].(map[string]any)
+	if got := int(clientToUpstream["bytes"].(float64)); got == 0 {
+		t.Fatalf("client_to_upstream 应记录转发字节：%v", clientToUpstream)
+	}
+	upstreamToClient := gateway["upstream_to_client"].(map[string]any)
+	if got := int(upstreamToClient["bytes"].(float64)); got == 0 {
+		t.Fatalf("upstream_to_client 应记录转发字节：%v", upstreamToClient)
+	}
+	rpc := gateway["rpc"].(map[string]any)
+	if got := int(rpc["responses"].(float64)); got < 1 {
+		t.Fatalf("rpc.responses 应记录 app-server 响应：%v", rpc)
+	}
+	if recent, ok := gateway["recent_rpc"].([]any); !ok || len(recent) == 0 {
+		t.Fatalf("recent_rpc 应包含最近 app-server 响应样本：%v", gateway)
+	}
+	if active, ok := gateway["active_connections_detail"].([]any); !ok || len(active) == 0 {
+		t.Fatalf("active_connections_detail 应包含当前连接：%v", gateway)
+	}
+}
+
 func TestAppServerGatewayRejectsEmptyUpstreamTokenFileBeforeDial(t *testing.T) {
 	upstreamURL, _, connections := fakeAppServerUpstream(t, nil)
 	tokenFile := filepath.Join(t.TempDir(), "empty-token")
