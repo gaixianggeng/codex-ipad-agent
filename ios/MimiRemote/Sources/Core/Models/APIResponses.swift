@@ -1168,11 +1168,18 @@ struct MessagesResponse: Codable {
 }
 
 struct HistoryMessagesPage: Equatable {
+    enum LoadMode: String, Equatable, Hashable {
+        case full
+        case economy
+    }
+
     let messages: [CodexHistoryMessage]
     let previousCursor: String?
     let hasMoreBefore: Bool
     let context: SessionContextSnapshot?
     let snapshotSeq: EventSequence?
+    let loadMode: LoadMode
+    let notice: String?
 
     init(response: MessagesResponse) {
         self.messages = response.messages
@@ -1180,6 +1187,8 @@ struct HistoryMessagesPage: Equatable {
         self.hasMoreBefore = response.hasMoreBefore ?? false
         self.context = nil
         self.snapshotSeq = response.snapshotSeq
+        self.loadMode = .full
+        self.notice = nil
     }
 
     init(
@@ -1187,13 +1196,17 @@ struct HistoryMessagesPage: Equatable {
         previousCursor: String? = nil,
         hasMoreBefore: Bool = false,
         context: SessionContextSnapshot? = nil,
-        snapshotSeq: EventSequence? = nil
+        snapshotSeq: EventSequence? = nil,
+        loadMode: LoadMode = .full,
+        notice: String? = nil
     ) {
         self.messages = messages
         self.previousCursor = previousCursor
         self.hasMoreBefore = hasMoreBefore
         self.context = context
         self.snapshotSeq = snapshotSeq
+        self.loadMode = loadMode
+        self.notice = notice
     }
 }
 

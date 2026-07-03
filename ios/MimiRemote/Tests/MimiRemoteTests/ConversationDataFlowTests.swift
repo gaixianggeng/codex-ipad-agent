@@ -5806,6 +5806,50 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["首屏历史"])
     }
 
+    func testConcurrentRunningHistoryFirstPageLoadsCoalesceRequest() async {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(id: "codex_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+
+        let firstSelectTask = Task { await store.selectSession(running) }
+        await client.waitForHistoryRequestCount(1)
+        let secondSelectTask = Task { await store.selectSession(running) }
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(client.requestedMessageCursors, [nil])
+        XCTAssertEqual(client.requestedMessageLimits, [60])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.economy])
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:101", role: "assistant", content: "合并首屏历史", createdAt: Date(timeIntervalSince1970: 10))
+                ],
+                loadMode: .economy,
+                notice: "此会话包含较大的图片或工具输出，已使用省流模式加载。"
+            )
+        )
+        await firstSelectTask.value
+        await secondSelectTask.value
+
+        XCTAssertEqual(client.requestedMessageCursors, [nil])
+        XCTAssertEqual(conversationStore.messages(for: running.id).map(\.content), ["合并首屏历史"])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.message, "此会话包含较大的图片或工具输出，已使用省流模式加载。")
+    }
+
     func testLoadEarlierHistoryMergesOlderMessagePage() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
@@ -6064,6 +6108,7 @@ final class ConversationDataFlowTests: XCTestCase {
         await secondRefreshTask.value
 
         XCTAssertEqual(client.requestedMessageCursors, [nil, nil, nil])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.economy, .full, .full])
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史", "最新历史"])
         XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
     }
@@ -9932,6 +9977,8 @@ private final class OrderedHistoryPageClient: SessionStoreAPIClient {
     let page: SessionsPage
     private let lock = NSLock()
     private var requestedMessageCursorsStorage: [String?] = []
+    private var requestedMessageLimitsStorage: [Int?] = []
+    private var requestedMessageLoadModesStorage: [HistoryMessagesPage.LoadMode] = []
     private var historyContinuations: [CheckedContinuation<HistoryMessagesPage, Never>?] = []
     private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
@@ -9946,6 +9993,22 @@ private final class OrderedHistoryPageClient: SessionStoreAPIClient {
             lock.unlock()
         }
         return requestedMessageCursorsStorage
+    }
+
+    var requestedMessageLimits: [Int?] {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return requestedMessageLimitsStorage
+    }
+
+    var requestedMessageLoadModes: [HistoryMessagesPage.LoadMode] {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return requestedMessageLoadModesStorage
     }
 
     func projects() async throws -> [AgentProject] {
@@ -9978,8 +10041,17 @@ private final class OrderedHistoryPageClient: SessionStoreAPIClient {
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+        try await messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: .full)
+    }
+
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
         await withCheckedContinuation { continuation in
-            let waiters = appendHistoryRequest(before: before, continuation: continuation)
+            let waiters = appendHistoryRequest(before: before, limit: limit, loadMode: loadMode, continuation: continuation)
             waiters.forEach { $0.resume() }
         }
     }
@@ -10008,6 +10080,8 @@ private final class OrderedHistoryPageClient: SessionStoreAPIClient {
 
     private func appendHistoryRequest(
         before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode,
         continuation: CheckedContinuation<HistoryMessagesPage, Never>
     ) -> [CheckedContinuation<Void, Never>] {
         lock.lock()
@@ -10016,6 +10090,8 @@ private final class OrderedHistoryPageClient: SessionStoreAPIClient {
         }
         historyContinuations.append(continuation)
         requestedMessageCursorsStorage.append(before)
+        requestedMessageLimitsStorage.append(limit)
+        requestedMessageLoadModesStorage.append(loadMode)
         return takeReadyRequestCountWaitersLocked()
     }
 
@@ -11641,7 +11717,7 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: metadataRead.id)),"result":{"thread":{"id":"thr_turn_pages","sessionId":"thr_turn_pages","preview":"turn pages","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"notLoaded"},"path":null,"cwd":"/tmp/turn-pages","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"turn pages","turns":[]}}}"#)
 
         let firstTurnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
-        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 60)
+        XCTAssertEqual(firstTurnsRequest.params?.objectValue?["limit"]?.intValue, 50)
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(firstTurnsRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: firstTurnsRequest.id)),"result":{"data":[{"id":"turn_new","items":[{"type":"userMessage","id":"item_3","created_at":1780490302,"content":[{"type":"text","text":"m3"}]},{"type":"agentMessage","id":"item_4","updated_at":1780490303,"text":"m4","phase":"final_answer"}]},{"id":"turn_old","started_at":1780490300,"completed_at":1780490301,"items":[{"type":"userMessage","id":"item_1","content":[{"type":"text","text":"m1"}]},{"type":"agentMessage","id":"item_2","text":"m2","phase":"final_answer"}]}],"nextCursor":"older-cursor","backwardsCursor":"newer-cursor"}}"#)
@@ -11678,6 +11754,55 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(requests.contains { request in
             request.method == "thread/read" && request.params?.objectValue?["includeTurns"]?.boolValue == true
         })
+    }
+
+    func testDirectRuntimeEconomyHistoryUsesSummaryTurnPagesAndNotice() async throws {
+        let project = AgentProject(id: "proj_turn_pages_economy", name: "Turn Pages Economy", path: "/tmp/turn-pages-economy")
+        let transport = FakeCodexAppServerTransport()
+        let allowedMethods = [
+            "initialize",
+            "initialized",
+            "thread/list",
+            "thread/start",
+            "thread/read",
+            "thread/turns/list",
+            "turn/start",
+            "turn/interrupt"
+        ]
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project, allowedMethods: allowedMethods) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(
+                sessionID: "thr_turn_pages_economy",
+                before: nil,
+                limit: 60,
+                loadMode: .economy
+            )
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let metadataRead = try await waitForFakeAppServerRequest(transport, method: "thread/read")
+        XCTAssertEqual(metadataRead.params?.objectValue?["includeTurns"]?.boolValue, false)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: metadataRead.id)),"result":{"thread":{"id":"thr_turn_pages_economy","sessionId":"thr_turn_pages_economy","preview":"economy","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"notLoaded"},"path":null,"cwd":"/tmp/turn-pages-economy","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"economy","turns":[]}}}"#)
+
+        let turnsRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        XCTAssertEqual(turnsRequest.params?.objectValue?["limit"]?.intValue, 15)
+        XCTAssertEqual(turnsRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: turnsRequest.id)),"result":{"data":[{"id":"turn_summary","itemsView":"summary","items":[{"type":"userMessage","id":"item_1","created_at":1780490302,"content":[{"type":"text","text":"m1"}]},{"type":"agentMessage","id":"item_2","updated_at":1780490303,"text":"m2","phase":"final_answer"}]}],"nextCursor":"older-cursor"}}"#)
+
+        let page = try await pageTask.value
+        XCTAssertEqual(page.messages.map(\.content), ["m1", "m2"])
+        XCTAssertEqual(page.loadMode, .economy)
+        XCTAssertEqual(page.notice, "此会话包含较大的图片或工具输出，已使用省流模式加载。")
+        XCTAssertTrue(page.hasMoreBefore)
     }
 
     func testDirectRuntimeThreadReadBackfillsHistoryContextFromTurns() async throws {

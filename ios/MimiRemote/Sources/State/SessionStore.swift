@@ -36,6 +36,12 @@ protocol SessionStoreAPIClient {
     func setSessionArchived(id: String, archived: Bool) async throws
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage
 }
 
 extension SessionStoreAPIClient {
@@ -173,6 +179,15 @@ extension SessionStoreAPIClient {
         HistoryMessagesPage(messages: try await messages(sessionID: sessionID, before: before, limit: limit))
     }
 
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        try await messagesPage(sessionID: sessionID, before: before, limit: limit)
+    }
+
 }
 
 actor TerminalStreamStore {
@@ -203,6 +218,42 @@ private struct QueuedCommandActionRun: Equatable {
     let path: String
     let id: String
     let confirmed: Bool
+}
+
+private struct HistoryFirstPageRequestKey: Hashable {
+    let sessionID: SessionID
+    let limit: Int
+    let loadMode: HistoryMessagesPage.LoadMode
+}
+
+private struct HistoryFirstPageInFlight {
+    let token: Int
+    let task: Task<HistoryMessagesPage, Error>
+}
+
+private struct HistoryFirstPageCacheEntry {
+    let page: HistoryMessagesPage
+    let loadedAt: Date
+    let token: Int
+}
+
+private struct HistoryFirstPageResult {
+    let page: HistoryMessagesPage
+    let token: Int
+}
+
+private struct HistoryFirstPageFetchFailure: LocalizedError {
+    let underlying: Error
+    let token: Int
+
+    var errorDescription: String? {
+        underlying.localizedDescription
+    }
+}
+
+private enum HistoryFirstPageCachePolicy: Equatable {
+    case reuseRecent
+    case bypass
 }
 
 struct ProjectSessionListSnapshot: Equatable {
@@ -386,6 +437,56 @@ struct SessionReminderStore {
         var storage = storage()
         storage.byEndpoint[normalizedEndpoint(endpoint)] = reminders
         persist(storage)
+    }
+
+    private func storage() -> Storage {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(Storage.self, from: data)
+        else {
+            return Storage()
+        }
+        return decoded
+    }
+
+    private func persist(_ storage: Storage) {
+        guard let data = try? JSONEncoder().encode(storage) else {
+            return
+        }
+        defaults.set(data, forKey: key)
+    }
+
+    private func normalizedEndpoint(_ endpoint: String) -> String {
+        AgentAPIClient.normalizedEndpoint(endpoint)
+    }
+}
+
+struct HistorySavingsNotice: Equatable {
+    let sessionID: SessionID
+    let message: String
+}
+
+struct HistorySavingsNoticeStore {
+    private struct Storage: Codable {
+        var dismissedEndpoints: Set<String> = []
+    }
+
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = "agentd.historySavingsNotice") {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func loadDismissedEndpoints() -> Set<String> {
+        storage().dismissedEndpoints
+    }
+
+    func dismiss(endpoint: String) -> Set<String> {
+        var storage = storage()
+        storage.dismissedEndpoints.insert(normalizedEndpoint(endpoint))
+        persist(storage)
+        return storage.dismissedEndpoints
     }
 
     private func storage() -> Storage {
@@ -668,6 +769,7 @@ final class SessionStore: ObservableObject {
     private let sessionControlStateStore: SessionControlStateStore
     private let sessionReminderStore: SessionReminderStore
     private let sessionReminderScheduler: any SessionReminderScheduling
+    private let historySavingsNoticeStore: HistorySavingsNoticeStore
     private let terminalStreamStore = TerminalStreamStore()
     private let clientFactory: () throws -> any SessionStoreAPIClient
     private let webSocketFactory: () -> any SessionWebSocketClient
@@ -706,15 +808,21 @@ final class SessionStore: ObservableObject {
     private var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     private var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
     private var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
+    private var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
+    private var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]
     private var initialHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published private var historyLoadProgressBySessionID: [SessionID: HistoryLoadProgress] = [:]
+    @Published private var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
+    @Published private var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     private var appServerModelOptionsLastRefresh: Date?
     @Published private var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
     private let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
     private let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
     private let sessionListPollingDelayNanoseconds: UInt64 = 8_000_000_000
-    private let historyPageLimit = 120
+    private let economyHistoryPageLimit = 60
+    private let fullHistoryPageLimit = 120
+    private let historyFirstPageCacheTTL: TimeInterval = 4
     private static let optimisticSessionSource = "local"
     static let sessionPreviewLimit = 3
     static let sessionExpansionStep = 5
@@ -733,6 +841,7 @@ final class SessionStore: ObservableObject {
         sessionListPreferenceStore: SessionListPreferenceStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
         sessionReminderStore: SessionReminderStore? = nil,
+        historySavingsNoticeStore: HistorySavingsNoticeStore? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
@@ -775,6 +884,14 @@ final class SessionStore: ObservableObject {
         } else {
             self.sessionReminderStore = SessionReminderStore()
         }
+        if let historySavingsNoticeStore {
+            self.historySavingsNoticeStore = historySavingsNoticeStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(suiteName: "SessionStore.HistorySavingsNotice.\(UUID().uuidString)") ?? .standard
+            self.historySavingsNoticeStore = HistorySavingsNoticeStore(defaults: defaults)
+        } else {
+            self.historySavingsNoticeStore = HistorySavingsNoticeStore()
+        }
         if let sessionReminderScheduler {
             self.sessionReminderScheduler = sessionReminderScheduler
         } else if clientFactory != nil {
@@ -785,6 +902,7 @@ final class SessionStore: ObservableObject {
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
+        self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
         reloadSessionControlStates()
         reloadSessionReminders()
@@ -1097,6 +1215,15 @@ final class SessionStore: ObservableObject {
             return false
         }
         return historyHasMoreBeforeBySessionID[sessionID] == true
+    }
+
+    var selectedHistorySavingsNotice: HistorySavingsNotice? {
+        guard let selectedSessionID,
+              !dismissedHistorySavingsNoticeEndpoints.contains(AgentAPIClient.normalizedEndpoint(appStore.endpoint))
+        else {
+            return nil
+        }
+        return historySavingsNoticesBySessionID[selectedSessionID]
     }
 
     func isLoadingEarlierHistory(sessionID: SessionID?) -> Bool {
@@ -2111,6 +2238,20 @@ final class SessionStore: ObservableObject {
         await refreshSelectedSessionContent(session)
     }
 
+    func loadFullHistoryForSelectedSession() async {
+        guard let session = selectedSession else {
+            return
+        }
+        await refreshSelectedSessionContent(session, successStatusMessage: "已加载完整内容")
+    }
+
+    func dismissSelectedHistorySavingsNotice() {
+        if let selectedSessionID {
+            historySavingsNoticesBySessionID.removeValue(forKey: selectedSessionID)
+        }
+        dismissedHistorySavingsNoticeEndpoints = historySavingsNoticeStore.dismiss(endpoint: appStore.endpoint)
+    }
+
     func refreshAppServerModelOptions(force: Bool = false) async {
         if isRefreshingAppServerModels {
             return
@@ -2198,7 +2339,12 @@ final class SessionStore: ObservableObject {
         do {
             let client = try clientFactory()
             setHistoryLoadProgress(sessionID: session.id, title: "请求历史分页", fraction: 0.42)
-            let page = try await client.messagesPage(sessionID: session.id, before: cursor, limit: historyPageLimit)
+            let page = try await client.messagesPage(
+                sessionID: session.id,
+                before: cursor,
+                limit: economyHistoryPageLimit,
+                loadMode: .economy
+            )
             setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.76)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
             conversationStore.setHistory(page.messages, sessionID: session.id)
@@ -2830,7 +2976,6 @@ final class SessionStore: ObservableObject {
     // 失败也不打扰用户（下一次轮询/手动刷新仍会兜底）。
     @discardableResult
     private func loadHistory(for session: AgentSession, quiet: Bool = false) async -> Bool {
-        let requestToken = beginHistoryPageRequest(sessionID: session.id)
         if !quiet {
             setHistoryLoadProgress(sessionID: session.id, title: "准备加载历史", fraction: 0.08)
         }
@@ -2840,27 +2985,31 @@ final class SessionStore: ObservableObject {
             }
         }
         do {
-            let client = try clientFactory()
             // 历史文件可能很大，移动端默认只加载最近一段上下文，避免打开会话时卡住 UI。
             if !quiet {
                 setHistoryLoadProgress(sessionID: session.id, title: "请求最近消息", fraction: 0.32)
             }
-            let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
-            guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
+            let result = try await historyFirstPage(
+                sessionID: session.id,
+                limit: economyHistoryPageLimit,
+                loadMode: .economy,
+                cachePolicy: .reuseRecent
+            )
+            guard isCurrentHistoryPageRequest(sessionID: session.id, token: result.token) else {
                 return false
             }
             if !quiet {
                 setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.74)
             }
-            ingestHistoryContext(page.context, fallbackSessionID: session.id)
-            conversationStore.setHistory(page.messages, sessionID: session.id)
+            applyHistoryFirstPage(result.page, sessionID: session.id)
             if !quiet {
                 setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.94)
             }
-            updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
+            updateHistoryPageState(sessionID: session.id, page: result.page, preserveExistingCursorOnEmptyPage: true)
             return true
         } catch {
-            guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
+            if let failure = error as? HistoryFirstPageFetchFailure,
+               !isCurrentHistoryPageRequest(sessionID: session.id, token: failure.token) {
                 return false
             }
             if !quiet {
@@ -2879,27 +3028,29 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func refreshSelectedSessionContent(_ session: AgentSession) async {
+    private func refreshSelectedSessionContent(_ session: AgentSession, successStatusMessage: String = "当前会话已刷新") async {
         isRefreshingSelectedSession = true
         defer { isRefreshingSelectedSession = false }
 
         do {
-            let client = try clientFactory()
             // 手动刷新必须绕过 hasLoadedHistory 缓存，Mac/iPad 混合使用时 app-server 历史可能已经更新。
-            let requestToken = beginHistoryPageRequest(sessionID: session.id)
             setHistoryLoadProgress(sessionID: session.id, title: "刷新历史消息", fraction: 0.18)
             defer {
                 clearHistoryLoadProgress(sessionID: session.id)
             }
-            let page = try await client.messagesPage(sessionID: session.id, before: nil, limit: historyPageLimit)
-            guard isCurrentHistoryPageRequest(sessionID: session.id, token: requestToken) else {
+            let result = try await historyFirstPage(
+                sessionID: session.id,
+                limit: fullHistoryPageLimit,
+                loadMode: .full,
+                cachePolicy: .bypass
+            )
+            guard isCurrentHistoryPageRequest(sessionID: session.id, token: result.token) else {
                 return
             }
             setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.72)
-            ingestHistoryContext(page.context, fallbackSessionID: session.id)
-            conversationStore.setHistory(page.messages, sessionID: session.id)
+            applyHistoryFirstPage(result.page, sessionID: session.id)
             setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.92)
-            updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: true)
+            updateHistoryPageState(sessionID: session.id, page: result.page, preserveExistingCursorOnEmptyPage: true)
             if !session.isRunning {
                 clearForegroundActivity(sessionID: session.id)
                 clearRuntimeActivity(sessionID: session.id)
@@ -2907,11 +3058,75 @@ final class SessionStore: ObservableObject {
             // 手动刷新当前会话只等待历史页接口；列表/运行态校准放到后台，
             // 避免 thread/list 之类的慢接口把“刷新历史”按钮继续卡住。
             scheduleSessionStateReconciliationAfterHistoryRefresh(session)
-            setStatusMessage("当前会话已刷新")
+            setStatusMessage(successStatusMessage)
             setErrorMessage(nil)
         } catch {
             setErrorMessage(error.localizedDescription)
         }
+    }
+
+    private func historyFirstPage(
+        sessionID: SessionID,
+        limit: Int,
+        loadMode: HistoryMessagesPage.LoadMode,
+        cachePolicy: HistoryFirstPageCachePolicy
+    ) async throws -> HistoryFirstPageResult {
+        let key = HistoryFirstPageRequestKey(sessionID: sessionID, limit: limit, loadMode: loadMode)
+        if cachePolicy == .reuseRecent,
+           let cached = historyFirstPageCacheByKey[key],
+           Date().timeIntervalSince(cached.loadedAt) < historyFirstPageCacheTTL {
+            return HistoryFirstPageResult(page: cached.page, token: cached.token)
+        }
+        if cachePolicy == .reuseRecent,
+           let inFlight = historyFirstPageInFlightByKey[key] {
+            do {
+                return HistoryFirstPageResult(page: try await inFlight.task.value, token: inFlight.token)
+            } catch {
+                throw HistoryFirstPageFetchFailure(underlying: error, token: inFlight.token)
+            }
+        }
+
+        let token = beginHistoryPageRequest(sessionID: sessionID)
+        let client = try clientFactory()
+        let task = Task {
+            try await client.messagesPage(
+                sessionID: sessionID,
+                before: nil,
+                limit: limit,
+                loadMode: loadMode
+            )
+        }
+        historyFirstPageInFlightByKey[key] = HistoryFirstPageInFlight(token: token, task: task)
+        do {
+            let page = try await task.value
+            if historyFirstPageInFlightByKey[key]?.token == token {
+                historyFirstPageInFlightByKey.removeValue(forKey: key)
+            }
+            historyFirstPageCacheByKey[key] = HistoryFirstPageCacheEntry(page: page, loadedAt: Date(), token: token)
+            return HistoryFirstPageResult(page: page, token: token)
+        } catch {
+            if historyFirstPageInFlightByKey[key]?.token == token {
+                historyFirstPageInFlightByKey.removeValue(forKey: key)
+            }
+            throw HistoryFirstPageFetchFailure(underlying: error, token: token)
+        }
+    }
+
+    private func applyHistoryFirstPage(_ page: HistoryMessagesPage, sessionID: SessionID) {
+        ingestHistoryContext(page.context, fallbackSessionID: sessionID)
+        conversationStore.setHistory(page.messages, sessionID: sessionID)
+        updateHistorySavingsNotice(sessionID: sessionID, page: page)
+    }
+
+    private func updateHistorySavingsNotice(sessionID: SessionID, page: HistoryMessagesPage) {
+        guard page.loadMode == .economy,
+              let notice = page.notice?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !notice.isEmpty
+        else {
+            historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+            return
+        }
+        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, message: notice)
     }
 
     private func scheduleSessionStateReconciliationAfterHistoryRefresh(_ session: AgentSession) {
@@ -3635,6 +3850,13 @@ final class SessionStore: ObservableObject {
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }
+        let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
+        for key in staleHistoryFirstPageKeys {
+            historyFirstPageInFlightByKey[key]?.task.cancel()
+            historyFirstPageInFlightByKey.removeValue(forKey: key)
+        }
+        historyFirstPageCacheByKey = historyFirstPageCacheByKey.filter { validSessionIDs.contains($0.key.sessionID) }
+        historySavingsNoticesBySessionID = historySavingsNoticesBySessionID.filter { validSessionIDs.contains($0.key) }
         initialHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
 
         let loadingEarlierSessionIDs = loadingEarlierHistorySessionIDs.intersection(validSessionIDs)
@@ -4798,8 +5020,12 @@ final class SessionStore: ObservableObject {
         historyHasMoreBeforeBySessionID = [:]
         historySnapshotSeqBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
+        historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
+        historyFirstPageInFlightByKey = [:]
+        historyFirstPageCacheByKey = [:]
         initialHistoryLoadingSessionIDs = []
         historyLoadProgressBySessionID = [:]
+        historySavingsNoticesBySessionID = [:]
         loadingEarlierHistorySessionIDs = []
         lastSeenEventSeqBySessionID = [:]
         listProjectionBySessionID = [:]

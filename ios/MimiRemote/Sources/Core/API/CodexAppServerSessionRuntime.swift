@@ -484,8 +484,14 @@ actor CodexAppServerSessionRuntime {
     // 超时，避免大会话首屏因为 20s 的默认请求超时而直接报错。
     private static let bulkReadTimeout: TimeInterval = 60
     private static let threadTurnsCursorPrefix = "turns:"
+    private static let economyHistoryNotice = "此会话包含较大的图片或工具输出，已使用省流模式加载。"
 
-    func messagesPage(sessionID: SessionID, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
+    func messagesPage(
+        sessionID: SessionID,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode = .full
+    ) async throws -> HistoryMessagesPage {
         let config = try await ensureConfig()
         if shouldUseThreadTurnsList(config: config) {
             do {
@@ -493,6 +499,7 @@ actor CodexAppServerSessionRuntime {
                     sessionID: sessionID,
                     before: before,
                     limit: limit,
+                    loadMode: loadMode,
                     projects: config.projects
                 )
             } catch {
@@ -551,6 +558,7 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         before: String?,
         limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode,
         projects: [AgentProject]
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
@@ -565,9 +573,9 @@ actor CodexAppServerSessionRuntime {
             builder.threadTurnsList(
                 threadID: sessionID,
                 cursor: cursor,
-                limit: Self.threadTurnPageLimit(forMessageLimit: limit),
+                limit: Self.threadTurnPageLimit(forMessageLimit: limit, loadMode: loadMode),
                 sortDirection: "desc",
-                itemsView: "full"
+                itemsView: Self.threadTurnItemsView(loadMode: loadMode)
             ),
             timeout: requestTimeout
         )
@@ -588,7 +596,9 @@ actor CodexAppServerSessionRuntime {
             messages: messages,
             previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
             hasMoreBefore: nextCursor != nil,
-            context: context
+            context: context,
+            loadMode: loadMode,
+            notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns)
         )
     }
 
@@ -685,9 +695,47 @@ actor CodexAppServerSessionRuntime {
             || message.contains("experimentalapi")
     }
 
-    private static func threadTurnPageLimit(forMessageLimit limit: Int?) -> Int {
+    private static func threadTurnPageLimit(forMessageLimit limit: Int?, loadMode: HistoryMessagesPage.LoadMode) -> Int {
         let requestedMessages = max(1, limit ?? 120)
-        return max(10, min(80, (requestedMessages + 1) / 2))
+        switch loadMode {
+        case .economy:
+            // 核心逻辑：一条 turn 可能包含 base64 图片或超长工具输出。
+            // 控制 turn 页大小，比降低 WebSocket message size 更温和，不会制造重连风暴。
+            return max(5, min(20, (requestedMessages + 3) / 4))
+        case .full:
+            // full 手动加载仍要服从 Go gateway 的硬上限，避免按钮在公网模式下被 50 limit 拒绝。
+            return max(10, min(50, (requestedMessages + 1) / 2))
+        }
+    }
+
+    private static func threadTurnItemsView(loadMode: HistoryMessagesPage.LoadMode) -> String {
+        switch loadMode {
+        case .economy:
+            return "summary"
+        case .full:
+            return "full"
+        }
+    }
+
+    private static func historyNotice(
+        loadMode: HistoryMessagesPage.LoadMode,
+        hasMoreBefore: Bool,
+        turns: [[String: CodexAppServerJSONValue]]
+    ) -> String? {
+        guard loadMode == .economy else {
+            return nil
+        }
+        // 后端 summary 视图表示 item 详情可按需再拉；没有显式字段时，大历史分页也按省流提示处理。
+        let hasLazyContentSignal = turns.contains { turn in
+            turn["itemsView"]?.stringValue == "summary"
+                || turn["items_view"]?.stringValue == "summary"
+                || turn["hasFullItems"]?.boolValue == false
+                || turn["has_full_items"]?.boolValue == false
+        }
+        guard hasMoreBefore || hasLazyContentSignal || !turns.isEmpty else {
+            return nil
+        }
+        return economyHistoryNotice
     }
 
     private static func encodeThreadTurnsCursor(_ cursor: String) -> String {
@@ -2836,7 +2884,16 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     }
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
-        try await runtime.messagesPage(sessionID: sessionID, before: before, limit: limit)
+        try await messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: .full)
+    }
+
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        try await runtime.messagesPage(sessionID: sessionID, before: before, limit: limit, loadMode: loadMode)
     }
 }
 

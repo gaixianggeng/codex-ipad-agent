@@ -404,12 +404,323 @@ func TestAppServerGatewayAuthorizesThreadIDsFromThreadListResponse(t *testing.T)
 	}
 	select {
 	case got := <-received:
-		if !bytes.Equal(got, turnsFrame) {
-			t.Fatalf("已授权 thread/turns/list 必须原样转发：got=%s want=%s", got, turnsFrame)
+		params := decodeGatewayParamsForTest(t, got)
+		if params["threadId"] != "thread-authorized" ||
+			params["limit"] != float64(appServerGatewayThreadTurnsFullMaxLimit) ||
+			params["sortDirection"] != "desc" ||
+			params["itemsView"] != "full" {
+			t.Fatalf("已授权 thread/turns/list 必须降级 full 大页后转发：got=%s", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake upstream 未收到已授权 thread/turns/list")
 	}
+}
+
+func TestAppServerGatewayNormalizesThreadTurnsListLimit(t *testing.T) {
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-limit")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-limit")
+
+	cases := []struct {
+		name       string
+		payload    string
+		wantLimit  float64
+		wantView   string
+		wantReject string
+	}{
+		{
+			name:      "default safe limit",
+			payload:   `{"id":330,"method":"thread/turns/list","params":{"threadId":"thread-limit"}}`,
+			wantLimit: float64(appServerGatewayThreadTurnsDefaultLimit),
+		},
+		{
+			name:      "full large page is downgraded",
+			payload:   `{"id":331,"method":"thread/turns/list","params":{"threadId":"thread-limit","limit":50,"sortDirection":"desc","itemsView":"full"}}`,
+			wantLimit: float64(appServerGatewayThreadTurnsFullMaxLimit),
+			wantView:  "full",
+		},
+		{
+			name:      "summary may use hard max",
+			payload:   `{"id":332,"method":"thread/turns/list","params":{"threadId":"thread-limit","limit":50,"itemsView":"summary"}}`,
+			wantLimit: float64(appServerGatewayThreadTurnsMaxLimit),
+			wantView:  "summary",
+		},
+		{
+			name:       "over hard max is rejected",
+			payload:    `{"id":333,"method":"thread/turns/list","params":{"threadId":"thread-limit","limit":51,"itemsView":"summary"}}`,
+			wantReject: "limit 不能超过 50",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(tc.payload)); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantReject != "" {
+				errFrame := readGatewayError(t, conn)
+				if !strings.Contains(errFrame.message, tc.wantReject) {
+					t.Fatalf("limit 拒绝错误应包含 %q，got=%+v", tc.wantReject, errFrame)
+				}
+				assertNoUpstreamFrame(t, received)
+				return
+			}
+			params := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
+			if params["threadId"] != "thread-limit" || params["limit"] != tc.wantLimit {
+				t.Fatalf("thread/turns/list limit 归一化异常：%v", params)
+			}
+			if tc.wantView != "" && params["itemsView"] != tc.wantView {
+				t.Fatalf("thread/turns/list itemsView 应保留：%v", params)
+			}
+		})
+	}
+}
+
+func TestAppServerGatewayCapsOversizedHistoryResponses(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	oldBudgetBytes := appServerGatewayHistoryBudgetMaxResponseBytes
+	appServerGatewayHistoryResponseCapBytes = 512
+	appServerGatewayHistoryBudgetMaxResponseBytes = 64 << 10
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+		appServerGatewayHistoryBudgetMaxResponseBytes = oldBudgetBytes
+	})
+
+	cases := []struct {
+		name    string
+		method  string
+		request string
+	}{
+		{
+			name:    "turns list",
+			method:  "thread/turns/list",
+			request: `{"id":710,"method":"thread/turns/list","params":{"threadId":"thread-history","limit":20,"itemsView":"full"}}`,
+		},
+		{
+			name:    "thread read include turns",
+			method:  "thread/read",
+			request: `{"id":711,"method":"thread/read","params":{"threadId":"thread-history","includeTurns":true}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var projectDir string
+			upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+				var frame appServerGatewayFrame
+				if err := json.Unmarshal(payload, &frame); err != nil {
+					t.Errorf("fake upstream 收到非法 JSON：%v", err)
+					return
+				}
+				if frame.Method == "thread/list" {
+					respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-history")
+					return
+				}
+				if frame.Method != tc.method {
+					return
+				}
+				padding := strings.Repeat("history-block-marker", 80)
+				response := fmt.Sprintf(`{"id":%s,"result":{"data":[{"id":"turn-1","content":%q}]}}`, string(*frame.ID), padding)
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+					t.Errorf("fake upstream 写 history 大响应失败：%v", err)
+				}
+			})
+			handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+			projectDir = dir
+			server := httptest.NewServer(handler)
+			defer server.Close()
+
+			conn := dialAuthedGateway(t, server.URL)
+			defer conn.Close()
+			authorizeGatewayThread(t, conn, received, projectDir, "thread-history")
+
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(tc.request)); err != nil {
+				t.Fatal(err)
+			}
+			_ = readUpstreamFrame(t, received)
+			raw := readGatewayRaw(t, conn)
+			if len(raw) >= appServerGatewayHistoryResponseCapBytes {
+				t.Fatalf("history cap 应只写小 error 给 client，got bytes=%d raw=%s", len(raw), raw)
+			}
+			if bytes.Contains(raw, []byte("history-block-marker")) {
+				t.Fatalf("history 大响应内容不应透传给 client：%s", raw)
+			}
+			var frame struct {
+				ID    json.RawMessage `json:"id"`
+				Error struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &frame); err != nil {
+				t.Fatalf("history cap error 不是合法 JSON：%v raw=%s", err, raw)
+			}
+			if frame.Error.Code != appServerPolicyErrorCode || !strings.Contains(frame.Error.Message, "history response 过大") {
+				t.Fatalf("history cap error 文案异常：%+v raw=%s", frame, raw)
+			}
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/diagnostics/relay", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("relay diagnostics 应返回 200，got=%d body=%s", rec.Code, rec.Body.String())
+			}
+			body := decodeJSON(t, rec)
+			gateway := body["app_server_gateway"].(map[string]any)
+			if got := int(gateway["history_responses_blocked"].(float64)); got < 1 {
+				t.Fatalf("diagnostics 应记录 history response 阻断：%v", gateway)
+			}
+			hints := body["hints"].([]any)
+			if !containsAnySubstring(hints, "超大历史响应") {
+				t.Fatalf("diagnostics hints 应提示超大历史响应：%v", hints)
+			}
+		})
+	}
+}
+
+func TestAppServerGatewayForwardsSmallHistoryResponse(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 1024
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+	})
+
+	var projectDir string
+	smallResponse := []byte(`{"id":720,"result":{"data":[{"id":"turn-small"}]}}`)
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-small-history")
+			return
+		}
+		if frame.Method == "thread/turns/list" {
+			if err := conn.WriteMessage(websocket.TextMessage, smallResponse); err != nil {
+				t.Errorf("fake upstream 写 small history 响应失败：%v", err)
+			}
+		}
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-small-history")
+
+	request := []byte(`{"id":720,"method":"thread/turns/list","params":{"threadId":"thread-small-history","limit":20,"itemsView":"summary"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	if got := readGatewayRaw(t, conn); !bytes.Equal(got, smallResponse) {
+		t.Fatalf("小 history response 应原样返回：got=%s want=%s", got, smallResponse)
+	}
+}
+
+func TestAppServerGatewayRejectsHistoryRetryStormByThreadMethod(t *testing.T) {
+	oldWindow := appServerGatewayHistoryBudgetWindow
+	oldMaxRequests := appServerGatewayHistoryBudgetMaxRequests
+	oldRequestBytes := appServerGatewayHistoryBudgetMaxRequestBytes
+	oldResponseBytes := appServerGatewayHistoryBudgetMaxResponseBytes
+	appServerGatewayHistoryBudgetWindow = time.Minute
+	appServerGatewayHistoryBudgetMaxRequests = 2
+	appServerGatewayHistoryBudgetMaxRequestBytes = 64 << 10
+	appServerGatewayHistoryBudgetMaxResponseBytes = 64 << 10
+	t.Cleanup(func() {
+		appServerGatewayHistoryBudgetWindow = oldWindow
+		appServerGatewayHistoryBudgetMaxRequests = oldMaxRequests
+		appServerGatewayHistoryBudgetMaxRequestBytes = oldRequestBytes
+		appServerGatewayHistoryBudgetMaxResponseBytes = oldResponseBytes
+	})
+
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-retry")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-retry")
+
+	for id := 730; id < 732; id++ {
+		request := []byte(fmt.Sprintf(`{"id":%d,"method":"thread/turns/list","params":{"threadId":"thread-retry","limit":20,"itemsView":"summary"}}`, id))
+		if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+			t.Fatal(err)
+		}
+		_ = readUpstreamFrame(t, received)
+	}
+
+	overflow := []byte(`{"id":732,"method":"thread/turns/list","params":{"threadId":"thread-retry","limit":20,"itemsView":"summary"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, overflow); err != nil {
+		t.Fatal(err)
+	}
+	errFrame := readGatewayError(t, conn)
+	if !strings.Contains(errFrame.message, "同一 thread/method 请求过于频繁") {
+		t.Fatalf("重试风暴应被同 thread/method 频率预算拒绝：%+v", errFrame)
+	}
+	assertNoUpstreamFrame(t, received)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/diagnostics/relay", nil))
+	body := decodeJSON(t, rec)
+	gateway := body["app_server_gateway"].(map[string]any)
+	if got := int(gateway["history_budget_rejections"].(float64)); got < 1 {
+		t.Fatalf("diagnostics 应记录 history budget 阻断：%v", gateway)
+	}
+	if !containsAnySubstring(body["hints"].([]any), "限流") {
+		t.Fatalf("diagnostics hints 应提示限流：%v", body["hints"])
+	}
+}
+
+func TestAppServerGatewayRejectsHistoryRequestByteBudget(t *testing.T) {
+	oldMaxRequests := appServerGatewayHistoryBudgetMaxRequests
+	oldRequestBytes := appServerGatewayHistoryBudgetMaxRequestBytes
+	appServerGatewayHistoryBudgetMaxRequests = 100
+	appServerGatewayHistoryBudgetMaxRequestBytes = 160
+	t.Cleanup(func() {
+		appServerGatewayHistoryBudgetMaxRequests = oldMaxRequests
+		appServerGatewayHistoryBudgetMaxRequestBytes = oldRequestBytes
+	})
+
+	var projectDir string
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-byte-budget")
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-byte-budget")
+
+	request := []byte(`{"id":740,"method":"thread/turns/list","params":{"threadId":"thread-byte-budget","limit":20,"itemsView":"summary","cursor":"` + strings.Repeat("x", 240) + `"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	errFrame := readGatewayError(t, conn)
+	if !strings.Contains(errFrame.message, "请求字节预算") {
+		t.Fatalf("history 请求字节预算应被拒绝：%+v", errFrame)
+	}
+	assertNoUpstreamFrame(t, received)
 }
 
 func TestAppServerGatewayKeepsAuthorizedThreadAcrossReconnects(t *testing.T) {
@@ -1651,11 +1962,11 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 	threadTurnsListParams := decodeGatewayParamsForTest(t, readUpstreamFrame(t, received))
 	assertGatewayParamsOnly(t, threadTurnsListParams, "threadId", "limit", "cursor", "sortDirection", "itemsView")
 	if threadTurnsListParams["threadId"] != "thread-sanitize" ||
-		threadTurnsListParams["limit"] != float64(40) ||
+		threadTurnsListParams["limit"] != float64(appServerGatewayThreadTurnsFullMaxLimit) ||
 		threadTurnsListParams["cursor"] != "older" ||
 		threadTurnsListParams["sortDirection"] != "desc" ||
 		threadTurnsListParams["itemsView"] != "full" {
-		t.Fatalf("thread/turns/list 合法参数应保留：%v", threadTurnsListParams)
+		t.Fatalf("thread/turns/list full 大页应安全降级：%v", threadTurnsListParams)
 	}
 
 	goalGet := []byte(`{"id":651,"method":"thread/goal/get","params":{"threadId":"thread-sanitize",` + dangerousTail + `}}`)
@@ -2448,6 +2759,15 @@ func decodeGatewayResultForTest(t *testing.T, payload []byte) map[string]any {
 func containsAnyString(values []any, want string) bool {
 	for _, value := range values {
 		if got, ok := value.(string); ok && got == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnySubstring(values []any, want string) bool {
+	for _, value := range values {
+		if got, ok := value.(string); ok && strings.Contains(got, want) {
 			return true
 		}
 	}

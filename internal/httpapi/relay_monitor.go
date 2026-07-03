@@ -47,18 +47,21 @@ type relayHTTPSample struct {
 }
 
 type relayGatewayStats struct {
-	TotalConnections       int64                         `json:"total_connections"`
-	ActiveConnections      int64                         `json:"active_connections"`
-	FailedUpstreamDials    int64                         `json:"failed_upstream_dials"`
-	UpstreamDialMillisMax  int64                         `json:"upstream_dial_ms_max"`
-	UpstreamDialMillisSum  int64                         `json:"upstream_dial_ms_total"`
-	ClientToUpstream       relayGatewayDirectionStats    `json:"client_to_upstream"`
-	UpstreamToClient       relayGatewayDirectionStats    `json:"upstream_to_client"`
-	RPC                    relayGatewayRPCStats          `json:"rpc"`
-	PolicyErrors           int64                         `json:"policy_errors"`
-	RecentConnections      []relayGatewayConnectionStats `json:"recent_connections"`
-	ActiveConnectionDetail []relayGatewayConnectionStats `json:"active_connections_detail"`
-	RecentRPC              []relayGatewayRPCSample       `json:"recent_rpc"`
+	TotalConnections            int64                         `json:"total_connections"`
+	ActiveConnections           int64                         `json:"active_connections"`
+	FailedUpstreamDials         int64                         `json:"failed_upstream_dials"`
+	UpstreamDialMillisMax       int64                         `json:"upstream_dial_ms_max"`
+	UpstreamDialMillisSum       int64                         `json:"upstream_dial_ms_total"`
+	ClientToUpstream            relayGatewayDirectionStats    `json:"client_to_upstream"`
+	UpstreamToClient            relayGatewayDirectionStats    `json:"upstream_to_client"`
+	RPC                         relayGatewayRPCStats          `json:"rpc"`
+	PolicyErrors                int64                         `json:"policy_errors"`
+	HistoryResponsesBlocked     int64                         `json:"history_responses_blocked"`
+	HistoryResponseBytesBlocked int64                         `json:"history_response_bytes_blocked"`
+	HistoryBudgetRejections     int64                         `json:"history_budget_rejections"`
+	RecentConnections           []relayGatewayConnectionStats `json:"recent_connections"`
+	ActiveConnectionDetail      []relayGatewayConnectionStats `json:"active_connections_detail"`
+	RecentRPC                   []relayGatewayRPCSample       `json:"recent_rpc"`
 }
 
 type relayGatewayDirectionStats struct {
@@ -89,25 +92,28 @@ type relayGatewayRPCStats struct {
 }
 
 type relayGatewayConnectionStats struct {
-	ID                   string                     `json:"id"`
-	StartedAt            time.Time                  `json:"started_at"`
-	EndedAt              *time.Time                 `json:"ended_at,omitempty"`
-	DurationMillis       int64                      `json:"duration_ms"`
-	Remote               string                     `json:"remote"`
-	Host                 string                     `json:"host"`
-	Upstream             string                     `json:"upstream"`
-	UpstreamDialMillis   int64                      `json:"upstream_dial_ms"`
-	CloseReason          string                     `json:"close_reason,omitempty"`
-	ClientToUpstream     relayGatewayDirectionStats `json:"client_to_upstream"`
-	UpstreamToClient     relayGatewayDirectionStats `json:"upstream_to_client"`
-	RPC                  relayGatewayRPCStats       `json:"rpc"`
-	PolicyErrors         int64                      `json:"policy_errors"`
-	RecentRPC            []relayGatewayRPCSample    `json:"recent_rpc,omitempty"`
-	pendingRPC           map[string]relayPendingRPC `json:"-"`
-	LastClientMethod     string                     `json:"last_client_method,omitempty"`
-	LastUpstreamMethod   string                     `json:"last_upstream_method,omitempty"`
-	LastClientFrameBytes int64                      `json:"last_client_frame_bytes,omitempty"`
-	LastUpstreamBytes    int64                      `json:"last_upstream_frame_bytes,omitempty"`
+	ID                          string                     `json:"id"`
+	StartedAt                   time.Time                  `json:"started_at"`
+	EndedAt                     *time.Time                 `json:"ended_at,omitempty"`
+	DurationMillis              int64                      `json:"duration_ms"`
+	Remote                      string                     `json:"remote"`
+	Host                        string                     `json:"host"`
+	Upstream                    string                     `json:"upstream"`
+	UpstreamDialMillis          int64                      `json:"upstream_dial_ms"`
+	CloseReason                 string                     `json:"close_reason,omitempty"`
+	ClientToUpstream            relayGatewayDirectionStats `json:"client_to_upstream"`
+	UpstreamToClient            relayGatewayDirectionStats `json:"upstream_to_client"`
+	RPC                         relayGatewayRPCStats       `json:"rpc"`
+	PolicyErrors                int64                      `json:"policy_errors"`
+	HistoryResponsesBlocked     int64                      `json:"history_responses_blocked"`
+	HistoryResponseBytesBlocked int64                      `json:"history_response_bytes_blocked"`
+	HistoryBudgetRejections     int64                      `json:"history_budget_rejections"`
+	RecentRPC                   []relayGatewayRPCSample    `json:"recent_rpc,omitempty"`
+	pendingRPC                  map[string]relayPendingRPC `json:"-"`
+	LastClientMethod            string                     `json:"last_client_method,omitempty"`
+	LastUpstreamMethod          string                     `json:"last_upstream_method,omitempty"`
+	LastClientFrameBytes        int64                      `json:"last_client_frame_bytes,omitempty"`
+	LastUpstreamBytes           int64                      `json:"last_upstream_frame_bytes,omitempty"`
 }
 
 type relayPendingRPC struct {
@@ -353,6 +359,49 @@ func (m *relayMonitor) recordGatewayPolicyError(id string, direction string, pay
 	m.gateway.PolicyErrors++
 }
 
+func (c *relayGatewayConnMonitor) recordHistoryResponseBlocked(payloadBytes int, payload []byte) {
+	if c == nil || c.parent == nil {
+		return
+	}
+	c.parent.recordGatewayHistoryResponseBlocked(c.id, payloadBytes, payload)
+}
+
+func (m *relayMonitor) recordGatewayHistoryResponseBlocked(id string, payloadBytes int, payload []byte) {
+	meta := relayFrameMetaFromPayload(payload)
+	now := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats, ok := m.active[id]
+	if !ok {
+		return
+	}
+	stats.HistoryResponsesBlocked++
+	stats.HistoryResponseBytesBlocked += int64(payloadBytes)
+	m.gateway.HistoryResponsesBlocked++
+	m.gateway.HistoryResponseBytesBlocked += int64(payloadBytes)
+	if meta.ID != "" && meta.IsResponse {
+		m.completeGatewayRPC(stats, meta.ID, payloadBytes, now)
+	}
+}
+
+func (c *relayGatewayConnMonitor) recordHistoryBudgetRejected() {
+	if c == nil || c.parent == nil {
+		return
+	}
+	c.parent.recordGatewayHistoryBudgetRejected(c.id)
+}
+
+func (m *relayMonitor) recordGatewayHistoryBudgetRejected(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats, ok := m.active[id]
+	if !ok {
+		return
+	}
+	stats.HistoryBudgetRejections++
+	m.gateway.HistoryBudgetRejections++
+}
+
 func (c *relayGatewayConnMonitor) recordDropped(direction string, payloadBytes int, policyDuration time.Duration) {
 	if c == nil || c.parent == nil {
 		return
@@ -440,6 +489,12 @@ func relayDiagnosticsHints(snapshot relayDiagnosticsResponse) []string {
 	}
 	if gatewayStats.RPC.OutstandingMillisMax >= 5000 {
 		hints = append(hints, fmt.Sprintf("仍有 app-server 请求等待超过 %dms，说明上游还没返回响应；优先看 app-server、模型或本机负载。", gatewayStats.RPC.OutstandingMillisMax))
+	}
+	if gatewayStats.HistoryResponsesBlocked > 0 {
+		hints = append(hints, fmt.Sprintf("app-server gateway 已阻断 %d 个超大历史响应（合计 %d bytes），建议降低 thread/turns/list limit、避免 full 大页或改用分页。", gatewayStats.HistoryResponsesBlocked, gatewayStats.HistoryResponseBytesBlocked))
+	}
+	if gatewayStats.HistoryBudgetRejections > 0 {
+		hints = append(hints, fmt.Sprintf("app-server gateway 已限流 %d 个历史请求，说明同一 thread/method 可能在重试风暴；建议等待窗口恢复后再重试。", gatewayStats.HistoryBudgetRejections))
 	}
 	if len(hints) == 0 {
 		hints = append(hints, "当前样本没有明显瓶颈信号；继续复现慢场景后重点比较 write_ms 和 rpc.latency_ms。")

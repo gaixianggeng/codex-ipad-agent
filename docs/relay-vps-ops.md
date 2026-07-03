@@ -303,7 +303,166 @@ hints[]
 - 剩余慢点主要是 `thread/list` 等 app-server JSON-RPC 响应偶发 3-9 秒
 - 语音转写慢主要看转录上游，不看 VPS 带宽
 
-### 2. 快速定位 502
+### 2. 腾讯云外网出带宽告警排查
+
+腾讯云「外网出带宽」告警表示 VPS 正在向公网客户端写出数据。当前架构下，最常见来源是 iPad 通过 `/api/app-server/ws` 拉取 app-server 大响应，尤其是 `thread/list` 或 `thread/turns/list` 返回过大的历史会话/turn 列表。
+
+先不要重启 Mac 或 Codex。优先用只读诊断确认是不是公网写出带宽，而不是 app-server 本身慢：
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $AGENTD_TOKEN" \
+  http://124.221.80.250/api/diagnostics/relay \
+  | jq '{
+      generated_at,
+      hints,
+      gateway: {
+        active_connections: .app_server_gateway.active_connections,
+        upstream_to_client: .app_server_gateway.upstream_to_client,
+        rpc: .app_server_gateway.rpc
+      }
+    }'
+```
+
+判断规则：
+
+| 现象 | 结论 | 下一步 |
+| --- | --- | --- |
+| `upstream_to_client.bytes` 持续增长，且 `upstream_to_client.write_ms_max` 高 | VPS 到 iPad 的写出链路吃紧 | 定位是哪条 WS 连接和哪个 RPC 大响应 |
+| `recent_rpc[].response_bytes` 很大，但 `write_ms_max` 不高 | app-server 返回了大包，但公网暂未卡住 | 优先优化列表/turn 拉取策略 |
+| `recent_rpc[].latency_ms` 高，`response_bytes` 小，`write_ms_max` 低 | Mac 本机 app-server / Codex 慢 | 不按带宽故障处理 |
+| `rpc.outstanding_requests` 长时间大于 0 | 上游请求未返回 | 看 Mac 本机 app-server、Codex、模型侧状态 |
+
+定位 `thread/list` 和 `thread/turns/list` 大响应：
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $AGENTD_TOKEN" \
+  http://124.221.80.250/api/diagnostics/relay \
+  | jq '[
+      .app_server_gateway.recent_rpc[]?
+      | select(.method == "thread/list" or .method == "thread/turns/list")
+      | {
+          completed_at,
+          method,
+          latency_ms,
+          request_bytes,
+          response_bytes,
+          response_kb: ((.response_bytes / 1024) | floor)
+        }
+    ] | sort_by(.response_bytes) | reverse | .[:20]'
+```
+
+定位当前活跃连接里是谁在拉大包：
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $AGENTD_TOKEN" \
+  http://124.221.80.250/api/diagnostics/relay \
+  | jq '.app_server_gateway.active_connections_detail[]
+    | {
+        id,
+        remote,
+        duration_ms,
+        last_client_method,
+        last_client_frame_bytes,
+        last_upstream_method,
+        last_upstream_frame_bytes,
+        upstream_to_client: {
+          bytes: .upstream_to_client.bytes,
+          write_ms_max: .upstream_to_client.write_ms_max,
+          last_frame_bytes: .upstream_to_client.last_frame_bytes
+        },
+        rpc: {
+          latency_ms_max: .rpc.latency_ms_max,
+          outstanding_requests: .rpc.outstanding_requests,
+          outstanding_ms_max: .rpc.outstanding_ms_max
+        },
+        recent_large_list_rpc: (
+          [.recent_rpc[]?
+           | select(.method == "thread/list" or .method == "thread/turns/list")
+           | {method, latency_ms, request_bytes, response_bytes}]
+          | sort_by(.response_bytes)
+          | reverse
+          | .[:10]
+        )
+      }'
+```
+
+如果 `last_client_method` 是 `thread/turns/list`，并且 `last_upstream_frame_bytes` 或 `recent_large_list_rpc[].response_bytes` 很大，基本可以判断是 iPad 正在拉某个 thread 的 turns 列表导致公网出带宽升高。
+
+临时止血按影响从小到大执行：
+
+1. 停 iPad 客户端
+
+   先让 iPad 端停止继续拉取数据：退出 Mimi Remote、断开当前网络，或临时把 Endpoint 改成不可用地址。等待 30-60 秒后再看诊断：
+
+   ```bash
+   curl -sS \
+     -H "Authorization: Bearer $AGENTD_TOKEN" \
+     http://124.221.80.250/api/diagnostics/relay \
+     | jq '.app_server_gateway.active_connections, .app_server_gateway.upstream_to_client'
+   ```
+
+   如果 `active_connections` 归零，且腾讯云外网出带宽回落，说明告警来自 iPad 侧持续拉取。
+
+2. 临时禁用公网 `/api/app-server/ws`
+
+   在 VPS 上给 nginx 加一个精确匹配，必须放在 `location ^~ /api/` 前面。这样只阻断 app-server WebSocket，不影响 `/healthz` 和 `/api/diagnostics/relay`：
+
+   ```nginx
+   location = /api/app-server/ws {
+       return 503;
+   }
+   ```
+
+   验证并 reload：
+
+   ```bash
+   ssh ubuntu@124.221.80.250
+   sudo nginx -t
+   sudo systemctl reload nginx
+   ```
+
+   恢复时删除这个 `location = /api/app-server/ws` 块，再执行同样的 `nginx -t` 和 `reload`。
+
+3. 临时切到 Tailscale 或局域网
+
+   如果公网 VPS 持续触发出带宽告警，但本机 Mac 和 iPad 在可信网络里，可以绕开 VPS：
+
+   ```text
+   http://<Mac 的 Tailscale IP>:8787
+   http://<Mac 的局域网 IP>:8787
+   ```
+
+   前提是 `agentd` 已经监听对应的 Tailscale / 局域网地址，并且访问来源受控。如果当前只监听 `127.0.0.1:8787`，不要为了止血把 `0.0.0.0:8787` 裸开到公网。Tailscale 优先于局域网直连，因为可以用 ACL 限制只有可信 iPad 访问 `8787`。切换后继续用 Mac 本地入口看健康状态：
+
+   ```bash
+   curl -i http://127.0.0.1:8787/healthz
+   ```
+
+止血后保留一份诊断样本，方便之后判断是不是列表接口需要分页、降频或缓存：
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $AGENTD_TOKEN" \
+  http://124.221.80.250/api/diagnostics/relay \
+  | jq '{
+      generated_at,
+      hints,
+      recent_large_list_rpc: (
+        [.app_server_gateway.recent_rpc[]?
+         | select(.method == "thread/list" or .method == "thread/turns/list")
+         | {completed_at, method, latency_ms, request_bytes, response_bytes}]
+        | sort_by(.response_bytes)
+        | reverse
+        | .[:20]
+      ),
+      active_connections_detail: .app_server_gateway.active_connections_detail
+    }'
+```
+
+### 3. 快速定位 502
 
 先看本机 `agentd`：
 
@@ -330,7 +489,7 @@ ssh ubuntu@124.221.80.250 'ss -ltnp | grep 18786 || true'
 ssh ubuntu@124.221.80.250 'sudo nginx -t && systemctl is-active nginx'
 ```
 
-### 3. 快速定位慢请求
+### 4. 快速定位慢请求
 
 先拉诊断：
 
@@ -354,7 +513,20 @@ agentd logs
 - 返回 payload 是否异常大
 - 是否需要继续升级带宽或减少列表刷新频率
 
-### 4. iPad App 配置
+### 5. 只读诊断脚本
+
+仓库里提供了一个只读脚本，把上面的 `curl /api/diagnostics/relay + jq` 查询固定下来：
+
+```bash
+bash ./scripts/relay-bandwidth-diagnose.sh \
+  --endpoint http://124.221.80.250 \
+  --min-bytes 262144 \
+  --min-latency-ms 2000
+```
+
+脚本只读取 `/api/diagnostics/relay`，不会建立 `/api/app-server/ws`，也不会发起 `thread/list` 或 `thread/turns/list` 新请求。Token 默认读取 `AGENTD_TOKEN`，如果环境变量为空，再尝试读取本机 `~/Library/Application Support/codex-ipad-agent/config.json`。
+
+### 6. iPad App 配置
 
 迁移后 iPad App 不需要改协议，只需要把 Endpoint 指向新入口：
 

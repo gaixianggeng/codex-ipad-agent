@@ -30,16 +30,27 @@ const (
 	appServerGatewayThreadCacheMax = 2048
 	appServerGatewayThreadCacheTTL = 24 * time.Hour
 	defaultCodexReasoningEffort    = "xhigh"
+
+	appServerGatewayThreadTurnsDefaultLimit = 20
+	appServerGatewayThreadTurnsMaxLimit     = 50
+	appServerGatewayThreadTurnsFullMaxLimit = 20
 )
 
 var (
-	appServerGatewayReadLimit               int64 = 64 << 20
-	appServerGatewayPongWait                      = 60 * time.Second
-	appServerGatewayPingPeriod                    = 45 * time.Second
-	appServerGatewayPendingThreadTTL              = 30 * time.Second
-	appServerGatewayPendingThreadMax              = 128
-	appServerGatewayPendingServerRequestTTL       = 24 * time.Hour
-	appServerGatewayPendingServerRequestMax       = 256
+	appServerGatewayReadLimit                     int64 = 64 << 20
+	appServerGatewayPongWait                            = 60 * time.Second
+	appServerGatewayPingPeriod                          = 45 * time.Second
+	appServerGatewayPendingThreadTTL                    = 30 * time.Second
+	appServerGatewayPendingThreadMax                    = 128
+	appServerGatewayPendingServerRequestTTL             = 24 * time.Hour
+	appServerGatewayPendingServerRequestMax             = 256
+	appServerGatewayPendingHistoryRequestTTL            = 2 * time.Minute
+	appServerGatewayPendingHistoryRequestMax            = 256
+	appServerGatewayHistoryResponseCapBytes             = 2 << 20
+	appServerGatewayHistoryBudgetWindow                 = 15 * time.Second
+	appServerGatewayHistoryBudgetMaxRequests            = 6
+	appServerGatewayHistoryBudgetMaxRequestBytes        = int64(64 << 10)
+	appServerGatewayHistoryBudgetMaxResponseBytes       = int64(2 << 20)
 )
 
 var appServerAllowedMethods = map[string]struct{}{
@@ -99,8 +110,11 @@ type appServerGatewayFrame struct {
 }
 
 type appServerGatewayPolicyError struct {
-	id      *json.RawMessage
-	message string
+	id                     *json.RawMessage
+	message                string
+	target                 string
+	historyResponseBlocked bool
+	historyBudgetRejected  bool
 }
 
 type appServerGatewayPolicy struct {
@@ -109,6 +123,8 @@ type appServerGatewayPolicy struct {
 
 	pendingThreads        map[string]appServerGatewayPendingThreadRequest
 	pendingServerRequests map[string]appServerGatewayPendingServerRequest
+	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
+	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
 }
 
@@ -122,6 +138,21 @@ type appServerGatewayPendingThreadRequest struct {
 type appServerGatewayPendingServerRequest struct {
 	method    string
 	createdAt time.Time
+}
+
+type appServerGatewayPendingHistoryRequest struct {
+	method       string
+	threadID     string
+	includeTurns bool
+	createdAt    time.Time
+}
+
+type appServerGatewayHistoryBudget struct {
+	windowStarted time.Time
+	requests      int
+	requestBytes  int64
+	responseBytes int64
+	blockedUntil  time.Time
 }
 
 type appServerGatewayValidatedParams struct {
@@ -342,6 +373,8 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 		router:                r,
 		pendingThreads:        map[string]appServerGatewayPendingThreadRequest{},
 		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+		pendingHistory:        map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets:        map[string]appServerGatewayHistoryBudget{},
 		allowedThreads:        map[string]appServerGatewayAllowedThread{},
 	}
 
@@ -401,6 +434,9 @@ func (r *Router) copyClientFramesToAppServer(client *websocket.Conn, upstream *w
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			monitor.recordPolicyError("client_to_upstream", len(payload), policyDuration)
+			if policyErr.historyBudgetRejected {
+				monitor.recordHistoryBudgetRejected()
+			}
 			// 非法请求只回 JSON-RPC error，不把高危帧送到 app-server。
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 				return "client_policy_error_write_failed"
@@ -431,7 +467,14 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
-			if !writeGatewayPolicyError(from, fromWriteMu, policyErr) {
+			if policyErr.historyResponseBlocked {
+				monitor.recordHistoryResponseBlocked(len(payload), payload)
+			}
+			if policyErr.target == "client" {
+				if !writeGatewayPolicyError(to, toWriteMu, policyErr) {
+					return "client_policy_error_write_failed"
+				}
+			} else if !writeGatewayPolicyError(from, fromWriteMu, policyErr) {
 				return "upstream_policy_error_write_failed"
 			}
 			continue
@@ -507,6 +550,9 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 	}
 	if err := p.validateThreadCapability(&frame, method, params, validated); err != nil {
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+	}
+	if err := p.reserveHistoryRequest(frame.ID, method, params, len(payload)); err != nil {
+		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error(), historyBudgetRejected: true}
 	}
 	rewritten, err := rewriteGatewaySafeDefaults(payload, method, params, validated)
 	if err != nil {
@@ -714,7 +760,7 @@ func rewriteGatewaySafeDefaults(payload []byte, method string, params map[string
 	case "thread/read":
 		sanitized = copyGatewayParams(params, "threadId", "includeTurns")
 	case "thread/turns/list":
-		sanitized = copyGatewayParams(params, "threadId", "limit", "cursor", "sortDirection", "itemsView")
+		sanitized = sanitizedGatewayThreadTurnsListParams(params)
 	case "thread/goal/get", "thread/goal/clear":
 		sanitized = copyGatewayParams(params, "threadId")
 	case "thread/goal/set":
@@ -757,6 +803,25 @@ func sanitizedGatewayGoalSetParams(params map[string]any) map[string]any {
 			safe["tokenBudget"] = value
 		}
 	}
+	return safe
+}
+
+func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any {
+	safe := copyGatewayParams(params, "threadId", "cursor", "sortDirection", "itemsView")
+	limit := int64(appServerGatewayThreadTurnsDefaultLimit)
+	if value, ok := params["limit"]; ok && value != nil {
+		if parsed, parsedOK := gatewayJSONNumberInt64(value); parsedOK {
+			limit = parsed
+		}
+	}
+	if limit > appServerGatewayThreadTurnsMaxLimit {
+		limit = appServerGatewayThreadTurnsMaxLimit
+	}
+	if itemsView, ok := gatewayStringParam(params, "itemsView"); ok && itemsView == "full" && limit > appServerGatewayThreadTurnsFullMaxLimit {
+		// full turn item 可能包含大量消息内容；移动端默认只拿小页，避免一次把完整历史打到 iPad。
+		limit = appServerGatewayThreadTurnsFullMaxLimit
+	}
+	safe["limit"] = limit
 	return safe
 }
 
@@ -848,8 +913,8 @@ func validateGatewayThreadTurnsListParams(params map[string]any) error {
 		if value != nil && !gatewayPositiveJSONNumber(value) {
 			return fmt.Errorf("thread/turns/list.limit 必须是正整数")
 		}
-		if gatewayJSONNumberGreaterThan(value, 200) {
-			return fmt.Errorf("thread/turns/list.limit 不能超过 200")
+		if gatewayJSONNumberGreaterThan(value, appServerGatewayThreadTurnsMaxLimit) {
+			return fmt.Errorf("thread/turns/list.limit 不能超过 %d", appServerGatewayThreadTurnsMaxLimit)
 		}
 	}
 	if value, ok := params["cursor"]; ok && value != nil {
@@ -911,6 +976,25 @@ func gatewayJSONNumberGreaterThan(value any, max int64) bool {
 		return typed > max
 	default:
 		return false
+	}
+}
+
+func gatewayJSONNumberInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Int64()
+		return number, err == nil
+	case float64:
+		if typed != float64(int64(typed)) {
+			return 0, false
+		}
+		return int64(typed), true
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	default:
+		return 0, false
 	}
 }
 
@@ -1184,6 +1268,132 @@ func copyGatewayParam(dst map[string]any, src map[string]any, key string) {
 	}
 }
 
+func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, method string, params map[string]any, requestBytes int) error {
+	pending, ok := gatewayHistoryRequestFromParams(method, params)
+	if !ok {
+		return nil
+	}
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return fmt.Errorf("%s 请求缺少 id", method)
+	}
+	now := time.Now()
+	budgetKey := gatewayHistoryBudgetKey(pending.threadID, pending.method)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pruneHistoryLocked(now)
+	if p.pendingHistory == nil {
+		p.pendingHistory = map[string]appServerGatewayPendingHistoryRequest{}
+	}
+	if _, exists := p.pendingHistory[key]; !exists && len(p.pendingHistory) >= appServerGatewayPendingHistoryRequestMax {
+		return fmt.Errorf("gateway pending history 请求过多")
+	}
+	if p.historyBudgets == nil {
+		p.historyBudgets = map[string]appServerGatewayHistoryBudget{}
+	}
+	budget := p.historyBudgets[budgetKey]
+	if budget.windowStarted.IsZero() || now.Sub(budget.windowStarted) >= appServerGatewayHistoryBudgetWindow {
+		budget = appServerGatewayHistoryBudget{windowStarted: now}
+	}
+	if budget.blockedUntil.After(now) {
+		p.historyBudgets[budgetKey] = budget
+		return fmt.Errorf("%s 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView", method)
+	}
+	if appServerGatewayHistoryBudgetMaxRequests > 0 && budget.requests >= appServerGatewayHistoryBudgetMaxRequests {
+		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
+		p.historyBudgets[budgetKey] = budget
+		return fmt.Errorf("%s 同一 thread/method 请求过于频繁，请稍后重试", method)
+	}
+	if appServerGatewayHistoryBudgetMaxRequestBytes > 0 && budget.requestBytes+int64(requestBytes) > appServerGatewayHistoryBudgetMaxRequestBytes {
+		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
+		p.historyBudgets[budgetKey] = budget
+		return fmt.Errorf("%s 同一 thread/method 请求字节预算已用尽，请稍后重试", method)
+	}
+	if appServerGatewayHistoryBudgetMaxResponseBytes > 0 && budget.responseBytes >= appServerGatewayHistoryBudgetMaxResponseBytes {
+		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
+		p.historyBudgets[budgetKey] = budget
+		return fmt.Errorf("%s 同一 thread/method 历史响应预算已用尽，请稍后重试", method)
+	}
+	budget.requests++
+	budget.requestBytes += int64(requestBytes)
+	p.historyBudgets[budgetKey] = budget
+	pending.createdAt = now
+	p.pendingHistory[key] = pending
+	return nil
+}
+
+func gatewayHistoryRequestFromParams(method string, params map[string]any) (appServerGatewayPendingHistoryRequest, bool) {
+	threadID, ok := gatewayStringParam(params, "threadId")
+	if !ok {
+		return appServerGatewayPendingHistoryRequest{}, false
+	}
+	switch method {
+	case "thread/turns/list":
+		return appServerGatewayPendingHistoryRequest{method: method, threadID: threadID}, true
+	case "thread/read":
+		includeTurns, includeTurnsOK := gatewayBoolParam(params, "includeTurns")
+		if includeTurnsOK && includeTurns {
+			return appServerGatewayPendingHistoryRequest{method: method, threadID: threadID, includeTurns: true}, true
+		}
+	}
+	return appServerGatewayPendingHistoryRequest{}, false
+}
+
+func gatewayHistoryBudgetKey(threadID string, method string) string {
+	return strings.TrimSpace(threadID) + "\x00" + strings.TrimSpace(method)
+}
+
+func (p *appServerGatewayPolicy) pruneHistoryLocked(now time.Time) {
+	for id, pending := range p.pendingHistory {
+		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingHistoryRequestTTL {
+			delete(p.pendingHistory, id)
+		}
+	}
+	for key, budget := range p.historyBudgets {
+		if budget.windowStarted.IsZero() || now.Sub(budget.windowStarted) >= appServerGatewayHistoryBudgetWindow {
+			delete(p.historyBudgets, key)
+		}
+	}
+}
+
+func (p *appServerGatewayPolicy) consumePendingHistoryRequest(id *json.RawMessage) (appServerGatewayPendingHistoryRequest, bool) {
+	key := gatewayRequestIDKey(id)
+	if key == "" {
+		return appServerGatewayPendingHistoryRequest{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pruneHistoryLocked(time.Now())
+	request, ok := p.pendingHistory[key]
+	if ok {
+		delete(p.pendingHistory, key)
+	}
+	return request, ok
+}
+
+func (p *appServerGatewayPolicy) recordHistoryResponseBudget(request appServerGatewayPendingHistoryRequest, responseBytes int) {
+	if strings.TrimSpace(request.threadID) == "" || strings.TrimSpace(request.method) == "" {
+		return
+	}
+	now := time.Now()
+	key := gatewayHistoryBudgetKey(request.threadID, request.method)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.historyBudgets == nil {
+		p.historyBudgets = map[string]appServerGatewayHistoryBudget{}
+	}
+	budget := p.historyBudgets[key]
+	if budget.windowStarted.IsZero() || now.Sub(budget.windowStarted) >= appServerGatewayHistoryBudgetWindow {
+		budget = appServerGatewayHistoryBudget{windowStarted: now}
+	}
+	budget.responseBytes += int64(responseBytes)
+	if appServerGatewayHistoryBudgetMaxResponseBytes > 0 && budget.responseBytes >= appServerGatewayHistoryBudgetMaxResponseBytes {
+		budget.blockedUntil = now.Add(appServerGatewayHistoryBudgetWindow)
+	}
+	p.historyBudgets[key] = budget
+}
+
 func copyGatewayStringParams(params map[string]any, keys ...string) map[string]any {
 	copied := map[string]any{}
 	for _, key := range keys {
@@ -1278,6 +1488,20 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		}
 		return true, nil
 	}
+	if gatewayFrameIsResponse(&frame) {
+		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
+			p.recordHistoryResponseBudget(pending, len(payload))
+			if len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes {
+				p.forgetPending(frame.ID)
+				return false, &appServerGatewayPolicyError{
+					id:                     frame.ID,
+					message:                fmt.Sprintf("%s history response 过大（%d bytes > %d bytes），gateway 已阻断；请降低 limit/itemsView 或改用分页读取", pending.method, len(payload), appServerGatewayHistoryResponseCapBytes),
+					target:                 "client",
+					historyResponseBlocked: true,
+				}
+			}
+		}
+	}
 	if !p.hasPendingThreadResponses() {
 		return true, nil
 	}
@@ -1302,6 +1526,13 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		p.allowThread(thread)
 	}
 	return true, nil
+}
+
+func gatewayFrameIsResponse(frame *appServerGatewayFrame) bool {
+	return frame != nil &&
+		strings.TrimSpace(frame.Method) == "" &&
+		frame.ID != nil &&
+		(len(frame.Result) > 0 || len(frame.Error) > 0)
 }
 
 func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessage, method string) error {
@@ -1577,6 +1808,15 @@ func gatewayStringParam(params map[string]any, key string) (string, bool) {
 	}
 	text, ok := value.(string)
 	return strings.TrimSpace(text), ok && strings.TrimSpace(text) != ""
+}
+
+func gatewayBoolParam(params map[string]any, key string) (bool, bool) {
+	value, ok := params[key]
+	if !ok {
+		return false, false
+	}
+	typed, ok := value.(bool)
+	return typed, ok
 }
 
 func collectUserInputPaths(method string, params map[string]any) ([]string, error) {

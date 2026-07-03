@@ -15,6 +15,7 @@ struct ConversationView: View {
             selectedProject: sessionStore.selectedProject,
             foregroundActivity: sessionStore.selectedForegroundActivity,
             runtimeActivitySnapshot: sessionStore.selectedRuntimeActivitySnapshot,
+            historySavingsNotice: sessionStore.selectedHistorySavingsNotice,
             webSocketStatus: sessionStore.webSocketStatus,
             errorMessage: sessionStore.errorMessage
         )
@@ -49,7 +50,7 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil || model.statusDisplay != nil {
+        if model.errorMessage != nil || model.statusDisplay != nil || model.historySavingsNotice != nil {
             Group {
                 if model.runtimeActivitySnapshot != nil {
                     TimelineView(.periodic(from: .now, by: 1)) { timeline in
@@ -68,13 +69,18 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func statusStripContainer(model: ConversationScreenModel, now: Date) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                statusStripContent(model: model, now: now, stacksVertically: false)
-                Spacer(minLength: 0)
+        VStack(spacing: 8) {
+            if let notice = model.historySavingsNotice {
+                historySavingsBanner(notice)
             }
-            statusStripContent(model: model, now: now, stacksVertically: true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    statusStripContent(model: model, now: now, stacksVertically: false)
+                    Spacer(minLength: 0)
+                }
+                statusStripContent(model: model, now: now, stacksVertically: true)
+            }
         }
     }
 
@@ -160,6 +166,68 @@ struct ConversationView: View {
         return "当前：\(status.title)"
     }
 
+    private func historySavingsBanner(_ notice: HistorySavingsNotice) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                historySavingsBannerMessage(notice)
+                Spacer(minLength: 0)
+                historySavingsBannerActions
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                historySavingsBannerMessage(notice)
+                historySavingsBannerActions
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.elevatedSurface)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(tokens.border, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func historySavingsBannerMessage(_ notice: HistorySavingsNotice) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "gauge.with.dots.needle.33percent")
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.accent)
+                .frame(width: 22, height: 22)
+            Text(notice.message)
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var historySavingsBannerActions: some View {
+        HStack(spacing: 8) {
+            Button {
+                Task {
+                    await sessionStore.loadFullHistoryForSelectedSession()
+                }
+            } label: {
+                Label("加载完整内容", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(sessionStore.isRefreshingSelectedSession)
+
+            Button {
+                sessionStore.dismissSelectedHistorySavingsNotice()
+            } label: {
+                Label("不再提示", systemImage: "xmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
     private func tint(for tone: AgentSessionStatusTone) -> Color {
         themeStore.tokens(for: colorScheme).tint(for: tone)
     }
@@ -179,6 +247,7 @@ struct ConversationScreenModel: Equatable {
     let subtitle: String
     let foregroundActivity: SessionForegroundActivity?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
+    let historySavingsNotice: HistorySavingsNotice?
     let webSocketStatus: WebSocketStatus
     let statusDisplay: AgentSessionDisplayStatus?
     let errorMessage: String?
@@ -188,6 +257,7 @@ struct ConversationScreenModel: Equatable {
         selectedProject: AgentProject?,
         foregroundActivity: SessionForegroundActivity?,
         runtimeActivitySnapshot: RuntimeActivitySnapshot?,
+        historySavingsNotice: HistorySavingsNotice?,
         webSocketStatus: WebSocketStatus,
         errorMessage: String?
     ) {
@@ -196,6 +266,7 @@ struct ConversationScreenModel: Equatable {
         self.subtitle = selectedSession?.dir ?? selectedProject?.path ?? ""
         self.foregroundActivity = foregroundActivity
         self.runtimeActivitySnapshot = runtimeActivitySnapshot
+        self.historySavingsNotice = historySavingsNotice
         self.webSocketStatus = webSocketStatus
         self.statusDisplay = Self.visibleStatusDisplay(for: selectedSession, foregroundActivity: foregroundActivity)
         self.errorMessage = errorMessage
