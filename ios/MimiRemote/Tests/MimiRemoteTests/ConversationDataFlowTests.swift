@@ -9930,13 +9930,22 @@ private final class DelayedCommandActionClient: SessionStoreAPIClient {
 private final class OrderedHistoryPageClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let page: SessionsPage
-    var requestedMessageCursors: [String?] = []
-    private var historyContinuations: [CheckedContinuation<HistoryMessagesPage, Never>] = []
+    private let lock = NSLock()
+    private var requestedMessageCursorsStorage: [String?] = []
+    private var historyContinuations: [CheckedContinuation<HistoryMessagesPage, Never>?] = []
     private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     init(projects: [AgentProject], page: SessionsPage) {
         self.projectsResult = projects
         self.page = page
+    }
+
+    var requestedMessageCursors: [String?] {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return requestedMessageCursorsStorage
     }
 
     func projects() async throws -> [AgentProject] {
@@ -9970,39 +9979,86 @@ private final class OrderedHistoryPageClient: SessionStoreAPIClient {
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
         await withCheckedContinuation { continuation in
-            historyContinuations.append(continuation)
-            requestedMessageCursors.append(before)
-            notifyRequestCountWaiters()
+            let waiters = appendHistoryRequest(before: before, continuation: continuation)
+            waiters.forEach { $0.resume() }
         }
     }
 
     func waitForHistoryRequestCount(_ count: Int) async {
-        guard historyContinuations.count < count else {
+        await withCheckedContinuation { continuation in
+            let shouldResumeNow = appendRequestCountWaiter(count: count, continuation: continuation)
+            if shouldResumeNow {
+                continuation.resume()
+            }
+        }
+    }
+
+    func resolveHistoryRequest(
+        at index: Int,
+        with page: HistoryMessagesPage,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let continuation = takeHistoryContinuation(at: index) else {
+            XCTFail("No pending history request at index \(index)", file: file, line: line)
             return
         }
-        await withCheckedContinuation { continuation in
-            guard historyContinuations.count < count else {
-                continuation.resume()
-                return
-            }
-            requestCountWaiters.append((count, continuation))
+        continuation.resume(returning: page)
+    }
+
+    private func appendHistoryRequest(
+        before: String?,
+        continuation: CheckedContinuation<HistoryMessagesPage, Never>
+    ) -> [CheckedContinuation<Void, Never>] {
+        lock.lock()
+        defer {
+            lock.unlock()
         }
+        historyContinuations.append(continuation)
+        requestedMessageCursorsStorage.append(before)
+        return takeReadyRequestCountWaitersLocked()
     }
 
-    func resolveHistoryRequest(at index: Int, with page: HistoryMessagesPage) {
-        historyContinuations[index].resume(returning: page)
+    private func appendRequestCountWaiter(
+        count: Int,
+        continuation: CheckedContinuation<Void, Never>
+    ) -> Bool {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        guard historyContinuations.count < count else {
+            return true
+        }
+        requestCountWaiters.append((count, continuation))
+        return false
     }
 
-    private func notifyRequestCountWaiters() {
+    private func takeHistoryContinuation(at index: Int) -> CheckedContinuation<HistoryMessagesPage, Never>? {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        guard historyContinuations.indices.contains(index) else {
+            return nil
+        }
+        let continuation = historyContinuations[index]
+        historyContinuations[index] = nil
+        return continuation
+    }
+
+    private func takeReadyRequestCountWaitersLocked() -> [CheckedContinuation<Void, Never>] {
+        var ready: [CheckedContinuation<Void, Never>] = []
         var pending: [(Int, CheckedContinuation<Void, Never>)] = []
         for waiter in requestCountWaiters {
             if historyContinuations.count >= waiter.0 {
-                waiter.1.resume()
+                ready.append(waiter.1)
             } else {
                 pending.append(waiter)
             }
         }
         requestCountWaiters = pending
+        return ready
     }
 }
 

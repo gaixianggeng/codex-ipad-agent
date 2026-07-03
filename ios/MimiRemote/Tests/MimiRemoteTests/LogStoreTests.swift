@@ -10,7 +10,8 @@ final class LogStoreTests: XCTestCase {
         let oversized = String(repeating: "x", count: 140_000)
 
         store.append(oversized, sessionID: sessionID)
-        try? await Task.sleep(nanoseconds: 180_000_000)
+        let didFlush = await waitUntil { !store.log(for: sessionID).isEmpty }
+        XCTAssertTrue(didFlush)
 
         XCTAssertLessThanOrEqual(store.log(for: sessionID).count, 120_000)
     }
@@ -21,7 +22,8 @@ final class LogStoreTests: XCTestCase {
         let oversized = "drop-prefix-" + String(repeating: "x", count: 90_000) + "tail-suffix"
 
         store.append(oversized, sessionID: sessionID)
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlush = await waitUntil { store.log(for: sessionID).hasSuffix("tail-suffix") }
+        XCTAssertTrue(didFlush)
 
         let log = store.log(for: sessionID)
         XCTAssertLessThanOrEqual(log.count, 80_000)
@@ -40,7 +42,8 @@ final class LogStoreTests: XCTestCase {
             store.append("chunk-\(index)-" + String(repeating: "y", count: 2_000), sessionID: sessionID)
         }
         store.append(suffix, sessionID: sessionID)
-        try? await Task.sleep(nanoseconds: 260_000_000)
+        let didFlush = await waitUntil { store.log(for: sessionID).hasSuffix(suffix) }
+        XCTAssertTrue(didFlush)
 
         let log = store.log(for: sessionID)
         XCTAssertLessThanOrEqual(log.count, 80_000)
@@ -57,7 +60,8 @@ final class LogStoreTests: XCTestCase {
         }
         let suffix = "many-small-chunks-tail"
         store.append(suffix, sessionID: sessionID)
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        let didFlush = await waitUntil { store.log(for: sessionID).hasSuffix(suffix) }
+        XCTAssertTrue(didFlush)
 
         let log = store.log(for: sessionID)
         XCTAssertLessThanOrEqual(log.count, 80_000)
@@ -70,7 +74,10 @@ final class LogStoreTests: XCTestCase {
 
         store.append("session-a", sessionID: "sess_a")
         store.append("session-b", sessionID: "sess_b")
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlush = await waitUntil {
+            store.log(for: "sess_a") == "session-a" && store.log(for: "sess_b") == "session-b"
+        }
+        XCTAssertTrue(didFlush)
 
         XCTAssertEqual(store.log(for: "sess_a"), "session-a")
         XCTAssertEqual(store.log(for: "sess_b"), "session-b")
@@ -81,7 +88,8 @@ final class LogStoreTests: XCTestCase {
         let sessionID = "sess_ansi"
 
         store.append("\u{001B}[?1049h\u{001B}[32mhello\u{001B}[0m", sessionID: sessionID)
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlush = await waitUntil { store.log(for: sessionID) == "hello" }
+        XCTAssertTrue(didFlush)
 
         let log = store.log(for: sessionID)
         XCTAssertEqual(log, "hello")
@@ -99,7 +107,8 @@ final class LogStoreTests: XCTestCase {
             .store(in: &cancellables)
 
         store.append("hello", sessionID: sessionID)
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlush = await waitUntil { store.log(for: sessionID) == "hello" }
+        XCTAssertTrue(didFlush)
         let publishCountAfterVisibleText = publishCount
 
         store.append("\u{001B}[?1049h\u{001B}[?25l\u{001B}[0m", sessionID: sessionID)
@@ -119,7 +128,8 @@ final class LogStoreTests: XCTestCase {
         store.append("-duplicate", sessionID: sessionID, seq: 10)
         store.append("-old", sessionID: sessionID, seq: 9)
         store.append("-two", sessionID: sessionID, seq: 11)
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlush = await waitUntil { store.log(for: sessionID) == "one-two" }
+        XCTAssertTrue(didFlush)
 
         // 重连 bounded replay 可能带回已处理过的日志块；相同或更旧 seq 不应再次进入渲染队列。
         XCTAssertEqual(store.log(for: sessionID), "one-two")
@@ -131,10 +141,12 @@ final class LogStoreTests: XCTestCase {
         let sessionID = "sess_seq_reset"
 
         store.append("before", sessionID: sessionID, seq: 7)
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlushBeforeReset = await waitUntil { store.log(for: sessionID) == "before" }
+        XCTAssertTrue(didFlushBeforeReset)
         store.reset(sessionID: sessionID)
         store.append("after", sessionID: sessionID, seq: 7)
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlushAfterReset = await waitUntil { store.log(for: sessionID) == "after" }
+        XCTAssertTrue(didFlushAfterReset)
 
         XCTAssertEqual(store.log(for: sessionID), "after")
         XCTAssertEqual(store.lastSeq(for: sessionID), 7)
@@ -161,7 +173,8 @@ final class LogStoreTests: XCTestCase {
         }
         store.retainSessionCache(sessionID: "sess_0")
         store.append("new log", sessionID: "sess_new")
-        try? await Task.sleep(nanoseconds: 220_000_000)
+        let didFlush = await waitUntil { store.log(for: "sess_new") == "new log" }
+        XCTAssertTrue(didFlush)
 
         // 日志缓存按最近使用会话保留，避免多会话长期运行后 buffers/renderedLines 无上限增长。
         XCTAssertEqual(store.log(for: "sess_0"), "log 0")
@@ -175,6 +188,21 @@ final class LogStoreTests: XCTestCase {
 
         // 输入框由 ComposerView 本地 @State 维护；没有任何按键路径会调用 LogStore。
         XCTAssertEqual(store.log(for: sessionID), "")
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 2.0,
+        intervalNanoseconds: UInt64 = 20_000_000,
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: intervalNanoseconds)
+        }
+        return condition()
     }
 
     func testLogFormatterKeepsAbsoluteLineIDsAfterTailLimit() {
