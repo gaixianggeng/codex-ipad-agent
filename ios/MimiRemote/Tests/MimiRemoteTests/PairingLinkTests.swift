@@ -141,4 +141,191 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 1_250), "1.2 秒")
         XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 12_400), "12 秒")
     }
+
+    func testConnectionTestReportFindsSlowestAndFailedStage() {
+        let report = ConnectionTestReport(
+            startedAt: Date(timeIntervalSince1970: 0),
+            totalMillis: 3_700,
+            stages: [
+                ConnectionTestStageTiming(kind: .health, durationMillis: 120, status: .succeeded),
+                ConnectionTestStageTiming(kind: .version, durationMillis: 260, status: .failed("unauthorized")),
+                ConnectionTestStageTiming(kind: .appServerConfig, durationMillis: 1_100, status: .succeeded),
+                ConnectionTestStageTiming(kind: .appServerGateway, durationMillis: 2_200, status: .failed("timeout"))
+            ]
+        )
+
+        XCTAssertEqual(report.slowestStage?.kind, .appServerGateway)
+        XCTAssertEqual(report.failedStage?.kind, .version)
+    }
+
+    func testConnectionTestStabilitySummarizesRecentReports() throws {
+        let reports = [
+            ConnectionTestReport(
+                startedAt: Date(timeIntervalSince1970: 0),
+                totalMillis: 800,
+                stages: [
+                    ConnectionTestStageTiming(kind: .health, durationMillis: 80, status: .succeeded),
+                    ConnectionTestStageTiming(kind: .appServerGateway, durationMillis: 200, status: .succeeded)
+                ]
+            ),
+            ConnectionTestReport(
+                startedAt: Date(timeIntervalSince1970: 1),
+                totalMillis: 2_100,
+                stages: [
+                    ConnectionTestStageTiming(kind: .health, durationMillis: 120, status: .succeeded),
+                    ConnectionTestStageTiming(kind: .appServerGateway, durationMillis: 1_700, status: .failed("timeout"))
+                ]
+            )
+        ]
+
+        let stabilities = AppStore.connectionTestStageStabilities(reports: reports)
+        let gateway = try XCTUnwrap(stabilities.first { $0.kind == .appServerGateway })
+
+        XCTAssertEqual(gateway.sampleCount, 2)
+        XCTAssertEqual(gateway.failureCount, 1)
+        XCTAssertEqual(gateway.spreadMillis, 1_500)
+        XCTAssertEqual(gateway.maxMillis, 1_700)
+    }
+
+    func testRelayDiagnosticsSnapshotBuildsGatewayEvidence() throws {
+        let baseline = try decodeRelayDiagnostics(totalConnections: 11, failedDials: 1)
+        let snapshot = try decodeRelayDiagnostics(totalConnections: 12, failedDials: 2)
+        let formatter = ISO8601DateFormatter()
+        let gatewayStartedAt = try XCTUnwrap(formatter.date(from: "2026-07-03T02:24:58Z"))
+
+        let diagnostics = ConnectionTestGatewayDiagnostics.make(
+            baseline: baseline,
+            snapshot: snapshot,
+            gatewayStartedAt: gatewayStartedAt
+        )
+
+        XCTAssertEqual(diagnostics.totalConnectionsDelta, 1)
+        XCTAssertEqual(diagnostics.failedUpstreamDialsDelta, 1)
+        XCTAssertEqual(diagnostics.relatedConnection?.id, "gateway-12")
+        XCTAssertEqual(diagnostics.relatedConnection?.recentRPC, [])
+        XCTAssertEqual(diagnostics.latestRPC?.method, "initialize")
+        XCTAssertEqual(diagnostics.latestRPC?.latencyMillis, 4_200)
+        XCTAssertEqual(diagnostics.writeBackMillisMax, 480)
+    }
+
+    func testRelayDiagnosticsDecodesNullSlicesAsEmptyLists() throws {
+        let json = """
+        {
+          "generated_at": "2026-07-03T02:25:00Z",
+          "app_server_gateway": {
+            "total_connections": 0,
+            "active_connections": 0,
+            "failed_upstream_dials": 1,
+            "upstream_dial_ms_max": 6300,
+            "client_to_upstream": {
+              "frames": 0,
+              "bytes": 0,
+              "write_ms_max": 0,
+              "last_write_ms": 0,
+              "last_frame_bytes": 0
+            },
+            "upstream_to_client": {
+              "frames": 0,
+              "bytes": 0,
+              "write_ms_max": 0,
+              "last_write_ms": 0,
+              "last_frame_bytes": 0
+            },
+            "rpc": {
+              "responses": 0,
+              "latency_ms_max": 0,
+              "outstanding_requests": 0,
+              "outstanding_ms_max": 0
+            },
+            "recent_connections": null,
+            "active_connections_detail": null,
+            "recent_rpc": null
+          },
+          "hints": null
+        }
+        """
+
+        let diagnostics = try AgentAPIClient.decoder.decode(RelayDiagnosticsResponse.self, from: Data(json.utf8))
+
+        XCTAssertEqual(diagnostics.hints, [])
+        XCTAssertEqual(diagnostics.appServerGateway.recentConnections, [])
+        XCTAssertEqual(diagnostics.appServerGateway.activeConnectionDetail, [])
+        XCTAssertEqual(diagnostics.appServerGateway.recentRPC, [])
+        XCTAssertEqual(diagnostics.appServerGateway.failedUpstreamDials, 1)
+    }
+
+    private func decodeRelayDiagnostics(totalConnections: Int, failedDials: Int) throws -> RelayDiagnosticsResponse {
+        let json = """
+        {
+          "generated_at": "2026-07-03T02:25:00Z",
+          "app_server_gateway": {
+            "total_connections": \(totalConnections),
+            "active_connections": 1,
+            "failed_upstream_dials": \(failedDials),
+            "upstream_dial_ms_max": 6300,
+            "client_to_upstream": {
+              "frames": 1,
+              "bytes": 120,
+              "write_ms_max": 12,
+              "last_write_ms": 12,
+              "last_frame_bytes": 120
+            },
+            "upstream_to_client": {
+              "frames": 1,
+              "bytes": 240,
+              "write_ms_max": 480,
+              "last_write_ms": 480,
+              "last_frame_bytes": 240
+            },
+            "rpc": {
+              "responses": 1,
+              "latency_ms_max": 4200,
+              "outstanding_requests": 0,
+              "outstanding_ms_max": 0
+            },
+            "recent_connections": [],
+            "active_connections_detail": [
+              {
+                "id": "gateway-12",
+                "started_at": "2026-07-03T02:24:59Z",
+                "duration_ms": 900,
+                "upstream_dial_ms": 951,
+                "client_to_upstream": {
+                  "frames": 1,
+                  "bytes": 120,
+                  "write_ms_max": 12,
+                  "last_write_ms": 12,
+                  "last_frame_bytes": 120
+                },
+                "upstream_to_client": {
+                  "frames": 1,
+                  "bytes": 240,
+                  "write_ms_max": 480,
+                  "last_write_ms": 480,
+                  "last_frame_bytes": 240
+                },
+                "rpc": {
+                  "responses": 1,
+                  "latency_ms_max": 4200,
+                  "outstanding_requests": 0,
+                  "outstanding_ms_max": 0
+                },
+                "last_client_method": "initialize"
+              }
+            ],
+            "recent_rpc": [
+              {
+                "completed_at": "2026-07-03T02:25:00Z",
+                "method": "initialize",
+                "latency_ms": 4200,
+                "request_bytes": 120,
+                "response_bytes": 240
+              }
+            ]
+          },
+          "hints": ["app-server JSON-RPC 最大响应耗时 4200ms。"]
+        }
+        """
+        return try AgentAPIClient.decoder.decode(RelayDiagnosticsResponse.self, from: Data(json.utf8))
+    }
 }

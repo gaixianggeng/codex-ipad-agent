@@ -542,7 +542,9 @@ final class ConversationDataFlowTests: XCTestCase {
                 role: .tool,
                 kind: .message,
                 content: "go test ./...",
-                createdAt: Date(timeIntervalSince1970: 4_500),
+                // 时间戳保持不早于上面的本地回显：本测试只关注 client index 不被抢占，
+                // 更早时间戳的 completed 消息如今会按时间线插回前面（有专门的排序测试覆盖）。
+                createdAt: Date(),
                 revision: 1,
                 sendStatus: .confirmed
             ),
@@ -1551,6 +1553,234 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(
             store.messages(for: sessionID).map(\.content),
             ["先排查", "命令：grep -n activeTurnID", "修复历史排序"]
+        )
+    }
+
+    func testHistoryMergeDoesNotLetFallbackOrdinalTimePushAccurateProcessEventsBehind() throws {
+        let store = ConversationStore()
+        let sessionID = "thread_fallback_plan_before_accurate_command"
+        let turnID = "turn_fallback_plan_before_accurate_command"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "plan_fallback",
+                role: "system",
+                kind: .plan,
+                content: "先列出修复计划。",
+                createdAt: Date(timeIntervalSince1970: 38),
+                turnID: turnID,
+                itemID: "plan_fallback",
+                timelineOrdinal: 2,
+                isTimestampFallback: true
+            ),
+            CodexHistoryMessage(
+                id: "cmd_accurate",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：grep -n ConversationStore",
+                createdAt: Date(timeIntervalSince1970: 32),
+                turnID: turnID,
+                itemID: "cmd_accurate",
+                timelineOrdinal: 3
+            )
+        ], sessionID: sessionID)
+
+        let messages = store.messages(for: sessionID)
+        // 橙色估算时间只能辅助排序，不能把灰色真实时间的历史过程卡压到后面。
+        XCTAssertEqual(messages.map(\.content), ["命令：grep -n ConversationStore", "先列出修复计划。"])
+        XCTAssertFalse(try XCTUnwrap(messages.first).isTimestampFallback)
+        XCTAssertTrue(try XCTUnwrap(messages.last).isTimestampFallback)
+    }
+
+    func testReplayedLiveCompletionWithOlderTimestampSortsBeforeEstimatedPlan() {
+        // 回放事故回归：merge 先落地（含橙色估算 plan），断线回放的命令卡随后带着更早的
+        // 原始时间戳到达；它必须插回 plan 之前，而不是钉在时间线尾部。
+        let store = ConversationStore()
+        let sessionID = "thread_replay_after_merge"
+        let turnID = "turn_replay_after_merge"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-0",
+                role: "user",
+                content: "先排查",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-0",
+                timelineOrdinal: 0
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-11",
+                role: "system",
+                kind: .plan,
+                content: "# 修复计划",
+                createdAt: Date(timeIntervalSince1970: 38),
+                turnID: turnID,
+                itemID: "item-11",
+                timelineOrdinal: 11,
+                isTimestampFallback: true
+            )
+        ], sessionID: sessionID)
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:\(turnID):cmd_live",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "cmd_live",
+                role: .system,
+                kind: .commandSummary,
+                content: "命令：grep -n ConversationStore",
+                createdAt: Date(timeIntervalSince1970: 32),
+                seq: 9,
+                revision: 9,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 9,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "cmd_live",
+                messageID: "appserver:\(turnID):cmd_live",
+                clientMessageID: nil,
+                revision: 9,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["先排查", "命令：grep -n ConversationStore", "# 修复计划"],
+            "回放追加的旧时间戳命令卡应插回估算 plan 之前"
+        )
+    }
+
+    func testReplayedPlanCompletionBackfillsEstimatedHistoryTwinInsteadOfDuplicating() throws {
+        // thread/read 把 plan item id 重排后，回放的 plan completed 带的是流式 id；
+        // 同 turn 同文本时应回填历史孪生卡的真实时间，而不是再补一张重复卡。
+        let store = ConversationStore()
+        let sessionID = "thread_replay_plan_twin"
+        let turnID = "turn_replay_plan_twin"
+        let planText = "# 设置与连接入口收敛方案"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-11",
+                role: "system",
+                kind: .plan,
+                content: planText,
+                createdAt: Date(timeIntervalSince1970: 38),
+                turnID: turnID,
+                itemID: "item-11",
+                timelineOrdinal: 11,
+                isTimestampFallback: true
+            )
+        ], sessionID: sessionID)
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:\(turnID):plan_live",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "plan_live",
+                role: .system,
+                kind: .plan,
+                content: planText,
+                createdAt: Date(timeIntervalSince1970: 41),
+                seq: 12,
+                revision: 12,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 12,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "plan_live",
+                messageID: "appserver:\(turnID):plan_live",
+                clientMessageID: nil,
+                revision: 12,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertEqual(messages.count, 1, "回放的 plan completed 应合并进历史孪生卡，而不是再补一张")
+        let plan = try XCTUnwrap(messages.first)
+        XCTAssertEqual(plan.kind, .plan)
+        XCTAssertFalse(plan.isTimestampFallback, "live 真实时间应回填，估算标记要清除")
+        XCTAssertEqual(plan.createdAt, Date(timeIntervalSince1970: 41))
+        XCTAssertEqual(plan.sendStatus, .confirmed)
+    }
+
+    func testReplayedPlanTwinBackfillResortsAfterAccurateTimeArrives() {
+        // 孪生卡回填真实时间后必须重新归位；否则 plan 这类估算时间卡会继续留在旧位置。
+        let store = ConversationStore()
+        let sessionID = "thread_replay_plan_twin_resort"
+        let turnID = "turn_replay_plan_twin_resort"
+        let planText = "# 修复计划"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-2",
+                role: "system",
+                kind: .plan,
+                content: planText,
+                createdAt: Date(timeIntervalSince1970: 38),
+                turnID: turnID,
+                itemID: "item-2",
+                timelineOrdinal: 2,
+                isTimestampFallback: true
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-3",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：go test ./...",
+                createdAt: Date(timeIntervalSince1970: 32),
+                turnID: turnID,
+                itemID: "item-3",
+                timelineOrdinal: 3
+            )
+        ], sessionID: sessionID)
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            ["命令：go test ./...", planText]
+        )
+
+        store.completeMessage(
+            AgentMessage(
+                id: "appserver:\(turnID):plan_live",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "plan_live",
+                role: .system,
+                kind: .plan,
+                content: planText,
+                createdAt: Date(timeIntervalSince1970: 31),
+                seq: 12,
+                revision: 12,
+                sendStatus: .confirmed
+            ),
+            metadata: AgentEventMetadata(
+                seq: 12,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "plan_live",
+                messageID: "appserver:\(turnID):plan_live",
+                clientMessageID: nil,
+                revision: 12,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        XCTAssertEqual(
+            store.messages(for: sessionID).map(\.content),
+            [planText, "命令：go test ./..."],
+            "live 真实时间到达后，历史孪生卡应从估算位置回到真实时间线位置"
         )
     }
 
@@ -7718,6 +7948,95 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertNil(store.selectedSession?.activeTurnID)
         XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
+    }
+
+    func testTakeOverSelectedRunningSessionReconnectsWithoutContentReplay() async throws {
+        // 接管时消息区已由 thread/read 快照兜底；完整回放会把 backlog 旧卡追加到
+        // 已合并时间线后面（plan 在前、命令在后的事故路径），必须走状态级回放。
+        let project = makeProject(id: "proj_takeover_replay")
+        let running = makeSession(id: "sess_takeover_replay", projectID: project.id, title: "Running", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 0, "未接管的运行会话应保持观察，不建立控制连接")
+
+        store.takeOverSession(running)
+
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(sockets[0].replayBufferedEventsByConnect, [false])
+    }
+
+    func testForegroundRefreshReattachDoesNotRequestContentReplay() async throws {
+        // 前台恢复的 refreshAll 会重走 prepareSelectedSessionAfterRefresh；已加载会话的
+        // loadHistoryIfNeeded 是 no-op，此时重连若要求完整回放，backlog 旧卡会破坏时间线顺序。
+        let project = makeProject(id: "proj_foreground_replay")
+        let running = makeSession(id: "sess_foreground_replay", projectID: project.id, title: "Running", status: "running", source: "codex")
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        XCTAssertEqual(sockets.count, 1)
+
+        await store.refreshAll(autoAttach: true)
+
+        XCTAssertGreaterThanOrEqual(sockets.count, 1)
+        for socket in sockets {
+            XCTAssertFalse(
+                socket.replayBufferedEventsByConnect.contains(true),
+                "前台恢复重连不应要求完整回放 backlog"
+            )
+        }
+    }
+
+    func testBufferedStateReplayKeepsCompletedContentEvents() {
+        // thread/read 快照不含 commandExecution 过程 item；状态级回放必须保留 completed
+        // 内容事件，否则离开期间完成的命令卡会永久丢失。流式 delta/日志仍不补播。
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { FakeCodexAppServerTransport() },
+            configProvider: { makeDirectAppServerConfig(project: AgentProject(id: "proj_replay_filter", name: "Replay", path: "/tmp/replay-filter")) }
+        )
+        let metadata = AgentEventMetadata.empty
+        let completed = AgentMessage(id: "m1", sessionID: "s1", role: .system, kind: .commandSummary, content: "命令：ls", revision: 1)
+
+        XCTAssertTrue(runtime.shouldReplayBufferedStateEvent(.processItemCompleted(completed, nil, metadata)))
+        XCTAssertTrue(runtime.shouldReplayBufferedStateEvent(.messageCompleted(completed, metadata)))
+        XCTAssertTrue(runtime.shouldReplayBufferedStateEvent(.turnCompleted(metadata)))
+        XCTAssertFalse(runtime.shouldReplayBufferedStateEvent(.assistantDelta(AgentDelta(text: "t", role: .assistant, kind: .message), metadata)))
+        XCTAssertFalse(runtime.shouldReplayBufferedStateEvent(.logDelta(LogDelta(text: "l", stream: nil), metadata)))
     }
 
     func testRunningSessionSendWaitsForConnectedWebSocket() async throws {

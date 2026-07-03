@@ -7,8 +7,25 @@ struct DoctorView: View {
     @State private var output = ""
     @State private var isRunning = false
 
+    let showsHistoryDiagnostics: Bool
+
+    init(showsHistoryDiagnostics: Bool = false) {
+        self.showsHistoryDiagnostics = showsHistoryDiagnostics
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("检查 Mac 助手、Codex CLI、app-server gateway 和项目配置。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if !showsHistoryDiagnostics {
+                    Text("历史诊断仅在设置里开启开发者模式后显示。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             HStack {
                 Button {
                     Task { await runDoctor() }
@@ -22,13 +39,15 @@ struct DoctorView: View {
                 .buttonStyle(.bordered)
                 .disabled(isRunning)
 
-                Button {
-                    Task { await runHistoryDiagnostics() }
-                } label: {
-                    Label("历史诊断", systemImage: "clock.badge.questionmark")
+                if showsHistoryDiagnostics {
+                    Button {
+                        Task { await runHistoryDiagnostics() }
+                    } label: {
+                        Label("历史诊断", systemImage: "clock.badge.questionmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isRunning)
                 }
-                .buttonStyle(.bordered)
-                .disabled(isRunning)
             }
 
             ScrollView([.horizontal, .vertical]) {

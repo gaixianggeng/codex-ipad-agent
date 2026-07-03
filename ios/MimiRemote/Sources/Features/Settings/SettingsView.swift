@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
+    @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var themeStore: ThemeStore
 
     let isInitialSetup: Bool
@@ -18,49 +19,11 @@ struct SettingsView: View {
         let tokens = themeStore.tokens(for: systemColorScheme)
 
         NavigationStack {
-            Form {
-                ConnectionSettingsSections(isInitialSetup: isInitialSetup)
-
-                Section {
-                    NavigationLink {
-                        AppearanceView()
-                    } label: {
-                        Label("外观", systemImage: "paintpalette")
-                    }
-
-                    NavigationLink {
-                        DefaultPermissionView()
-                    } label: {
-                        Label("默认权限", systemImage: "lock.shield")
-                    }
-
-                    NavigationLink {
-                        DoctorView()
-                    } label: {
-                        Label("诊断", systemImage: "stethoscope")
-                    }
-
-                    NavigationLink {
-                        CapabilitiesView()
-                    } label: {
-                        Label("能力", systemImage: "wand.and.stars")
-                    }
-                }
-
-                Section {
-                    Toggle(isOn: $keepAwakeWhileRunning) {
-                        Label("运行中保持屏幕常亮", systemImage: "sun.max")
-                    }
-                } footer: {
-                    Text("仅当前台选中会话处于运行或等待审批状态时生效；离开运行会话后会恢复系统默认锁屏。")
-                }
-
-                Section {
-                    Toggle(isOn: $developerModeEnabled) {
-                        Label("开发者模式", systemImage: "wrench.and.screwdriver")
-                    }
-                } footer: {
-                    Text("开启后会在对话输入区显示高级运行选项。普通远程使用不需要开启。")
+            Group {
+                if isInitialSetup {
+                    InitialPairingView()
+                } else {
+                    settingsForm(tokens: tokens)
                 }
             }
             .navigationTitle(isInitialSetup ? "连接你的 Mac" : "设置")
@@ -76,6 +39,152 @@ struct SettingsView: View {
             .preferredColorScheme(resolvedColorScheme)
             .environment(\.colorScheme, resolvedColorScheme)
         }
+    }
+
+    private func settingsForm(tokens: ThemeTokens) -> some View {
+        Form {
+            Section {
+                NavigationLink {
+                    ConnectionSettingsView {
+                        dismiss()
+                    }
+                } label: {
+                    SettingsNavigationRow(
+                        systemImage: "desktopcomputer",
+                        title: "连接 Mac",
+                        subtitle: appStore.isConfigured ? appStore.endpoint : "尚未连接",
+                        trailing: appStore.connectionStatus.title,
+                        trailingColor: connectionStatusColor(tokens: tokens)
+                    )
+                }
+            } header: {
+                Text("连接")
+            } footer: {
+                Text("扫码、手动连接、测试连接和忘记 Mac 都在这里处理。连接变更会重建运行通道。")
+            }
+
+            Section {
+                NavigationLink {
+                    AppearanceView()
+                } label: {
+                    Label("外观", systemImage: "paintpalette")
+                }
+
+                NavigationLink {
+                    DefaultPermissionView()
+                } label: {
+                    Label("默认权限", systemImage: "lock.shield")
+                }
+
+                Toggle(isOn: $keepAwakeWhileRunning) {
+                    Label("运行中保持屏幕常亮", systemImage: "sun.max")
+                }
+            } header: {
+                Text("偏好")
+            } footer: {
+                Text("常亮仅在前台选中会话处于运行或等待审批状态时生效；离开运行会话后会恢复系统默认锁屏。")
+            }
+
+            Section {
+                Toggle(isOn: $developerModeEnabled) {
+                    Label("开发者模式", systemImage: "wrench.and.screwdriver")
+                }
+
+                NavigationLink {
+                    DoctorView(showsHistoryDiagnostics: developerModeEnabled)
+                } label: {
+                    Label("诊断与支持", systemImage: "stethoscope")
+                }
+
+                NavigationLink {
+                    CapabilitiesView()
+                } label: {
+                    Label("能力清单", systemImage: "wand.and.stars")
+                }
+            } header: {
+                Text("高级")
+            } footer: {
+                Text(developerModeEnabled ? "历史诊断会显示本机路径和会话标题，仅用于排障。" : "开发者模式开启后，对话输入区会显示高级运行选项，诊断页也会显示历史诊断。")
+            }
+        }
+    }
+
+    private func connectionStatusColor(tokens: ThemeTokens) -> Color {
+        switch appStore.connectionStatus {
+        case .connected:
+            return tokens.success
+        case .failed:
+            return .red
+        case .testing:
+            return tokens.warning
+        case .idle:
+            return .secondary
+        }
+    }
+}
+
+private struct SettingsNavigationRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    let systemImage: String
+    let title: String
+    let subtitle: String
+    let trailing: String?
+    let trailingColor: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                    Text(subtitle)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            } icon: {
+                Image(systemName: systemImage)
+            }
+
+            Spacer()
+
+            if let trailing, !trailing.isEmpty {
+                Text(trailing)
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .foregroundStyle(trailingColor)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+private struct InitialPairingView: View {
+    var body: some View {
+        Form {
+            ConnectionSettingsSections(mode: .initialSetup)
+        }
+    }
+}
+
+struct ConnectionSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let onFinished: () -> Void
+
+    var body: some View {
+        let systemColorScheme = themeSystemColorScheme ?? colorScheme
+        let resolvedColorScheme = themeStore.resolvedColorScheme(for: systemColorScheme)
+        let tokens = themeStore.tokens(for: systemColorScheme)
+
+        Form {
+            ConnectionSettingsSections(mode: .settings, onFinished: onFinished)
+        }
+        .navigationTitle("连接 Mac")
+        .tint(tokens.accent)
+        .preferredColorScheme(resolvedColorScheme)
+        .environment(\.colorScheme, resolvedColorScheme)
     }
 }
 
@@ -155,14 +264,25 @@ private struct PermissionModeRow: View {
     }
 }
 
+private enum ConnectionSettingsMode {
+    case initialSetup
+    case settings
+}
+
+private struct GatewayDiagnosticSummary {
+    let title: String
+    let detail: String
+    let color: Color
+}
+
 private struct ConnectionSettingsSections: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
 
-    let isInitialSetup: Bool
+    let mode: ConnectionSettingsMode
+    var onFinished: () -> Void = {}
 
     @State private var endpoint = ""
     @State private var token = ""
@@ -206,7 +326,7 @@ private struct ConnectionSettingsSections: View {
             } header: {
                 Text("在当前设备上配对")
             } footer: {
-                Text("扫描 Mimi Mac 助手显示的二维码后会自动测试连接；成功后直接进入工作台。")
+                Text(scanFooterText)
             }
 
             Section {
@@ -239,7 +359,7 @@ private struct ConnectionSettingsSections: View {
                 Button {
                     Task { await save() }
                 } label: {
-                    Label("保存并进入工作台", systemImage: "checkmark.circle")
+                    Label(saveButtonTitle, systemImage: "checkmark.circle")
                 }
                 .disabled(!canSubmit)
             }
@@ -262,6 +382,25 @@ private struct ConnectionSettingsSections: View {
                         Text(connectionTestDurationText)
                             .monospacedDigit()
                             .foregroundStyle(statusColor)
+                    }
+                }
+                if let report = appStore.lastConnectionTestReport {
+                    if let failedStage = report.failedStage {
+                        connectionStageSummaryRow(title: "失败环节", stage: failedStage, color: .red)
+                    } else if let slowestStage = report.slowestStage {
+                        connectionStageSummaryRow(title: "最慢环节", stage: slowestStage, color: themeStore.tokens(for: colorScheme).warning)
+                    }
+                    if appStore.recentConnectionTestReports.count > 1,
+                       let unstableStage = appStore.mostUnstableConnectionTestStage {
+                        connectionStabilityRow(unstableStage)
+                    }
+                    ForEach(report.stages) { stage in
+                        connectionStageRow(stage)
+                    }
+                    if let diagnostics = report.gatewayDiagnostics {
+                        connectionGatewayDiagnosticsRows(diagnostics)
+                    } else if let diagnosticsError = report.gatewayDiagnosticsError {
+                        connectionGatewayDiagnosticsErrorRow(diagnosticsError)
                     }
                 }
                 if let message = displayErrorMessage {
@@ -296,6 +435,21 @@ private struct ConnectionSettingsSections: View {
         }
     }
 
+    private var isInitialSetup: Bool {
+        mode == .initialSetup
+    }
+
+    private var scanFooterText: String {
+        if isInitialSetup {
+            return "扫描 Mimi Mac 助手显示的二维码后会自动测试连接；成功后直接进入工作台。"
+        }
+        return "重新扫描会切换到新的 Mac 连接，并重新加载项目与会话。"
+    }
+
+    private var saveButtonTitle: String {
+        isInitialSetup ? "保存并进入工作台" : "保存连接"
+    }
+
     private var canSubmit: Bool {
         !isSavingConnection &&
         !isConnectionTesting &&
@@ -315,6 +469,266 @@ private struct ConnectionSettingsSections: View {
             return nil
         }
         return AppStore.connectionTestDurationText(milliseconds: milliseconds)
+    }
+
+    private func connectionStageSummaryRow(title: String, stage: ConnectionTestStageTiming, color: Color) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text("\(stage.kind.title) · \(AppStore.connectionTestDurationText(milliseconds: stage.durationMillis))")
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
+    }
+
+    private func connectionStabilityRow(_ stability: ConnectionTestStageStability) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("最近波动")
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(stability.kind.title)
+                    .foregroundStyle(themeStore.tokens(for: colorScheme).warning)
+                Text(connectionStabilityDetailText(stability))
+                    .font(themeStore.uiFont(.footnote))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func connectionStabilityDetailText(_ stability: ConnectionTestStageStability) -> String {
+        let spread = AppStore.connectionTestDurationText(milliseconds: stability.spreadMillis)
+        let max = AppStore.connectionTestDurationText(milliseconds: stability.maxMillis)
+        if stability.failureCount > 0 {
+            return "\(stability.sampleCount) 次 · 失败 \(stability.failureCount) 次 · 最大 \(max)"
+        }
+        return "\(stability.sampleCount) 次 · 波动 \(spread) · 最大 \(max)"
+    }
+
+    private func connectionStageRow(_ stage: ConnectionTestStageTiming) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(stage.kind.title)
+                    if case .failed = stage.status {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                            .foregroundStyle(.red)
+                    }
+                }
+                Text(stage.kind.detail)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            Text(stageDurationText(stage))
+                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(connectionStageColor(stage))
+                .lineLimit(1)
+        }
+    }
+
+    private func stageDurationText(_ stage: ConnectionTestStageTiming) -> String {
+        let duration = AppStore.connectionTestDurationText(milliseconds: stage.durationMillis)
+        switch stage.status {
+        case .succeeded:
+            return duration
+        case .failed:
+            return "失败 · \(duration)"
+        }
+    }
+
+    private func connectionStageColor(_ stage: ConnectionTestStageTiming) -> Color {
+        switch stage.status {
+        case .succeeded:
+            return .secondary
+        case .failed:
+            return .red
+        }
+    }
+
+    @ViewBuilder
+    private func connectionGatewayDiagnosticsRows(_ diagnostics: ConnectionTestGatewayDiagnostics) -> some View {
+        connectionGatewaySummaryRow(diagnostics)
+
+        if diagnostics.failedUpstreamDialsDelta > 0 {
+            connectionGatewayMetricRow(
+                title: "上游拨号失败",
+                detail: "本次测试新增失败，累计最大耗时",
+                value: "\(diagnostics.failedUpstreamDialsDelta) 次 · \(AppStore.connectionTestDurationText(milliseconds: diagnostics.upstreamDialMillisMax))",
+                color: .red
+            )
+        }
+
+        if let connection = diagnostics.relatedConnection {
+            connectionGatewayMetricRow(
+                title: "Mac 上游拨号",
+                detail: "agentd 到本机 app-server",
+                value: AppStore.connectionTestDurationText(milliseconds: connection.upstreamDialMillis),
+                color: gatewayMetricColor(milliseconds: connection.upstreamDialMillis)
+            )
+        }
+
+        if let rpc = diagnostics.latestRPC {
+            connectionGatewayMetricRow(
+                title: "最近 RPC",
+                detail: rpc.method.isEmpty ? "app-server JSON-RPC" : rpc.method,
+                value: AppStore.connectionTestDurationText(milliseconds: rpc.latencyMillis),
+                color: gatewayMetricColor(milliseconds: rpc.latencyMillis)
+            )
+        }
+
+        if diagnostics.rpcOutstandingRequests > 0 {
+            connectionGatewayMetricRow(
+                title: "等待上游",
+                detail: "app-server 仍未返回响应",
+                value: "\(diagnostics.rpcOutstandingRequests) 个 · \(AppStore.connectionTestDurationText(milliseconds: diagnostics.rpcOutstandingMillisMax))",
+                color: themeStore.tokens(for: colorScheme).warning
+            )
+        }
+
+        if diagnostics.writeBackMillisMax > 0 {
+            connectionGatewayMetricRow(
+                title: "写回 iPad",
+                detail: "agentd gateway 写给当前设备",
+                value: AppStore.connectionTestDurationText(milliseconds: diagnostics.writeBackMillisMax),
+                color: gatewayMetricColor(milliseconds: diagnostics.writeBackMillisMax)
+            )
+        }
+
+        if let closeReason = diagnostics.relatedConnection?.closeReason,
+           !closeReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            connectionGatewayMetricRow(
+                title: "最近断开",
+                detail: closeReason,
+                value: nil,
+                color: .secondary
+            )
+        }
+
+        if let hint = diagnostics.hints.first {
+            Text(hint)
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func connectionGatewaySummaryRow(_ diagnostics: ConnectionTestGatewayDiagnostics) -> some View {
+        let summary = gatewayDiagnosticSummary(diagnostics)
+        return HStack(alignment: .top, spacing: 12) {
+            Text("Gateway 判断")
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(summary.title)
+                    .foregroundStyle(summary.color)
+                    .lineLimit(1)
+                Text(summary.detail)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+    }
+
+    private func connectionGatewayMetricRow(title: String, detail: String, value: String?, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Text(detail)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 12)
+            if let value {
+                Text(value)
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func connectionGatewayDiagnosticsErrorRow(_ error: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("Gateway 诊断")
+            Spacer(minLength: 12)
+            Text(error)
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+    }
+
+    private func gatewayMetricColor(milliseconds: Int) -> Color {
+        if milliseconds >= 2_000 {
+            return .red
+        }
+        if milliseconds >= 500 {
+            return themeStore.tokens(for: colorScheme).warning
+        }
+        return .secondary
+    }
+
+    private func gatewayDiagnosticSummary(_ diagnostics: ConnectionTestGatewayDiagnostics) -> GatewayDiagnosticSummary {
+        let warning = themeStore.tokens(for: colorScheme).warning
+        if diagnostics.failedUpstreamDialsDelta > 0 {
+            return GatewayDiagnosticSummary(
+                title: "上游拨号失败",
+                detail: "agentd 连本机 app-server 失败",
+                color: .red
+            )
+        }
+        if diagnostics.rpcOutstandingRequests > 0 && diagnostics.rpcOutstandingMillisMax >= 2_000 {
+            return GatewayDiagnosticSummary(
+                title: "上游未返回",
+                detail: "请求已进 app-server，响应还没回来",
+                color: warning
+            )
+        }
+        if let rpc = diagnostics.latestRPC,
+           rpc.latencyMillis >= 1_000 {
+            let method = rpc.method.isEmpty ? "app-server JSON-RPC" : rpc.method
+            return GatewayDiagnosticSummary(
+                title: "RPC 返回慢",
+                detail: "\(method) 返回耗时偏高",
+                color: gatewayMetricColor(milliseconds: rpc.latencyMillis)
+            )
+        }
+        if diagnostics.writeBackMillisMax >= 500 {
+            return GatewayDiagnosticSummary(
+                title: "写回链路慢",
+                detail: "优先看 iPad/VPS/公网转发",
+                color: gatewayMetricColor(milliseconds: diagnostics.writeBackMillisMax)
+            )
+        }
+        if let connection = diagnostics.relatedConnection,
+           connection.upstreamDialMillis >= 500 {
+            return GatewayDiagnosticSummary(
+                title: "本机拨号慢",
+                detail: "agentd 到 app-server 建连偏慢",
+                color: gatewayMetricColor(milliseconds: connection.upstreamDialMillis)
+            )
+        }
+        if diagnostics.totalConnectionsDelta > 0 {
+            return GatewayDiagnosticSummary(
+                title: "本次有新连接",
+                detail: "未见明显 gateway 瓶颈",
+                color: .secondary
+            )
+        }
+        return GatewayDiagnosticSummary(
+            title: "无新增样本",
+            detail: "继续复现慢场景再看快照",
+            color: .secondary
+        )
     }
 
     private var statusColor: Color {
@@ -367,15 +781,15 @@ private struct ConnectionSettingsSections: View {
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
-            try await appStore.validateAndSave(endpoint: endpoint, token: token)
+            let didChange = try await appStore.validateAndSave(endpoint: endpoint, token: token)
             endpoint = appStore.endpoint
             token = appStore.token
-            sessionStore.resetConnectionForSettingsChange(clearData: true)
+            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
             connectionSuccessMessage = ""
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
             if !isInitialSetup {
-                dismiss()
+                onFinished()
             }
         } catch {
             appStore.connectionStatus = .failed(error.localizedDescription)
@@ -392,15 +806,15 @@ private struct ConnectionSettingsSections: View {
             guard let url = URL(string: raw) else {
                 throw PairingLinkError.unsupportedURL
             }
-            try await appStore.validateAndSavePairingURL(url)
+            let didChange = try await appStore.validateAndSavePairingURL(url)
             endpoint = appStore.endpoint
             token = appStore.token
-            sessionStore.resetConnectionForSettingsChange(clearData: true)
+            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
             connectionSuccessMessage = "已连接这台 Mac，正在进入工作台。"
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
             if !isInitialSetup {
-                dismiss()
+                onFinished()
             } else {
                 isShowingConnectionSuccess = true
             }
@@ -421,7 +835,7 @@ private struct ConnectionSettingsSections: View {
             sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
             if !isInitialSetup {
-                dismiss()
+                onFinished()
             }
         } catch {
             localError = error.localizedDescription

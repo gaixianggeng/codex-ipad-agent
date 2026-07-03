@@ -1078,7 +1078,9 @@ final class SessionStore: ObservableObject {
     func takeOverSession(_ session: AgentSession) {
         setSessionControlState(.takenOver, sessionID: session.id)
         if session.id == selectedSessionID, session.isRunning {
-            connectWebSocket(session)
+            // 接管前消息区已经由 selectSession/刷新用 thread/read 快照兜底；backlog 走状态级
+            // 回放（completed 内容仍会补播），完整回放会把旧 delta 再直播一遍。
+            connectWebSocket(session, replayBufferedEvents: false)
         }
         setStatusMessage("已接管到 iPad")
     }
@@ -2983,7 +2985,10 @@ final class SessionStore: ObservableObject {
         await loadHistoryIfNeeded(for: session)
         if session.isRunning {
             if autoAttach && canControlSession(session) {
-                connectWebSocket(session)
+                // 前台恢复会反复走到这里；已加载会话的 loadHistoryIfNeeded 是 no-op，此时若做
+                // 完整回放，backlog 里的旧卡会被追加到已合并的时间线后面。状态级回放已经
+                // 覆盖 completed 内容，足够补齐离开期间的输出。
+                connectWebSocket(session, replayBufferedEvents: false)
             } else if !canControlSession(session) {
                 disconnectWebSocket()
             }

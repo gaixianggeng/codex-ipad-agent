@@ -562,9 +562,49 @@ final class ConversationStore: ObservableObject {
                 revision: message.revision,
                 isTimestampFallback: message.isTimestampFallback
             )
+            // 回放/迟到的 completed 事件带的是流式 item id；thread/read 把 item id 重排成 item-N 后，
+            // 同一条内容可能已经以历史投影身份在列表里。找到孪生卡就把真实时间/终态回填给它，
+            // 不再追加重复卡（与 mergeHistory 的 turn+文本去重语义保持一致）。
+            if let twinIndex = historyProjectedTwinIndex(for: completedMessage, in: list) {
+                var twin = list[twinIndex]
+                if twin.isTimestampFallback, let liveCreatedAt = message.createdAt {
+                    twin.createdAt = liveCreatedAt
+                    twin.isTimestampFallback = false
+                }
+                twin.updatedAt = message.updatedAt ?? metadata.createdAt ?? twin.updatedAt
+                twin.sendStatus = message.sendStatus == .failed ? .failed : .confirmed
+                twin.revision = max(message.revision, twin.revision ?? message.revision)
+                list[twinIndex] = twin
+                messageUUIDByStableMessageID[key] = twin.id
+                // 真实时间回填后，历史孪生卡可能需要从估算时间位置挪回真实时间线位置。
+                let resorted = timelineSortEntries(from: list)
+                    .sorted(by: areTimelineSortEntriesInOrder)
+                    .map(\.message)
+                replaceMessagesWithoutEquivalenceCheck(resorted, sessionID: sessionID, rebuildIndexes: true)
+                // 流式 id 也指向孪生卡，后续同一事件的补发/查找直接原位命中。
+                if let resolvedIndex = resorted.firstIndex(where: { $0.id == twin.id }) {
+                    messageIndexByStableIDBySessionID[sessionID, default: [:]][stableID] = resolvedIndex
+                }
+                return
+            }
             messageUUIDByStableMessageID[key] = completedMessage.id
             list.append(completedMessage)
             appendMessageWithIndex(completedMessage, list: list, sessionID: sessionID)
+        }
+    }
+
+    private func historyProjectedTwinIndex(for message: ConversationMessage, in list: [ConversationMessage]) -> Int? {
+        guard let key = turnScopedTextMergeKey(for: message) else {
+            return nil
+        }
+        // 只认历史投影（带 timelineOrdinal）的孪生卡；同 turn 内两条真实的 live 重复输出仍各自保留。
+        return list.lastIndex { candidate in
+            guard candidate.timelineOrdinal != nil,
+                  candidate.turnID == message.turnID,
+                  candidate.id != message.id else {
+                return false
+            }
+            return turnScopedTextMergeKey(for: candidate) == key
         }
     }
 
@@ -755,6 +795,16 @@ final class ConversationStore: ObservableObject {
     private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
         // 普通流式/本地追加总是发生在尾部。像 Codex/Litter 的 live projection 一样只补新行索引，
         // 避免长会话里每个 append 都 O(n) 重建 stable/client/uuid 三套字典。
+        // 例外：断线回放/迟到 completed 事件带着比当前尾部更早的原始时间戳到达；时间线顺序只有
+        // merge 的排序在维护，直接钉在尾部会把旧卡显示在更新的消息（如历史投影的 plan）后面。
+        // 尾部逆序是罕见路径，检测到就用同一套 timeline 排序整体归位。
+        if list.count >= 2, message.createdAt < list[list.count - 2].createdAt {
+            let resorted = timelineSortEntries(from: list)
+                .sorted(by: areTimelineSortEntriesInOrder)
+                .map(\.message)
+            replaceMessagesWithoutEquivalenceCheck(resorted, sessionID: sessionID, rebuildIndexes: true)
+            return
+        }
         replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
         indexMessage(message, at: list.count - 1, sessionID: sessionID)
     }
@@ -1067,26 +1117,38 @@ final class ConversationStore: ObservableObject {
         }
 
         for indices in ordinalIndicesByTurn.values {
-            var runningMax: Date?
+            var lastEffectiveAt: Date?
+            var lastReliableEffectiveAt: Date?
             for index in indices.sorted(by: { leftIndex, rightIndex in
                 compareTimelineOrdinalThenOffset(leftIndex, rightIndex, entries: entries)
             }) {
                 let entry = entries[index]
                 let effectiveAt: Date
-                if let runningMax, entry.effectiveAt < runningMax {
-                    effectiveAt = runningMax
+                if entry.message.isTimestampFallback {
+                    // 估算时间只能被前序消息向后托住；它自己不能反过来压住后续真实时间。
+                    if let lastEffectiveAt, entry.effectiveAt < lastEffectiveAt {
+                        effectiveAt = lastEffectiveAt
+                    } else {
+                        effectiveAt = entry.effectiveAt
+                    }
+                } else if let lastReliableEffectiveAt, entry.effectiveAt < lastReliableEffectiveAt {
+                    // 真实时间之间仍按 ordinal 保持同 turn 内单调，避免上游真实时间短暂反挂。
+                    effectiveAt = lastReliableEffectiveAt
                 } else {
                     effectiveAt = entry.effectiveAt
                 }
                 // history item 用 live 副本回填真实时间后，时间和 thread/read item 顺序可能短暂反挂。
-                // 同 turn 内先把 ordinal 骨架的时间单调化，再统一排序，避免 Swift sort 遇到非传递比较器。
+                // 同 turn 内先把 ordinal 骨架的时间单调化，再统一排序；但不能让 fallback 时间覆盖真实时间。
                 entries[index] = TimelineSortEntry(
                     offset: entry.offset,
                     message: entry.message,
                     effectiveAt: effectiveAt,
                     timelineOrdinal: entry.timelineOrdinal
                 )
-                runningMax = effectiveAt
+                lastEffectiveAt = lastEffectiveAt.map { max($0, effectiveAt) } ?? effectiveAt
+                if !entry.message.isTimestampFallback {
+                    lastReliableEffectiveAt = lastReliableEffectiveAt.map { max($0, effectiveAt) } ?? effectiveAt
+                }
             }
         }
 

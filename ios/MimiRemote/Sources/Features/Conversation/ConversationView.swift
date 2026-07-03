@@ -495,6 +495,7 @@ struct ConversationTimelineView: View {
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
     @State private var isTailFollowLockedByLocalSubmit = false
+    @State private var isTimelineNearBottom = true
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
     @State private var expandedProcessedGroupIDs: Set<String> = []
@@ -564,6 +565,7 @@ struct ConversationTimelineView: View {
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     isNearBottom(geometry)
                 } action: { _, nearBottom in
+                    isTimelineNearBottom = nearBottom
                     if nearBottom {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
@@ -572,22 +574,18 @@ struct ConversationTimelineView: View {
                     }
                 }
 
-                if hasUnseenTailMessage {
+                if shouldShowReturnToTailButton(timelineItems: timelineItems) {
                     Button {
-                        hasUnseenTailMessage = false
-                        shouldFollowMessageTail = true
-                        isTailFollowLockedByLocalSubmit = true
-                        scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: true)
+                        returnToTimelineTail(timelineItems: timelineItems, proxy: proxy)
                     } label: {
-                        Label("新消息", systemImage: "arrow.down.circle.fill")
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                        returnToTailLabel
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(tokens.accent)
                     .controlSize(.small)
                     .padding(.trailing, layout.horizontalInset)
                     .padding(.bottom, 18)
-                    .accessibilityLabel("回到底部查看新消息")
+                    .accessibilityLabel(returnToTailAccessibilityLabel)
                 }
             }
             .onChange(of: sessionStore.selectedSessionID) { oldID, newID in
@@ -598,6 +596,7 @@ struct ConversationTimelineView: View {
                 forceNextMessageTailScroll = true
                 isTailFollowLockedByLocalSubmit = shouldPreserveTailFollowLock
                 hasUnseenTailMessage = false
+                isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
                 expandedProcessedGroupIDs.removeAll()
                 timelineItemCache.removeAll()
@@ -751,6 +750,23 @@ struct ConversationTimelineView: View {
         return distanceFromBottom <= messageTailFollowThreshold
     }
 
+    private func shouldShowReturnToTailButton(timelineItems: [ConversationTimelineItem]) -> Bool {
+        !timelineItems.isEmpty && !isPreservingHistoryScroll && (hasUnseenTailMessage || !isTimelineNearBottom)
+    }
+
+    private var returnToTailLabel: some View {
+        Label(returnToTailTitle, systemImage: "arrow.down.circle.fill")
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+    }
+
+    private var returnToTailTitle: String {
+        hasUnseenTailMessage ? "新消息" : "回到底部"
+    }
+
+    private var returnToTailAccessibilityLabel: String {
+        hasUnseenTailMessage ? "回到底部查看新消息" : "回到最新消息"
+    }
+
     private var emptyState: some View {
         VStack(spacing: 12) {
             Image(systemName: "message")
@@ -790,8 +806,17 @@ struct ConversationTimelineView: View {
         }
         shouldFollowMessageTail = true
         hasUnseenTailMessage = false
+        isTimelineNearBottom = true
         forceNextMessageTailScroll = false
         scrollToTimelineTail(id: Self.timelineTailSentinelID, proxy: proxy, animated: animated)
+    }
+
+    private func returnToTimelineTail(timelineItems: [ConversationTimelineItem], proxy: ScrollViewProxy) {
+        hasUnseenTailMessage = false
+        shouldFollowMessageTail = true
+        isTailFollowLockedByLocalSubmit = true
+        isTimelineNearBottom = true
+        scrollToTimelineTail(timelineItems: timelineItems, proxy: proxy, animated: true)
     }
 
     private func scrollToTimelineTail(timelineItems: [ConversationTimelineItem], proxy: ScrollViewProxy, animated: Bool) {
@@ -806,6 +831,7 @@ struct ConversationTimelineView: View {
             return
         }
         hasUnseenTailMessage = false
+        isTimelineNearBottom = true
         forceNextMessageTailScroll = false
         scrollToTimelineTail(id: Self.timelineTailSentinelID, proxy: proxy, animated: animated)
     }

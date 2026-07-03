@@ -77,6 +77,195 @@ struct CodexAppServerPolicyMetadata: Codable, Hashable {
     }
 }
 
+struct RelayDiagnosticsResponse: Decodable, Equatable {
+    let generatedAt: Date
+    let appServerGateway: RelayGatewayStats
+    let hints: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case appServerGateway = "app_server_gateway"
+        case hints
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        appServerGateway = try container.decode(RelayGatewayStats.self, forKey: .appServerGateway)
+        // Go 端空 slice 在部分路径会编码成 null；诊断提示为空时按无提示处理，不影响连接证据解码。
+        hints = try container.decodeIfPresent([String].self, forKey: .hints) ?? []
+    }
+}
+
+struct RelayGatewayStats: Decodable, Equatable {
+    let totalConnections: Int
+    let activeConnections: Int
+    let failedUpstreamDials: Int
+    let upstreamDialMillisMax: Int
+    let clientToUpstream: RelayGatewayDirectionStats
+    let upstreamToClient: RelayGatewayDirectionStats
+    let rpc: RelayGatewayRPCStats
+    let recentConnections: [RelayGatewayConnectionStats]
+    let activeConnectionDetail: [RelayGatewayConnectionStats]
+    let recentRPC: [RelayGatewayRPCSample]
+
+    enum CodingKeys: String, CodingKey {
+        case totalConnections = "total_connections"
+        case activeConnections = "active_connections"
+        case failedUpstreamDials = "failed_upstream_dials"
+        case upstreamDialMillisMax = "upstream_dial_ms_max"
+        case clientToUpstream = "client_to_upstream"
+        case upstreamToClient = "upstream_to_client"
+        case rpc
+        case recentConnections = "recent_connections"
+        case activeConnectionDetail = "active_connections_detail"
+        case recentRPC = "recent_rpc"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalConnections = try container.decode(Int.self, forKey: .totalConnections)
+        activeConnections = try container.decode(Int.self, forKey: .activeConnections)
+        failedUpstreamDials = try container.decode(Int.self, forKey: .failedUpstreamDials)
+        upstreamDialMillisMax = try container.decode(Int.self, forKey: .upstreamDialMillisMax)
+        clientToUpstream = try container.decode(RelayGatewayDirectionStats.self, forKey: .clientToUpstream)
+        upstreamToClient = try container.decode(RelayGatewayDirectionStats.self, forKey: .upstreamToClient)
+        rpc = try container.decode(RelayGatewayRPCStats.self, forKey: .rpc)
+        // relay 监控里 nil slice 会以 null 返回；移动端展示时统一当空列表处理。
+        recentConnections = try container.decodeIfPresent([RelayGatewayConnectionStats].self, forKey: .recentConnections) ?? []
+        activeConnectionDetail = try container.decodeIfPresent([RelayGatewayConnectionStats].self, forKey: .activeConnectionDetail) ?? []
+        recentRPC = try container.decodeIfPresent([RelayGatewayRPCSample].self, forKey: .recentRPC) ?? []
+    }
+}
+
+struct RelayGatewayDirectionStats: Decodable, Equatable {
+    let frames: Int
+    let bytes: Int
+    let writeMillisMax: Int
+    let lastWriteMillis: Int
+    let lastFrameBytes: Int
+
+    enum CodingKeys: String, CodingKey {
+        case frames
+        case bytes
+        case writeMillisMax = "write_ms_max"
+        case lastWriteMillis = "last_write_ms"
+        case lastFrameBytes = "last_frame_bytes"
+    }
+}
+
+struct RelayGatewayRPCStats: Decodable, Equatable {
+    let responses: Int
+    let latencyMillisMax: Int
+    let outstandingRequests: Int
+    let outstandingMillisMax: Int
+
+    enum CodingKeys: String, CodingKey {
+        case responses
+        case latencyMillisMax = "latency_ms_max"
+        case outstandingRequests = "outstanding_requests"
+        case outstandingMillisMax = "outstanding_ms_max"
+    }
+}
+
+struct RelayGatewayConnectionStats: Decodable, Equatable, Identifiable {
+    let id: String
+    let startedAt: Date
+    let endedAt: Date?
+    let durationMillis: Int
+    let upstreamDialMillis: Int
+    let closeReason: String?
+    let clientToUpstream: RelayGatewayDirectionStats
+    let upstreamToClient: RelayGatewayDirectionStats
+    let rpc: RelayGatewayRPCStats
+    let recentRPC: [RelayGatewayRPCSample]
+    let lastClientMethod: String?
+    let lastUpstreamMethod: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case durationMillis = "duration_ms"
+        case upstreamDialMillis = "upstream_dial_ms"
+        case closeReason = "close_reason"
+        case clientToUpstream = "client_to_upstream"
+        case upstreamToClient = "upstream_to_client"
+        case rpc
+        case recentRPC = "recent_rpc"
+        case lastClientMethod = "last_client_method"
+        case lastUpstreamMethod = "last_upstream_method"
+    }
+
+    init(
+        id: String,
+        startedAt: Date,
+        endedAt: Date?,
+        durationMillis: Int,
+        upstreamDialMillis: Int,
+        closeReason: String?,
+        clientToUpstream: RelayGatewayDirectionStats,
+        upstreamToClient: RelayGatewayDirectionStats,
+        rpc: RelayGatewayRPCStats,
+        recentRPC: [RelayGatewayRPCSample],
+        lastClientMethod: String?,
+        lastUpstreamMethod: String?
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.durationMillis = durationMillis
+        self.upstreamDialMillis = upstreamDialMillis
+        self.closeReason = closeReason
+        self.clientToUpstream = clientToUpstream
+        self.upstreamToClient = upstreamToClient
+        self.rpc = rpc
+        self.recentRPC = recentRPC
+        self.lastClientMethod = lastClientMethod
+        self.lastUpstreamMethod = lastUpstreamMethod
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.startedAt = try container.decode(Date.self, forKey: .startedAt)
+        self.endedAt = try container.decodeIfPresent(Date.self, forKey: .endedAt)
+        self.durationMillis = try container.decode(Int.self, forKey: .durationMillis)
+        self.upstreamDialMillis = try container.decode(Int.self, forKey: .upstreamDialMillis)
+        self.closeReason = try container.decodeIfPresent(String.self, forKey: .closeReason)
+        self.clientToUpstream = try container.decode(RelayGatewayDirectionStats.self, forKey: .clientToUpstream)
+        self.upstreamToClient = try container.decode(RelayGatewayDirectionStats.self, forKey: .upstreamToClient)
+        self.rpc = try container.decode(RelayGatewayRPCStats.self, forKey: .rpc)
+        self.recentRPC = try container.decodeIfPresent([RelayGatewayRPCSample].self, forKey: .recentRPC) ?? []
+        self.lastClientMethod = try container.decodeIfPresent(String.self, forKey: .lastClientMethod)
+        self.lastUpstreamMethod = try container.decodeIfPresent(String.self, forKey: .lastUpstreamMethod)
+    }
+}
+
+struct RelayGatewayRPCSample: Decodable, Equatable, Identifiable {
+    let completedAt: Date
+    let method: String
+    let latencyMillis: Int
+    let requestBytes: Int
+    let responseBytes: Int
+    let outstanding: Bool?
+    let outstandingForMillis: Int?
+
+    var id: String {
+        "\(completedAt.timeIntervalSince1970)-\(method)-\(latencyMillis)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case completedAt = "completed_at"
+        case method
+        case latencyMillis = "latency_ms"
+        case requestBytes = "request_bytes"
+        case responseBytes = "response_bytes"
+        case outstanding
+        case outstandingForMillis = "outstanding_for_ms"
+    }
+}
+
 struct CapabilityListRequest: Encodable {
     let path: String?
 }

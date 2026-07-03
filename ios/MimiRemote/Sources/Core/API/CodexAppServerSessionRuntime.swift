@@ -771,13 +771,13 @@ actor CodexAppServerSessionRuntime {
         case .all:
             return events
         case .stateOnly:
-            // 切回运行会话前已经用 thread/read 快照补齐消息区；旧 delta、日志和过程项不再逐条补播。
+            // 切回运行会话前已经用 thread/read 快照补齐消息区；旧 delta 和日志不再逐条补播。
             // 但审批、补充信息、turn 完成和会话状态仍要回放，避免丢掉当前可操作状态。
             return events.filter(shouldReplayBufferedStateEvent)
         }
     }
 
-    private func shouldReplayBufferedStateEvent(_ event: AgentEvent) -> Bool {
+    nonisolated func shouldReplayBufferedStateEvent(_ event: AgentEvent) -> Bool {
         switch event {
         case .session,
              .sessionRow,
@@ -795,9 +795,12 @@ actor CodexAppServerSessionRuntime {
              .error,
              .unknown:
             return true
+        case .messageCompleted,
+             .processItemCompleted:
+            // thread/read 快照不含 commandExecution 等过程 item；completed 内容事件必须补播，
+            // 否则离开期间完成的命令卡会永久丢失。排序与去重由 ConversationStore 兜底。
+            return true
         case .assistantDelta,
-             .messageCompleted,
-             .processItemCompleted,
              .logDelta,
              .diffUpdated:
             return false

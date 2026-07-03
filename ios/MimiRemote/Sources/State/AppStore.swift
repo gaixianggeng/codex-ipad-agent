@@ -41,6 +41,170 @@ struct PairingTicket: Equatable {
     }
 }
 
+struct ConnectionTestStageTiming: Identifiable, Equatable {
+    enum Kind: String, CaseIterable {
+        case health
+        case version
+        case appServerConfig
+        case appServerGateway
+
+        var title: String {
+            switch self {
+            case .health:
+                return "基础连通"
+            case .version:
+                return "鉴权版本"
+            case .appServerConfig:
+                return "Gateway 配置"
+            case .appServerGateway:
+                return "app-server 握手"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .health:
+                return "iPad 到 agentd 的 /healthz"
+            case .version:
+                return "带 Token 访问 /api/version"
+            case .appServerConfig:
+                return "读取 Mac 端 gateway 配置"
+            case .appServerGateway:
+                return "WebSocket + JSON-RPC initialize"
+            }
+        }
+    }
+
+    enum Status: Equatable {
+        case succeeded
+        case failed(String)
+
+        var isFailed: Bool {
+            if case .failed = self {
+                return true
+            }
+            return false
+        }
+    }
+
+    let kind: Kind
+    let durationMillis: Int
+    let status: Status
+
+    var id: String {
+        kind.rawValue
+    }
+}
+
+struct ConnectionTestReport: Equatable {
+    let startedAt: Date
+    let totalMillis: Int
+    let stages: [ConnectionTestStageTiming]
+    let gatewayDiagnostics: ConnectionTestGatewayDiagnostics?
+    let gatewayDiagnosticsError: String?
+
+    init(
+        startedAt: Date,
+        totalMillis: Int,
+        stages: [ConnectionTestStageTiming],
+        gatewayDiagnostics: ConnectionTestGatewayDiagnostics? = nil,
+        gatewayDiagnosticsError: String? = nil
+    ) {
+        self.startedAt = startedAt
+        self.totalMillis = totalMillis
+        self.stages = stages
+        self.gatewayDiagnostics = gatewayDiagnostics
+        self.gatewayDiagnosticsError = gatewayDiagnosticsError
+    }
+
+    var slowestStage: ConnectionTestStageTiming? {
+        stages.max { lhs, rhs in
+            lhs.durationMillis < rhs.durationMillis
+        }
+    }
+
+    var failedStage: ConnectionTestStageTiming? {
+        stages.first { $0.status.isFailed }
+    }
+}
+
+struct ConnectionTestGatewayDiagnostics: Equatable {
+    let capturedAt: Date
+    let totalConnectionsDelta: Int
+    let failedUpstreamDialsDelta: Int
+    let activeConnections: Int
+    let upstreamDialMillisMax: Int
+    let writeBackMillisMax: Int
+    let writeToUpstreamMillisMax: Int
+    let rpcLatencyMillisMax: Int
+    let rpcOutstandingRequests: Int
+    let rpcOutstandingMillisMax: Int
+    let relatedConnection: RelayGatewayConnectionStats?
+    let latestRPC: RelayGatewayRPCSample?
+    let hints: [String]
+
+    static func make(
+        baseline: RelayDiagnosticsResponse?,
+        snapshot: RelayDiagnosticsResponse,
+        gatewayStartedAt: Date
+    ) -> ConnectionTestGatewayDiagnostics {
+        let gateway = snapshot.appServerGateway
+        let relatedConnection = Self.relatedGatewayConnection(
+            in: gateway,
+            gatewayStartedAt: gatewayStartedAt
+        )
+        return ConnectionTestGatewayDiagnostics(
+            capturedAt: snapshot.generatedAt,
+            totalConnectionsDelta: max(0, gateway.totalConnections - (baseline?.appServerGateway.totalConnections ?? gateway.totalConnections)),
+            failedUpstreamDialsDelta: max(0, gateway.failedUpstreamDials - (baseline?.appServerGateway.failedUpstreamDials ?? gateway.failedUpstreamDials)),
+            activeConnections: gateway.activeConnections,
+            upstreamDialMillisMax: gateway.upstreamDialMillisMax,
+            writeBackMillisMax: gateway.upstreamToClient.writeMillisMax,
+            writeToUpstreamMillisMax: gateway.clientToUpstream.writeMillisMax,
+            rpcLatencyMillisMax: gateway.rpc.latencyMillisMax,
+            rpcOutstandingRequests: gateway.rpc.outstandingRequests,
+            rpcOutstandingMillisMax: gateway.rpc.outstandingMillisMax,
+            relatedConnection: relatedConnection,
+            latestRPC: relatedConnection?.recentRPC.last ?? gateway.recentRPC.last,
+            hints: snapshot.hints
+        )
+    }
+
+    private static func relatedGatewayConnection(
+        in gateway: RelayGatewayStats,
+        gatewayStartedAt: Date
+    ) -> RelayGatewayConnectionStats? {
+        // iPad 和 Mac 时钟正常同步时，优先选本次测试窗口内创建的 gateway 连接；若两端时钟偏差，
+        // 退回最近 active/recent 连接，保证现场仍能看到 Mac 侧的最新证据。
+        let threshold = gatewayStartedAt.addingTimeInterval(-2)
+        let candidates = gateway.activeConnectionDetail + gateway.recentConnections
+        if let current = candidates
+            .filter({ $0.startedAt >= threshold })
+            .max(by: { $0.startedAt < $1.startedAt }) {
+            return current
+        }
+        return gateway.activeConnectionDetail.max(by: { $0.startedAt < $1.startedAt })
+            ?? gateway.recentConnections.max(by: { $0.startedAt < $1.startedAt })
+    }
+}
+
+struct ConnectionTestStageStability: Identifiable, Equatable {
+    let kind: ConnectionTestStageTiming.Kind
+    let sampleCount: Int
+    let failureCount: Int
+    let minMillis: Int
+    let maxMillis: Int
+    let averageMillis: Int
+
+    var id: String {
+        kind.rawValue
+    }
+
+    var spreadMillis: Int {
+        max(0, maxMillis - minMillis)
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var endpoint: String
@@ -48,10 +212,13 @@ final class AppStore: ObservableObject {
     @Published var connectionStatus: ConnectionStatus = .idle
     @Published var lastError: String?
     @Published var lastConnectionTestDurationMillis: Int?
+    @Published var lastConnectionTestReport: ConnectionTestReport?
+    @Published var recentConnectionTestReports: [ConnectionTestReport] = []
 
     private let endpointKey = "agentd.endpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
     private let defaultEndpoint = "http://127.0.0.1:8787"
+    private let maxConnectionTestReportHistory = 20
     private let tokenStore = TokenStore()
     private var directRuntime: CodexAppServerSessionRuntime?
     private var directRuntimeIdentity: String?
@@ -97,21 +264,31 @@ final class AppStore: ObservableObject {
         self.token = token
     }
 
-    func validateAndSave(endpoint: String, token: String) async throws {
+    @discardableResult
+    func validateAndSave(endpoint: String, token: String) async throws -> Bool {
         let normalized = try await validateConnection(endpoint: endpoint, token: token)
+        let didChange = normalized != self.endpoint || token != self.token
+        guard didChange else {
+            // 同一凭据重新验证成功，也要丢弃 direct runtime 的 app-server config 缓存；
+            // 用户常用“保存/重新扫码”来拉取 Mac 端最新项目根目录或 allowlist。
+            resetDirectRuntime()
+            lastError = nil
+            return false
+        }
         try save(endpoint: normalized, token: token)
         lastError = nil
+        return true
     }
 
-    func validateAndSavePairingURL(_ url: URL) async throws {
+    @discardableResult
+    func validateAndSavePairingURL(_ url: URL) async throws -> Bool {
         if let ticket = try Self.pairingTicket(from: url) {
             let credentials = try await claimPairing(ticket)
-            try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
-            return
+            return try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
         }
         let credentials = try Self.pairingCredentials(from: url)
         // 兼容旧版 connect 链接；新版 pair 二维码只携带短期签名票据。
-        try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
+        return try await validateAndSave(endpoint: credentials.endpoint, token: credentials.token)
     }
 
     func validatePairingURL(_ url: URL) async throws -> PairingCredentials {
@@ -136,26 +313,137 @@ final class AppStore: ObservableObject {
         connectionStatus = .idle
         lastError = nil
         lastConnectionTestDurationMillis = nil
+        lastConnectionTestReport = nil
+        recentConnectionTestReports = []
     }
 
     @discardableResult
     func validateConnection(endpoint: String, token: String) async throws -> String {
         let startedAt = Date()
+        var stages: [ConnectionTestStageTiming] = []
+        var gatewayDiagnosticsBaseline: RelayDiagnosticsResponse?
+        var gatewayDiagnostics: ConnectionTestGatewayDiagnostics?
+        var gatewayDiagnosticsError: String?
         connectionStatus = .testing
         lastError = nil
         lastConnectionTestDurationMillis = nil
-        defer {
-            // 用完整验证链路的端到端耗时做“延迟”展示：HTTP 健康检查、版本接口和 direct gateway 都要走通。
-            lastConnectionTestDurationMillis = Self.elapsedMilliseconds(since: startedAt)
+        lastConnectionTestReport = nil
+
+        func appendStage(_ kind: ConnectionTestStageTiming.Kind, since stageStartedAt: Date, status: ConnectionTestStageTiming.Status) {
+            stages.append(ConnectionTestStageTiming(
+                kind: kind,
+                durationMillis: Self.elapsedMilliseconds(since: stageStartedAt),
+                status: status
+            ))
         }
+
+        func publishReport() {
+            // 诊断快照是为了定位瓶颈，不属于真实业务链路；总耗时只汇总上面几个测试阶段。
+            let totalMillis = stages.reduce(0) { $0 + $1.durationMillis }
+            let report = ConnectionTestReport(
+                startedAt: startedAt,
+                totalMillis: totalMillis,
+                stages: stages,
+                gatewayDiagnostics: gatewayDiagnostics,
+                gatewayDiagnosticsError: gatewayDiagnosticsError
+            )
+            lastConnectionTestDurationMillis = totalMillis
+            lastConnectionTestReport = report
+            rememberConnectionTestReport(report)
+        }
+
+        func captureGatewayDiagnostics(client: AgentAPIClient, gatewayStartedAt: Date) async {
+            do {
+                let snapshot = try await client.relayDiagnostics()
+                gatewayDiagnostics = ConnectionTestGatewayDiagnostics.make(
+                    baseline: gatewayDiagnosticsBaseline,
+                    snapshot: snapshot,
+                    gatewayStartedAt: gatewayStartedAt
+                )
+                gatewayDiagnosticsError = nil
+            } catch {
+                gatewayDiagnostics = nil
+                gatewayDiagnosticsError = error.localizedDescription
+            }
+        }
+
         let normalized = try Self.validatedEndpoint(endpoint)
         let client = AgentAPIClient(endpoint: normalized, token: token)
-        _ = try await client.health()
-        let version = try await client.version()
-        let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token)
-        try await runtime.validateDirectGateway()
+
+        let healthStartedAt = Date()
+        do {
+            _ = try await client.health()
+            appendStage(.health, since: healthStartedAt, status: .succeeded)
+        } catch {
+            appendStage(.health, since: healthStartedAt, status: .failed(error.localizedDescription))
+            publishReport()
+            throw error
+        }
+
+        let versionStartedAt = Date()
+        let version: VersionResponse
+        do {
+            version = try await client.version()
+            appendStage(.version, since: versionStartedAt, status: .succeeded)
+        } catch {
+            appendStage(.version, since: versionStartedAt, status: .failed(error.localizedDescription))
+            publishReport()
+            throw error
+        }
+
+        let configStartedAt = Date()
+        let config: CodexAppServerConfigResponse
+        do {
+            config = try await client.appServerConfig()
+            appendStage(.appServerConfig, since: configStartedAt, status: .succeeded)
+        } catch {
+            appendStage(.appServerConfig, since: configStartedAt, status: .failed(error.localizedDescription))
+            publishReport()
+            throw error
+        }
+
+        gatewayDiagnosticsBaseline = try? await client.relayDiagnostics()
+
+        let gatewayStartedAt = Date()
+        do {
+            let runtime = CodexAppServerSessionRuntime(endpoint: normalized, token: token, configProvider: { config })
+            try await runtime.validateDirectGateway()
+            appendStage(.appServerGateway, since: gatewayStartedAt, status: .succeeded)
+        } catch {
+            appendStage(.appServerGateway, since: gatewayStartedAt, status: .failed(error.localizedDescription))
+            await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
+            publishReport()
+            throw error
+        }
+
+        await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
+        publishReport()
         connectionStatus = .connected("\(version.version) · direct")
         return normalized
+    }
+
+    var connectionTestStageStabilities: [ConnectionTestStageStability] {
+        Self.connectionTestStageStabilities(reports: recentConnectionTestReports)
+    }
+
+    var mostUnstableConnectionTestStage: ConnectionTestStageStability? {
+        connectionTestStageStabilities.max { lhs, rhs in
+            if lhs.failureCount != rhs.failureCount {
+                return lhs.failureCount < rhs.failureCount
+            }
+            if lhs.spreadMillis != rhs.spreadMillis {
+                return lhs.spreadMillis < rhs.spreadMillis
+            }
+            return lhs.maxMillis < rhs.maxMillis
+        }
+    }
+
+    private func rememberConnectionTestReport(_ report: ConnectionTestReport) {
+        recentConnectionTestReports.append(report)
+        let overflow = recentConnectionTestReports.count - maxConnectionTestReportHistory
+        if overflow > 0 {
+            recentConnectionTestReports.removeFirst(overflow)
+        }
     }
 
     func testConnection(endpoint: String, token: String) async {
@@ -164,6 +452,30 @@ final class AppStore: ObservableObject {
         } catch {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
+        }
+    }
+
+    static func connectionTestStageStabilities(reports: [ConnectionTestReport]) -> [ConnectionTestStageStability] {
+        ConnectionTestStageTiming.Kind.allCases.compactMap { kind in
+            let stages = reports.compactMap { report in
+                report.stages.first { $0.kind == kind }
+            }
+            guard !stages.isEmpty else {
+                return nil
+            }
+            let durations = stages.map(\.durationMillis)
+            let total = durations.reduce(0, +)
+            let failures = stages.filter { stage in
+                stage.status.isFailed
+            }.count
+            return ConnectionTestStageStability(
+                kind: kind,
+                sampleCount: stages.count,
+                failureCount: failures,
+                minMillis: durations.min() ?? 0,
+                maxMillis: durations.max() ?? 0,
+                averageMillis: Int((Double(total) / Double(stages.count)).rounded())
+            )
         }
     }
 
