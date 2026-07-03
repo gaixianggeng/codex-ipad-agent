@@ -16,6 +16,7 @@ struct ConversationView: View {
             foregroundActivity: sessionStore.selectedForegroundActivity,
             runtimeActivitySnapshot: sessionStore.selectedRuntimeActivitySnapshot,
             historySavingsNotice: sessionStore.selectedHistorySavingsNotice,
+            quotaNotice: sessionStore.selectedQuotaNotice,
             webSocketStatus: sessionStore.webSocketStatus,
             errorMessage: sessionStore.errorMessage
         )
@@ -50,7 +51,7 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func topStatusStrip(model: ConversationScreenModel, layout: ConversationLayout) -> some View {
-        if model.errorMessage != nil || model.statusDisplay != nil || model.historySavingsNotice != nil {
+        if model.errorMessage != nil || model.statusDisplay != nil || model.historySavingsNotice != nil || model.quotaNotice != nil {
             Group {
                 if model.runtimeActivitySnapshot != nil {
                     TimelineView(.periodic(from: .now, by: 1)) { timeline in
@@ -72,6 +73,9 @@ struct ConversationView: View {
         VStack(spacing: 8) {
             if let notice = model.historySavingsNotice {
                 historySavingsBanner(notice)
+            }
+            if let notice = model.quotaNotice {
+                quotaLimitBanner(notice)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
@@ -172,11 +176,11 @@ struct ConversationView: View {
             HStack(alignment: .center, spacing: 10) {
                 historySavingsBannerMessage(notice)
                 Spacer(minLength: 0)
-                historySavingsBannerActions
+                historySavingsBannerActions(notice)
             }
             VStack(alignment: .leading, spacing: 8) {
                 historySavingsBannerMessage(notice)
-                historySavingsBannerActions
+                historySavingsBannerActions(notice)
             }
         }
         .padding(.horizontal, 12)
@@ -205,26 +209,142 @@ struct ConversationView: View {
         }
     }
 
-    private var historySavingsBannerActions: some View {
+    private func quotaLimitBanner(_ notice: CodexQuotaNotice) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                quotaLimitBannerMessage(notice)
+                Spacer(minLength: 0)
+                quotaLimitBannerActions(notice)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                quotaLimitBannerMessage(notice)
+                quotaLimitBannerActions(notice)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.warning.opacity(0.12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(tokens.warning.opacity(0.42), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func quotaLimitBannerMessage(_ notice: CodexQuotaNotice) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "speedometer")
+                .font(themeStore.uiFont(.body, weight: .semibold))
+                .foregroundStyle(tokens.warning)
+                .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(notice.title)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(notice.message)
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func quotaLimitBannerActions(_ notice: CodexQuotaNotice) -> some View {
         HStack(spacing: 8) {
             Button {
                 Task {
-                    await sessionStore.loadFullHistoryForSelectedSession()
+                    await sessionStore.refreshCurrentContext()
                 }
             } label: {
-                Label("加载完整内容", systemImage: "arrow.down.circle")
+                Label("刷新状态", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(sessionStore.isRefreshingSelectedSession)
+            .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
-            Button {
-                sessionStore.dismissSelectedHistorySavingsNotice()
-            } label: {
-                Label("不再提示", systemImage: "xmark.circle")
+            if notice.canDismiss {
+                Button {
+                    sessionStore.dismissErrorMessage()
+                } label: {
+                    Label("关闭", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private func historySavingsBannerActions(_ notice: HistorySavingsNotice) -> some View {
+        HStack(spacing: 8) {
+            switch notice.kind {
+            case .loadingFull:
+                Button {
+                    Task {
+                        await sessionStore.loadSummaryHistoryForSelectedSession()
+                    }
+                } label: {
+                    Label("只看缩略版", systemImage: "text.justify")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(sessionStore.isRefreshingSelectedSession)
+
+            case .fullFailed:
+                Button {
+                    Task {
+                        await sessionStore.loadFullHistoryForSelectedSession()
+                    }
+                } label: {
+                    Label("重试完整历史", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(sessionStore.isRefreshingSelectedSession)
+
+                Button {
+                    Task {
+                        await sessionStore.loadSummaryHistoryForSelectedSession()
+                    }
+                } label: {
+                    Label("只看缩略版", systemImage: "text.justify")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(sessionStore.isRefreshingSelectedSession)
+
+            case .loadingSummary:
+                Button {} label: {
+                    Label("正在加载", systemImage: "hourglass")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(true)
+
+            case .summaryLoaded:
+                Button {
+                    Task {
+                        await sessionStore.loadFullHistoryForSelectedSession()
+                    }
+                } label: {
+                    Label("加载完整历史", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(sessionStore.isRefreshingSelectedSession)
+
+                Button {
+                    sessionStore.dismissSelectedHistorySavingsNotice()
+                } label: {
+                    Label("关闭", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
     }
 
@@ -248,6 +368,7 @@ struct ConversationScreenModel: Equatable {
     let foregroundActivity: SessionForegroundActivity?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
     let historySavingsNotice: HistorySavingsNotice?
+    let quotaNotice: CodexQuotaNotice?
     let webSocketStatus: WebSocketStatus
     let statusDisplay: AgentSessionDisplayStatus?
     let errorMessage: String?
@@ -258,6 +379,7 @@ struct ConversationScreenModel: Equatable {
         foregroundActivity: SessionForegroundActivity?,
         runtimeActivitySnapshot: RuntimeActivitySnapshot?,
         historySavingsNotice: HistorySavingsNotice?,
+        quotaNotice: CodexQuotaNotice?,
         webSocketStatus: WebSocketStatus,
         errorMessage: String?
     ) {
@@ -267,9 +389,11 @@ struct ConversationScreenModel: Equatable {
         self.foregroundActivity = foregroundActivity
         self.runtimeActivitySnapshot = runtimeActivitySnapshot
         self.historySavingsNotice = historySavingsNotice
+        self.quotaNotice = quotaNotice
         self.webSocketStatus = webSocketStatus
         self.statusDisplay = Self.visibleStatusDisplay(for: selectedSession, foregroundActivity: foregroundActivity)
-        self.errorMessage = errorMessage
+        let trimmedError = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.errorMessage = quotaNotice != nil && trimmedError.map(CodexQuotaNotice.isQuotaError) == true ? nil : errorMessage
     }
 
     private static func visibleStatusDisplay(

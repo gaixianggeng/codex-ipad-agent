@@ -74,6 +74,9 @@ actor CodexAppServerSessionRuntime {
     private var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     private var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
     private var userInputPromptsEnabledBySessionID: [SessionID: Bool] = [:]
+    private var accountRateLimit: RateLimitSummary?
+    private var rateLimitRefreshTask: Task<RateLimitSummary?, Never>?
+    private var lastRateLimitRefreshAt: Date?
     // 正在 startTurn 中的 thread：turn/start 请求挂起期间，actor 会重入处理 server-request，
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
@@ -91,6 +94,9 @@ actor CodexAppServerSessionRuntime {
     // 只给列表请求放宽超时，避免影响 turn/start 等交互命令的失败反馈速度。
     private let threadListRequestTimeout: TimeInterval = 60
     private let requestTimeout: TimeInterval
+    private var rateLimitRequestTimeout: TimeInterval {
+        min(requestTimeout, 5)
+    }
     // 每个 thread 最近一次收到上游实时通知的时间。thread/list、thread/read 偶发把正在执行的
     // turn 误读成 idle/notLoaded；刚收到过实时信号的 thread 在这个时间窗内不接受 history 降级。
     private var lastLiveSignalAtBySessionID: [SessionID: Date] = [:]
@@ -117,6 +123,7 @@ actor CodexAppServerSessionRuntime {
         connectionTask?.cancel()
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
+        rateLimitRefreshTask?.cancel()
     }
 
     func projects() async throws -> [AgentProject] {
@@ -177,6 +184,7 @@ actor CodexAppServerSessionRuntime {
                 activeTurnID: session.activeTurnID
             )
         }
+        scheduleRateLimitRefreshIfAvailable()
         return page
     }
 
@@ -197,6 +205,7 @@ actor CodexAppServerSessionRuntime {
                 activeTurnID: session.activeTurnID
             )
         }
+        scheduleRateLimitRefreshIfAvailable()
         return page
     }
 
@@ -292,6 +301,7 @@ actor CodexAppServerSessionRuntime {
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(id)
         }
+        _ = await refreshRateLimitIfAvailable(force: true)
         let session = try agentSession(from: thread, projects: try await projects(), fallbackProject: nil)
         contextsBySessionID[id] = CodexAppServerSessionContext(
             session: session,
@@ -944,6 +954,7 @@ actor CodexAppServerSessionRuntime {
                     didRetryAfterStaleInitialization = true
                     continue
                 }
+                await refreshRateLimitAfterQuotaError(error)
                 await retireCurrentConnectionAfterRecoverableError(connection, error: error)
                 throw error
             }
@@ -994,6 +1005,7 @@ actor CodexAppServerSessionRuntime {
                     didRetryAfterStaleInitialization = true
                     continue
                 }
+                await refreshRateLimitAfterQuotaError(error)
                 await retireCurrentConnectionAfterRecoverableError(connection, error: error)
                 throw error
             }
@@ -1705,6 +1717,78 @@ actor CodexAppServerSessionRuntime {
         return SessionsPage(sessions: sessions, nextCursor: nextCursor, hasMore: nextCursor != nil)
     }
 
+    private func scheduleRateLimitRefreshIfAvailable() {
+        guard rateLimitRefreshTask == nil else {
+            return
+        }
+        if let lastRateLimitRefreshAt,
+           Date().timeIntervalSince(lastRateLimitRefreshAt) < 15 {
+            return
+        }
+        // 额度读取只是列表展示增强，不能阻塞 thread/list 首屏；后台完成后用 session 事件刷新 UI。
+        rateLimitRefreshTask = Task { [self] in
+            let summary = await performRateLimitRefreshIfAvailable()
+            finishScheduledRateLimitRefresh()
+            return summary
+        }
+    }
+
+    private func finishScheduledRateLimitRefresh() {
+        rateLimitRefreshTask = nil
+    }
+
+    private func refreshRateLimitIfAvailable(force: Bool = false) async -> RateLimitSummary? {
+        if !force, let rateLimitRefreshTask {
+            return await rateLimitRefreshTask.value
+        }
+        if force {
+            rateLimitRefreshTask?.cancel()
+            rateLimitRefreshTask = nil
+        }
+        return await performRateLimitRefreshIfAvailable()
+    }
+
+    private func performRateLimitRefreshIfAvailable() async -> RateLimitSummary? {
+        guard let config = try? await ensureConfig(),
+              config.policy.allowedMethods.contains("account/rateLimits/read")
+        else {
+            return accountRateLimit
+        }
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                CodexAppServerRequestBuilder(allowlistedProjects: config.projects).accountRateLimitsRead(),
+                timeout: rateLimitRequestTimeout
+            )
+            guard let summary = rateLimitSummary(fromPayload: result) else {
+                return accountRateLimit
+            }
+            applyAccountRateLimit(summary)
+            lastRateLimitRefreshAt = Date()
+            return summary
+        } catch {
+            // 额度读取只是展示增强，不应拖垮会话列表或发送链路。
+            return accountRateLimit
+        }
+    }
+
+    private func refreshRateLimitAfterQuotaError(_ error: Error) async {
+        guard CodexQuotaNotice.isQuotaError(error.localizedDescription) else {
+            return
+        }
+        _ = await refreshRateLimitIfAvailable()
+    }
+
+    private func applyAccountRateLimit(_ summary: RateLimitSummary) {
+        accountRateLimit = summary
+        for sessionID in Array(contextsBySessionID.keys) {
+            if let session = withUpdatedSession(sessionID, update: { item in
+                item.rateLimit = summary
+            }) {
+                emit(.session(session))
+            }
+        }
+    }
+
     private func threadObject(from result: CodexAppServerJSONValue?) -> [String: CodexAppServerJSONValue]? {
         result?["thread"]?.objectValue
     }
@@ -1755,6 +1839,10 @@ actor CodexAppServerSessionRuntime {
             && (activeTurnID != nil || hasRecentLiveSignal(sessionID: id))
         let effectiveStatus = shouldKeepCachedStatus ? (cached?.status ?? status) : status
         let goal = thread["goal"]?.objectValue.flatMap { ThreadGoal(object: $0) } ?? cached?.goal
+        let rateLimit = rateLimitSummary(fromSnapshot: thread["rateLimit"]?.objectValue)
+            ?? rateLimitSummary(fromSnapshot: thread["rate_limit"]?.objectValue)
+            ?? cached?.rateLimit
+            ?? accountRateLimit
         let context = sessionContext(
             from: thread,
             sessionID: id,
@@ -1779,6 +1867,8 @@ actor CodexAppServerSessionRuntime {
             activeTurnID: activeTurnID,
             lastSeq: nil,
             revision: 0,
+            usage: cached?.usage,
+            rateLimit: rateLimit,
             goal: goal,
             context: context
         )
@@ -1882,6 +1972,131 @@ actor CodexAppServerSessionRuntime {
             if let value = object[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
                !value.isEmpty {
                 return value
+            }
+        }
+        return nil
+    }
+
+    private func rateLimitSummary(fromPayload value: CodexAppServerJSONValue?) -> RateLimitSummary? {
+        guard let object = value?.objectValue else {
+            return nil
+        }
+        if let byLimitID = object["rateLimitsByLimitId"]?.objectValue ?? object["rate_limits_by_limit_id"]?.objectValue {
+            if let codex = byLimitID["codex"]?.objectValue,
+               let summary = rateLimitSummary(fromSnapshot: codex) {
+                return summary
+            }
+            for item in byLimitID.values {
+                if let summary = rateLimitSummary(fromSnapshot: item.objectValue) {
+                    return summary
+                }
+            }
+        }
+        if let rateLimits = object["rateLimits"]?.objectValue ?? object["rate_limits"]?.objectValue {
+            return rateLimitSummary(fromSnapshot: rateLimits)
+        }
+        return rateLimitSummary(fromSnapshot: object)
+    }
+
+    private func rateLimitSummary(fromSnapshot snapshot: [String: CodexAppServerJSONValue]?) -> RateLimitSummary? {
+        guard let snapshot else {
+            return nil
+        }
+        let primary = snapshot["primary"]?.objectValue
+        let secondary = snapshot["secondary"]?.objectValue
+        let credits = snapshot["credits"]?.objectValue
+        let summary = RateLimitSummary(
+            limitID: firstString(in: snapshot, keys: ["limitId", "limit_id"]),
+            limitName: firstString(in: snapshot, keys: ["limitName", "limit_name"]),
+            planType: firstString(in: snapshot, keys: ["planType", "plan_type"]),
+            reachedType: firstString(in: snapshot, keys: ["rateLimitReachedType", "reachedType", "reached_type"]),
+            primaryUsedPercent: firstDouble(in: primary, keys: ["usedPercent", "used_percent"]),
+            secondaryUsedPercent: firstDouble(in: secondary, keys: ["usedPercent", "used_percent"]),
+            primaryResetsAt: firstInt64(in: primary, keys: ["resetsAt", "resets_at"]),
+            secondaryResetsAt: firstInt64(in: secondary, keys: ["resetsAt", "resets_at"]),
+            hasCredits: firstBool(in: credits, keys: ["hasCredits", "has_credits"]),
+            creditsUnlimited: firstBool(in: credits, keys: ["unlimited", "credits_unlimited"]),
+            creditBalance: firstString(in: credits ?? [:], keys: ["balance", "credit_balance"])
+        )
+        if summary.limitID == nil,
+           summary.limitName == nil,
+           summary.planType == nil,
+           summary.reachedType == nil,
+           summary.primaryUsedPercent == nil,
+           summary.secondaryUsedPercent == nil,
+           summary.hasCredits == nil,
+           summary.creditBalance == nil {
+            return nil
+        }
+        return summary
+    }
+
+    private func firstDouble(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Double? {
+        guard let object else {
+            return nil
+        }
+        for key in keys {
+            guard let value = object[key] else {
+                continue
+            }
+            switch value {
+            case .double(let number):
+                return number
+            case .int(let number):
+                return Double(number)
+            case .string(let raw):
+                if let number = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    return number
+                }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func firstInt64(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Int64? {
+        guard let object else {
+            return nil
+        }
+        for key in keys {
+            guard let value = object[key] else {
+                continue
+            }
+            switch value {
+            case .int(let number):
+                return number
+            case .double(let number):
+                return Int64(number)
+            case .string(let raw):
+                if let number = Int64(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    return number
+                }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func firstBool(in object: [String: CodexAppServerJSONValue]?, keys: [String]) -> Bool? {
+        guard let object else {
+            return nil
+        }
+        for key in keys {
+            guard let value = object[key] else {
+                continue
+            }
+            if let bool = value.boolValue {
+                return bool
+            }
+            if let raw = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                if raw == "true" {
+                    return true
+                }
+                if raw == "false" {
+                    return false
+                }
             }
         }
         return nil

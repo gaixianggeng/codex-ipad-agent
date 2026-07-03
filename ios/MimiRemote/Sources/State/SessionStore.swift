@@ -256,6 +256,39 @@ private enum HistoryFirstPageCachePolicy: Equatable {
     case bypass
 }
 
+private enum HistoryLoadReason: Equatable {
+    case automatic
+    case manualFull
+    case summaryChoice
+}
+
+private enum HistoryLoadQuality: Equatable {
+    case full
+    case summary
+}
+
+private struct HistoryLoadSignature: Equatable {
+    let updatedAt: Date?
+    let revision: ModelRevision?
+    let lastSeq: EventSequence?
+
+    init(session: AgentSession) {
+        self.updatedAt = session.updatedAt
+        self.revision = session.revision
+        self.lastSeq = session.lastSeq
+    }
+}
+
+// 会话首屏历史按 session 维度复用，而不是按选中动作复用。
+// 用户来回切会话、前台恢复、手动刷新可能同时触发 before=nil 请求；
+// 这里保留一轮加载的 task 和 session 快照，用来避免同一个大 session 反复请求。
+private struct HistoryLoadJob {
+    let token: Int
+    let sessionSignature: HistoryLoadSignature
+    let loadMode: HistoryMessagesPage.LoadMode
+    let task: Task<HistoryFirstPageResult, Error>
+}
+
 struct ProjectSessionListSnapshot: Equatable {
     let projectID: String
     let isExpanded: Bool
@@ -461,7 +494,15 @@ struct SessionReminderStore {
 }
 
 struct HistorySavingsNotice: Equatable {
+    enum Kind: Equatable {
+        case loadingFull
+        case fullFailed
+        case loadingSummary
+        case summaryLoaded
+    }
+
     let sessionID: SessionID
+    let kind: Kind
     let message: String
 }
 
@@ -810,6 +851,10 @@ final class SessionStore: ObservableObject {
     private var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
     private var historyFirstPageInFlightByKey: [HistoryFirstPageRequestKey: HistoryFirstPageInFlight] = [:]
     private var historyFirstPageCacheByKey: [HistoryFirstPageRequestKey: HistoryFirstPageCacheEntry] = [:]
+    private var historyLoadJobsBySessionID: [SessionID: HistoryLoadJob] = [:]
+    private var historyLoadJobTokenBySessionID: [SessionID: Int] = [:]
+    private var historyLoadedSignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
+    private var historyLoadedQualityBySessionID: [SessionID: HistoryLoadQuality] = [:]
     private var initialHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published private var historyLoadProgressBySessionID: [SessionID: HistoryLoadProgress] = [:]
     @Published private var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
@@ -1172,7 +1217,15 @@ final class SessionStore: ObservableObject {
     }
 
     var canSendInSelectedSession: Bool {
-        canControlSession(selectedSession)
+        canControlSession(selectedSession) && selectedQuotaNotice?.blocksSending != true
+    }
+
+    var selectedQuotaNotice: CodexQuotaNotice? {
+        CodexQuotaNotice.make(rateLimit: selectedSession?.rateLimit, errorMessage: errorMessage)
+    }
+
+    var selectedCodexUsageDisplay: CodexUsageDisplaySummary? {
+        CodexUsageDisplaySummary.make(rateLimit: selectedSession?.rateLimit)
     }
 
     var isSelectedSessionObserving: Bool {
@@ -1218,9 +1271,7 @@ final class SessionStore: ObservableObject {
     }
 
     var selectedHistorySavingsNotice: HistorySavingsNotice? {
-        guard let selectedSessionID,
-              !dismissedHistorySavingsNoticeEndpoints.contains(AgentAPIClient.normalizedEndpoint(appStore.endpoint))
-        else {
+        guard let selectedSessionID else {
             return nil
         }
         return historySavingsNoticesBySessionID[selectedSessionID]
@@ -2242,14 +2293,31 @@ final class SessionStore: ObservableObject {
         guard let session = selectedSession else {
             return
         }
-        await refreshSelectedSessionContent(session, successStatusMessage: "已加载完整内容")
+        await refreshSelectedSessionContent(session, successStatusMessage: "已加载完整历史", reason: .manualFull)
+    }
+
+    func loadSummaryHistoryForSelectedSession() async {
+        guard let session = selectedSession else {
+            return
+        }
+        _ = await loadHistory(
+            for: session,
+            quiet: false,
+            loadMode: .economy,
+            force: true,
+            reason: .summaryChoice,
+            successStatusMessage: "已加载缩略历史"
+        )
     }
 
     func dismissSelectedHistorySavingsNotice() {
         if let selectedSessionID {
             historySavingsNoticesBySessionID.removeValue(forKey: selectedSessionID)
         }
-        dismissedHistorySavingsNoticeEndpoints = historySavingsNoticeStore.dismiss(endpoint: appStore.endpoint)
+    }
+
+    func dismissErrorMessage() {
+        setErrorMessage(nil)
     }
 
     func refreshAppServerModelOptions(force: Bool = false) async {
@@ -2342,8 +2410,8 @@ final class SessionStore: ObservableObject {
             let page = try await client.messagesPage(
                 sessionID: session.id,
                 before: cursor,
-                limit: economyHistoryPageLimit,
-                loadMode: .economy
+                limit: historyLoadedQualityBySessionID[session.id] == .summary ? economyHistoryPageLimit : fullHistoryPageLimit,
+                loadMode: historyLoadedQualityBySessionID[session.id] == .summary ? .economy : .full
             )
             setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.76)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
@@ -2459,6 +2527,10 @@ final class SessionStore: ObservableObject {
             return false
         }
         threadGoalErrorMessage = nil
+        if let notice = selectedQuotaNotice, notice.blocksSending {
+            setErrorMessage(notice.message)
+            return false
+        }
 
         if let session = selectedSession, session.isRunning {
             // 运行中目标要先确认实时通道可用；否则会出现目标已写入但任务没有真正发送的中间态。
@@ -2513,6 +2585,10 @@ final class SessionStore: ObservableObject {
     @discardableResult
     func sendTurn(_ payload: CodexAppServerTurnPayload, runningDelivery: RunningTurnDelivery = .queued) async -> Bool {
         guard !payload.isEmpty else {
+            return false
+        }
+        if let notice = selectedQuotaNotice, notice.blocksSending {
+            setErrorMessage(notice.message)
             return false
         }
         let payload = runningDelivery == .queued ? await payloadResolvingRequiredModel(payload) : payload
@@ -2665,6 +2741,10 @@ final class SessionStore: ObservableObject {
         }
         let prompt = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
+            return false
+        }
+        if let notice = selectedQuotaNotice, notice.blocksSending {
+            setErrorMessage(notice.message)
             return false
         }
 
@@ -2845,6 +2925,10 @@ final class SessionStore: ObservableObject {
         initialGoalObjective: String? = nil
     ) async -> Bool {
         let payload = await payloadResolvingRequiredModel(payload)
+        if !payload.isEmpty, let notice = selectedQuotaNotice, notice.blocksSending {
+            setErrorMessage(notice.message)
+            return false
+        }
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             setErrorMessage("工作区已失效，请重新打开")
@@ -2906,7 +2990,11 @@ final class SessionStore: ObservableObject {
             insertExpandedProjectID(responseSession.projectID)
 
             // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
-            let didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
+            // 如果用户刚从历史列表进入，当前 session 已经有一份完整历史快照；
+            // create 返回的 running 状态可能只改变元数据，这里复用快照，避免同一会话立刻再打一次 full。
+            let didLoadInitialHistory = hasLoadedFullHistorySnapshot(sessionID: responseSession.id)
+                ? true
+                : await loadHistoryIfNeeded(for: responseSession)
             if !prompt.isEmpty {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
@@ -2958,16 +3046,8 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     private func loadHistoryIfNeeded(for session: AgentSession) async -> Bool {
-        guard !conversationStore.hasLoadedHistory(sessionID: session.id) else {
+        guard !canReuseLoadedHistory(for: session, loadMode: .full) else {
             return true
-        }
-        guard !initialHistoryLoadingSessionIDs.contains(session.id) else {
-            return false
-        }
-        // 自动选择历史会话时只需要一个首屏请求；手动刷新仍会绕过这里拿最新 rollout。
-        initialHistoryLoadingSessionIDs.insert(session.id)
-        defer {
-            initialHistoryLoadingSessionIDs.remove(session.id)
         }
         return await loadHistory(for: session)
     }
@@ -2975,48 +3055,71 @@ final class SessionStore: ObservableObject {
     // quiet 模式用于切回已加载会话时的后台补拉：界面继续展示缓存，不出进度条，
     // 失败也不打扰用户（下一次轮询/手动刷新仍会兜底）。
     @discardableResult
-    private func loadHistory(for session: AgentSession, quiet: Bool = false) async -> Bool {
+    private func loadHistory(
+        for session: AgentSession,
+        quiet: Bool = false,
+        loadMode: HistoryMessagesPage.LoadMode = .full,
+        force: Bool = false,
+        reason: HistoryLoadReason = .automatic,
+        successStatusMessage: String? = nil
+    ) async -> Bool {
+        if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
+            return true
+        }
+
+        if let existing = historyLoadJobsBySessionID[session.id] {
+            if existing.loadMode == loadMode {
+                // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
+                return await awaitHistoryLoadJob(
+                    existing,
+                    session: session,
+                    quiet: quiet,
+                    successStatusMessage: successStatusMessage
+                )
+            }
+            switch reason {
+            case .summaryChoice, .manualFull:
+                cancelHistoryLoadJob(existing, sessionID: session.id)
+            case .automatic:
+                return true
+            }
+        }
+
+        let signature = HistoryLoadSignature(session: session)
+        let jobToken = beginHistoryLoadJob(sessionID: session.id)
+        let limit = loadMode == .full ? fullHistoryPageLimit : economyHistoryPageLimit
+        let hasNewerSessionSnapshot = historyLoadedSignatureBySessionID[session.id].map { $0 != signature } == true
+        let cachePolicy: HistoryFirstPageCachePolicy = force || hasNewerSessionSnapshot ? .bypass : .reuseRecent
+        let task = Task { [self] in
+            try await historyFirstPage(
+                sessionID: session.id,
+                limit: limit,
+                loadMode: loadMode,
+                cachePolicy: cachePolicy
+            )
+        }
+        let job = HistoryLoadJob(
+            token: jobToken,
+            sessionSignature: signature,
+            loadMode: loadMode,
+            task: task
+        )
+        historyLoadJobsBySessionID[session.id] = job
+        setHistoryLoadNotice(sessionID: session.id, kind: loadMode == .full ? .loadingFull : .loadingSummary)
+
         if !quiet {
-            setHistoryLoadProgress(sessionID: session.id, title: "准备加载历史", fraction: 0.08)
+            setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? "准备加载完整历史" : "准备加载缩略历史", fraction: 0.08)
         }
         defer {
             if !quiet {
                 clearHistoryLoadProgress(sessionID: session.id)
             }
         }
-        do {
-            // 历史文件可能很大，移动端默认只加载最近一段上下文，避免打开会话时卡住 UI。
-            if !quiet {
-                setHistoryLoadProgress(sessionID: session.id, title: "请求最近消息", fraction: 0.32)
-            }
-            let result = try await historyFirstPage(
-                sessionID: session.id,
-                limit: economyHistoryPageLimit,
-                loadMode: .economy,
-                cachePolicy: .reuseRecent
-            )
-            guard isCurrentHistoryPageRequest(sessionID: session.id, token: result.token) else {
-                return false
-            }
-            if !quiet {
-                setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.74)
-            }
-            applyHistoryFirstPage(result.page, sessionID: session.id)
-            if !quiet {
-                setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.94)
-            }
-            updateHistoryPageState(sessionID: session.id, page: result.page, preserveExistingCursorOnEmptyPage: true)
-            return true
-        } catch {
-            if let failure = error as? HistoryFirstPageFetchFailure,
-               !isCurrentHistoryPageRequest(sessionID: session.id, token: failure.token) {
-                return false
-            }
-            if !quiet {
-                setStatusMessage("历史消息读取失败：\(error.localizedDescription)")
-            }
-            return false
+
+        if !quiet {
+            setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? "请求完整历史" : "请求缩略历史", fraction: 0.32)
         }
+        return await awaitHistoryLoadJob(job, session: session, quiet: quiet, successStatusMessage: successStatusMessage)
     }
 
     private func scheduleQuietHistoryRefresh(for session: AgentSession) {
@@ -3028,29 +3131,147 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func refreshSelectedSessionContent(_ session: AgentSession, successStatusMessage: String = "当前会话已刷新") async {
+    private func canReuseLoadedHistory(for session: AgentSession, loadMode: HistoryMessagesPage.LoadMode) -> Bool {
+        guard conversationStore.hasLoadedHistory(sessionID: session.id),
+              let loadedSignature = historyLoadedSignatureBySessionID[session.id],
+              loadedSignature == HistoryLoadSignature(session: session),
+              let loadedQuality = historyLoadedQualityBySessionID[session.id]
+        else {
+            return false
+        }
+        // 缩略历史只能满足 summary 视图；当调用方明确需要 full 时必须重新拉完整历史。
+        return loadMode == .economy || loadedQuality == .full
+    }
+
+    private func hasLoadedFullHistorySnapshot(sessionID: SessionID) -> Bool {
+        conversationStore.hasLoadedHistory(sessionID: sessionID)
+            && historyLoadedQualityBySessionID[sessionID] == .full
+    }
+
+    private func awaitHistoryLoadJob(
+        _ job: HistoryLoadJob,
+        session: AgentSession,
+        quiet: Bool,
+        successStatusMessage: String?
+    ) async -> Bool {
+        do {
+            let result = try await job.task.value
+            return finishHistoryLoadJob(
+                job,
+                result: result,
+                sessionID: session.id,
+                quiet: quiet,
+                successStatusMessage: successStatusMessage
+            )
+        } catch {
+            return failHistoryLoadJob(job, sessionID: session.id, error: error, quiet: quiet)
+        }
+    }
+
+    private func finishHistoryLoadJob(
+        _ job: HistoryLoadJob,
+        result: HistoryFirstPageResult,
+        sessionID: SessionID,
+        quiet: Bool,
+        successStatusMessage: String?
+    ) -> Bool {
+        guard historyLoadJobsBySessionID[sessionID]?.token == job.token else {
+            // 当前 job 已被用户选择 summary 或新的刷新取代；旧结果可以完成，但不能覆盖界面。
+            return historyLoadedSignatureBySessionID[sessionID] == job.sessionSignature
+        }
+        historyLoadJobsBySessionID.removeValue(forKey: sessionID)
+        guard isCurrentHistoryPageRequest(sessionID: sessionID, token: result.token) else {
+            return false
+        }
+        if !quiet {
+            setHistoryLoadProgress(sessionID: sessionID, title: "解析历史消息", fraction: 0.74)
+        }
+        applyHistoryFirstPage(result.page, sessionID: sessionID)
+        if !quiet {
+            setHistoryLoadProgress(sessionID: sessionID, title: "更新界面", fraction: 0.94)
+        }
+        updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
+        historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
+        historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
+        if job.loadMode == .full {
+            historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
+        } else {
+            setHistoryLoadNotice(sessionID: sessionID, kind: .summaryLoaded)
+        }
+        if let successStatusMessage {
+            setStatusMessage(successStatusMessage)
+        }
+        return true
+    }
+
+    private func failHistoryLoadJob(
+        _ job: HistoryLoadJob,
+        sessionID: SessionID,
+        error: Error,
+        quiet: Bool
+    ) -> Bool {
+        guard historyLoadJobsBySessionID[sessionID]?.token == job.token else {
+            return false
+        }
+        historyLoadJobsBySessionID.removeValue(forKey: sessionID)
+        if error is CancellationError {
+            return false
+        }
+        if let failure = error as? HistoryFirstPageFetchFailure,
+           !isCurrentHistoryPageRequest(sessionID: sessionID, token: failure.token) {
+            return false
+        }
+        if job.loadMode == .full {
+            setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
+            if !quiet {
+                setStatusMessage("完整历史加载失败：\(error.localizedDescription)")
+            }
+        } else {
+            setErrorMessage("缩略历史加载失败：\(error.localizedDescription)")
+        }
+        return false
+    }
+
+    private func cancelHistoryLoadJob(_ job: HistoryLoadJob, sessionID: SessionID) {
+        if historyLoadJobsBySessionID[sessionID]?.token == job.token {
+            // best-effort 取消旧 job；即使底层请求已发出，token 校验也会阻止迟到结果覆盖当前视图。
+            job.task.cancel()
+            historyLoadJobsBySessionID.removeValue(forKey: sessionID)
+        }
+    }
+
+    private func setHistoryLoadNotice(sessionID: SessionID, kind: HistorySavingsNotice.Kind) {
+        let message: String
+        switch kind {
+        case .loadingFull:
+            message = "正在加载完整历史，内容较大时可能需要等待。"
+        case .fullFailed:
+            message = "完整历史加载失败，可能是内容过大。"
+        case .loadingSummary:
+            message = "正在加载缩略历史。"
+        case .summaryLoaded:
+            message = "当前显示缩略历史。"
+        }
+        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: kind, message: message)
+    }
+
+    private func refreshSelectedSessionContent(
+        _ session: AgentSession,
+        successStatusMessage: String = "当前会话已刷新",
+        reason: HistoryLoadReason = .manualFull
+    ) async {
         isRefreshingSelectedSession = true
         defer { isRefreshingSelectedSession = false }
 
-        do {
-            // 手动刷新必须绕过 hasLoadedHistory 缓存，Mac/iPad 混合使用时 app-server 历史可能已经更新。
-            setHistoryLoadProgress(sessionID: session.id, title: "刷新历史消息", fraction: 0.18)
-            defer {
-                clearHistoryLoadProgress(sessionID: session.id)
-            }
-            let result = try await historyFirstPage(
-                sessionID: session.id,
-                limit: fullHistoryPageLimit,
-                loadMode: .full,
-                cachePolicy: .bypass
-            )
-            guard isCurrentHistoryPageRequest(sessionID: session.id, token: result.token) else {
-                return
-            }
-            setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.72)
-            applyHistoryFirstPage(result.page, sessionID: session.id)
-            setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.92)
-            updateHistoryPageState(sessionID: session.id, page: result.page, preserveExistingCursorOnEmptyPage: true)
+        let didLoad = await loadHistory(
+            for: session,
+            quiet: false,
+            loadMode: .full,
+            force: true,
+            reason: reason,
+            successStatusMessage: successStatusMessage
+        )
+        if didLoad {
             if !session.isRunning {
                 clearForegroundActivity(sessionID: session.id)
                 clearRuntimeActivity(sessionID: session.id)
@@ -3058,10 +3279,7 @@ final class SessionStore: ObservableObject {
             // 手动刷新当前会话只等待历史页接口；列表/运行态校准放到后台，
             // 避免 thread/list 之类的慢接口把“刷新历史”按钮继续卡住。
             scheduleSessionStateReconciliationAfterHistoryRefresh(session)
-            setStatusMessage(successStatusMessage)
             setErrorMessage(nil)
-        } catch {
-            setErrorMessage(error.localizedDescription)
         }
     }
 
@@ -3101,8 +3319,8 @@ final class SessionStore: ObservableObject {
             let page = try await task.value
             if historyFirstPageInFlightByKey[key]?.token == token {
                 historyFirstPageInFlightByKey.removeValue(forKey: key)
+                historyFirstPageCacheByKey[key] = HistoryFirstPageCacheEntry(page: page, loadedAt: Date(), token: token)
             }
-            historyFirstPageCacheByKey[key] = HistoryFirstPageCacheEntry(page: page, loadedAt: Date(), token: token)
             return HistoryFirstPageResult(page: page, token: token)
         } catch {
             if historyFirstPageInFlightByKey[key]?.token == token {
@@ -3114,7 +3332,7 @@ final class SessionStore: ObservableObject {
 
     private func applyHistoryFirstPage(_ page: HistoryMessagesPage, sessionID: SessionID) {
         ingestHistoryContext(page.context, fallbackSessionID: sessionID)
-        conversationStore.setHistory(page.messages, sessionID: sessionID)
+        conversationStore.replaceHistorySnapshot(page.messages, sessionID: sessionID)
         updateHistorySavingsNotice(sessionID: sessionID, page: page)
     }
 
@@ -3126,7 +3344,7 @@ final class SessionStore: ObservableObject {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
             return
         }
-        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, message: notice)
+        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: .summaryLoaded, message: notice)
     }
 
     private func scheduleSessionStateReconciliationAfterHistoryRefresh(_ session: AgentSession) {
@@ -3625,6 +3843,12 @@ final class SessionStore: ObservableObject {
         sessionPageRequestTokenByProjectID[projectID] == token
     }
 
+    private func beginHistoryLoadJob(sessionID: SessionID) -> Int {
+        let token = (historyLoadJobTokenBySessionID[sessionID] ?? 0) + 1
+        historyLoadJobTokenBySessionID[sessionID] = token
+        return token
+    }
+
     // 历史首屏也会并发触发：点选历史、前台恢复、手动刷新都可能同时请求 before=nil。
     // 只接受最新 token，避免旧 rollout 快照晚到后覆盖较新的消息投影和分页 cursor。
     private func beginHistoryPageRequest(sessionID: SessionID) -> Int {
@@ -3850,6 +4074,14 @@ final class SessionStore: ObservableObject {
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadProgressBySessionID = historyLoadProgressBySessionID.filter { validSessionIDs.contains($0.key) }
+        let staleHistoryLoadJobIDs = historyLoadJobsBySessionID.keys.filter { !validSessionIDs.contains($0) }
+        for sessionID in staleHistoryLoadJobIDs {
+            historyLoadJobsBySessionID[sessionID]?.task.cancel()
+            historyLoadJobsBySessionID.removeValue(forKey: sessionID)
+        }
+        historyLoadJobTokenBySessionID = historyLoadJobTokenBySessionID.filter { validSessionIDs.contains($0.key) }
+        historyLoadedSignatureBySessionID = historyLoadedSignatureBySessionID.filter { validSessionIDs.contains($0.key) }
+        historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
         for key in staleHistoryFirstPageKeys {
             historyFirstPageInFlightByKey[key]?.task.cancel()
@@ -5023,6 +5255,11 @@ final class SessionStore: ObservableObject {
         historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         historyFirstPageInFlightByKey = [:]
         historyFirstPageCacheByKey = [:]
+        historyLoadJobsBySessionID.values.forEach { $0.task.cancel() }
+        historyLoadJobsBySessionID = [:]
+        historyLoadJobTokenBySessionID = [:]
+        historyLoadedSignatureBySessionID = [:]
+        historyLoadedQualityBySessionID = [:]
         initialHistoryLoadingSessionIDs = []
         historyLoadProgressBySessionID = [:]
         historySavingsNoticesBySessionID = [:]

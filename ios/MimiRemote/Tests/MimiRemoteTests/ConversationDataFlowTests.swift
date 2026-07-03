@@ -5789,9 +5789,15 @@ final class ConversationDataFlowTests: XCTestCase {
         let firstSelectTask = Task { await store.selectSession(history) }
         await client.waitForHistoryRequestCount(1)
 
-        await store.selectSession(history)
+        store.returnToSessionList()
+        let secondSelectTask = Task { await store.selectSession(history) }
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
 
         XCTAssertEqual(client.requestedMessageCursors, [nil])
+        XCTAssertEqual(client.requestedMessageLimits, [120])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
 
         client.resolveHistoryRequest(
             at: 0,
@@ -5802,8 +5808,10 @@ final class ConversationDataFlowTests: XCTestCase {
             )
         )
         await firstSelectTask.value
+        await secondSelectTask.value
 
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["首屏历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
     func testConcurrentRunningHistoryFirstPageLoadsCoalesceRequest() async {
@@ -5829,17 +5837,16 @@ final class ConversationDataFlowTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 20_000_000)
 
         XCTAssertEqual(client.requestedMessageCursors, [nil])
-        XCTAssertEqual(client.requestedMessageLimits, [60])
-        XCTAssertEqual(client.requestedMessageLoadModes, [.economy])
+        XCTAssertEqual(client.requestedMessageLimits, [120])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
 
         client.resolveHistoryRequest(
             at: 0,
             with: HistoryMessagesPage(
                 messages: [
                     CodexHistoryMessage(id: "rollout:101", role: "assistant", content: "合并首屏历史", createdAt: Date(timeIntervalSince1970: 10))
-                ],
-                loadMode: .economy,
-                notice: "此会话包含较大的图片或工具输出，已使用省流模式加载。"
+                ]
             )
         )
         await firstSelectTask.value
@@ -5847,7 +5854,80 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(conversationStore.messages(for: running.id).map(\.content), ["合并首屏历史"])
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.message, "此会话包含较大的图片或工具输出，已使用省流模式加载。")
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testSummaryHistoryIsOnlyLoadedAfterUserChoosesIt() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_large", projectID: project.id, title: "大历史", status: "history", source: "codex", resumeID: "large")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let fullTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+
+        let firstSummaryTask = Task { await store.loadSummaryHistoryForSelectedSession() }
+        await client.waitForHistoryRequestCount(2)
+        let secondSummaryTask = Task { await store.loadSummaryHistoryForSelectedSession() }
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingSummary)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:summary", role: "assistant", content: "缩略历史", createdAt: Date(timeIntervalSince1970: 20))
+                ],
+                loadMode: .economy,
+                notice: "当前显示缩略历史。"
+            )
+        )
+        await firstSummaryTask.value
+        await secondSummaryTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["缩略历史"])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryLoaded)
+
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:full", role: "assistant", content: "迟到完整历史", createdAt: Date(timeIntervalSince1970: 10))
+                ]
+            )
+        )
+        await fullTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["缩略历史"])
+
+        let reloadFullTask = Task { await store.loadFullHistoryForSelectedSession() }
+        await client.waitForHistoryRequestCount(3)
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .full])
+        client.resolveHistoryRequest(
+            at: 2,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:full-current", role: "assistant", content: "完整历史", createdAt: Date(timeIntervalSince1970: 30))
+                ]
+            )
+        )
+        await reloadFullTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["完整历史"])
+        XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
     func testLoadEarlierHistoryMergesOlderMessagePage() async {
@@ -6044,7 +6124,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(client.requestedMessageCursors, [nil, nil, "older_cursor"])
     }
 
-    func testStaleHistoryFirstPageResponseDoesNotOverwriteNewerRefresh() async {
+    func testManualRefreshReusesInFlightFullHistoryRequest() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
         let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
@@ -6061,10 +6141,14 @@ final class ConversationDataFlowTests: XCTestCase {
         await client.waitForHistoryRequestCount(1)
 
         let refreshTask = Task { await store.refreshCurrentContext() }
-        await client.waitForHistoryRequestCount(2)
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(client.requestedMessageCursors, [nil])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full])
 
         client.resolveHistoryRequest(
-            at: 1,
+            at: 0,
             with: HistoryMessagesPage(
                 messages: [
                     CodexHistoryMessage(id: "rollout:200", role: "assistant", content: "新历史", createdAt: Date(timeIntervalSince1970: 20))
@@ -6074,43 +6158,12 @@ final class ConversationDataFlowTests: XCTestCase {
             )
         )
         await refreshTask.value
-        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史"])
-
-        let secondRefreshTask = Task { await store.refreshCurrentContext() }
-        await client.waitForHistoryRequestCount(3)
-
-        client.resolveHistoryRequest(
-            at: 0,
-            with: HistoryMessagesPage(
-                messages: [
-                    CodexHistoryMessage(id: "rollout:100", role: "assistant", content: "旧历史", createdAt: Date(timeIntervalSince1970: 10))
-                ],
-                previousCursor: "stale_cursor",
-                hasMoreBefore: true
-            )
-        )
         await selectTask.value
 
-        // 旧的 before=nil 响应晚到后必须丢弃，不能把较新的手动刷新结果和 cursor 覆盖掉。
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史"])
         XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
-
-        client.resolveHistoryRequest(
-            at: 2,
-            with: HistoryMessagesPage(
-                messages: [
-                    CodexHistoryMessage(id: "rollout:300", role: "assistant", content: "最新历史", createdAt: Date(timeIntervalSince1970: 30))
-                ],
-                previousCursor: "latest_cursor",
-                hasMoreBefore: true
-            )
-        )
-        await secondRefreshTask.value
-
-        XCTAssertEqual(client.requestedMessageCursors, [nil, nil, nil])
-        XCTAssertEqual(client.requestedMessageLoadModes, [.economy, .full, .full])
-        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["新历史", "最新历史"])
-        XCTAssertTrue(store.canLoadEarlierHistory(sessionID: history.id))
+        XCTAssertEqual(client.requestedMessageCursors, [nil])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full])
     }
 
     func testRefreshCurrentContextKeepsRunningRecentOutputInLogOnly() async throws {
@@ -13011,6 +13064,163 @@ extension ConversationDataFlowTests {
             .object(["cwd": .string(project.path), "sandbox": .string("danger-full-access")]),
             projectPath: project.path
         ))
+        XCTAssertEqual(builder.accountRateLimitsRead().method, "account/rateLimits/read")
+    }
+
+    func testCodexUsageDisplaySummaryFormatsRateLimit() throws {
+        XCTAssertEqual(RateLimitSummary(remainingRequests: 18).compactText, "剩余 18 次")
+        XCTAssertEqual(RateLimitSummary(primaryUsedPercent: 72).compactText, "已用 72%")
+        XCTAssertEqual(RateLimitSummary(primaryUsedPercent: 100).compactText, "额度已用尽")
+        XCTAssertNil(CodexUsageDisplaySummary.make(rateLimit: nil))
+        XCTAssertNil(CodexUsageDisplaySummary.make(rateLimit: RateLimitSummary(limitID: "codex")))
+
+        let now = Date(timeIntervalSince1970: 1_780_490_700)
+        let resetEpoch: Int64 = 1_780_494_300
+        let summary = RateLimitSummary(
+            limitName: "Codex",
+            primaryUsedPercent: 60,
+            secondaryUsedPercent: 42,
+            primaryResetsAt: resetEpoch
+        )
+        let display = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: summary, now: now))
+        XCTAssertEqual(display.title, "Codex 使用量")
+        XCTAssertEqual(display.primaryText, "已用 60%")
+        XCTAssertEqual(display.secondaryText.hasPrefix("预计 "), true)
+        XCTAssertEqual(display.secondaryText.hasSuffix(" 重置"), true)
+        XCTAssertEqual(display.progress ?? -1, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(display.resetDate, Date(timeIntervalSince1970: TimeInterval(resetEpoch)))
+        XCTAssertFalse(display.isNearLimit)
+        XCTAssertFalse(display.isExhausted)
+
+        let nearLimit = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: RateLimitSummary(primaryUsedPercent: 85), now: now))
+        XCTAssertTrue(nearLimit.isNearLimit)
+
+        let secondaryResetEpoch: Int64 = 1_780_497_900
+        let secondaryDriven = try XCTUnwrap(CodexUsageDisplaySummary.make(
+            rateLimit: RateLimitSummary(
+                primaryUsedPercent: 40,
+                secondaryUsedPercent: 90,
+                primaryResetsAt: resetEpoch,
+                secondaryResetsAt: secondaryResetEpoch
+            ),
+            now: now
+        ))
+        XCTAssertEqual(secondaryDriven.primaryText, "已用 90%")
+        XCTAssertEqual(secondaryDriven.resetDate, Date(timeIntervalSince1970: TimeInterval(secondaryResetEpoch)))
+    }
+
+    func testDirectRuntimeAttachesUsageDisplayForAvailableRateLimit() async throws {
+        let project = AgentProject(id: "proj_rate_limit_available", name: "Rate Limit", path: "/tmp/rate-limit-available")
+        let transport = FakeCodexAppServerTransport()
+        let allowedMethods = [
+            "initialize",
+            "initialized",
+            "thread/list",
+            "thread/start",
+            "thread/read",
+            "turn/start",
+            "turn/interrupt",
+            "account/rateLimits/read"
+        ]
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project, allowedMethods: allowedMethods) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+
+        let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_rate_limit_available","sessionId":"thr_rate_limit_available","preview":"quota","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/rate-limit-available","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"额度展示","turns":[]}],"nextCursor":null}"#)
+
+        let page = try await pageTask.value
+        let initialSession = try XCTUnwrap(page.sessions.first)
+        XCTAssertNil(initialSession.rateLimit)
+
+        let rateLimit = try await waitForFakeAppServerRequest(transport, method: "account/rateLimits/read")
+        transportResponse(transport, id: rateLimit.id, result: #"{"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":60,"resetsAt":1780494300},"secondary":{"usedPercent":42},"credits":{"hasCredits":false,"unlimited":false}}}}"#)
+
+        let messagesBeforeSecondPage = await transport.sentMessages().count
+        let secondPageTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let secondThreadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: messagesBeforeSecondPage)
+        transportResponse(transport, id: secondThreadList.id, result: #"{"data":[{"id":"thr_rate_limit_available","sessionId":"thr_rate_limit_available","preview":"quota","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/rate-limit-available","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"额度展示","turns":[]}],"nextCursor":null}"#)
+
+        let refreshedPage = try await secondPageTask.value
+        let session = try XCTUnwrap(refreshedPage.sessions.first)
+        XCTAssertEqual(session.rateLimit?.compactText, "已用 60%")
+        let display = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: session.rateLimit, now: Date(timeIntervalSince1970: 1_780_490_700)))
+        XCTAssertEqual(display.primaryText, "已用 60%")
+        XCTAssertEqual(display.progress ?? -1, 0.6, accuracy: 0.0001)
+        XCTAssertFalse(display.isExhausted)
+    }
+
+    func testDirectRuntimeAttachesAccountRateLimitToSessionRows() async throws {
+        let project = AgentProject(id: "proj_rate_limit", name: "Rate Limit", path: "/tmp/rate-limit")
+        let transport = FakeCodexAppServerTransport()
+        let allowedMethods = [
+            "initialize",
+            "initialized",
+            "thread/list",
+            "thread/start",
+            "thread/read",
+            "turn/start",
+            "turn/interrupt",
+            "account/rateLimits/read"
+        ]
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project, allowedMethods: allowedMethods) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+
+        let threadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: threadList.id, result: #"{"data":[{"id":"thr_rate_limit","sessionId":"thr_rate_limit","preview":"quota","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/rate-limit","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"额度提示","turns":[]}],"nextCursor":null}"#)
+
+        let initialPage = try await pageTask.value
+        XCTAssertNil(try XCTUnwrap(initialPage.sessions.first).rateLimit)
+
+        let rateLimit = try await waitForFakeAppServerRequest(transport, method: "account/rateLimits/read")
+        transportResponse(transport, id: rateLimit.id, result: #"{"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","rateLimitReachedType":"primary","primary":{"usedPercent":100,"resetsAt":1780494300},"credits":{"hasCredits":false,"unlimited":false}}}}"#)
+
+        let messagesBeforeSecondPage = await transport.sentMessages().count
+        let secondPageTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let secondThreadList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: messagesBeforeSecondPage)
+        transportResponse(transport, id: secondThreadList.id, result: #"{"data":[{"id":"thr_rate_limit","sessionId":"thr_rate_limit","preview":"quota","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/rate-limit","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"额度提示","turns":[]}],"nextCursor":null}"#)
+
+        let page = try await secondPageTask.value
+        let session = try XCTUnwrap(page.sessions.first)
+        XCTAssertEqual(session.rateLimit?.limitID, "codex")
+        XCTAssertEqual(session.rateLimit?.limitName, "Codex")
+        XCTAssertEqual(session.rateLimit?.primaryUsedPercent, 100)
+        XCTAssertEqual(session.rateLimit?.primaryResetsAt, 1_780_494_300)
+        XCTAssertTrue(try XCTUnwrap(session.rateLimit?.isExhausted))
+        XCTAssertEqual(session.rateLimit?.compactText, "额度已用尽")
+    }
+
+    func testQuotaNoticeRecognizesQuotaButIgnoresSkillBudgetWarning() {
+        XCTAssertTrue(CodexQuotaNotice.isQuotaError("Your Codex message limit has been exhausted."))
+        XCTAssertTrue(CodexQuotaNotice.isQuotaError("HTTP 429: rate limit exceeded"))
+        XCTAssertFalse(CodexQuotaNotice.isQuotaError("Skill descriptions were shortened to fit the 2% skills context budget."))
     }
 }
 

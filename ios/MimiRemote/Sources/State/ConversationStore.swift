@@ -152,6 +152,43 @@ final class ConversationStore: ObservableObject {
         loadedHistorySessionIDs.insert(sessionID)
     }
 
+    func replaceHistorySnapshot(_ history: [CodexHistoryMessage], sessionID: String) {
+        flushPendingAssistantDelta(sessionID: sessionID)
+        let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[sessionID]?.messages.map(\.id) ?? [])
+        let converted = projectedHistoryMessages(history, sessionID: sessionID)
+        for message in converted {
+            if let stableID = message.stableID {
+                let key = stableCacheKey(stableID: stableID, sessionID: sessionID)
+                messageUUIDByStableMessageID[key] = message.id
+                if let revision = message.revision {
+                    revisionByStableMessageID[key] = revision
+                }
+            }
+        }
+
+        if converted.isEmpty, messagesBySessionID[sessionID]?.isEmpty == false {
+            // app-server 偶发返回空首屏时，不能清掉用户当前可见的历史和运行态消息；
+            // 只标记本轮加载完成，分页游标由 SessionStore 根据 page metadata 继续维护。
+            loadedHistorySessionIDs.insert(sessionID)
+            touchConversationSession(sessionID)
+            return
+        }
+
+        let localToPreserve = (messagesBySessionID[sessionID] ?? []).filter { message in
+            !previousHistoryProjectionIDs.contains(message.id)
+        }
+        let snapshot = mergeHistory(converted, with: localToPreserve)
+        if let current = messagesBySessionID[sessionID], areMessagesEquivalent(current, snapshot) {
+            loadedHistorySessionIDs.insert(sessionID)
+            touchConversationSession(sessionID)
+            return
+        }
+        // 首屏 full/summary 历史是当前会话的 canonical 快照。替换上一轮历史投影，
+        // 但保留尚未进入 thread/read 的本地发送、审批、补充信息等运行态消息。
+        setMessages(snapshot, sessionID: sessionID)
+        loadedHistorySessionIDs.insert(sessionID)
+    }
+
     func appendUser(_ text: String, sessionID: String, createdAt: Date? = nil) {
         appendLocalUser(text, sessionID: sessionID, clientMessageID: nil, sendStatus: .sent, createdAt: createdAt)
     }

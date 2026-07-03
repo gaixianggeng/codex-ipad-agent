@@ -2348,6 +2348,10 @@ struct CodexAppServerRequestBuilder {
         CodexAppServerRequestSpec(method: "model/list")
     }
 
+    func accountRateLimitsRead() -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "account/rateLimits/read")
+    }
+
     func threadStart(projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         var resolved = options
         if resolved.model == nil {

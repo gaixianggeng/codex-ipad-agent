@@ -95,8 +95,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var activeTurnID: TurnID?
     let lastSeq: EventSequence?
     let revision: ModelRevision?
-    let usage: UsageSummary?
-    let rateLimit: RateLimitSummary?
+    var usage: UsageSummary?
+    var rateLimit: RateLimitSummary?
     var pendingApproval: ApprovalSummary?
     var pendingUserInput: AgentUserInputRequest?
     var goal: ThreadGoal?
@@ -1379,14 +1379,74 @@ struct RateLimitSummary: Codable, Hashable {
     let remainingRequests: Int?
     let remainingTokens: Int?
     let resetAt: Date?
+    let limitID: String?
+    let limitName: String?
+    let planType: String?
+    let reachedType: String?
+    let primaryUsedPercent: Double?
+    let secondaryUsedPercent: Double?
+    let primaryResetsAt: Int64?
+    let secondaryResetsAt: Int64?
+    let hasCredits: Bool?
+    let creditsUnlimited: Bool?
+    let creditBalance: String?
 
     enum CodingKeys: String, CodingKey {
         case remainingRequests = "remaining_requests"
         case remainingTokens = "remaining_tokens"
         case resetAt = "reset_at"
+        case limitID = "limit_id"
+        case limitName = "limit_name"
+        case planType = "plan_type"
+        case reachedType = "reached_type"
+        case primaryUsedPercent = "primary_used_percent"
+        case secondaryUsedPercent = "secondary_used_percent"
+        case primaryResetsAt = "primary_resets_at"
+        case secondaryResetsAt = "secondary_resets_at"
+        case hasCredits = "has_credits"
+        case creditsUnlimited = "credits_unlimited"
+        case creditBalance = "credit_balance"
+    }
+
+    init(
+        remainingRequests: Int? = nil,
+        remainingTokens: Int? = nil,
+        resetAt: Date? = nil,
+        limitID: String? = nil,
+        limitName: String? = nil,
+        planType: String? = nil,
+        reachedType: String? = nil,
+        primaryUsedPercent: Double? = nil,
+        secondaryUsedPercent: Double? = nil,
+        primaryResetsAt: Int64? = nil,
+        secondaryResetsAt: Int64? = nil,
+        hasCredits: Bool? = nil,
+        creditsUnlimited: Bool? = nil,
+        creditBalance: String? = nil
+    ) {
+        self.remainingRequests = remainingRequests
+        self.remainingTokens = remainingTokens
+        self.resetAt = resetAt
+        self.limitID = limitID
+        self.limitName = limitName
+        self.planType = planType
+        self.reachedType = reachedType
+        self.primaryUsedPercent = primaryUsedPercent
+        self.secondaryUsedPercent = secondaryUsedPercent
+        self.primaryResetsAt = primaryResetsAt
+        self.secondaryResetsAt = secondaryResetsAt
+        self.hasCredits = hasCredits
+        self.creditsUnlimited = creditsUnlimited
+        self.creditBalance = creditBalance
     }
 
     var compactText: String? {
+        if isExhausted {
+            return "额度已用尽"
+        }
+        if let percentText = usedPercentText {
+            return "已用 \(percentText)"
+        }
         if let remainingRequests {
             return "剩余 \(remainingRequests) 次"
         }
@@ -1394,6 +1454,218 @@ struct RateLimitSummary: Codable, Hashable {
             return "剩余 \(remainingTokens) tok"
         }
         return nil
+    }
+
+    var isExhausted: Bool {
+        if reachedType?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+        if let primaryUsedPercent, primaryUsedPercent >= 100 {
+            return true
+        }
+        if let secondaryUsedPercent, secondaryUsedPercent >= 100 {
+            return true
+        }
+        if remainingRequests == 0 {
+            return true
+        }
+        return false
+    }
+
+    var resetDate: Date? {
+        if dominantUsageIsSecondary,
+           let secondaryResetsAt {
+            return Self.date(fromEpoch: secondaryResetsAt)
+        }
+        if let primaryResetsAt {
+            return Self.date(fromEpoch: primaryResetsAt)
+        }
+        if let secondaryResetsAt {
+            return Self.date(fromEpoch: secondaryResetsAt)
+        }
+        return resetAt
+    }
+
+    var displayName: String {
+        let name = limitName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let name, !name.isEmpty {
+            return name
+        }
+        let id = limitID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let id, !id.isEmpty {
+            return id
+        }
+        return "Codex"
+    }
+
+    var usedPercentValue: Double? {
+        // Codex app-server 同时返回 primary/secondary 时，界面展示更接近耗尽的那一档。
+        [primaryUsedPercent, secondaryUsedPercent].compactMap { $0 }.max()
+    }
+
+    private var dominantUsageIsSecondary: Bool {
+        guard let secondaryUsedPercent else {
+            return false
+        }
+        guard let primaryUsedPercent else {
+            return true
+        }
+        return secondaryUsedPercent > primaryUsedPercent
+    }
+
+    var progressFraction: Double? {
+        guard let usedPercentValue else {
+            return nil
+        }
+        return min(max(usedPercentValue / 100, 0), 1)
+    }
+
+    var usedPercentText: String? {
+        guard let percent = usedPercentValue else {
+            return nil
+        }
+        let bounded = max(0, percent)
+        if bounded.rounded() == bounded {
+            return "\(Int(bounded))%"
+        }
+        return String(format: "%.1f%%", bounded)
+    }
+
+    private static func date(fromEpoch value: Int64) -> Date? {
+        guard value > 0 else {
+            return nil
+        }
+        let seconds = value > 10_000_000_000 ? Double(value) / 1_000 : Double(value)
+        return Date(timeIntervalSince1970: seconds)
+    }
+}
+
+struct CodexUsageDisplaySummary: Equatable {
+    static let nearLimitThreshold = 0.8
+
+    let title: String
+    let primaryText: String
+    let secondaryText: String
+    let progress: Double?
+    let resetDate: Date?
+    let isNearLimit: Bool
+    let isExhausted: Bool
+
+    static func make(rateLimit: RateLimitSummary?, now: Date = Date()) -> CodexUsageDisplaySummary? {
+        guard let rateLimit else {
+            return nil
+        }
+        guard let primaryText = rateLimit.compactText else {
+            return nil
+        }
+
+        let progress = rateLimit.progressFraction
+        let resetDate = rateLimit.resetDate
+        let secondaryText: String
+        if let resetDate {
+            secondaryText = "预计 \(resetText(resetDate, now: now)) 重置"
+        } else {
+            secondaryText = "暂无重置时间"
+        }
+
+        return CodexUsageDisplaySummary(
+            title: "Codex 使用量",
+            primaryText: primaryText,
+            secondaryText: secondaryText,
+            progress: progress,
+            resetDate: resetDate,
+            isNearLimit: (progress ?? 0) >= nearLimitThreshold,
+            isExhausted: rateLimit.isExhausted
+        )
+    }
+
+    private static func resetText(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "M月d日 HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+struct CodexQuotaNotice: Equatable {
+    let title: String
+    let message: String
+    let resetDate: Date?
+    let blocksSending: Bool
+    let canDismiss: Bool
+
+    static func make(rateLimit: RateLimitSummary?, errorMessage: String?, now: Date = Date()) -> CodexQuotaNotice? {
+        if let rateLimit, rateLimit.isExhausted {
+            let resetDate = rateLimit.resetDate
+            let resetText = resetDate.map { Self.resetText($0, now: now) }
+            let blocksSending = resetDate.map { $0 > now } ?? true
+            let suffix = resetText.map { "预计 \($0) 恢复；也可以在桌面 Codex 点“增加额度”或“重置使用量”。" }
+                ?? "可以在桌面 Codex 点“增加额度”或“重置使用量”。"
+            return CodexQuotaNotice(
+                title: "Codex 消息额度已用尽",
+                message: "\(rateLimit.displayName) 当前额度不可用。\(suffix)",
+                resetDate: resetDate,
+                blocksSending: blocksSending,
+                canDismiss: false
+            )
+        }
+
+        guard let error = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+              isQuotaError(error)
+        else {
+            return nil
+        }
+        return CodexQuotaNotice(
+            title: "Codex 消息额度已用尽",
+            message: "这次发送被 Codex 额度限制拦截。请等待重置，或先在桌面 Codex 点“增加额度”/“重置使用量”。",
+            resetDate: nil,
+            blocksSending: true,
+            canDismiss: true
+        )
+    }
+
+    static func isQuotaError(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        if lower.contains("skill descriptions") || lower.contains("skills context budget") {
+            return false
+        }
+        return [
+            "rate limit",
+            "ratelimit",
+            "quota",
+            "message limit",
+            "messages limit",
+            "usage limit",
+            "limit has been exhausted",
+            "exceeded your current quota",
+            "429",
+            "额度",
+            "限额",
+            "速率限制",
+            "用量受限",
+            "已用尽"
+        ].contains { lower.contains($0) }
+    }
+
+    private static func resetText(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "M月d日 HH:mm"
+        let seconds = max(0, Int(date.timeIntervalSince(now).rounded()))
+        let absolute = formatter.string(from: date)
+        if seconds < 60 {
+            return "\(absolute)（约 \(seconds) 秒）"
+        }
+        let minutes = seconds / 60
+        if minutes < 60 {
+            return "\(absolute)（约 \(minutes) 分钟）"
+        }
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        if remainingMinutes == 0 {
+            return "\(absolute)（约 \(hours) 小时）"
+        }
+        return "\(absolute)（约 \(hours) 小时 \(remainingMinutes) 分钟）"
     }
 }
 

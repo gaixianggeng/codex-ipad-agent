@@ -147,6 +147,8 @@ struct ComposerView: View {
         VStack(alignment: .leading, spacing: 10) {
             foregroundActivityRow
             sessionControlNotice
+            quotaLimitNotice
+            usageLimitStrip
             activeGoalStatusBar
             pendingApprovalAction
             pendingUserInputAction
@@ -497,6 +499,134 @@ struct ComposerView: View {
                     .strokeBorder(tokens.border)
             }
         }
+    }
+
+    @ViewBuilder
+    private var quotaLimitNotice: some View {
+        if let notice = sessionStore.selectedQuotaNotice {
+            let tokens = themeStore.tokens(for: colorScheme)
+            HStack(spacing: 8) {
+                Image(systemName: "speedometer")
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                Text(notice.blocksSending ? "额度已用尽，暂时不能发送。\(notice.message)" : notice.message)
+                    .lineLimit(2)
+                    .layoutPriority(1)
+                Button {
+                    Task {
+                        await sessionStore.refreshCurrentContext()
+                    }
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+            }
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.warning)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(tokens.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(tokens.warning.opacity(0.36))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var usageLimitStrip: some View {
+        if sessionStore.selectedQuotaNotice == nil,
+           let usage = sessionStore.selectedCodexUsageDisplay,
+           !usage.isExhausted {
+            let tokens = themeStore.tokens(for: colorScheme)
+            let tint = usage.isNearLimit ? tokens.warning : tokens.accent
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 10) {
+                    usageLimitIcon(tint: tint)
+                    usageLimitSummary(usage, tint: tint)
+                    Spacer(minLength: 8)
+                    usageLimitRefreshButton(tint: tint)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 10) {
+                        usageLimitIcon(tint: tint)
+                        usageLimitSummary(usage, tint: tint)
+                    }
+                    usageLimitRefreshButton(tint: tint)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(tint.opacity(0.28))
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private func usageLimitIcon(tint: Color) -> some View {
+        Image(systemName: "speedometer")
+            .font(themeStore.uiFont(.body, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: 24, height: 24)
+            .background(tint.opacity(0.12), in: Circle())
+            .accessibilityHidden(true)
+    }
+
+    private func usageLimitSummary(_ usage: CodexUsageDisplaySummary, tint: Color) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(usage.title)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                Text(usage.primaryText)
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(tint.opacity(0.13), in: Capsule())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
+            }
+
+            Text(usage.secondaryText)
+                .font(themeStore.uiFont(.caption2, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+
+            if let progress = usage.progress {
+                ProgressView(value: progress)
+                    .tint(tint)
+                    .frame(maxWidth: 220)
+                    .accessibilityLabel("Codex 使用量")
+                    .accessibilityValue(usage.primaryText)
+            }
+        }
+        .layoutPriority(1)
+    }
+
+    private func usageLimitRefreshButton(tint: Color) -> some View {
+        Button {
+            Task {
+                await sessionStore.refreshCurrentContext()
+            }
+        } label: {
+            Label("刷新", systemImage: "arrow.clockwise")
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(.borderless)
+        .font(themeStore.uiFont(.caption, weight: .semibold))
+        .foregroundStyle(tint)
+        .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
+        .accessibilityLabel("刷新 Codex 使用量")
     }
 
     // 输入框上方收敛成一行：左＝常驻只读信息（模型/权限 + seq/usage 等），中＝录音波形，
@@ -1654,9 +1784,6 @@ struct ComposerView: View {
         }
         if let usage = session.usage?.compactText {
             items.append((usage, "gauge.with.dots.needle.33percent", .secondary))
-        }
-        if let rateLimit = session.rateLimit?.compactText {
-            items.append((rateLimit, "speedometer", .secondary))
         }
         return items
     }
