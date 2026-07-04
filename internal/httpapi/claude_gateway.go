@@ -391,53 +391,27 @@ func rewriteClaudeModelListResponse(policy *appServerGatewayPolicy, payload []by
 }
 
 func claudeCurrentModelList() []map[string]any {
+	// Claude CLI 的具体模型 ID 会比产品命名更频繁变化；这里用 CLI alias 作为真正发送的
+	// model，避免新名字尚未进入本机 metadata 时触发 fallback warning。展示名仍表达当前推荐代际。
 	return []map[string]any{
 		claudeModelOption(
-			"claude-fable-5",
-			"Claude Fable 5",
-			"Anthropic's most capable widely released model for long-running, high-complexity agent work.",
-			false,
-			"high",
-		),
-		claudeModelOption(
-			"claude-opus-4-8",
-			"Claude Opus 4.8",
-			"Best for complex agentic coding, deep reasoning, and enterprise-grade work.",
-			false,
-			"high",
-		),
-		claudeModelOption(
-			"claude-sonnet-5",
-			"Claude Sonnet 5",
-			"Default balanced model for everyday coding work with strong speed, cost, and agentic performance.",
-			true,
-			"high",
-		),
-		claudeModelOption(
-			"claude-haiku-4-5-20251001",
-			"Claude Haiku 4.5",
-			"Fastest Claude model for quick edits, small tasks, and low-latency interactions.",
-			false,
-			"minimal",
-		),
-		claudeModelOption(
 			"opus",
-			"Claude Opus (alias)",
-			"Alias resolved by the Claude CLI to the latest available Opus model.",
+			"Claude Opus 4.8",
+			"Alias resolved by the Claude CLI to the latest available Opus model; best for complex agentic coding and deep reasoning.",
 			false,
 			"high",
 		),
 		claudeModelOption(
 			"sonnet",
-			"Claude Sonnet (alias)",
-			"Alias resolved by the Claude CLI to the latest available Sonnet model.",
-			false,
+			"Claude Sonnet 5",
+			"Alias resolved by the Claude CLI to the latest available Sonnet model; default balanced model for everyday coding work.",
+			true,
 			"high",
 		),
 		claudeModelOption(
 			"haiku",
-			"Claude Haiku (alias)",
-			"Alias resolved by the Claude CLI to the latest available Haiku model.",
+			"Claude Haiku 4.5",
+			"Alias resolved by the Claude CLI to the latest available Haiku model; fastest choice for quick edits and small tasks.",
 			false,
 			"minimal",
 		),

@@ -218,6 +218,9 @@ struct ComposerView: View {
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
         }
+        .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
+            clampModelSelectionToSelectedSessionRuntime()
+        }
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
             if !canGuide {
                 guidedFollowUpEnabled = false
@@ -231,9 +234,11 @@ struct ComposerView: View {
         }
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            clampModelSelectionToSelectedSessionRuntime()
         }
         .task {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            clampModelSelectionToSelectedSessionRuntime()
             applyDefaultPermissionMode()
             voiceInput.prewarm()
             await sessionStore.refreshAppServerModelOptions()
@@ -1423,7 +1428,7 @@ struct ComposerView: View {
     private var modelOptionsMenu: some View {
         Menu {
             Button("默认") {
-                composerState.turnOptions.runtimeProvider = nil
+                composerState.turnOptions.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
                 composerState.turnOptions.model = nil
                 composerState.turnOptions.modelProvider = nil
             }
@@ -1573,7 +1578,20 @@ struct ComposerView: View {
     }
 
     private var modelOptionsForMenu: [CodexAppServerModelOption] {
-        sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
+        let options = sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
+        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
+            return options
+        }
+        let scoped = options.filter { option in
+            normalizedRuntimeProvider(option.runtimeProvider) == runtimeProvider
+        }
+        if scoped.isEmpty, runtimeProvider == "claude" {
+            return CodexAppServerModelOption.builtInClaudeFallback
+        }
+        if scoped.isEmpty, runtimeProvider == "codex" {
+            return CodexAppServerModelOption.builtInFallback
+        }
+        return scoped.isEmpty ? options : scoped
     }
 
     private func applyDefaultPermissionMode() {
@@ -1665,6 +1683,39 @@ struct ComposerView: View {
             return false
         }
         return runtime != "codex" && runtime != "claude"
+    }
+
+    private var selectedSessionRuntimeProviderForModelMenu: String? {
+        guard let session = sessionStore.selectedSession else {
+            return nil
+        }
+        if session.source == "local", session.runtimeProvider == nil {
+            return nil
+        }
+        return normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+    }
+
+    private func clampModelSelectionToSelectedSessionRuntime() {
+        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
+            return
+        }
+        guard normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider else {
+            return
+        }
+        composerState.turnOptions.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
+        composerState.turnOptions.model = nil
+        composerState.turnOptions.modelProvider = nil
+    }
+
+    private func payloadRuntimeProviderForSelectedSessionLock() -> String? {
+        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
+            return nil
+        }
+        return runtimeProvider == "codex" ? nil : runtimeProvider
+    }
+
+    private func normalizedRuntimeProvider(_ rawValue: String?) -> String {
+        CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
     }
 
     @ViewBuilder

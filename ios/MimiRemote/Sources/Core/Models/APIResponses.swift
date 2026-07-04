@@ -2006,6 +2006,31 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
         CodexAppServerModelOption(id: "gpt-5.1", title: "gpt-5.1")
     ]
 
+    static let builtInClaudeFallback: [CodexAppServerModelOption] = [
+        CodexAppServerModelOption(
+            id: "sonnet",
+            title: "Claude Sonnet 5",
+            provider: "anthropic",
+            runtimeProvider: "claude",
+            description: "Claude CLI alias resolved to the latest available Sonnet model.",
+            isDefault: true
+        ),
+        CodexAppServerModelOption(
+            id: "opus",
+            title: "Claude Opus 4.8",
+            provider: "anthropic",
+            runtimeProvider: "claude",
+            description: "Claude CLI alias resolved to the latest available Opus model."
+        ),
+        CodexAppServerModelOption(
+            id: "haiku",
+            title: "Claude Haiku 4.5",
+            provider: "anthropic",
+            runtimeProvider: "claude",
+            description: "Claude CLI alias resolved to the latest available Haiku model."
+        )
+    ]
+
     static func parseListResult(_ result: CodexAppServerJSONValue?) -> [CodexAppServerModelOption] {
         let rawItems = modelItems(from: result)
         var seen: Set<String> = []

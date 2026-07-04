@@ -2362,6 +2362,19 @@ final class SessionStore: ObservableObject {
 
     private func payloadResolvingRequiredModel(_ payload: CodexAppServerTurnPayload) async -> CodexAppServerTurnPayload {
         var resolved = payload
+        let lockedRuntimeProvider = selectedSessionRuntimeProviderForTurn()
+        if let lockedRuntimeProvider {
+            let requestedRuntimeProvider = Self.normalizedRuntimeProvider(resolved.options.runtimeProvider)
+            if requestedRuntimeProvider != lockedRuntimeProvider {
+                // 已有会话的 thread 授权只属于创建它的 runtime。历史 Codex/Claude 会话里如果残留了
+                // 另一条渠道的模型选择，必须清掉并回到当前会话 runtime 的默认模型，避免 resume 到错误 gateway。
+                resolved.options.runtimeProvider = Self.payloadRuntimeProvider(lockedRuntimeProvider)
+                resolved.options.model = nil
+                resolved.options.modelProvider = nil
+            } else if resolved.options.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                resolved.options.runtimeProvider = Self.payloadRuntimeProvider(lockedRuntimeProvider)
+            }
+        }
         if let model = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
            !model.isEmpty {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
@@ -2371,8 +2384,20 @@ final class SessionStore: ObservableObject {
         if appServerModelOptions.isEmpty {
             await refreshAppServerModelOptions()
         }
-        let options = appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : appServerModelOptions
-        guard let selected = options.first(where: \.isDefault) ?? options.first else {
+        let allOptions = appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : appServerModelOptions
+        let targetRuntimeProvider = lockedRuntimeProvider ?? Self.explicitRuntimeProvider(resolved.options.runtimeProvider)
+        let options = targetRuntimeProvider.map { runtimeProvider in
+            allOptions.filter { Self.normalizedRuntimeProvider($0.runtimeProvider) == runtimeProvider }
+        } ?? allOptions
+        let candidateOptions: [CodexAppServerModelOption]
+        if options.isEmpty, targetRuntimeProvider == "claude" {
+            candidateOptions = CodexAppServerModelOption.builtInClaudeFallback
+        } else if options.isEmpty, targetRuntimeProvider == "codex" {
+            candidateOptions = CodexAppServerModelOption.builtInFallback
+        } else {
+            candidateOptions = options.isEmpty ? allOptions : options
+        }
+        guard let selected = candidateOptions.first(where: \.isDefault) ?? candidateOptions.first else {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
@@ -2380,12 +2405,37 @@ final class SessionStore: ObservableObject {
         // app-server 的 turn/start 目前要求顶层 model 必填；模型来源必须优先使用
         // model/list 的账号默认值，只有列表不可用时才使用内置兜底，避免 iPad 硬编码旧模型踩 rollout。
         if resolved.options.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
-            resolved.options.runtimeProvider = selected.runtimeProvider
+            resolved.options.runtimeProvider = Self.payloadRuntimeProvider(Self.normalizedRuntimeProvider(selected.runtimeProvider))
         }
         resolved.options.model = selected.model
         resolved.options.modelProvider = selected.provider
         resolved.options = resolved.options.sanitizedForRuntimePolicy()
         return resolved
+    }
+
+    private func selectedSessionRuntimeProviderForTurn() -> String? {
+        guard let session = selectedSession else {
+            return nil
+        }
+        if session.source == "local", session.runtimeProvider == nil {
+            return nil
+        }
+        return Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+    }
+
+    private static func explicitRuntimeProvider(_ rawValue: String?) -> String? {
+        guard rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return nil
+        }
+        return normalizedRuntimeProvider(rawValue)
+    }
+
+    private static func normalizedRuntimeProvider(_ rawValue: String?) -> String {
+        CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
+    }
+
+    private static func payloadRuntimeProvider(_ normalizedRuntimeProvider: String) -> String? {
+        normalizedRuntimeProvider == "codex" ? nil : normalizedRuntimeProvider
     }
 
     func refreshCapabilities() async {

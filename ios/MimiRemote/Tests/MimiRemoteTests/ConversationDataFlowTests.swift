@@ -7575,6 +7575,115 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(client.modelOptionsCallCount, 0)
     }
 
+    func testCodexHistorySessionIgnoresStaleClaudeModelSelectionBeforeResume() async throws {
+        let project = makeProject(id: "proj_codex_history_runtime_lock")
+        let history = makeSession(
+            id: "sess_codex_history_runtime_lock",
+            projectID: project.id,
+            title: "Codex 历史会话",
+            status: "closed",
+            source: "codex",
+            resumeID: "thread-codex-history-runtime-lock"
+        )
+        let resumed = makeSession(
+            id: "sess_codex_history_runtime_lock_resumed",
+            projectID: project.id,
+            title: "Codex 历史会话",
+            status: "running",
+            source: "codex",
+            resumeID: "thread-codex-history-runtime-lock"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            createSessionResponse: try makeCreateSessionResponse(session: resumed),
+            messagesResult: [],
+            modelOptions: [
+                CodexAppServerModelOption(id: "gpt-codex-default", title: "Codex Default", provider: "openai", runtimeProvider: "codex", isDefault: true),
+                CodexAppServerModelOption(id: "sonnet", title: "Claude Sonnet 5", provider: "anthropic", runtimeProvider: "claude", isDefault: true)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        options.model = "opus"
+        options.modelProvider = "anthropic"
+        let accepted = await store.sendTurn(CodexAppServerTurnPayload(prompt: "继续 Codex 历史会话", options: options))
+
+        XCTAssertTrue(accepted)
+        let createPayload: CreateSessionRequest = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(createPayload.resumeID, "thread-codex-history-runtime-lock")
+        XCTAssertNil(createPayload.turnOptions.runtimeProvider)
+        XCTAssertEqual(createPayload.turnOptions.model, "gpt-codex-default")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "openai")
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+    }
+
+    func testClaudeHistorySessionIgnoresStaleCodexModelSelectionBeforeResume() async throws {
+        let project = makeProject(id: "proj_claude_history_runtime_lock")
+        let history = makeSession(
+            id: "sess_claude_history_runtime_lock",
+            projectID: project.id,
+            title: "Claude 历史会话",
+            status: "closed",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "thread-claude-history-runtime-lock"
+        )
+        let resumed = makeSession(
+            id: "sess_claude_history_runtime_lock_resumed",
+            projectID: project.id,
+            title: "Claude 历史会话",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "thread-claude-history-runtime-lock"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            createSessionResponse: try makeCreateSessionResponse(session: resumed),
+            messagesResult: [],
+            modelOptions: [
+                CodexAppServerModelOption(id: "gpt-codex-default", title: "Codex Default", provider: "openai", runtimeProvider: "codex", isDefault: true),
+                CodexAppServerModelOption(id: "sonnet", title: "Claude Sonnet 5", provider: "anthropic", runtimeProvider: "claude", isDefault: true)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = nil
+        options.model = "gpt-codex-default"
+        options.modelProvider = "openai"
+        let accepted = await store.sendTurn(CodexAppServerTurnPayload(prompt: "继续 Claude 历史会话", options: options))
+
+        XCTAssertTrue(accepted)
+        let createPayload: CreateSessionRequest = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(createPayload.resumeID, "thread-claude-history-runtime-lock")
+        XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
+        XCTAssertEqual(createPayload.turnOptions.model, "sonnet")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+    }
+
     func testExplicitClaudeModelClampsDangerFullAccessBeforeCreate() async throws {
         let project = makeProject(id: "proj_explicit_claude_clamp")
         let created = makeSession(id: "sess_explicit_claude_clamp", projectID: project.id, title: "Claude Clamp", status: "running", source: "claude", runtimeProvider: "claude")
