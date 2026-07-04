@@ -1556,6 +1556,234 @@ final class ConversationDataFlowTests: XCTestCase {
         )
     }
 
+    func testAuthoritativeCompletedHistoryPrunesMissingProjectedProcessItems() {
+        let store = ConversationStore()
+        let sessionID = "thread_projected_orphan_prune"
+        let turnID = "turn_projected_orphan_prune"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-20",
+                role: "system",
+                kind: .plan,
+                content: "给出修复计划",
+                createdAt: Date(timeIntervalSince1970: 20),
+                turnID: turnID,
+                itemID: "item-20",
+                timelineOrdinal: 20
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-21",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：git diff",
+                createdAt: Date(timeIntervalSince1970: 10.021),
+                turnID: turnID,
+                itemID: "item-21",
+                timelineOrdinal: 21,
+                isTimestampFallback: true
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-22",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：grep -n ConversationStore",
+                createdAt: Date(timeIntervalSince1970: 10.022),
+                turnID: turnID,
+                itemID: "item-22",
+                timelineOrdinal: 22,
+                isTimestampFallback: true
+            )
+        ], sessionID: sessionID)
+        XCTAssertEqual(store.messages(for: sessionID).filter { $0.kind == .commandSummary }.count, 2)
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-20",
+                role: "system",
+                kind: .plan,
+                content: "给出修复计划",
+                createdAt: Date(timeIntervalSince1970: 20),
+                turnID: turnID,
+                itemID: "item-20",
+                timelineOrdinal: 20
+            )
+        ], sessionID: sessionID, authoritativeCompletedTurnItems: [
+            turnID: ["item-1", "item-20"]
+        ])
+
+        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["检查排序", "给出修复计划"])
+        XCTAssertFalse(store.messages(for: sessionID).contains { $0.itemID == "item-21" || $0.itemID == "item-22" })
+    }
+
+    func testAuthoritativeCompletedHistoryKeepsLiveProcessItemsWithoutTimelineOrdinal() {
+        let store = ConversationStore()
+        let sessionID = "thread_live_process_preserve"
+        let turnID = "turn_live_process_preserve"
+
+        store.appendSystem(
+            "命令：git diff",
+            sessionID: sessionID,
+            kind: .commandSummary,
+            metadata: AgentEventMetadata(
+                seq: 2,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "cmd_live_1",
+                messageID: "appserver:\(turnID):cmd_live_1",
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: Date(timeIntervalSince1970: 15)
+            )
+        )
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-20",
+                role: "system",
+                kind: .plan,
+                content: "给出修复计划",
+                createdAt: Date(timeIntervalSince1970: 20),
+                turnID: turnID,
+                itemID: "item-20",
+                timelineOrdinal: 20
+            )
+        ], sessionID: sessionID, authoritativeCompletedTurnItems: [
+            turnID: ["item-1", "item-20"]
+        ])
+
+        let messages = store.messages(for: sessionID)
+        XCTAssertTrue(messages.contains { $0.itemID == "cmd_live_1" && $0.timelineOrdinal == nil })
+        XCTAssertEqual(messages.map(\.content), ["检查排序", "命令：git diff", "给出修复计划"])
+    }
+
+    func testSummaryHistoryDoesNotPruneMissingProjectedProcessItems() {
+        let store = ConversationStore()
+        let sessionID = "thread_summary_no_prune"
+        let turnID = "turn_summary_no_prune"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-21",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：git diff",
+                createdAt: Date(timeIntervalSince1970: 10.021),
+                turnID: turnID,
+                itemID: "item-21",
+                timelineOrdinal: 21,
+                isTimestampFallback: true
+            )
+        ], sessionID: sessionID)
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            )
+        ], sessionID: sessionID)
+
+        XCTAssertTrue(store.messages(for: sessionID).contains { $0.itemID == "item-21" })
+    }
+
+    func testAuthoritativeCompletedHistoryKeepsProjectedProcessItemsPresentInTurnItemSet() {
+        let store = ConversationStore()
+        let sessionID = "thread_window_process_preserve"
+        let turnID = "turn_window_process_preserve"
+
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-30",
+                role: "system",
+                kind: .commandSummary,
+                content: "工具：browser.open\n状态：completed",
+                createdAt: Date(timeIntervalSince1970: 30),
+                turnID: turnID,
+                itemID: "item-30",
+                timelineOrdinal: 30
+            ),
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-31",
+                role: "system",
+                kind: .fileChangeSummary,
+                content: "文件变更：Sources/App.swift",
+                createdAt: Date(timeIntervalSince1970: 31),
+                turnID: turnID,
+                itemID: "item-31",
+                timelineOrdinal: 31
+            )
+        ], sessionID: sessionID)
+
+        // 核心逻辑：thread/read 兜底按消息切窗口，当前页可能没带这个工具卡；
+        // 只要 runtime 的完整 turn item 集合证明它仍存在，就不能当 orphan 清理。
+        store.setHistory([
+            CodexHistoryMessage(
+                id: "appserver:\(turnID):item-1",
+                role: "user",
+                content: "检查排序",
+                createdAt: Date(timeIntervalSince1970: 10),
+                turnID: turnID,
+                itemID: "item-1",
+                timelineOrdinal: 1
+            )
+        ], sessionID: sessionID, authoritativeCompletedTurnItems: [
+            turnID: ["item-1", "item-30", "item-31"]
+        ])
+
+        XCTAssertTrue(store.messages(for: sessionID).contains { $0.itemID == "item-30" })
+        XCTAssertTrue(store.messages(for: sessionID).contains { $0.itemID == "item-31" })
+    }
+
     func testHistoryMergeDoesNotLetFallbackOrdinalTimePushAccurateProcessEventsBehind() throws {
         let store = ConversationStore()
         let sessionID = "thread_fallback_plan_before_accurate_command"
@@ -2353,6 +2581,39 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(earliest.messages.map(\.id), ["m0"])
         XCTAssertNil(earliest.previousCursor)
         XCTAssertFalse(earliest.hasMoreBefore)
+    }
+
+    func testPaginateHistoryCarriesAuthoritativeTurnItemsAcrossWindowCuts() {
+        let turnID = "turn_window_authority"
+        let allItemIDs: [AgentItemID] = (20..<25).map { index in "item-\(index)" }
+        let messages: [CodexHistoryMessage] = (20..<25).map { index in
+            let role = index == 24 ? "assistant" : "system"
+            let kind: MessageKind = index == 24 ? .message : .commandSummary
+            let itemID: AgentItemID = "item-\(index)"
+            return CodexHistoryMessage(
+                id: "appserver:\(turnID):\(itemID)",
+                role: role,
+                kind: kind,
+                content: "msg\(index)",
+                createdAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                turnID: turnID,
+                itemID: itemID,
+                timelineOrdinal: Int64(index)
+            )
+        }
+
+        let page = CodexAppServerSessionRuntime.paginateHistory(
+            messages,
+            before: nil,
+            limit: 2,
+            authoritativeCompletedTurnItems: [
+                turnID: Set(allItemIDs)
+            ]
+        )
+
+        XCTAssertEqual(page.messages.map { $0.itemID }, ["item-23", "item-24"])
+        XCTAssertTrue(page.hasMoreBefore)
+        XCTAssertEqual(page.authoritativeCompletedTurnItems[turnID], Set(allItemIDs))
     }
 
     func testPaginateHistoryReturnsAllWhenWithinLimitOrCursorMissing() {
@@ -5146,6 +5407,40 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(store.selectedSession?.id, created.id)
         XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), [created.id, newer.id, older.id])
         XCTAssertEqual(store.filteredSessions.map(\.id), [created.id, newer.id, older.id])
+    }
+
+    func testStartingEmptyInteractiveSessionDoesNotAutoLoadHistory() async throws {
+        let project = makeProject(id: "proj_1")
+        let created = makeSession(id: "sess_created_running", projectID: project.id, title: "刚创建", status: "running", source: "codex")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            createSessionResponse: try makeCreateSessionResponse(session: created),
+            messagesError: AgentAPIError.server(status: 504, message: "thread/read timeout")
+        )
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.startNewSession(in: project)
+
+        XCTAssertEqual(client.createPayloads.count, 1)
+        XCTAssertTrue(client.requestedMessageSessionIDs.isEmpty)
+        XCTAssertEqual(store.selectedSession?.id, created.id)
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(conversationStore.messages(for: created.id).map(\.content), ["交互式会话已启动。"])
+        XCTAssertEqual(sockets.count, 1)
     }
 
     func testSessionStoreUsesIDTieBreakerForMatchingBackendCursorOrder() async {

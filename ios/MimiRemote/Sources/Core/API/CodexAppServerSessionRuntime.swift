@@ -88,6 +88,7 @@ actor CodexAppServerSessionRuntime {
     // thread/read 没有分页参数，一次会返回整段 thread。把上次整段读取缓存下来，翻看更早历史时直接
     // 从缓存切窗口，避免每次翻页都在 Tailscale 这类慢链路上重新拉一遍大会话（会很慢甚至超时）。
     private var threadHistoryCacheBySessionID: [SessionID: [CodexHistoryMessage]] = [:]
+    private var threadAuthoritativeCompletedTurnItemsBySessionID: [SessionID: [TurnID: Set<AgentItemID>]] = [:]
     private var threadTurnsListUnavailable = false
     private var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
     // thread/list 在远程/VPS 中转链路上可能要扫本机 Codex 历史并传回较大的 JSON。
@@ -461,6 +462,7 @@ actor CodexAppServerSessionRuntime {
         if archived {
             contextsBySessionID.removeValue(forKey: id)
             threadHistoryCacheBySessionID.removeValue(forKey: id)
+            threadAuthoritativeCompletedTurnItemsBySessionID.removeValue(forKey: id)
         }
     }
 
@@ -540,7 +542,8 @@ actor CodexAppServerSessionRuntime {
                 cached,
                 before: before,
                 limit: limit,
-                context: contextsBySessionID[sessionID]?.session.context
+                context: contextsBySessionID[sessionID]?.session.context,
+                authoritativeCompletedTurnItems: threadAuthoritativeCompletedTurnItemsBySessionID[sessionID] ?? [:]
             )
         }
         let result = try await sendRecoveringFromStaleInitialization(
@@ -550,7 +553,9 @@ actor CodexAppServerSessionRuntime {
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
+        let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
         let messages = historyMessages(from: thread, sessionID: sessionID)
+        let authoritativeCompletedTurnItems = Self.authoritativeCompletedTurnItems(fromTurns: turns)
         var context: SessionContextSnapshot?
         if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
             contextsBySessionID[sessionID] = CodexAppServerSessionContext(
@@ -561,7 +566,14 @@ actor CodexAppServerSessionRuntime {
             context = session.context
         }
         threadHistoryCacheBySessionID[sessionID] = messages
-        return Self.paginateHistory(messages, before: before, limit: limit, context: context)
+        threadAuthoritativeCompletedTurnItemsBySessionID[sessionID] = authoritativeCompletedTurnItems
+        return Self.paginateHistory(
+            messages,
+            before: before,
+            limit: limit,
+            context: context,
+            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+        )
     }
 
     private func messagesPageFromTurnPages(
@@ -608,7 +620,8 @@ actor CodexAppServerSessionRuntime {
             hasMoreBefore: nextCursor != nil,
             context: context,
             loadMode: loadMode,
-            notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns)
+            notice: Self.historyNotice(loadMode: loadMode, hasMoreBefore: nextCursor != nil, turns: chronologicalTurns),
+            authoritativeCompletedTurnItems: Self.authoritativeCompletedTurnItems(fromTurns: chronologicalTurns)
         )
     }
 
@@ -727,6 +740,27 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
+    private static func authoritativeCompletedTurnItems(
+        fromTurns turns: [[String: CodexAppServerJSONValue]]
+    ) -> [TurnID: Set<AgentItemID>] {
+        var result: [TurnID: Set<AgentItemID>] = [:]
+        for turn in turns {
+            guard turn["status"]?.stringValue == "completed",
+                  turn["itemsView"]?.stringValue == "full" || turn["items_view"]?.stringValue == "full",
+                  let turnID = turn["id"]?.stringValue else {
+                continue
+            }
+            let itemIDs = Set(
+                turn["items"]?.arrayValue?
+                    .compactMap(\.objectValue)
+                    .compactMap { $0["id"]?.stringValue }
+                    .filter { !$0.isEmpty } ?? []
+            )
+            result[turnID] = itemIDs
+        }
+        return result
+    }
+
     private static func historyNotice(
         loadMode: HistoryMessagesPage.LoadMode,
         hasMoreBefore: Bool,
@@ -772,13 +806,20 @@ actor CodexAppServerSessionRuntime {
         _ messages: [CodexHistoryMessage],
         before: String?,
         limit: Int?,
-        context: SessionContextSnapshot? = nil
+        context: SessionContextSnapshot? = nil,
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
     ) -> HistoryMessagesPage {
         let upperBound: Int
         if let before {
             guard let index = messages.firstIndex(where: { $0.id == before }) else {
                 // 游标对应的消息已不在历史里（极少见），关闭分页，避免反复请求同一页。
-                return HistoryMessagesPage(messages: [], previousCursor: nil, hasMoreBefore: false, context: context)
+                return HistoryMessagesPage(
+                    messages: [],
+                    previousCursor: nil,
+                    hasMoreBefore: false,
+                    context: context,
+                    authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+                )
             }
             upperBound = index
         } else {
@@ -796,7 +837,8 @@ actor CodexAppServerSessionRuntime {
             messages: bounded,
             previousCursor: hasMoreBefore ? bounded.first?.id : nil,
             hasMoreBefore: hasMoreBefore,
-            context: context
+            context: context,
+            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
     }
 

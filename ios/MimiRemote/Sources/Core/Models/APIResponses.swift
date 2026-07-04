@@ -1180,6 +1180,7 @@ struct HistoryMessagesPage: Equatable {
     let snapshotSeq: EventSequence?
     let loadMode: LoadMode
     let notice: String?
+    let authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]
 
     init(response: MessagesResponse) {
         self.messages = response.messages
@@ -1189,6 +1190,7 @@ struct HistoryMessagesPage: Equatable {
         self.snapshotSeq = response.snapshotSeq
         self.loadMode = .full
         self.notice = nil
+        self.authoritativeCompletedTurnItems = [:]
     }
 
     init(
@@ -1198,7 +1200,8 @@ struct HistoryMessagesPage: Equatable {
         context: SessionContextSnapshot? = nil,
         snapshotSeq: EventSequence? = nil,
         loadMode: LoadMode = .full,
-        notice: String? = nil
+        notice: String? = nil,
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
     ) {
         self.messages = messages
         self.previousCursor = previousCursor
@@ -1207,6 +1210,7 @@ struct HistoryMessagesPage: Equatable {
         self.snapshotSeq = snapshotSeq
         self.loadMode = loadMode
         self.notice = notice
+        self.authoritativeCompletedTurnItems = authoritativeCompletedTurnItems
     }
 }
 

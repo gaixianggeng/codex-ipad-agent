@@ -2415,7 +2415,11 @@ final class SessionStore: ObservableObject {
             )
             setHistoryLoadProgress(sessionID: session.id, title: "解析历史消息", fraction: 0.76)
             ingestHistoryContext(page.context, fallbackSessionID: session.id)
-            conversationStore.setHistory(page.messages, sessionID: session.id)
+            conversationStore.setHistory(
+                page.messages,
+                sessionID: session.id,
+                authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+            )
             setHistoryLoadProgress(sessionID: session.id, title: "更新界面", fraction: 0.94)
             updateHistoryPageState(sessionID: session.id, page: page, preserveExistingCursorOnEmptyPage: false)
             setErrorMessage(nil)
@@ -2989,12 +2993,19 @@ final class SessionStore: ObservableObject {
             setSelectedSessionID(responseSession.id)
             insertExpandedProjectID(responseSession.projectID)
 
-            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
-            // 如果用户刚从历史列表进入，当前 session 已经有一份完整历史快照；
-            // create 返回的 running 状态可能只改变元数据，这里复用快照，避免同一会话立刻再打一次 full。
-            let didLoadInitialHistory = hasLoadedFullHistorySnapshot(sessionID: responseSession.id)
-                ? true
-                : await loadHistoryIfNeeded(for: responseSession)
+            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”；
+            // 带首轮 prompt 的新会话也保留 thread/read 快照，用它校准后续事件回放。
+            // 新建空交互会话没有历史可补；启动后立刻请求完整历史容易撞上后端 thread/read
+            // 初始化窗口并误报“大历史加载失败”，因此只跳过这类空会话的首屏补拉。
+            let didLoadInitialHistory: Bool
+            if hasLoadedFullHistorySnapshot(sessionID: responseSession.id) {
+                // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
+                didLoadInitialHistory = true
+            } else if resume != nil || !payload.isEmpty {
+                didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
+            } else {
+                didLoadInitialHistory = false
+            }
             if !prompt.isEmpty {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
@@ -3332,7 +3343,11 @@ final class SessionStore: ObservableObject {
 
     private func applyHistoryFirstPage(_ page: HistoryMessagesPage, sessionID: SessionID) {
         ingestHistoryContext(page.context, fallbackSessionID: sessionID)
-        conversationStore.replaceHistorySnapshot(page.messages, sessionID: sessionID)
+        conversationStore.replaceHistorySnapshot(
+            page.messages,
+            sessionID: sessionID,
+            authoritativeCompletedTurnItems: page.authoritativeCompletedTurnItems
+        )
         updateHistorySavingsNotice(sessionID: sessionID, page: page)
     }
 

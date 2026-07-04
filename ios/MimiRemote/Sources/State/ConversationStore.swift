@@ -129,7 +129,11 @@ final class ConversationStore: ObservableObject {
         touchConversationSession(sessionID)
     }
 
-    func setHistory(_ history: [CodexHistoryMessage], sessionID: String) {
+    func setHistory(
+        _ history: [CodexHistoryMessage],
+        sessionID: String,
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+    ) {
         flushPendingAssistantDelta(sessionID: sessionID)
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
         for message in converted {
@@ -148,11 +152,22 @@ final class ConversationStore: ObservableObject {
             touchConversationSession(sessionID)
             return
         }
-        setMessages(mergeHistory(converted, with: messagesBySessionID[sessionID] ?? []), sessionID: sessionID)
+        setMessages(
+            mergeHistory(
+                converted,
+                with: messagesBySessionID[sessionID] ?? [],
+                authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+            ),
+            sessionID: sessionID
+        )
         loadedHistorySessionIDs.insert(sessionID)
     }
 
-    func replaceHistorySnapshot(_ history: [CodexHistoryMessage], sessionID: String) {
+    func replaceHistorySnapshot(
+        _ history: [CodexHistoryMessage],
+        sessionID: String,
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+    ) {
         flushPendingAssistantDelta(sessionID: sessionID)
         let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[sessionID]?.messages.map(\.id) ?? [])
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
@@ -177,7 +192,11 @@ final class ConversationStore: ObservableObject {
         let localToPreserve = (messagesBySessionID[sessionID] ?? []).filter { message in
             !previousHistoryProjectionIDs.contains(message.id)
         }
-        let snapshot = mergeHistory(converted, with: localToPreserve)
+        let snapshot = mergeHistory(
+            converted,
+            with: localToPreserve,
+            authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+        )
         if let current = messagesBySessionID[sessionID], areMessagesEquivalent(current, snapshot) {
             loadedHistorySessionIDs.insert(sessionID)
             touchConversationSession(sessionID)
@@ -1026,7 +1045,11 @@ final class ConversationStore: ObservableObject {
         messageIndexByUUIDBySessionID[sessionID]?[uuid]
     }
 
-    private func mergeHistory(_ history: [ConversationMessage], with local: [ConversationMessage]) -> [ConversationMessage] {
+    private func mergeHistory(
+        _ history: [ConversationMessage],
+        with local: [ConversationMessage],
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
+    ) -> [ConversationMessage] {
 #if DEBUG
         historyMergeInvocationCountForTesting += 1
 #endif
@@ -1059,6 +1082,12 @@ final class ConversationStore: ObservableObject {
             guard seenUUIDs.insert(item.id).inserted else {
                 continue
             }
+            if shouldPruneOrphanedHistoryProcess(
+                item,
+                authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
+            ) {
+                continue
+            }
             if shouldMergeAsNearbyHistoryEcho(item, candidates: nearbyHistoryEchoCandidates) {
                 continue
             }
@@ -1080,6 +1109,27 @@ final class ConversationStore: ObservableObject {
         return timelineSortEntries(from: merged)
             .sorted(by: areTimelineSortEntriesInOrder)
             .map(\.message)
+    }
+
+    private func shouldPruneOrphanedHistoryProcess(
+        _ item: ConversationMessage,
+        authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]
+    ) -> Bool {
+        guard item.timelineOrdinal != nil,
+              let turnID = item.turnID,
+              let itemID = item.itemID,
+              let authoritativeItemIDs = authoritativeCompletedTurnItems[turnID],
+              !authoritativeItemIDs.contains(itemID),
+              isPrunableHistoryProcessKind(item.kind) else {
+            return false
+        }
+        // 核心逻辑：只清历史投影卡。实时命令卡也有 turnID/itemID，但没有 timelineOrdinal；
+        // commandExecution 不落盘时，完成快照天然缺它们，不能把用户正在看的实时过程卡删掉。
+        return true
+    }
+
+    private func isPrunableHistoryProcessKind(_ kind: MessageKind) -> Bool {
+        kind == .commandSummary || kind == .fileChangeSummary
     }
 
     private struct LiveBackfillCandidates {
