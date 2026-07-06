@@ -9,6 +9,7 @@ struct SettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let isInitialSetup: Bool
+    var showsDoneButton = true
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage("runtime.keepAwakeWhileRunning") private var keepAwakeWhileRunning = false
@@ -28,7 +29,7 @@ struct SettingsView: View {
             }
             .navigationTitle(isInitialSetup ? "连接你的 Mac" : "设置")
             .toolbar {
-                if !isInitialSetup {
+                if !isInitialSetup && showsDoneButton {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("完成") { dismiss() }
                     }

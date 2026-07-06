@@ -8,9 +8,9 @@ struct RootView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showingSettings = false
     @State private var showingLogInspector = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @SceneStorage("root.selectedAppTab") private var selectedAppTabRawValue = AppTab.sessions.rawValue
     @AppStorage("runtime.keepAwakeWhileRunning") private var keepAwakeWhileRunning = false
 
     var body: some View {
@@ -18,7 +18,7 @@ struct RootView: View {
 
         Group {
             if appStore.isConfigured {
-                mainLayout
+                appShell
             } else {
                 SettingsView(isInitialSetup: true)
                     .environment(\.themeSystemColorScheme, colorScheme)
@@ -33,10 +33,6 @@ struct RootView: View {
         .onAppear(perform: applyIdleTimerPolicy)
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView(isInitialSetup: false)
-                .environment(\.themeSystemColorScheme, colorScheme)
         }
         .onChange(of: scenePhase) { _, phase in
             applyIdleTimerPolicy()
@@ -70,6 +66,41 @@ struct RootView: View {
         UIApplication.shared.isIdleTimerDisabled = keepAwakeWhileRunning
             && scenePhase == .active
             && sessionStore.selectedSession?.isRunning == true
+    }
+
+    private var selectedAppTab: AppTab {
+        AppTab(rawValue: selectedAppTabRawValue) ?? .sessions
+    }
+
+    private var selectedAppTabBinding: Binding<AppTab> {
+        Binding(
+            get: { selectedAppTab },
+            set: { selectedAppTabRawValue = $0.rawValue }
+        )
+    }
+
+    private var appShell: some View {
+        TabView(selection: selectedAppTabBinding) {
+            ForEach(AppTab.allCases) { tab in
+                Tab(tab.title, systemImage: tab.systemImage, value: tab) {
+                    appTabContent(for: tab)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func appTabContent(for tab: AppTab) -> some View {
+        switch tab {
+        case .sessions:
+            mainLayout
+        case .settings:
+            SettingsView(isInitialSetup: false, showsDoneButton: false)
+                .environment(\.themeSystemColorScheme, colorScheme)
+        case .profile:
+            ProfileRootView()
+                .environment(\.themeSystemColorScheme, colorScheme)
+        }
     }
 
     private var mainLayout: some View {
@@ -120,7 +151,7 @@ struct RootView: View {
                         .foregroundStyle(tokens.secondaryText)
                         .multilineTextAlignment(.center)
                     Button {
-                        showingSettings = true
+                        selectedAppTabRawValue = AppTab.settings.rawValue
                     } label: {
                         Label("打开设置", systemImage: "gearshape")
                     }
@@ -144,17 +175,6 @@ struct RootView: View {
             ProjectSidebarView(showsSessions: true)
                 .navigationTitle("咪咪")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            showingSettings = true
-                        } label: {
-                            Label("设置", systemImage: "gearshape")
-                        }
-                        .labelStyle(.iconOnly)
-                        .accessibilityLabel("设置")
-                    }
-                }
                 .navigationDestination(isPresented: compactSessionDetailBinding) {
                     workspaceDetail(
                         layout: layout,
@@ -259,14 +279,6 @@ struct RootView: View {
                         .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText.opacity(0.78))
                         .accessibilityLabel(showingLogInspector ? "隐藏详情" : "显示详情")
                     }
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Label("设置", systemImage: "gearshape")
-                    }
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText.opacity(0.78))
-                    .accessibilityLabel("设置")
                 }
             }
             .sessionInspectorPresentation(isPresented: $showingLogInspector, layout: layout)
@@ -379,6 +391,319 @@ struct RootView: View {
             }
             sessionStore.returnToSessionList()
         })
+    }
+}
+
+private enum AppTab: String, CaseIterable, Identifiable {
+    case sessions
+    case settings
+    case profile
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sessions:
+            return "会话"
+        case .settings:
+            return "设置"
+        case .profile:
+            return "我的"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .sessions:
+            return "bubble.left.and.bubble.right"
+        case .settings:
+            return "gearshape"
+        case .profile:
+            return "person.crop.circle"
+        }
+    }
+
+    @ViewBuilder
+    var label: some View {
+        Label(title, systemImage: systemImage)
+    }
+}
+
+private enum ProfileSection: String, CaseIterable, Identifiable, Hashable {
+    case runtime
+    case models
+    case capabilities
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .runtime:
+            return "运行环境"
+        case .models:
+            return "模型"
+        case .capabilities:
+            return "能力"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .runtime:
+            return "server.rack"
+        case .models:
+            return "cpu"
+        case .capabilities:
+            return "wand.and.stars"
+        }
+    }
+}
+
+private struct ProfileRootView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var selectedSection: ProfileSection = .runtime
+
+    var body: some View {
+        GeometryReader { proxy in
+            let usesSplitLayout = horizontalSizeClass == .regular && proxy.size.width >= 720
+
+            if usesSplitLayout {
+                HStack(spacing: 0) {
+                    ProfileSectionSidebar(selection: $selectedSection)
+                        .frame(width: 260)
+                    Divider()
+                    ProfileSectionDetail(section: selectedSection)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .background(themeStore.tokens(for: colorScheme).background)
+            } else {
+                NavigationStack {
+                    List {
+                        ForEach(ProfileSection.allCases) { section in
+                            NavigationLink(value: section) {
+                                Label(section.title, systemImage: section.systemImage)
+                            }
+                        }
+                    }
+                    .navigationTitle("我的")
+                    .navigationDestination(for: ProfileSection.self) { section in
+                        ProfileSectionDetail(section: section)
+                    }
+                    .scrollContentBackground(.hidden)
+                    .background(themeStore.tokens(for: colorScheme).background)
+                }
+            }
+        }
+    }
+}
+
+private struct ProfileSectionSidebar: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Binding var selection: ProfileSection
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 12) {
+            Text("我的")
+                .font(themeStore.uiFont(.title2, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+                .padding(.horizontal, 18)
+                .padding(.top, 20)
+
+            VStack(spacing: 4) {
+                ForEach(ProfileSection.allCases) { section in
+                    Button {
+                        selection = section
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: section.systemImage)
+                                .font(.system(size: 16, weight: .semibold))
+                                .frame(width: 22)
+                            Text(section.title)
+                                .font(themeStore.uiFont(.callout, weight: .semibold))
+                            Spacer()
+                        }
+                        .foregroundStyle(selection == section ? tokens.accent : tokens.primaryText)
+                        .padding(.horizontal, 12)
+                        .frame(height: 42)
+                        .background(selection == section ? tokens.selectionFill : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == section ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 10)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(tokens.sidebarBackground)
+    }
+}
+
+private struct ProfileSectionDetail: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    let section: ProfileSection
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Label(section.title, systemImage: section.systemImage)
+                        .font(themeStore.uiFont(.title2, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Spacer()
+                }
+
+                switch section {
+                case .runtime:
+                    runtimeContent(tokens: tokens)
+                case .models:
+                    modelsContent(tokens: tokens)
+                case .capabilities:
+                    capabilitiesContent(tokens: tokens)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 760, alignment: .leading)
+        }
+        .background(tokens.background)
+        .navigationTitle(section.title)
+    }
+
+    private func runtimeContent(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 10) {
+            ProfileInfoRow(
+                systemImage: "desktopcomputer",
+                title: "Mac 助手",
+                value: appStore.connectionStatus.title,
+                detail: appStore.endpoint,
+                tone: appStore.connectionStatus.isConnected ? tokens.success : tokens.warning
+            )
+            ProfileInfoRow(
+                systemImage: "sparkles",
+                title: "Codex",
+                value: "默认通道",
+                detail: "会话工作区继续沿用当前运行逻辑",
+                tone: tokens.accent
+            )
+            ProfileInfoRow(
+                systemImage: "flask",
+                title: "Claude",
+                value: sessionStore.hasClaudeRuntimeChannel ? "已发现" : "实验通道",
+                detail: "本轮只占位展示，不迁移配置入口",
+                tone: sessionStore.hasClaudeRuntimeChannel ? tokens.success : tokens.secondaryText
+            )
+        }
+    }
+
+    private func modelsContent(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 10) {
+            ProfileInfoRow(
+                systemImage: "cpu",
+                title: "模型列表",
+                value: modelSummary,
+                detail: "输入区的模型菜单暂时保持原位置",
+                tone: tokens.accent
+            )
+            ProfileInfoRow(
+                systemImage: "arrow.clockwise",
+                title: "刷新模型",
+                value: sessionStore.isRefreshingAppServerModels ? "刷新中" : "待接入",
+                detail: "下一步再把真实刷新动作迁移到这里",
+                tone: tokens.secondaryText
+            )
+        }
+    }
+
+    private func capabilitiesContent(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 10) {
+            ProfileInfoRow(
+                systemImage: "wand.and.stars",
+                title: "Skills",
+                value: "只读能力",
+                detail: "现有能力清单暂时留在设置高级里",
+                tone: tokens.accent
+            )
+            ProfileInfoRow(
+                systemImage: "point.3.connected.trianglepath.dotted",
+                title: "MCP",
+                value: "只读配置",
+                detail: "后续再迁移 Skills / MCP 列表",
+                tone: tokens.accent
+            )
+        }
+    }
+
+    private var modelSummary: String {
+        let count = sessionStore.appServerModelOptions.count
+        return count == 0 ? "使用内置候选" : "\(count) 个模型"
+    }
+}
+
+private struct ProfileInfoRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let systemImage: String
+    let title: String
+    let value: String
+    let detail: String
+    let tone: Color
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tone.opacity(0.12))
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(tone)
+            }
+            .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(value)
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
+                        .foregroundStyle(tone)
+                }
+                Text(detail)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border, lineWidth: 1)
+        }
+    }
+}
+
+private extension ConnectionStatus {
+    var isConnected: Bool {
+        if case .connected = self {
+            return true
+        }
+        return false
     }
 }
 
