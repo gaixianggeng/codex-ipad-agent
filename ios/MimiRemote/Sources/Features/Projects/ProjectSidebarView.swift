@@ -30,6 +30,7 @@ struct ProjectSidebarView: View {
                         isExpanded: snapshot.isExpanded,
                         isLoading: snapshot.isLoadingMore,
                         isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
+                        claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
                         themeRenderKey: themeRenderKey,
                         onToggle: {
                             Task {
@@ -42,6 +43,9 @@ struct ProjectSidebarView: View {
                         },
                         onNewSession: {
                             Task { await sessionStore.startNewSession(in: project) }
+                        },
+                        onNewClaudeSession: {
+                            Task { await sessionStore.startNewSession(in: project, runtimeProvider: "claude") }
                         },
                         onCreateWorktree: {
                             worktreeCreateProject = project
@@ -616,9 +620,11 @@ private struct ProjectRow: View, Equatable {
     let isExpanded: Bool
     let isLoading: Bool
     let isUnavailable: Bool
+    let claudeChannelAvailable: Bool
     let themeRenderKey: SidebarThemeRenderKey
     let onToggle: () -> Void
     let onNewSession: () -> Void
+    let onNewClaudeSession: () -> Void
     let onCreateWorktree: () -> Void
     let onManageWorktrees: () -> Void
     let onRetry: () -> Void
@@ -631,6 +637,7 @@ private struct ProjectRow: View, Equatable {
             && lhs.isExpanded == rhs.isExpanded
             && lhs.isLoading == rhs.isLoading
             && lhs.isUnavailable == rhs.isUnavailable
+            && lhs.claudeChannelAvailable == rhs.claudeChannelAvailable
             // 主题切换只通过轻量 key 打破行缓存，避免移除 .equatable() 导致长列表回退。
             && lhs.themeRenderKey == rhs.themeRenderKey
     }
@@ -678,6 +685,18 @@ private struct ProjectRow: View, Equatable {
                 .frame(width: 34, height: 34)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onNewSession)
+                // 会话在创建瞬间就绑定 runtime，事后无法切换通道；长按提供显式的通道选择，
+                // 轻点保持默认（Codex）行为不变。
+                .contextMenu {
+                    Button(action: onNewSession) {
+                        Label("新建 Codex 会话", systemImage: "plus.circle")
+                    }
+                    if claudeChannelAvailable {
+                        Button(action: onNewClaudeSession) {
+                            Label("新建 Claude Code 会话", systemImage: "sparkles")
+                        }
+                    }
+                }
                 .accessibilityLabel("新建会话")
 
             Menu {

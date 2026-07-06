@@ -5585,6 +5585,45 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(sockets.count, 1)
     }
 
+    // 回归：新建会话在创建瞬间就绑定 runtime。入口显式选择 Claude 时，createSession 请求必须
+    // 携带 runtimeProvider=claude，否则空线程会落在默认 Codex 通道上且事后无法迁移。
+    func testStartNewSessionWithClaudeRuntimeCarriesRuntimeProviderInCreatePayload() async throws {
+        let project = makeProject(id: "proj_claude_entry")
+        let created = makeSession(id: "claude_created", projectID: project.id, title: "Claude 会话", status: "closed", source: "claude")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            createSessionResponse: try makeCreateSessionResponse(session: created)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.startNewSession(in: project, runtimeProvider: "claude")
+
+        XCTAssertEqual(client.createPayloads.count, 1)
+        let payload = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.normalizedRuntimeProvider(payload.turnOptions.runtimeProvider),
+            "claude",
+            "显式 Claude 入口创建的空线程必须路由到 Claude runtime"
+        )
+        XCTAssertEqual(store.selectedSession?.id, created.id)
+
+        // 默认入口保持 Codex 主线行为：不显式携带 claude runtimeProvider。
+        await store.startNewSession(in: project)
+        XCTAssertEqual(client.createPayloads.count, 2)
+        let defaultPayload = try XCTUnwrap(client.createPayloads.last)
+        XCTAssertNotEqual(
+            CodexAppServerSessionRuntime.normalizedRuntimeProvider(defaultPayload.turnOptions.runtimeProvider),
+            "claude",
+            "默认新建会话不能被 Claude 修复改变通道"
+        )
+    }
+
     func testSessionStoreUsesIDTieBreakerForMatchingBackendCursorOrder() async {
         let project = makeProject(id: "proj_1")
         let sameUpdatedAt = Date(timeIntervalSince1970: 20)
@@ -12038,6 +12077,73 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(turnStart.params?.objectValue?["collaborationMode"]?.objectValue?["mode"]?.stringValue, "default")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_empty_first","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490603,"completedAt":null,"durationMs":null}}}"#)
 
+        socket.disconnect()
+    }
+
+    // 回归：Claude 通道的 thread/start / thread/resume 必须先按 runtime 策略把 .default 草稿的
+    // dangerFullAccess 降级为 workspace-write。旧行为原样携带 danger-full-access，gateway 以
+    // -32080 拒绝 resume，事件订阅进入确定性失败的重连死循环，Claude 会话永远打不开。
+    func testClaudeRuntimeThreadStartAndResumeDowngradeSandboxToWorkspaceWrite() async throws {
+        let project = AgentProject(id: "proj_claude_sandbox", name: "Claude Sandbox", path: "/tmp/claude-sandbox")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()]) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "",
+                input: [],
+                resumeID: "",
+                clientMessageID: nil
+            ))
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-claude-bridge","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let threadStart = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(threadStart.method, "thread/start")
+        XCTAssertEqual(
+            threadStart.params?.objectValue?["sandbox"]?.stringValue,
+            "workspace-write",
+            "Claude 通道 thread/start 不应携带 danger-full-access"
+        )
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_claude_sandbox","sessionId":"thr_claude_sandbox","preview":"","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-sandbox","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 会话","turns":[]}}}"#)
+
+        let created = try await createTask.value
+        XCTAssertEqual(created.session.id, "thr_claude_sandbox")
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.connect(sessionID: "thr_claude_sandbox")
+
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
+        XCTAssertEqual(resume.params?.objectValue?["threadId"]?.stringValue, "thr_claude_sandbox")
+        XCTAssertEqual(
+            resume.params?.objectValue?["sandbox"]?.stringValue,
+            "workspace-write",
+            "Claude 通道 thread/resume 不应携带 danger-full-access（gateway 会 -32080 拒绝并造成重连死循环）"
+        )
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_claude_sandbox","sessionId":"thr_claude_sandbox","preview":"","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490700,"updatedAt":1780490702,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-sandbox","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 会话","turns":[]}}}"#)
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+        XCTAssertFalse(
+            statuses.contains { if case .failed = $0 { return true } else { return false } },
+            "Claude 会话 resume 不应进入 failed/重连"
+        )
         socket.disconnect()
     }
 

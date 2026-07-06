@@ -404,6 +404,7 @@ actor CodexAppServerSessionRuntime {
         // 所以这里必须保持主线兼容行为，不能让纯 Codex 用户回归。
         threadOptions.model = nil
         threadOptions.modelProvider = nil
+        threadOptions = runtimeScopedThreadOptions(threadOptions)
         let spec: CodexAppServerRequestSpec
         if payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             spec = projectPath?.isEmpty == false
@@ -1082,6 +1083,16 @@ actor CodexAppServerSessionRuntime {
         turnStartTasksBySessionID.removeValue(forKey: sessionID)
     }
 
+    // thread/start、thread/resume 的 options 必须按本 runtime 的通道策略先降级再发送：
+    // Claude 通道不接受 dangerFullAccess，.default 草稿直接上桥会被 gateway 拒绝，
+    // 会话恢复就会陷入确定性失败的重连循环。runtime 连接的 gateway 由自身 runtimeProvider
+    // 决定，所以这里强制以 actor 的 runtime 为准，而不是相信 payload 里的残留值。
+    private func runtimeScopedThreadOptions(_ options: CodexAppServerTurnOptions) -> CodexAppServerTurnOptions {
+        var scoped = options
+        scoped.runtimeProvider = runtimeProvider
+        return scoped.sanitizedForRuntimePolicy()
+    }
+
     // 直连发送路径下，thread 可能只在 thread/list 或 thread/start 里出现过，但没有在当前 gateway
     // 连接上执行过 thread/resume。真实 app-server 只有 resume 后才稳定建立 live listener；
     // 否则 turn/start 虽然被接受，iPad 也可能收不到 turn/started、delta 和 completed，界面就会一直等待。
@@ -1096,7 +1107,7 @@ actor CodexAppServerSessionRuntime {
         }
         let result: CodexAppServerJSONValue?
         do {
-            result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd))
+            result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd, options: runtimeScopedThreadOptions(.default)))
         } catch {
             if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回

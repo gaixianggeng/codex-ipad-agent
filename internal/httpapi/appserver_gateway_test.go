@@ -262,7 +262,7 @@ while IFS= read -r line; do sleep 30; done
 	waitForProcessExit(t, childPID)
 }
 
-func TestClaudeGatewayRejectsUnsupportedMethodAndDangerSandbox(t *testing.T) {
+func TestClaudeGatewayRejectsUnsupportedMethod(t *testing.T) {
 	receivedPath := filepath.Join(t.TempDir(), "received.jsonl")
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 while IFS= read -r line; do
@@ -270,7 +270,7 @@ while IFS= read -r line; do
 done
 `, receivedPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
-	handler, projectDir := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
 		cfg.Claude.BridgeBin = bridge
 		cfg.Claude.MaxConcurrentBridges = 3
@@ -286,22 +286,75 @@ done
 	if got := readGatewayError(t, conn); !strings.Contains(got.message, "method 不允许") {
 		t.Fatalf("Claude 未声明 method 应被 gateway 拒绝：%+v", got)
 	}
-
-	conn2 := dialAuthedGatewayRuntime(t, server.URL, "claude")
-	defer conn2.Close()
-	payload := fmt.Sprintf(
-		`{"id":78,"method":"turn/start","params":{"threadId":"thr","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"dangerFullAccess","networkAccess":false}}}`,
-		projectDir,
-	)
-	if err := conn2.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
-		t.Fatal(err)
-	}
-	if got := readGatewayError(t, conn2); !strings.Contains(got.message, "dangerFullAccess") {
-		t.Fatalf("Claude dangerFullAccess 应被 gateway 拒绝：%+v", got)
-	}
 	time.Sleep(150 * time.Millisecond)
 	if raw, err := os.ReadFile(receivedPath); err == nil && len(bytes.TrimSpace(raw)) > 0 {
 		t.Fatalf("被拒绝的 Claude frame 不应写入 bridge stdin：%s", raw)
+	}
+}
+
+// 回归：iPad 老版本/默认草稿会在 thread/resume 和 turn/start 上携带 dangerFullAccess。
+// gateway 必须改写降级后转发，而不是硬拒——硬拒会让会话恢复陷入确定性失败的重连死循环。
+func TestClaudeGatewayCoercesDangerSandboxOnResumeAndTurn(t *testing.T) {
+	receivedPath := filepath.Join(t.TempDir(), "received.jsonl")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+while IFS= read -r line; do
+  printf '%%s\n' "$line" >> %q
+  case "$line" in
+  *'"method":"thread/list"'*)
+    printf '{"jsonrpc":"2.0","id":81,"result":{"data":[{"id":"thr-danger"}]}}\n'
+    ;;
+  esac
+done
+`, receivedPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, projectDir := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer conn.Close()
+	// 先用 thread/list 响应把 thread 绑定到当前连接，模拟 iPad 打开会话列表后进入历史会话。
+	listPayload := fmt.Sprintf(`{"id":81,"method":"thread/list","params":{"cwd":%q}}`, projectDir)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(listPayload)); err != nil {
+		t.Fatal(err)
+	}
+	listResponse := readGatewayRaw(t, conn)
+	if !bytes.Contains(listResponse, []byte("thr-danger")) {
+		t.Fatalf("thread/list 响应应回流客户端：%s", listResponse)
+	}
+
+	resumePayload := fmt.Sprintf(
+		`{"id":82,"method":"thread/resume","params":{"threadId":"thr-danger","cwd":%q,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"danger-full-access"}}`,
+		projectDir,
+	)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(resumePayload)); err != nil {
+		t.Fatal(err)
+	}
+	resumeFrame := readTestFileLineEventually(t, receivedPath, `"thread/resume"`)
+	resumeParams := decodeGatewayParamsForTest(t, resumeFrame)
+	if resumeParams["sandbox"] != "workspace-write" {
+		t.Fatalf("Claude thread/resume 的危险 sandbox 应被改写为 workspace-write：%s", resumeFrame)
+	}
+	if bytes.Contains(resumeFrame, []byte("danger-full-access")) {
+		t.Fatalf("Claude thread/resume 不应把 danger-full-access 透传给 bridge：%s", resumeFrame)
+	}
+
+	turnPayload := fmt.Sprintf(
+		`{"id":83,"method":"turn/start","params":{"threadId":"thr-danger","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-request","sandboxPolicy":{"type":"dangerFullAccess","networkAccess":false}}}`,
+		projectDir,
+	)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(turnPayload)); err != nil {
+		t.Fatal(err)
+	}
+	turnFrame := readTestFileLineEventually(t, receivedPath, `"turn/start"`)
+	turnParams := decodeGatewayParamsForTest(t, turnFrame)
+	sandboxPolicy, _ := turnParams["sandboxPolicy"].(map[string]any)
+	if sandboxPolicy["type"] != "workspaceWrite" || sandboxPolicy["networkAccess"] != false {
+		t.Fatalf("Claude turn/start 的危险 sandboxPolicy 应被改写为 workspaceWrite：%s", turnFrame)
 	}
 }
 
@@ -3137,6 +3190,24 @@ func readTestFileEventually(t *testing.T, path string) []byte {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("等待测试文件写入超时：%s", path)
+	return nil
+}
+
+func readTestFileLineEventually(t *testing.T, path string, needle string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			for _, line := range bytes.Split(raw, []byte("\n")) {
+				if bytes.Contains(line, []byte(needle)) {
+					return append([]byte(nil), line...)
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("等待测试文件出现 %q 超时：%s", needle, path)
 	return nil
 }
 

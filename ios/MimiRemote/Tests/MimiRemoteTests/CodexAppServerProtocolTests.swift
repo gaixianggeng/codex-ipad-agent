@@ -43,6 +43,41 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(sandbox["writableRoots"])
     }
 
+    func testDeterministicGatewayPolicyFailureStopsReconnectOnlyForHardPolicyErrors() {
+        // 硬策略拒绝：重连必然复现，应停止自动重连。
+        XCTAssertTrue(SessionStore.isDeterministicGatewayPolicyFailure(
+            "app-server 错误 -32080：dangerFullAccess 不允许用于 Claude experimental runtime"
+        ))
+        XCTAssertTrue(SessionStore.isDeterministicGatewayPolicyFailure(
+            "app-server 错误 -32080：thread/resume.cwd 必须来自 projects allowlist 或 browse_roots"
+        ))
+        // 历史预算/限流类是时间窗资源，恢复后可成功，必须继续走重试路径。
+        XCTAssertFalse(SessionStore.isDeterministicGatewayPolicyFailure(
+            "app-server 错误 -32080：thread/turns/list 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView"
+        ))
+        XCTAssertFalse(SessionStore.isDeterministicGatewayPolicyFailure(
+            "app-server 错误 -32080：gateway pending history 请求过多"
+        ))
+        // 非 -32080 的普通断线仍然自动重连。
+        XCTAssertFalse(SessionStore.isDeterministicGatewayPolicyFailure("连接已断开"))
+        XCTAssertFalse(SessionStore.isDeterministicGatewayPolicyFailure(
+            "app-server 错误 -32081：CLAUDE_BRIDGE_EXITED: Claude bridge 已退出，本轮连接已中断"
+        ))
+    }
+
+    func testSanitizedForRuntimePolicyDowngradesClaudeFullAccess() {
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        let sanitized = options.sanitizedForRuntimePolicy()
+        XCTAssertEqual(sanitized.sandboxMode, .workspaceWrite)
+        XCTAssertFalse(sanitized.networkAccess)
+
+        var codexOptions = CodexAppServerTurnOptions.default
+        codexOptions.runtimeProvider = "codex"
+        XCTAssertEqual(codexOptions.sanitizedForRuntimePolicy().sandboxMode, .dangerFullAccess,
+                       "Codex 通道保持默认完全访问，不能因 Claude 修复回归")
+    }
+
     func testThreadListBuilderUsesStableSidebarSortParams() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])

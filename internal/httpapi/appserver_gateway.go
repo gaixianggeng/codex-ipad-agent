@@ -2101,9 +2101,10 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	if hasDangerousConfigSandbox(params["config"]) {
 		return validated, fmt.Errorf("dangerFullAccess 不允许通过 config 使用")
 	}
-	if normalizeAppServerRuntimeID(runtimeID) == "claude" && hasDangerFullAccessPolicy(params) {
-		return validated, fmt.Errorf("dangerFullAccess 不允许用于 Claude experimental runtime")
-	}
+	// Claude runtime 不在这里硬拒 dangerFullAccess：老客户端/默认草稿会在 thread/resume 上带全量沙盒，
+	// 硬拒会让会话恢复进入确定性失败的重连死循环。rewriteGatewaySafeDefaults 的
+	// sanitizedGatewayThreadSandbox / sanitizedGatewaySandboxPolicy 会把 Claude 的沙盒强制压回
+	// workspace-write/read-only，所有 Claude 允许的方法都在改写覆盖范围内。
 	if hasNetworkAccessEnabled(params) {
 		return validated, fmt.Errorf("networkAccess=true 不允许远程使用")
 	}
@@ -2476,37 +2477,6 @@ func hasNetworkAccessEnabled(value any) bool {
 
 func hasDangerousConfigSandbox(value any) bool {
 	return hasDangerousConfigSandboxValue(value, "")
-}
-
-func hasDangerFullAccessPolicy(value any) bool {
-	return hasDangerFullAccessPolicyValue(value, "")
-}
-
-func hasDangerFullAccessPolicyValue(value any, parentKey string) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			normalizedKey := normalizePolicyValue(key)
-			if normalizedKey == "dangerfullaccess" {
-				return true
-			}
-			if normalizedKey == "sandbox" || normalizedKey == "sandboxmode" || (parentKey == "sandboxpolicy" && normalizedKey == "type") {
-				if text, ok := child.(string); ok && normalizePolicyValue(text) == "dangerfullaccess" {
-					return true
-				}
-			}
-			if hasDangerFullAccessPolicyValue(child, normalizedKey) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if hasDangerFullAccessPolicyValue(child, parentKey) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func hasDangerousConfigSandboxValue(value any, parentKey string) bool {

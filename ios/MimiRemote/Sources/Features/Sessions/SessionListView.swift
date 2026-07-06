@@ -16,6 +16,16 @@ struct SessionListView: View {
                     Label("新建会话", systemImage: "plus.circle")
                 }
 
+                // 会话在创建瞬间就绑定 runtime；Claude 通道必须在入口显式选择，
+                // 建好之后模型菜单只会显示所属通道的模型。
+                if sessionStore.hasClaudeRuntimeChannel {
+                    Button {
+                        Task { await sessionStore.startNewSession(runtimeProvider: "claude") }
+                    } label: {
+                        Label("新建 Claude Code 会话", systemImage: "sparkles")
+                    }
+                }
+
                 ForEach(sessionStore.filteredSessions) { session in
                     Button {
                         Task { await sessionStore.selectSession(session) }

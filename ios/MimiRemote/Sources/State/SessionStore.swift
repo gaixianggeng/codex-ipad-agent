@@ -2564,22 +2564,28 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func startNewSession() async {
+    // 新建会话在点击瞬间就急切创建空线程并绑定 runtime；不传 runtimeProvider 时由默认模型
+    // 决定（当前是 Codex）。要开 Claude 会话必须在这里显式指定，事后无法把线程迁到另一条通道。
+    func startNewSession(runtimeProvider: String? = nil) async {
         guard let selectedProjectID else {
             setErrorMessage("请先选择项目")
             return
         }
-        await createSession(projectID: selectedProjectID, prompt: "", resume: nil)
+        await createSession(projectID: selectedProjectID, prompt: "", resume: nil, runtimeProvider: runtimeProvider)
     }
 
-    func startNewSession(in project: AgentProject) async {
+    func startNewSession(in project: AgentProject, runtimeProvider: String? = nil) async {
         let workspace = ensureWorkspace(for: project)
         setSelectedProjectID(workspace.id)
         setSelectedSessionID(nil)
         insertExpandedProjectID(workspace.id)
         setErrorMessage(nil)
         disconnectWebSocket()
-        await createSession(projectID: workspace.id, prompt: "", resume: nil)
+        await createSession(projectID: workspace.id, prompt: "", resume: nil, runtimeProvider: runtimeProvider)
+    }
+
+    var hasClaudeRuntimeChannel: Bool {
+        appServerModelOptions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider) == "claude" }
     }
 
     @discardableResult
@@ -2989,8 +2995,18 @@ final class SessionStore: ObservableObject {
     }
 
     @discardableResult
-    private func createSession(projectID: String, prompt: String, resume: AgentSession?, clientMessageID: ClientMessageID? = nil) async -> Bool {
-        await createSession(projectID: projectID, payload: CodexAppServerTurnPayload(prompt: prompt), resume: resume, clientMessageID: clientMessageID)
+    private func createSession(
+        projectID: String,
+        prompt: String,
+        resume: AgentSession?,
+        clientMessageID: ClientMessageID? = nil,
+        runtimeProvider: String? = nil
+    ) async -> Bool {
+        var payload = CodexAppServerTurnPayload(prompt: prompt)
+        if let runtimeProvider, !runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload.options.runtimeProvider = runtimeProvider
+        }
+        return await createSession(projectID: projectID, payload: payload, resume: resume, clientMessageID: clientMessageID)
     }
 
     @discardableResult
@@ -3366,6 +3382,27 @@ final class SessionStore: ObservableObject {
             setErrorMessage("缩略历史加载失败：\(error.localizedDescription)")
         }
         return false
+    }
+
+    // gateway 策略拒绝（-32080）对同样的请求参数是确定性失败：自动重连只会带着相同参数再次被拒，
+    // 结果是错误横幅无限刷新。历史预算类拒绝（限流/响应过大/pending 过多）是时间窗资源，恢复后
+    // 可以成功，这些仍保留重连与 history 重试路径。
+    nonisolated static func isDeterministicGatewayPolicyFailure(_ message: String) -> Bool {
+        guard message.contains("-32080") else {
+            return false
+        }
+        let lowerMessage = message.lowercased()
+        if lowerMessage.contains("thread/turns/list")
+            || lowerMessage.contains("thread/read")
+            || lowerMessage.contains("history response")
+            || lowerMessage.contains("limit/itemsview") {
+            return false
+        }
+        return !(message.contains("历史响应")
+            || message.contains("临时限流")
+            || message.contains("响应过大")
+            || message.contains("内容过大")
+            || message.contains("请求过多"))
     }
 
     private func historyPolicyFailure(from error: Error) -> HistoryPolicyFailure? {
@@ -4550,7 +4587,8 @@ final class SessionStore: ObservableObject {
             setWebSocketStatus(.connected)
             setErrorMessage(nil)
         case .failed(let message):
-            let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
+            let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
+            let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID) && !policyRejected
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 webSocket = nil
@@ -4563,7 +4601,7 @@ final class SessionStore: ObservableObject {
                 scheduleWebSocketReconnect(sessionID: sessionID, reason: message)
             } else {
                 setWebSocketStatus(.failed(message))
-                setErrorMessage(message)
+                setErrorMessage(policyRejected ? "连接被服务器策略拒绝，已停止自动重连：\(message)" : message)
             }
         case .disconnected:
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
