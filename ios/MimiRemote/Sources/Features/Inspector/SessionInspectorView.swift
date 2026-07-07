@@ -14,16 +14,18 @@ struct SessionInspectorView: View {
             Picker("Inspector", selection: $selectedSection) {
                 ForEach(SessionInspectorSection.allCases) { section in
                     Image(systemName: section.symbolName)
+                        .font(themeStore.uiFont(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 28)
                         .tag(section)
                         .accessibilityLabel(section.title)
                 }
             }
             .pickerStyle(.segmented)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
 
             Rectangle()
-                .fill(tokens.border)
+                .fill(tokens.border.opacity(0.7))
                 .frame(height: 1)
 
             Group {
@@ -39,23 +41,42 @@ struct SessionInspectorView: View {
                 }
             }
         }
-        .background(tokens.surface)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(tokens.sidebarBackground)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(tokens.border.opacity(0.78))
+                .frame(width: 1)
+        }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(tokens.border.opacity(0.42))
+                .frame(height: 1)
+        }
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return HStack(spacing: 10) {
             Image(systemName: selectedSection.symbolName)
-                .font(themeStore.uiFont(.callout, weight: .semibold))
-                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-                .frame(width: 24, height: 24)
+                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.accent)
+                .frame(width: 34, height: 34)
+                .background(tokens.elevatedSurface.opacity(0.74), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(tokens.border.opacity(0.62), lineWidth: 1)
+                }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(selectedSection.title)
                     .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).primaryText)
+                    .foregroundStyle(tokens.primaryText)
                 Text(sessionSubtitle)
                     .font(themeStore.codeFont(.caption2))
-                    .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+                    .foregroundStyle(tokens.secondaryText)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -63,8 +84,9 @@ struct SessionInspectorView: View {
 
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.top, 9)
+        .padding(.bottom, 9)
     }
 
     private var sessionSubtitle: String {

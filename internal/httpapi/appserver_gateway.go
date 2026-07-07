@@ -215,7 +215,10 @@ type appServerGatewayPendingHistoryRequest struct {
 	threadID     string
 	itemsView    string
 	includeTurns bool
-	createdAt    time.Time
+	// redactOnly 请求（thread/resume）只做图片改写，不记预算、不做 cap 阻断：
+	// resume 是发消息前的绑定步骤，被阻断会直接废掉大线程的消息发送。
+	redactOnly bool
+	createdAt  time.Time
 }
 
 type appServerGatewayHistoryBudget struct {
@@ -653,7 +656,7 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 			return gatewayCloseReason("upstream_read", err)
 		}
 		policyStart := time.Now()
-		forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
+		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(messageType, payload)
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
@@ -674,10 +677,10 @@ func copyWebSocketFrames(ctx context.Context, from *websocket.Conn, to *websocke
 			continue
 		}
 		writeStart := time.Now()
-		if err := writeWebSocketFrame(to, toWriteMu, messageType, payload); err != nil {
+		if err := writeWebSocketFrame(to, toWriteMu, messageType, forwardPayload); err != nil {
 			return gatewayCloseReason("client_write", err)
 		}
-		monitor.recordForward("upstream_to_client", len(payload), len(payload), policyDuration, time.Since(writeStart), payload)
+		monitor.recordForward("upstream_to_client", len(payload), len(forwardPayload), policyDuration, time.Since(writeStart), forwardPayload)
 	}
 }
 
@@ -1505,6 +1508,15 @@ func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, meth
 	if p.pendingHistory == nil {
 		p.pendingHistory = map[string]appServerGatewayPendingHistoryRequest{}
 	}
+	if pending.redactOnly {
+		// 追踪表满时放弃改写而不是拒绝请求：redact-only 请求宁可原样透传也不能失败。
+		if _, exists := p.pendingHistory[key]; !exists && len(p.pendingHistory) >= appServerGatewayPendingHistoryRequestMax {
+			return nil
+		}
+		pending.createdAt = now
+		p.pendingHistory[key] = pending
+		return nil
+	}
 	if _, exists := p.pendingHistory[key]; !exists && len(p.pendingHistory) >= appServerGatewayPendingHistoryRequestMax {
 		return &appServerGatewayPolicyError{id: id, message: "gateway pending history 请求过多"}
 	}
@@ -1583,6 +1595,10 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 		if includeTurnsOK && includeTurns {
 			return appServerGatewayPendingHistoryRequest{method: method, threadID: threadID, itemsView: "fullRead", includeTurns: true}, true
 		}
+	case "thread/resume":
+		// resume 一次性带回整段 thread（大线程 9MB+ 内联图），必须做图片改写；
+		// 但它是消息发送的前置绑定，不能被预算/cap 阻断。
+		return appServerGatewayPendingHistoryRequest{method: method, threadID: threadID, itemsView: "resume", redactOnly: true}, true
 	}
 	return appServerGatewayPendingHistoryRequest{}, false
 }
@@ -1784,51 +1800,58 @@ func (r *Router) gatewayThread(runtimeID string, threadID string) (appServerGate
 	return thread, ok
 }
 
-func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload []byte) (bool, *appServerGatewayPolicyError) {
+func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload []byte) ([]byte, bool, *appServerGatewayPolicyError) {
 	if messageType != websocket.TextMessage {
-		return true, nil
+		return payload, true, nil
 	}
 	var frame appServerGatewayFrame
 	if err := json.Unmarshal(payload, &frame); err != nil {
-		return true, nil
+		return payload, true, nil
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID != nil {
 		if err := p.rememberPendingServerRequest(frame.ID, frame.Method); err != nil {
-			return false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
+			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
-		return true, nil
+		return payload, true, nil
 	}
 	if gatewayFrameIsResponse(&frame) {
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
-			p.recordHistoryResponseBudget(pending, len(payload))
-			if len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes {
-				p.forgetPending(frame.ID)
-				return false, &appServerGatewayPolicyError{
-					id:      frame.ID,
-					message: fmt.Sprintf("%s history response 过大（%d bytes > %d bytes），gateway 已阻断；请降低 limit/itemsView 或改用分页读取", pending.method, len(payload), appServerGatewayHistoryResponseCapBytes),
-					data: gatewayPolicyErrorData("history_response_too_large", appServerGatewayHistoryBudgetWindow, map[string]any{
-						"method":           pending.method,
-						"threadId":         pending.threadID,
-						"itemsView":        pending.itemsView,
-						"responseBytes":    len(payload),
-						"maxResponseBytes": appServerGatewayHistoryResponseCapBytes,
-					}),
-					target:                 "client",
-					historyResponseBlocked: true,
+			if len(frame.Error) == 0 && len(frame.Result) > 0 {
+				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
+					payload = redacted
+				}
+			}
+			if !pending.redactOnly {
+				p.recordHistoryResponseBudget(pending, len(payload))
+				if len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes {
+					p.forgetPending(frame.ID)
+					return payload, false, &appServerGatewayPolicyError{
+						id:      frame.ID,
+						message: fmt.Sprintf("%s history response 过大（%d bytes > %d bytes），gateway 已阻断；请降低 limit/itemsView 或改用分页读取", pending.method, len(payload), appServerGatewayHistoryResponseCapBytes),
+						data: gatewayPolicyErrorData("history_response_too_large", appServerGatewayHistoryBudgetWindow, map[string]any{
+							"method":           pending.method,
+							"threadId":         pending.threadID,
+							"itemsView":        pending.itemsView,
+							"responseBytes":    len(payload),
+							"maxResponseBytes": appServerGatewayHistoryResponseCapBytes,
+						}),
+						target:                 "client",
+						historyResponseBlocked: true,
+					}
 				}
 			}
 		}
 	}
 	if !p.hasPendingThreadResponses() {
-		return true, nil
+		return payload, true, nil
 	}
 	if frame.ID == nil || len(frame.Result) == 0 || len(frame.Error) > 0 {
 		p.forgetPending(frame.ID)
-		return true, nil
+		return payload, true, nil
 	}
 	key := gatewayRequestIDKey(frame.ID)
 	if key == "" {
-		return true, nil
+		return payload, true, nil
 	}
 	p.mu.Lock()
 	pending, ok := p.pendingThreads[key]
@@ -1837,12 +1860,12 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 	}
 	p.mu.Unlock()
 	if !ok {
-		return true, nil
+		return payload, true, nil
 	}
 	for _, thread := range p.threadsFromResult(frame.Result, pending) {
 		p.allowThread(thread)
 	}
-	return true, nil
+	return payload, true, nil
 }
 
 func gatewayFrameIsResponse(frame *appServerGatewayFrame) bool {

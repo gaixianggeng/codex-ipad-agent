@@ -352,6 +352,26 @@ struct ConversationView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+
+            case .summaryFailed:
+                Button {
+                    Task {
+                        await sessionStore.loadSummaryHistoryForSelectedSession()
+                    }
+                } label: {
+                    Label("重试缩略版", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(sessionStore.isRefreshingSelectedSession)
+
+                Button {
+                    sessionStore.dismissSelectedHistorySavingsNotice()
+                } label: {
+                    Label("关闭", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
     }
@@ -674,9 +694,9 @@ struct ConversationLayout: Equatable {
         messageSideSpacer = isCompactWidth ? 12 : (isTightPadWidth ? 24 : 56)
         composerAvailableWidth = max(240, containerWidth - horizontalInset * 2)
         composerMaxWidth = isCompactWidth ? .infinity : min(920, max(360, composerAvailableWidth))
-        composerTopPadding = isCompactWidth ? 8 : 10
-        // 底部输入区是触屏主操作区，保留稳定的下方呼吸空间；不要依赖隐藏快捷键按钮撑高布局。
-        composerBottomPadding = isCompactWidth ? 20 : 22
+        composerTopPadding = isCompactWidth ? 7 : 8
+        // 底部输入区是触屏主操作区，但 iPad dock 过厚会抢走会话主体重心；保持可点空间，同时减少空闲态压迫感。
+        composerBottomPadding = isCompactWidth ? 16 : 18
 
         // 气泡宽度按实际容器收缩，保留左右身份感，同时避免 iPhone/mini 竖屏横向溢出。
         let rowAvailableWidth = max(240, containerWidth - horizontalInset * 2 - messageSideSpacer)
@@ -1019,10 +1039,7 @@ struct ConversationTimelineView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "message")
-                .font(themeStore.uiFont(.title2))
-                .foregroundStyle(workbenchSecondaryText)
+        VStack(spacing: 8) {
             Text("还没有对话")
                 .font(themeStore.uiFont(.headline, weight: .semibold))
                 .foregroundStyle(workbenchPrimaryText)

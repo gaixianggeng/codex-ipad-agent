@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -942,6 +943,123 @@ func TestAppServerGatewayCapsOversizedHistoryResponses(t *testing.T) {
 	}
 }
 
+func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 1024
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+	})
+
+	var projectDir string
+	imagePayload := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("large-history-image", 120)))
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-image-history")
+			return
+		}
+		if frame.Method != "thread/turns/list" {
+			return
+		}
+		response := fmt.Sprintf(
+			`{"id":%s,"result":{"data":[{"id":"turn-image","items":[{"type":"userMessage","id":"user-image","content":[{"type":"text","text":"看这张截图"},{"type":"image","url":"data:image/png;base64,%s","detail":"high"}]}]}]}}`,
+			string(*frame.ID),
+			imagePayload,
+		)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+			t.Errorf("fake upstream 写 inline image history 响应失败：%v", err)
+		}
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-image-history")
+
+	request := []byte(`{"id":730,"method":"thread/turns/list","params":{"threadId":"thread-image-history","limit":20,"itemsView":"full"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	raw := readGatewayRaw(t, conn)
+	if bytes.Contains(raw, []byte(imagePayload)) || bytes.Contains(raw, []byte("data:image/png;base64")) {
+		t.Fatalf("history inline 图片不应透传给 iPad：%s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"error"`)) {
+		t.Fatalf("inline 图片应被占位化而不是触发 history cap：%s", raw)
+	}
+	if len(raw) >= appServerGatewayHistoryResponseCapBytes {
+		t.Fatalf("redacted history response 应小于 cap，got=%d raw=%s", len(raw), raw)
+	}
+
+	var frame struct {
+		Result struct {
+			Data []struct {
+				Items []struct {
+					Content []struct {
+						Type        string `json:"type"`
+						URL         string `json:"url"`
+						ContentType string `json:"contentType"`
+						ByteCount   int    `json:"byteCount"`
+						Redacted    bool   `json:"redacted"`
+					} `json:"content"`
+				} `json:"items"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("redacted history response 不是合法 JSON：%v raw=%s", err, raw)
+	}
+	content := frame.Result.Data[0].Items[0].Content
+	if len(content) != 2 || content[1].Type != "image" {
+		t.Fatalf("history 图片占位结构异常：%+v", content)
+	}
+	if !strings.HasPrefix(content[1].URL, "agentd-history-media://") || !content[1].Redacted {
+		t.Fatalf("history 图片应替换为 agentd media URL：%+v", content[1])
+	}
+	if content[1].ContentType != "image/png" || content[1].ByteCount == 0 {
+		t.Fatalf("history 图片应保留类型和大小元数据：%+v", content[1])
+	}
+
+	mediaID := strings.TrimPrefix(content[1].URL, "agentd-history-media://")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/history-media/"+mediaID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history media 应可按需读取，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if body["content_type"] != "image/png" {
+		t.Fatalf("history media content_type 异常：%v", body)
+	}
+	if body["content_base64"] != imagePayload {
+		t.Fatalf("history media 应返回原始 base64")
+	}
+}
+
+func TestAppServerHistoryImageRedactionRewritesDataURL(t *testing.T) {
+	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
+	imagePayload := base64.StdEncoding.EncodeToString([]byte("image-bytes"))
+	payload := []byte(`{"id":1,"result":{"data":[{"items":[{"content":[{"type":"image","url":"data:image/png;base64,` + imagePayload + `"}]}]}]}}`)
+
+	rewritten, changed := router.redactInlineHistoryImagesInGatewayResponse(payload)
+	if !changed {
+		t.Fatalf("redaction 应识别 history data URL")
+	}
+	if bytes.Contains(rewritten, []byte(imagePayload)) || bytes.Contains(rewritten, []byte("data:image/png;base64")) {
+		t.Fatalf("redaction 不应保留 inline base64：%s", rewritten)
+	}
+	if !bytes.Contains(rewritten, []byte(appServerHistoryMediaURLPrefix)) {
+		t.Fatalf("redaction 应写入 history media URL：%s", rewritten)
+	}
+}
+
 func TestAppServerGatewayForwardsSmallHistoryResponse(t *testing.T) {
 	oldCap := appServerGatewayHistoryResponseCapBytes
 	appServerGatewayHistoryResponseCapBytes = 1024
@@ -1384,7 +1502,7 @@ func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing
 		projectDir,
 	))
 
-	if forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); !forward || policyErr != nil {
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); !forward || policyErr != nil {
 		t.Fatalf("普通上游响应应继续转发：forward=%v err=%+v", forward, policyErr)
 	}
 	if _, ok := router.gatewayThread("codex", "thread-pending"); ok {
@@ -1395,7 +1513,7 @@ func TestAppServerGatewayObservesThreadResponseOnlyWithPendingRequest(t *testing
 	if err := policy.rememberPendingThreadResponse(&id, "thread/list", projectDir, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	if forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); !forward || policyErr != nil {
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload); !forward || policyErr != nil {
 		t.Fatalf("thread/list 响应应继续转发：forward=%v err=%+v", forward, policyErr)
 	}
 	if _, ok := router.gatewayThread("codex", "thread-pending"); !ok {
@@ -3335,4 +3453,159 @@ func assertNoUpstreamFrame(t *testing.T, received <-chan []byte) {
 		t.Fatalf("非法帧不应转发到 upstream：%s", payload)
 	case <-time.After(150 * time.Millisecond):
 	}
+}
+
+func TestAppServerHistoryImageRedactionRewritesImageGenerationResult(t *testing.T) {
+	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
+	pngBytes := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0xAB}, 20<<10)...)
+	resultPayload := base64.StdEncoding.EncodeToString(pngBytes)
+	payload := []byte(`{"id":1,"result":{"data":[{"items":[{"type":"imageGeneration","id":"ig_1","status":"completed","result":"` + resultPayload + `","savedPath":"/tmp/mockup.png"}]}]}}`)
+
+	rewritten, changed := router.redactInlineHistoryImagesInGatewayResponse(payload)
+	if !changed {
+		t.Fatalf("redaction 应识别 imageGeneration 裸 base64 result")
+	}
+	if bytes.Contains(rewritten, []byte(resultPayload)) {
+		t.Fatalf("redaction 不应保留 imageGeneration 裸 base64：len=%d", len(rewritten))
+	}
+
+	var frame struct {
+		Result struct {
+			Data []struct {
+				Items []struct {
+					Type              string `json:"type"`
+					Result            string `json:"result"`
+					ResultContentType string `json:"resultContentType"`
+					ResultByteCount   int    `json:"resultByteCount"`
+					ResultRedacted    bool   `json:"resultRedacted"`
+					SavedPath         string `json:"savedPath"`
+				} `json:"items"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &frame); err != nil {
+		t.Fatalf("redacted 响应不是合法 JSON：%v", err)
+	}
+	item := frame.Result.Data[0].Items[0]
+	if !strings.HasPrefix(item.Result, appServerHistoryMediaURLPrefix) || !item.ResultRedacted {
+		t.Fatalf("imageGeneration result 应替换为 media URL：%+v", item)
+	}
+	if item.ResultContentType != "image/png" || item.ResultByteCount != len(pngBytes) {
+		t.Fatalf("imageGeneration 应保留类型和大小元数据：%+v", item)
+	}
+	if item.SavedPath != "/tmp/mockup.png" {
+		t.Fatalf("imageGeneration savedPath 不应被改写：%+v", item)
+	}
+
+	mediaID := strings.TrimPrefix(item.Result, appServerHistoryMediaURLPrefix)
+	entry, ok := router.historyMedia.get(mediaID)
+	if !ok {
+		t.Fatalf("media store 应能取回 imageGeneration 图片")
+	}
+	if entry.contentType != "image/png" || !bytes.Equal(entry.data, pngBytes) {
+		t.Fatalf("media store 内容与原图不一致：contentType=%s len=%d", entry.contentType, len(entry.data))
+	}
+}
+
+func TestAppServerHistoryImageRedactionSkipsNonImageGenerationBlobs(t *testing.T) {
+	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
+
+	// 长文本 base64（可解码但不是图片）不应被改写。
+	textPayload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("plain tool output. "), 2<<10))
+	payload := []byte(`{"id":1,"result":{"data":[{"items":[{"type":"imageGeneration","result":"` + textPayload + `"}]}]}}`)
+	if _, changed := router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
+		t.Fatalf("非图片 base64 result 不应被改写")
+	}
+
+	// 小图（低于阈值）继续内联。
+	smallPNG := base64.StdEncoding.EncodeToString(append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0x01}, 512)...))
+	payload = []byte(`{"id":2,"result":{"data":[{"items":[{"type":"imageGeneration","result":"` + smallPNG + `"}]}]}}`)
+	if _, changed := router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
+		t.Fatalf("小图 result 不应被改写")
+	}
+
+	// 非 imageGeneration item 的 result 不做嗅探。
+	bigPNG := base64.StdEncoding.EncodeToString(append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0x02}, 20<<10)...))
+	payload = []byte(`{"id":3,"result":{"data":[{"items":[{"type":"mcpToolCall","result":"` + bigPNG + `"}]}]}}`)
+	if _, changed := router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
+		t.Fatalf("mcpToolCall result 当前不在改写范围")
+	}
+}
+
+func TestAppServerGatewayThreadResumeRedactsImagesWithoutCap(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 1024
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+	})
+
+	var projectDir string
+	pngBytes := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0xCD}, 20<<10)...)
+	imagePayload := base64.StdEncoding.EncodeToString(pngBytes)
+	// 即使去掉图片，响应仍显著超过 cap；thread/resume 不应因此被阻断。
+	filler := strings.Repeat("很长的历史文本。", 2<<10)
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-resume-media")
+			return
+		}
+		if frame.Method != "thread/resume" {
+			return
+		}
+		response := fmt.Sprintf(
+			`{"id":%s,"result":{"thread":{"id":"thread-resume-media","cwd":%q,"turns":[{"id":"turn-1","items":[{"type":"imageGeneration","id":"ig_9","status":"completed","result":%q},{"type":"agentMessage","id":"msg-1","text":%q}]}]}}}`,
+			string(*frame.ID),
+			projectDir,
+			imagePayload,
+			filler,
+		)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+			t.Errorf("fake upstream 写 thread/resume 响应失败：%v", err)
+		}
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-resume-media")
+
+	request := fmt.Sprintf(
+		`{"id":901,"method":"thread/resume","params":{"threadId":"thread-resume-media","cwd":%q,"approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":"workspace-write"}}`,
+		projectDir,
+	)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	raw := readGatewayRaw(t, conn)
+	if bytes.Contains(raw, []byte(`"error"`)) {
+		t.Fatalf("thread/resume 不应被 history cap 阻断：%s", truncateForLog(raw))
+	}
+	if len(raw) <= appServerGatewayHistoryResponseCapBytes {
+		t.Fatalf("测试前提失效：redacted resume 响应应仍大于 cap，got=%d", len(raw))
+	}
+	if bytes.Contains(raw, []byte(imagePayload)) {
+		t.Fatalf("thread/resume 内联图片应被改写为 media URL")
+	}
+	if !bytes.Contains(raw, []byte(appServerHistoryMediaURLPrefix)) {
+		t.Fatalf("thread/resume 响应应包含 media URL：%s", truncateForLog(raw))
+	}
+	if !bytes.Contains(raw, []byte(filler)) {
+		t.Fatalf("thread/resume 文本内容不应被改写")
+	}
+}
+
+func truncateForLog(raw []byte) string {
+	if len(raw) > 512 {
+		return string(raw[:512]) + "…"
+	}
+	return string(raw)
 }

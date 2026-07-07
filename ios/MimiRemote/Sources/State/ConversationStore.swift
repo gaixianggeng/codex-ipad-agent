@@ -47,6 +47,7 @@ final class ConversationStore: ObservableObject {
         let role: String
         let kind: MessageKind
         let content: String
+        let turnPayload: CodexAppServerTurnPayload?
         let createdAt: Date?
         let updatedAt: Date?
         let clientMessageID: ClientMessageID?
@@ -80,6 +81,7 @@ final class ConversationStore: ObservableObject {
         let updatedAt: Date?
         let sendStatus: MessageSendStatus
         let revision: ModelRevision?
+        let turnPayload: CodexAppServerTurnPayload?
         let activityPayload: ConversationActivityPayload?
         let timelineOrdinal: Int64?
         let userDelivery: UserMessageDelivery?
@@ -1409,6 +1411,7 @@ final class ConversationStore: ObservableObject {
                       updatedAt: item.updatedAt,
                       sendStatus: sendStatus,
                       revision: item.revision,
+                      turnPayload: item.turnPayload,
                       activityPayload: item.activityPayload,
                       timelineOrdinal: item.timelineOrdinal,
                       userDelivery: item.userDelivery,
@@ -1432,6 +1435,7 @@ final class ConversationStore: ObservableObject {
             updatedAt: item.updatedAt,
             sendStatus: sendStatus,
             revision: item.revision,
+            turnPayload: item.turnPayload,
             activityPayload: item.activityPayload,
             timelineOrdinal: item.timelineOrdinal,
             userDelivery: item.userDelivery,
@@ -1529,6 +1533,7 @@ final class ConversationStore: ObservableObject {
             updatedAt: message.updatedAt,
             sendStatus: message.sendStatus,
             revision: message.revision,
+            turnPayload: message.turnPayload,
             activityPayload: message.activityPayload,
             timelineOrdinal: message.timelineOrdinal,
             userDelivery: message.userDelivery,
@@ -1544,6 +1549,7 @@ final class ConversationStore: ObservableObject {
         updatedAt: Date?,
         sendStatus: MessageSendStatus,
         revision: ModelRevision?,
+        turnPayload: CodexAppServerTurnPayload?,
         activityPayload: ConversationActivityPayload?,
         timelineOrdinal: Int64?,
         userDelivery: UserMessageDelivery?,
@@ -1558,6 +1564,7 @@ final class ConversationStore: ObservableObject {
             updatedAt: updatedAt,
             sendStatus: sendStatus,
             revision: revision,
+            turnPayload: turnPayload,
             activityPayload: activityPayload,
             timelineOrdinal: timelineOrdinal,
             userDelivery: userDelivery,
@@ -1588,6 +1595,7 @@ final class ConversationStore: ObservableObject {
             role: item.role,
             kind: item.kind,
             content: item.content,
+            turnPayload: item.turnPayload,
             createdAt: item.createdAt,
             updatedAt: item.updatedAt,
             clientMessageID: item.clientMessageID,

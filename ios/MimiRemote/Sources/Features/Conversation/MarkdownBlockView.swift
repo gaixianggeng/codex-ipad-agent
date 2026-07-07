@@ -257,6 +257,7 @@ enum ConversationImageSource: Hashable, Identifiable {
     case dataURL(String)
     case remoteURL(URL)
     case localPath(String)
+    case historyMedia(id: String)
     case unsupported(String)
 
     var id: String {
@@ -267,6 +268,8 @@ enum ConversationImageSource: Hashable, Identifiable {
             return "remote:\(url.absoluteString)"
         case .localPath(let path):
             return "local:\(path)"
+        case .historyMedia(let id):
+            return "historyMedia:\(id)"
         case .unsupported(let value):
             return "unsupported:\(value)"
         }
@@ -291,6 +294,9 @@ enum ConversationImageSource: Hashable, Identifiable {
         if trimmed.range(of: "data:image/", options: [.anchored, .caseInsensitive]) != nil {
             return .dataURL(trimmed)
         }
+        if let id = historyMediaID(from: trimmed) {
+            return .historyMedia(id: id)
+        }
         if let localPath = localFilePath(from: trimmed) {
             return .localPath(localPath)
         }
@@ -313,6 +319,15 @@ enum ConversationImageSource: Hashable, Identifiable {
             return nil
         }
         return url.path
+    }
+
+    private static func historyMediaID(from value: String) -> String? {
+        let prefix = "agentd-history-media://"
+        guard value.hasPrefix(prefix) else {
+            return nil
+        }
+        let id = String(value.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return id.isEmpty ? nil : id
     }
 
     private static func stableDigest(_ value: String) -> String {
@@ -381,6 +396,8 @@ struct ConversationImagePreview: View {
                 .task(id: path) {
                     await loadLocalImage(path: path)
                 }
+        case .historyMedia(let id):
+            historyMediaContent(id: id)
         case .unsupported(let value):
             fallback("暂不支持这个图片地址", detail: compactSource(value))
         }
@@ -401,6 +418,33 @@ struct ConversationImagePreview: View {
                 loadingPlaceholder
             } else {
                 fallback(loadError ?? "图片尚未加载", detail: URL(fileURLWithPath: path).lastPathComponent)
+            }
+        }
+    }
+
+    private func historyMediaContent(id: String) -> some View {
+        Group {
+            if let localImage {
+                Button {
+                    quickLookURL = localFileURL
+                } label: {
+                    imageView(Image(uiImage: localImage))
+                }
+                .buttonStyle(.plain)
+                .disabled(localFileURL == nil)
+                .accessibilityLabel("预览历史图片")
+            } else if isLoadingLocalImage {
+                loadingPlaceholder
+            } else {
+                Button {
+                    Task {
+                        await loadHistoryMedia(id: id)
+                    }
+                } label: {
+                    fallback(loadError == nil ? "历史图片未加载" : "历史图片加载失败", detail: loadError ?? "点按加载")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("加载历史图片")
             }
         }
     }
@@ -485,6 +529,39 @@ struct ConversationImagePreview: View {
         }
     }
 
+    @MainActor
+    private func loadHistoryMedia(id: String) async {
+        let targetID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetID.isEmpty else {
+            loadError = "历史图片 ID 为空，无法加载。"
+            return
+        }
+
+        localImage = nil
+        localFileURL = nil
+        loadError = nil
+        isLoadingLocalImage = true
+        defer { isLoadingLocalImage = false }
+
+        do {
+            // 历史图片首屏只保留短 ID；用户点按时再从 agentd 短期缓存取回原始二进制。
+            let url = try await sessionStore.previewHistoryMedia(id: targetID)
+            guard !Task.isCancelled else {
+                return
+            }
+            guard let image = UIImage(contentsOfFile: url.path) else {
+                loadError = "历史图片已读取，但无法按图片解码。"
+                return
+            }
+            localFileURL = url
+            localImage = image
+        } catch is CancellationError {
+            return
+        } catch {
+            loadError = userFacingHistoryMediaError(error)
+        }
+    }
+
     private func userFacingPreviewError(_ error: Error) -> String {
         if case AgentAPIError.server(let status, _) = error, status == 404 || status == 405 {
             return "当前 agentd 版本还不支持文件预览，请升级 agentd。"
@@ -498,9 +575,22 @@ struct ConversationImagePreview: View {
         return error.localizedDescription
     }
 
+    private func userFacingHistoryMediaError(_ error: Error) -> String {
+        if case AgentAPIError.server(let status, _) = error, status == 404 {
+            return "历史图片缓存已过期，请刷新会话后重试。"
+        }
+        if case AgentAPIError.server(let status, _) = error, status == 405 {
+            return "当前 agentd 版本还不支持历史图片按需加载，请升级 agentd。"
+        }
+        return userFacingPreviewError(error)
+    }
+
     private func compactSource(_ value: String) -> String {
         if value.range(of: "data:image/", options: [.anchored, .caseInsensitive]) != nil {
             return "data:image/..."
+        }
+        if ConversationImageSource.markdown(value).id.hasPrefix("historyMedia:") {
+            return "agentd-history-media://..."
         }
         return value
     }

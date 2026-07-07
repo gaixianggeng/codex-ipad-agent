@@ -221,10 +221,29 @@ final class AppStore: ObservableObject {
     private let maxConnectionTestReportHistory = 20
     private let tokenStore = TokenStore()
     private var runtimeBundlesByIdentity: [String: AppServerRuntimeBundle] = [:]
+#if DEBUG
+    @Published private var debugWorkbenchBypassEnabled = false
+    private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
+#endif
 
     init() {
-        self.endpoint = UserDefaults.standard.string(forKey: endpointKey) ?? defaultEndpoint
-        self.token = tokenStore.load()
+        var initialEndpoint = UserDefaults.standard.string(forKey: endpointKey) ?? defaultEndpoint
+        var initialToken = tokenStore.load()
+#if DEBUG
+        // Debug 启动参数只影响本次内存态，避免把本地调试 token 写进 Keychain 或带进 Release 流程。
+        if let debugEndpoint = debugLaunchConfiguration.endpoint,
+           let normalizedEndpoint = try? Self.validatedEndpoint(debugEndpoint) {
+            initialEndpoint = normalizedEndpoint
+        }
+        if let debugToken = debugLaunchConfiguration.token {
+            initialToken = debugToken
+        }
+#endif
+        self.endpoint = initialEndpoint
+        self.token = initialToken
+#if DEBUG
+        debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
+#endif
         // 当前移动客户端只保留 Codex app-server JSON-RPC 直连链路；旧版本写入的连接模式配置直接清理掉。
         UserDefaults.standard.removeObject(forKey: retiredConnectionModeKey)
     }
@@ -233,6 +252,27 @@ final class AppStore: ObservableObject {
         !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    var canEnterWorkbench: Bool {
+        if isConfigured {
+            return true
+        }
+#if DEBUG
+        return debugWorkbenchBypassEnabled
+#else
+        return false
+#endif
+    }
+
+#if DEBUG
+    func enterDebugWorkbenchWithoutPairing() {
+        debugWorkbenchBypassEnabled = true
+    }
+
+    var shouldSeedDebugWorkbenchUI: Bool {
+        debugLaunchConfiguration.seedsWorkbenchUI
+    }
+#endif
 
     func client() throws -> AgentAPIClient {
         let endpoint = try Self.validatedEndpoint(endpoint)
@@ -682,3 +722,55 @@ final class AppStore: ObservableObject {
         runtimeBundlesByIdentity.removeAll()
     }
 }
+
+#if DEBUG
+private struct DebugLaunchConfiguration {
+    let opensWorkbenchWithoutPairing: Bool
+    let seedsWorkbenchUI: Bool
+    let endpoint: String?
+    let token: String?
+
+    static func current(processInfo: ProcessInfo = .processInfo) -> DebugLaunchConfiguration {
+        let arguments = processInfo.arguments
+        let environment = processInfo.environment
+        return DebugLaunchConfiguration(
+            opensWorkbenchWithoutPairing: arguments.contains("--debug-skip-pairing")
+                || boolValue(environment["MIMI_DEBUG_SKIP_PAIRING"]),
+            seedsWorkbenchUI: arguments.contains("--debug-seed-ui")
+                || boolValue(environment["MIMI_DEBUG_SEED_UI"]),
+            endpoint: argumentValue(named: "--debug-endpoint", in: arguments)
+                ?? environment["MIMI_DEBUG_ENDPOINT"],
+            token: argumentValue(named: "--debug-token", in: arguments)
+                ?? environment["MIMI_DEBUG_TOKEN"]
+        )
+    }
+
+    private static func argumentValue(named name: String, in arguments: [String]) -> String? {
+        let inlinePrefix = "\(name)="
+        if let inlineValue = arguments.first(where: { $0.hasPrefix(inlinePrefix) }) {
+            let value = String(inlineValue.dropFirst(inlinePrefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        guard let index = arguments.firstIndex(of: name) else {
+            return nil
+        }
+        let valueIndex = arguments.index(after: index)
+        guard arguments.indices.contains(valueIndex),
+              !arguments[valueIndex].hasPrefix("--") else {
+            return nil
+        }
+        let value = arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func boolValue(_ rawValue: String?) -> Bool {
+        switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "y", "on":
+            return true
+        default:
+            return false
+        }
+    }
+}
+#endif

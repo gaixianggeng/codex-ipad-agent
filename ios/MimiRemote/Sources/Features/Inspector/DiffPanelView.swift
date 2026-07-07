@@ -451,9 +451,15 @@ struct InspectorSummaryCard: View {
 
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: symbolName)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(tint)
-                .frame(width: 16, height: 18)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(tint.opacity(0.18), lineWidth: 1)
+                }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
@@ -469,10 +475,10 @@ struct InspectorSummaryCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(tokens.elevatedSurface.opacity(0.88), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(tint.opacity(0.22), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(tokens.border.opacity(0.72), lineWidth: 1)
         }
     }
 

@@ -99,6 +99,11 @@ struct AgentAPIClient {
         return try await request(path: "/api/files/read", method: "POST", body: body)
     }
 
+    func readHistoryMedia(id: String) async throws -> FileReadResponse {
+        let encodedID = Self.percentEncodedPathComponent(id)
+        return try await request(path: "/api/app-server/history-media/\(encodedID)", method: "GET", body: Optional<Data>.none)
+    }
+
     func commandActions(path: String) async throws -> [AgentCommandAction] {
         let body = try JSONEncoder().encode(CommandActionListRequest(path: path))
         let response: CommandActionListResponse = try await request(path: "/api/actions/list", method: "POST", body: body)
@@ -242,6 +247,12 @@ struct AgentAPIClient {
             return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         }
         return "http://" + trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func percentEncodedPathComponent(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#[]@!$&'()*+,;=")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     static let decoder: JSONDecoder = {

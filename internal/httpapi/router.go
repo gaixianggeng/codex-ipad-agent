@@ -26,15 +26,16 @@ import (
 )
 
 type Router struct {
-	cfg      config.Config
-	projects *projects.Registry
-	sessions *session.Manager
-	runtime  SessionRuntime
-	doctor   *doctor.Checker
-	auth     auth.Authenticator
-	version  string
-	upgrader websocket.Upgrader
-	monitor  *relayMonitor
+	cfg          config.Config
+	projects     *projects.Registry
+	sessions     *session.Manager
+	runtime      SessionRuntime
+	doctor       *doctor.Checker
+	auth         auth.Authenticator
+	version      string
+	upgrader     websocket.Upgrader
+	monitor      *relayMonitor
+	historyMedia *appServerHistoryMediaStore
 
 	gatewayThreadsMu   sync.Mutex
 	gatewayThreads     map[string]appServerGatewayAllowedThread
@@ -64,6 +65,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 			CheckOrigin: sameOriginOrNoOrigin,
 		},
 		monitor:          newRelayMonitor(),
+		historyMedia:     newAppServerHistoryMediaStore(),
 		gatewayThreads:   map[string]appServerGatewayAllowedThread{},
 		managedWorktrees: map[string]managedWorktree{},
 	}
@@ -102,6 +104,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/git/pull-request/status", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestStatusHandler)))
 	mux.Handle("/api/voice/transcribe", r.auth.Middleware(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
+	mux.Handle("/api/app-server/history-media/", r.auth.Middleware(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(mux, r.monitor)
 }

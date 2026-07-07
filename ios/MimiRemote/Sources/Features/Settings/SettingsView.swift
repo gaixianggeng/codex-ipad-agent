@@ -26,7 +26,8 @@ struct SettingsView: View {
                     settingsForm(tokens: tokens)
                 }
             }
-            .navigationTitle(isInitialSetup ? "连接你的 Mac" : "设置")
+            .navigationTitle(isInitialSetup ? "连接你的 Mac" : "")
+            .navigationBarTitleDisplayMode(isInitialSetup ? .automatic : .inline)
             .toolbar {
                 if !isInitialSetup && showsDoneButton {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -42,54 +43,74 @@ struct SettingsView: View {
     }
 
     private func settingsForm(tokens: ThemeTokens) -> some View {
-        Form {
-            Section {
-                NavigationLink {
-                    AppearanceView()
-                } label: {
-                    Label("外观", systemImage: "paintpalette")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                WorkbenchPageHeader(
+                    title: "设置",
+                    subtitle: "偏好、权限和诊断入口。",
+                    tokens: tokens
+                )
+
+                SettingsDashboardSection(
+                    title: "偏好",
+                    footer: "常亮仅在前台选中会话处于运行或等待审批状态时生效；离开运行会话后会恢复系统默认锁屏。"
+                ) {
+                    SettingsDashboardNavigationRow(
+                        systemImage: "paintpalette",
+                        title: "外观",
+                        value: "主题与字体"
+                    ) {
+                        AppearanceView()
+                    }
+                    SettingsDashboardNavigationRow(
+                        systemImage: "lock.shield",
+                        title: "默认权限",
+                        value: "新会话策略"
+                    ) {
+                        DefaultPermissionView()
+                    }
+                    SettingsDashboardToggleRow(
+                        systemImage: "sun.max",
+                        title: "运行中保持屏幕常亮",
+                        value: "运行会话生效",
+                        isOn: $keepAwakeWhileRunning,
+                        showsSeparator: false
+                    )
                 }
 
-                NavigationLink {
-                    DefaultPermissionView()
-                } label: {
-                    Label("默认权限", systemImage: "lock.shield")
+                SettingsDashboardSection(
+                    title: "高级",
+                    footer: developerModeEnabled ? "历史诊断会显示本机路径和会话标题，仅用于排障。" : "开发者模式开启后，对话输入区会显示高级运行选项，诊断页也会显示历史诊断。"
+                ) {
+                    SettingsDashboardToggleRow(
+                        systemImage: "wrench.and.screwdriver",
+                        title: "开发者模式",
+                        value: developerModeEnabled ? "已开启" : "已关闭",
+                        isOn: $developerModeEnabled
+                    )
+                    SettingsDashboardNavigationRow(
+                        systemImage: "stethoscope",
+                        title: "诊断与支持",
+                        value: "网络与日志"
+                    ) {
+                        DoctorView(showsHistoryDiagnostics: developerModeEnabled)
+                    }
+                    SettingsDashboardNavigationRow(
+                        systemImage: "wand.and.stars",
+                        title: "能力清单",
+                        value: "Skills / MCP",
+                        showsSeparator: false
+                    ) {
+                        CapabilitiesView()
+                    }
                 }
-
-                Toggle(isOn: $keepAwakeWhileRunning) {
-                    Label("运行中保持屏幕常亮", systemImage: "sun.max")
-                }
-            } header: {
-                Text("偏好")
-            } footer: {
-                Text("常亮仅在前台选中会话处于运行或等待审批状态时生效；离开运行会话后会恢复系统默认锁屏。")
             }
-            .listRowBackground(tokens.elevatedSurface)
-
-            Section {
-                Toggle(isOn: $developerModeEnabled) {
-                    Label("开发者模式", systemImage: "wrench.and.screwdriver")
-                }
-
-                NavigationLink {
-                    DoctorView(showsHistoryDiagnostics: developerModeEnabled)
-                } label: {
-                    Label("诊断与支持", systemImage: "stethoscope")
-                }
-
-                NavigationLink {
-                    CapabilitiesView()
-                } label: {
-                    Label("能力清单", systemImage: "wand.and.stars")
-                }
-            } header: {
-                Text("高级")
-            } footer: {
-                Text(developerModeEnabled ? "历史诊断会显示本机路径和会话标题，仅用于排障。" : "开发者模式开启后，对话输入区会显示高级运行选项，诊断页也会显示历史诊断。")
-            }
-            .listRowBackground(tokens.elevatedSurface)
+            .padding(WorkbenchPageLayout.regularPadding)
+            .frame(maxWidth: WorkbenchPageLayout.maxContentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .themedSettingsForm(tokens: tokens)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(tokens.background.ignoresSafeArea())
     }
 }
 
@@ -101,32 +122,9 @@ private struct InitialPairingView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            ConnectionSettingsSections(mode: .initialSetup)
+            InitialConnectionSettingsSections()
         }
         .themedSettingsForm(tokens: tokens)
-    }
-}
-
-struct ConnectionSettingsView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let onFinished: () -> Void
-
-    var body: some View {
-        let systemColorScheme = themeSystemColorScheme ?? colorScheme
-        let resolvedColorScheme = themeStore.resolvedColorScheme(for: systemColorScheme)
-        let tokens = themeStore.tokens(for: systemColorScheme)
-
-        Form {
-            ConnectionSettingsSections(mode: .settings, onFinished: onFinished)
-        }
-        .themedSettingsForm(tokens: tokens)
-        .navigationTitle("连接 Mac")
-        .tint(tokens.accent)
-        .preferredColorScheme(resolvedColorScheme)
-        .environment(\.colorScheme, resolvedColorScheme)
     }
 }
 
@@ -208,9 +206,169 @@ private struct PermissionModeRow: View {
     }
 }
 
-private enum ConnectionSettingsMode {
-    case initialSetup
-    case settings
+private struct SettingsDashboardSection<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    let title: String
+    let footer: String
+    let content: Content
+
+    init(title: String, footer: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.footer = footer
+        self.content = content()
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(themeStore.uiFont(.headline, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 0) {
+                content
+            }
+            .background(tokens.elevatedSurface.opacity(0.82), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(tokens.border, lineWidth: 1)
+            }
+
+            Text(footer)
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(tokens.secondaryText)
+                .padding(.horizontal, 2)
+        }
+    }
+}
+
+private struct SettingsDashboardNavigationRow<Destination: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    let systemImage: String
+    let title: String
+    let value: String
+    let showsSeparator: Bool
+    let destination: Destination
+
+    init(
+        systemImage: String,
+        title: String,
+        value: String,
+        showsSeparator: Bool = true,
+        @ViewBuilder destination: () -> Destination
+    ) {
+        self.systemImage = systemImage
+        self.title = title
+        self.value = value
+        self.showsSeparator = showsSeparator
+        self.destination = destination()
+    }
+
+    var body: some View {
+        NavigationLink {
+            destination
+        } label: {
+            SettingsDashboardRowContent(
+                systemImage: systemImage,
+                title: title,
+                value: value,
+                showsSeparator: showsSeparator,
+                trailing: Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SettingsDashboardToggleRow: View {
+    @Binding var isOn: Bool
+    let systemImage: String
+    let title: String
+    let value: String
+    let showsSeparator: Bool
+
+    init(
+        systemImage: String,
+        title: String,
+        value: String,
+        isOn: Binding<Bool>,
+        showsSeparator: Bool = true
+    ) {
+        self.systemImage = systemImage
+        self.title = title
+        self.value = value
+        self.showsSeparator = showsSeparator
+        self._isOn = isOn
+    }
+
+    var body: some View {
+        SettingsDashboardRowContent(
+            systemImage: systemImage,
+            title: title,
+            value: value,
+            showsSeparator: showsSeparator,
+            trailing: Toggle("", isOn: $isOn)
+                .labelsHidden()
+        )
+    }
+}
+
+private struct SettingsDashboardRowContent<Trailing: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    let systemImage: String
+    let title: String
+    let value: String
+    let showsSeparator: Bool
+    let trailing: Trailing
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tokens.accent.opacity(0.12))
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+            }
+            .frame(width: 40, height: 40)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                Text(value)
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 10)
+
+            trailing
+                .foregroundStyle(tokens.tertiaryText)
+        }
+        .padding(.horizontal, 16)
+        .frame(minHeight: 62)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            if showsSeparator {
+                Rectangle()
+                    .fill(tokens.border.opacity(0.72))
+                    .frame(height: 1)
+                    .padding(.leading, 70)
+            }
+        }
+    }
 }
 
 private struct GatewayDiagnosticSummary {
@@ -219,14 +377,11 @@ private struct GatewayDiagnosticSummary {
     let color: Color
 }
 
-private struct ConnectionSettingsSections: View {
+private struct InitialConnectionSettingsSections: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
-
-    let mode: ConnectionSettingsMode
-    var onFinished: () -> Void = {}
 
     @State private var endpoint = ""
     @State private var token = ""
@@ -242,24 +397,22 @@ private struct ConnectionSettingsSections: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Group {
-            if isInitialSetup {
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("在 Mac 上准备 Mimi Mac 助手", systemImage: "desktopcomputer")
-                            .font(themeStore.uiFont(.headline, weight: .semibold))
-                        Text("Mimi 需要和你的 Mac 配对一次，之后会自动连接本机 Codex 和项目目录。")
-                            .font(themeStore.uiFont(.callout))
-                            .foregroundStyle(.secondary)
-                        Text("先确认 Mac 已安装并登录 Codex CLI，然后在终端运行：")
-                            .font(themeStore.uiFont(.callout, weight: .semibold))
-                        Text("brew install gaixianggeng/tap/mimi-remote\nagentd up")
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
-                    .padding(.vertical, 4)
-                } footer: {
-                    Text("Mac 上出现二维码后，回到当前设备扫码连接。二维码过期时，在 Mac 运行 agentd pair 刷新。你的代码和 Codex 凭证仍留在自己的 Mac 上。")
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("在 Mac 上准备 Mimi Mac 助手", systemImage: "desktopcomputer")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                    Text("Mimi 需要和你的 Mac 配对一次，之后会自动连接本机 Codex 和项目目录。")
+                        .font(themeStore.uiFont(.callout))
+                        .foregroundStyle(.secondary)
+                    Text("先确认 Mac 已安装并登录 Codex CLI，然后在终端运行：")
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                    Text("brew install gaixianggeng/tap/mimi-remote\nagentd up")
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
                 }
+                .padding(.vertical, 4)
+            } footer: {
+                Text("Mac 上出现二维码后，回到当前设备扫码连接。二维码过期时，在 Mac 运行 agentd pair 刷新。你的代码和 Codex 凭证仍留在自己的 Mac 上。")
             }
 
             Section {
@@ -272,21 +425,21 @@ private struct ConnectionSettingsSections: View {
             } header: {
                 Text("在当前设备上配对")
             } footer: {
-                Text(scanFooterText)
+                Text("扫描 Mimi Mac 助手显示的二维码后会自动测试连接；成功后直接进入工作台。")
             }
 
             Section {
                 DisclosureGroup(isExpanded: $isShowingAdvancedManualConnection) {
                     StableEndpointTextField(placeholder: "http://IP:端口", text: $endpoint)
                         .frame(minHeight: 28)
-                    SecureField("访问 Token", text: $token)
+                    SecureField("访问码", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } label: {
-                    Label("高级手动连接", systemImage: "slider.horizontal.3")
+                    Label("手动连接", systemImage: "slider.horizontal.3")
                 }
             } header: {
-                Text("备用")
+                Text("其他方式")
             } footer: {
                 Text("只有二维码不可用时才需要手动输入地址和访问码。支持本机、局域网、Tailscale 或自建 VPS 中转。")
             }
@@ -305,10 +458,22 @@ private struct ConnectionSettingsSections: View {
                 Button {
                     Task { await save() }
                 } label: {
-                    Label(saveButtonTitle, systemImage: "checkmark.circle")
+                    Label("保存并进入工作台", systemImage: "checkmark.circle")
                 }
                 .disabled(!canSubmit)
             }
+
+#if DEBUG
+            Section {
+                Button {
+                    appStore.enterDebugWorkbenchWithoutPairing()
+                } label: {
+                    Label("Debug 进入工作台", systemImage: "wrench.and.screwdriver")
+                }
+            } footer: {
+                Text("仅 Debug 编译可见；只跳过首屏配对，不保存访问码，也不改变 Release 流程。")
+            }
+#endif
 
             Section {
                 HStack {
@@ -380,21 +545,6 @@ private struct ConnectionSettingsSections: View {
         } message: {
             Text(connectionSuccessMessage)
         }
-    }
-
-    private var isInitialSetup: Bool {
-        mode == .initialSetup
-    }
-
-    private var scanFooterText: String {
-        if isInitialSetup {
-            return "扫描 Mimi Mac 助手显示的二维码后会自动测试连接；成功后直接进入工作台。"
-        }
-        return "重新扫描会切换到新的 Mac 连接，并重新加载项目与会话。"
-    }
-
-    private var saveButtonTitle: String {
-        isInitialSetup ? "保存并进入工作台" : "保存连接"
     }
 
     private var canSubmit: Bool {
@@ -735,9 +885,6 @@ private struct ConnectionSettingsSections: View {
             connectionSuccessMessage = ""
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
-            if !isInitialSetup {
-                onFinished()
-            }
         } catch {
             appStore.connectionStatus = .failed(error.localizedDescription)
             appStore.lastError = error.localizedDescription
@@ -760,11 +907,7 @@ private struct ConnectionSettingsSections: View {
             connectionSuccessMessage = "已连接这台 Mac，正在进入工作台。"
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
-            if !isInitialSetup {
-                onFinished()
-            } else {
-                isShowingConnectionSuccess = true
-            }
+            isShowingConnectionSuccess = true
             localError = nil
         } catch {
             appStore.connectionStatus = .failed(error.localizedDescription)
@@ -781,9 +924,6 @@ private struct ConnectionSettingsSections: View {
             connectionSuccessMessage = ""
             sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
-            if !isInitialSetup {
-                onFinished()
-            }
         } catch {
             localError = error.localizedDescription
         }

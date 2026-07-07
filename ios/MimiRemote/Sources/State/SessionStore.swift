@@ -13,6 +13,7 @@ protocol SessionStoreAPIClient {
     func pruneMissingWorktrees() async throws -> WorktreePruneResponse
     func listDirectories(path: String) async throws -> DirectoryListResponse
     func readFile(path: String) async throws -> FileReadResponse
+    func readHistoryMedia(id: String) async throws -> FileReadResponse
     func commandActions(path: String) async throws -> [AgentCommandAction]
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse
     func gitStatus(path: String) async throws -> GitStatusResponse
@@ -114,6 +115,11 @@ extension SessionStoreAPIClient {
 
     func readFile(path: String) async throws -> FileReadResponse {
         // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/files/read。
+        throw AgentAPIError.invalidResponse
+    }
+
+    func readHistoryMedia(id: String) async throws -> FileReadResponse {
+        // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/app-server/history-media/{id}。
         throw AgentAPIError.invalidResponse
     }
 
@@ -328,6 +334,7 @@ struct ProjectSessionListSnapshot: Equatable {
 struct SessionListPreferences: Codable, Equatable {
     var pinnedSessionIDs: Set<SessionID> = []
     var archivedSessionIDs: Set<SessionID> = []
+    var sessionWorkspaceIDs: Set<String>? = nil
 }
 
 struct SessionListPreferenceStore {
@@ -505,6 +512,7 @@ struct HistorySavingsNotice: Equatable {
         case fullFailed
         case loadingSummary
         case summaryLoaded
+        case summaryFailed
     }
 
     let sessionID: SessionID
@@ -745,6 +753,7 @@ final class SessionStore: ObservableObject {
     }
     @Published private(set) var pinnedSessionIDs: Set<SessionID> = []
     @Published private(set) var archivedSessionIDs: Set<SessionID> = []
+    @Published private(set) var sessionWorkspaceIDs: Set<String>? = nil
     @Published private(set) var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
     @Published var selectedSessionID: String?
@@ -831,6 +840,9 @@ final class SessionStore: ObservableObject {
     private var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
     private var runtimeEventFlushTasks: [SessionID: Task<Void, Never>] = [:]
     private var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
+#if DEBUG
+    private var didApplyDebugWorkbenchUISeed = false
+#endif
     private var deliveredRuntimeNotificationIDs: Set<String> = []
     private var locallyCompletedSessionIDs: Set<SessionID> = []
     private var locallyCompletedGoalThreadIDs: Set<SessionID> = []
@@ -1173,6 +1185,42 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    var sessionSidebarProjects: [AgentProject] {
+        guard let sessionWorkspaceIDs else {
+            return sidebarProjects
+        }
+        return sidebarProjects.filter { sessionWorkspaceIDs.contains($0.id) }
+    }
+
+    var filteredSessionSidebarProjects: [AgentProject] {
+        let projects = effectiveSessionSidebarProjects
+        guard isSessionSearchActive else {
+            return projects
+        }
+        return projects.filter { project in
+            projectMatchesSearch(project) || !sessionsMatchingSearch(sortedSessionsByProjectID[project.id] ?? []).isEmpty
+        }
+    }
+
+    private var effectiveSessionSidebarProjects: [AgentProject] {
+        let projects = sessionSidebarProjects
+        guard selectedSessionID != nil,
+              let selectedProjectID,
+              !projects.contains(where: { $0.id == selectedProjectID })
+        else {
+            return projects
+        }
+
+        // 当前正在查看的会话必须在左侧保留上下文；这里只做临时补项，不写回工作区筛选偏好。
+        return sidebarProjects.filter { project in
+            project.id == selectedProjectID || projects.contains(where: { $0.id == project.id })
+        }
+    }
+
+    var sessionWorkspaceSelectionCount: Int {
+        sessionSidebarProjects.count
+    }
+
     var isSessionSearchActive: Bool {
         !normalizedSessionSearchQuery.isEmpty
     }
@@ -1195,6 +1243,28 @@ final class SessionStore: ObservableObject {
 
     func isSessionArchived(_ sessionID: SessionID) -> Bool {
         archivedSessionIDs.contains(sessionID)
+    }
+
+    func isWorkspaceShownInSessions(_ projectID: String) -> Bool {
+        sessionWorkspaceIDs?.contains(projectID) ?? true
+    }
+
+    func toggleWorkspaceInSessions(_ project: AgentProject) {
+        let allProjectIDs = Set(sidebarProjects.map(\.id))
+        var next = sessionWorkspaceIDs ?? allProjectIDs
+        if next.contains(project.id) {
+            next.remove(project.id)
+            setStatusMessage("已从会话移除 \(project.name)")
+        } else {
+            next.insert(project.id)
+            setStatusMessage("已在会话显示 \(project.name)")
+        }
+        setSessionWorkspaceIDs(next.intersection(allProjectIDs))
+    }
+
+    func resetSessionWorkspaceSelection() {
+        setStatusMessage("会话已恢复显示全部工作区")
+        setSessionWorkspaceIDs(nil)
     }
 
     func visibleSessions(forProjectID projectID: String) -> [AgentSession] {
@@ -1309,6 +1379,12 @@ final class SessionStore: ObservableObject {
     }
 
     func bootstrap() async {
+#if DEBUG
+        if appStore.shouldSeedDebugWorkbenchUI {
+            applyDebugWorkbenchUISeedIfNeeded()
+            return
+        }
+#endif
         guard appStore.isConfigured else {
             return
         }
@@ -1320,6 +1396,154 @@ final class SessionStore: ObservableObject {
         // 连不上”的半成品状态，只能靠用户杀进程重开才恢复。
         await refreshUntilLoaded(maxWait: 45, autoAttach: true)
     }
+
+#if DEBUG
+    private func applyDebugWorkbenchUISeedIfNeeded() {
+        guard !didApplyDebugWorkbenchUISeed else {
+            return
+        }
+        didApplyDebugWorkbenchUISeed = true
+
+        let now = Date()
+        let chatArchive = AgentWorkspace(
+            id: "debug-chat-archive",
+            name: "chat-archive",
+            path: "/Users/demo/code/chat-archive",
+            rootProjectID: "debug-chat-archive",
+            rootProjectName: "chat-archive",
+            rootProjectPath: "/Users/demo/code/chat-archive",
+            lastOpenedAt: now.addingTimeInterval(-60 * 8)
+        )
+        let ipadAgent = AgentWorkspace(
+            id: "debug-ipad-agent",
+            name: "codex-ipad-agent",
+            path: "/Users/demo/code/codex-ipad-agent",
+            rootProjectID: "debug-ipad-agent",
+            rootProjectName: "codex-ipad-agent",
+            rootProjectPath: "/Users/demo/code/codex-ipad-agent",
+            lastOpenedAt: now.addingTimeInterval(-60 * 35)
+        )
+        let selectedSessionID = "debug-session-layout"
+        let runningSessionID = "debug-session-running"
+        let sessions = [
+            AgentSession(
+                id: selectedSessionID,
+                projectID: chatArchive.id,
+                project: chatArchive.name,
+                dir: chatArchive.path,
+                title: "优化三栏边界和工具按钮",
+                status: SessionStatus.completed.rawValue,
+                source: "debug",
+                runtimeProvider: "codex",
+                resumeID: selectedSessionID,
+                createdAt: now.addingTimeInterval(-60 * 40),
+                updatedAt: now.addingTimeInterval(-60 * 3),
+                preview: "统一左栏、对话区和右侧详情栏的边界，并把操作按钮收成一组。"
+            ),
+            AgentSession(
+                id: runningSessionID,
+                projectID: chatArchive.id,
+                project: chatArchive.name,
+                dir: chatArchive.path,
+                title: "整理会话历史摘要",
+                status: SessionStatus.running.rawValue,
+                source: "debug",
+                runtimeProvider: "codex",
+                resumeID: runningSessionID,
+                createdAt: now.addingTimeInterval(-60 * 110),
+                updatedAt: now.addingTimeInterval(-60 * 1),
+                preview: "正在检查最近会话的摘要展示和输入区状态。",
+                activeTurnID: "debug-turn-running"
+            ),
+            AgentSession(
+                id: "debug-session-workspace",
+                projectID: ipadAgent.id,
+                project: ipadAgent.name,
+                dir: ipadAgent.path,
+                title: "工作区卡片视觉微调",
+                status: SessionStatus.closed.rawValue,
+                source: "debug",
+                runtimeProvider: "codex",
+                resumeID: "debug-session-workspace",
+                createdAt: now.addingTimeInterval(-60 * 180),
+                updatedAt: now.addingTimeInterval(-60 * 28),
+                preview: "卡片等高、选中态和加入会话按钮需要更稳定。"
+            )
+        ]
+
+        isLoading = false
+        setErrorMessage(nil)
+        setStatusMessage("Debug UI 样例已加载")
+        setProjectsIfChanged([chatArchive.project, ipadAgent.project])
+        setRecentWorkspacesIfChanged([chatArchive, ipadAgent])
+        sessionWorkspaceIDs = nil
+        setExpandedProjectIDs([chatArchive.id])
+        replaceSessionsIfChanged(with: sessions, projectID: nil)
+        setSelectedProjectID(chatArchive.id)
+        setSelectedSessionID(selectedSessionID)
+        webSocketStatus = .disconnected
+        disconnectWebSocket()
+        seedDebugConversationMessages(sessionID: selectedSessionID, now: now)
+        seedDebugConversationMessages(sessionID: runningSessionID, now: now.addingTimeInterval(-60 * 10))
+        rebuildProjectSessionListSnapshots()
+    }
+
+    private func seedDebugConversationMessages(sessionID: SessionID, now: Date) {
+        let history = [
+            CodexHistoryMessage(
+                id: "\(sessionID)-user-1",
+                role: "user",
+                content: "帮我把会话页左侧和右侧的边界重新看一下，按钮不要显得零散。",
+                createdAt: now.addingTimeInterval(-60 * 18),
+                turnID: "\(sessionID)-turn-1",
+                itemID: "\(sessionID)-item-user-1",
+                timelineOrdinal: 1
+            ),
+            CodexHistoryMessage(
+                id: "\(sessionID)-assistant-1",
+                role: "assistant",
+                content: "我会把维护动作收进统一工具组，并让左右栏使用一致的 sidebar 背景和分割线。左栏空态会放进列表内部，避免和标题或主内容区互相抢位置。",
+                createdAt: now.addingTimeInterval(-60 * 16),
+                turnID: "\(sessionID)-turn-1",
+                itemID: "\(sessionID)-item-assistant-1",
+                timelineOrdinal: 2
+            ),
+            CodexHistoryMessage(
+                id: "\(sessionID)-summary-1",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "已完成布局整理：左栏列表内空态、顶部胶囊工具组、右侧详情栏边界统一。",
+                createdAt: now.addingTimeInterval(-60 * 14),
+                turnID: "\(sessionID)-turn-1",
+                itemID: "\(sessionID)-item-summary-1",
+                timelineOrdinal: 3
+            ),
+            CodexHistoryMessage(
+                id: "\(sessionID)-user-2",
+                role: "user",
+                content: "很好，再确认一下没有选中会话和选中会话时都不要出现奇怪的漂浮 icon。",
+                createdAt: now.addingTimeInterval(-60 * 6),
+                turnID: "\(sessionID)-turn-2",
+                itemID: "\(sessionID)-item-user-2",
+                timelineOrdinal: 4
+            ),
+            CodexHistoryMessage(
+                id: "\(sessionID)-assistant-2",
+                role: "assistant",
+                content: "空态会保留一个明确的主行动按钮；有会话时，刷新和右栏入口保持同一组原生 SF Symbol 控件。这样用户能一眼知道哪里是导航、哪里是当前对话、哪里是辅助信息。",
+                createdAt: now.addingTimeInterval(-60 * 4),
+                turnID: "\(sessionID)-turn-2",
+                itemID: "\(sessionID)-item-assistant-2",
+                timelineOrdinal: 5
+            )
+        ]
+        conversationStore.replaceHistorySnapshot(history, sessionID: sessionID)
+    }
+
+    private var isDebugWorkbenchUISeedActive: Bool {
+        appStore.shouldSeedDebugWorkbenchUI && didApplyDebugWorkbenchUISeed
+    }
+#endif
 
     // refreshAll 成功拿到数据、或后端确实为空时都会清空 errorMessage；只要还有 errorMessage，
     // 就说明 projects / sessions / gateway 至少有一环没就绪，需要继续重试让首屏自愈。
@@ -1347,6 +1571,12 @@ final class SessionStore: ObservableObject {
     }
 
     func refreshAll(autoAttach: Bool = false) async {
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else {
+            setStatusMessage("Debug UI 样例不会连接后端")
+            return
+        }
+#endif
         isLoading = true
         defer { isLoading = false }
         var requestToken: Int?
@@ -1444,6 +1674,12 @@ final class SessionStore: ObservableObject {
         setSelectedSessionID(nil)
         insertExpandedProjectID(workspace.id)
         setErrorMessage(nil)
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else {
+            setStatusMessage("已选择 Debug 工作区 \(project.name)")
+            return
+        }
+#endif
         disconnectWebSocket()
         await refreshSessions(forProjectID: workspace.id)
     }
@@ -1771,6 +2007,16 @@ final class SessionStore: ObservableObject {
     // 文件预览同样不污染全局错误状态：后端只返回授权边界内的普通文件，客户端落到临时目录后交给 QuickLook。
     func previewFile(path: String) async throws -> URL {
         let response = try await clientFactory().readFile(path: path)
+        return try Self.previewURL(from: response)
+    }
+
+    // 历史图片走 app-server gateway 的短期缓存 ID，不阻塞会话文字首屏；点按后再落到临时文件预览。
+    func previewHistoryMedia(id: String) async throws -> URL {
+        let response = try await clientFactory().readHistoryMedia(id: id)
+        return try Self.previewURL(from: response)
+    }
+
+    private static func previewURL(from response: FileReadResponse) throws -> URL {
         guard let data = Data(base64Encoded: response.contentBase64) else {
             throw FilePreviewStoreError.invalidPayload
         }
@@ -2222,6 +2468,12 @@ final class SessionStore: ObservableObject {
             setErrorMessage(nil)
             disconnectWebSocket()
         }
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else {
+            setStatusMessage("Debug UI 样例已展开 \(project.name)")
+            return
+        }
+#endif
         await refreshSessions(forProjectID: workspace.id)
     }
 
@@ -2291,6 +2543,11 @@ final class SessionStore: ObservableObject {
             } catch {
                 return
             }
+#if DEBUG
+            guard !isDebugWorkbenchUISeedActive else {
+                continue
+            }
+#endif
             guard appStore.isConfigured, selectedProjectID != nil else {
                 continue
             }
@@ -2299,6 +2556,12 @@ final class SessionStore: ObservableObject {
     }
 
     func refreshCurrentContext() async {
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else {
+            setStatusMessage("Debug UI 样例不会连接后端")
+            return
+        }
+#endif
         guard let session = selectedSession else {
             await refreshAll(autoAttach: false)
             return
@@ -2538,6 +2801,12 @@ final class SessionStore: ObservableObject {
         setErrorMessage(nil)
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else {
+            setStatusMessage("已选择 Debug 会话 \(session.title)")
+            return
+        }
+#endif
 
         if session.isRunning && canControlSession(session) {
             // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
@@ -2866,6 +3135,11 @@ final class SessionStore: ObservableObject {
     }
 
     func resumeFromForeground() async {
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else {
+            return
+        }
+#endif
         guard appStore.isConfigured else {
             return
         }
@@ -3379,6 +3653,8 @@ final class SessionStore: ObservableObject {
                 setStatusMessage("完整历史加载失败：\(error.localizedDescription)")
             }
         } else {
+            // 终态失败必须离开“正在加载”横幅，否则重连触发的静默刷新会让界面永远停在加载中。
+            setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
             setErrorMessage("缩略历史加载失败：\(error.localizedDescription)")
         }
         return false
@@ -3494,6 +3770,8 @@ final class SessionStore: ObservableObject {
             defaultMessage = "正在加载缩略历史。"
         case .summaryLoaded:
             defaultMessage = "当前显示缩略历史。"
+        case .summaryFailed:
+            defaultMessage = "缩略历史加载失败，可能是网络不稳或服务器限流。"
         }
         let message = customMessage ?? defaultMessage
         historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: kind, message: message)
@@ -5176,6 +5454,9 @@ final class SessionStore: ObservableObject {
             byID[project.id] = project
         }
         sidebarProjectsByID = byID
+        if let sessionWorkspaceIDs {
+            setSessionWorkspaceIDs(sessionWorkspaceIDs)
+        }
     }
 
     private func reloadRecentWorkspaces() {
@@ -5187,19 +5468,64 @@ final class SessionStore: ObservableObject {
 
     private func reloadSessionListPreferences() {
         let preferences = sessionListPreferenceStore.load(endpoint: appStore.endpoint)
-        guard pinnedSessionIDs != preferences.pinnedSessionIDs || archivedSessionIDs != preferences.archivedSessionIDs else {
+        let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(preferences.sessionWorkspaceIDs)
+        guard pinnedSessionIDs != preferences.pinnedSessionIDs
+            || archivedSessionIDs != preferences.archivedSessionIDs
+            || sessionWorkspaceIDs != loadedSessionWorkspaceIDs
+        else {
             return
         }
         pinnedSessionIDs = preferences.pinnedSessionIDs
         archivedSessionIDs = preferences.archivedSessionIDs
+        sessionWorkspaceIDs = loadedSessionWorkspaceIDs
+        if loadedSessionWorkspaceIDs != preferences.sessionWorkspaceIDs {
+            saveSessionListPreferences()
+        }
         rebuildSessionIndexes()
     }
 
     private func saveSessionListPreferences() {
         sessionListPreferenceStore.save(
-            SessionListPreferences(pinnedSessionIDs: pinnedSessionIDs, archivedSessionIDs: archivedSessionIDs),
+            SessionListPreferences(
+                pinnedSessionIDs: pinnedSessionIDs,
+                archivedSessionIDs: archivedSessionIDs,
+                sessionWorkspaceIDs: sessionWorkspaceIDs
+            ),
             endpoint: appStore.endpoint
         )
+    }
+
+    private func setSessionWorkspaceIDs(_ value: Set<String>?) {
+        let normalized = normalizedSessionWorkspaceIDs(value)
+        guard sessionWorkspaceIDs != normalized else {
+            return
+        }
+        sessionWorkspaceIDs = normalized
+        saveSessionListPreferences()
+        rebuildProjectSessionListSnapshots()
+        reconcileSelectedProjectAfterSessionWorkspaceChange()
+    }
+
+    private func normalizedSessionWorkspaceIDs(_ value: Set<String>?) -> Set<String>? {
+        let validProjectIDs = Set(sidebarProjects.map(\.id))
+        guard let value else {
+            return nil
+        }
+        let selectedIDs = value.intersection(validProjectIDs)
+        // 全选和默认显示全部是同一个语义，归一成 nil，避免 UI 出现多余的“恢复全部显示”按钮。
+        return selectedIDs == validProjectIDs ? nil : selectedIDs
+    }
+
+    private func reconcileSelectedProjectAfterSessionWorkspaceChange() {
+        guard let selectedProjectID,
+              !isWorkspaceShownInSessions(selectedProjectID),
+              selectedSessionID == nil
+        else {
+            return
+        }
+        setSelectedProjectID(sessionSidebarProjects.first?.id)
+        setSelectedSessionID(nil)
+        disconnectWebSocket()
     }
 
     private func reloadSessionControlStates() {

@@ -268,6 +268,11 @@ actor CodexAppServerSessionRuntime {
         try await AgentAPIClient(endpoint: endpoint, token: token).readFile(path: path)
     }
 
+    func readHistoryMedia(id: String) async throws -> FileReadResponse {
+        // 历史媒体是 gateway 脱水后生成的短期缓存，只在用户点按历史图片占位时读取。
+        try await AgentAPIClient(endpoint: endpoint, token: token).readHistoryMedia(id: id)
+    }
+
     func commandActions(path: String) async throws -> [AgentCommandAction] {
         // 快捷动作是 agentd 配置的 allowlist 能力，只在控制面列出，不让 app-server 接触命令定义。
         try await AgentAPIClient(endpoint: endpoint, token: token).commandActions(path: path)
@@ -2588,15 +2593,26 @@ actor CodexAppServerSessionRuntime {
         let processTimestampIsFallback = itemCreatedAt == nil && itemCompletedAt == nil && estimatedAt != nil
         switch type {
         case "userMessage":
-            let text = userMessageText(from: item).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, isVisibleUserHistoryMessage(text) else {
+            let inputs = userMessageInputs(from: item)
+            let text = userMessageText(from: inputs).trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasImageInput = containsImageInput(inputs)
+            guard !text.isEmpty || hasImageInput else {
+                return nil
+            }
+            guard text.isEmpty || isVisibleUserHistoryMessage(text) else {
+                return nil
+            }
+            let turnPayload = hasImageInput ? CodexAppServerTurnPayload(input: inputs) : nil
+            let content = text.isEmpty ? (turnPayload?.previewText ?? "") : text
+            guard !content.isEmpty else {
                 return nil
             }
             let createdAt = itemCreatedAt ?? estimatedAt ?? startedAt ?? itemCompletedAt ?? completedAt
             return CodexHistoryMessage(
                 id: messageID,
                 role: "user",
-                content: text,
+                content: content,
+                turnPayload: turnPayload,
                 createdAt: createdAt,
                 clientMessageID: item["clientId"]?.stringValue,
                 turnID: turnID,
@@ -2734,15 +2750,76 @@ actor CodexAppServerSessionRuntime {
         return "appserver:\(turnID):\(itemID)"
     }
 
-    private func userMessageText(from item: [String: CodexAppServerJSONValue]) -> String {
+    private func userMessageInputs(from item: [String: CodexAppServerJSONValue]) -> [CodexAppServerUserInput] {
         let content = item["content"]?.arrayValue ?? []
         return content.compactMap { value in
-            guard let object = value.objectValue, object["type"]?.stringValue == "text" else {
+            guard let object = value.objectValue,
+                  let type = object["type"]?.stringValue
+            else {
                 return nil
             }
-            return object["text"]?.stringValue
+            switch type {
+            case "text":
+                guard let text = object["text"]?.stringValue else {
+                    return nil
+                }
+                return .text(text, textElements: object["text_elements"]?.arrayValue ?? [])
+            case "image":
+                guard let url = object["url"]?.stringValue else {
+                    return nil
+                }
+                return .image(url: url, detail: userMessageImageDetail(from: object))
+            case "localImage", "local_image":
+                guard let path = object["path"]?.stringValue else {
+                    return nil
+                }
+                return .localImage(path: path, detail: userMessageImageDetail(from: object))
+            case "skill":
+                guard let name = object["name"]?.stringValue,
+                      let path = object["path"]?.stringValue
+                else {
+                    return nil
+                }
+                return .skill(name: name, path: path)
+            case "mention":
+                guard let name = object["name"]?.stringValue,
+                      let path = object["path"]?.stringValue
+                else {
+                    return nil
+                }
+                return .mention(name: name, path: path)
+            default:
+                return nil
+            }
+        }
+    }
+
+    private func userMessageText(from inputs: [CodexAppServerUserInput]) -> String {
+        inputs.compactMap { input in
+            if case .text(let text, _) = input {
+                return text
+            }
+            return nil
         }
         .joined(separator: "\n")
+    }
+
+    private func containsImageInput(_ inputs: [CodexAppServerUserInput]) -> Bool {
+        inputs.contains { input in
+            switch input {
+            case .image, .localImage:
+                return true
+            case .text, .skill, .mention:
+                return false
+            }
+        }
+    }
+
+    private func userMessageImageDetail(from object: [String: CodexAppServerJSONValue]) -> CodexAppServerImageDetail? {
+        guard let raw = object["detail"]?.stringValue else {
+            return nil
+        }
+        return CodexAppServerImageDetail(rawValue: raw)
     }
 
     private func approvalID(for request: CodexAppServerServerRequest) -> String? {
@@ -3132,6 +3209,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.readFile(path: path)
     }
 
+    func readHistoryMedia(id: String) async throws -> FileReadResponse {
+        try await runtime.readHistoryMedia(id: id)
+    }
+
     func commandActions(path: String) async throws -> [AgentCommandAction] {
         try await runtime.commandActions(path: path)
     }
@@ -3359,6 +3440,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     func pruneMissingWorktrees() async throws -> WorktreePruneResponse { try await codexClient.pruneMissingWorktrees() }
     func listDirectories(path: String) async throws -> DirectoryListResponse { try await codexClient.listDirectories(path: path) }
     func readFile(path: String) async throws -> FileReadResponse { try await codexClient.readFile(path: path) }
+    func readHistoryMedia(id: String) async throws -> FileReadResponse { try await codexClient.readHistoryMedia(id: id) }
     func commandActions(path: String) async throws -> [AgentCommandAction] { try await codexClient.commandActions(path: path) }
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse { try await codexClient.runCommandAction(path: path, id: id, confirmed: confirmed) }
     func gitStatus(path: String) async throws -> GitStatusResponse { try await codexClient.gitStatus(path: path) }

@@ -713,6 +713,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
     let role: String
     let kind: MessageKind
     let content: String
+    let turnPayload: CodexAppServerTurnPayload?
     let activityPayload: ConversationActivityPayload?
     let createdAt: Date?
     let updatedAt: Date?
@@ -731,6 +732,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         role: String,
         kind: MessageKind = .message,
         content: String,
+        turnPayload: CodexAppServerTurnPayload? = nil,
         activityPayload: ConversationActivityPayload? = nil,
         createdAt: Date?,
         updatedAt: Date? = nil,
@@ -748,6 +750,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         self.role = role
         self.kind = kind
         self.content = content
+        self.turnPayload = turnPayload
         self.activityPayload = activityPayload
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -767,6 +770,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
         case role
         case kind
         case content
+        case turnPayload = "turn_payload"
         case activityPayload = "activity_payload"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -793,6 +797,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
             role: role,
             kind: try container.decodeIfPresent(MessageKind.self, forKey: .kind) ?? .message,
             content: content,
+            turnPayload: try container.decodeIfPresent(CodexAppServerTurnPayload.self, forKey: .turnPayload),
             activityPayload: try container.decodeIfPresent(ConversationActivityPayload.self, forKey: .activityPayload),
             createdAt: createdAt,
             updatedAt: updatedAt,
@@ -814,6 +819,7 @@ struct CodexHistoryMessage: Identifiable, Codable, Hashable {
             role: role,
             kind: kind,
             content: content,
+            turnPayload: turnPayload,
             activityPayload: activityPayload,
             createdAt: createdAt,
             updatedAt: updatedAt ?? self.updatedAt,
@@ -1271,6 +1277,7 @@ struct ConversationMessage: Identifiable, Hashable {
             && lhs.updatedAt == rhs.updatedAt
             && lhs.sendStatus == rhs.sendStatus
             && lhs.revision == rhs.revision
+            && lhs.turnPayload == rhs.turnPayload
             && lhs.activityPayload == rhs.activityPayload
             && lhs.timelineOrdinal == rhs.timelineOrdinal
             && lhs.userDelivery == rhs.userDelivery
@@ -1291,6 +1298,7 @@ struct ConversationMessage: Identifiable, Hashable {
         hasher.combine(updatedAt)
         hasher.combine(sendStatus)
         hasher.combine(revision)
+        hasher.combine(turnPayload)
         hasher.combine(activityPayload)
         hasher.combine(timelineOrdinal)
         hasher.combine(userDelivery)

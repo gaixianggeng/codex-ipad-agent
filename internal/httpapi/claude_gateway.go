@@ -292,7 +292,7 @@ func copyClaudeBridgeFrames(ctx context.Context, stdout io.Reader, client *webso
 			continue
 		}
 		policyStart := time.Now()
-		forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
 		policyDuration := time.Since(policyStart)
 		if policyErr != nil {
 			if monitor != nil {
@@ -309,7 +309,7 @@ func copyClaudeBridgeFrames(ctx context.Context, stdout io.Reader, client *webso
 			}
 			continue
 		}
-		frame := append([]byte(nil), payload...)
+		frame := append([]byte(nil), forwardPayload...)
 		if rewritten, ok := rewriteClaudeModelListResponse(policy, frame); ok {
 			frame = rewritten
 		}

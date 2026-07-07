@@ -1888,7 +1888,7 @@ struct ComposerView: View {
         if isCompactComposer {
             return 68
         }
-        return 112
+        return 104
     }
 
     private var voiceButtonHeight: CGFloat {
@@ -1908,7 +1908,7 @@ struct ComposerView: View {
     }
 
     private var voiceButtonMinimumHeight: CGFloat {
-        isCompactComposer ? 82 : 96
+        isCompactComposer ? 78 : 90
     }
 
     private var composerCardPadding: CGFloat {

@@ -334,7 +334,13 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(references.map(\.name), ["report.pdf", "chart.png"])
     }
 
-    func testConversationMessageEqualityAndHashIgnoreTurnPayload() {
+    func testConversationImageSourceRecognizesHistoryMediaPlaceholder() {
+        let source = ConversationImageSource.markdown("agentd-history-media://media_abc")
+
+        XCTAssertEqual(source, .historyMedia(id: "media_abc"))
+    }
+
+    func testConversationMessageEqualityAndHashIncludeTurnPayload() {
         let id = UUID()
         let createdAt = Date(timeIntervalSince1970: 42)
         let firstPayload = CodexAppServerTurnPayload(input: [
@@ -372,8 +378,8 @@ final class ConversationDataFlowTests: XCTestCase {
             turnPayload: secondPayload
         )
 
-        XCTAssertEqual(first, second)
-        XCTAssertEqual(Set([first, second]).count, 1)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(Set([first, second]).count, 2)
     }
 
     func testTimelineBuilderCollapsesProcessMessagesBeforeCompletedAssistant() throws {
@@ -3672,6 +3678,39 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testPreviewHistoryMediaWritesDecodedPayloadToTemporaryFile() async throws {
+        let mediaID = "media-123"
+        let payload = Data("history-image-payload".utf8)
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            historyMediaResults: [
+                mediaID: .success(FileReadResponse(
+                    path: "agentd-history-media://\(mediaID)",
+                    name: "history-image.png",
+                    contentType: "image/png",
+                    size: Int64(payload.count),
+                    contentBase64: payload.base64EncodedString()
+                ))
+            ]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        let url = try await store.previewHistoryMedia(id: mediaID)
+        XCTAssertEqual(client.requestedHistoryMediaIDs, [mediaID])
+        XCTAssertEqual(client.requestedFileReadPaths, [])
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+        XCTAssertTrue(url.lastPathComponent.hasSuffix("-history-image.png"))
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testWorkspaceLoadFailureMarksUnavailableWhenResolveRejects() async {
         let rootProject = makeProject(id: "proj_root")
         let workspace = makeChildWorkspace(id: "ws_gone", name: "gone", root: rootProject)
@@ -6487,6 +6526,37 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["重试后的缩略历史"])
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryLoaded)
+    }
+
+    func testSummaryHistoryTerminalFailureShowsFailedNotice() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_summary_dead", projectID: project.id, title: "缩略失败", status: "history", source: "codex", resumeID: "summary-dead")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        client.failHistoryRequest(at: 0, with: historyPolicyError(reason: "history_response_too_large"))
+        await client.waitForHistoryRequestCount(2)
+
+        client.failHistoryRequest(at: 1, with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1))
+        await client.waitForHistoryRequestCount(3)
+
+        // 重试额度用尽后再次失败：横幅必须离开“正在加载”，进入可重试的失败态。
+        client.failHistoryRequest(at: 2, with: historyPolicyError(reason: "history_budget_limited", retryAfterMs: 1))
+        await selectTask.value
+
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .economy])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryFailed)
+        XCTAssertNotNil(store.errorMessage)
     }
 
     func testLoadEarlierHistoryMergesOlderMessagePage() async {
@@ -10017,6 +10087,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     let worktreePruneResult: Result<WorktreePruneResponse, Error>?
     let directoryListResults: [String: Result<DirectoryListResponse, Error>]
     let fileReadResults: [String: Result<FileReadResponse, Error>]
+    let historyMediaResults: [String: Result<FileReadResponse, Error>]
     let commandActionResults: [String: Result<[AgentCommandAction], Error>]
     let commandActionRunResults: [String: Result<CommandActionRunResponse, Error>]
     let gitStatusResults: [String: Result<GitStatusResponse, Error>]
@@ -10039,6 +10110,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     private(set) var worktreePruneCallCount = 0
     var requestedDirectoryPaths: [String] = []
     var requestedFileReadPaths: [String] = []
+    var requestedHistoryMediaIDs: [String] = []
     var requestedCommandActionPaths: [String] = []
     var requestedCommandActionRuns: [RequestedCommandActionRun] = []
     var requestedGitStatusPaths: [String] = []
@@ -10085,6 +10157,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         worktreePruneResult: Result<WorktreePruneResponse, Error>? = nil,
         directoryListResults: [String: Result<DirectoryListResponse, Error>] = [:],
         fileReadResults: [String: Result<FileReadResponse, Error>] = [:],
+        historyMediaResults: [String: Result<FileReadResponse, Error>] = [:],
         commandActionResults: [String: Result<[AgentCommandAction], Error>] = [:],
         commandActionRunResults: [String: Result<CommandActionRunResponse, Error>] = [:],
         gitStatusResults: [String: Result<GitStatusResponse, Error>] = [:],
@@ -10126,6 +10199,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         self.worktreePruneResult = worktreePruneResult
         self.directoryListResults = directoryListResults
         self.fileReadResults = fileReadResults
+        self.historyMediaResults = historyMediaResults
         self.commandActionResults = commandActionResults
         self.commandActionRunResults = commandActionRunResults
         self.gitStatusResults = gitStatusResults
@@ -10252,6 +10326,18 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     func readFile(path: String) async throws -> FileReadResponse {
         requestedFileReadPaths.append(path)
         switch fileReadResults[path] {
+        case .success(let response):
+            return response
+        case .failure(let error):
+            throw error
+        case .none:
+            throw MockError.unimplemented
+        }
+    }
+
+    func readHistoryMedia(id: String) async throws -> FileReadResponse {
+        requestedHistoryMediaIDs.append(id)
+        switch historyMediaResults[id] {
         case .success(let response):
             return response
         case .failure(let error):
@@ -12655,6 +12741,37 @@ extension ConversationDataFlowTests {
         let sent = await transport.sentMessages()
         let threadReadCount = sent.compactMap { try? decodeAppServerRequest($0) }.filter { $0.method == "thread/read" }.count
         XCTAssertEqual(threadReadCount, 1, "翻看更早历史应命中缓存，不应再次拉取整段 thread/read")
+    }
+
+    func testDirectRuntimePreservesHistoryImagePayloadAsLazyMedia() async throws {
+        let project = AgentProject(id: "proj_hist_image", name: "Hist Image", path: "/tmp/hist-image")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let pageTask = Task {
+            try await client.messagesPage(sessionID: "thr_hist_image", before: nil, limit: 10)
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_hist_image","sessionId":"thr_hist_image","preview":"hist image","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/hist-image","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"hist image","turns":[{"id":"turn_img","startedAt":1780490000,"items":[{"type":"userMessage","id":"item_img","content":[{"type":"text","text":"看这张截图"},{"type":"image","url":"agentd-history-media://media_abc","detail":"high","redacted":true,"contentType":"image/png","byteCount":2048}]}]}]}}}"#)
+
+        let page = try await pageTask.value
+        let message = try XCTUnwrap(page.messages.first)
+        XCTAssertEqual(message.content, "看这张截图")
+        XCTAssertEqual(message.turnPayload?.textPrompt, "看这张截图")
+        XCTAssertTrue(payloadContainsImageURL(message.turnPayload, url: "agentd-history-media://media_abc"))
     }
 
     func testDirectRuntimeParsesHistoryTurnDatesFromISOAndMilliseconds() async throws {

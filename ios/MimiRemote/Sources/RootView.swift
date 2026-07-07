@@ -17,7 +17,7 @@ struct RootView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Group {
-            if appStore.isConfigured {
+            if appStore.canEnterWorkbench {
                 appShell
             } else {
                 SettingsView(isInitialSetup: true)
@@ -91,6 +91,7 @@ struct RootView: View {
         }
         .toolbarBackground(tokens.background, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+        .background(tokens.background.ignoresSafeArea())
     }
 
     @ViewBuilder
@@ -120,6 +121,7 @@ struct RootView: View {
                 splitLayout(layout: layout)
             }
         }
+        .background(themeStore.tokens(for: colorScheme).background.ignoresSafeArea())
         .overlay {
             initialConnectionOverlay
         }
@@ -139,10 +141,10 @@ struct RootView: View {
                     ProgressView()
                         .controlSize(.large)
                         .tint(tokens.accent)
-                    Text("正在连接本地开发环境中的 agentd")
+                    Text("正在连接 Mac 助手")
                         .font(themeStore.uiFont(.headline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
-                    Text("如果刚启动 Tailscale 或 agentd，这里会自动重试。")
+                    Text("如果刚启动 Tailscale 或 Mac 助手，这里会自动重试。")
                         .font(themeStore.uiFont(.callout))
                         .foregroundStyle(tokens.secondaryText)
                         .multilineTextAlignment(.center)
@@ -150,10 +152,10 @@ struct RootView: View {
                     Image(systemName: "wifi.exclamationmark")
                         .font(.system(size: 34, weight: .semibold))
                         .foregroundStyle(tokens.warning)
-                    Text("无法连接 agentd")
+                    Text("无法连接 Mac 助手")
                         .font(themeStore.uiFont(.headline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
-                    Text(sessionStore.errorMessage ?? "请检查 agentd 和网络连接。")
+                    Text(sessionStore.errorMessage ?? "请检查 Mac 助手和网络连接。")
                         .font(themeStore.uiFont(.callout))
                         .foregroundStyle(tokens.secondaryText)
                         .multilineTextAlignment(.center)
@@ -178,18 +180,19 @@ struct RootView: View {
     }
 
     private func compactLayout(layout: WorkbenchLayout) -> some View {
-        NavigationStack {
-            ProjectSidebarView(showsSessions: true)
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return NavigationStack {
+            ProjectSidebarView(showsSessions: true, onOpenWorkspaceTab: {
+                selectedAppTabRawValue = AppTab.workspace.rawValue
+            })
                 .navigationTitle("咪咪")
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationDestination(isPresented: compactSessionDetailBinding) {
-                    workspaceDetail(
-                        layout: layout,
-                        showsSidebarToggle: false,
-                        showsReturnButton: false
-                    )
+                    workspaceDetail(layout: layout)
                 }
         }
+        .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
             if sessionID == nil {
                 showingLogInspector = false
@@ -198,10 +201,19 @@ struct RootView: View {
     }
 
     private func splitLayout(layout: WorkbenchLayout) -> some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            ProjectSidebarView(showsSessions: true)
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return NavigationSplitView(columnVisibility: $columnVisibility) {
+            ProjectSidebarView(showsSessions: true, onCollapseSidebar: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    columnVisibility = .detailOnly
+                }
+            }, onOpenWorkspaceTab: {
+                selectedAppTabRawValue = AppTab.workspace.rawValue
+            })
                 // 侧栏本身用 Section header 呈现“项目”，隐藏大标题可以让项目树首屏更紧凑。
                 .toolbar(.hidden, for: .navigationBar)
+                .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
                 // 侧栏宽度跟随窗口缩放，iPhone、iPad mini 和浮窗不会把详情区挤到只剩一条窄缝。
                 .navigationSplitViewColumnWidth(
                     min: layout.projectColumn.min,
@@ -209,13 +221,11 @@ struct RootView: View {
                     max: layout.projectColumn.max
                 )
         } detail: {
-            workspaceDetail(
-                layout: layout,
-                showsSidebarToggle: true,
-                showsReturnButton: true
-            )
+            workspaceDetail(layout: layout)
         }
         .navigationSplitViewStyle(.balanced)
+        .background(tokens.background.ignoresSafeArea())
+        .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .onAppear {
             applyResponsiveColumnVisibility(for: layout)
         }
@@ -230,12 +240,12 @@ struct RootView: View {
         }
     }
 
-    private func workspaceDetail(
-        layout: WorkbenchLayout,
-        showsSidebarToggle: Bool,
-        showsReturnButton: Bool
-    ) -> some View {
-        WorkspaceView()
+    private func workspaceDetail(layout: WorkbenchLayout) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return WorkspaceView {
+            selectedAppTabRawValue = AppTab.workspace.rawValue
+        }
             .navigationTitle(sessionStore.selectedSession?.title ?? sessionStore.selectedProject?.name ?? "会话")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -245,49 +255,14 @@ struct RootView: View {
                         horizontalOffset: titleHorizontalOffset(layout: layout)
                     )
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    // 仅在侧栏收起时，在主界面提供展开按钮；展开时由侧栏自带的开关负责收起，避免两个图标同时出现。
-                    if showsSidebarToggle && columnVisibility == .detailOnly {
-                        Button {
-                            withAnimation {
-                                columnVisibility = .all
-                            }
-                        } label: {
-                            Label("显示项目栏", systemImage: "sidebar.left")
-                        }
-                        .accessibilityLabel("显示项目栏")
-                    }
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    if showsReturnButton && sessionStore.selectedSessionID != nil {
-                        Button {
-                            sessionStore.returnToSessionList()
-                        } label: {
-                            Label("回到项目", systemImage: "xmark.circle")
-                        }
-                        .accessibilityLabel("回到项目")
-                    }
-                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    refreshControl
-                    if let symbol = connectionBadgeSymbol {
-                        Image(systemName: symbol)
-                            .foregroundStyle(connectionBadgeColor)
-                            .symbolRenderingMode(.hierarchical)
-                            .accessibilityLabel(sessionStore.connectionBadgeTitle ?? "连接状态")
-                    }
-                    if sessionStore.selectedSessionID != nil {
-                        Button {
-                            showingLogInspector.toggle()
-                        } label: {
-                            Label(layout.usesAttachedInspector ? "日志" : "会话详情", systemImage: layout.usesAttachedInspector ? "terminal" : "sidebar.right")
-                        }
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText.opacity(0.78))
-                        .accessibilityLabel(showingLogInspector ? "隐藏详情" : "显示详情")
+                    if shouldShowDetailToolbarCluster {
+                        detailToolbarCluster(layout: layout, tokens: tokens)
                     }
                 }
             }
+            .background(tokens.background.ignoresSafeArea())
+            .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
             .sessionInspectorPresentation(isPresented: $showingLogInspector, layout: layout)
     }
 
@@ -300,26 +275,101 @@ struct RootView: View {
         return -(layout.inspectorColumn.ideal / 2)
     }
 
-    // 刷新属于维护动作，不参与主定位信息；放在 trailing 并弱化颜色，减少顶部抢眼控件。
-    @ViewBuilder
-    private var refreshControl: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
+    // 顶部维护动作收成一个统一工具组，避免刷新、连接状态和详情入口各自漂浮。
+    private var shouldShowDetailToolbarCluster: Bool {
+        shouldShowDetailRefresh ||
+            connectionBadgeSymbol != nil ||
+            sessionStore.selectedSessionID != nil
+    }
 
-        if sessionStore.isLoading || sessionStore.isRefreshingSelectedSession {
-            ProgressView()
-                .controlSize(.small)
-                .tint(tokens.secondaryText.opacity(0.8))
-                .accessibilityLabel("正在刷新")
-        } else {
-            Button {
-                Task { await sessionStore.refreshCurrentContext() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .foregroundStyle(tokens.secondaryText.opacity(0.72))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话")
+    private func detailToolbarCluster(layout: WorkbenchLayout, tokens: ThemeTokens) -> some View {
+        HStack(spacing: 2) {
+            detailRefreshControl(tokens: tokens)
+            connectionBadgeControl(tokens: tokens)
+            detailInspectorControl(layout: layout, tokens: tokens)
         }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(tokens.elevatedSurface.opacity(0.78), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(tokens.border.opacity(0.62), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func detailRefreshControl(tokens: ThemeTokens) -> some View {
+        if shouldShowDetailRefresh {
+            if sessionStore.isLoading || sessionStore.isRefreshingSelectedSession {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(tokens.secondaryText.opacity(0.8))
+                    .frame(width: 32, height: 32)
+                    .accessibilityLabel("正在刷新")
+            } else {
+                detailToolbarButton(
+                    systemImage: "arrow.clockwise",
+                    accessibilityLabel: sessionStore.selectedSessionID == nil ? "刷新会话列表" : "刷新当前会话",
+                    tokens: tokens
+                ) {
+                    Task { await sessionStore.refreshCurrentContext() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionBadgeControl(tokens: ThemeTokens) -> some View {
+        if let symbol = connectionBadgeSymbol {
+            Image(systemName: symbol)
+                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(connectionBadgeColor)
+                .frame(width: 32, height: 32)
+                .accessibilityLabel(sessionStore.connectionBadgeTitle ?? "连接状态")
+        }
+    }
+
+    @ViewBuilder
+    private func detailInspectorControl(layout: WorkbenchLayout, tokens: ThemeTokens) -> some View {
+        if sessionStore.selectedSessionID != nil {
+            detailToolbarButton(
+                systemImage: "sidebar.right",
+                accessibilityLabel: showingLogInspector ? "隐藏详情" : (layout.usesAttachedInspector ? "显示右侧详情" : "打开详情"),
+                isActive: showingLogInspector,
+                tokens: tokens
+            ) {
+                showingLogInspector.toggle()
+            }
+        }
+    }
+
+    private func detailToolbarButton(
+        systemImage: String,
+        accessibilityLabel: String,
+        isActive: Bool = false,
+        tokens: ThemeTokens,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? tokens.accent : tokens.secondaryText)
+        .background(isActive ? tokens.selectionFill : Color.clear, in: Circle())
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var shouldShowDetailRefresh: Bool {
+        sessionStore.isLoading ||
+            sessionStore.errorMessage != nil ||
+            sessionStore.selectedProjectID != nil ||
+            sessionStore.selectedSessionID != nil ||
+            !sessionStore.sidebarProjects.isEmpty
     }
 
     private var connectionBadgeKind: StatusPill.Kind {
@@ -441,39 +491,517 @@ private enum AppTab: String, CaseIterable, Identifiable {
     }
 }
 
+enum WorkbenchPageLayout {
+    static let maxContentWidth: CGFloat = 820
+    static let regularPadding: CGFloat = 24
+    static let compactPadding: CGFloat = 20
+}
+
+struct WorkbenchPageHeader: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    let title: String
+    let subtitle: String
+    let tokens: ThemeTokens
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(themeStore.uiFont(.title2, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+            Text(subtitle)
+                .font(themeStore.uiFont(.callout))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct WorkspaceRootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var isShowingCompactWorkspaceDetail = false
+    @State private var isPresentingOpenWorkspace = false
 
     var body: some View {
-        GeometryReader { proxy in
-            let usesSplitLayout = horizontalSizeClass == .regular && proxy.size.width >= 720
+        let tokens = themeStore.tokens(for: colorScheme)
 
-            if usesSplitLayout {
+        return GeometryReader { proxy in
+            let usesSplitLayout = horizontalSizeClass == .regular && proxy.size.width >= 720
+            let hasProjects = !sessionStore.sidebarProjects.isEmpty
+
+            if usesSplitLayout && !hasProjects && !sessionStore.isLoading {
+                workspaceEmptyLanding()
+            } else if usesSplitLayout {
+                let sidebarWidth = min(max(proxy.size.width * 0.44, 440), 640)
                 HStack(spacing: 0) {
-                    ProjectSidebarView(showsSessions: false)
-                        .frame(width: min(max(proxy.size.width * 0.32, 280), 360))
-                    Divider()
-                    WorkspaceDetailView(project: sessionStore.selectedProject)
+                    workspaceGrid(usesSplitLayout: true, availableWidth: sidebarWidth)
+                        .frame(width: sidebarWidth)
+                    Rectangle()
+                        .fill(tokens.border.opacity(0.72))
+                        .frame(width: 1)
+                    WorkspaceDetailView(project: selectedProject)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .background(themeStore.tokens(for: colorScheme).background)
+                .background(tokens.background)
             } else {
                 NavigationStack {
-                    ProjectSidebarView(showsSessions: false) {
-                        isShowingCompactWorkspaceDetail = true
-                    }
+                    workspaceGrid(usesSplitLayout: false, availableWidth: proxy.size.width)
                         .navigationTitle("工作区")
                         .navigationBarTitleDisplayMode(.inline)
-                        .navigationDestination(isPresented: $isShowingCompactWorkspaceDetail) {
-                            WorkspaceDetailView(project: sessionStore.selectedProject)
-                        }
                 }
+                .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
             }
         }
+        .background(tokens.background.ignoresSafeArea())
+        .sheet(isPresented: $isPresentingOpenWorkspace) {
+            OpenWorkspaceSheet()
+        }
+    }
+
+    private func workspaceEmptyLanding() -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                WorkbenchPageHeader(
+                    title: "工作区",
+                    subtitle: workspaceSummary,
+                    tokens: tokens
+                )
+
+                WorkspaceEmptyStateCard(
+                    systemImage: "folder.badge.plus",
+                    title: "打开第一个工作区",
+                    detail: "工作区用来管理开发目录；加入会话后，会话页只显示你常用的项目。",
+                    actionTitle: "打开目录",
+                    actionSystemImage: "folder.badge.plus"
+                ) {
+                    isPresentingOpenWorkspace = true
+                }
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 30)
+            .padding(.bottom, 32)
+            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .background(tokens.background.ignoresSafeArea())
+    }
+
+    private var selectedProject: AgentProject? {
+        sessionStore.selectedProject ?? sessionStore.sidebarProjects.first
+    }
+
+    private func workspaceGrid(usesSplitLayout: Bool, availableWidth: CGFloat) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let projects = sessionStore.sidebarProjects
+        let columns = workspaceColumns(usesSplitLayout: usesSplitLayout, availableWidth: availableWidth)
+        let cardHeight = workspaceCardHeight(usesSplitLayout: usesSplitLayout, availableWidth: availableWidth)
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .top, spacing: 16) {
+                    WorkbenchPageHeader(
+                        title: "工作区",
+                        subtitle: workspaceSummary,
+                        tokens: tokens
+                    )
+
+                    Spacer(minLength: 0)
+
+                    workspaceHeaderActions(tokens: tokens, projects: projects)
+                }
+
+                if projects.isEmpty && !sessionStore.isLoading {
+                    WorkspaceEmptyStateCard(
+                        systemImage: "folder.badge.plus",
+                        title: "没有已打开的工作区",
+                        detail: "打开项目后，这里会以文件夹卡片展示；会话页只显示你加入会话的项目。",
+                        actionTitle: "打开目录",
+                        actionSystemImage: "folder.badge.plus"
+                    ) {
+                        isPresentingOpenWorkspace = true
+                    }
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(projects) { project in
+                            WorkspaceFolderCard(
+                                project: project,
+                                isSelected: project.id == selectedProject?.id,
+                                isShownInSessions: sessionStore.isWorkspaceShownInSessions(project.id),
+                                isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
+                                sessionCount: sessionStore.sessions(forProjectID: project.id).count,
+                                worktreeCount: managedWorktreeCount(for: project),
+                                cardHeight: cardHeight,
+                                onSelect: {
+                                    Task { await sessionStore.selectProject(project) }
+                                },
+                                onToggleSessionVisibility: {
+                                    sessionStore.toggleWorkspaceInSessions(project)
+                                }
+                            )
+                        }
+                    }
+
+                    if sessionStore.sessionWorkspaceIDs != nil {
+                        Button {
+                            sessionStore.resetSessionWorkspaceSelection()
+                        } label: {
+                            Label("恢复全部显示", systemImage: "arrow.counterclockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(tokens.accent)
+                        .accessibilityLabel("恢复会话页显示全部工作区")
+                    }
+                }
+            }
+            .padding(.horizontal, usesSplitLayout ? WorkbenchPageLayout.regularPadding : WorkbenchPageLayout.compactPadding)
+            .padding(.top, usesSplitLayout ? WorkbenchPageLayout.regularPadding : WorkbenchPageLayout.compactPadding)
+            .padding(.bottom, WorkbenchPageLayout.regularPadding)
+        }
+        .background(tokens.background.ignoresSafeArea())
+        .refreshable {
+            await sessionStore.refreshAll(autoAttach: false)
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceHeaderActions(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        if sessionStore.isLoading {
+            ProgressView()
+                .controlSize(.small)
+                .tint(tokens.secondaryText)
+                .frame(width: 32, height: 32)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+                .background(tokens.elevatedSurface.opacity(0.58), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(tokens.border.opacity(0.5), lineWidth: 1)
+                }
+                .accessibilityLabel("正在刷新工作区")
+        } else if !projects.isEmpty {
+            HStack(spacing: 2) {
+                workspaceHeaderButton(tokens: tokens, systemImage: "arrow.clockwise", accessibilityLabel: "刷新工作区") {
+                    Task { await sessionStore.refreshAll(autoAttach: false) }
+                }
+
+                workspaceHeaderButton(tokens: tokens, systemImage: "folder.badge.plus", accessibilityLabel: "打开目录") {
+                    isPresentingOpenWorkspace = true
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(tokens.elevatedSurface.opacity(0.58), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tokens.border.opacity(0.5), lineWidth: 1)
+            }
+        }
+    }
+
+    private func workspaceHeaderButton(
+        tokens: ThemeTokens,
+        systemImage: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 32, height: 32)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.secondaryText)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func workspaceColumns(usesSplitLayout: Bool, availableWidth: CGFloat) -> [GridItem] {
+        if usesSplitLayout {
+            guard availableWidth >= 520 else {
+                return [GridItem(.flexible(minimum: 0), spacing: 14)]
+            }
+            return [
+                GridItem(.flexible(minimum: 0), spacing: 14),
+                GridItem(.flexible(minimum: 0), spacing: 14)
+            ]
+        }
+        return [GridItem(.adaptive(minimum: 168, maximum: 340), spacing: 14)]
+    }
+
+    private func workspaceCardHeight(usesSplitLayout: Bool, availableWidth: CGFloat) -> CGFloat {
+        if usesSplitLayout {
+            return availableWidth >= 520 ? 238 : 224
+        }
+        return 210
+    }
+
+    private var workspaceSummary: String {
+        let total = sessionStore.sidebarProjects.count
+        let shown = sessionStore.sessionWorkspaceSelectionCount
+        guard total > 0 else {
+            return "还没有打开工作区"
+        }
+        if sessionStore.sessionWorkspaceIDs == nil {
+            return "\(total) 个工作区，会话页显示全部"
+        }
+        return "\(total) 个工作区，会话页显示 \(shown) 个"
+    }
+
+    private func managedWorktreeCount(for project: AgentProject) -> Int {
+        let rootProjectID = sessionStore.rootProjectID(forProjectID: project.id)
+        return sessionStore.managedWorktrees(rootProjectID: rootProjectID).count
+    }
+}
+
+private struct WorkspaceEmptyStateCard: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let systemImage: String
+    let title: String
+    let detail: String
+    var actionTitle: String?
+    var actionSystemImage: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 30, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: 54, height: 54)
+                .background(tokens.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .multilineTextAlignment(.center)
+                Text(detail)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    if let actionSystemImage {
+                        Label(actionTitle, systemImage: actionSystemImage)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .padding(.top, 2)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, minHeight: 236)
+        .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border, lineWidth: 1)
+        }
+    }
+}
+
+private struct WorkspaceFolderCard: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let project: AgentProject
+    let isSelected: Bool
+    let isShownInSessions: Bool
+    let isUnavailable: Bool
+    let sessionCount: Int
+    let worktreeCount: Int
+    let cardHeight: CGFloat
+    let onSelect: () -> Void
+    let onToggleSessionVisibility: () -> Void
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let statusTone = isUnavailable ? tokens.warning : tokens.success
+        let cardFill = isSelected ? tokens.accent.opacity(0.13) : tokens.elevatedSurface.opacity(0.78)
+        let cardStroke = isSelected ? tokens.accent : tokens.border.opacity(0.86)
+
+        VStack(alignment: .leading, spacing: 16) {
+            Button(action: onSelect) {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top, spacing: 12) {
+                        WorkspaceFolderGlyph(
+                            isSelected: isSelected,
+                            isUnavailable: isUnavailable,
+                            size: .large
+                        )
+
+                        Spacer(minLength: 8)
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: isSelected ? 20 : 16, weight: .semibold))
+                            .foregroundStyle(isSelected ? tokens.accent : tokens.tertiaryText)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(project.name)
+                            .font(themeStore.uiFont(.headline, weight: .semibold))
+                            .foregroundStyle(tokens.primaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.86)
+                        Text(project.path)
+                            .font(themeStore.uiFont(.caption))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 8) {
+                WorkspaceMetricChip(value: "\(sessionCount)", title: "会话", systemImage: "bubble.left.and.text.bubble.right")
+                WorkspaceMetricChip(value: "\(worktreeCount)", title: "Worktree", systemImage: "arrow.triangle.branch")
+                Spacer(minLength: 0)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(statusTone)
+                        .frame(width: 8, height: 8)
+                    Text(isUnavailable ? "异常" : "正常")
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+                .accessibilityLabel(isUnavailable ? "不可用" : "可访问")
+            }
+
+            Spacer(minLength: 0)
+            sessionVisibilityButton
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: cardHeight, maxHeight: cardHeight, alignment: .topLeading)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(cardStroke, lineWidth: isSelected ? 2 : 1)
+        }
+    }
+
+    @ViewBuilder
+    private var sessionVisibilityButton: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        if isShownInSessions {
+            Button(action: onToggleSessionVisibility) {
+                Label("会话中", systemImage: "checkmark.circle.fill")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+            }
+            .buttonStyle(.plain)
+            .font(themeStore.uiFont(.callout, weight: .semibold))
+            .foregroundStyle(tokens.accent)
+            .background(tokens.accent.opacity(0.14), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tokens.accent.opacity(0.26), lineWidth: 1)
+            }
+            .controlSize(.small)
+        } else {
+            Button(action: onToggleSessionVisibility) {
+                Label("加入会话", systemImage: "plus.circle")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+            }
+            .buttonStyle(.plain)
+            .font(themeStore.uiFont(.callout, weight: .semibold))
+            .foregroundStyle(tokens.accent)
+            .background(tokens.surface.opacity(0.72), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
+private struct WorkspaceMetricChip: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let value: String
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+            Text(value)
+                .monospacedDigit()
+        }
+        .font(themeStore.uiFont(.caption, weight: .semibold))
+        .foregroundStyle(tokens.secondaryText)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tokens.surface.opacity(0.72), in: Capsule())
+        .lineLimit(1)
+        .minimumScaleFactor(0.82)
+        .accessibilityLabel("\(title) \(value)")
+    }
+}
+
+private struct WorkspaceFolderGlyph: View {
+    enum Size {
+        case large
+        case header
+
+        var width: CGFloat {
+            switch self {
+            case .large:
+                return 52
+            case .header:
+                return 40
+            }
+        }
+
+        var height: CGFloat {
+            switch self {
+            case .large:
+                return 52
+            case .header:
+                return 40
+            }
+        }
+    }
+
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let isSelected: Bool
+    let isUnavailable: Bool
+    let size: Size
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let tone = isUnavailable ? tokens.warning : (isSelected ? tokens.accent : tokens.secondaryText)
+
+        Image(systemName: isSelected ? "folder.fill" : "folder")
+            .font(themeStore.uiFont(size: size == .large ? 28 : 21, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(tone)
+            .frame(width: size.width, height: size.height)
+            .background(tone.opacity(isSelected ? 0.16 : 0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(tone.opacity(isSelected ? 0.42 : 0.18), lineWidth: 1)
+            }
+        .accessibilityHidden(true)
     }
 }
 
@@ -490,11 +1018,13 @@ private struct WorkspaceDetailView: View {
             if let project {
                 workspaceContent(project: project, tokens: tokens)
             } else {
-                ContentUnavailableView {
-                    Label("选择一个工作区", systemImage: "folder")
-                } description: {
-                    Text("左侧会保留最近打开的项目。这里先作为工作区入口，后续再迁移更多管理功能。")
-                }
+                WorkspaceEmptyStateCard(
+                    systemImage: "folder",
+                    title: "选择一个工作区",
+                    detail: "选择后可查看会话、Worktree 和权限状态。"
+                )
+                .frame(maxWidth: 420)
+                .padding(32)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -505,73 +1035,114 @@ private struct WorkspaceDetailView: View {
 
     private func workspaceContent(project: AgentProject, tokens: ThemeTokens) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 24) {
                 workspaceHeader(project: project, tokens: tokens)
                 workspaceStats(project: project, tokens: tokens)
 
-                VStack(spacing: 10) {
-                    ProfileInfoRow(
+                VStack(spacing: 12) {
+                    WorkspaceDetailActionRow(
                         systemImage: "terminal",
                         title: "会话",
                         value: sessionSummary(for: project),
                         detail: "会话仍在“会话”工作区里创建和继续运行。",
-                        tone: tokens.accent
+                        tone: tokens.accent,
+                        showsChevron: false
                     )
-                    ProfileInfoRow(
+                    WorkspaceDetailActionRow(
                         systemImage: "square.stack.3d.up",
                         title: "Git Worktree",
                         value: worktreeSummary(for: project),
-                        detail: "Worktree 管理入口暂时保留在项目行菜单里。",
-                        tone: tokens.secondaryText
+                        detail: "在项目行菜单里管理这个工作区的 Worktree。",
+                        tone: tokens.secondaryText,
+                        showsChevron: false
                     )
-                    ProfileInfoRow(
+                    WorkspaceDetailActionRow(
                         systemImage: "checkmark.shield",
                         title: "权限状态",
                         value: sessionStore.isWorkspaceUnavailable(project.id) ? "需要重试" : "可访问",
                         detail: sessionStore.isWorkspaceUnavailable(project.id) ? "这个工作区可能已被移动、删除或不在授权范围内。" : "当前工作区在已授权范围内，可继续用于会话。",
-                        tone: sessionStore.isWorkspaceUnavailable(project.id) ? tokens.warning : tokens.success
+                        tone: sessionStore.isWorkspaceUnavailable(project.id) ? tokens.warning : tokens.success,
+                        showsChevron: false
                     )
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 34)
+            .padding(.top, 28)
+            .padding(.bottom, 34)
+            .frame(maxWidth: 860, alignment: .leading)
         }
+        .background(tokens.background.ignoresSafeArea())
     }
 
     private func workspaceHeader(project: AgentProject, tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(project.name, systemImage: "folder.fill")
-                .font(themeStore.uiFont(.title2, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(2)
-            Text(project.path)
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(3)
-                .truncationMode(.middle)
+        HStack(alignment: .top, spacing: 14) {
+            WorkspaceFolderGlyph(
+                isSelected: true,
+                isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
+                size: .header
+            )
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(project.name)
+                    .font(themeStore.uiFont(.title2, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(2)
+                Text(project.path)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 6) {
+                Image(systemName: "link")
+                Text("路径已绑定")
+            }
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .foregroundStyle(tokens.secondaryText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(tokens.elevatedSurface.opacity(0.8), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tokens.border, lineWidth: 1)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func workspaceStats(project: AgentProject, tokens: ThemeTokens) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 10)], alignment: .leading, spacing: 10) {
-            WorkspaceStatPill(
+        let columns = [
+            GridItem(.flexible(minimum: 150), spacing: 12),
+            GridItem(.flexible(minimum: 150), spacing: 12)
+        ]
+
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+            WorkspaceStatTile(
                 title: "会话",
                 value: "\(sessionStore.sessions(forProjectID: project.id).count)",
                 systemImage: "bubble.left.and.text.bubble.right",
                 tone: tokens.accent
             )
-            WorkspaceStatPill(
+            WorkspaceStatTile(
                 title: "Worktree",
                 value: "\(managedWorktreeCount(for: project))",
                 systemImage: "arrow.triangle.branch",
                 tone: tokens.secondaryText
             )
-            WorkspaceStatPill(
+            WorkspaceStatTile(
                 title: "状态",
                 value: sessionStore.isWorkspaceUnavailable(project.id) ? "异常" : "正常",
                 systemImage: sessionStore.isWorkspaceUnavailable(project.id) ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
                 tone: sessionStore.isWorkspaceUnavailable(project.id) ? tokens.warning : tokens.success
+            )
+            WorkspaceStatTile(
+                title: "最近更新",
+                value: lastActivityText(for: project),
+                systemImage: "clock",
+                tone: tokens.secondaryText
             )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -584,16 +1155,30 @@ private struct WorkspaceDetailView: View {
 
     private func worktreeSummary(for project: AgentProject) -> String {
         let count = managedWorktreeCount(for: project)
-        return count == 0 ? "待接入" : "\(count) 个"
+        return count == 0 ? "暂无" : "\(count) 个"
     }
 
     private func managedWorktreeCount(for project: AgentProject) -> Int {
         let rootProjectID = sessionStore.rootProjectID(forProjectID: project.id)
         return sessionStore.managedWorktrees(rootProjectID: rootProjectID).count
     }
+
+    private func lastActivityText(for project: AgentProject) -> String {
+        let sessions = sessionStore.sessions(forProjectID: project.id)
+        guard let date = sessions.compactMap({ $0.updatedAt ?? $0.createdAt }).max() else {
+            return "暂无"
+        }
+        return Self.minuteTimeFormatter.string(from: date)
+    }
+
+    private static let minuteTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }
 
-private struct WorkspaceStatPill: View {
+private struct WorkspaceStatTile: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let title: String
@@ -608,18 +1193,21 @@ private struct WorkspaceStatPill: View {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 16, weight: .semibold))
                 .foregroundStyle(tone)
+                .frame(width: 28, height: 28)
+                .background(tone.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             Text(value)
                 .font(themeStore.uiFont(.headline, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(1)
+                .minimumScaleFactor(0.78)
             Text(title)
                 .font(themeStore.uiFont(.caption, weight: .medium))
                 .foregroundStyle(tokens.secondaryText)
                 .lineLimit(1)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 94, alignment: .leading)
-        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 118, alignment: .leading)
+        .background(tokens.elevatedSurface.opacity(0.82), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(tokens.border, lineWidth: 1)
@@ -627,32 +1215,60 @@ private struct WorkspaceStatPill: View {
     }
 }
 
-private enum ProfileSection: String, CaseIterable, Identifiable, Hashable {
-    case runtime
-    case models
-    case capabilities
+private struct WorkspaceDetailActionRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let systemImage: String
+    let title: String
+    let value: String
+    let detail: String
+    let tone: Color
+    let showsChevron: Bool
 
-    var id: String { rawValue }
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
 
-    var title: String {
-        switch self {
-        case .runtime:
-            return "运行环境"
-        case .models:
-            return "模型"
-        case .capabilities:
-            return "能力"
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tone.opacity(0.12))
+                Image(systemName: systemImage)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(tone)
+            }
+            .frame(width: 46, height: 46)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                    Text(value)
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .foregroundStyle(tone)
+                        .lineLimit(1)
+                }
+                Text(detail)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
         }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .runtime:
-            return "server.rack"
-        case .models:
-            return "cpu"
-        case .capabilities:
-            return "wand.and.stars"
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+        .background(tokens.elevatedSurface.opacity(0.76), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border, lineWidth: 1)
         }
     }
 }
@@ -660,218 +1276,373 @@ private enum ProfileSection: String, CaseIterable, Identifiable, Hashable {
 private struct ProfileRootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    @State private var selectedSection: ProfileSection = .runtime
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        GeometryReader { proxy in
-            let usesSplitLayout = horizontalSizeClass == .regular && proxy.size.width >= 720
-
-            if usesSplitLayout {
-                HStack(spacing: 0) {
-                    ProfileSectionSidebar(selection: $selectedSection)
-                        .frame(width: 260)
-                    Divider()
-                    ProfileSectionDetail(section: selectedSection)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .background(tokens.background)
-            } else {
-                NavigationStack {
-                    List {
-                        ForEach(ProfileSection.allCases) { section in
-                            NavigationLink(value: section) {
-                                Label(section.title, systemImage: section.systemImage)
-                                    .foregroundStyle(tokens.primaryText)
-                            }
-                            .listRowBackground(tokens.elevatedSurface)
-                        }
-                    }
-                    .navigationTitle("我的")
-                    .navigationDestination(for: ProfileSection.self) { section in
-                        ProfileSectionDetail(section: section)
-                    }
-                    .scrollContentBackground(.hidden)
-                    .background(tokens.background)
-                    .tint(tokens.accent)
-                }
-            }
-        }
-    }
-}
-
-private struct ProfileSectionSidebar: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Binding var selection: ProfileSection
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        VStack(alignment: .leading, spacing: 12) {
-            Text("我的")
-                .font(themeStore.uiFont(.title2, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-                .padding(.horizontal, 18)
-                .padding(.top, 20)
-
-            VStack(spacing: 4) {
-                ForEach(ProfileSection.allCases) { section in
-                    Button {
-                        selection = section
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: section.systemImage)
-                                .font(.system(size: 16, weight: .semibold))
-                                .frame(width: 22)
-                            Text(section.title)
-                                .font(themeStore.uiFont(.callout, weight: .semibold))
-                            Spacer()
-                        }
-                        .foregroundStyle(selection == section ? tokens.accent : tokens.primaryText)
-                        .padding(.horizontal, 12)
-                        .frame(height: 42)
-                        .background(selection == section ? tokens.selectionFill : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selection == section ? .isSelected : [])
-                }
-            }
-            .padding(.horizontal, 10)
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(tokens.sidebarBackground)
-    }
-}
-
-private struct ProfileSectionDetail: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var isShowingConnectionSettings = false
-    let section: ProfileSection
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
+        ZStack {
+            tokens.background.ignoresSafeArea()
+            if horizontalSizeClass == .compact {
+                NavigationStack {
+                    profileContent(tokens: tokens)
+                        .navigationTitle("我的")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+                .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
+            } else {
+                profileContent(tokens: tokens)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tint(tokens.accent)
+    }
+
+    private func profileContent(tokens: ThemeTokens) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Label(section.title, systemImage: section.systemImage)
-                        .font(themeStore.uiFont(.title2, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Spacer()
-                }
-
-                switch section {
-                case .runtime:
-                    runtimeContent(tokens: tokens)
-                case .models:
-                    modelsContent(tokens: tokens)
-                case .capabilities:
-                    capabilitiesContent(tokens: tokens)
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: 760, alignment: .leading)
-        }
-        .background(tokens.background)
-        .navigationTitle(section.title)
-        .sheet(isPresented: $isShowingConnectionSettings) {
-            NavigationStack {
-                ConnectionSettingsView {
-                    isShowingConnectionSettings = false
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("完成") {
-                            isShowingConnectionSettings = false
-                        }
-                    }
-                }
-            }
-            .environment(\.themeSystemColorScheme, colorScheme)
-        }
-    }
-
-    private func runtimeContent(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 10) {
-            Button {
-                isShowingConnectionSettings = true
-            } label: {
-                ProfileInfoRow(
-                    systemImage: "desktopcomputer",
-                    title: "连接 Mac",
-                    value: appStore.connectionStatus.title,
-                    detail: appStore.isConfigured ? appStore.endpoint : "扫码、手动连接、测试连接和忘记 Mac 都在这里处理",
-                    tone: appStore.connectionStatus.isConnected ? tokens.success : tokens.warning,
-                    trailingSystemImage: "chevron.right"
+                WorkbenchPageHeader(
+                    title: "我的",
+                    subtitle: "管理 Mac 连接、模型和工具能力。",
+                    tokens: tokens
                 )
+
+                MacConnectionPanel()
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("模型与能力")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    ProfileInfoRow(
+                        systemImage: "sparkles",
+                        title: "Codex",
+                        value: "默认使用",
+                        detail: "默认处理会话任务",
+                        tone: tokens.accent
+                    )
+                    ProfileInfoRow(
+                        systemImage: "flask",
+                        title: "Claude",
+                        value: sessionStore.hasClaudeRuntimeChannel ? "已发现" : "可配置",
+                        detail: "配置后可用于会话任务",
+                        tone: sessionStore.hasClaudeRuntimeChannel ? tokens.success : tokens.secondaryText
+                    )
+                    ProfileInfoRow(
+                        systemImage: "cpu",
+                        title: "模型",
+                        value: modelSummary,
+                        detail: "为新任务选择合适的模型",
+                        tone: tokens.accent
+                    )
+                    ProfileInfoRow(
+                        systemImage: "wand.and.stars",
+                        title: "Skills / MCP",
+                        value: "工具能力",
+                        detail: "查看本机工具和扩展配置",
+                        tone: tokens.accent
+                    )
+                }
             }
-            .buttonStyle(.plain)
-            ProfileInfoRow(
-                systemImage: "sparkles",
-                title: "Codex",
-                value: "默认通道",
-                detail: "会话工作区继续沿用当前运行逻辑",
-                tone: tokens.accent
-            )
-            ProfileInfoRow(
-                systemImage: "flask",
-                title: "Claude",
-                value: sessionStore.hasClaudeRuntimeChannel ? "已发现" : "实验通道",
-                detail: "本轮只占位展示，不迁移配置入口",
-                tone: sessionStore.hasClaudeRuntimeChannel ? tokens.success : tokens.secondaryText
-            )
+            .padding(WorkbenchPageLayout.regularPadding)
+            .frame(maxWidth: WorkbenchPageLayout.maxContentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-    }
-
-    private func modelsContent(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 10) {
-            ProfileInfoRow(
-                systemImage: "cpu",
-                title: "模型列表",
-                value: modelSummary,
-                detail: "输入区的模型菜单暂时保持原位置",
-                tone: tokens.accent
-            )
-            ProfileInfoRow(
-                systemImage: "arrow.clockwise",
-                title: "刷新模型",
-                value: sessionStore.isRefreshingAppServerModels ? "刷新中" : "待接入",
-                detail: "下一步再把真实刷新动作迁移到这里",
-                tone: tokens.secondaryText
-            )
-        }
-    }
-
-    private func capabilitiesContent(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 10) {
-            ProfileInfoRow(
-                systemImage: "wand.and.stars",
-                title: "Skills",
-                value: "只读能力",
-                detail: "现有能力清单暂时留在设置高级里",
-                tone: tokens.accent
-            )
-            ProfileInfoRow(
-                systemImage: "point.3.connected.trianglepath.dotted",
-                title: "MCP",
-                value: "只读配置",
-                detail: "后续再迁移 Skills / MCP 列表",
-                tone: tokens.accent
-            )
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(tokens.background.ignoresSafeArea())
     }
 
     private var modelSummary: String {
         let count = sessionStore.appServerModelOptions.count
-        return count == 0 ? "使用内置候选" : "\(count) 个模型"
+        return count == 0 ? "默认模型" : "\(count) 个模型"
+    }
+}
+
+private struct MacConnectionPanel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var endpoint = ""
+    @State private var token = ""
+    @State private var didLoadInitialConnection = false
+    @State private var isSavingConnection = false
+    @State private var isShowingQRCodeScanner = false
+    @State private var isShowingManualFields = false
+    @State private var localError: String?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 14) {
+                    connectionSummaryRow(tokens: tokens)
+                    Spacer(minLength: 16)
+                    HStack(spacing: 10) {
+                        connectionActions()
+                    }
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    connectionSummaryRow(tokens: tokens)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            connectionActions()
+                        }
+                        VStack(alignment: .leading, spacing: 10) {
+                            connectionActions()
+                        }
+                    }
+                }
+            }
+
+            connectionDiagnostics(tokens: tokens)
+
+            DisclosureGroup(isExpanded: $isShowingManualFields) {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("http://IP:端口", text: $endpoint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .font(themeStore.uiFont(.callout))
+                        .padding(10)
+                        .background(tokens.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    SecureField("访问码", text: $token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(themeStore.uiFont(.callout))
+                        .padding(10)
+                        .background(tokens.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .padding(.top, 10)
+            } label: {
+                Label("手动配置", systemImage: "slider.horizontal.3")
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .foregroundStyle(appStore.isConfigured ? tokens.primaryText : tokens.secondaryText)
+            }
+
+            if let error = localError ?? appStore.lastError {
+                Text(error)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border, lineWidth: 1)
+        }
+        .onAppear(perform: loadInitialConnectionIfNeeded)
+        .sheet(isPresented: $isShowingQRCodeScanner) {
+            QRCodeScannerSheet { rawValue in
+                Task { await applyScannedConnection(rawValue) }
+            }
+        }
+    }
+
+    private func connectionSummaryRow(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(connectionTone(tokens: tokens).opacity(0.14))
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(connectionTone(tokens: tokens))
+            }
+            .frame(width: 46, height: 46)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text("连接 Mac")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(appStore.connectionStatus.title)
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .foregroundStyle(connectionTone(tokens: tokens))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(connectionTone(tokens: tokens).opacity(0.12), in: Capsule())
+                }
+                Text(appStore.isConfigured ? appStore.endpoint : "尚未配置 Mac 连接")
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionDiagnostics(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isConnectionTesting {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在测试连接")
+                        .font(themeStore.uiFont(.footnote, weight: .medium))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+            }
+            if let milliseconds = appStore.lastConnectionTestDurationMillis {
+                Text("上次测试耗时 \(AppStore.connectionTestDurationText(milliseconds: milliseconds))")
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            if let report = appStore.lastConnectionTestReport {
+                if let failedStage = report.failedStage {
+                    Text("失败环节：\(failedStage.kind.title) · \(AppStore.connectionTestDurationText(milliseconds: failedStage.durationMillis))")
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.warning)
+                } else if let slowestStage = report.slowestStage {
+                    Text("最慢环节：\(slowestStage.kind.title) · \(AppStore.connectionTestDurationText(milliseconds: slowestStage.durationMillis))")
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func connectionActions() -> some View {
+        scanConnectionButton
+
+        if appStore.isConfigured || isShowingManualFields {
+            Button {
+                Task { await appStore.testConnection(endpoint: endpoint, token: token) }
+            } label: {
+                Label(isConnectionTesting ? "测试中" : "测试连接", systemImage: isConnectionTesting ? "timer" : "bolt.horizontal.circle")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canSubmit)
+
+            Button {
+                Task { await saveManualConnection() }
+            } label: {
+                Label(isSavingConnection ? "保存中" : "保存连接", systemImage: "checkmark.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canSubmit)
+        }
+
+        if appStore.isConfigured {
+            Button(role: .destructive) {
+                clearPairing()
+            } label: {
+                Label("忘记", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .disabled(isSavingConnection)
+        }
+    }
+
+    @ViewBuilder
+    private var scanConnectionButton: some View {
+        if appStore.isConfigured {
+            Button {
+                isShowingQRCodeScanner = true
+            } label: {
+                Label("扫码连接", systemImage: "qrcode.viewfinder")
+            }
+            .buttonStyle(.bordered)
+            .disabled(isSavingConnection)
+        } else {
+            Button {
+                isShowingQRCodeScanner = true
+            } label: {
+                Label("扫码连接", systemImage: "qrcode.viewfinder")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isSavingConnection)
+        }
+    }
+
+    private var canSubmit: Bool {
+        !isSavingConnection &&
+        !isConnectionTesting &&
+        !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isConnectionTesting: Bool {
+        if case .testing = appStore.connectionStatus {
+            return true
+        }
+        return false
+    }
+
+    private func connectionTone(tokens: ThemeTokens) -> Color {
+        switch appStore.connectionStatus {
+        case .connected:
+            return tokens.success
+        case .failed:
+            return tokens.warning
+        case .testing:
+            return tokens.accent
+        case .idle:
+            return appStore.isConfigured ? tokens.secondaryText : tokens.warning
+        }
+    }
+
+    private func loadInitialConnectionIfNeeded() {
+        guard !didLoadInitialConnection else {
+            return
+        }
+        didLoadInitialConnection = true
+        endpoint = appStore.endpoint
+        token = appStore.token
+    }
+
+    private func saveManualConnection() async {
+        isSavingConnection = true
+        defer { isSavingConnection = false }
+        do {
+            let didChange = try await appStore.validateAndSave(endpoint: endpoint, token: token)
+            endpoint = appStore.endpoint
+            token = appStore.token
+            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
+            localError = nil
+            await sessionStore.refreshAll(autoAttach: true)
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+            localError = error.localizedDescription
+        }
+    }
+
+    private func applyScannedConnection(_ rawValue: String) async {
+        isSavingConnection = true
+        defer { isSavingConnection = false }
+        do {
+            let raw = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: raw) else {
+                throw PairingLinkError.unsupportedURL
+            }
+            let didChange = try await appStore.validateAndSavePairingURL(url)
+            endpoint = appStore.endpoint
+            token = appStore.token
+            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
+            localError = nil
+            await sessionStore.refreshAll(autoAttach: true)
+        } catch {
+            appStore.connectionStatus = .failed(error.localizedDescription)
+            appStore.lastError = error.localizedDescription
+            localError = error.localizedDescription
+        }
+    }
+
+    private func clearPairing() {
+        do {
+            try appStore.clearPairing()
+            endpoint = appStore.endpoint
+            token = appStore.token
+            sessionStore.resetConnectionForSettingsChange(clearData: true)
+            localError = nil
+        } catch {
+            localError = error.localizedDescription
+        }
     }
 }
 
@@ -899,13 +1670,16 @@ private struct ProfileInfoRow: View {
             .frame(width: 38, height: 38)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(value)
-                        .font(themeStore.uiFont(.footnote, weight: .semibold))
-                        .foregroundStyle(tone)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        rowTitle(tokens: tokens)
+                        rowValue
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        rowTitle(tokens: tokens)
+                        rowValue
+                    }
                 }
                 Text(detail)
                     .font(themeStore.uiFont(.footnote))
@@ -928,6 +1702,30 @@ private struct ProfileInfoRow: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(tokens.border, lineWidth: 1)
         }
+    }
+
+    private func rowTitle(tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(.headline, weight: .semibold))
+            .foregroundStyle(tokens.primaryText)
+            .lineLimit(1)
+    }
+
+    private var rowValue: some View {
+        Text(value)
+            .font(themeStore.uiFont(.footnote, weight: .semibold))
+            .foregroundStyle(tone)
+            .lineLimit(1)
+    }
+}
+
+private extension View {
+    func themedWorkbenchNavigationChrome(tokens: ThemeTokens, colorScheme: ColorScheme) -> some View {
+        // 会话工作台嵌在 NavigationSplitView 里，系统导航栏默认会透出平台背景。
+        // 这里统一让导航栏和状态栏区域吃主题色，避免 iPad 横屏顶部出现黑色断层。
+        toolbarBackground(tokens.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(colorScheme, for: .navigationBar)
     }
 }
 
@@ -1032,43 +1830,59 @@ private struct AgentWorkbenchTitle: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(spacing: 2) {
-            Text(primaryText)
-                .font(themeStore.codeFont(.subheadline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-            HStack(spacing: 5) {
-                if historyProgress != nil {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(tokens.tertiaryText)
-                        .frame(width: 10, height: 10)
+        Group {
+            if shouldShowTitle {
+                VStack(spacing: 2) {
+                    Text(primaryText)
+                        .font(themeStore.codeFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                    if let secondaryText {
+                        HStack(spacing: 5) {
+                            if historyProgress != nil {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(tokens.tertiaryText)
+                                    .frame(width: 10, height: 10)
+                            }
+                            Text(secondaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.76)
+                        }
+                        .font(themeStore.codeFont(.caption2))
+                        .foregroundStyle(tokens.tertiaryText)
+                    }
                 }
-                Text(secondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
+                .accessibilityElement(children: .combine)
+            } else {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityHidden(true)
             }
-            .font(themeStore.codeFont(.caption2))
-            .foregroundStyle(tokens.tertiaryText)
         }
         .frame(maxWidth: maxWidth)
         .offset(x: horizontalOffset)
-        .accessibilityElement(children: .combine)
     }
 
     private var historyProgress: HistoryLoadProgress? {
         sessionStore.historyLoadProgress(sessionID: sessionStore.selectedSessionID)
     }
 
+    private var shouldShowTitle: Bool {
+        historyProgress != nil ||
+            sessionStore.selectedSession != nil ||
+            sessionStore.selectedProject != nil
+    }
+
     private var primaryText: String {
         if let session = sessionStore.selectedSession {
             return session.project.isEmpty ? "工作区" : session.project
         }
-        return sessionStore.selectedProject?.name ?? "工作区"
+        return sessionStore.selectedProject?.name ?? "会话"
     }
 
-    private var secondaryText: String {
+    private var secondaryText: String? {
         if let historyProgress {
             // 历史请求没有真实网络进度，标题区只保留轻量状态，避免 32% 这类假进度占据主内容。
             return "正在\(historyProgress.title)…"
@@ -1076,7 +1890,7 @@ private struct AgentWorkbenchTitle: View {
         if let session = sessionStore.selectedSession {
             return session.title.isEmpty ? session.dir : session.title
         }
-        return sessionStore.selectedProject?.path ?? "请选择项目"
+        return sessionStore.selectedProject?.path
     }
 }
 

@@ -14,6 +14,8 @@ struct SessionContextSidebarView: View {
     }
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         Group {
             if let context {
                 List {
@@ -26,6 +28,9 @@ struct SessionContextSidebarView: View {
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
+                .contentMargins(.top, 8, for: .scrollContent)
+                .contentMargins(.bottom, 12, for: .scrollContent)
+                .background(tokens.sidebarBackground)
                 .task(id: sessionStore.selectedCommandActionPath) {
                     await sessionStore.refreshSelectedCommandActions()
                 }
@@ -34,7 +39,7 @@ struct SessionContextSidebarView: View {
                     .font(themeStore.uiFont(.caption))
             }
         }
-        .background(themeStore.tokens(for: colorScheme).surface)
+        .background(tokens.sidebarBackground)
         .sheet(item: $goalEditor) { draft in
             ThreadGoalEditorSheet(draft: draft)
         }
@@ -593,7 +598,7 @@ private struct ContextValueRow: View {
     private var horizontalRow: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+        return HStack(alignment: .top, spacing: 10) {
             rowIcon(tokens: tokens)
             Text(title)
                 .font(themeStore.uiFont(.caption, weight: .medium))
@@ -620,8 +625,14 @@ private struct ContextValueRow: View {
     private func rowIcon(tokens: ThemeTokens) -> some View {
         Image(systemName: symbolName)
             .font(themeStore.uiFont(.caption, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
             .foregroundStyle(tokens.secondaryText)
-            .frame(width: 18)
+            .frame(width: 26, height: 26)
+            .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(tokens.border.opacity(0.46), lineWidth: 1)
+            }
     }
 
     private func valueText(tokens: ThemeTokens) -> some View {
@@ -819,8 +830,14 @@ private struct ContextItemRow: View {
     private func rowIcon(tokens: ThemeTokens) -> some View {
         Image(systemName: symbolName)
             .font(themeStore.uiFont(.caption, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
             .foregroundStyle(tokens.secondaryText)
-            .frame(width: 18, height: 20)
+            .frame(width: 26, height: 26)
+            .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(tokens.border.opacity(0.46), lineWidth: 1)
+            }
     }
 
     private func titleStack(tokens: ThemeTokens) -> some View {

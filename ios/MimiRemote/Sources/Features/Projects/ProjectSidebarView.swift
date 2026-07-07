@@ -12,16 +12,87 @@ struct ProjectSidebarView: View {
     @State private var worktreeCreateProject: AgentProject?
     var showsSessions = true
     var onProjectSelected: (() -> Void)?
+    var onCollapseSidebar: (() -> Void)?
+    var onOpenWorkspaceTab: (() -> Void)?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let selectedProjectID = sessionStore.selectedProjectID
         let selectedSessionID = sessionStore.selectedSessionID
         let themeRenderKey = SidebarThemeRenderKey(themeVersion: themeStore.themeVersion, colorScheme: colorScheme)
+        let projects = showsSessions ? sessionStore.filteredSessionSidebarProjects : sessionStore.filteredSidebarProjects
+        let usesCustomHeader = horizontalSizeClass == .regular || onCollapseSidebar != nil
 
+        Group {
+            if usesCustomHeader {
+                VStack(spacing: 0) {
+                    sidebarHeader(tokens: tokens, projects: projects)
+                        .frame(height: regularHeaderHeight)
+                    sidebarList(
+                        tokens: tokens,
+                        selectedProjectID: selectedProjectID,
+                        selectedSessionID: selectedSessionID,
+                        themeRenderKey: themeRenderKey,
+                        projects: projects,
+                        showsInlineHeader: false
+                    )
+                }
+            } else {
+                sidebarList(
+                    tokens: tokens,
+                    selectedProjectID: selectedProjectID,
+                    selectedSessionID: selectedSessionID,
+                    themeRenderKey: themeRenderKey,
+                    projects: projects,
+                    showsInlineHeader: true
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(tokens.sidebarBackground)
+        .tint(tokens.accent)
+        .overlay(alignment: .trailing) {
+            if horizontalSizeClass == .regular {
+                Rectangle()
+                    .fill(tokens.border.opacity(0.72))
+                    .frame(width: 1)
+            }
+        }
+        .sidebarSystemSearchable(
+            isEnabled: !usesCustomHeader,
+            text: $sessionStore.sessionSearchQuery,
+            placement: searchPlacement,
+            prompt: Text(showsSessions ? "搜索会话" : "搜索工作区")
+        )
+        .sheet(isPresented: $isPresentingOpenWorkspace) {
+            OpenWorkspaceSheet()
+        }
+        .sheet(isPresented: $isPresentingWorktreeManager) {
+            WorktreeManagerSheet(rootProjectID: worktreeManagerRootProjectID)
+        }
+        .sheet(item: $worktreeCreateProject) { project in
+            CreateWorktreeSheet(project: project)
+        }
+    }
+
+    private func sidebarList(
+        tokens: ThemeTokens,
+        selectedProjectID: String?,
+        selectedSessionID: SessionID?,
+        themeRenderKey: SidebarThemeRenderKey,
+        projects: [AgentProject],
+        showsInlineHeader: Bool
+    ) -> some View {
         List {
             Section {
-                ForEach(sessionStore.filteredSidebarProjects) { project in
+                if shouldShowSidebarEmptyRow(projects: projects) {
+                    sidebarEmptyContent()
+                        .padding(.top, showsInlineHeader ? 10 : 12)
+                        .padding(.bottom, 8)
+                        .sidebarListRow()
+                }
+
+                ForEach(projects) { project in
                     let snapshot = sessionStore.sessionListSnapshot(forProjectID: project.id)
 
                     ProjectRow(
@@ -79,72 +150,292 @@ struct ProjectSidebarView: View {
                     }
                 }
             } header: {
-                HStack {
-                    Text(showsSessions ? "项目" : "工作区")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
-                        .foregroundStyle(tokens.tertiaryText)
-                    Spacer()
-                    Button {
-                        Task { await sessionStore.refreshAll(autoAttach: false) }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(tokens.tertiaryText)
-                    Button {
-                        isPresentingOpenWorkspace = true
-                    } label: {
-                        Image(systemName: "folder.badge.plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(tokens.tertiaryText)
-                    .accessibilityLabel("打开路径")
+                if showsInlineHeader {
+                    sidebarCompactHeaderContent(tokens: tokens, projects: projects)
                 }
             }
         }
         .listStyle(.sidebar)
-        .contentMargins(.top, 6, for: .scrollContent)
+        .contentMargins(.top, showsInlineHeader ? 6 : 0, for: .scrollContent)
         .contentMargins(.bottom, 12, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .background(tokens.sidebarBackground)
-        .tint(tokens.accent)
-        .searchable(text: $sessionStore.sessionSearchQuery, placement: searchPlacement, prompt: Text(showsSessions ? "搜索会话" : "搜索工作区"))
-        .sheet(isPresented: $isPresentingOpenWorkspace) {
-            OpenWorkspaceSheet()
+    }
+
+    private func shouldShowSidebarEmptyRow(projects: [AgentProject]) -> Bool {
+        guard projects.isEmpty, !sessionStore.isLoading else {
+            return false
         }
-        .sheet(isPresented: $isPresentingWorktreeManager) {
-            WorktreeManagerSheet(rootProjectID: worktreeManagerRootProjectID)
-        }
-        .sheet(item: $worktreeCreateProject) { project in
-            CreateWorktreeSheet(project: project)
-        }
-        .overlay {
-            if sessionStore.sidebarProjects.isEmpty && !sessionStore.isLoading {
-                ContentUnavailableView {
-                    Label("没有已打开的工作区", systemImage: "folder.badge.plus")
-                } description: {
-                    Text("选择已授权的工作目录后，这里会保留最近打开的项目。")
-                } actions: {
-                    Button {
-                        isPresentingOpenWorkspace = true
-                    } label: {
-                        Label("打开路径", systemImage: "folder.badge.plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            } else if sessionStore.filteredSidebarProjects.isEmpty && !sessionStore.isLoading && sessionStore.isSessionSearchActive {
-                ContentUnavailableView(
-                    "没有匹配的会话",
-                    systemImage: "magnifyingglass",
-                    description: Text("换个关键词试试。")
-                )
+        return true
+    }
+
+    @ViewBuilder
+    private func sidebarEmptyContent() -> some View {
+        if sessionStore.isSessionSearchActive {
+            SidebarEmptyMessage(
+                title: showsSessions ? "没有匹配的会话" : "没有匹配的工作区",
+                detail: "换个关键词试试。"
+            )
+        } else if showsSessions {
+            SidebarEmptyMessage(
+                title: "还没有会话工作区",
+                detail: "会话页只显示已加入会话的工作区，去工作区把常用项目加入后，这里会显示对应的历史会话。",
+                actionTitle: onOpenWorkspaceTab == nil ? nil : "去工作区",
+                actionSystemImage: onOpenWorkspaceTab == nil ? nil : "folder.badge.plus",
+                action: onOpenWorkspaceTab
+            )
+        } else {
+            SidebarEmptyMessage(
+                title: "没有已打开的工作区",
+                detail: "选择已授权的工作目录后，这里会保留最近打开的项目。",
+                actionTitle: "打开路径",
+                actionSystemImage: "folder.badge.plus"
+            ) {
+                isPresentingOpenWorkspace = true
             }
         }
     }
 
+    private var regularHeaderHeight: CGFloat {
+        showsSessions ? 112 : 104
+    }
+
+    private func sidebarHeader(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        regularSidebarHeaderContent(tokens: tokens, projects: projects)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(tokens.sidebarBackground)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(tokens.border.opacity(0.42))
+                    .frame(height: 1)
+            }
+    }
+
+    private func regularSidebarHeaderContent(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(showsSessions ? "会话" : "工作区")
+                        .font(themeStore.uiFont(size: 13, weight: .semibold))
+                        .foregroundStyle(tokens.secondaryText)
+                    Text(sidebarHeaderSubtitle(projects: projects))
+                        .font(themeStore.uiFont(size: 11))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if shouldShowSidebarHeaderActions(projects: projects) {
+                    sidebarHeaderActionGroup(tokens: tokens, projects: projects)
+                }
+            }
+
+            HStack(spacing: 8) {
+                sidebarSearchField(tokens: tokens)
+                if showsSessions {
+                    sidebarNewSessionMenu(tokens: tokens, projects: projects)
+                }
+            }
+        }
+    }
+
+    private func sidebarCompactHeaderContent(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        HStack(spacing: 8) {
+            Text(showsSessions ? "会话" : "工作区")
+                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+            Spacer()
+            if shouldShowSidebarHeaderActions(projects: projects) {
+                sidebarHeaderActionGroup(tokens: tokens, projects: projects)
+            }
+        }
+    }
+
+    private func sidebarHeaderActionGroup(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        HStack(spacing: 2) {
+            if showsSessions, let onCollapseSidebar {
+                sidebarHeaderButton(tokens: tokens, systemImage: "sidebar.left", accessibilityLabel: "收起会话列表") {
+                    onCollapseSidebar()
+                }
+            }
+            sidebarHeaderRefresh(tokens: tokens, projects: projects)
+            if !showsSessions {
+                sidebarHeaderButton(tokens: tokens, systemImage: "folder.badge.plus", accessibilityLabel: "打开路径") {
+                    isPresentingOpenWorkspace = true
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(tokens.elevatedSurface.opacity(0.58), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(tokens.border.opacity(0.5), lineWidth: 1)
+        }
+    }
+
+    private func sidebarSearchField(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+            TextField(showsSessions ? "搜索会话" : "搜索工作区", text: $sessionStore.sessionSearchQuery)
+                .font(themeStore.uiFont(size: 13))
+                .foregroundStyle(tokens.primaryText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .lineLimit(1)
+            if sessionStore.isSessionSearchActive {
+                Button {
+                    sessionStore.sessionSearchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tokens.tertiaryText)
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .frame(maxWidth: .infinity)
+        .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border.opacity(0.52), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func sidebarNewSessionMenu(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        if let project = primarySessionProject(projects: projects) {
+            Menu {
+                Button {
+                    Task { await sessionStore.startNewSession(in: project) }
+                } label: {
+                    Label("新建 Codex 会话", systemImage: "plus.circle")
+                }
+                if sessionStore.hasClaudeRuntimeChannel {
+                    Button {
+                        Task { await sessionStore.startNewSession(in: project, runtimeProvider: "claude") }
+                    } label: {
+                        Label("新建 Claude Code 会话", systemImage: "sparkles")
+                    }
+                }
+            } label: {
+                ViewThatFits(in: .horizontal) {
+                    Label("新会话", systemImage: "plus")
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                    Image(systemName: "plus")
+                        .frame(width: 34, height: 34)
+                        .accessibilityLabel("新会话")
+                }
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(tokens.accent)
+                .background(tokens.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(tokens.accent.opacity(0.26), lineWidth: 1)
+                }
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .accessibilityLabel("新建会话")
+        }
+    }
+
+    private func primarySessionProject(projects: [AgentProject]) -> AgentProject? {
+        if let selectedProject = sessionStore.selectedProject,
+           projects.contains(where: { $0.id == selectedProject.id }) {
+            return selectedProject
+        }
+        return projects.first
+    }
+
+    private func sidebarHeaderSubtitle(projects: [AgentProject]) -> String {
+        if sessionStore.isSessionSearchActive {
+            return projects.isEmpty ? "没有匹配结果" : "\(projects.count) 个匹配结果"
+        }
+        if showsSessions {
+            let configuredCount = sessionStore.sessionWorkspaceSelectionCount
+            if projects.count > configuredCount, sessionStore.selectedSessionID != nil {
+                return configuredCount == 0 ? "当前会话临时保留" : "\(configuredCount) 个常用 + 当前会话"
+            }
+            return projects.isEmpty ? "只显示已加入会话的工作区" : "\(projects.count) 个工作区显示在会话里"
+        }
+        return projects.isEmpty ? "还没有打开的目录" : "\(projects.count) 个工作区"
+    }
+
+    private func shouldShowSidebarHeaderActions(projects: [AgentProject]) -> Bool {
+        if showsSessions, onCollapseSidebar != nil {
+            return true
+        }
+        if sessionStore.isLoading || shouldShowSidebarRefresh(projects: projects) {
+            return true
+        }
+        return !showsSessions
+    }
+
+    @ViewBuilder
+    private func sidebarHeaderRefresh(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+        if sessionStore.isLoading {
+            ProgressView()
+                .controlSize(.small)
+                .tint(tokens.secondaryText)
+                .frame(width: 32, height: 32)
+                .accessibilityLabel("正在刷新")
+        } else if shouldShowSidebarRefresh(projects: projects) {
+            sidebarHeaderButton(tokens: tokens, systemImage: "arrow.clockwise", accessibilityLabel: "刷新") {
+                Task { await sessionStore.refreshAll(autoAttach: false) }
+            }
+        }
+    }
+
+    private func shouldShowSidebarRefresh(projects: [AgentProject]) -> Bool {
+        !projects.isEmpty || sessionStore.isSessionSearchActive || sessionStore.errorMessage != nil
+    }
+
+    private func sidebarHeaderButton(
+        tokens: ThemeTokens,
+        systemImage: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 32, height: 32)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.secondaryText)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
     private var searchPlacement: SearchFieldPlacement {
         // iPhone 没有真正的 sidebar 搜索区，放到导航栏抽屉里才是系统原生的窄屏入口。
-        horizontalSizeClass == .compact ? .navigationBarDrawer(displayMode: .automatic) : .sidebar
+        horizontalSizeClass == .compact ? .navigationBarDrawer(displayMode: .automatic) : .automatic
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func sidebarSystemSearchable(
+        isEnabled: Bool,
+        text: Binding<String>,
+        placement: SearchFieldPlacement,
+        prompt: Text
+    ) -> some View {
+        if isEnabled {
+            searchable(text: text, placement: placement, prompt: prompt)
+        } else {
+            // 宽屏侧栏已经有可见的内联搜索框；这里不再叠加系统 searchable，
+            // 避免出现两个搜索入口或隐藏搜索状态互相抢焦点。
+            self
+        }
     }
 }
 
@@ -153,7 +444,60 @@ private struct SidebarThemeRenderKey: Equatable {
     let colorScheme: ColorScheme
 }
 
-private struct OpenWorkspaceSheet: View {
+private struct SidebarEmptyMessage: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let detail: String
+    var actionTitle: String?
+    var actionSystemImage: String?
+    var action: (() -> Void)?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(detail)
+                .font(themeStore.uiFont(size: 12))
+                .foregroundStyle(tokens.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            if let actionTitle, let action {
+                Button(action: action) {
+                    if let actionSystemImage {
+                        Label(actionTitle, systemImage: actionSystemImage)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .foregroundStyle(tokens.accent)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(tokens.accent.opacity(0.1), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(tokens.accent.opacity(0.24), lineWidth: 1)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tokens.elevatedSurface.opacity(0.42), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border.opacity(0.48), lineWidth: 1)
+        }
+    }
+}
+
+struct OpenWorkspaceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var sessionStore: SessionStore
@@ -659,7 +1003,8 @@ private struct ProjectRow: View, Equatable {
             HStack(spacing: 8) {
                 Image(systemName: isUnavailable ? "exclamationmark.triangle.fill" : (isActiveProject || isExpanded ? "folder.fill" : "folder"))
                     .font(themeStore.uiFont(size: 15, weight: .medium))
-                    .frame(width: 18)
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 20)
                     .foregroundStyle(isUnavailable ? tokens.warning : (isActiveProject ? tokens.accent : tokens.tertiaryText))
                 Text(project.name)
                     .font(themeStore.uiFont(size: 15, weight: isActiveProject ? .semibold : .medium))
@@ -689,31 +1034,21 @@ private struct ProjectRow: View, Equatable {
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggle)
 
-            if showsSessionActions {
-                Image(systemName: "square.and.pencil")
-                    .font(themeStore.uiFont(size: 14, weight: .medium))
-                    .foregroundStyle((isActiveProject ? tokens.accent : tokens.tertiaryText).opacity(isActiveProject ? 0.9 : 0.68))
-                    .frame(width: 26, height: 26)
-                    // 视觉图标保持紧凑，外层热区补到接近系统最小触控尺寸，避免 iPad 浮窗误触。
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onNewSession)
-                    // 会话在创建瞬间就绑定 runtime，事后无法切换通道；长按提供显式的通道选择，
-                    // 轻点保持默认（Codex）行为不变。
-                    .contextMenu {
-                        Button(action: onNewSession) {
-                            Label("新建 Codex 会话", systemImage: "plus.circle")
-                        }
-                        if claudeChannelAvailable {
-                            Button(action: onNewClaudeSession) {
-                                Label("新建 Claude Code 会话", systemImage: "sparkles")
-                            }
-                        }
-                    }
-                    .accessibilityLabel("新建会话")
-            }
-
             Menu {
+                if showsSessionActions {
+                    // 会话在创建瞬间就绑定 runtime，事后无法切换通道；菜单里保留显式通道选择。
+                    Button(action: onNewSession) {
+                        Label("新建 Codex 会话", systemImage: "plus.circle")
+                    }
+                    .disabled(isUnavailable)
+                    if claudeChannelAvailable {
+                        Button(action: onNewClaudeSession) {
+                            Label("新建 Claude Code 会话", systemImage: "sparkles")
+                        }
+                        .disabled(isUnavailable)
+                    }
+                    Divider()
+                }
                 if isUnavailable {
                     Button(action: onRetry) {
                         Label("重试", systemImage: "arrow.clockwise")
@@ -739,6 +1074,7 @@ private struct ProjectRow: View, Equatable {
                     .contentShape(Rectangle())
             }
             .menuStyle(.button)
+            .accessibilityLabel("项目操作")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -748,16 +1084,18 @@ private struct ProjectRow: View, Equatable {
                 isSelected: isSelected,
                 isHovered: isHovered,
                 selectedTint: tokens.selectionFill,
-                hoverTint: tokens.sidebarHoverFill
+                hoverTint: tokens.sidebarHoverFill,
+                selectedAccent: tokens.accent
             )
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isSelected ? tokens.border.opacity(0.82) : Color.clear, lineWidth: 1)
+                .stroke(isSelected ? tokens.accent.opacity(0.34) : Color.clear, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { isHovered = $0 }
     }
+
 }
 
 private struct SessionRow: View, Equatable {
@@ -837,12 +1175,13 @@ private struct SessionRow: View, Equatable {
                 isSelected: isSelected,
                 isHovered: isHovered,
                 selectedTint: tokens.selectionFill,
-                hoverTint: tokens.sidebarHoverFill
+                hoverTint: tokens.sidebarHoverFill,
+                selectedAccent: tokens.accent
             )
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isSelected ? tokens.border.opacity(0.82) : Color.clear, lineWidth: 1)
+                .stroke(isSelected ? tokens.accent.opacity(0.32) : Color.clear, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { isHovered = $0 }
@@ -949,11 +1288,19 @@ private struct SidebarSelectionBackground: View {
     let isHovered: Bool
     let selectedTint: Color
     let hoverTint: Color
+    let selectedAccent: Color
 
     var body: some View {
         if isSelected {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(selectedTint)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selectedTint)
+                Capsule(style: .continuous)
+                    .fill(selectedAccent)
+                    .frame(width: 3)
+                    .padding(.vertical, 7)
+                    .padding(.leading, 1)
+            }
         } else if isHovered {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(hoverTint)
