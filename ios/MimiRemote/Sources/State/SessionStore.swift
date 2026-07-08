@@ -1316,6 +1316,39 @@ final class SessionStore: ObservableObject {
         CodexUsageDisplaySummary.make(rateLimit: selectedSession?.rateLimit)
     }
 
+    var accountCodexUsageWindowsDisplay: CodexUsageWindowsDisplay {
+        CodexUsageWindowsDisplay.make(rateLimit: latestCodexRateLimit)
+    }
+
+    private var latestCodexRateLimit: RateLimitSummary? {
+        if let rateLimit = selectedSession?.rateLimit {
+            return rateLimit
+        }
+        if let rateLimit = mostRecentSessionRateLimit(preferCodexRuntime: true) {
+            return rateLimit
+        }
+        return mostRecentSessionRateLimit(preferCodexRuntime: false)
+    }
+
+    private func mostRecentSessionRateLimit(preferCodexRuntime: Bool) -> RateLimitSummary? {
+        sessions
+            .filter { session in
+                guard session.rateLimit != nil else {
+                    return false
+                }
+                guard preferCodexRuntime else {
+                    return true
+                }
+                return session.runtimeProvider?.lowercased() == "codex"
+                    || session.source.lowercased() == "codex"
+            }
+            .sorted {
+                ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
+            }
+            .first?
+            .rateLimit
+    }
+
     var isSelectedSessionObserving: Bool {
         guard let session = selectedSession else {
             return false
@@ -1406,6 +1439,17 @@ final class SessionStore: ObservableObject {
         didApplyDebugWorkbenchUISeed = true
 
         let now = Date()
+        let debugRateLimit = RateLimitSummary(
+            limitName: "Codex",
+            planType: "pro",
+            primaryUsedPercent: 62,
+            secondaryUsedPercent: 38,
+            primaryResetsAt: Int64(now.addingTimeInterval(60 * 82).timeIntervalSince1970),
+            secondaryResetsAt: Int64(now.addingTimeInterval(60 * 60 * 24 * 3).timeIntervalSince1970),
+            hasCredits: true,
+            creditsUnlimited: false,
+            creditBalance: "18.40"
+        )
         let chatArchive = AgentWorkspace(
             id: "debug-chat-archive",
             name: "chat-archive",
@@ -1439,7 +1483,8 @@ final class SessionStore: ObservableObject {
                 resumeID: selectedSessionID,
                 createdAt: now.addingTimeInterval(-60 * 40),
                 updatedAt: now.addingTimeInterval(-60 * 3),
-                preview: "统一左栏、对话区和右侧详情栏的边界，并把操作按钮收成一组。"
+                preview: "统一左栏、对话区和右侧详情栏的边界，并把操作按钮收成一组。",
+                rateLimit: debugRateLimit
             ),
             AgentSession(
                 id: runningSessionID,

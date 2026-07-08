@@ -290,10 +290,10 @@ struct RootView: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
-        .background(tokens.elevatedSurface.opacity(0.78), in: Capsule())
+        .background(tokens.elevatedSurface.opacity(0.58), in: Capsule())
         .overlay {
             Capsule()
-                .stroke(tokens.border.opacity(0.62), lineWidth: 1)
+                .stroke(tokens.border.opacity(0.5), lineWidth: 1)
         }
     }
 
@@ -322,7 +322,7 @@ struct RootView: View {
     private func connectionBadgeControl(tokens: ThemeTokens) -> some View {
         if let symbol = connectionBadgeSymbol {
             Image(systemName: symbol)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(connectionBadgeColor)
                 .frame(width: 32, height: 32)
@@ -353,7 +353,7 @@ struct RootView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
                 .frame(width: 32, height: 32)
                 .contentShape(Circle())
@@ -1448,6 +1448,7 @@ private struct ProfileRootView: View {
                 }
 
                 MacConnectionPanel()
+                CodexUsagePanel()
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("模型与能力")
@@ -1496,6 +1497,191 @@ private struct ProfileRootView: View {
     private var modelSummary: String {
         let count = sessionStore.appServerModelOptions.count
         return count == 0 ? "默认模型" : "\(count) 个模型"
+    }
+}
+
+private struct CodexUsagePanel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var isRefreshingUsage = false
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let display = sessionStore.accountCodexUsageWindowsDisplay
+
+        VStack(alignment: .leading, spacing: 16) {
+            header(display: display, tokens: tokens)
+
+            VStack(alignment: .leading, spacing: 12) {
+                if let fiveHour = display.windows.first(where: { $0.kind == .fiveHour }) {
+                    usageWindowRow(fiveHour, tokens: tokens)
+                }
+                Divider()
+                    .overlay(tokens.border.opacity(0.72))
+                if let sevenDay = display.windows.first(where: { $0.kind == .sevenDay }) {
+                    usageWindowRow(sevenDay, tokens: tokens)
+                }
+            }
+
+            footer(display: display, tokens: tokens)
+        }
+        .padding(16)
+        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.border, lineWidth: 1)
+        }
+    }
+
+    private func header(display: CodexUsageWindowsDisplay, tokens: ThemeTokens) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tokens.accent.opacity(0.12))
+                Image(systemName: "speedometer")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+            }
+            .frame(width: 42, height: 42)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(display.displayName) 用量")
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                Text(display.hasLiveData ? "按 Codex 账号窗口展示 5h 和 7d 限额" : "点击刷新读取 Codex 账号限额")
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            refreshButton(tokens: tokens)
+        }
+    }
+
+    private func usageWindowRow(_ window: CodexUsageWindowDisplay, tokens: ThemeTokens) -> some View {
+        let tint = windowTint(window, tokens: tokens)
+        let progress = window.progress ?? 0
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: windowSymbol(window.kind))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .frame(width: 18)
+                    Text(window.kind.label)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .monospacedDigit()
+                    Text(window.kind.title)
+                        .font(themeStore.uiFont(.footnote, weight: .medium))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+                .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(window.primaryText)
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .monospacedDigit()
+            }
+
+            ProgressView(value: progress)
+                .tint(tint)
+                .opacity(window.progress == nil ? 0.34 : 1)
+                .accessibilityLabel("\(window.kind.label) Codex 用量")
+                .accessibilityValue(window.primaryText)
+
+            Text(window.resetText)
+                .font(themeStore.uiFont(.footnote))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+        }
+    }
+
+    private func footer(display: CodexUsageWindowsDisplay, tokens: ThemeTokens) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(display.hasLiveData ? tokens.success : tokens.secondaryText)
+            Text(display.creditText)
+                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func refreshButton(tokens: ThemeTokens) -> some View {
+        let isWorking = isRefreshingUsage || sessionStore.isLoading
+
+        Button {
+            Task { await refreshUsage() }
+        } label: {
+            Group {
+                if isWorking {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(tokens.secondaryText)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                }
+            }
+            .frame(width: 34, height: 34)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.secondaryText)
+        .background(tokens.surface.opacity(0.72), in: Circle())
+        .overlay {
+            Circle()
+                .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+        }
+        .disabled(isWorking)
+        .accessibilityLabel("刷新 Codex 用量")
+    }
+
+    private func refreshUsage() async {
+        guard !isRefreshingUsage else {
+            return
+        }
+        isRefreshingUsage = true
+        defer { isRefreshingUsage = false }
+        // 复用会话列表刷新链路，让 app-server 的 account/rateLimits/read 仍由既有权限和超时策略控制。
+        await sessionStore.refreshAll(autoAttach: true)
+    }
+
+    private func windowSymbol(_ kind: CodexUsageWindowKind) -> String {
+        switch kind {
+        case .fiveHour:
+            return "clock"
+        case .sevenDay:
+            return "calendar"
+        }
+    }
+
+    private func windowTint(_ window: CodexUsageWindowDisplay, tokens: ThemeTokens) -> Color {
+        if window.isExhausted || window.isNearLimit {
+            return tokens.warning
+        }
+        switch window.kind {
+        case .fiveHour:
+            return tokens.accent
+        case .sevenDay:
+            return tokens.success
+        }
     }
 }
 

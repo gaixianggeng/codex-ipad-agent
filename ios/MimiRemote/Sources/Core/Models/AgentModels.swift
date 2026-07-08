@@ -1862,13 +1862,13 @@ struct RateLimitSummary: Codable, Hashable {
     var resetDate: Date? {
         if dominantUsageIsSecondary,
            let secondaryResetsAt {
-            return Self.date(fromEpoch: secondaryResetsAt)
+            return Self.dateFromRateLimitEpoch(secondaryResetsAt)
         }
         if let primaryResetsAt {
-            return Self.date(fromEpoch: primaryResetsAt)
+            return Self.dateFromRateLimitEpoch(primaryResetsAt)
         }
         if let secondaryResetsAt {
-            return Self.date(fromEpoch: secondaryResetsAt)
+            return Self.dateFromRateLimitEpoch(secondaryResetsAt)
         }
         return resetAt
     }
@@ -1918,7 +1918,7 @@ struct RateLimitSummary: Codable, Hashable {
         return String(format: "%.1f%%", bounded)
     }
 
-    private static func date(fromEpoch value: Int64) -> Date? {
+    static func dateFromRateLimitEpoch(_ value: Int64) -> Date? {
         guard value > 0 else {
             return nil
         }
@@ -1971,6 +1971,151 @@ struct CodexUsageDisplaySummary: Equatable {
         formatter.locale = Locale(identifier: "zh_Hans_CN")
         formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "M月d日 HH:mm"
         return formatter.string(from: date)
+    }
+}
+
+enum CodexUsageWindowKind: String, CaseIterable, Equatable, Identifiable {
+    case fiveHour
+    case sevenDay
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .fiveHour:
+            return "5h"
+        case .sevenDay:
+            return "7d"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .fiveHour:
+            return "短窗口"
+        case .sevenDay:
+            return "周窗口"
+        }
+    }
+}
+
+struct CodexUsageWindowDisplay: Equatable, Identifiable {
+    static let nearLimitThreshold = 0.85
+
+    let kind: CodexUsageWindowKind
+    let usedPercentText: String?
+    let progress: Double?
+    let resetDate: Date?
+    let resetText: String
+    let isNearLimit: Bool
+    let isExhausted: Bool
+
+    var id: String { kind.id }
+
+    var primaryText: String {
+        guard let usedPercentText else {
+            return "等待刷新"
+        }
+        return "已用 \(usedPercentText)"
+    }
+}
+
+// app-server 的账号限额以 primary/secondary 返回；移动端按 Codex 当前语义分别展示为 5h/7d，
+// 不再合并成单一“最危险窗口”，让“我的”页可以同时看短窗口和周窗口。
+struct CodexUsageWindowsDisplay: Equatable {
+    let displayName: String
+    let creditText: String
+    let windows: [CodexUsageWindowDisplay]
+    let hasLiveData: Bool
+
+    static func make(rateLimit: RateLimitSummary?, now: Date = Date()) -> CodexUsageWindowsDisplay {
+        let windows = CodexUsageWindowKind.allCases.map { kind in
+            window(kind: kind, rateLimit: rateLimit, now: now)
+        }
+        return CodexUsageWindowsDisplay(
+            displayName: rateLimit?.displayName ?? "Codex",
+            creditText: creditText(rateLimit),
+            windows: windows,
+            hasLiveData: windows.contains { $0.progress != nil || $0.resetDate != nil }
+        )
+    }
+
+    private static func window(
+        kind: CodexUsageWindowKind,
+        rateLimit: RateLimitSummary?,
+        now: Date
+    ) -> CodexUsageWindowDisplay {
+        let percent: Double?
+        let resetEpoch: Int64?
+        switch kind {
+        case .fiveHour:
+            percent = rateLimit?.primaryUsedPercent
+            resetEpoch = rateLimit?.primaryResetsAt
+        case .sevenDay:
+            percent = rateLimit?.secondaryUsedPercent
+            resetEpoch = rateLimit?.secondaryResetsAt
+        }
+
+        let progress = percent.map { min(max($0 / 100, 0), 1) }
+        let resetDate = resetEpoch.flatMap(RateLimitSummary.dateFromRateLimitEpoch)
+        let boundedPercent = percent.map { max(0, $0) }
+        let reachedType = rateLimit?.reachedType?.lowercased() ?? ""
+        let reachedThisWindow: Bool
+        switch kind {
+        case .fiveHour:
+            reachedThisWindow = reachedType.contains("primary") || reachedType.contains("5")
+        case .sevenDay:
+            reachedThisWindow = reachedType.contains("secondary") || reachedType.contains("7")
+        }
+        let isExhausted = reachedThisWindow || (boundedPercent ?? 0) >= 100
+
+        return CodexUsageWindowDisplay(
+            kind: kind,
+            usedPercentText: boundedPercent.map(percentText),
+            progress: progress,
+            resetDate: resetDate,
+            resetText: resetText(resetDate, now: now),
+            isNearLimit: (progress ?? 0) >= CodexUsageWindowDisplay.nearLimitThreshold,
+            isExhausted: isExhausted
+        )
+    }
+
+    private static func percentText(_ percent: Double) -> String {
+        if percent.rounded() == percent {
+            return "\(Int(percent))%"
+        }
+        return String(format: "%.1f%%", percent)
+    }
+
+    private static func resetText(_ date: Date?, now: Date) -> String {
+        guard let date else {
+            return "暂无重置时间"
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "M月d日 HH:mm"
+        return "\(formatter.string(from: date)) 重置"
+    }
+
+    private static func creditText(_ rateLimit: RateLimitSummary?) -> String {
+        guard let rateLimit else {
+            return "等待 Codex 返回账号用量"
+        }
+        if rateLimit.creditsUnlimited == true {
+            return "Credits 无限制"
+        }
+        if let balance = rateLimit.creditBalance?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !balance.isEmpty {
+            return "Credits 余额 \(balance)"
+        }
+        if rateLimit.hasCredits == false {
+            return "Credits 未启用"
+        }
+        if let plan = rateLimit.planType?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !plan.isEmpty {
+            return "计划 \(plan)"
+        }
+        return "暂无余额信息"
     }
 }
 

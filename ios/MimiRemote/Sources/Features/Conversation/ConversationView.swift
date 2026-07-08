@@ -463,12 +463,16 @@ struct ProcessedConversationGroup: Identifiable, Equatable {
     let messages: [ConversationMessage]
     let startedAt: Date
     let completedAt: Date
+    let isActive: Bool
 
     var duration: TimeInterval {
         max(0, completedAt.timeIntervalSince(startedAt))
     }
 
     var title: String {
+        if isActive {
+            return "正在处理 \(messages.count) 步"
+        }
         let durationText = Self.compactDuration(duration)
         return "已处理 \(messages.count) 步 · \(durationText)"
     }
@@ -487,16 +491,21 @@ struct ProcessedConversationGroup: Identifiable, Equatable {
 struct ConversationTimelineItemBuilder {
     static func items(from messages: [ConversationMessage]) -> [ConversationTimelineItem] {
         let completedAssistantByTurnID = completedAssistantMessagesByTurnID(in: messages)
+        let terminalAssistantByTurnID = terminalAssistantMessagesByTurnID(in: messages)
         let planMessagesByTurnID = planMessagesByTurnID(
             in: messages,
             completedTurnIDs: Set(completedAssistantByTurnID.keys)
         )
-        let processMessagesByTurnID = groupedProcessMessagesByTurnID(
-            in: messages,
-            completedTurnIDs: Set(completedAssistantByTurnID.keys)
-        )
-        let groupedProcessMessageIDs = Set(processMessagesByTurnID.values.flatMap { grouped in
-            grouped.map(\.id)
+        let processMessagesByTurnID = groupedProcessMessagesByTurnID(in: messages, includeInteractive: true)
+        let activeProcessMessagesByTurnID = groupedProcessMessagesByTurnID(in: messages, includeInteractive: false)
+        let groupedProcessMessageIDs = Set(processMessagesByTurnID.values.flatMap { grouped -> [UUID] in
+            guard let turnID = grouped.first?.turnID else {
+                return []
+            }
+            if terminalAssistantByTurnID[turnID] != nil {
+                return grouped.map(\.id)
+            }
+            return activeProcessMessagesByTurnID[turnID]?.map(\.id) ?? []
         })
         let pinnedPlanMessageIDs = Set(planMessagesByTurnID.values.flatMap { grouped in
             grouped.map(\.id)
@@ -508,22 +517,41 @@ struct ConversationTimelineItemBuilder {
 
         while index < messages.endIndex {
             let message = messages[index]
-            if groupedProcessMessageIDs.contains(message.id) {
-                index = messages.index(after: index)
-                continue
-            }
             if pinnedPlanMessageIDs.contains(message.id) {
                 index = messages.index(after: index)
                 continue
             }
             if let turnID = message.turnID,
-               isCompletedAssistantMessage(message),
+               isTerminalAssistantMessage(message),
                let processMessages = processMessagesByTurnID[turnID],
                !insertedProcessTurnIDs.contains(turnID) {
                 // app-server 事件可能先到最终 assistant、后到 diff/approval；渲染层按 turnID 归位，
                 // 保持“已处理”入口在最终回答之前，避免过程卡散落在最终回答之后。
-                items.append(.processed(group(from: processMessages, completedBy: message, id: "processed:turn:\(turnID)")))
+                items.append(.processed(group(
+                    from: processMessages,
+                    anchoredBy: message,
+                    id: "processed:turn:\(turnID)",
+                    isActive: false
+                )))
                 insertedProcessTurnIDs.insert(turnID)
+            }
+            if let turnID = message.turnID,
+               groupedProcessMessageIDs.contains(message.id) {
+                if terminalAssistantByTurnID[turnID] == nil,
+                   let processMessages = activeProcessMessagesByTurnID[turnID],
+                   !insertedProcessTurnIDs.contains(turnID) {
+                    // 运行中的 turn 也要收成一个入口，但保留最近进度预览；避免每个 bash/tool
+                    // 都以主消息卡出现，同时不让用户失去“正在跑什么”的反馈。
+                    items.append(.processed(group(
+                        from: processMessages,
+                        anchoredBy: nil,
+                        id: "processed:turn:\(turnID)",
+                        isActive: true
+                    )))
+                    insertedProcessTurnIDs.insert(turnID)
+                }
+                index = messages.index(after: index)
+                continue
             }
             guard isCollapsibleProcessMessage(message) else {
                 items.append(.message(message))
@@ -538,7 +566,6 @@ struct ConversationTimelineItemBuilder {
                 continue
             }
 
-            let startIndex = index
             var processMessages: [ConversationMessage] = []
             while index < messages.endIndex, isCollapsibleProcessMessage(messages[index]) {
                 processMessages.append(messages[index])
@@ -546,10 +573,18 @@ struct ConversationTimelineItemBuilder {
             }
 
             if let completedAssistant = fallbackCompletedAssistant(for: processMessages, nextIndex: index, messages: messages) {
-                // 只有最终 assistant 回复已经落定时才折叠过程；运行中仍完整展示，避免隐藏实时状态。
-                items.append(.processed(group(from: processMessages, completedBy: completedAssistant)))
+                items.append(.processed(group(from: processMessages, anchoredBy: completedAssistant, isActive: false)))
             } else {
-                items.append(contentsOf: messages[startIndex..<index].map(ConversationTimelineItem.message))
+                let activeMessages = processMessages.filter(isActiveCollapsibleProcessMessage)
+                if !activeMessages.isEmpty {
+                    let activeMessageIDs = Set(activeMessages.map(\.id))
+                    items.append(.processed(group(from: activeMessages, anchoredBy: nil, isActive: true)))
+                    items.append(contentsOf: processMessages
+                        .filter { !activeMessageIDs.contains($0.id) }
+                        .map(ConversationTimelineItem.message))
+                } else {
+                    items.append(contentsOf: processMessages.map(ConversationTimelineItem.message))
+                }
             }
         }
 
@@ -568,11 +603,26 @@ struct ConversationTimelineItemBuilder {
         }
     }
 
+    private static func isActiveCollapsibleProcessMessage(_ message: ConversationMessage) -> Bool {
+        guard isCollapsibleProcessMessage(message) else {
+            return false
+        }
+        // 运行中的审批和用户输入必须保持可操作，不默认藏进过程折叠组。
+        return message.kind != .approval && message.kind != .userInput
+    }
+
     private static func isCompletedAssistantMessage(_ message: ConversationMessage) -> Bool {
         guard message.role == .assistant && message.kind == .message else {
             return false
         }
         return message.sendStatus == .confirmed || message.sendStatus == .sent
+    }
+
+    private static func isTerminalAssistantMessage(_ message: ConversationMessage) -> Bool {
+        guard message.role == .assistant && message.kind == .message else {
+            return false
+        }
+        return message.sendStatus == .confirmed || message.sendStatus == .sent || message.sendStatus == .failed
     }
 
     private static func completedAssistantMessagesByTurnID(in messages: [ConversationMessage]) -> [TurnID: ConversationMessage] {
@@ -586,15 +636,29 @@ struct ConversationTimelineItemBuilder {
         return result
     }
 
+    private static func terminalAssistantMessagesByTurnID(in messages: [ConversationMessage]) -> [TurnID: ConversationMessage] {
+        var result: [TurnID: ConversationMessage] = [:]
+        for message in messages {
+            guard let turnID = message.turnID, !turnID.isEmpty, isTerminalAssistantMessage(message) else {
+                continue
+            }
+            result[turnID] = result[turnID] ?? message
+        }
+        return result
+    }
+
     private static func groupedProcessMessagesByTurnID(
         in messages: [ConversationMessage],
-        completedTurnIDs: Set<TurnID>
+        includeInteractive: Bool
     ) -> [TurnID: [ConversationMessage]] {
         var result: [TurnID: [ConversationMessage]] = [:]
         for message in messages {
+            let canGroup = includeInteractive
+                ? isCollapsibleProcessMessage(message)
+                : isActiveCollapsibleProcessMessage(message)
             guard let turnID = message.turnID,
-                  completedTurnIDs.contains(turnID),
-                  isCollapsibleProcessMessage(message)
+                  !turnID.isEmpty,
+                  canGroup
             else {
                 continue
             }
@@ -645,20 +709,22 @@ struct ConversationTimelineItemBuilder {
 
     private static func group(
         from messages: [ConversationMessage],
-        completedBy assistant: ConversationMessage,
-        id: String? = nil
+        anchoredBy anchor: ConversationMessage?,
+        id: String? = nil,
+        isActive: Bool
     ) -> ProcessedConversationGroup {
-        let firstID = messages.first?.id.uuidString ?? assistant.id.uuidString
+        let firstID = messages.first?.id.uuidString ?? anchor?.id.uuidString ?? UUID().uuidString
         let lastID = messages.last?.id.uuidString ?? firstID
-        let processStart = messages.map(\.createdAt).min() ?? assistant.createdAt
-        let processEnd = messages.map(\.createdAt).max() ?? assistant.createdAt
-        let startedAt = min(processStart, assistant.createdAt)
-        let completedAt = max(processEnd, assistant.createdAt)
+        let processStart = messages.map(\.createdAt).min() ?? anchor?.createdAt ?? Date()
+        let processEnd = messages.map(\.createdAt).max() ?? anchor?.createdAt ?? processStart
+        let startedAt = min(processStart, anchor?.createdAt ?? processStart)
+        let completedAt = max(processEnd, anchor?.createdAt ?? processEnd)
         return ProcessedConversationGroup(
             id: id ?? "processed:\(firstID):\(lastID)",
             messages: messages,
             startedAt: startedAt,
-            completedAt: completedAt
+            completedAt: completedAt,
+            isActive: isActive
         )
     }
 }
@@ -1293,14 +1359,18 @@ private struct ProcessedTurnRow: View, Equatable {
     }
 
     var body: some View {
-        let preview = ProcessedActivityPreviewModel(messages: group.messages, maxRows: collapsedPreviewLimit)
+        let preview = ProcessedActivityPreviewModel(
+            messages: group.messages,
+            maxRows: collapsedPreviewLimit,
+            isActive: group.isActive
+        )
 
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 if isExpanded || preview.items.isEmpty {
                     Button(action: toggle) {
                         HStack(spacing: 6) {
-                            Image(systemName: "checkmark.circle")
+                            Image(systemName: group.isActive ? "waveform.path" : "checkmark.circle")
                                 .font(themeStore.uiFont(.caption, weight: .semibold))
                             Text(group.title)
                                 .font(themeStore.uiFont(.caption, weight: .medium))
@@ -1314,7 +1384,7 @@ private struct ProcessedTurnRow: View, Equatable {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(isExpanded ? "收起已处理过程" : "展开已处理过程")
+                    .accessibilityLabel(isExpanded ? "收起处理过程" : "展开处理过程")
                 }
 
                 if isExpanded {
@@ -1330,7 +1400,7 @@ private struct ProcessedTurnRow: View, Equatable {
                         ProcessedActivityPreview(model: preview)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("展开已处理过程，\(group.title)")
+                    .accessibilityLabel("展开处理过程，\(group.title)")
                     .transition(.opacity)
                 }
             }
@@ -1430,7 +1500,7 @@ private struct ProcessedActivityPreviewModel: Equatable {
     let items: [ProcessedActivityPreviewItem]
     let hiddenOriginalCount: Int
 
-    init(messages: [ConversationMessage], maxRows: Int) {
+    init(messages: [ConversationMessage], maxRows: Int, isActive: Bool) {
         let units = messages.map { ProcessedActivityPreviewUnit(message: $0) }
         guard !units.isEmpty else {
             items = []
@@ -1445,7 +1515,8 @@ private struct ProcessedActivityPreviewModel: Equatable {
             hiddenOriginalCount = 0
         } else if styles.count == 1 {
             let limit = min(maxRows + 1, 6)
-            items = Array(units.prefix(limit).map { $0.detailedItem })
+            let visibleUnits = isActive ? Array(units.suffix(limit)) : Array(units.prefix(limit))
+            items = visibleUnits.map { $0.detailedItem }
             hiddenOriginalCount = max(0, units.count - items.count)
         } else {
             let groupedUnits = Self.groupedByStyle(units)
@@ -1598,8 +1669,16 @@ private struct ProcessedActivityPreviewUnit: Equatable {
     }
 
     private static func title(for payload: ConversationActivityPayload) -> String {
-        if payload.category == .runCommand, isRunning(payload.status) {
-            return "正在运行 \(commandSubject(for: payload))"
+        if payload.category == .runCommand {
+            if payload.displayTitle.hasPrefix("查看 ") ||
+                payload.displayTitle.hasPrefix("列出 ") ||
+                payload.displayTitle.hasPrefix("搜索 ") {
+                return payload.displayTitle
+            }
+            if isRunning(payload.status) {
+                return "正在运行 \(commandSubject(for: payload))"
+            }
+            return "运行 \(commandSubject(for: payload))"
         }
         return payload.displayTitle
     }
@@ -1629,7 +1708,7 @@ private struct ProcessedActivityPreviewUnit: Equatable {
         case .thinking, .plan, .error:
             return payload.subtitle
         case .runCommand:
-            return payload.outputPreview ?? payload.cwd ?? payload.command
+            return payload.outputPreview ?? payload.cwd ?? commandSubject(for: payload)
         case .editFile:
             if payload.filePaths.isEmpty {
                 return payload.subtitle
@@ -1663,11 +1742,40 @@ private struct ProcessedActivityPreviewUnit: Equatable {
 
     private static func commandSubject(for payload: ConversationActivityPayload) -> String {
         if let command = payload.command?.trimmedNonEmpty {
-            return command
+            return stripShellWrapper(from: command)
         }
-        return payload.displayTitle
+        return stripShellWrapper(from: payload.displayTitle)
             .removingPrefix("运行 ")
             .removingPrefix("正在运行 ")
+    }
+
+    private static func stripShellWrapper(from command: String) -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shellPrefixes = [
+            "/bin/zsh -lc ",
+            "/usr/bin/zsh -lc ",
+            "zsh -lc ",
+            "/bin/bash -lc ",
+            "/usr/bin/bash -lc ",
+            "bash -lc "
+        ]
+        guard let prefix = shellPrefixes.first(where: { trimmed.hasPrefix($0) }) else {
+            return trimmed
+        }
+        let script = String(trimmed.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return unquoteShellArgument(script)
+    }
+
+    private static func unquoteShellArgument(_ value: String) -> String {
+        guard value.count >= 2,
+              let first = value.first,
+              let last = value.last,
+              (first == "'" && last == "'") || (first == "\"" && last == "\"")
+        else {
+            return value
+        }
+        return String(value.dropFirst().dropLast())
     }
 
     private static func firstContentLine(in text: String) -> String? {

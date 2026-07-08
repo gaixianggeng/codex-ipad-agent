@@ -465,10 +465,11 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        if case .message(let first) = items[0] {
-            XCTAssertEqual(first.turnID, "turn-a")
+        if case .processed(let group) = items[0] {
+            XCTAssertEqual(group.messages.map(\.turnID), ["turn-a"])
+            XCTAssertTrue(group.isActive)
         } else {
-            XCTFail("不同 turn 的过程消息不能折叠到后续 assistant")
+            XCTFail("不同 turn 的运行过程应只折叠成自己的进度组，不能归入后续 assistant")
         }
     }
 
@@ -522,7 +523,7 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
-    func testTimelineBuilderKeepsProcessMessagesVisibleWhileAssistantIsStreaming() {
+    func testTimelineBuilderCollapsesProcessMessagesIntoActiveProgressWhileAssistantIsStreaming() {
         let base = Date(timeIntervalSince1970: 2_000)
         let command = ConversationMessage(
             stableID: "cmd-streaming",
@@ -545,15 +546,66 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        XCTAssertFalse(items.contains { item in
-            if case .processed = item {
-                return true
-            }
-            return false
-        })
+        guard case .processed(let group) = items[0] else {
+            return XCTFail("运行中的过程项应收成一个实时进度组")
+        }
+        XCTAssertTrue(group.isActive)
+        XCTAssertEqual(group.title, "正在处理 1 步")
+        XCTAssertEqual(group.messages.map(\.content), ["命令仍在运行"])
+        guard case .message(let streamingAssistant) = items[1] else {
+            return XCTFail("assistant streaming 内容仍应保留")
+        }
+        XCTAssertEqual(streamingAssistant.sendStatus, .sending)
     }
 
-    func testTimelineBuilderKeepsProcessMessagesVisibleWhenAssistantFailed() {
+    func testTimelineBuilderKeepsInteractiveProcessMessagesVisibleDuringActiveTurn() {
+        let base = Date(timeIntervalSince1970: 2_200)
+        let command = ConversationMessage(
+            stableID: "cmd-active-interactive",
+            turnID: "turn-active-interactive",
+            role: .system,
+            kind: .commandSummary,
+            content: "命令仍在运行",
+            createdAt: base,
+            sendStatus: .confirmed
+        )
+        let approval = ConversationMessage(
+            stableID: "approval-active-interactive",
+            turnID: "turn-active-interactive",
+            role: .system,
+            kind: .approval,
+            content: "需要批准运行命令",
+            createdAt: base.addingTimeInterval(1),
+            sendStatus: .confirmed
+        )
+        let assistant = ConversationMessage(
+            stableID: "assistant-active-interactive",
+            turnID: "turn-active-interactive",
+            role: .assistant,
+            content: "等待确认",
+            createdAt: base.addingTimeInterval(2),
+            sendStatus: .sending
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [command, approval, assistant])
+
+        XCTAssertEqual(items.count, 3)
+        guard case .processed(let group) = items[0] else {
+            return XCTFail("非交互过程应收成运行进度组")
+        }
+        XCTAssertEqual(group.messages.map(\.kind), [.commandSummary])
+        XCTAssertTrue(group.isActive)
+        guard case .message(let visibleApproval) = items[1] else {
+            return XCTFail("运行中的审批必须保持可见可操作")
+        }
+        XCTAssertEqual(visibleApproval.kind, .approval)
+        guard case .message(let streamingAssistant) = items[2] else {
+            return XCTFail("assistant streaming 内容仍应保留")
+        }
+        XCTAssertEqual(streamingAssistant.sendStatus, .sending)
+    }
+
+    func testTimelineBuilderCollapsesProcessMessagesBeforeFailedAssistant() {
         let base = Date(timeIntervalSince1970: 2_500)
         let command = ConversationMessage(
             stableID: "cmd-failed",
@@ -576,12 +628,15 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        XCTAssertFalse(items.contains { item in
-            if case .processed = item {
-                return true
-            }
-            return false
-        })
+        guard case .processed(let group) = items[0] else {
+            return XCTFail("失败 assistant 前的过程项也应聚合展示")
+        }
+        XCTAssertFalse(group.isActive)
+        XCTAssertEqual(group.title, "已处理 1 步 · 2s")
+        guard case .message(let failedAssistant) = items[1] else {
+            return XCTFail("失败 assistant 消息仍应保留")
+        }
+        XCTAssertEqual(failedAssistant.sendStatus, .failed)
     }
 
     func testTimelineBuilderDoesNotHideErrorMessagesInsideProcessedGroup() {
@@ -14296,6 +14351,25 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(display.isNearLimit)
         XCTAssertFalse(display.isExhausted)
 
+        let windowsDisplay = CodexUsageWindowsDisplay.make(rateLimit: summary, now: now)
+        let fiveHourWindow = try XCTUnwrap(windowsDisplay.windows.first { $0.kind == .fiveHour })
+        let sevenDayWindow = try XCTUnwrap(windowsDisplay.windows.first { $0.kind == .sevenDay })
+        XCTAssertEqual(windowsDisplay.displayName, "Codex")
+        XCTAssertEqual(windowsDisplay.creditText, "暂无余额信息")
+        XCTAssertTrue(windowsDisplay.hasLiveData)
+        XCTAssertEqual(fiveHourWindow.primaryText, "已用 60%")
+        XCTAssertEqual(fiveHourWindow.progress ?? -1, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(fiveHourWindow.resetDate, Date(timeIntervalSince1970: TimeInterval(resetEpoch)))
+        XCTAssertEqual(fiveHourWindow.resetText.hasSuffix(" 重置"), true)
+        XCTAssertEqual(sevenDayWindow.primaryText, "已用 42%")
+        XCTAssertNil(sevenDayWindow.resetDate)
+        XCTAssertEqual(sevenDayWindow.resetText, "暂无重置时间")
+
+        let pendingWindowsDisplay = CodexUsageWindowsDisplay.make(rateLimit: nil, now: now)
+        XCTAssertFalse(pendingWindowsDisplay.hasLiveData)
+        XCTAssertEqual(try XCTUnwrap(pendingWindowsDisplay.windows.first { $0.kind == .fiveHour }).primaryText, "等待刷新")
+        XCTAssertEqual(try XCTUnwrap(pendingWindowsDisplay.windows.first { $0.kind == .sevenDay }).primaryText, "等待刷新")
+
         let eightyPercent = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: RateLimitSummary(primaryUsedPercent: 80), now: now))
         XCTAssertFalse(eightyPercent.isNearLimit)
         let almostNearLimit = try XCTUnwrap(CodexUsageDisplaySummary.make(rateLimit: RateLimitSummary(primaryUsedPercent: 84), now: now))
@@ -14322,6 +14396,18 @@ extension ConversationDataFlowTests {
         ))
         XCTAssertEqual(secondaryDriven.primaryText, "已用 90%")
         XCTAssertEqual(secondaryDriven.resetDate, Date(timeIntervalSince1970: TimeInterval(secondaryResetEpoch)))
+
+        let secondaryWindows = CodexUsageWindowsDisplay.make(
+            rateLimit: RateLimitSummary(
+                reachedType: "secondary",
+                primaryUsedPercent: 40,
+                secondaryUsedPercent: 100,
+                secondaryResetsAt: secondaryResetEpoch
+            ),
+            now: now
+        )
+        XCTAssertFalse(try XCTUnwrap(secondaryWindows.windows.first { $0.kind == .fiveHour }).isExhausted)
+        XCTAssertTrue(try XCTUnwrap(secondaryWindows.windows.first { $0.kind == .sevenDay }).isExhausted)
     }
 
     func testDirectRuntimeAttachesUsageDisplayForAvailableRateLimit() async throws {
