@@ -2532,7 +2532,8 @@ struct CodexAppServerRequestBuilder {
         return try threadResume(threadID: threadID, cwd: pathForProject(id: projectID), options: resolved)
     }
 
-    func threadResume(threadID: String, cwd: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+    // 保留显式 model 的兼容入口；model 不设默认值，避免与支持初始历史页的新入口发生重载歧义。
+    func threadResume(threadID: String, cwd: String, model: String?, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         var resolved = options
         if resolved.model == nil {
             resolved.model = model
