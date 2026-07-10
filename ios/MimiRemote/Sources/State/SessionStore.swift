@@ -1786,6 +1786,29 @@ final class SessionStore: ObservableObject {
         await refreshSessions(forProjectID: workspace.id)
     }
 
+    /// 只刷新工作区目录，不改变当前会话选择，也不重建 WebSocket。
+    /// 工作区页浏览和手动刷新必须与会话运行态隔离，避免用户查看目录时打断长任务。
+    func refreshWorkspaceCatalog() async throws {
+        let fetchedProjects = try await clientFactory().projects()
+        setProjectsIfChanged(fetchedProjects)
+
+        var nextWorkspaces = recentWorkspaces
+        let knownIDs = Set(nextWorkspaces.map(\.id))
+        for project in fetchedProjects where !knownIDs.contains(project.id) {
+            nextWorkspaces.append(AgentWorkspace(project: project))
+        }
+        nextWorkspaces.sort { lhs, rhs in
+            let lhsDate = lhs.lastOpenedAt ?? .distantPast
+            let rhsDate = rhs.lastOpenedAt ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        recentWorkspaceStore.save(nextWorkspaces, endpoint: appStore.endpoint)
+        setRecentWorkspacesIfChanged(nextWorkspaces)
+    }
+
     @discardableResult
     func openWorkspace(path: String) async -> Bool {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)

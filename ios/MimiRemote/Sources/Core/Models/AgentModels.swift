@@ -2204,8 +2204,43 @@ struct CodexQuotaNotice: Equatable {
 struct ApprovalSummary: Codable, Hashable {
     let id: String
     let title: String
+    // 审批摘要会随 session/history 缓存落盘。字段保持可选，保证旧版本缓存和服务端快照
+    // 缺少详情时仍能正常解码；UI 再据此决定是否允许批准。
+    let body: String?
     let kind: String
+    let risk: String?
     let count: Int?
+
+    init(
+        id: String,
+        title: String,
+        body: String? = nil,
+        kind: String,
+        risk: String? = nil,
+        count: Int?
+    ) {
+        let normalizedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedRisk = risk?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.id = id
+        self.title = title
+        self.body = normalizedBody.isEmpty ? nil : normalizedBody
+        self.kind = kind
+        self.risk = normalizedRisk.isEmpty ? nil : normalizedRisk
+        self.count = count
+    }
+
+    var hasDecisionContext: Bool {
+        if body?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return true
+        }
+        guard kind == "command" else {
+            return false
+        }
+        let command = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 旧事件只带 title。含参数、路径或命令分隔符的标题仍能明确表达动作；
+        // “运行命令”这类泛化标题则必须等服务端补齐 body 后才能批准。
+        return command.contains(" ") || command.contains("/") || command.contains("：") || command.contains(":")
+    }
 }
 
 struct AgentUserInputRequest: Identifiable, Codable, Hashable {

@@ -746,14 +746,12 @@ struct ConversationTimelineView: View {
                 // “空白要手滑一下”的竞态，右侧滚动条也不再因 LazyVStack 高度估算而长度/位置乱跳。
                 List {
                     if timelineItems.isEmpty {
-                        if !isHistoryLoading {
-                            emptyState
-                                .padding(.top, 80)
-                                .frame(maxWidth: .infinity)
-                                .listRowSeparator(.hidden)
-                                .listRowInsets(layout.messageRowInsets)
-                                .listRowBackground(Color.clear)
-                        }
+                        timelineEmptyState(isHistoryLoading: isHistoryLoading)
+                            .padding(.top, 80)
+                            .frame(maxWidth: .infinity)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(layout.messageRowInsets)
+                            .listRowBackground(Color.clear)
                     } else {
                         if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
                             loadEarlierRow(proxy: proxy, timelineItems: timelineItems)
@@ -1051,6 +1049,27 @@ struct ConversationTimelineView: View {
         }
         .padding(.vertical, 40)
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func timelineEmptyState(isHistoryLoading: Bool) -> some View {
+        if isHistoryLoading {
+            ProgressView("正在加载会话记录")
+                .accessibilityLabel("正在加载会话记录")
+        } else if let error = sessionStore.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+            ContentUnavailableView {
+                Label("会话记录加载失败", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error)
+            } actions: {
+                Button("重试") {
+                    Task { await sessionStore.refreshCurrentContext() }
+                }
+                .buttonStyle(.bordered)
+            }
+        } else {
+            emptyState
+        }
     }
 
     private var statusChipBackground: Color {

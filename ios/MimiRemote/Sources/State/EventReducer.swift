@@ -160,7 +160,14 @@ actor EventReducer {
             // 输入框上方的审批卡读取 session.pendingApproval；审批事件不能只写入时间线记录。
             output.pendingApprovalUpdates.append((
                 id,
-                ApprovalSummary(id: request.id, title: request.title, kind: request.kind, count: nil)
+                ApprovalSummary(
+                    id: request.id,
+                    title: request.title,
+                    body: request.body,
+                    kind: request.kind,
+                    risk: request.risk,
+                    count: nil
+                )
             ))
             output.contextUpdates.append((
                 SessionContextSnapshot(

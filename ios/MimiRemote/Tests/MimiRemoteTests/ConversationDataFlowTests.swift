@@ -4209,6 +4209,99 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(store.selectedSessionID)
     }
 
+    func testWorkspaceCatalogRefreshDoesNotChangeActiveSessionContext() async throws {
+        let project = makeProject(id: "proj_catalog_refresh")
+        let session = makeSession(
+            id: "sess_catalog_refresh",
+            projectID: project.id,
+            title: "正在查看的会话",
+            status: "history",
+            source: "codex",
+            resumeID: "catalog-refresh"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            messagesResult: []
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectProject(project)
+        await store.selectSession(session)
+        let selectedProjectID = store.selectedProjectID
+        let selectedSessionID = store.selectedSessionID
+        let socketCount = sockets.count
+
+        try await store.refreshWorkspaceCatalog()
+
+        XCTAssertEqual(store.selectedProjectID, selectedProjectID)
+        XCTAssertEqual(store.selectedSessionID, selectedSessionID)
+        XCTAssertEqual(sockets.count, socketCount)
+        XCTAssertEqual(store.sidebarProjects.map(\.id), [project.id])
+    }
+
+    func testApprovalSummaryDecodesLegacyPayloadAndRequiresDetailsForApproval() throws {
+        let legacyJSON = #"{"id":"approval-legacy","title":"运行命令","kind":"command","count":1}"#
+        let legacy = try JSONDecoder().decode(ApprovalSummary.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertNil(legacy.body)
+        XCTAssertNil(legacy.risk)
+        XCTAssertFalse(legacy.hasDecisionContext)
+
+        let explicit = ApprovalSummary(
+            id: "approval-explicit",
+            title: "运行 go test ./...",
+            body: "go test ./...",
+            kind: "command",
+            risk: "会执行测试命令",
+            count: 1
+        )
+        XCTAssertTrue(explicit.hasDecisionContext)
+    }
+
+    func testEventReducerRetainsApprovalBodyAndRisk() async throws {
+        let reducer = EventReducer()
+        let output = await reducer.reduce(
+            .approvalRequest(
+                AgentApprovalRequest(
+                    id: "approval-detail",
+                    title: "运行 go test ./...",
+                    body: "go test ./...",
+                    kind: "command",
+                    risk: "将在当前工作区执行"
+                ),
+                AgentEventMetadata(
+                    seq: 1,
+                    sessionID: "sess-approval-detail",
+                    turnID: "turn-1",
+                    itemID: "item-1",
+                    messageID: nil,
+                    clientMessageID: nil,
+                    revision: nil,
+                    createdAt: nil
+                )
+            ),
+            fallbackSessionID: "fallback",
+            outputIdleClearDelay: 0
+        )
+
+        let approval = try XCTUnwrap(output.pendingApprovalUpdates.first?.1)
+        XCTAssertEqual(approval.body, "go test ./...")
+        XCTAssertEqual(approval.risk, "将在当前工作区执行")
+    }
+
     func testSessionStoreSearchFiltersLoadedSessionsAndProjects() async {
         let firstProject = makeProject(id: "proj_alpha")
         let secondProject = makeProject(id: "proj_beta")

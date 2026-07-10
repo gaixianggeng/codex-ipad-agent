@@ -5,6 +5,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
+    @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
 
     let isInitialSetup: Bool
@@ -26,7 +28,7 @@ struct SettingsView: View {
                     settingsForm(tokens: tokens)
                 }
             }
-            .navigationTitle(isInitialSetup ? "连接你的 Mac" : "")
+            .navigationTitle(isInitialSetup ? "连接你的 Mac" : "设置")
             .navigationBarTitleDisplayMode(isInitialSetup ? .automatic : .inline)
             .toolbar {
                 if !isInitialSetup && showsDoneButton {
@@ -43,74 +45,109 @@ struct SettingsView: View {
     }
 
     private func settingsForm(tokens: ThemeTokens) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                WorkbenchPageHeader(
-                    title: "设置",
-                    subtitle: "偏好、权限和诊断入口。",
-                    tokens: tokens
-                )
-
-                SettingsDashboardSection(
-                    title: "偏好",
-                    footer: "常亮仅在前台选中会话处于运行或等待审批状态时生效；离开运行会话后会恢复系统默认锁屏。"
-                ) {
-                    SettingsDashboardNavigationRow(
-                        systemImage: "paintpalette",
-                        title: "外观",
-                        value: "主题与字体"
-                    ) {
-                        AppearanceView()
-                    }
-                    SettingsDashboardNavigationRow(
-                        systemImage: "lock.shield",
-                        title: "默认权限",
-                        value: "新会话策略"
-                    ) {
-                        DefaultPermissionView()
-                    }
-                    SettingsDashboardToggleRow(
-                        systemImage: "sun.max",
-                        title: "运行中保持屏幕常亮",
-                        value: "运行会话生效",
-                        isOn: $keepAwakeWhileRunning,
-                        showsSeparator: false
-                    )
+        Form {
+            Section("Mac 连接") {
+                NavigationLink {
+                    ConnectionManagementView()
+                } label: {
+                    LabeledContent("状态", value: appStore.connectionStatus.title)
                 }
+                LabeledContent("当前链路", value: appStore.activeConnectionRouteTitle)
+            }
 
-                SettingsDashboardSection(
-                    title: "高级",
-                    footer: developerModeEnabled ? "历史诊断会显示本机路径和会话标题，仅用于排障。" : "开发者模式开启后，对话输入区会显示高级运行选项，诊断页也会显示历史诊断。"
-                ) {
-                    SettingsDashboardToggleRow(
-                        systemImage: "wrench.and.screwdriver",
-                        title: "开发者模式",
-                        value: developerModeEnabled ? "已开启" : "已关闭",
-                        isOn: $developerModeEnabled
-                    )
-                    SettingsDashboardNavigationRow(
-                        systemImage: "stethoscope",
-                        title: "诊断与支持",
-                        value: "网络与日志"
-                    ) {
-                        DoctorView(showsHistoryDiagnostics: developerModeEnabled)
-                    }
-                    SettingsDashboardNavigationRow(
-                        systemImage: "wand.and.stars",
-                        title: "能力清单",
-                        value: "Skills / MCP",
-                        showsSeparator: false
-                    ) {
-                        CapabilitiesView()
+            Section("Codex 用量") {
+                NavigationLink {
+                    CodexUsageSettingsView()
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        LabeledContent("账户", value: sessionStore.accountCodexUsageWindowsDisplay.displayName)
+                        Text(sessionStore.accountCodexUsageWindowsDisplay.creditText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding(WorkbenchPageLayout.regularPadding)
-            .frame(maxWidth: WorkbenchPageLayout.maxContentWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+
+            Section {
+                NavigationLink {
+                    AppearanceView()
+                } label: {
+                    Label("外观", systemImage: "paintpalette")
+                }
+                NavigationLink {
+                    DefaultPermissionView()
+                } label: {
+                    Label("默认权限", systemImage: "lock.shield")
+                }
+                Toggle("运行中保持屏幕常亮", isOn: $keepAwakeWhileRunning)
+            } header: {
+                Text("偏好")
+            } footer: {
+                Text("仅在前台选中会话运行或等待审批时生效。")
+            }
+
+            Section {
+                Toggle("开发者模式", isOn: $developerModeEnabled)
+                NavigationLink {
+                    DoctorView(showsHistoryDiagnostics: developerModeEnabled)
+                } label: {
+                    Label("诊断与支持", systemImage: "stethoscope")
+                }
+                NavigationLink {
+                    CapabilitiesView()
+                } label: {
+                    Label("能力清单", systemImage: "wand.and.stars")
+                }
+            } header: {
+                Text("高级")
+            } footer: {
+                Text(developerModeEnabled ? "历史诊断可能显示本机路径和会话标题，仅用于排障。" : "开启后可使用高级运行选项和历史诊断。")
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(tokens.background.ignoresSafeArea())
+        .themedSettingsForm(tokens: tokens)
+    }
+}
+
+private struct ConnectionManagementView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        Form {
+            InitialConnectionSettingsSections()
+        }
+        .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
+        .navigationTitle("Mac 连接")
+    }
+}
+
+private struct CodexUsageSettingsView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+
+    var body: some View {
+        let usage = sessionStore.accountCodexUsageWindowsDisplay
+
+        Form {
+            ForEach(usage.windows) { window in
+                Section(window.kind.title) {
+                    Gauge(value: window.progress ?? 0) {
+                        Text(window.primaryText)
+                    } currentValueLabel: {
+                        Text(window.usedPercentText ?? "等待刷新")
+                    }
+                    .gaugeStyle(.accessoryLinearCapacity)
+                    .tint(window.isExhausted ? .red : window.isNearLimit ? .orange : .accentColor)
+                    .accessibilityLabel("\(window.kind.title) 用量")
+                    .accessibilityValue(window.usedPercentText ?? "等待刷新")
+
+                    LabeledContent("重置", value: window.resetText)
+                }
+            }
+            Section {
+                LabeledContent("额度", value: usage.creditText)
+            }
+        }
+        .navigationTitle("Codex 用量")
     }
 }
 

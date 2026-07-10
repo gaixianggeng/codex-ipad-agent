@@ -72,7 +72,11 @@ struct RootView: View {
     }
 
     private var selectedAppTab: AppTab {
-        AppTab(rawValue: selectedAppTabRawValue) ?? .sessions
+        // v30 以前保存的“我的”入口并入设置，升级后不让用户落到不存在的 tab。
+        if selectedAppTabRawValue == "profile" {
+            return .settings
+        }
+        return AppTab(rawValue: selectedAppTabRawValue) ?? .sessions
     }
 
     private var selectedAppTabBinding: Binding<AppTab> {
@@ -90,10 +94,19 @@ struct RootView: View {
                 Tab(tab.title, systemImage: tab.systemImage, value: tab) {
                     appTabContent(for: tab)
                 }
+                .customizationBehavior(.disabled, for: .sidebar, .tabBar)
             }
         }
+        // iPad 使用系统 Sidebar，窄窗和 iPhone 自动退回系统 Tab Bar；不再维护自绘导航轨。
+        .tabViewStyle(.sidebarAdaptable)
+        .defaultAdaptableTabBarPlacement(horizontalSizeClass == .regular ? .sidebar : .tabBar)
         .toolbarBackground(tokens.background, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+        .onAppear {
+            if selectedAppTabRawValue == "profile" {
+                selectedAppTabRawValue = AppTab.settings.rawValue
+            }
+        }
         .background(tokens.background.ignoresSafeArea())
     }
 
@@ -103,13 +116,23 @@ struct RootView: View {
         case .sessions:
             mainLayout
         case .workspace:
-            WorkspaceRootView()
+            WorkspaceRootView(
+                onOpenInSessions: { project in
+                    Task {
+                        await sessionStore.selectProject(project)
+                        selectedAppTabRawValue = AppTab.sessions.rawValue
+                    }
+                },
+                onStartSession: { project in
+                    Task {
+                        await sessionStore.startNewSession(in: project)
+                        selectedAppTabRawValue = AppTab.sessions.rawValue
+                    }
+                }
+            )
                 .environment(\.themeSystemColorScheme, colorScheme)
         case .settings:
             SettingsView(isInitialSetup: false, showsDoneButton: false)
-                .environment(\.themeSystemColorScheme, colorScheme)
-        case .profile:
-            ProfileRootView()
                 .environment(\.themeSystemColorScheme, colorScheme)
         }
     }
@@ -457,7 +480,6 @@ struct RootView: View {
 private enum AppTab: String, CaseIterable, Identifiable {
     case sessions
     case workspace
-    case profile
     case settings
 
     var id: String { rawValue }
@@ -468,8 +490,6 @@ private enum AppTab: String, CaseIterable, Identifiable {
             return "会话"
         case .workspace:
             return "工作区"
-        case .profile:
-            return "我的"
         case .settings:
             return "设置"
         }
@@ -481,8 +501,6 @@ private enum AppTab: String, CaseIterable, Identifiable {
             return "bubble.left.and.bubble.right"
         case .workspace:
             return "folder"
-        case .profile:
-            return "person.crop.circle"
         case .settings:
             return "gearshape"
         }
@@ -521,7 +539,7 @@ struct WorkbenchPageHeader: View {
     }
 }
 
-private struct WorkspaceRootView: View {
+private struct LegacyWorkspaceRootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var sessionStore: SessionStore

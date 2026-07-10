@@ -89,14 +89,6 @@ enum VoiceInputLanguage: String, CaseIterable, Identifiable {
     }
 }
 
-private struct ComposerCardHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 struct ComposerView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -122,10 +114,8 @@ struct ComposerView: View {
     @State private var isVoiceTranscribing = false
     @State private var voiceTranscriptionTask: Task<Void, Never>?
     @State private var activeVoiceTranscriptionContext: VoiceTranscriptionContext?
-    @State private var voicePressStartedAt: Date?
     @State private var retryableVoiceTranscription: RetryableVoiceTranscription?
     @State private var measuredComposerTextHeight: CGFloat = 0
-    @State private var measuredComposerCardHeight: CGFloat = 0
     @State private var isComposerTextComposing = false
     @State private var composerTextSubmitBridge = ComposerTextSubmitBridge()
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
@@ -141,7 +131,6 @@ struct ComposerView: View {
     }
 
     private static let minimumUsableVoiceDuration: TimeInterval = 0.35
-    private static let minimumVoicePressDuration: TimeInterval = 0.45
     private static let completedGoalAutoHideDelayNanoseconds: UInt64 = 3_500_000_000
 
     var body: some View {
@@ -374,7 +363,6 @@ struct ComposerView: View {
         activeComposerDraftScope = nextScope
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
-        measuredComposerCardHeight = 0
         isComposerTextComposing = false
     }
 
@@ -718,21 +706,8 @@ struct ComposerView: View {
         HStack(alignment: .top, spacing: composerInputRowSpacing) {
             composerCard(tokens: tokens)
                 .layoutPriority(1)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(key: ComposerCardHeightPreferenceKey.self, value: proxy.size.height)
-                    }
-                }
 
             composerVoiceActionColumn
-        }
-        .onPreferenceChange(ComposerCardHeightPreferenceKey.self) { height in
-            guard height > 0, abs(measuredComposerCardHeight - height) > 0.5 else {
-                return
-            }
-            // 右侧语音入口跟随输入卡片高度，保证“文字输入”和“语音输入”是同一层级的两个主入口。
-            measuredComposerCardHeight = height
         }
     }
 
@@ -849,11 +824,8 @@ struct ComposerView: View {
 
     private func composerToolbar(tokens: ThemeTokens) -> some View {
         HStack(spacing: 10) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                toolbarMenuRow
-                    .padding(.vertical, 1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            toolbarMenuRow
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             followUpDeliverySendMenu(showLabels: !isCompactComposer)
             sendButton(showLabels: !isCompactComposer)
@@ -862,13 +834,9 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var toolbarMenuRow: some View {
-        HStack(spacing: 8) {
-            addContentButton
-            composerMoreMenu
-            composerModeControls
-        }
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        .controlSize(.small)
+        composerMoreMenu
+            .font(themeStore.uiFont(.caption, weight: .medium))
+            .controlSize(.regular)
     }
 
     private var composerVoiceActionColumn: some View {
@@ -878,27 +846,13 @@ struct ComposerView: View {
         .frame(width: voiceActionColumnWidth, alignment: .trailing)
     }
 
-    private var composerModeControls: some View {
-        HStack(spacing: 6) {
-            goalButton
-            planButton
-        }
-    }
-
     private var voiceMicControl: some View {
         VoiceMicButton(
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
             isTranscribing: isVoiceTranscribing,
-            width: voiceButtonWidth,
-            height: voiceButtonHeight,
-            showsTitle: voiceButtonShowsTitle,
-            onPressChanged: { pressed in
-                if pressed {
-                    beginHoldToTalk()
-                } else {
-                    endHoldToTalk()
-                }
+            onTap: {
+                toggleVoiceInput()
             }
         )
         .layoutPriority(0)
@@ -1008,29 +962,39 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var composerMoreMenu: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
         Menu {
-            permissionMenu
-            runSettingsMenu
-            voiceLanguageMenu
-        } label: {
-            Image(systemName: "slider.horizontal.3")
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
-                .foregroundStyle(tokens.accent)
-                .frame(width: 28, height: 28)
-                .frame(width: 44, height: 44)
-                .background(tokens.selectionFill, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(tokens.border.opacity(0.86), lineWidth: 1)
+            Section("输入") {
+                Button {
+                    showsAddContentPanel = true
+                } label: {
+                    Label("添加附件或引用", systemImage: "paperclip")
                 }
+            }
+            Section("发送模式") {
+                Button {
+                    setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+                } label: {
+                    Label("目标任务", systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+                }
+                Button {
+                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+                } label: {
+                    Label("计划", systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+                }
+            }
+            Section("运行") {
+                permissionMenu
+                runSettingsMenu
+                voiceLanguageMenu
+            }
+        } label: {
+            Label("更多", systemImage: "ellipsis.circle")
+                .frame(minHeight: 44)
         }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
+        .buttonStyle(.bordered)
         .accessibilityLabel("更多设置")
         .accessibilityValue(moreMenuAccessibilitySummary)
-        .help("权限、运行设置和语音语言")
+        .accessibilityHint("添加附件、选择发送模式、权限和运行选项")
     }
 
     private var moreMenuAccessibilitySummary: String {
@@ -1877,38 +1841,7 @@ struct ComposerView: View {
     }
 
     private var voiceActionColumnWidth: CGFloat {
-        voiceButtonWidth
-    }
-
-    private var voiceButtonWidth: CGFloat {
-        let width = availableWidth ?? 920
-        if width < 360 {
-            return 60
-        }
-        if isCompactComposer {
-            return 68
-        }
-        return 104
-    }
-
-    private var voiceButtonHeight: CGFloat {
-        let measuredHeight = measuredComposerCardHeight > 0 ? measuredComposerCardHeight : estimatedComposerCardHeight
-        return max(voiceButtonMinimumHeight, measuredHeight)
-    }
-
-    private var voiceButtonShowsTitle: Bool {
-        voiceButtonWidth >= 96 && !isCompactComposer
-    }
-
-    private var estimatedComposerCardHeight: CGFloat {
-        let toolbarHeight: CGFloat = 46
-        let reviewHeight = composerState.voiceDraftNeedsReview ? 28 + composerCardSpacing : 0
-        // 首次布局还没有 GeometryReader 回传高度时，用同一套尺寸预估，避免右侧语音按钮首帧跳动。
-        return composerTextHeight + toolbarHeight + reviewHeight + composerCardPadding * 2 + composerCardSpacing
-    }
-
-    private var voiceButtonMinimumHeight: CGFloat {
-        isCompactComposer ? 78 : 90
+        44
     }
 
     private var composerCardPadding: CGFloat {
@@ -1974,14 +1907,12 @@ struct ComposerView: View {
         }
         clearVoiceTransientStatus()
         isVoicePressActive = true
-        voicePressStartedAt = Date()
         composerState.beginVoiceInput()
         let language = selectedVoiceLanguage
         let context = VoiceTranscriptionContext(sessionID: sessionStore.selectedSessionID)
         activeVoiceTranscriptionContext = context
         voiceInput.start { recording in
             isVoicePressActive = false
-            voicePressStartedAt = nil
             guard let recording else {
                 if activeVoiceTranscriptionContext == context {
                     activeVoiceTranscriptionContext = nil
@@ -2004,25 +1935,19 @@ struct ComposerView: View {
         guard isVoicePressActive || voiceInput.isPreparing || voiceInput.isRecording else {
             return
         }
-        let pressDuration = voicePressStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         let releasedBeforeRecording = voiceInput.isPreparing && !voiceInput.isRecording
         isVoicePressActive = false
-        voicePressStartedAt = nil
-        if pressDuration < Self.minimumVoicePressDuration {
-            // 很短的点按大多是误触，直接取消录音，不再发起一次必失败的转写请求。
+        if releasedBeforeRecording {
+            // 点按模式下第二次点按发生在权限/录音准备期间，按取消处理，避免空录音进入转写。
             voiceInput.cancel()
             activeVoiceTranscriptionContext = nil
             composerState.endVoiceInput()
-            voiceInput.setNoticeMessage("按住说话，松手转写")
             return
         }
         voiceInput.stop()
-        if releasedBeforeRecording {
-            voiceInput.setErrorMessage("麦克风还没准备好，请按住到出现“正在听”后再说")
-        }
     }
 
-    private func toggleVoiceInputFromKeyboard() {
+    private func toggleVoiceInput() {
         guard !isVoiceTranscribing else {
             return
         }
@@ -2031,6 +1956,10 @@ struct ComposerView: View {
         } else {
             beginHoldToTalk()
         }
+    }
+
+    private func toggleVoiceInputFromKeyboard() {
+        toggleVoiceInput()
     }
 
     @MainActor
@@ -2046,7 +1975,6 @@ struct ComposerView: View {
         voiceTranscriptionTask?.cancel()
         voiceTranscriptionTask = nil
         activeVoiceTranscriptionContext = nil
-        voicePressStartedAt = nil
         if isVoicePressActive || voiceInput.isPreparing || voiceInput.isRecording {
             voiceInput.cancel()
         }
@@ -3180,102 +3108,49 @@ private struct AddContentPanel: View {
 }
 
 private struct VoiceMicButton: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var isPressed = false
-
     let isPreparing: Bool
     let isRecording: Bool
     let isTranscribing: Bool
-    let width: CGFloat
-    let height: CGFloat
-    let showsTitle: Bool
-    let onPressChanged: (Bool) -> Void
+    let onTap: () -> Void
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let isActive = isPreparing || isRecording || isTranscribing
-        let foreground = isRecording ? tokens.voiceRecording : tokens.accent
-        let background = isRecording ? tokens.voiceRecording.opacity(0.15) : tokens.accent.opacity(isActive ? 0.14 : 0.10)
-        let border = isRecording ? tokens.voiceRecording.opacity(0.5) : tokens.accent.opacity(isActive ? 0.54 : 0.42)
-
-        VStack(spacing: showsTitle ? 8 : 0) {
-            if isPreparing {
-                ProgressView()
-                    .controlSize(showsTitle ? .regular : .small)
-                    .tint(foreground)
-            } else {
-                Image(systemName: isTranscribing ? "wand.and.stars" : isRecording ? "waveform.circle.fill" : "mic.fill")
-                    .font(themeStore.uiFont(size: showsTitle ? 25 : 24, weight: .bold))
-            }
-            if showsTitle {
-                Text(buttonTitle)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-            }
-        }
-        .foregroundStyle(foreground)
-        .frame(width: width, height: height)
-        .background(background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(border)
-        }
-        .shadow(color: isRecording ? tokens.voiceRecording.opacity(0.14) : .clear, radius: 10, y: 3)
-        .scaleEffect(isActive ? 1.015 : 1)
-        .animation(.easeInOut(duration: 0.15), value: isActive)
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        // 语音入口已经从工具栏里独立出来，长按手势只绑定在右侧整块主按钮上。
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard !isPressed else {
-                        return
-                    }
-                    isPressed = true
-                    onPressChanged(true)
+        Button(action: onTap) {
+            Group {
+                if isPreparing || isTranscribing {
+                    ProgressView()
+                } else {
+                    Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                 }
-                .onEnded { _ in
-                    guard isPressed else {
-                        return
-                    }
-                    isPressed = false
-                    onPressChanged(false)
-                }
-        )
-        .onDisappear {
-            guard isPressed else {
-                return
             }
-            isPressed = false
-            onPressChanged(false)
+            .frame(minWidth: 44, minHeight: 44)
         }
+        .buttonStyle(.bordered)
+        .tint(isRecording ? .red : .accentColor)
+        .controlSize(.large)
+        .disabled(isPreparing || isTranscribing)
         .accessibilityLabel(accessibilityTitle)
-        .accessibilityHint("按住把语音转写到草稿")
-    }
-
-    private var buttonTitle: String {
-        if isTranscribing {
-            return "转写中"
-        }
-        if isRecording {
-            return "松手转写"
-        }
-        if isPreparing {
-            return "准备中"
-        }
-        return "按住说话"
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint(isRecording ? "点按停止录音并开始转写" : "点按开始录音")
     }
 
     private var accessibilityTitle: String {
         if isRecording {
-            return "正在录音，松手结束"
+            return "停止录音"
         }
         if isPreparing {
             return "正在准备麦克风"
         }
-        return isTranscribing ? "正在转写语音" : "按住说话"
+        return isTranscribing ? "正在转写语音" : "开始语音输入"
+    }
+
+    private var accessibilityValue: String {
+        if isRecording {
+            return "正在录音"
+        }
+        if isPreparing {
+            return "正在准备"
+        }
+        return isTranscribing ? "正在转写" : "未开始"
     }
 }
 
@@ -4360,78 +4235,63 @@ private struct PendingApprovalActionCard: View {
     let onDecline: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.shield")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .frame(width: 22, height: 22)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("等待审批")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                    if isSendingDecision {
-                        Label("决定已发送", systemImage: "hourglass")
-                            .font(.caption)
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                LabeledContent("类型", value: approval.kind)
+                LabeledContent("请求", value: approval.title)
+                if let risk = approval.risk {
+                    LabeledContent("风险", value: risk)
+                }
+                if let count = approval.count {
+                    LabeledContent("影响项", value: "\(count) 项")
+                }
+                DisclosureGroup("审批详情") {
+                    if let body = approval.body {
+                        Text(body)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text("审批详情不可用")
                             .foregroundStyle(.secondary)
                     }
-                    Text(approval.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                    approvalMeta
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
-            approvalButtons
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // 审批是当前 turn 的阻塞点，放在输入框上方比放在 Inspector 更接近用户决策动作。
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.30), lineWidth: 1)
-        }
-    }
-
-    private var approvalMeta: some View {
-        HStack(spacing: 8) {
-            Label(approval.kind, systemImage: "tag")
-            if let count = approval.count {
-                Label("\(count) 项", systemImage: "number")
+                if isSendingDecision {
+                    Label("决定已发送", systemImage: "hourglass")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                approvalButtons
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Label("等待审批", systemImage: "exclamationmark.shield")
+                .foregroundStyle(.orange)
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
+        // 审批卡位于输入框上方，用户无需跳转到 Inspector 才能作出决定。
+        .accessibilityElement(children: .contain)
     }
 
     private var approvalButtons: some View {
-        // 移动端触控优先：两个决策按钮等宽铺满、加大高度和字号，比并排小按钮更好点。
-        HStack(spacing: 10) {
+        ControlGroup {
             Button(role: .destructive, action: onDecline) {
                 Label("拒绝", systemImage: "xmark.circle")
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 30)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
             .disabled(isSendingDecision)
+            .accessibilityLabel("拒绝审批")
+            .accessibilityHint("拒绝始终可用")
 
             Button(action: onApprove) {
                 Label("批准", systemImage: "checkmark.circle.fill")
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 30)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
-            .controlSize(.large)
-            .disabled(isSendingDecision)
+            .disabled(isSendingDecision || !approval.hasDecisionContext)
+            .accessibilityLabel("批准审批")
+            .accessibilityValue(approval.hasDecisionContext ? "可用" : "审批详情不可用")
+            .accessibilityHint(approval.hasDecisionContext ? "批准这项请求" : "缺少审批详情，无法批准")
         }
+        .controlGroupStyle(.navigation)
+        .controlSize(.large)
     }
 }
 
