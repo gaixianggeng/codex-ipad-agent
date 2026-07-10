@@ -829,6 +829,111 @@ func TestAppServerGatewayNormalizesThreadTurnsListLimit(t *testing.T) {
 	}
 }
 
+func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
+	params := map[string]any{
+		"cwd":            "/tmp/project",
+		"limit":          json.Number("50"),
+		"sortKey":        "updated_at",
+		"sortDirection":  "desc",
+		"useStateDbOnly": true,
+		"unsafe":         "drop-me",
+	}
+	if err := validateGatewayThreadListParams(params); err != nil {
+		t.Fatalf("thread/list 合法快速路径参数不应被拒绝：%v", err)
+	}
+
+	sanitized := sanitizedGatewayThreadListParams(params)
+	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "sortKey", "sortDirection", "useStateDbOnly")
+	if sanitized["useStateDbOnly"] != true {
+		t.Fatalf("thread/list 应保留 useStateDbOnly：%v", sanitized)
+	}
+}
+
+func TestGatewayThreadListRejectsUnsafeFastPathParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		want   string
+	}{
+		{name: "limit over hard max", params: map[string]any{"limit": json.Number("51")}, want: "不能超过 50"},
+		{name: "state db flag must be bool", params: map[string]any{"useStateDbOnly": "true"}, want: "必须是布尔值"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateGatewayThreadListParams(tt.params); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("thread/list 非法参数应被拒绝并包含 %q，got=%v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestGatewayThreadResumeSanitizesBoundedInitialTurnsPage(t *testing.T) {
+	params := map[string]any{
+		"threadId":     "thread-resume",
+		"cwd":          "/tmp/project",
+		"excludeTurns": false,
+		"initialTurnsPage": map[string]any{
+			"limit":         json.Number("5"),
+			"sortDirection": "desc",
+			"itemsView":     "full",
+			"unsafe":        "drop-me",
+		},
+	}
+	if err := validateGatewayThreadResumeParams(params); err != nil {
+		t.Fatalf("thread/resume 合法最近页参数不应被拒绝：%v", err)
+	}
+
+	sanitized := sanitizedGatewayThreadParams("codex", "thread/resume", params)
+	if sanitized["excludeTurns"] != true {
+		t.Fatalf("thread/resume 必须强制 excludeTurns=true：%v", sanitized)
+	}
+	page, ok := sanitized["initialTurnsPage"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread/resume 应保留安全 initialTurnsPage：%v", sanitized)
+	}
+	assertGatewayParamsOnly(t, page, "limit", "sortDirection", "itemsView")
+	if page["limit"] != int64(5) || page["sortDirection"] != "desc" || page["itemsView"] != "full" {
+		t.Fatalf("initialTurnsPage 参数被意外改写：%v", page)
+	}
+}
+
+func TestGatewayThreadResumeDefaultsInitialTurnsPageToSafeRecentPage(t *testing.T) {
+	sanitized := sanitizedGatewayThreadParams("codex", "thread/resume", map[string]any{
+		"threadId":         "thread-resume",
+		"initialTurnsPage": map[string]any{},
+	})
+	page, ok := sanitized["initialTurnsPage"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread/resume 空 initialTurnsPage 应归一化为安全最近页：%v", sanitized)
+	}
+	if page["limit"] != int64(5) || page["sortDirection"] != "desc" || page["itemsView"] != "full" {
+		t.Fatalf("thread/resume 最近页安全默认值异常：%v", page)
+	}
+}
+
+func TestGatewayThreadResumeRejectsUnsafeInitialTurnsPage(t *testing.T) {
+	tests := []struct {
+		name string
+		page any
+		want string
+	}{
+		{name: "page must be object", page: "recent", want: "必须是对象"},
+		{name: "limit over hard max", page: map[string]any{"limit": json.Number("6")}, want: "不能超过 5"},
+		{name: "direction must be desc", page: map[string]any{"sortDirection": "asc"}, want: "只支持 desc"},
+		{name: "view must be bounded", page: map[string]any{"itemsView": "notLoaded"}, want: "只支持 summary/full"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGatewayThreadResumeParams(map[string]any{"initialTurnsPage": tt.page})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("thread/resume 非法最近页应被拒绝并包含 %q，got=%v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestAppServerGatewayCapsOversizedHistoryResponses(t *testing.T) {
 	oldCap := appServerGatewayHistoryResponseCapBytes
 	oldBudgetBytes := appServerGatewayHistoryBudgetMaxResponseBytes
@@ -1212,14 +1317,14 @@ func TestAppServerGatewayRejectsHistoryRetryStormByThreadMethod(t *testing.T) {
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-retry")
 
 	for id := 730; id < 732; id++ {
-		request := []byte(fmt.Sprintf(`{"id":%d,"method":"thread/turns/list","params":{"threadId":"thread-retry","limit":20,"itemsView":"summary"}}`, id))
+		request := []byte(fmt.Sprintf(`{"id":%d,"method":"thread/turns/list","params":{"threadId":"thread-retry","limit":20,"itemsView":"summary","cursor":"page-%d"}}`, id, id))
 		if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
 			t.Fatal(err)
 		}
 		_ = readUpstreamFrame(t, received)
 	}
 
-	overflow := []byte(`{"id":732,"method":"thread/turns/list","params":{"threadId":"thread-retry","limit":20,"itemsView":"summary"}}`)
+	overflow := []byte(`{"id":732,"method":"thread/turns/list","params":{"threadId":"thread-retry","limit":20,"itemsView":"summary","cursor":"page-732"}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, overflow); err != nil {
 		t.Fatal(err)
 	}
@@ -1251,7 +1356,7 @@ func TestAppServerGatewayRejectsHistoryRequestByteBudget(t *testing.T) {
 	oldMaxRequests := appServerGatewayHistoryBudgetMaxRequests
 	oldRequestBytes := appServerGatewayHistoryBudgetMaxRequestBytes
 	appServerGatewayHistoryBudgetMaxRequests = 100
-	appServerGatewayHistoryBudgetMaxRequestBytes = 160
+	appServerGatewayHistoryBudgetMaxRequestBytes = 64 << 10
 	t.Cleanup(func() {
 		appServerGatewayHistoryBudgetMaxRequests = oldMaxRequests
 		appServerGatewayHistoryBudgetMaxRequestBytes = oldRequestBytes
@@ -1269,6 +1374,7 @@ func TestAppServerGatewayRejectsHistoryRequestByteBudget(t *testing.T) {
 	conn := dialAuthedGateway(t, server.URL)
 	defer conn.Close()
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-byte-budget")
+	appServerGatewayHistoryBudgetMaxRequestBytes = 160
 
 	request := []byte(`{"id":740,"method":"thread/turns/list","params":{"threadId":"thread-byte-budget","limit":20,"itemsView":"summary","cursor":"` + strings.Repeat("x", 240) + `"}}`)
 	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
@@ -2835,14 +2941,14 @@ func TestAppServerGatewayRejectsTooManyPendingThreadRequests(t *testing.T) {
 	defer conn.Close()
 
 	for id := 1; id <= 2; id++ {
-		frame := []byte(fmt.Sprintf(`{"id":%d,"method":"thread/list","params":{"cwd":%q}}`, id, projectDir))
+		frame := []byte(fmt.Sprintf(`{"id":%d,"method":"thread/list","params":{"cwd":%q,"cursor":"page-%d"}}`, id, projectDir, id))
 		if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
 			t.Fatal(err)
 		}
 		_ = readUpstreamFrame(t, received)
 	}
 
-	overflow := []byte(fmt.Sprintf(`{"id":3,"method":"thread/list","params":{"cwd":%q}}`, projectDir))
+	overflow := []byte(fmt.Sprintf(`{"id":3,"method":"thread/list","params":{"cwd":%q,"cursor":"page-3"}}`, projectDir))
 	if err := conn.WriteMessage(websocket.TextMessage, overflow); err != nil {
 		t.Fatal(err)
 	}

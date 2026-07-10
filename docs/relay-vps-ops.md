@@ -1,5 +1,7 @@
 # 公网 VPS 转发运维手册
 
+> 当前推荐链路已经升级为 Tailscale 直连优先、上海 Peer Relay 次选、本页 nginx + SSH reverse tunnel 最终兜底。配置和验证见 [Tailscale 直连与上海 Peer Relay 运维手册](./tailscale-peer-relay-ops.md)。
+
 ## 目标
 
 记录当前 Mimi Remote 的公网访问架构、这次从旧 1M VPS 迁移到新 5M VPS 的操作，以及后续排查慢请求、断连、端口不可达时应该先看哪里。
@@ -526,7 +528,52 @@ bash ./scripts/relay-bandwidth-diagnose.sh \
 
 脚本只读取 `/api/diagnostics/relay`，不会建立 `/api/app-server/ws`，也不会发起 `thread/list` 或 `thread/turns/list` 新请求。Token 默认读取 `AGENTD_TOKEN`，如果环境变量为空，再尝试读取本机 `~/Library/Application Support/codex-ipad-agent/config.json`。
 
-### 6. iPad App 配置
+### 6. 列表与大历史诊断
+
+日常 `thread/list` 使用 `limit=20`、最近更新时间倒序和 `useStateDbOnly=true`，直接读取 Codex 状态库，避免每次扫描 rollout JSONL。以下情况 App 会在同一连接代次执行一次普通扫描回退：
+
+- 状态库返回空列表，但本地已有该工作区的已知会话
+- 快路径没有返回当前已选会话
+- 旧版 Codex 明确拒绝 `useStateDbOnly`
+
+回退是修复路径，不是第二套轮询。成功回退或确认旧版本不支持后，本次连接不会持续重复两次 `thread/list`。
+
+Gateway 按方法记录历史与列表流量，可用下面的命令观察累计值：
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $AGENTD_TOKEN" \
+  http://127.0.0.1:8787/api/diagnostics/relay \
+  | jq '.app_server_gateway.methods
+      | with_entries(select(.key == "thread/list"
+                         or .key == "thread/turns/list"
+                         or .key == "thread/resume"
+                         or .key == "thread/read"))'
+```
+
+每个方法包含：
+
+- `requested`：进入历史/列表保护逻辑的请求数
+- `inflight`：当前仍在等待上游响应的请求数
+- `duplicate_rejected`：相同指纹仍在执行，被 Gateway 提前拒绝的次数
+- `rejected`：重复、预算或策略拒绝总数
+- `blocked`：响应超过单次预算、未下发到移动端的次数
+- `rate_limited`：触发时间窗请求/字节预算的次数
+- `response_bytes`：上游为该方法生成的累计响应字节数，包括被阻断响应
+
+这些字段是进程启动后的累计值。对比改造前后时应各保存一次 diagnostics，再做字段差值；不要用历史最大值判断刚发生的一轮回归。
+
+大历史的默认处理顺序：
+
+1. 恢复会话只取最近最多 5 个完整 turn，并保持 `excludeTurns=true`
+2. 更早历史按 cursor 分页，自动加载使用 `itemsView=summary`
+3. 只有用户显式要求完整工具输出时才使用受限的 `itemsView=full`
+4. 同参数并发请求由 App 合并；漏网重复由 Gateway 返回可重试原因 `history_request_in_flight`
+5. 若 full 页超过预算，降低页大小或继续使用 summary，不提高响应上限
+
+Gateway 的上限是在移动端之前止损，但 app-server 仍可能已经读取并构造了响应。因此优化重点始终是少请求、小页和 summary，而不是单纯调大 cap。
+
+### 7. iPad App 配置
 
 迁移后 iPad App 不需要改协议，只需要把 Endpoint 指向新入口：
 

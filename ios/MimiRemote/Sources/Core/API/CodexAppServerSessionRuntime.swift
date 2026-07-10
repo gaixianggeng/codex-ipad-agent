@@ -91,6 +91,8 @@ actor CodexAppServerSessionRuntime {
     private var threadHistoryCacheBySessionID: [SessionID: [CodexHistoryMessage]] = [:]
     private var threadAuthoritativeCompletedTurnItemsBySessionID: [SessionID: [TurnID: Set<AgentItemID>]] = [:]
     private var threadTurnsListUnavailable = false
+    private var stateDBOnlyListUnavailable = false
+    private var stateDBOnlyScanRequiredCWDs: Set<String> = []
     private var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
     // thread/list 在远程/VPS 中转链路上可能要扫本机 Codex 历史并传回较大的 JSON。
     // 只给列表请求放宽超时，避免影响 turn/start 等交互命令的失败反馈速度。
@@ -192,10 +194,14 @@ actor CodexAppServerSessionRuntime {
             throw CodexAppServerSessionRuntimeError.projectNotFound(projectID)
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
-        let spec = try builder.threadList(cwd: project.path, limit: limit, cursor: cursor)
-
-        let result = try await sendRecoveringFromStaleInitialization(spec, timeout: threadListRequestTimeout)
-        let page = threadListPage(from: result, projects: projects, fallbackProject: project)
+        let page = try await threadListPageWithIndexedFallback(
+            cwd: project.path,
+            cursor: cursor,
+            limit: limit,
+            builder: builder,
+            projects: projects,
+            fallbackProject: project
+        )
         for session in page.sessions {
             contextsBySessionID[session.id] = CodexAppServerSessionContext(
                 session: session,
@@ -213,10 +219,14 @@ actor CodexAppServerSessionRuntime {
         let workspaceProject = workspace.project
         let listCWD = threadListCWD(for: workspace, projects: baseProjects)
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
-        let spec = try builder.threadList(cwd: listCWD, limit: limit, cursor: cursor)
-
-        let result = try await sendRecoveringFromStaleInitialization(spec, timeout: threadListRequestTimeout)
-        let page = threadListPage(from: result, projects: projects, fallbackProject: workspaceProject)
+        let page = try await threadListPageWithIndexedFallback(
+            cwd: listCWD,
+            cursor: cursor,
+            limit: limit,
+            builder: builder,
+            projects: projects,
+            fallbackProject: workspaceProject
+        )
         for session in page.sessions {
             contextsBySessionID[session.id] = CodexAppServerSessionContext(
                 session: session,
@@ -333,6 +343,10 @@ actor CodexAppServerSessionRuntime {
             activeTurnID: session.activeTurnID
         )
         return SessionResponse(session: session, recentOutput: nil, lastSeq: session.lastSeq)
+    }
+
+    func refreshRateLimit() async -> RateLimitSummary? {
+        await refreshRateLimitIfAvailable(force: true)
     }
 
     func threadGoal(threadID: SessionID) async throws -> ThreadGoal? {
@@ -614,7 +628,7 @@ actor CodexAppServerSessionRuntime {
             sessionID: sessionID,
             builder: builder,
             projects: projects,
-            shouldRefresh: before == nil || contextsBySessionID[sessionID] == nil
+            shouldRefresh: contextsBySessionID[sessionID] == nil
         )
         let result = try await sendRecoveringFromStaleInitialization(
             builder.threadTurnsList(
@@ -730,6 +744,89 @@ actor CodexAppServerSessionRuntime {
 
     private func shouldUseThreadTurnsList(config: CodexAppServerConfigResponse) -> Bool {
         !threadTurnsListUnavailable && config.policy.allowedMethods.contains("thread/turns/list")
+    }
+
+    private func threadListPageWithIndexedFallback(
+        cwd: String,
+        cursor: String?,
+        limit: Int?,
+        builder: CodexAppServerRequestBuilder,
+        projects: [AgentProject],
+        fallbackProject: AgentProject
+    ) async throws -> SessionsPage {
+        let canUseIndexedList = cursor == nil
+            && !stateDBOnlyListUnavailable
+            && !stateDBOnlyScanRequiredCWDs.contains(cwd)
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                try builder.threadList(cwd: cwd, limit: limit, cursor: cursor, useStateDBOnly: canUseIndexedList),
+                timeout: threadListRequestTimeout
+            )
+            let page = threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
+            guard canUseIndexedList, indexedThreadListNeedsRepair(page, cwd: cwd) else {
+                return page
+            }
+            // 状态库漏掉本连接已知 thread 时，本连接后续固定走普通扫描，避免每轮都先错一次再回退。
+            stateDBOnlyScanRequiredCWDs.insert(cwd)
+            return try await ordinaryThreadListPage(
+                cwd: cwd,
+                cursor: cursor,
+                limit: limit,
+                builder: builder,
+                projects: projects,
+                fallbackProject: fallbackProject
+            )
+        } catch {
+            guard canUseIndexedList, shouldFallbackFromStateDBOnlyList(error) else {
+                throw error
+            }
+            stateDBOnlyListUnavailable = true
+            return try await ordinaryThreadListPage(
+                cwd: cwd,
+                cursor: cursor,
+                limit: limit,
+                builder: builder,
+                projects: projects,
+                fallbackProject: fallbackProject
+            )
+        }
+    }
+
+    private func ordinaryThreadListPage(
+        cwd: String,
+        cursor: String?,
+        limit: Int?,
+        builder: CodexAppServerRequestBuilder,
+        projects: [AgentProject],
+        fallbackProject: AgentProject
+    ) async throws -> SessionsPage {
+        let result = try await sendRecoveringFromStaleInitialization(
+            try builder.threadList(cwd: cwd, limit: limit, cursor: cursor, useStateDBOnly: false),
+            timeout: threadListRequestTimeout
+        )
+        return threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
+    }
+
+    private func indexedThreadListNeedsRepair(_ page: SessionsPage, cwd: String) -> Bool {
+        let knownIDs = Set(contextsBySessionID.values.compactMap { context in
+            context.cwd == cwd ? context.session.id : nil
+        })
+        guard !knownIDs.isEmpty, !page.hasMore else {
+            return false
+        }
+        return !knownIDs.isSubset(of: Set(page.sessions.map(\.id)))
+    }
+
+    private func shouldFallbackFromStateDBOnlyList(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else {
+            return false
+        }
+        let message = appError.message.lowercased()
+        return appError.code == -32601
+            || message.contains("usestatedbonly")
+            || message.contains("unknown field")
+            || message.contains("unsupported")
+            || message.contains("not supported")
     }
 
     private func shouldFallbackFromThreadTurnsList(_ error: Error) -> Bool {
@@ -1114,15 +1211,23 @@ actor CodexAppServerSessionRuntime {
         do {
             result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd, options: runtimeScopedThreadOptions(.default)))
         } catch {
-            if isNoRolloutFoundError(error) {
+            if shouldFallbackFromInitialTurnsPage(error) {
+                result = try await connection.send(try builder.threadResume(
+                    threadID: sessionID,
+                    cwd: cwd,
+                    options: runtimeScopedThreadOptions(.default),
+                    includeInitialTurnsPage: false
+                ))
+            } else if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
                 // -32600 "no rollout found"。这类线程已经在本连接上被 thread/start 绑定，resume 只是冗余；
                 // 标记为已 resume 并放行，等首个 turn/start 落盘 rollout 后事件自然回流。否则空会话开屏即
                 // 因 connectForEvents 抛错进入“WebSocket 断开，正在自动重连”的死循环。
                 threadsResumedOnConnection.insert(sessionID)
                 return
+            } else {
+                throw error
             }
-            throw error
         }
         if let thread = threadObject(from: result),
            let session = try? agentSession(
@@ -1138,6 +1243,19 @@ actor CodexAppServerSessionRuntime {
             emit(.session(session))
         }
         threadsResumedOnConnection.insert(sessionID)
+    }
+
+    private func shouldFallbackFromInitialTurnsPage(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else {
+            return false
+        }
+        let message = appError.message.lowercased()
+        let reason = appError.data?.objectValue?["reason"]?.stringValue?.lowercased()
+        return reason == "history_response_too_large"
+            || message.contains("initialturnspage")
+            || message.contains("unknown field")
+            || message.contains("unsupported")
+            || message.contains("not supported")
     }
 
     private func refreshThreadGoalIfAvailable(
@@ -1439,22 +1557,12 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func gatewayURL(from config: CodexAppServerConfigResponse) throws -> URL {
-        if let channel = runtimeGatewayChannel(in: config),
-           channel.gatewayAvailable,
-           let url = URL(string: channel.gatewayWSURL),
-           !channel.gatewayWSURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return url
-        }
-        if runtimeProvider != "codex" {
+        guard runtimeGatewayAvailable(in: config) else {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
-        if let url = URL(string: config.gatewayWSURL), !config.gatewayWSURL.isEmpty {
-            return url
-        }
-        guard let url = URL(string: try Self.gatewayURL(endpoint: endpoint, sessionID: "", runtimeProvider: runtimeProvider).absoluteString) else {
-            throw CodexAppServerSessionRuntimeError.invalidGatewayURL
-        }
-        return url
+        // config 只用于确认 gateway 能力；真实 URL 始终从当前连接代次的 endpoint 派生。
+        // 这样 REST 与 WebSocket 不会因为反向代理返回了另一 Host 而分裂到不同链路。
+        return try Self.gatewayURL(endpoint: endpoint, sessionID: "", runtimeProvider: runtimeProvider)
     }
 
     private func runtimeGatewayAvailable(in config: CodexAppServerConfigResponse) -> Bool {
@@ -3275,6 +3383,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.session(id: id, afterSeq: afterSeq)
     }
 
+    func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
+        await runtime.refreshRateLimit()
+    }
+
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
         try await runtime.threadGoal(threadID: threadID)
     }
@@ -3503,6 +3615,10 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         return response
     }
 
+    func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
+        await bundle.codex.refreshRateLimit()
+    }
+
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
         try await bundle.runtime(forSessionID: threadID).threadGoal(threadID: threadID)
     }
@@ -3545,6 +3661,20 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
         try await bundle.runtime(forSessionID: sessionID).messagesPage(sessionID: sessionID, before: before, limit: limit)
+    }
+
+    func messagesPage(
+        sessionID: String,
+        before: String?,
+        limit: Int?,
+        loadMode: HistoryMessagesPage.LoadMode
+    ) async throws -> HistoryMessagesPage {
+        try await bundle.runtime(forSessionID: sessionID).messagesPage(
+            sessionID: sessionID,
+            before: before,
+            limit: limit,
+            loadMode: loadMode
+        )
     }
 
     private struct RuntimePage {

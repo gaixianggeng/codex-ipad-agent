@@ -40,8 +40,7 @@ struct MimiRemoteApp: App {
                 .onOpenURL { url in
                     Task { @MainActor in
                         do {
-                            let didChange = try await appStore.validateAndSavePairingURL(url)
-                            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
+                            _ = try await sessionStore.applyPairingURL(url)
                             await sessionStore.refreshAll(autoAttach: true)
                         } catch {
                             appStore.connectionStatus = .failed(error.localizedDescription)

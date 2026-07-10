@@ -150,6 +150,7 @@ func main() {
 	var listOnly bool
 	var modelsOnly bool
 	var findThreadPrefix string
+	var useStateDBOnly bool
 
 	defaultConfig := filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "codex-ipad-agent", "config.json")
 	flag.StringVar(&endpoint, "endpoint", "http://124.221.80.250", "agentd endpoint，例如 http://124.221.80.250")
@@ -170,6 +171,7 @@ func main() {
 	flag.BoolVar(&listOnly, "list-only", false, "只执行 initialize + thread/list，不发送 turn")
 	flag.BoolVar(&modelsOnly, "models-only", false, "只执行 initialize + model/list，不发送 turn")
 	flag.StringVar(&findThreadPrefix, "find-thread-prefix", "", "只输出 id 以该前缀开头的 thread；为空输出列表窗口")
+	flag.BoolVar(&useStateDBOnly, "state-db-only", true, "thread/list 优先读取 Codex 状态库；false 用于验证普通扫描回退")
 	flag.Parse()
 
 	if strings.TrimSpace(token) == "" {
@@ -228,7 +230,7 @@ func main() {
 		return
 	}
 	if listOnly || strings.TrimSpace(findThreadPrefix) != "" {
-		threads, err := listThreads(ctx, gatewayURL, token, selected, listLimit, timeout)
+		threads, err := listThreads(ctx, gatewayURL, token, selected, listLimit, useStateDBOnly, timeout)
 		if err != nil {
 			fatalf("thread/list 失败：%v", err)
 		}
@@ -279,7 +281,7 @@ func main() {
 			if concurrency > 1 {
 				workerPrompt = fmt.Sprintf("%s worker=%d nonce=%s", prompt, worker, shortNonce())
 			}
-			results[worker] = runWorker(ctx, worker, gatewayURL, token, selected, threadID, model, modelProvider, workerPrompt, startNew, goalGet, listLimit, timeout, listenAfterTurn)
+			results[worker] = runWorker(ctx, worker, gatewayURL, token, selected, threadID, model, modelProvider, workerPrompt, startNew, goalGet, listLimit, useStateDBOnly, timeout, listenAfterTurn)
 		}(i)
 	}
 	wg.Wait()
@@ -302,7 +304,7 @@ func main() {
 	}
 }
 
-func runWorker(ctx context.Context, worker int, wsURL string, token string, p project, threadID string, model string, modelProvider string, prompt string, startNew bool, goalGet bool, listLimit int, timeout time.Duration, listenAfterTurn time.Duration) workerResult {
+func runWorker(ctx context.Context, worker int, wsURL string, token string, p project, threadID string, model string, modelProvider string, prompt string, startNew bool, goalGet bool, listLimit int, useStateDBOnly bool, timeout time.Duration, listenAfterTurn time.Duration) workerResult {
 	started := time.Now()
 	result := workerResult{Worker: worker, CWD: p.Path, Model: model}
 	client, err := dialRPC(ctx, fmt.Sprintf("worker-%d", worker), wsURL, token)
@@ -321,10 +323,7 @@ func runWorker(ctx context.Context, worker int, wsURL string, token string, p pr
 
 	// 先 thread/list：这一步既模拟 iPad 拉历史，也让 gateway 在当前连接授权已有 thread。
 	listStart := time.Now()
-	listResult, err := client.request(ctx, timeout, "thread/list", map[string]any{
-		"cwd":   p.Path,
-		"limit": listLimit,
-	})
+	listResult, err := client.request(ctx, timeout, "thread/list", threadListParams(p, listLimit, useStateDBOnly))
 	if err != nil {
 		result.Error = "thread/list: " + err.Error()
 		return result
@@ -445,7 +444,7 @@ func runWorker(ctx context.Context, worker int, wsURL string, token string, p pr
 	}
 }
 
-func listThreads(ctx context.Context, wsURL string, token string, p project, listLimit int, timeout time.Duration) ([]listedThread, error) {
+func listThreads(ctx context.Context, wsURL string, token string, p project, listLimit int, useStateDBOnly bool, timeout time.Duration) ([]listedThread, error) {
 	client, err := dialRPC(ctx, "list", wsURL, token)
 	if err != nil {
 		return nil, err
@@ -454,14 +453,21 @@ func listThreads(ctx context.Context, wsURL string, token string, p project, lis
 	if err := initializeClient(ctx, client, timeout); err != nil {
 		return nil, err
 	}
-	raw, err := client.request(ctx, timeout, "thread/list", map[string]any{
-		"cwd":   p.Path,
-		"limit": listLimit,
-	})
+	raw, err := client.request(ctx, timeout, "thread/list", threadListParams(p, listLimit, useStateDBOnly))
 	if err != nil {
 		return nil, err
 	}
 	return listedThreadsFromResult(raw), nil
+}
+
+func threadListParams(p project, listLimit int, useStateDBOnly bool) map[string]any {
+	return map[string]any{
+		"cwd":            p.Path,
+		"limit":          listLimit,
+		"sortKey":        "updated_at",
+		"sortDirection":  "desc",
+		"useStateDbOnly": useStateDBOnly,
+	}
 }
 
 func listModels(ctx context.Context, wsURL string, token string, timeout time.Duration) (json.RawMessage, error) {

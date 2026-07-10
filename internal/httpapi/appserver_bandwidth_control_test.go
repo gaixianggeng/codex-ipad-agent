@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestAppServerGatewayRedactsImageGenerationNotificationsAndDeduplicates(t *testing.T) {
@@ -115,6 +117,118 @@ func TestAppServerGatewayGlobalHistoryBudgetLimitsAcrossThreads(t *testing.T) {
 	}
 }
 
+func TestAppServerGatewayRejectsDuplicateInflightHistoryAndReleases(t *testing.T) {
+	monitor := newRelayMonitor()
+	router := &Router{monitor: monitor}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      "codex",
+		pendingHistory: map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets: map[string]appServerGatewayHistoryBudget{},
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	params := map[string]any{
+		"threadId":      "thread-duplicate",
+		"cursor":        "page-1",
+		"limit":         json.Number("20"),
+		"sortDirection": "desc",
+		"itemsView":     "summary",
+	}
+
+	firstID := json.RawMessage(`101`)
+	if err := policy.reserveHistoryRequest(&firstID, "thread/turns/list", params, 128); err != nil {
+		t.Fatalf("首个历史请求应进入 in-flight：%+v", err)
+	}
+	duplicateID := json.RawMessage(`102`)
+	duplicateErr := policy.reserveHistoryRequest(&duplicateID, "thread/turns/list", params, 128)
+	if duplicateErr == nil || duplicateErr.data["reason"] != "history_request_in_flight" {
+		t.Fatalf("相同指纹请求应在上游前被拒绝并标记可重试原因：%+v", duplicateErr)
+	}
+	if _, ok := duplicateErr.data["retryAfterMs"]; !ok {
+		t.Fatalf("重复请求错误应包含 retryAfterMs：%+v", duplicateErr.data)
+	}
+
+	differentCursor := cloneGatewayParamsForTest(params)
+	differentCursor["cursor"] = "page-2"
+	differentCursorID := json.RawMessage(`103`)
+	if err := policy.reserveHistoryRequest(&differentCursorID, "thread/turns/list", differentCursor, 128); err != nil {
+		t.Fatalf("不同 cursor 不应误判为重复：%+v", err)
+	}
+	differentView := cloneGatewayParamsForTest(params)
+	differentView["itemsView"] = "full"
+	differentViewID := json.RawMessage(`104`)
+	if err := policy.reserveHistoryRequest(&differentViewID, "thread/turns/list", differentView, 128); err != nil {
+		t.Fatalf("不同 itemsView 不应误判为重复：%+v", err)
+	}
+	claudePolicy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      "claude",
+		pendingHistory: map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets: map[string]appServerGatewayHistoryBudget{},
+	}
+	claudeID := json.RawMessage(`105`)
+	if err := claudePolicy.reserveHistoryRequest(&claudeID, "thread/turns/list", params, 128); err != nil {
+		t.Fatalf("不同 runtime 不应共享请求指纹：%+v", err)
+	}
+
+	errorResponse := []byte(`{"id":101,"error":{"code":-32000,"message":"upstream failed"}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, errorResponse); !forward || policyErr != nil {
+		t.Fatalf("上游失败响应应透传并释放指纹：forward=%v err=%+v", forward, policyErr)
+	}
+	retryID := json.RawMessage(`106`)
+	if err := policy.reserveHistoryRequest(&retryID, "thread/turns/list", params, 128); err != nil {
+		t.Fatalf("失败响应后相同请求应可重试：%+v", err)
+	}
+	successResponse := []byte(`{"id":106,"result":{"data":[]}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, successResponse); !forward || policyErr != nil {
+		t.Fatalf("上游成功响应应透传并释放指纹：forward=%v err=%+v", forward, policyErr)
+	}
+	afterSuccessID := json.RawMessage(`107`)
+	if err := policy.reserveHistoryRequest(&afterSuccessID, "thread/turns/list", params, 128); err != nil {
+		t.Fatalf("成功响应后相同请求应可再次发送：%+v", err)
+	}
+}
+
+func TestAppServerGatewayCountsThreadListResponseAgainstBudgets(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	oldLocalBudget := appServerGatewayHistoryBudgetMaxResponseBytes
+	oldGlobalBudget := appServerGatewayHistoryGlobalMaxResponseBytes
+	appServerGatewayHistoryResponseCapBytes = 64 << 10
+	appServerGatewayHistoryBudgetMaxResponseBytes = 64 << 10
+	appServerGatewayHistoryGlobalMaxResponseBytes = 64 << 10
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+		appServerGatewayHistoryBudgetMaxResponseBytes = oldLocalBudget
+		appServerGatewayHistoryGlobalMaxResponseBytes = oldGlobalBudget
+	})
+
+	router := &Router{monitor: newRelayMonitor()}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      "codex",
+		pendingHistory: map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets: map[string]appServerGatewayHistoryBudget{},
+	}
+	id := json.RawMessage(`201`)
+	params := map[string]any{"cwd": "/tmp/project", "limit": json.Number("20"), "sortDirection": "desc", "useStateDbOnly": true}
+	if err := policy.reserveHistoryRequest(&id, "thread/list", params, 128); err != nil {
+		t.Fatalf("thread/list 应进入响应预算跟踪：%+v", err)
+	}
+	response := []byte(`{"id":201,"result":{"data":[]}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, response); !forward || policyErr != nil {
+		t.Fatalf("小列表响应应正常透传：forward=%v err=%+v", forward, policyErr)
+	}
+
+	budgetKey := gatewayHistoryBudgetKey("/tmp/project", "thread/list", "list")
+	if got := policy.historyBudgets[budgetKey].responseBytes; got != int64(len(response)) {
+		t.Fatalf("thread/list 应计入单连接响应预算：got=%d want=%d budgets=%v", got, len(response), policy.historyBudgets)
+	}
+	if got := router.gatewayHistoryGlobalBudget.responseBytes; got != int64(len(response)) {
+		t.Fatalf("thread/list 应计入全局响应预算：got=%d want=%d", got, len(response))
+	}
+}
+
 func TestRelayMonitorRecordsForwardedAndRedactedBytes(t *testing.T) {
 	monitor := newRelayMonitor()
 	conn := monitor.startGatewayConnection("127.0.0.1", "example.test", "ws://upstream", 0)
@@ -128,6 +242,14 @@ func TestRelayMonitorRecordsForwardedAndRedactedBytes(t *testing.T) {
 	if dir.RedactedFrames != 1 || dir.RedactedBytesSaved != 880 {
 		t.Fatalf("diagnostics 应记录 redaction 节省量：%+v", dir)
 	}
+}
+
+func cloneGatewayParamsForTest(params map[string]any) map[string]any {
+	cloned := make(map[string]any, len(params))
+	for key, value := range params {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func TestAppServerHistoryMediaHandlerDownsamplesAndCachesDerivedImage(t *testing.T) {

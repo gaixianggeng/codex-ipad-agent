@@ -130,7 +130,14 @@ def kb: (((. // 0) / 1024) * 100 | floor / 100);
       last_frame_bytes: .app_server_gateway.upstream_to_client.last_frame_bytes,
       last_frame_kb: (.app_server_gateway.upstream_to_client.last_frame_bytes | kb)
     },
-    rpc: .app_server_gateway.rpc
+    rpc: .app_server_gateway.rpc,
+    history_methods: (
+      (.app_server_gateway.methods // {})
+      | with_entries(select(.key == "thread/list"
+                           or .key == "thread/turns/list"
+                           or .key == "thread/resume"
+                           or .key == "thread/read"))
+    )
   },
   recent_large_list_rpc: (
     [.app_server_gateway.recent_rpc[]?

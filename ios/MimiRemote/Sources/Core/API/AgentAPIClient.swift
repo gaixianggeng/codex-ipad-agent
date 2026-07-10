@@ -41,8 +41,13 @@ struct AgentAPIClient {
         try await request(path: "/api/version", method: "GET", body: Optional<Data>.none)
     }
 
-    func appServerConfig() async throws -> CodexAppServerConfigResponse {
-        try await request(path: "/api/app-server/config", method: "GET", body: Optional<Data>.none)
+    func appServerConfig(timeout: TimeInterval = 20) async throws -> CodexAppServerConfigResponse {
+        try await request(
+            path: "/api/app-server/config",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
     }
 
     func relayDiagnostics() async throws -> RelayDiagnosticsResponse {

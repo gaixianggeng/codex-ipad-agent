@@ -92,6 +92,21 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["sortKey"]?.stringValue, "updated_at")
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(params["archived"]?.boolValue, false)
+        XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)
+    }
+
+    func testThreadResumeBuilderRequestsBoundedRecentTurns() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = try builder.threadResume(threadID: "thread-1", cwd: project.path)
+        let params = try XCTUnwrap(request.params?.objectValue)
+        let page = try XCTUnwrap(params["initialTurnsPage"]?.objectValue)
+
+        XCTAssertEqual(params["excludeTurns"]?.boolValue, true)
+        XCTAssertEqual(page["limit"]?.intValue, 5)
+        XCTAssertEqual(page["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(page["itemsView"]?.stringValue, "full")
     }
 
     func testTurnStartBuilderSendsExplicitCollaborationMode() throws {

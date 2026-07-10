@@ -96,3 +96,16 @@ func TestProbeThreadParamsOmitBlankProvider(t *testing.T) {
 		t.Fatalf("空 provider 不应发送给 app-server：%v", params)
 	}
 }
+
+func TestThreadListParamsUseIndexedFastPath(t *testing.T) {
+	params := threadListParams(project{Path: "/tmp/mimi"}, 20, true)
+	if params["cwd"] != "/tmp/mimi" || params["limit"] != 20 {
+		t.Fatalf("thread/list 必须保留工作区和小页参数：%v", params)
+	}
+	if params["sortKey"] != "updated_at" || params["sortDirection"] != "desc" {
+		t.Fatalf("thread/list 必须按最近更新时间倒序：%v", params)
+	}
+	if params["useStateDbOnly"] != true {
+		t.Fatalf("日常探针必须覆盖 Codex 状态库快路径：%v", params)
+	}
+}

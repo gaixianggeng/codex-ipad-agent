@@ -43,9 +43,13 @@ protocol SessionStoreAPIClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage
+    func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
 }
 
 extension SessionStoreAPIClient {
+    func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
+        nil
+    }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []
     }
@@ -230,6 +234,22 @@ private struct HistoryFirstPageRequestKey: Hashable {
     let sessionID: SessionID
     let limit: Int
     let loadMode: HistoryMessagesPage.LoadMode
+}
+
+private struct SessionListFirstPageRequestKey: Hashable {
+    let connectionGeneration: Int
+    let workspaceID: String
+    let workspacePath: String
+    let limit: Int
+}
+
+private struct SessionListFirstPageInFlight {
+    let task: Task<SessionsPage, Error>
+}
+
+private struct SessionListFirstPageCacheEntry {
+    let page: SessionsPage
+    let loadedAt: Date
 }
 
 private struct HistoryFirstPageInFlight {
@@ -865,6 +885,9 @@ final class SessionStore: ObservableObject {
     private var sessionHasMoreByProjectID: [String: Bool] = [:]
     private var sessionPageRequestTokenByProjectID: [String: Int] = [:]
     private var sessionPageLoadingTokenByProjectID: [String: Int] = [:]
+    private var sessionListFirstPageInFlightByKey: [SessionListFirstPageRequestKey: SessionListFirstPageInFlight] = [:]
+    private var sessionListFirstPageCacheByKey: [SessionListFirstPageRequestKey: SessionListFirstPageCacheEntry] = [:]
+    private var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
     private var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     private var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
     private var historyPageRequestTokenBySessionID: [SessionID: Int] = [:]
@@ -883,8 +906,10 @@ final class SessionStore: ObservableObject {
 
     private let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
     private let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
-    private let sessionListActivePollingDelayNanoseconds: UInt64 = 8_000_000_000
-    private let sessionListIdlePollingDelayNanoseconds: UInt64 = 20_000_000_000
+    private let sessionListConnectedPollingDelayNanoseconds: UInt64 = 60_000_000_000
+    private let sessionListDisconnectedPollingDelayNanoseconds: UInt64 = 8_000_000_000
+    private let sessionListFirstPageCacheTTL: TimeInterval = 2
+    private let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
     private let economyHistoryPageLimit = 60
     private let fullHistoryPageLimit = 20
     private let historyFirstPageCacheTTL: TimeInterval = 4
@@ -1422,6 +1447,7 @@ final class SessionStore: ObservableObject {
         guard appStore.isConfigured else {
             return
         }
+        _ = await refreshConnectionRoute(preferPrimary: true)
         // 冷启动有两层“没就绪”：① VPN / Tailscale 隧道还没建好，首个 HTTP 请求就失败；
         // ② agentd 的 HTTP 端口先于 app-server gateway 上游就绪——projects 能立刻拿到，但首个
         // 会话请求 / WebSocket 连接会因为上游还没接受连接而失败。scenePhase 的 .active 回调在
@@ -1598,6 +1624,26 @@ final class SessionStore: ObservableObject {
     // 都很快返回，所以用较短的固定退避高频轮询：后端一就绪就能在 ~1s 内被探测到并自愈，而不是用
     // 慢退避白等。按总时长封顶而非固定次数，后端晚十几二十秒才起来也能等到，不会提前放弃又卡回
     // “要杀进程”的老问题。
+    @discardableResult
+    private func refreshConnectionRoute(preferPrimary: Bool) async -> Bool {
+        do {
+            let selectedEndpoint = try await appStore.prepareReachableRoute(preferPrimary: preferPrimary)
+            guard selectedEndpoint != appStore.activeEndpoint else {
+                return false
+            }
+            // 路由切换是连接代次边界：先停止旧订阅，再让所有新 client 读取同一个 active endpoint。
+            disconnectWebSocket()
+            let changed = try appStore.activateConnectionRoute(selectedEndpoint)
+            if changed {
+                setStatusMessage("已切换到\(appStore.activeConnectionRouteTitle)")
+            }
+            return changed
+        } catch {
+            // 这里不覆盖业务错误；refreshAll 会给出更具体的 projects / gateway 失败原因。
+            return false
+        }
+    }
+
     private func refreshUntilLoaded(maxWait: TimeInterval, autoAttach: Bool) async {
         let deadline = Date().addingTimeInterval(max(0, maxWait))
         var attempt = 0
@@ -1608,6 +1654,9 @@ final class SessionStore: ObservableObject {
             }
             if Task.isCancelled || Date() >= deadline {
                 return
+            }
+            if await refreshConnectionRoute(preferPrimary: false) {
+                continue
             }
             // 首个失败立刻快速重试一次（隧道/后端经常就差最后一两百毫秒），之后固定 ~0.9s 轮询。
             let backoffNanoseconds: UInt64 = attempt == 0 ? 300_000_000 : 900_000_000
@@ -1625,6 +1674,7 @@ final class SessionStore: ObservableObject {
 #endif
         isLoading = true
         defer { isLoading = false }
+        let connectionGeneration = appStore.connectionGeneration
         var requestToken: Int?
         var requestProjectID: String?
         var activeWorkspace: AgentWorkspace?
@@ -1633,6 +1683,9 @@ final class SessionStore: ObservableObject {
             let previousProjectID = selectedProjectID
             let previousSessionID = selectedSessionID
             let fetchedProjects = try await client.projects()
+            guard connectionGeneration == appStore.connectionGeneration else {
+                return
+            }
             setProjectsIfChanged(fetchedProjects)
             reloadRecentWorkspaces()
             if let previousProjectID,
@@ -1673,6 +1726,9 @@ final class SessionStore: ObservableObject {
             }
             activeWorkspace = workspace
             let page = try await client.sessionsPage(workspace: workspace, cursor: nil, limit: Self.initialSessionPageLimit)
+            guard connectionGeneration == appStore.connectionGeneration else {
+                return
+            }
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
@@ -2602,12 +2658,22 @@ final class SessionStore: ObservableObject {
     }
 
     private func sessionListPollingDelayNanoseconds() -> UInt64 {
-        guard let selectedProjectID else {
-            return sessionListIdlePollingDelayNanoseconds
+        webSocketStatus == .connected
+            ? sessionListConnectedPollingDelayNanoseconds
+            : sessionListDisconnectedPollingDelayNanoseconds
+    }
+
+    func refreshCodexUsage() async {
+        do {
+            let summary = try await clientFactory().refreshRateLimit(sessionID: selectedSessionID)
+            guard let summary, var session = selectedSession else {
+                return
+            }
+            session.rateLimit = summary
+            upsert(session)
+        } catch {
+            setErrorMessage(error.localizedDescription)
         }
-        return sessions(forProjectID: selectedProjectID).contains(where: \.isRunning)
-            ? sessionListActivePollingDelayNanoseconds
-            : sessionListIdlePollingDelayNanoseconds
     }
 
     func refreshCurrentContext() async {
@@ -2845,6 +2911,39 @@ final class SessionStore: ObservableObject {
         setStatusMessage(nil)
     }
 
+    @discardableResult
+    func applyConnectionSettings(
+        endpoint: String,
+        fallbackEndpoint: String,
+        token: String
+    ) async throws -> Bool {
+        let prepared = try await appStore.prepareConnectionSettings(
+            endpoint: endpoint,
+            fallbackEndpoint: fallbackEndpoint,
+            token: token
+        )
+        return try commitPreparedConnection(prepared)
+    }
+
+    @discardableResult
+    func applyPairingURL(_ url: URL) async throws -> Bool {
+        let prepared = try await appStore.preparePairingURL(url)
+        return try commitPreparedConnection(prepared)
+    }
+
+    private func commitPreparedConnection(_ prepared: PreparedConnectionSettings) throws -> Bool {
+        // 连接切换必须先结束旧 WebSocket，再原子提交新的 active endpoint；后续 REST 与
+        // WebSocket 都从同一个 runtime bundle 创建，避免一次会话被拆到两条链路上。
+        disconnectWebSocket()
+        let didChange = try appStore.commitConnectionSettings(prepared)
+        if didChange {
+            clearConnectionData()
+        }
+        setErrorMessage(nil)
+        setStatusMessage(nil)
+        return didChange
+    }
+
     func selectSession(_ session: AgentSession) async {
         if isNoOpHistorySelection(session) {
             return
@@ -3041,10 +3140,6 @@ final class SessionStore: ObservableObject {
                 setErrorMessage("发送失败：WebSocket 未连接")
                 return false
             }
-            Task { [weak self] in
-                // 发送后的后台刷新只同步侧栏状态；不能清掉随后可能出现的发送失败原因。
-                await self?.refreshSessions(forProjectID: session.projectID, clearErrorOnSuccess: false)
-            }
             return true
         }
 
@@ -3178,10 +3273,6 @@ final class SessionStore: ObservableObject {
                 setErrorMessage("重试失败：WebSocket 未连接")
                 return false
             }
-            Task { [weak self] in
-                // 重试发送后的后台刷新只同步侧栏状态；不能清掉随后可能出现的发送失败原因。
-                await self?.refreshSessions(forProjectID: session.projectID, clearErrorOnSuccess: false)
-            }
             return true
         }
 
@@ -3198,6 +3289,7 @@ final class SessionStore: ObservableObject {
         guard appStore.isConfigured else {
             return
         }
+        _ = await refreshConnectionRoute(preferPrimary: true)
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: true)
@@ -4000,10 +4092,13 @@ final class SessionStore: ObservableObject {
         }
         var requestToken: Int?
         do {
-            let client = try clientFactory()
             requestToken = beginSessionPageRequest(projectID: projectID)
             defer { finishSessionPageRequest(projectID: projectID, token: requestToken ?? 0) }
-            let page = try await client.sessionsPage(workspace: workspace, cursor: nil, limit: Self.initialSessionPageLimit)
+            let page = try await sessionListFirstPage(
+                workspace: workspace,
+                limit: Self.initialSessionPageLimit,
+                reuseRecent: !showLoading
+            )
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
@@ -4029,6 +4124,42 @@ final class SessionStore: ObservableObject {
             if reportErrorOnFailure, selectedProjectID == projectID {
                 await handleWorkspaceLoadFailure(workspace: workspace, error: error)
             }
+        }
+    }
+
+    private func sessionListFirstPage(
+        workspace: AgentWorkspace,
+        limit: Int,
+        reuseRecent: Bool
+    ) async throws -> SessionsPage {
+        let key = SessionListFirstPageRequestKey(
+            connectionGeneration: appStore.connectionGeneration,
+            workspaceID: workspace.id,
+            workspacePath: workspace.path,
+            limit: limit
+        )
+        // 手动刷新可以绕过短缓存，但同一时刻仍必须等待已存在的共享请求。
+        if let inFlight = sessionListFirstPageInFlightByKey[key] {
+            return try await inFlight.task.value
+        }
+        if reuseRecent,
+           let cached = sessionListFirstPageCacheByKey[key],
+           Date().timeIntervalSince(cached.loadedAt) < sessionListFirstPageCacheTTL {
+            return cached.page
+        }
+        let client = try clientFactory()
+        let task = Task {
+            try await client.sessionsPage(workspace: workspace, cursor: nil, limit: limit)
+        }
+        sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(task: task)
+        do {
+            let page = try await task.value
+            sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+            sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(page: page, loadedAt: Date())
+            return page
+        } catch {
+            sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+            throw error
         }
     }
 
@@ -5050,6 +5181,10 @@ final class SessionStore: ObservableObject {
               let latestSession = sessionsByID[sessionID] else {
             return
         }
+        _ = await refreshConnectionRoute(preferPrimary: false)
+        guard selectedSessionID == sessionID else {
+            return
+        }
         let refreshedSession = await refreshSessionSnapshotBeforeReconnect(sessionID: sessionID) ?? latestSession
         guard selectedSessionID == sessionID else {
             return
@@ -5124,12 +5259,30 @@ final class SessionStore: ObservableObject {
         if case .turnCompleted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
             if let projectID = sessionsByID[id]?.projectID {
-                Task { [weak self] in
-                    await self?.refreshSessions(forProjectID: projectID)
-                }
+                scheduleSessionListReconciliation(projectID: projectID)
             }
         }
         await scheduleRuntimeNotificationIfNeeded(runtimeNotification)
+    }
+
+    private func scheduleSessionListReconciliation(projectID: String) {
+        sessionListReconciliationTasksByProjectID[projectID]?.cancel()
+        sessionListReconciliationTasksByProjectID[projectID] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: self.sessionListReconciliationDelayNanoseconds)
+            } catch {
+                return
+            }
+            await self.refreshSessions(
+                forProjectID: projectID,
+                showLoading: false,
+                clearErrorOnSuccess: false,
+                updateStatusMessage: false,
+                reportErrorOnFailure: false
+            )
+            self.sessionListReconciliationTasksByProjectID.removeValue(forKey: projectID)
+        }
     }
 
     private func scheduleRuntimeNotificationIfNeeded(_ notification: SessionRuntimeNotification?) async {
@@ -5880,6 +6033,11 @@ final class SessionStore: ObservableObject {
         sessionHasMoreByProjectID = [:]
         sessionPageRequestTokenByProjectID = [:]
         sessionPageLoadingTokenByProjectID = [:]
+        sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
+        sessionListFirstPageInFlightByKey = [:]
+        sessionListFirstPageCacheByKey = [:]
+        sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
+        sessionListReconciliationTasksByProjectID = [:]
         historyPreviousCursorBySessionID = [:]
         historyHasMoreBeforeBySessionID = [:]
         historySnapshotSeqBySessionID = [:]

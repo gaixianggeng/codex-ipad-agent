@@ -384,6 +384,7 @@ private struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var endpoint = ""
+    @State private var fallbackEndpoint = ""
     @State private var token = ""
     @State private var didLoadInitialConnection = false
     @State private var isShowingQRCodeScanner = false
@@ -430,7 +431,9 @@ private struct InitialConnectionSettingsSections: View {
 
             Section {
                 DisclosureGroup(isExpanded: $isShowingAdvancedManualConnection) {
-                    StableEndpointTextField(placeholder: "http://IP:端口", text: $endpoint)
+                    StableEndpointTextField(placeholder: "首选地址（Tailscale）", text: $endpoint)
+                        .frame(minHeight: 28)
+                    StableEndpointTextField(placeholder: "备用公网地址（可选）", text: $fallbackEndpoint)
                         .frame(minHeight: 28)
                     SecureField("访问码", text: $token)
                         .textInputAutocapitalization(.never)
@@ -441,12 +444,18 @@ private struct InitialConnectionSettingsSections: View {
             } header: {
                 Text("其他方式")
             } footer: {
-                Text("只有二维码不可用时才需要手动输入地址和访问码。支持本机、局域网、Tailscale 或自建 VPS 中转。")
+                Text("优先连接 Tailscale 地址；首选链路不可用时自动切到备用公网 VPS。")
             }
 
             Section {
                 Button {
-                    Task { await appStore.testConnection(endpoint: endpoint, token: token) }
+                    Task {
+                        await appStore.testConnection(
+                            endpoint: endpoint,
+                            fallbackEndpoint: fallbackEndpoint,
+                            token: token
+                        )
+                    }
                 } label: {
                     Label(
                         isConnectionTesting ? "正在测试" : "测试连接",
@@ -871,6 +880,7 @@ private struct InitialConnectionSettingsSections: View {
         }
         didLoadInitialConnection = true
         endpoint = appStore.endpoint
+        fallbackEndpoint = appStore.fallbackEndpoint
         token = appStore.token
     }
 
@@ -878,10 +888,14 @@ private struct InitialConnectionSettingsSections: View {
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
-            let didChange = try await appStore.validateAndSave(endpoint: endpoint, token: token)
+            _ = try await sessionStore.applyConnectionSettings(
+                endpoint: endpoint,
+                fallbackEndpoint: fallbackEndpoint,
+                token: token
+            )
             endpoint = appStore.endpoint
+            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
-            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
             connectionSuccessMessage = ""
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
@@ -900,10 +914,10 @@ private struct InitialConnectionSettingsSections: View {
             guard let url = URL(string: raw) else {
                 throw PairingLinkError.unsupportedURL
             }
-            let didChange = try await appStore.validateAndSavePairingURL(url)
+            _ = try await sessionStore.applyPairingURL(url)
             endpoint = appStore.endpoint
+            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
-            sessionStore.resetConnectionForSettingsChange(clearData: didChange)
             connectionSuccessMessage = "已连接这台 Mac，正在进入工作台。"
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
@@ -920,6 +934,7 @@ private struct InitialConnectionSettingsSections: View {
         do {
             try appStore.clearPairing()
             endpoint = appStore.endpoint
+            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             connectionSuccessMessage = ""
             sessionStore.resetConnectionForSettingsChange(clearData: true)

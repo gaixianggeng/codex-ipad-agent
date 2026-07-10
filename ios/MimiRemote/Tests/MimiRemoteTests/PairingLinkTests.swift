@@ -136,6 +136,50 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(credentials.token, "0123456789abcdef0123456789abcdef")
     }
 
+    func testConnectionCandidatesPreferPrimaryAndDeduplicateFallback() throws {
+        let candidates = try AppStore.connectionCandidates(
+            endpoint: "100.64.0.1:8787",
+            fallbackEndpoint: "http://100.64.0.1:8787/",
+            activeEndpoint: "http://100.64.0.1:8787",
+            preferPrimary: true
+        )
+
+        XCTAssertEqual(candidates, ["http://100.64.0.1:8787"])
+    }
+
+    func testConnectionCandidatesKeepActiveFallbackFirstDuringRecovery() throws {
+        let candidates = try AppStore.connectionCandidates(
+            endpoint: "http://100.64.0.1:8787",
+            fallbackEndpoint: "https://relay.example.com",
+            activeEndpoint: "https://relay.example.com",
+            preferPrimary: false
+        )
+
+        XCTAssertEqual(candidates, ["https://relay.example.com", "http://100.64.0.1:8787"])
+    }
+
+    func testReachableRouteFallsBackAfterPrimaryProbeFails() async throws {
+        let suiteName = "PairingLinkTests.ConnectionRoute.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
+        defaults.set("https://relay.example.com", forKey: "agentd.fallbackEndpoint")
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
+            await recorder.record(endpoint)
+            if endpoint == "http://100.64.0.1:8787" {
+                throw URLError(.cannotConnectToHost)
+            }
+        }
+        store.token = "test-token"
+
+        let selected = try await store.prepareReachableRoute(preferPrimary: true)
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertEqual(selected, "https://relay.example.com")
+        XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787", "https://relay.example.com"])
+    }
+
     func testFormatsConnectionTestDuration() {
         XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 98), "98 ms")
         XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 1_250), "1.2 秒")
@@ -327,5 +371,17 @@ final class PairingLinkTests: XCTestCase {
         }
         """
         return try AgentAPIClient.decoder.decode(RelayDiagnosticsResponse.self, from: Data(json.utf8))
+    }
+}
+
+private actor ConnectionRouteProbeRecorder {
+    private var recordedEndpoints: [String] = []
+
+    func record(_ endpoint: String) {
+        recordedEndpoints.append(endpoint)
+    }
+
+    func endpoints() -> [String] {
+        recordedEndpoints
     }
 }

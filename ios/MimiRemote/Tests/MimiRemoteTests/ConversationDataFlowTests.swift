@@ -465,11 +465,10 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        if case .processed(let group) = items[0] {
-            XCTAssertEqual(group.messages.map(\.turnID), ["turn-a"])
-            XCTAssertTrue(group.isActive)
+        if case .message(let first) = items[0] {
+            XCTAssertEqual(first.turnID, "turn-a")
         } else {
-            XCTFail("不同 turn 的运行过程应只折叠成自己的进度组，不能归入后续 assistant")
+            XCTFail("不同 turn 的过程消息不能折叠到后续 assistant")
         }
     }
 
@@ -523,7 +522,7 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
-    func testTimelineBuilderCollapsesProcessMessagesIntoActiveProgressWhileAssistantIsStreaming() {
+    func testTimelineBuilderKeepsProcessMessagesVisibleWhileAssistantIsStreaming() {
         let base = Date(timeIntervalSince1970: 2_000)
         let command = ConversationMessage(
             stableID: "cmd-streaming",
@@ -546,19 +545,15 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        guard case .processed(let group) = items[0] else {
-            return XCTFail("运行中的过程项应收成一个实时进度组")
-        }
-        XCTAssertTrue(group.isActive)
-        XCTAssertEqual(group.title, "正在处理 1 步")
-        XCTAssertEqual(group.messages.map(\.content), ["命令仍在运行"])
-        guard case .message(let streamingAssistant) = items[1] else {
-            return XCTFail("assistant streaming 内容仍应保留")
-        }
-        XCTAssertEqual(streamingAssistant.sendStatus, .sending)
+        XCTAssertFalse(items.contains { item in
+            if case .processed = item {
+                return true
+            }
+            return false
+        })
     }
 
-    func testTimelineBuilderKeepsInteractiveProcessMessagesVisibleDuringActiveTurn() {
+    func testTimelineBuilderKeepsAllProcessMessagesVisibleDuringActiveTurn() {
         let base = Date(timeIntervalSince1970: 2_200)
         let command = ConversationMessage(
             stableID: "cmd-active-interactive",
@@ -589,12 +584,12 @@ final class ConversationDataFlowTests: XCTestCase {
 
         let items = ConversationTimelineItemBuilder.items(from: [command, approval, assistant])
 
+        // 运行中不折叠：命令、审批、streaming assistant 全部平铺，保持实时可见可操作。
         XCTAssertEqual(items.count, 3)
-        guard case .processed(let group) = items[0] else {
-            return XCTFail("非交互过程应收成运行进度组")
+        guard case .message(let visibleCommand) = items[0] else {
+            return XCTFail("运行中的命令卡必须保持完整可见")
         }
-        XCTAssertEqual(group.messages.map(\.kind), [.commandSummary])
-        XCTAssertTrue(group.isActive)
+        XCTAssertEqual(visibleCommand.kind, .commandSummary)
         guard case .message(let visibleApproval) = items[1] else {
             return XCTFail("运行中的审批必须保持可见可操作")
         }
@@ -605,7 +600,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(streamingAssistant.sendStatus, .sending)
     }
 
-    func testTimelineBuilderCollapsesProcessMessagesBeforeFailedAssistant() {
+    func testTimelineBuilderKeepsProcessMessagesVisibleWhenAssistantFailed() {
         let base = Date(timeIntervalSince1970: 2_500)
         let command = ConversationMessage(
             stableID: "cmd-failed",
@@ -628,15 +623,12 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        guard case .processed(let group) = items[0] else {
-            return XCTFail("失败 assistant 前的过程项也应聚合展示")
-        }
-        XCTAssertFalse(group.isActive)
-        XCTAssertEqual(group.title, "已处理 1 步 · 2s")
-        guard case .message(let failedAssistant) = items[1] else {
-            return XCTFail("失败 assistant 消息仍应保留")
-        }
-        XCTAssertEqual(failedAssistant.sendStatus, .failed)
+        XCTAssertFalse(items.contains { item in
+            if case .processed = item {
+                return true
+            }
+            return false
+        })
     }
 
     func testTimelineBuilderDoesNotHideErrorMessagesInsideProcessedGroup() {
@@ -9875,6 +9867,79 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(store.projects.isEmpty)
         XCTAssertNil(store.errorMessage)
     }
+
+    func testConcurrentSelectedProjectRefreshesShareOneListRequest() async throws {
+        let project = makeProject(id: "proj_coalesced_list")
+        let session = makeSession(id: "thread_coalesced_list", projectID: project.id, title: "合并列表", status: "history", source: "codex")
+        let client = BlockingSessionListRefreshClient(projects: [project], page: SessionsPage(sessions: [session]))
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        let first = Task { await store.refreshSelectedProjectSessions(showLoading: true) }
+        let second = Task { await store.refreshSelectedProjectSessions(showLoading: true) }
+        await client.waitForBlockedSessionListRefresh()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2, "bootstrap 后的两个并发刷新必须共享一个上游 thread/list")
+        client.releaseBlockedSessionListRefresh()
+        await first.value
+        await second.value
+    }
+
+    func testMultiRuntimeHistoryPreservesEconomyAndFullLoadModes() async throws {
+        let project = AgentProject(id: "proj_multi_history_mode", name: "History Mode", path: "/tmp/multi-history-mode")
+        let config = makeDirectAppServerConfig(project: project)
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let client = MultiRuntimeSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "outer-token",
+                transportFactory: { codexTransport },
+                configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "outer-token",
+                runtimeProvider: "claude",
+                transportFactory: { claudeTransport },
+                configProvider: { config }
+            )
+        )
+
+        let listTask = Task { try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(codexTransport, method: "initialize")
+        transportResponse(codexTransport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let list = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: 1)
+        transportResponse(codexTransport, id: list.id, result: appServerThreadListResult([
+            appServerThreadJSON(id: "thread_history_mode", cwd: project.path, source: "appServer", updatedAt: 1780493000)
+        ], nextCursor: nil))
+        _ = try await listTask.value
+
+        let economyTask = Task {
+            try await client.messagesPage(sessionID: "thread_history_mode", before: nil, limit: 20, loadMode: .economy)
+        }
+        let economyRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 2)
+        XCTAssertEqual(economyRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transportResponse(codexTransport, id: economyRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+        let economyPage = try await economyTask.value
+        XCTAssertEqual(economyPage.loadMode, .economy)
+
+        let fullTask = Task {
+            try await client.messagesPage(sessionID: "thread_history_mode", before: nil, limit: 20, loadMode: .full)
+        }
+        let fullRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 3)
+        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        transportResponse(codexTransport, id: fullRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+        let fullPage = try await fullTask.value
+        XCTAssertEqual(fullPage.loadMode, .full)
+    }
 }
 
 private final class MockWebSocketClient: SessionWebSocketClient {
@@ -10721,9 +10786,9 @@ private final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let page: SessionsPage
     private(set) var requestedMessageCursors: [String?] = []
-    private var sessionsPageCallCount = 0
+    private(set) var sessionsPageCallCount = 0
     private var blockedListRefreshCount = 0
-    private var blockedListContinuation: CheckedContinuation<SessionsPage, Never>?
+    private var blockedListContinuations: [CheckedContinuation<SessionsPage, Never>] = []
     private var blockedListWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(projects: [AgentProject], page: SessionsPage) {
@@ -10746,7 +10811,7 @@ private final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
         }
         // 第二次列表请求模拟慢 thread/list：当前会话刷新不应该等它结束。
         return await withCheckedContinuation { continuation in
-            blockedListContinuation = continuation
+            blockedListContinuations.append(continuation)
             blockedListRefreshCount += 1
             notifyBlockedListWaiters()
         }
@@ -10792,8 +10857,8 @@ private final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
     }
 
     func releaseBlockedSessionListRefresh() {
-        blockedListContinuation?.resume(returning: page)
-        blockedListContinuation = nil
+        blockedListContinuations.forEach { $0.resume(returning: page) }
+        blockedListContinuations = []
     }
 
     private func notifyBlockedListWaiters() {

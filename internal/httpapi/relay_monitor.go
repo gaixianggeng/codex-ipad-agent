@@ -16,9 +16,16 @@ type relayMonitor struct {
 	startedAt time.Time
 	nextID    int64
 
-	http    relayHTTPStats
-	gateway relayGatewayStats
-	active  map[string]*relayGatewayConnectionStats
+	http            relayHTTPStats
+	gateway         relayGatewayStats
+	active          map[string]*relayGatewayConnectionStats
+	historyInflight map[string]relayHistoryInflightRequest
+}
+
+type relayHistoryInflightRequest struct {
+	owner     string
+	method    string
+	startedAt time.Time
 }
 
 type relayHTTPStats struct {
@@ -47,21 +54,32 @@ type relayHTTPSample struct {
 }
 
 type relayGatewayStats struct {
-	TotalConnections            int64                         `json:"total_connections"`
-	ActiveConnections           int64                         `json:"active_connections"`
-	FailedUpstreamDials         int64                         `json:"failed_upstream_dials"`
-	UpstreamDialMillisMax       int64                         `json:"upstream_dial_ms_max"`
-	UpstreamDialMillisSum       int64                         `json:"upstream_dial_ms_total"`
-	ClientToUpstream            relayGatewayDirectionStats    `json:"client_to_upstream"`
-	UpstreamToClient            relayGatewayDirectionStats    `json:"upstream_to_client"`
-	RPC                         relayGatewayRPCStats          `json:"rpc"`
-	PolicyErrors                int64                         `json:"policy_errors"`
-	HistoryResponsesBlocked     int64                         `json:"history_responses_blocked"`
-	HistoryResponseBytesBlocked int64                         `json:"history_response_bytes_blocked"`
-	HistoryBudgetRejections     int64                         `json:"history_budget_rejections"`
-	RecentConnections           []relayGatewayConnectionStats `json:"recent_connections"`
-	ActiveConnectionDetail      []relayGatewayConnectionStats `json:"active_connections_detail"`
-	RecentRPC                   []relayGatewayRPCSample       `json:"recent_rpc"`
+	TotalConnections            int64                              `json:"total_connections"`
+	ActiveConnections           int64                              `json:"active_connections"`
+	FailedUpstreamDials         int64                              `json:"failed_upstream_dials"`
+	UpstreamDialMillisMax       int64                              `json:"upstream_dial_ms_max"`
+	UpstreamDialMillisSum       int64                              `json:"upstream_dial_ms_total"`
+	ClientToUpstream            relayGatewayDirectionStats         `json:"client_to_upstream"`
+	UpstreamToClient            relayGatewayDirectionStats         `json:"upstream_to_client"`
+	RPC                         relayGatewayRPCStats               `json:"rpc"`
+	PolicyErrors                int64                              `json:"policy_errors"`
+	HistoryResponsesBlocked     int64                              `json:"history_responses_blocked"`
+	HistoryResponseBytesBlocked int64                              `json:"history_response_bytes_blocked"`
+	HistoryBudgetRejections     int64                              `json:"history_budget_rejections"`
+	Methods                     map[string]relayGatewayMethodStats `json:"methods"`
+	RecentConnections           []relayGatewayConnectionStats      `json:"recent_connections"`
+	ActiveConnectionDetail      []relayGatewayConnectionStats      `json:"active_connections_detail"`
+	RecentRPC                   []relayGatewayRPCSample            `json:"recent_rpc"`
+}
+
+type relayGatewayMethodStats struct {
+	Requested         int64 `json:"requested"`
+	Inflight          int64 `json:"inflight"`
+	DuplicateRejected int64 `json:"duplicate_rejected"`
+	Rejected          int64 `json:"rejected"`
+	Blocked           int64 `json:"blocked"`
+	RateLimited       int64 `json:"rate_limited"`
+	ResponseBytes     int64 `json:"response_bytes"`
 }
 
 type relayGatewayDirectionStats struct {
@@ -164,9 +182,88 @@ type relayFrameMeta struct {
 
 func newRelayMonitor() *relayMonitor {
 	return &relayMonitor{
-		startedAt: time.Now().UTC(),
-		active:    map[string]*relayGatewayConnectionStats{},
+		startedAt:       time.Now().UTC(),
+		gateway:         relayGatewayStats{Methods: map[string]relayGatewayMethodStats{}},
+		active:          map[string]*relayGatewayConnectionStats{},
+		historyInflight: map[string]relayHistoryInflightRequest{},
 	}
+}
+
+func (m *relayMonitor) reserveHistoryInflight(fingerprint string, owner string, method string, ttl time.Duration) bool {
+	if m == nil || fingerprint == "" || owner == "" {
+		return true
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.historyInflight == nil {
+		m.historyInflight = map[string]relayHistoryInflightRequest{}
+	}
+	for key, request := range m.historyInflight {
+		if request.startedAt.IsZero() || (ttl > 0 && now.Sub(request.startedAt) > ttl) {
+			stats := m.gateway.Methods[request.method]
+			if stats.Inflight > 0 {
+				stats.Inflight--
+			}
+			m.gateway.Methods[request.method] = stats
+			delete(m.historyInflight, key)
+		}
+	}
+	stats := m.gateway.Methods[method]
+	stats.Requested++
+	if _, exists := m.historyInflight[fingerprint]; exists {
+		stats.DuplicateRejected++
+		stats.Rejected++
+		m.gateway.Methods[method] = stats
+		return false
+	}
+	stats.Inflight++
+	m.gateway.Methods[method] = stats
+	m.historyInflight[fingerprint] = relayHistoryInflightRequest{owner: owner, method: method, startedAt: now}
+	return true
+}
+
+func (m *relayMonitor) releaseHistoryInflight(fingerprint string, owner string) {
+	if m == nil || fingerprint == "" || owner == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	request, exists := m.historyInflight[fingerprint]
+	if exists && request.owner == owner {
+		delete(m.historyInflight, fingerprint)
+		stats := m.gateway.Methods[request.method]
+		if stats.Inflight > 0 {
+			stats.Inflight--
+		}
+		m.gateway.Methods[request.method] = stats
+	}
+}
+
+func (m *relayMonitor) recordHistoryResponseMetrics(method string, responseBytes int, blocked bool) {
+	if m == nil || strings.TrimSpace(method) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats := m.gateway.Methods[method]
+	stats.ResponseBytes += int64(responseBytes)
+	if blocked {
+		stats.Blocked++
+	}
+	m.gateway.Methods[method] = stats
+}
+
+func (m *relayMonitor) recordHistoryRateLimited(method string) {
+	if m == nil || strings.TrimSpace(method) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats := m.gateway.Methods[method]
+	stats.RateLimited++
+	stats.Rejected++
+	m.gateway.Methods[method] = stats
 }
 
 func (m *relayMonitor) beginHTTP() {
@@ -436,6 +533,10 @@ func (m *relayMonitor) snapshot() relayDiagnosticsResponse {
 	httpStats.Recent = append([]relayHTTPSample(nil), m.http.Recent...)
 
 	gatewayStats := m.gateway
+	gatewayStats.Methods = make(map[string]relayGatewayMethodStats, len(m.gateway.Methods))
+	for method, stats := range m.gateway.Methods {
+		gatewayStats.Methods[method] = stats
+	}
 	gatewayStats.RecentConnections = append([]relayGatewayConnectionStats(nil), m.gateway.RecentConnections...)
 	gatewayStats.RecentRPC = append([]relayGatewayRPCSample(nil), m.gateway.RecentRPC...)
 	gatewayStats.ActiveConnections = int64(len(m.active))

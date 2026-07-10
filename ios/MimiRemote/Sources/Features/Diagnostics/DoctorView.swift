@@ -82,7 +82,7 @@ struct DoctorView: View {
         defer { isRunning = false }
         do {
             let client = try appStore.client()
-            let url = URL(string: AgentAPIClient.normalizedEndpoint(appStore.endpoint))!.appending(path: "/api/doctor")
+            let url = URL(string: AgentAPIClient.normalizedEndpoint(appStore.activeEndpoint))!.appending(path: "/api/doctor")
             var request = URLRequest(url: url)
             request.setValue("Bearer \(appStore.token)", forHTTPHeaderField: "Authorization")
             let (data, _) = try await URLSession.shared.data(for: request)
@@ -97,7 +97,7 @@ struct DoctorView: View {
         isRunning = true
         defer { isRunning = false }
         do {
-            guard var components = URLComponents(string: AgentAPIClient.normalizedEndpoint(appStore.endpoint)) else {
+            guard var components = URLComponents(string: AgentAPIClient.normalizedEndpoint(appStore.activeEndpoint)) else {
                 output = "Endpoint 无效"
                 return
             }

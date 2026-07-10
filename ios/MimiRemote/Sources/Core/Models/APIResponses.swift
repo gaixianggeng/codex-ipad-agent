@@ -2471,7 +2471,12 @@ struct CodexAppServerRequestBuilder {
         self.allowlistedPaths = Set(allowlistedProjects.map(\.path).compactMap(Self.standardizedAllowlistPath))
     }
 
-    func threadList(cwd: String, limit: Int? = 20, cursor: String? = nil) throws -> CodexAppServerRequestSpec {
+    func threadList(
+        cwd: String,
+        limit: Int? = 20,
+        cursor: String? = nil,
+        useStateDBOnly: Bool = true
+    ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
             "cwd": .string(path),
@@ -2480,7 +2485,8 @@ struct CodexAppServerRequestBuilder {
             // 列表分页 cursor 必须和本地侧栏排序保持同一基准，避免加载更多后漏掉最新会话。
             "sortKey": .string("updated_at"),
             "sortDirection": .string("desc"),
-            "archived": .bool(false)
+            "archived": .bool(false),
+            "useStateDbOnly": .bool(useStateDBOnly)
         ]))
     }
 
@@ -2534,11 +2540,24 @@ struct CodexAppServerRequestBuilder {
         return try threadResume(threadID: threadID, cwd: cwd, options: resolved)
     }
 
-    func threadResume(threadID: String, cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+    func threadResume(
+        threadID: String,
+        cwd: String,
+        options: CodexAppServerTurnOptions = .default,
+        includeInitialTurnsPage: Bool = true
+    ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
         params["threadId"] = .string(threadID)
         params["excludeTurns"] = .bool(true)
+        if includeInitialTurnsPage {
+            // 恢复只顺带取最近小页，避免普通 resume 把整段 rollout 和内联图片重新下发。
+            params["initialTurnsPage"] = .object([
+                "limit": .int(5),
+                "sortDirection": .string("desc"),
+                "itemsView": .string("full")
+            ])
+        }
         params["ephemeral"] = nil
         options.threadParams(projectPath: path).forEach { key, value in
             params[key] = value
