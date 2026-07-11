@@ -2,7 +2,7 @@ name: Mimi TestFlight 内测
 
 on:
   push:
-    branches: [main, codex/public-initial]
+    branches: [main]
     paths:
       - 'ios/MimiRemote/**'
       - '.github/workflows/mimi-testflight.yml'
@@ -11,7 +11,7 @@ on:
       ref:
         description: 要发布的 Git commit、tag 或分支
         required: true
-        default: codex/public-initial
+        default: main
         type: string
       what_to_test:
         description: TestFlight 的“测试内容”
