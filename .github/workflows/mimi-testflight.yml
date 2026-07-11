@@ -156,7 +156,6 @@ jobs:
             --api_key_path "$api_key_json" \
             --groups "$TESTFLIGHT_BETA_GROUP_NAME" \
             --changelog "$TESTFLIGHT_WHATS_NEW" \
-            --distribute_external false \
             --skip_waiting_for_build_processing false
           echo "Mimi TestFlight 发布成功：$IOS_MARKETING_VERSION ($IOS_BUILD_NUMBER)"
 
