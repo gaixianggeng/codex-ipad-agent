@@ -10194,6 +10194,56 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
     }
 
+    func testRecentSessionsUsesLatestActivityAcrossEveryWorkspace() async {
+        let projects = (0..<9).map { makeProject(id: "proj_recent_\($0)") }
+        let workspaces = projects.enumerated().map { index, project in
+            AgentWorkspace(
+                project: project,
+                lastOpenedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let projectSessions = Dictionary(uniqueKeysWithValues: projects.enumerated().map { index, project in
+            let updatedAt = index == 8 ? 1_000 : 100 + index
+            return (
+                project.id,
+                [makeSession(
+                    id: "thread_recent_\(index)",
+                    projectID: project.id,
+                    title: "最近会话 \(index)",
+                    status: "history",
+                    source: "codex",
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(updatedAt))
+                )]
+            )
+        })
+        let client = MockSessionStoreClient(
+            projects: projects,
+            sessions: [],
+            projectSessions: projectSessions
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: workspaces,
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: true)
+        await store.refreshSessionLibraryIndex()
+
+        // 第 9 个工作区虽然更早打开，但它的会话活动时间最新，必须排在全局“最近”第一位。
+        XCTAssertEqual(
+            store.recentSessions.map(\.id),
+            (1...8).reversed().map { "thread_recent_\($0)" }
+        )
+        XCTAssertEqual(Set(client.requestedWorkspaceIDs), Set(projects.map(\.id)))
+    }
+
     func testMultiRuntimeHistoryPreservesEconomyAndFullLoadModes() async throws {
         let project = AgentProject(id: "proj_multi_history_mode", name: "History Mode", path: "/tmp/multi-history-mode")
         let config = makeDirectAppServerConfig(

@@ -833,12 +833,22 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var toolbarMenuRow: some View {
-        HStack(spacing: 8) {
-            addContentButton
-            composerMoreMenu
+        // 高频配置直接平铺在输入框旁边；空间不足时只让这一组横向滚动，
+        // 避免把发送、语音等主操作挤出屏幕，也不再要求先打开“配置”总菜单。
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                addContentButton
+                voiceLanguageMenu
+                runSettingsMenu
+                permissionMenu
+                planButton
+                goalButton
+            }
+            .padding(.vertical, 1)
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
         .controlSize(.regular)
+        .accessibilityElement(children: .contain)
     }
 
     private var voiceMicControl: some View {
@@ -905,24 +915,16 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var addContentButton: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
         Button {
             showsAddContentPanel.toggle()
         } label: {
-            Image(systemName: "plus")
-                .font(themeStore.uiFont(size: 15, weight: .bold))
-                .foregroundStyle(tokens.accent)
-                .frame(width: 28, height: 28)
-                .frame(width: 44, height: 44)
-                .background(tokens.selectionFill, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(tokens.border.opacity(0.86), lineWidth: 1)
-                }
+            composerToolbarControlLabel(
+                title: nil,
+                systemImage: "plus",
+                accessibilityLabel: "添加内容"
+            )
         }
         .buttonStyle(.plain)
-        .contentShape(Capsule())
         .accessibilityLabel("添加内容")
         .help("添加图片、Skill、Mention 或快捷短语")
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
@@ -953,54 +955,6 @@ struct ComposerView: View {
             .environmentObject(themeStore)
             .presentationCompactAdaptation(.sheet)
         }
-    }
-
-    @ViewBuilder
-    private var composerMoreMenu: some View {
-        Menu {
-            Section("输入") {
-                Button {
-                    showsAddContentPanel = true
-                } label: {
-                    Label("添加附件或引用", systemImage: "paperclip")
-                }
-            }
-            Section("发送模式") {
-                Button {
-                    setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
-                } label: {
-                    Label("目标任务", systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
-                }
-                Button {
-                    setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
-                } label: {
-                    Label("计划", systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
-                }
-            }
-            Section("运行") {
-                permissionMenu
-                runSettingsMenu
-                voiceLanguageMenu
-            }
-        } label: {
-            ViewThatFits(in: .horizontal) {
-                // 模型和权限已在输入框上方常驻展示，这里只保留明确的配置入口，避免信息重复。
-                Label("配置", systemImage: "slider.horizontal.3")
-                    .lineLimit(1)
-                Image(systemName: "slider.horizontal.3")
-                    .accessibilityLabel("配置")
-            }
-            .frame(minHeight: 44)
-        }
-        .buttonStyle(.glass)
-        .tint(themeStore.tokens(for: colorScheme).accent)
-        .accessibilityLabel("运行设置")
-        .accessibilityValue(moreMenuAccessibilitySummary)
-        .accessibilityHint("添加附件、选择发送模式、权限和运行选项")
-    }
-
-    private var moreMenuAccessibilitySummary: String {
-        "\(composerState.permissionMode.title)，运行，语音 \(selectedVoiceLanguage.title)"
     }
 
     private var skillShortcutMenu: some View {
@@ -1084,11 +1038,10 @@ struct ComposerView: View {
     private var goalButton: some View {
         let selected = composerState.isGoalModeSelected
         return composerModeButton(
-            title: "目标",
+            title: "目标任务",
             systemImage: "target",
             selected: selected,
             accessibilityLabel: "目标任务模式",
-            showsTitle: composerModeButtonShowsTitle,
             action: {
                 setSendMode(selected ? .standard : .goal)
             }
@@ -1104,7 +1057,6 @@ struct ComposerView: View {
             systemImage: "list.clipboard",
             selected: selected,
             accessibilityLabel: "计划模式",
-            showsTitle: composerModeButtonShowsTitle,
             action: {
                 setSendMode(selected ? .standard : .plan)
             }
@@ -1113,51 +1065,63 @@ struct ComposerView: View {
         .help(selected ? "关闭计划模式" : "将下一次发送设为 Codex 计划模式")
     }
 
-    private var composerModeButtonShowsTitle: Bool {
-        !isCompactComposer
-    }
-
-    @ViewBuilder
     private func composerModeButton(
         title: String,
         systemImage: String,
         selected: Bool,
         accessibilityLabel: String,
-        showsTitle: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        if selected {
-            Button(action: action) {
-                composerModeButtonLabel(title: title, systemImage: systemImage, showsTitle: showsTitle)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(tokens.accent)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityValue("已选择")
-            .accessibilityHint("只切换发送模式，不会立即发送")
-        } else {
-            Button(action: action) {
-                composerModeButtonLabel(title: title, systemImage: systemImage, showsTitle: showsTitle)
-                    .foregroundStyle(tokens.accent)
-            }
-            .buttonStyle(.bordered)
-            .tint(tokens.accent)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityValue("未选择")
-            .accessibilityHint("只切换发送模式，不会立即发送")
+        Button(action: action) {
+            composerToolbarControlLabel(
+                title: title,
+                systemImage: systemImage,
+                isSelected: selected,
+                accessibilityLabel: accessibilityLabel
+            )
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(selected ? "已选择" : "未选择")
+        .accessibilityHint("只切换发送模式，不会立即发送")
     }
 
-    @ViewBuilder
-    private func composerModeButtonLabel(title: String, systemImage: String, showsTitle: Bool) -> some View {
-        if showsTitle {
-            Label(title, systemImage: systemImage)
-        } else {
+    private func composerToolbarControlLabel(
+        title: String?,
+        systemImage: String,
+        isSelected: Bool = false,
+        tint: Color? = nil,
+        accessibilityLabel: String
+    ) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.accent)
+
+        return HStack(spacing: 6) {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 14, weight: .semibold))
-                .frame(width: 22, height: 22)
+            if let title {
+                Text(title)
+                    .lineLimit(1)
+            }
         }
+        .font(themeStore.uiFont(.caption, weight: .semibold))
+        .foregroundStyle(foreground)
+        .frame(height: 44)
+        .padding(.horizontal, title == nil ? 0 : 12)
+        .frame(minWidth: 44)
+        .background(
+            isSelected ? tokens.accent : tokens.elevatedSurface,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            if !isSelected {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(tokens.border.opacity(0.9), lineWidth: 1)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     @ViewBuilder
@@ -1249,11 +1213,15 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Label(selectedVoiceLanguage.title, systemImage: "globe")
-                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
+            composerToolbarControlLabel(
+                title: selectedVoiceLanguage.title,
+                systemImage: "globe",
+                accessibilityLabel: "语音语言"
+            )
         }
-        .buttonStyle(.bordered)
-        .tint(themeStore.tokens(for: colorScheme).accent)
+        .buttonStyle(.plain)
+        .accessibilityLabel("语音语言")
+        .accessibilityValue(selectedVoiceLanguage.title)
     }
 
     private var runSettingsMenu: some View {
@@ -1271,11 +1239,15 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Label("运行", systemImage: "gearshape")
-                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
+            composerToolbarControlLabel(
+                title: "运行",
+                systemImage: "gearshape",
+                accessibilityLabel: "运行设置"
+            )
         }
-        .buttonStyle(.bordered)
-        .tint(themeStore.tokens(for: colorScheme).accent)
+        .buttonStyle(.plain)
+        .accessibilityLabel("运行设置")
+        .accessibilityValue(selectedModelSummaryTitle)
     }
 
     private var modelOptionsMenu: some View {
@@ -1365,9 +1337,14 @@ struct ComposerView: View {
                 Text(permissionWireSummary)
             }
         } label: {
-            Label(composerState.permissionMode.title, systemImage: composerState.permissionMode.systemImage)
+            composerToolbarControlLabel(
+                title: composerState.permissionMode.title,
+                systemImage: composerState.permissionMode.systemImage,
+                tint: permissionTint,
+                accessibilityLabel: "权限模式"
+            )
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .accessibilityLabel("权限模式")
         .accessibilityValue(permissionTitle)
     }

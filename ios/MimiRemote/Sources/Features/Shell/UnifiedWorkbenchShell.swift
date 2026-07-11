@@ -74,25 +74,6 @@ struct UnifiedWorkbenchShell: View {
 
     private func sidebar(tokens: ThemeTokens) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Mimi Remote")
-                        .font(themeStore.uiFont(.title3, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(connectionSubtitle)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.tertiaryText)
-                }
-                Spacer()
-                Circle()
-                    .fill(connectionTone(tokens: tokens))
-                    .frame(width: 8, height: 8)
-                    .accessibilityLabel(connectionSubtitle)
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
-
             List(selection: $selection) {
                 Section {
                     sidebarDestinationRow(
@@ -177,6 +158,28 @@ struct UnifiedWorkbenchShell: View {
             .padding(14)
         }
         .background(tokens.sidebarBackground.ignoresSafeArea())
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                // 标题放进系统顶栏，才能与 iPad 的侧栏收起按钮保持同一行。
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Mimi Remote")
+                            .font(themeStore.uiFont(.headline, weight: .semibold))
+                            .foregroundStyle(tokens.primaryText)
+                        Text(connectionSubtitle)
+                            .font(themeStore.uiFont(.caption2))
+                            .foregroundStyle(tokens.tertiaryText)
+                    }
+
+                    Circle()
+                        .fill(connectionTone(tokens: tokens))
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Mimi Remote，\(connectionSubtitle)")
+            }
+        }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
         }

@@ -2740,7 +2740,9 @@ final class SessionStore: ObservableObject {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
-        let workspaces = Array(recentWorkspaces.prefix(8)).filter { workspace in
+        // 全局“最近”最终只展示 8 条，但要得到正确的全局 Top 8，必须读取每个已打开工作区的
+        // 首屏候选；不能先截断工作区，否则较早打开的工作区即使刚有新会话也永远不会入选。
+        let workspaces = recentWorkspaces.filter { workspace in
             // 当前工作区已经由 refreshAll/轮询维护完整首屏时，会话库直接复用本地投影。
             // 再用 limit=8 请求一次会和 limit=20 共用 gateway 预算，却无法命中 exact single-flight。
             !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
