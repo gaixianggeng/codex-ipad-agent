@@ -45,7 +45,9 @@ struct SettingsView: View {
     }
 
     private func settingsForm(tokens: ThemeTokens) -> some View {
-        Form {
+        let usage = sessionStore.accountCodexUsageWindowsDisplay
+
+        return Form {
             Section("Mac 连接") {
                 NavigationLink {
                     ConnectionManagementView()
@@ -56,16 +58,11 @@ struct SettingsView: View {
             }
 
             Section("Codex 用量") {
-                NavigationLink {
-                    CodexUsageSettingsView()
-                } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        LabeledContent("账户", value: sessionStore.accountCodexUsageWindowsDisplay.displayName)
-                        Text(sessionStore.accountCodexUsageWindowsDisplay.creditText)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                LabeledContent("账户", value: usage.displayName)
+                ForEach(usage.windows) { window in
+                    CodexUsageWindowRow(window: window, tint: tokens.accent)
                 }
+                LabeledContent("额度", value: usage.creditText)
             }
 
             Section {
@@ -105,6 +102,10 @@ struct SettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .task {
+            // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
+            await appStore.preflightConnection()
+        }
     }
 }
 
@@ -121,33 +122,31 @@ private struct ConnectionManagementView: View {
     }
 }
 
-private struct CodexUsageSettingsView: View {
-    @EnvironmentObject private var sessionStore: SessionStore
+private struct CodexUsageWindowRow: View {
+    let window: CodexUsageWindowDisplay
+    let tint: Color
 
     var body: some View {
-        let usage = sessionStore.accountCodexUsageWindowsDisplay
-
-        Form {
-            ForEach(usage.windows) { window in
-                Section(window.kind.title) {
-                    Gauge(value: window.progress ?? 0) {
-                        Text(window.primaryText)
-                    } currentValueLabel: {
-                        Text(window.usedPercentText ?? "等待刷新")
-                    }
-                    .gaugeStyle(.accessoryLinearCapacity)
-                    .tint(window.isExhausted ? .red : window.isNearLimit ? .orange : .accentColor)
-                    .accessibilityLabel("\(window.kind.title) 用量")
-                    .accessibilityValue(window.usedPercentText ?? "等待刷新")
-
-                    LabeledContent("重置", value: window.resetText)
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(window.kind.title)
+                Spacer()
+                Text(window.primaryText)
+                    .foregroundStyle(.secondary)
             }
-            Section {
-                LabeledContent("额度", value: usage.creditText)
+            Gauge(value: window.progress ?? 0) {
+                EmptyView()
             }
+            .gaugeStyle(.accessoryLinearCapacity)
+            .tint(tint)
+            Text("重置：\(window.resetText)")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
-        .navigationTitle("Codex 用量")
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(window.kind.title) 用量")
+        .accessibilityValue("\(window.primaryText)，\(window.resetText)")
     }
 }
 

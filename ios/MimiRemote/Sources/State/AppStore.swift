@@ -250,6 +250,7 @@ final class AppStore: ObservableObject {
     private let tokenStore = TokenStore()
     private let routeProbeTimeout: TimeInterval
     private let routeProbe: ConnectionRouteProbe
+    private var isConnectionPreflightRunning = false
     private var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
 #if DEBUG
@@ -629,6 +630,57 @@ final class AppStore: ObservableObject {
         } catch {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
+        }
+    }
+
+    /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
+    @discardableResult
+    func preflightConnection(force: Bool = false) async -> Bool {
+        guard isConfigured else {
+            connectionStatus = .idle
+            return false
+        }
+        if !force, case .connected = connectionStatus {
+            return true
+        }
+        // RootView 和设置页可能同时触发；只保留一次探测，避免重复建立 WebSocket。
+        guard !isConnectionPreflightRunning else {
+            return false
+        }
+        isConnectionPreflightRunning = true
+        defer { isConnectionPreflightRunning = false }
+
+        connectionStatus = .testing
+        lastError = nil
+
+        do {
+            let candidates = try Self.connectionCandidates(
+                endpoint: endpoint,
+                fallbackEndpoint: fallbackEndpoint,
+                activeEndpoint: activeEndpoint,
+                preferPrimary: true
+            )
+            var latestError: Error?
+            for candidate in candidates {
+                do {
+                    try await routeProbe(candidate, token, routeProbeTimeout)
+                    _ = try activateConnectionRoute(candidate)
+                    connectionStatus = .connected(activeConnectionRouteTitle)
+                    lastError = nil
+                    return true
+                } catch {
+                    latestError = error
+                }
+            }
+            throw ConnectionRouteSelectionError.unavailable(lastError: latestError)
+        } catch {
+            if Task.isCancelled || error is CancellationError {
+                connectionStatus = .idle
+                return false
+            }
+            connectionStatus = .failed(error.localizedDescription)
+            lastError = error.localizedDescription
+            return false
         }
     }
 

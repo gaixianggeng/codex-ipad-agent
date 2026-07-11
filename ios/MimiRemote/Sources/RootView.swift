@@ -28,6 +28,10 @@ struct RootView: View {
         .task {
             await sessionStore.bootstrap(restoring: decodedSessionRestoreSnapshot)
         }
+        .task {
+            // 冷启动先并行探测真实控制面和 WebSocket，设置页无需用户手动测试即可看到连接状态。
+            await appStore.preflightConnection()
+        }
         .task(id: scenePhase == .active ? sessionStore.selectedProjectID : nil) {
             guard scenePhase == .active else {
                 return

@@ -180,6 +180,81 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787", "https://relay.example.com"])
     }
 
+    func testConnectionPreflightPublishesConnectedStatus() async throws {
+        let suiteName = "PairingLinkTests.ConnectionPreflight.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
+            await recorder.record(endpoint)
+        }
+        store.token = "test-token"
+
+        let connected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertTrue(connected)
+        XCTAssertEqual(store.connectionStatus, .connected("首选链路"))
+        XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787"])
+    }
+
+    func testConnectionPreflightDoesNotRepeatAfterSuccess() async throws {
+        let suiteName = "PairingLinkTests.ConnectionPreflightReuse.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
+            await recorder.record(endpoint)
+        }
+        store.token = "test-token"
+
+        let firstConnected = await store.preflightConnection()
+        let secondConnected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertTrue(firstConnected)
+        XCTAssertTrue(secondConnected)
+        XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787"])
+    }
+
+    func testConnectionPreflightPublishesFailure() async throws {
+        let suiteName = "PairingLinkTests.ConnectionPreflightFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
+        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { _, _, _ in
+            throw URLError(.cannotConnectToHost)
+        }
+        store.token = "test-token"
+
+        let connected = await store.preflightConnection()
+
+        XCTAssertFalse(connected)
+        guard case .failed = store.connectionStatus else {
+            return XCTFail("探测失败后应展示连接失败")
+        }
+    }
+
+    func testConnectionPreflightSkipsUnconfiguredStore() async throws {
+        let suiteName = "PairingLinkTests.ConnectionPreflightUnconfigured.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
+            await recorder.record(endpoint)
+        }
+        store.token = ""
+
+        let connected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertFalse(connected)
+        XCTAssertEqual(store.connectionStatus, .idle)
+        XCTAssertEqual(probedEndpoints, [])
+    }
+
     func testFormatsConnectionTestDuration() {
         XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 98), "98 ms")
         XCTAssertEqual(AppStore.connectionTestDurationText(milliseconds: 1_250), "1.2 秒")
