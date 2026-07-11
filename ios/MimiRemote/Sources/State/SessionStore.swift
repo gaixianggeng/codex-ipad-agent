@@ -329,6 +329,8 @@ private struct HistoryLoadJob {
     let loadMode: HistoryMessagesPage.LoadMode
     let allowPolicyRetry: Bool
     let task: Task<HistoryFirstPageResult, Error>
+    var requiresForegroundReporting: Bool
+    var foregroundSuccessStatusMessage: String?
 }
 
 struct ProjectSessionListSnapshot: Equatable {
@@ -3769,6 +3771,28 @@ final class SessionStore: ObservableObject {
         if let existing = historyLoadJobsBySessionID[session.id] {
             if existing.loadMode == loadMode {
                 // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
+                // 前台刷新加入 quiet job 后必须提升共享 job 的反馈级别；否则 quiet waiter
+                // 若先恢复，会先移除 job 并吞掉失败提示，手动刷新只能静默返回 false。
+                if !quiet {
+                    promoteHistoryLoadJobForForegroundReporting(
+                        existing,
+                        sessionID: session.id,
+                        successStatusMessage: successStatusMessage
+                    )
+                    setHistoryLoadProgress(
+                        sessionID: session.id,
+                        title: loadMode == .full ? "请求完整历史" : "请求缩略历史",
+                        fraction: 0.32
+                    )
+                    let didLoad = await awaitHistoryLoadJob(
+                        existing,
+                        session: session,
+                        quiet: false,
+                        successStatusMessage: successStatusMessage
+                    )
+                    clearHistoryLoadProgress(sessionID: session.id)
+                    return didLoad
+                }
                 return await awaitHistoryLoadJob(
                     existing,
                     session: session,
@@ -3802,7 +3826,9 @@ final class SessionStore: ObservableObject {
             sessionSignature: signature,
             loadMode: loadMode,
             allowPolicyRetry: allowPolicyRetry,
-            task: task
+            task: task,
+            requiresForegroundReporting: !quiet,
+            foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage
         )
         historyLoadJobsBySessionID[session.id] = job
         if !quiet {
@@ -3822,6 +3848,25 @@ final class SessionStore: ObservableObject {
             setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? "请求完整历史" : "请求缩略历史", fraction: 0.32)
         }
         return await awaitHistoryLoadJob(job, session: session, quiet: quiet, successStatusMessage: successStatusMessage)
+    }
+
+    private func promoteHistoryLoadJobForForegroundReporting(
+        _ job: HistoryLoadJob,
+        sessionID: SessionID,
+        successStatusMessage: String?
+    ) {
+        guard var current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
+            return
+        }
+        current.requiresForegroundReporting = true
+        if let successStatusMessage {
+            current.foregroundSuccessStatusMessage = successStatusMessage
+        }
+        historyLoadJobsBySessionID[sessionID] = current
+        setHistoryLoadNotice(
+            sessionID: sessionID,
+            kind: current.loadMode == .full ? .loadingFull : .loadingSummary
+        )
     }
 
     private func scheduleQuietHistoryRefresh(for session: AgentSession) {
@@ -3877,19 +3922,21 @@ final class SessionStore: ObservableObject {
         quiet: Bool,
         successStatusMessage: String?
     ) -> Bool {
-        guard historyLoadJobsBySessionID[sessionID]?.token == job.token else {
+        guard let current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
             // 当前 job 已被用户选择 summary 或新的刷新取代；旧结果可以完成，但不能覆盖界面。
             return historyLoadedSignatureBySessionID[sessionID] == job.sessionSignature
         }
+        let effectiveQuiet = quiet && !current.requiresForegroundReporting
+        let effectiveSuccessStatusMessage = current.foregroundSuccessStatusMessage ?? successStatusMessage
         historyLoadJobsBySessionID.removeValue(forKey: sessionID)
         guard isCurrentHistoryPageRequest(sessionID: sessionID, token: result.token) else {
             return false
         }
-        if !quiet {
+        if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: "解析历史消息", fraction: 0.74)
         }
         applyHistoryFirstPage(result.page, sessionID: sessionID)
-        if !quiet {
+        if !effectiveQuiet {
             setHistoryLoadProgress(sessionID: sessionID, title: "更新界面", fraction: 0.94)
         }
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
@@ -3897,11 +3944,11 @@ final class SessionStore: ObservableObject {
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
         if job.loadMode == .full {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
-        } else if !quiet {
+        } else if !effectiveQuiet {
             setHistoryLoadNotice(sessionID: sessionID, kind: .summaryLoaded)
         }
-        if let successStatusMessage {
-            setStatusMessage(successStatusMessage)
+        if let effectiveSuccessStatusMessage {
+            setStatusMessage(effectiveSuccessStatusMessage)
         }
         return true
     }
@@ -3913,9 +3960,10 @@ final class SessionStore: ObservableObject {
         quiet: Bool
     ) async -> Bool {
         let sessionID = session.id
-        guard historyLoadJobsBySessionID[sessionID]?.token == job.token else {
+        guard let current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
             return false
         }
+        let effectiveQuiet = quiet && !current.requiresForegroundReporting
         historyLoadJobsBySessionID.removeValue(forKey: sessionID)
         if error is CancellationError {
             return false
@@ -3928,23 +3976,23 @@ final class SessionStore: ObservableObject {
             switch job.loadMode {
             case .full:
                 let message = "完整历史内容较大，正在切换缩略历史。"
-                if !quiet {
+                if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                     setStatusMessage(message)
                 }
                 return await loadHistory(
                     for: session,
-                    quiet: quiet,
+                    quiet: effectiveQuiet,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
-                    successStatusMessage: quiet ? nil : "已自动加载缩略历史"
+                    successStatusMessage: effectiveQuiet ? nil : "已自动加载缩略历史"
                 )
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
                 let seconds = policyFailure.retryAfterSeconds ?? Int((delay + 999_999_999) / 1_000_000_000)
                 let message = "服务器临时限流，\(seconds) 秒后自动重试缩略历史。"
-                if !quiet {
+                if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                     setStatusMessage(message)
                 }
@@ -3957,11 +4005,11 @@ final class SessionStore: ObservableObject {
                 }
                 return await loadHistory(
                     for: session,
-                    quiet: quiet,
+                    quiet: effectiveQuiet,
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
-                    successStatusMessage: quiet ? nil : "已加载缩略历史",
+                    successStatusMessage: effectiveQuiet ? nil : "已加载缩略历史",
                     allowPolicyRetry: false
                 )
             default:
@@ -3969,13 +4017,13 @@ final class SessionStore: ObservableObject {
             }
         }
         if job.loadMode == .full {
-            if !quiet {
+            if !effectiveQuiet {
                 setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
                 setStatusMessage("完整历史加载失败：\(error.localizedDescription)")
             }
         } else {
             // 终态失败必须离开“正在加载”横幅，否则重连触发的静默刷新会让界面永远停在加载中。
-            if !quiet {
+            if !effectiveQuiet {
                 setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
                 setErrorMessage("缩略历史加载失败：\(error.localizedDescription)")
             }

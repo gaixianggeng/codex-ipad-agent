@@ -6665,6 +6665,71 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])
     }
 
+    func testManualRefreshJoiningQuietHistoryFailureStillReportsForegroundError() async throws {
+        let project = makeProject(id: "proj_quiet_joined_by_manual")
+        let history = makeSession(
+            id: "codex_quiet_joined_by_manual",
+            projectID: project.id,
+            title: "前台加入静默刷新",
+            status: "history",
+            source: "codex",
+            resumeID: "quiet-joined-by-manual",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let firstSelectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(id: "rollout:manual-join-cached", role: "assistant", content: "已缓存历史", createdAt: Date(timeIntervalSince1970: 10))
+            ])
+        )
+        await firstSelectTask.value
+
+        store.returnToSessionList()
+        let updated = makeSession(
+            id: history.id,
+            projectID: project.id,
+            title: history.title,
+            status: "history",
+            source: "codex",
+            resumeID: history.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        await store.selectSession(updated)
+        await client.waitForHistoryRequestCount(2)
+
+        let manualRefreshTask = Task { await store.refreshCurrentContext() }
+        for _ in 0..<100 {
+            if store.isRefreshingSelectedSession {
+                break
+            }
+            await Task.yield()
+        }
+        XCTAssertTrue(store.isRefreshingSelectedSession)
+
+        // 手动刷新应加入已有 quiet job，不增加请求；但共享 job 必须升级为前台反馈。
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        client.failHistoryRequest(at: 1, with: MockError.timeout)
+        await manualRefreshTask.value
+
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
+        XCTAssertTrue(store.statusMessage?.contains("完整历史加载失败") == true)
+        XCTAssertFalse(store.isRefreshingSelectedSession)
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])
+    }
+
     func testSummaryHistoryIsOnlyLoadedAfterUserChoosesIt() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_large", projectID: project.id, title: "大历史", status: "history", source: "codex", resumeID: "large")

@@ -96,7 +96,11 @@ struct WorkspaceRootView: View {
             }
         }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
-            OpenWorkspaceSheet()
+            OpenWorkspaceSheet { workspaceID in
+                // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
+                // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
+                selectedWorkspaceID = workspaceID
+            }
         }
         .background(tokens.background.ignoresSafeArea())
     }

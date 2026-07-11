@@ -517,6 +517,7 @@ struct OpenWorkspaceSheet: View {
     @State private var previewingPath: String?
     // 快速连点目录时让最后一次请求胜出，避免慢响应把列表回写成旧目录。
     @State private var browseRequestID = 0
+    var onOpened: (String) -> Void = { _ in }
 
     var body: some View {
         NavigationStack {
@@ -803,6 +804,9 @@ struct OpenWorkspaceSheet: View {
         localError = nil
         defer { isOpening = false }
         if await sessionStore.openWorkspace(path: targetPath) {
+            if let openedWorkspaceID = sessionStore.selectedProjectID {
+                onOpened(openedWorkspaceID)
+            }
             dismiss()
         } else {
             localError = userFacingOpenWorkspaceError(sessionStore.errorMessage, path: targetPath)
