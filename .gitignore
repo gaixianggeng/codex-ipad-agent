@@ -33,11 +33,8 @@ xcuserdata/
 ios/MimiRemote/build/
 ios/MimiRemote/build-test/
 
-# Local planning notes that are useful privately but noisy for public users
-docs/codex-app-server-runtime-refactor.md
-docs/codex-app-server-runtime-review-fixes.md
+# Local implementation design kept out of public releases
 docs/ios-markdown-rendering-design.md
-docs/release-plan.md
 
 # Logs and temporary files
 /logs/

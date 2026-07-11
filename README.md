@@ -12,7 +12,7 @@ Mimi Remote 是一个原生 iPhone / iPad 控制台，用来连接用户自己 M
 - 本项目不是任何商业产品的“免费替代品”，也不以复刻其他产品的 UI、交互或宣传语作为目标。
 - `Codex`、`OpenAI` 等名称只用于说明兼容的用户自有工具链；项目不会使用官方 Logo 或容易造成混淆的品牌元素。
 - 如果后续参考其他开源项目的代码、设计或文案，必须保留许可证和归属说明，并优先做出自己的产品取舍。
-- 许可证、归属和品牌边界见 [LICENSE](LICENSE)、[NOTICE.md](NOTICE.md) 和 [docs/ip-and-brand-policy.md](docs/ip-and-brand-policy.md)；从私有开发仓库整理到公开仓库的流程见 [docs/open-source-release.md](docs/open-source-release.md)。
+- 本项目使用 [MIT License](LICENSE)，第三方归属说明见 [NOTICE.md](NOTICE.md)。
 - 当前个人部署使用公网 VPS + SSH 反向隧道访问本机 `agentd`；迁移记录、架构说明和排障命令见 [docs/relay-vps-ops.md](docs/relay-vps-ops.md)。
 
 ## 方案
@@ -614,7 +614,7 @@ curl -H "Authorization: Bearer $AGENTD_TOKEN" \
 
 ## 发布
 
-从私有开发仓库同步到公开仓库 `gaixianggeng/mimi-remote` 的流程见 [docs/open-source-release.md](docs/open-source-release.md)。这里的发布指公开仓库内基于 tag 的二进制和 Homebrew 发布。
+这里的发布指公开仓库内基于 tag 的二进制和 Homebrew 发布。
 
 发布使用 GoReleaser。Release workflow 固定使用已验证的 GoReleaser `v2.9.0`，原因是当前 Homebrew Formula + `brew services` 的发布方式需要稳定生成 `Formula/mimi-remote.rb`。仓库 tag 形如 `v0.1.0` 时，GitHub Actions 会：
 

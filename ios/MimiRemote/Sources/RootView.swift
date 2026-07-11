@@ -126,6 +126,12 @@ struct RootView: View {
                         await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)
                         selectedAppTabRawValue = AppTab.sessions.rawValue
                     }
+                },
+                onOpenSession: { session in
+                    Task {
+                        await sessionStore.selectSession(session)
+                        selectedAppTabRawValue = AppTab.sessions.rawValue
+                    }
                 }
             )
                 .environment(\.themeSystemColorScheme, colorScheme)

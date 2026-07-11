@@ -225,6 +225,13 @@ struct UnifiedWorkbenchShell: View {
                             selection = .session(sessionID)
                         }
                     }
+                },
+                onOpenSession: { session in
+                    Task {
+                        // 最近会话属于当前工作区索引，先恢复会话上下文，再切换详情路由。
+                        await sessionStore.selectSession(session)
+                        selection = .session(session.id)
+                    }
                 }
             )
         case .session:
@@ -296,6 +303,7 @@ private struct NewSessionSheet: View {
     @AppStorage("newSession.lastRuntime") private var lastRuntimeID = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var selectedWorkspaceID = ""
     @State private var isCreating = false
+    @State private var didLeaveSheetForCreation = false
 
     let onCreated: (SessionID) -> Void
     let onOpenWorkspaces: () -> Void
@@ -382,6 +390,12 @@ private struct NewSessionSheet: View {
                 lastRuntimeID = WorkspaceSessionRuntimeChoice.codex.rawValue
             }
         }
+        .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
+            guard isCreating,
+                  let sessionID,
+                  sessionID.hasPrefix("local:") else { return }
+            leaveSheetForCreatedSession(sessionID)
+        }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
@@ -398,6 +412,12 @@ private struct NewSessionSheet: View {
         lastWorkspaceID = project.id
         await sessionStore.startNewSession(in: project, runtimeProvider: choice.runtimeProvider)
         guard let sessionID = sessionStore.selectedSessionID else { return }
+        leaveSheetForCreatedSession(sessionID)
+    }
+
+    private func leaveSheetForCreatedSession(_ sessionID: SessionID) {
+        guard !didLeaveSheetForCreation else { return }
+        didLeaveSheetForCreation = true
         dismiss()
         onCreated(sessionID)
     }

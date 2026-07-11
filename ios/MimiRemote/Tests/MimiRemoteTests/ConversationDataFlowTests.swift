@@ -5777,7 +5777,7 @@ final class ConversationDataFlowTests: XCTestCase {
         let created = makeSession(id: "sess_created_running", projectID: project.id, title: "刚创建", status: "running", source: "codex")
         let client = MockSessionStoreClient(
             projects: [project],
-            sessions: [],
+            sessions: [created],
             createSessionResponse: try makeCreateSessionResponse(session: created),
             messagesError: AgentAPIError.server(status: 504, message: "thread/read timeout")
         )
@@ -5804,6 +5804,45 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(store.errorMessage)
         XCTAssertEqual(conversationStore.messages(for: created.id).map(\.content), ["交互式会话已启动。"])
         XCTAssertEqual(sockets.count, 1)
+
+        // 回前台会再次 refreshAll；空 thread 已记录空快照后，不能在首个 turn 前读取不存在的 rollout。
+        await store.refreshAll(autoAttach: true)
+        XCTAssertTrue(client.requestedMessageSessionIDs.isEmpty)
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testStartingEmptyInteractiveSessionPublishesOptimisticSessionBeforeBackendReturns() async throws {
+        let project = makeProject(id: "proj_empty_optimistic")
+        let created = makeSession(
+            id: "sess_empty_optimistic",
+            projectID: project.id,
+            title: "新会话",
+            status: "running",
+            source: "codex"
+        )
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let createTask = Task { await store.startNewSession(in: project) }
+        await client.waitForCreateRequestCount(1)
+
+        // 空会话也必须先发布本地占位，让弹窗可以立即关闭并进入会话页；不能等 thread/start 返回。
+        let optimisticSessionID = try XCTUnwrap(store.selectedSessionID)
+        XCTAssertTrue(optimisticSessionID.hasPrefix("local:"))
+        XCTAssertEqual(store.selectedSession?.title, "新会话")
+        XCTAssertEqual(store.selectedSession?.source, "local")
+        XCTAssertEqual(client.modelOptionsCallCount, 0, "空会话没有 turn/start，不应先请求 model/list")
+
+        client.resolveCreate(with: .success(try makeCreateSessionResponse(session: created)))
+        await createTask.value
+
+        XCTAssertEqual(store.selectedSessionID, created.id)
+        XCTAssertFalse(store.sessions.contains { $0.id == optimisticSessionID })
     }
 
     // 回归：新建会话在创建瞬间就绑定 runtime。入口显式选择 Claude 时，createSession 请求必须
@@ -6567,6 +6606,63 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(conversationStore.messages(for: running.id).map(\.content), ["合并首屏历史"])
         XCTAssertNil(store.selectedHistorySavingsNotice)
+    }
+
+    func testQuietHistoryRefreshFailureKeepsCachedMessagesWithoutShowingFailureBanner() async throws {
+        let project = makeProject(id: "proj_quiet_history")
+        let history = makeSession(
+            id: "codex_quiet_history",
+            projectID: project.id,
+            title: "安静刷新",
+            status: "history",
+            source: "codex",
+            resumeID: "quiet-history",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let firstSelectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(
+            at: 0,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(id: "rollout:cached", role: "assistant", content: "已缓存历史", createdAt: Date(timeIntervalSince1970: 10))
+            ])
+        )
+        await firstSelectTask.value
+
+        store.returnToSessionList()
+        // 测试进程可能继承 Debug Simulator 的连接错误；先清掉基线，只验证 quiet 请求不制造新错误。
+        store.dismissErrorMessage()
+        let updated = makeSession(
+            id: history.id,
+            projectID: project.id,
+            title: history.title,
+            status: "history",
+            source: "codex",
+            resumeID: history.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        await store.selectSession(updated)
+        await client.waitForHistoryRequestCount(2)
+
+        // 后台补拉不能把“正在加载完整历史”或失败横幅盖到已有会话上。
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+        client.failHistoryRequest(at: 1, with: MockError.timeout)
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])
     }
 
     func testSummaryHistoryIsOnlyLoadedAfterUserChoosesIt() async {
@@ -10385,6 +10481,7 @@ private final class DelayedCreateSessionClient: SessionStoreAPIClient {
     private var createContinuations: [CheckedContinuation<CreateSessionResponse, Error>] = []
     private var requestCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     var createPayloads: [CreateSessionRequest] = []
+    private(set) var modelOptionsCallCount = 0
 
     init(projects: [AgentProject], sessions: [AgentSession]) {
         self.projectsResult = projects
@@ -10393,6 +10490,11 @@ private final class DelayedCreateSessionClient: SessionStoreAPIClient {
 
     func projects() async throws -> [AgentProject] {
         projectsResult
+    }
+
+    func modelOptions() async throws -> [CodexAppServerModelOption] {
+        modelOptionsCallCount += 1
+        return []
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {

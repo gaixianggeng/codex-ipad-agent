@@ -915,6 +915,7 @@ final class SessionStore: ObservableObject {
     private var historyLoadJobTokenBySessionID: [SessionID: Int] = [:]
     private var historyLoadedSignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     private var historyLoadedQualityBySessionID: [SessionID: HistoryLoadQuality] = [:]
+    private var freshEmptyHistorySignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     private var initialHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published private var historyLoadProgressBySessionID: [SessionID: HistoryLoadProgress] = [:]
     @Published private var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
@@ -3269,6 +3270,8 @@ final class SessionStore: ObservableObject {
                 setErrorMessage("发送失败：WebSocket 未连接")
                 return false
             }
+            // 只有后端通道接受首个 turn 后才解除 fresh-empty 保护；本地发送失败时 thread 仍无 rollout。
+            freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
             return true
         }
 
@@ -3567,7 +3570,9 @@ final class SessionStore: ObservableObject {
         clientMessageID: ClientMessageID? = nil,
         initialGoalObjective: String? = nil
     ) async -> Bool {
-        let payload = await payloadResolvingRequiredModel(payload)
+        // 空会话只执行 thread/start，没有 turn/start；提前拉 model/list 既不会影响线程创建，
+        // 还会在远程链路上平白增加一次串行往返。只有真正要发送首轮输入时才解析模型。
+        let payload = payload.isEmpty ? payload : await payloadResolvingRequiredModel(payload)
         if !payload.isEmpty, let notice = selectedQuotaNotice, notice.blocksSending {
             setErrorMessage(notice.message)
             return false
@@ -3581,11 +3586,15 @@ final class SessionStore: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         let prompt = payload.previewText
-        let optimisticSessionID = optimisticSessionID(projectID: projectID, resume: resume, clientMessageID: clientMessageID, prompt: prompt)
-        if let optimisticSessionID,
-           let clientMessageID {
-            // 先做本地回显，网络慢或 create 失败时用户输入仍留在时间线；
-            // 服务端确认后再用 client_message_id 合并到真实会话。
+        let optimisticSessionID = optimisticSessionID(
+            projectID: projectID,
+            resume: resume,
+            clientMessageID: clientMessageID,
+            prompt: prompt
+        ) ?? (resume == nil && payload.isEmpty ? "local:\(projectID):\(UUID().uuidString)" : nil)
+        if let optimisticSessionID {
+            // 空会话也先发布本地占位，让 UI 立即离开创建弹窗；带首轮输入时继续用
+            // client_message_id 合并本地气泡，服务端确认后再迁移到真实 session_id。
             if resume == nil {
                 upsert(makeOptimisticSession(
                     id: optimisticSessionID,
@@ -3597,9 +3606,11 @@ final class SessionStore: ObservableObject {
             setSelectedProjectID(projectID)
             setSelectedSessionID(optimisticSessionID)
             insertExpandedProjectID(projectID)
-            conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
-            setSessionListProjection(sessionID: optimisticSessionID, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
-            setForegroundActivity(.waitingForAssistant, sessionID: optimisticSessionID)
+            if let clientMessageID {
+                conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
+                setSessionListProjection(sessionID: optimisticSessionID, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
+                setForegroundActivity(.waitingForAssistant, sessionID: optimisticSessionID)
+            }
         }
 
         do {
@@ -3619,14 +3630,15 @@ final class SessionStore: ObservableObject {
             let responseSession = self.session(response.session, in: workspace)
 
             if let optimisticSessionID,
-               let clientMessageID,
                optimisticSessionID != responseSession.id {
                 // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
                 // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
-                conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
-                moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
-                migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
-                migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
+                if let clientMessageID {
+                    conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
+                    moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
+                    migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
+                    migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
+                }
                 if resume == nil {
                     removeSession(optimisticSessionID)
                 }
@@ -3648,7 +3660,11 @@ final class SessionStore: ObservableObject {
             } else if resume != nil || !payload.isEmpty {
                 didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
             } else {
-                didLoadInitialHistory = false
+                // 新建空 thread 在首个 turn 前没有 rollout。把当前空快照标成已加载，前台恢复时
+                // 就不会误打 thread/turns/list 并把 no-rollout 错报成“大历史加载失败”；首个 turn
+                // 会改变 updatedAt/revision/lastSeq，届时签名自然失效并允许正常补拉。
+                markEmptyHistoryLoaded(for: responseSession)
+                didLoadInitialHistory = true
             }
             if !prompt.isEmpty {
                 if let clientMessageID {
@@ -3685,10 +3701,11 @@ final class SessionStore: ObservableObject {
             setErrorMessage(nil)
             return true
         } catch {
-            if let optimisticSessionID,
-               let clientMessageID {
-                conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: optimisticSessionID, status: .failed)
-                clearSessionListProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
+            if let optimisticSessionID {
+                if let clientMessageID {
+                    conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: optimisticSessionID, status: .failed)
+                    clearSessionListProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
+                }
                 updateSession(optimisticSessionID) { item in
                     item.status = "failed"
                 }
@@ -3699,12 +3716,38 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    private func markEmptyHistoryLoaded(for session: AgentSession) {
+        conversationStore.replaceHistorySnapshot([], sessionID: session.id)
+        historyLoadedSignatureBySessionID[session.id] = HistoryLoadSignature(session: session)
+        historyLoadedQualityBySessionID[session.id] = .full
+        freshEmptyHistorySignatureBySessionID[session.id] = HistoryLoadSignature(session: session)
+        historySavingsNoticesBySessionID.removeValue(forKey: session.id)
+    }
+
     @discardableResult
     private func loadHistoryIfNeeded(for session: AgentSession) async -> Bool {
+        if canReuseFreshEmptyHistory(for: session) {
+            return true
+        }
         guard !canReuseLoadedHistory(for: session, loadMode: .full) else {
             return true
         }
         return await loadHistory(for: session)
+    }
+
+    private func canReuseFreshEmptyHistory(for session: AgentSession) -> Bool {
+        guard let baseline = freshEmptyHistorySignatureBySessionID[session.id] else {
+            return false
+        }
+        // thread/start 与 thread/list 的 updatedAt 来源并不稳定，不能用它判断首个 turn 是否存在。
+        // 本地首发会主动清除此标记；远端状态若已出现 turn/seq/revision，也立即恢复正常历史补拉。
+        let isStillFresh = baseline.revision == session.revision
+            && baseline.lastSeq == session.lastSeq
+            && session.activeTurnID == nil
+        if !isStillFresh {
+            freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
+        }
+        return isStillFresh
     }
 
     // quiet 模式用于切回已加载会话时的后台补拉：界面继续展示缓存，不出进度条，
@@ -3762,7 +3805,9 @@ final class SessionStore: ObservableObject {
             task: task
         )
         historyLoadJobsBySessionID[session.id] = job
-        setHistoryLoadNotice(sessionID: session.id, kind: loadMode == .full ? .loadingFull : .loadingSummary)
+        if !quiet {
+            setHistoryLoadNotice(sessionID: session.id, kind: loadMode == .full ? .loadingFull : .loadingSummary)
+        }
 
         if !quiet {
             setHistoryLoadProgress(sessionID: session.id, title: loadMode == .full ? "准备加载完整历史" : "准备加载缩略历史", fraction: 0.08)
@@ -3852,7 +3897,7 @@ final class SessionStore: ObservableObject {
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
         if job.loadMode == .full {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
-        } else {
+        } else if !quiet {
             setHistoryLoadNotice(sessionID: sessionID, kind: .summaryLoaded)
         }
         if let successStatusMessage {
@@ -3883,8 +3928,8 @@ final class SessionStore: ObservableObject {
             switch job.loadMode {
             case .full:
                 let message = "完整历史内容较大，正在切换缩略历史。"
-                setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                 if !quiet {
+                    setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                     setStatusMessage(message)
                 }
                 return await loadHistory(
@@ -3899,8 +3944,8 @@ final class SessionStore: ObservableObject {
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
                 let seconds = policyFailure.retryAfterSeconds ?? Int((delay + 999_999_999) / 1_000_000_000)
                 let message = "服务器临时限流，\(seconds) 秒后自动重试缩略历史。"
-                setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                 if !quiet {
+                    setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                     setStatusMessage(message)
                 }
                 try? await Task.sleep(nanoseconds: delay)
@@ -3924,14 +3969,16 @@ final class SessionStore: ObservableObject {
             }
         }
         if job.loadMode == .full {
-            setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
             if !quiet {
+                setHistoryLoadNotice(sessionID: sessionID, kind: .fullFailed)
                 setStatusMessage("完整历史加载失败：\(error.localizedDescription)")
             }
         } else {
             // 终态失败必须离开“正在加载”横幅，否则重连触发的静默刷新会让界面永远停在加载中。
-            setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
-            setErrorMessage("缩略历史加载失败：\(error.localizedDescription)")
+            if !quiet {
+                setHistoryLoadNotice(sessionID: sessionID, kind: .summaryFailed)
+                setErrorMessage("缩略历史加载失败：\(error.localizedDescription)")
+            }
         }
         return false
     }
@@ -6343,6 +6390,7 @@ final class SessionStore: ObservableObject {
         historyLoadJobTokenBySessionID = [:]
         historyLoadedSignatureBySessionID = [:]
         historyLoadedQualityBySessionID = [:]
+        freshEmptyHistorySignatureBySessionID = [:]
         initialHistoryLoadingSessionIDs = []
         historyLoadProgressBySessionID = [:]
         historySavingsNoticesBySessionID = [:]
