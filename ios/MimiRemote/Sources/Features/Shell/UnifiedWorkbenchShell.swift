@@ -3,12 +3,12 @@ import SwiftUI
 enum AppDestination: Hashable {
     case sessions
     case workspaces
-    case settings
     case session(SessionID)
 }
 
 private enum AppSheetDestination: String, Identifiable {
     case newSession
+    case settings
 
     var id: String { rawValue }
 }
@@ -50,6 +50,8 @@ struct UnifiedWorkbenchShell: View {
                         selection = .workspaces
                     }
                 )
+            case .settings:
+                SettingsView(isInitialSetup: false)
             }
         }
         .onAppear {
@@ -141,7 +143,8 @@ struct UnifiedWorkbenchShell: View {
 
             VStack(spacing: 8) {
                 Button {
-                    selection = .settings
+                    // 设置是临时配置面板，不改变用户当前所在的会话或工作区。
+                    presentedSheet = .settings
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "gearshape")
@@ -150,10 +153,10 @@ struct UnifiedWorkbenchShell: View {
                         Spacer()
                     }
                     .font(themeStore.uiFont(.callout, weight: .medium))
-                    .foregroundStyle(selection == .settings ? tokens.primaryText : tokens.secondaryText)
+                    .foregroundStyle(presentedSheet == .settings ? tokens.primaryText : tokens.secondaryText)
                     .padding(.horizontal, 12)
                     .frame(height: 40)
-                    .background(selection == .settings ? tokens.selectionFill : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(presentedSheet == .settings ? tokens.selectionFill : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
 
@@ -162,10 +165,12 @@ struct UnifiedWorkbenchShell: View {
                 } label: {
                     Label("新会话", systemImage: "plus")
                         .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .foregroundStyle(tokens.primaryActionForeground)
                         .frame(maxWidth: .infinity)
                         .frame(height: 46)
                 }
                 .buttonStyle(.glassProminent)
+                .buttonBorderShape(.roundedRectangle(radius: 12))
                 .tint(tokens.primaryAction)
                 .accessibilityLabel("新建会话")
             }
@@ -219,8 +224,6 @@ struct UnifiedWorkbenchShell: View {
                     }
                 }
             )
-        case .settings:
-            SettingsView(isInitialSetup: false, showsDoneButton: false)
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
         }

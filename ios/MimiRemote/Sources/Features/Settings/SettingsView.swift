@@ -33,7 +33,14 @@ struct SettingsView: View {
             .toolbar {
                 if !isInitialSetup && showsDoneButton {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("完成") { dismiss() }
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonBorderShape(.circle)
+                        .accessibilityLabel("关闭设置")
+                        .accessibilityIdentifier("settings.close")
                     }
                 }
             }

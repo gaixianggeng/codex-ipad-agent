@@ -243,6 +243,11 @@ private struct SessionListFirstPageRequestKey: Hashable {
     let limit: Int
 }
 
+private struct SessionListBudgetKey: Hashable {
+    let connectionGeneration: Int
+    let cwd: String
+}
+
 private struct SessionListFirstPageInFlight {
     let task: Task<SessionsPage, Error>
 }
@@ -280,6 +285,11 @@ private struct HistoryFirstPageFetchFailure: LocalizedError {
 private struct HistoryPolicyFailure: Equatable {
     let retryAfterNanoseconds: UInt64?
     let retryAfterSeconds: Int?
+}
+
+private struct SessionListPolicyFailure: Equatable {
+    let retryAfterNanoseconds: UInt64
+    let retryAfterSeconds: Int
 }
 
 private enum HistoryFirstPageCachePolicy: Equatable {
@@ -856,6 +866,8 @@ final class SessionStore: ObservableObject {
     private let webSocketFactory: () -> any SessionWebSocketClient
     private let sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)?
     private let webSocketReconnectDelayNanoseconds: (Int) -> UInt64
+    private let sessionListNow: () -> Date
+    private let sessionListSleep: (UInt64) async -> Void
     private var webSocket: (any SessionWebSocketClient)?
     private var connectedSessionID: String?
     private var webSocketConnectionGeneration = 0
@@ -892,6 +904,7 @@ final class SessionStore: ObservableObject {
     private var sessionPageLoadingTokenByProjectID: [String: Int] = [:]
     private var sessionListFirstPageInFlightByKey: [SessionListFirstPageRequestKey: SessionListFirstPageInFlight] = [:]
     private var sessionListFirstPageCacheByKey: [SessionListFirstPageRequestKey: SessionListFirstPageCacheEntry] = [:]
+    private var sessionListCooldownUntilByBudgetKey: [SessionListBudgetKey: Date] = [:]
     private var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
     private var historyPreviousCursorBySessionID: [SessionID: String] = [:]
     private var historyHasMoreBeforeBySessionID: [SessionID: Bool] = [:]
@@ -943,7 +956,11 @@ final class SessionStore: ObservableObject {
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
-        webSocketReconnectDelayNanoseconds: ((Int) -> UInt64)? = nil
+        webSocketReconnectDelayNanoseconds: ((Int) -> UInt64)? = nil,
+        sessionListNow: @escaping () -> Date = Date.init,
+        sessionListSleep: @escaping (UInt64) async -> Void = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
     ) {
         self.appStore = appStore
         self.conversationStore = conversationStore
@@ -1007,6 +1024,8 @@ final class SessionStore: ObservableObject {
             self.sessionWebSocketFactory = nil
         }
         self.webSocketReconnectDelayNanoseconds = webSocketReconnectDelayNanoseconds ?? Self.defaultWebSocketReconnectDelayNanoseconds
+        self.sessionListNow = sessionListNow
+        self.sessionListSleep = sessionListSleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
         reloadSessionControlStates()
@@ -1693,13 +1712,23 @@ final class SessionStore: ObservableObject {
             if Task.isCancelled || Date() >= deadline {
                 return
             }
+            // Gateway 已明确给出 retryAfter 时必须尊重该窗口；继续按 0.3/0.9 秒探测只会把一次限流
+            // 放大成重试风暴，也不能把业务限流误判成主链路故障并切到备用地址。
+            if let workspace = selectedProjectID.flatMap({ workspacesByID[$0] }),
+               let cooldownDelay = sessionListCooldownDelayNanoseconds(for: workspace) {
+                attempt += 1
+                await sessionListSleep(cooldownDelay)
+                if Task.isCancelled { return }
+                continue
+            }
             if await refreshConnectionRoute(preferPrimary: false) {
                 continue
             }
-            // 首个失败立刻快速重试一次（隧道/后端经常就差最后一两百毫秒），之后固定 ~0.9s 轮询。
+            // 普通隧道/启动失败仍保留原来的快速恢复节奏。
             let backoffNanoseconds: UInt64 = attempt == 0 ? 300_000_000 : 900_000_000
             attempt += 1
-            try? await Task.sleep(nanoseconds: backoffNanoseconds)
+            await sessionListSleep(backoffNanoseconds)
+            if Task.isCancelled { return }
         }
     }
 
@@ -2711,7 +2740,11 @@ final class SessionStore: ObservableObject {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
-        let workspaces = Array(recentWorkspaces.prefix(8))
+        let workspaces = Array(recentWorkspaces.prefix(8)).filter { workspace in
+            // 当前工作区已经由 refreshAll/轮询维护完整首屏时，会话库直接复用本地投影。
+            // 再用 limit=8 请求一次会和 limit=20 共用 gateway 预算，却无法命中 exact single-flight。
+            !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
+        }
         guard !workspaces.isEmpty else { return }
         let generation = appStore.connectionGeneration
 
@@ -3923,6 +3956,45 @@ final class SessionStore: ObservableObject {
             || message.contains("请求过多"))
     }
 
+    private func sessionListPolicyFailure(from error: Error) -> SessionListPolicyFailure? {
+        let appServerError: CodexAppServerError?
+        if case CodexAppServerConnectionError.appServer(let error) = error {
+            appServerError = error
+        } else {
+            appServerError = nil
+        }
+        let data = appServerError?.data?.objectValue
+        let method = data?["method"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let message = error.localizedDescription.lowercased()
+        let isStructuredListPolicy = appServerError?.code == -32080
+            && method == "thread/list"
+            && (reason == "history_budget_limited" || reason == "history_request_in_flight")
+        let isLegacyListPolicy = message.contains("-32080")
+            && message.contains("thread/list")
+            && (message.contains("临时限流") || message.contains("相同历史或列表请求"))
+        guard isStructuredListPolicy || isLegacyListPolicy else { return nil }
+
+        let fallbackNanoseconds: UInt64 = reason == "history_request_in_flight"
+            ? 1_000_000_000
+            : 15_000_000_000
+        let requestedNanoseconds: UInt64
+        if let retryAfterMs = data?["retryAfterMs"]?.intValue, retryAfterMs > 0 {
+            requestedNanoseconds = UInt64(retryAfterMs) * 1_000_000
+        } else if let retryAfterSeconds = data?["retryAfterSeconds"]?.intValue, retryAfterSeconds > 0 {
+            requestedNanoseconds = UInt64(retryAfterSeconds) * 1_000_000_000
+        } else {
+            requestedNanoseconds = fallbackNanoseconds
+        }
+        // 防止异常上游把客户端挂起太久；正常 gateway 窗口目前是 1~15 秒。
+        let boundedNanoseconds = min(max(requestedNanoseconds, 1_000_000), 60_000_000_000)
+        let seconds = max(1, Int((boundedNanoseconds + 999_999_999) / 1_000_000_000))
+        return SessionListPolicyFailure(
+            retryAfterNanoseconds: boundedNanoseconds,
+            retryAfterSeconds: seconds
+        )
+    }
+
     private func historyPolicyFailure(from error: Error) -> HistoryPolicyFailure? {
         let underlying = (error as? HistoryFirstPageFetchFailure)?.underlying ?? error
         let message = underlying.localizedDescription
@@ -4266,11 +4338,31 @@ final class SessionStore: ObservableObject {
         if let inFlight = sessionListFirstPageInFlightByKey[key] {
             return try await inFlight.task.value
         }
+        // 会话库只需要 8 条时，可以复用同工作区正在执行的 20 条请求；反向复用会缩短主列表，不能做。
+        if let largerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
+            entry.key.connectionGeneration == key.connectionGeneration
+                && entry.key.workspaceID == key.workspaceID
+                && entry.key.workspacePath == key.workspacePath
+                && entry.key.limit >= key.limit
+        })?.value {
+            return try await largerInFlight.task.value
+        }
+        let now = sessionListNow()
         if reuseRecent,
            let cached = sessionListFirstPageCacheByKey[key],
-           Date().timeIntervalSince(cached.loadedAt) < sessionListFirstPageCacheTTL {
+           now.timeIntervalSince(cached.loadedAt) < sessionListFirstPageCacheTTL {
             return cached.page
         }
+
+        if let cooldownDelay = sessionListCooldownDelayNanoseconds(for: workspace) {
+            // 已有页时直接保留旧列表；后台轮询会在窗口恢复后自然校准，不让限流冒泡成整页红错。
+            if let stale = cachedSessionListPage(workspace: workspace, minimumLimit: limit) {
+                return stale
+            }
+            // 冷启动没有任何可展示数据时才等待窗口并继续请求，保证首屏最终自动恢复。
+            await sessionListSleep(cooldownDelay)
+        }
+
         let client = try clientFactory()
         let task = Task {
             try await client.sessionsPage(workspace: workspace, cursor: nil, limit: limit)
@@ -4279,12 +4371,70 @@ final class SessionStore: ObservableObject {
         do {
             let page = try await task.value
             sessionListFirstPageInFlightByKey.removeValue(forKey: key)
-            sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(page: page, loadedAt: Date())
+            sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(page: page, loadedAt: sessionListNow())
+            clearSessionListCooldown(for: workspace)
             return page
         } catch {
             sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+            if let policyFailure = sessionListPolicyFailure(from: error) {
+                registerSessionListCooldown(policyFailure, for: workspace)
+            }
             throw error
         }
+    }
+
+    private func cachedSessionListPage(workspace: AgentWorkspace, minimumLimit: Int) -> SessionsPage? {
+        sessionListFirstPageCacheByKey
+            .filter { entry in
+                entry.key.connectionGeneration == appStore.connectionGeneration
+                    && entry.key.workspaceID == workspace.id
+                    && entry.key.workspacePath == workspace.path
+                    && entry.key.limit >= minimumLimit
+            }
+            .max { $0.value.loadedAt < $1.value.loadedAt }?
+            .value.page
+    }
+
+    private func sessionListBudgetKey(for workspace: AgentWorkspace) -> SessionListBudgetKey {
+        let workspacePath = standardizedSessionListPath(workspace.path)
+        let rootPath = workspace.rootProjectPath.map(standardizedSessionListPath)
+        let cwd: String
+        if let rootPath, workspacePath == rootPath || workspacePath.hasPrefix(rootPath == "/" ? "/" : rootPath + "/") {
+            cwd = rootPath
+        } else {
+            cwd = workspacePath
+        }
+        return SessionListBudgetKey(connectionGeneration: appStore.connectionGeneration, cwd: cwd)
+    }
+
+    private func standardizedSessionListPath(_ rawPath: String) -> String {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+    }
+
+    private func sessionListCooldownDelayNanoseconds(for workspace: AgentWorkspace) -> UInt64? {
+        let key = sessionListBudgetKey(for: workspace)
+        guard let until = sessionListCooldownUntilByBudgetKey[key] else { return nil }
+        let remaining = until.timeIntervalSince(sessionListNow())
+        guard remaining > 0 else {
+            sessionListCooldownUntilByBudgetKey.removeValue(forKey: key)
+            return nil
+        }
+        return UInt64(ceil(remaining * 1_000_000_000))
+    }
+
+    private func registerSessionListCooldown(_ failure: SessionListPolicyFailure, for workspace: AgentWorkspace) {
+        let key = sessionListBudgetKey(for: workspace)
+        let until = sessionListNow().addingTimeInterval(Double(failure.retryAfterNanoseconds) / 1_000_000_000)
+        if let current = sessionListCooldownUntilByBudgetKey[key], current >= until {
+            return
+        }
+        sessionListCooldownUntilByBudgetKey[key] = until
+    }
+
+    private func clearSessionListCooldown(for workspace: AgentWorkspace) {
+        sessionListCooldownUntilByBudgetKey.removeValue(forKey: sessionListBudgetKey(for: workspace))
     }
 
     private func prepareSelectedSessionAfterRefresh(_ session: AgentSession, autoAttach: Bool) async {
@@ -5984,6 +6134,20 @@ final class SessionStore: ObservableObject {
     }
 
     private func handleWorkspaceLoadFailure(workspace: AgentWorkspace, error: Error) async {
+        if let policyFailure = sessionListPolicyFailure(from: error) {
+            registerSessionListCooldown(policyFailure, for: workspace)
+            if sessions(forProjectID: workspace.id).isEmpty {
+                // 首屏还没有可展示数据时保留一个友好错误标记，让 bootstrap 按 cooldown 继续自愈。
+                let message = "会话列表刷新过快，将在 \(policyFailure.retryAfterSeconds) 秒后自动重试。"
+                setStatusMessage(message)
+                setErrorMessage(message)
+            } else {
+                // 已有列表时继续展示旧数据，限流只是后台同步延迟，不应升级成红色全局错误。
+                setStatusMessage("会话列表刷新过快，已保留现有会话，稍后自动重试。")
+                setErrorMessage(nil)
+            }
+            return
+        }
         switch await evaluateWorkspaceAvailability(workspace) {
         case .unavailable(let message):
             markWorkspaceUnavailable(workspace.id)
@@ -6162,6 +6326,7 @@ final class SessionStore: ObservableObject {
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
+        sessionListCooldownUntilByBudgetKey = [:]
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
         sessionListReconciliationTasksByProjectID = [:]
         historyPreviousCursorBySessionID = [:]

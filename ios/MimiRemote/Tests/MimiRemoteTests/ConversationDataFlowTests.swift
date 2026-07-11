@@ -10082,6 +10082,118 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testBootstrapHonorsThreadListRetryAfterBeforeRetrying() async {
+        let project = makeProject(id: "proj_list_retry_after")
+        let session = makeSession(id: "thread_list_retry_after", projectID: project.id, title: "限流恢复", status: "history", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [
+                .failure(sessionListPolicyError(retryAfterMs: 15_000)),
+                .success(SessionsPage(sessions: [session]))
+            ]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        var now = Date(timeIntervalSince1970: 1_780_000_000)
+        var requestedSleeps: [UInt64] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListNow: { now },
+            sessionListSleep: { nanoseconds in
+                requestedSleeps.append(nanoseconds)
+                now = now.addingTimeInterval(Double(nanoseconds) / 1_000_000_000)
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        XCTAssertEqual(requestedSleeps, [15_000_000_000])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testThreadListRateLimitKeepsExistingSessionsAndSuppressesGlobalError() async {
+        let project = makeProject(id: "proj_list_cooldown")
+        let existing = makeSession(id: "thread_existing", projectID: project.id, title: "已有会话", status: "history", source: "codex")
+        let refreshed = makeSession(id: "thread_refreshed", projectID: project.id, title: "恢复后会话", status: "history", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [
+                .success(SessionsPage(sessions: [existing])),
+                .failure(sessionListPolicyError(retryAfterMs: 15_000)),
+                .success(SessionsPage(sessions: [refreshed]))
+            ]
+        )
+        let appStore = AppStore()
+        var now = Date(timeIntervalSince1970: 1_780_000_000)
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListNow: { now },
+            sessionListSleep: { _ in }
+        )
+        store.selectedProjectID = project.id
+
+        await store.refreshAll(autoAttach: false)
+        await store.refreshSelectedProjectSessions(showLoading: true)
+
+        XCTAssertEqual(store.filteredSessions.map(\.id), [existing.id])
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(store.statusMessage, "会话列表刷新过快，已保留现有会话，稍后自动重试。")
+        XCTAssertFalse(store.statusMessage?.contains("itemsView") == true)
+
+        // 冷却窗口内继续刷新必须复用旧页，不能再撞 gateway。
+        await store.refreshSelectedProjectSessions(showLoading: true)
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+
+        now = now.addingTimeInterval(15)
+        await store.refreshSelectedProjectSessions(showLoading: true)
+        XCTAssertEqual(client.sessionsPageCallCount, 3)
+        XCTAssertEqual(store.filteredSessions.map(\.id), [refreshed.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testSessionLibrarySkipsSelectedWorkspaceAlreadyLoadedByRefreshAll() async {
+        let project = makeProject(id: "proj_library_reuse")
+        let session = makeSession(id: "thread_library_reuse", projectID: project.id, title: "已加载", status: "history", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [.success(SessionsPage(sessions: [session]))]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.selectedProjectID = project.id
+
+        await store.refreshAll(autoAttach: false)
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1)
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+    }
+
     func testMultiRuntimeHistoryPreservesEconomyAndFullLoadModes() async throws {
         let project = AgentProject(id: "proj_multi_history_mode", name: "History Mode", path: "/tmp/multi-history-mode")
         let config = makeDirectAppServerConfig(
@@ -11063,6 +11175,50 @@ private final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
     private func notifyBlockedListWaiters() {
         blockedListWaiters.forEach { $0.resume() }
         blockedListWaiters = []
+    }
+}
+
+private final class SequencedSessionListClient: SessionStoreAPIClient {
+    private let projectsResult: [AgentProject]
+    private let results: [Result<SessionsPage, Error>]
+    private(set) var sessionsPageCallCount = 0
+
+    init(projects: [AgentProject], results: [Result<SessionsPage, Error>]) {
+        self.projectsResult = projects
+        self.results = results
+    }
+
+    func projects() async throws -> [AgentProject] {
+        projectsResult
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit).sessions
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        let index = min(sessionsPageCallCount, max(0, results.count - 1))
+        sessionsPageCallCount += 1
+        guard !results.isEmpty else {
+            return SessionsPage(sessions: [])
+        }
+        return try results[index].get()
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        []
     }
 }
 
@@ -15253,6 +15409,20 @@ private func historyPolicyError(reason: String, retryAfterMs: Int? = nil) -> Err
         code: -32080,
         message: message,
         data: .object(data)
+    ))
+}
+
+private func sessionListPolicyError(retryAfterMs: Int) -> Error {
+    CodexAppServerConnectionError.appServer(CodexAppServerError(
+        code: -32080,
+        message: "thread/list 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView（itemsView=list）",
+        data: .object([
+            "reason": .string("history_budget_limited"),
+            "method": .string("thread/list"),
+            "itemsView": .string("list"),
+            "retryAfterMs": .int(Int64(retryAfterMs)),
+            "retryAfterSeconds": .int(Int64(max(1, (retryAfterMs + 999) / 1_000)))
+        ])
     ))
 }
 

@@ -68,6 +68,7 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
             .frame(width: 1024, height: 768)
     }
 
@@ -123,6 +124,7 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
             .frame(width: 1024, height: 768)
     }
 
@@ -153,6 +155,7 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
             .frame(width: 1024, height: 768)
 
         assertSnapshot(
@@ -252,6 +255,8 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
+            // 快照固定为浅色，避免运行测试前手动切过模拟器外观就整组误报。
+            .environment(\.colorScheme, .light)
             .frame(width: width, height: height)
     }
 
@@ -314,6 +319,7 @@ final class ConversationSnapshotTests: XCTestCase {
         }
         .environmentObject(sessionStore)
         .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
         .frame(width: 420, height: 768)
 
         assertSnapshot(

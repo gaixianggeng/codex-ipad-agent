@@ -268,15 +268,21 @@ extension ThemeTokens {
         }
     }
 
-    /// 主操作继续使用产品默认紫色；暖珊瑚只作为装饰和次级提示，避免主按钮随主题改版失去识别度。
+    /// 浅色保留品牌深紫；深色改用浅薰衣草色，避免深紫前景沉入暖黑背景。
     var primaryAction: Color {
         guard preset == .codex else { return accent }
-        return .mimiPrimary
+        return resolvedScheme == .dark ? accent : .mimiPrimary
     }
 
     var livelyAccent: Color {
         guard preset == .codex else { return accent }
         return primaryAction
+    }
+
+    /// 主操作填充变亮后，深色模式改用暖黑字，避免浅紫底继续叠白字造成低对比。
+    var primaryActionForeground: Color {
+        guard preset == .codex, resolvedScheme == .dark else { return .white }
+        return background
     }
 
     var accentSoft: Color {
@@ -285,7 +291,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.949, green: 0.933, blue: 0.945)
         case .dark:
-            return Color(red: 0.243, green: 0.145, blue: 0.235)
+            return Color(red: 0.243, green: 0.224, blue: 0.247)
         }
     }
 
@@ -518,14 +524,14 @@ final class ThemeStore: ObservableObject {
     }
 
     private var codexDarkTokens: ThemeTokens {
-        // 深色改为暖石墨而非纯黑，状态色和桃色反射负责提亮，主操作仍保持默认紫色。
+        // 深色使用暖石墨与低饱和浅薰衣草；品牌深紫只留在浅色模式，避免暗底可读性不足。
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .dark,
             background: Color(red: 0.098, green: 0.086, blue: 0.078),
             surface: Color(red: 0.129, green: 0.114, blue: 0.106),
             elevatedSurface: Color(red: 0.169, green: 0.145, blue: 0.133),
-            userBubble: .mimiPrimary,
+            userBubble: Color(red: 0.318, green: 0.239, blue: 0.306),
             assistantBubble: Color(red: 0.129, green: 0.114, blue: 0.106),
             systemBubble: Color(red: 0.176, green: 0.161, blue: 0.157),
             codeBlock: Color(red: 0.047, green: 0.039, blue: 0.035),
@@ -533,18 +539,18 @@ final class ThemeStore: ObservableObject {
             primaryText: Color(red: 1.000, green: 0.969, blue: 0.941),
             secondaryText: Color(red: 0.827, green: 0.749, blue: 0.706),
             tertiaryText: Color(red: 0.631, green: 0.525, blue: 0.467),
-            accent: Color(red: 0.82, green: 0.70, blue: 0.94),
+            accent: Color(red: 0.835, green: 0.765, blue: 0.867),
             warning: Color(red: 0.941, green: 0.702, blue: 0.361),
             success: Color(red: 0.384, green: 0.769, blue: 0.576),
             goalActive: Color(red: 0.851, green: 0.604, blue: 0.718),
-            voiceRecording: .mimiPrimary,
+            voiceRecording: Color(red: 0.835, green: 0.765, blue: 0.867),
             voiceWaveformGradient: [
-                .mimiPrimary,
-                Color(red: 0.478, green: 0.259, blue: 0.467),
-                Color(red: 0.690, green: 0.525, blue: 0.678)
+                Color(red: 0.929, green: 0.867, blue: 0.941),
+                Color(red: 0.835, green: 0.765, blue: 0.867),
+                Color(red: 0.655, green: 0.545, blue: 0.647)
             ],
-            border: Color(red: 0.227, green: 0.196, blue: 0.220),
-            selectionFill: Color(red: 0.184, green: 0.125, blue: 0.176)
+            border: Color(red: 0.286, green: 0.255, blue: 0.278),
+            selectionFill: Color(red: 0.235, green: 0.216, blue: 0.235)
         )
     }
 

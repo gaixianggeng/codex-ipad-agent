@@ -183,10 +183,13 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThan(lightSuccess.green, lightSuccess.red)
         XCTAssertGreaterThan(lightSuccess.green, lightSuccess.blue)
 
-        // 主操作和用户发送气泡严格共用产品默认色 #4A144A。
+        // 浅色主操作保留品牌色；深色必须使用更亮的语义色，不能沉入暖黑背景。
         assertRGB(lightUserBubble, red: 74, green: 20, blue: 74)
         assertRGB(rgba(lightTokens.primaryAction), red: 74, green: 20, blue: 74)
-        assertRGB(rgba(darkTokens.primaryAction), red: 74, green: 20, blue: 74)
+        let darkPrimaryAction = rgba(darkTokens.primaryAction)
+        XCTAssertEqual(darkPrimaryAction.red, darkAccent.red, accuracy: 0.001)
+        XCTAssertEqual(darkPrimaryAction.green, darkAccent.green, accuracy: 0.001)
+        XCTAssertEqual(darkPrimaryAction.blue, darkAccent.blue, accuracy: 0.001)
         XCTAssertGreaterThan(lightUserBubble.alpha, 0.99)
         XCTAssertEqual(codexSwatchForeground.red, lightUserBubble.red, accuracy: 0.001)
         XCTAssertEqual(codexSwatchForeground.green, lightUserBubble.green, accuracy: 0.001)
@@ -205,7 +208,9 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertGreaterThan(darkSuccess.green, darkSuccess.red)
         XCTAssertGreaterThan(darkSuccess.green, darkSuccess.blue)
 
-        assertRGB(darkUserBubble, red: 74, green: 20, blue: 74)
+        XCTAssertGreaterThan(darkUserBubble.red, darkBackground.red + 0.15)
+        XCTAssertGreaterThan(darkUserBubble.green, darkBackground.green + 0.10)
+        XCTAssertGreaterThan(darkUserBubble.blue, darkBackground.blue + 0.15)
         XCTAssertGreaterThan(darkUserBubble.alpha, 0.99)
     }
 
@@ -268,7 +273,7 @@ final class ThemeStoreTests: XCTestCase {
                 let accent = rgba(tokens.accent)
                 let warning = rgba(tokens.warning)
 
-                if preset == .codex {
+                if preset == .codex, scheme == .light {
                     assertRGB(voice, red: 74, green: 20, blue: 74)
                     assertRGB(rgba(tokens.tint(for: .active)), red: 74, green: 20, blue: 74)
                     continue
@@ -282,6 +287,21 @@ final class ThemeStoreTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testCodexDarkTokensKeepTextAndActionsReadable() {
+        let store = ThemeStore(defaults: defaults)
+        store.mode = .dark
+        store.preset = .codex
+        let tokens = store.tokens(for: .light)
+
+        // 直接约束对比度而不是锁死 RGB，后续微调配色时仍能防止深紫重新沉入暗色背景。
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.primaryAction, tokens.background), 3.0)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.primaryText, tokens.background), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.secondaryText, tokens.background), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.tertiaryText, tokens.background), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.userBubbleForeground, tokens.userBubble), 4.5)
+        XCTAssertGreaterThanOrEqual(contrastRatio(tokens.primaryActionForeground, tokens.primaryAction), 4.5)
     }
 
     func testThemeVersionIncrementsWhenVisualStateChanges() {
@@ -323,6 +343,26 @@ final class ThemeStoreTests: XCTestCase {
         let green = lhs.green - rhs.green
         let blue = lhs.blue - rhs.blue
         return sqrt(red * red + green * green + blue * blue)
+    }
+
+    private func contrastRatio(_ foreground: Color, _ background: Color) -> CGFloat {
+        let foregroundLuminance = relativeLuminance(rgba(foreground))
+        let backgroundLuminance = relativeLuminance(rgba(background))
+        return (max(foregroundLuminance, backgroundLuminance) + 0.05)
+            / (min(foregroundLuminance, backgroundLuminance) + 0.05)
+    }
+
+    private func relativeLuminance(
+        _ color: (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)
+    ) -> CGFloat {
+        func linear(_ component: CGFloat) -> CGFloat {
+            component <= 0.03928
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(color.red)
+            + 0.7152 * linear(color.green)
+            + 0.0722 * linear(color.blue)
     }
 }
 

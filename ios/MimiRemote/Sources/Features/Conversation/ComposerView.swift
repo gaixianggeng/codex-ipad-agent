@@ -544,8 +544,8 @@ struct ComposerView: View {
     // 右＝会话运行时的 Ctrl-C / 停止。三者各就各位，不再各自独占一整行往上堆。
     @ViewBuilder
     private var composerStatusRow: some View {
-        // 模型、权限和发送模式已经合并到输入框内的一枚配置摘要；这里只保留实时语音与停止控制。
-        let chips: [ComposerChipItem] = []
+        // 模型、权限与运行状态放在输入框上方，方便扫读，也不挤占正文输入空间。
+        let chips = displayChipItems
         let showWave = isVoiceActive
         let showControls = canShowRunningControls
         if !chips.isEmpty || showWave || showControls {
@@ -705,12 +705,8 @@ struct ComposerView: View {
     }
 
     private func composerInputRow(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .top, spacing: composerInputRowSpacing) {
-            composerCard(tokens: tokens)
-                .layoutPriority(1)
-
-            composerVoiceActionColumn
-        }
+        composerCard(tokens: tokens)
+            .layoutPriority(1)
     }
 
     private func composerCard(tokens: ThemeTokens) -> some View {
@@ -831,6 +827,7 @@ struct ComposerView: View {
 
             followUpDeliverySendMenu(showLabels: !isCompactComposer)
             sendButton(showLabels: !isCompactComposer)
+            voiceMicControl
         }
     }
 
@@ -842,13 +839,6 @@ struct ComposerView: View {
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
         .controlSize(.regular)
-    }
-
-    private var composerVoiceActionColumn: some View {
-        VStack(alignment: .trailing, spacing: 0) {
-            voiceMicControl
-        }
-        .frame(width: voiceActionColumnWidth, alignment: .trailing)
     }
 
     private var voiceMicControl: some View {
@@ -994,10 +984,11 @@ struct ComposerView: View {
             }
         } label: {
             ViewThatFits(in: .horizontal) {
-                Label(composerConfigurationSummary, systemImage: "slider.horizontal.3")
+                // 模型和权限已在输入框上方常驻展示，这里只保留明确的配置入口，避免信息重复。
+                Label("配置", systemImage: "slider.horizontal.3")
                     .lineLimit(1)
                 Image(systemName: "slider.horizontal.3")
-                    .accessibilityLabel(composerConfigurationSummary)
+                    .accessibilityLabel("配置")
             }
             .frame(minHeight: 44)
         }
@@ -1010,18 +1001,6 @@ struct ComposerView: View {
 
     private var moreMenuAccessibilitySummary: String {
         "\(composerState.permissionMode.title)，运行，语音 \(selectedVoiceLanguage.title)"
-    }
-
-    private var composerConfigurationSummary: String {
-        let mode: String
-        if composerState.isGoalModeSelected {
-            mode = "目标"
-        } else if composerState.isPlanModeSelected {
-            mode = "计划"
-        } else {
-            mode = "默认"
-        }
-        return "\(selectedModelSummaryTitle) · \(composerState.permissionMode.chipTitle) · \(mode)"
     }
 
     private var skillShortcutMenu: some View {
@@ -1779,7 +1758,7 @@ struct ComposerView: View {
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(enabled ? Color.white : tokens.tertiaryText)
+            .foregroundStyle(enabled ? tokens.primaryActionForeground : tokens.tertiaryText)
             .frame(height: 44)
             .padding(.horizontal, showLabels ? 18 : 0)
             .frame(minWidth: 44)
@@ -1857,14 +1836,6 @@ struct ComposerView: View {
     private var usesCollapsedComposerTextHeight: Bool {
         // 空输入时先保持轻量高度；一旦有文字/附件/语音草稿，才恢复更像命令面板的多行空间。
         composerState.isEmpty && !composerState.voiceDraftNeedsReview
-    }
-
-    private var composerInputRowSpacing: CGFloat {
-        (availableWidth ?? 920) < 360 ? 6 : 8
-    }
-
-    private var voiceActionColumnWidth: CGFloat {
-        44
     }
 
     private var composerCardPadding: CGFloat {
@@ -3140,6 +3111,8 @@ private struct VoiceMicButton: View {
     let onTap: () -> Void
 
     var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
         Button(action: onTap) {
             Group {
                 if isPreparing || isTranscribing {
@@ -3148,11 +3121,16 @@ private struct VoiceMicButton: View {
                     Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                 }
             }
-            .frame(minWidth: 44, minHeight: 44)
+            .foregroundStyle(tokens.primaryAction)
+            .frame(width: 44, height: 44)
+            .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(tokens.border, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(.bordered)
-        .tint(themeStore.tokens(for: colorScheme).primaryAction)
-        .controlSize(.large)
+        .buttonStyle(.plain)
         .disabled(isPreparing || isTranscribing)
         .accessibilityLabel(accessibilityTitle)
         .accessibilityValue(accessibilityValue)
