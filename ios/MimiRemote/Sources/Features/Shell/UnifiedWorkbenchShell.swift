@@ -119,43 +119,6 @@ struct UnifiedWorkbenchShell: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 38)
-
-            Divider().overlay(tokens.border.opacity(0.7))
-
-            VStack(spacing: 8) {
-                Button {
-                    // 设置是临时配置面板，不改变用户当前所在的会话或工作区。
-                    presentedSheet = .settings
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "gearshape")
-                            .frame(width: 22)
-                        Text("设置")
-                        Spacer()
-                    }
-                    .font(themeStore.uiFont(.callout, weight: .medium))
-                    .foregroundStyle(presentedSheet == .settings ? tokens.primaryText : tokens.secondaryText)
-                    .padding(.horizontal, 12)
-                    .frame(height: 40)
-                    .background(presentedSheet == .settings ? tokens.selectionFill : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    presentedSheet = .newSession
-                } label: {
-                    Label("新会话", systemImage: "plus")
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
-                        .foregroundStyle(tokens.primaryActionForeground)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.roundedRectangle(radius: 12))
-                .tint(tokens.primaryAction)
-                .accessibilityLabel("新建会话")
-            }
-            .padding(14)
         }
         .background(tokens.sidebarBackground.ignoresSafeArea())
         .toolbar {
@@ -174,9 +137,13 @@ struct UnifiedWorkbenchShell: View {
                             Text("Mimi Remote")
                                 .font(themeStore.uiFont(.headline, weight: .semibold))
                                 .foregroundStyle(tokens.primaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.82)
                             Text(connectionSubtitle)
                                 .font(themeStore.uiFont(.caption2))
                                 .foregroundStyle(tokens.tertiaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.82)
                         }
 
                         Circle()
@@ -187,6 +154,35 @@ struct UnifiedWorkbenchShell: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("Mimi Remote，\(connectionSubtitle)")
                 }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    presentedSheet = .newSession
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
+                .tint(tokens.primaryAction)
+                .accessibilityLabel("新建会话")
+                .accessibilityIdentifier("sidebar.newSession")
+            }
+            // 固定间距会阻止系统把两个操作合并进同一个玻璃容器，保持为独立圆钮。
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    // 设置是临时配置面板，不改变用户当前所在的会话或工作区。
+                    presentedSheet = .settings
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .foregroundStyle(tokens.secondaryText)
+                .accessibilityLabel("打开设置")
+                .accessibilityIdentifier("sidebar.settings")
             }
         }
         .task {
