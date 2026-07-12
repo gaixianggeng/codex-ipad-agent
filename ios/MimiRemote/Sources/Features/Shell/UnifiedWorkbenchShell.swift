@@ -252,37 +252,81 @@ struct UnifiedWorkbenchShell: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     Text(sessionStore.selectedSession?.title ?? "会话")
                         .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
-                    if let project = sessionStore.selectedSession?.project, !project.isEmpty {
-                        Text(project)
-                            .font(themeStore.uiFont(.caption2))
+
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(selectedSessionStatusColor(tokens: tokens))
+                            .frame(width: 5, height: 5)
+
+                        Text(sessionTitleSubtitle)
+                            .font(themeStore.uiFont(.caption2, weight: .medium))
                             .foregroundStyle(tokens.tertiaryText)
                             .lineLimit(1)
                     }
                 }
+                .frame(maxWidth: layout.titleMaxWidth)
+                .accessibilityElement(children: .combine)
             }
-            ToolbarItemGroup(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Task { await sessionStore.refreshCurrentContext() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .foregroundStyle(tokens.secondaryText)
                 .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
                 .accessibilityLabel("刷新当前会话")
-
+            }
+            // 与主页的圆形操作保持同一节奏，同时让系统不要把刷新和详情合并成一个玻璃胶囊。
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingInspector.toggle()
                 } label: {
                     Image(systemName: "sidebar.right")
                 }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .foregroundStyle(showingInspector ? tokens.primaryAction : tokens.secondaryText)
                 .accessibilityLabel(showingInspector ? "隐藏详情" : "显示详情")
             }
         }
         .background(tokens.background.ignoresSafeArea())
+        .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .sessionInspectorPresentation(isPresented: $showingInspector, layout: layout)
+    }
+
+    private var sessionTitleSubtitle: String {
+        guard let session = sessionStore.selectedSession else {
+            return "会话"
+        }
+        let project = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        return project.isEmpty ? session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity).title : project
+    }
+
+    private func selectedSessionStatusColor(tokens: ThemeTokens) -> Color {
+        guard let session = sessionStore.selectedSession else {
+            return tokens.tertiaryText
+        }
+        switch session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity).tone {
+        case .active:
+            return tokens.primaryAction
+        case .warning:
+            return tokens.warning
+        case .danger:
+            return .red
+        case .complete:
+            return tokens.success
+        case .neutral:
+            return tokens.tertiaryText
+        }
     }
 
     private var connectionSubtitle: String {

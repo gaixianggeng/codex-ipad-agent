@@ -136,8 +136,8 @@ struct ComposerView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        // 外层不再画大方框：ConversationView 的底部 dock 已经提供了表面色和顶部分隔线，
-        // 这里只保留一个真正的输入卡片，避免“框中框”的视觉堆叠。
+        // 外层保持透明，由输入卡片承担唯一主表面；这样和首页“暖色底 + 白色浮层”的
+        // 层级一致，也避免状态提示、输入框和底部 dock 形成三层嵌套。
         VStack(alignment: .leading, spacing: 10) {
             foregroundActivityRow
             composerStatusTray
@@ -710,19 +710,25 @@ struct ComposerView: View {
     }
 
     private func composerCard(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: composerCardSpacing) {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        return VStack(alignment: .leading, spacing: composerCardSpacing) {
             composerTextArea(tokens: tokens)
             voiceReviewNotice
             composerToolbar(tokens: tokens)
         }
         .padding(composerCardPadding)
         .frame(maxWidth: .infinity)
-        .background(tokens.inputBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tokens.inputBackground, in: shape)
         .tint(tokens.accent)
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
+        .shadow(color: composerCardShadow(tokens), radius: 12, y: 5)
+    }
+
+    private func composerCardShadow(_ tokens: ThemeTokens) -> Color {
+        // 浅色只做很轻的悬浮感；深色适当提高阴影不透明度，避免输入卡融进暖黑背景。
+        Color.black.opacity(tokens.resolvedScheme == .light ? 0.07 : 0.24)
     }
 
     private func composerTextArea(tokens: ThemeTokens) -> some View {
@@ -793,7 +799,7 @@ struct ComposerView: View {
         if isVoiceTranscribing {
             return tokens.accent.opacity(0.5)
         }
-        return tokens.border
+        return tokens.border.opacity(0.84)
     }
 
     private var composerPlaceholderText: String {
@@ -833,22 +839,60 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var toolbarMenuRow: some View {
-        // 高频配置直接平铺在输入框旁边；空间不足时只让这一组横向滚动，
-        // 避免把发送、语音等主操作挤出屏幕，也不再要求先打开“配置”总菜单。
-        ScrollView(.horizontal, showsIndicators: false) {
+        if isCompactComposer {
+            // iPhone 只保留“添加”这个高频入口，其余运行选项收进一个菜单；
+            // 发送和语音仍固定在右侧，避免横向滚动造成主操作位置漂移。
             HStack(spacing: 8) {
                 addContentButton
-                voiceLanguageMenu
-                runSettingsMenu
-                permissionMenu
-                planButton
-                goalButton
+                compactComposerOptionsMenu
             }
-            .padding(.vertical, 1)
+        } else {
+            // iPad/宽窗口继续平铺运行选项，利用横向空间降低多一次菜单点击的成本。
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    addContentButton
+                    voiceLanguageMenu
+                    runSettingsMenu
+                    permissionMenu
+                    planButton
+                    goalButton
+                }
+                .padding(.vertical, 1)
+            }
         }
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        .controlSize(.regular)
-        .accessibilityElement(children: .contain)
+    }
+
+    private var compactComposerOptionsMenu: some View {
+        Menu {
+            voiceLanguageMenu
+            runSettingsMenu
+            permissionMenu
+
+            Divider()
+
+            Button {
+                setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
+            } label: {
+                Label(composerState.isPlanModeSelected ? "关闭计划模式" : "计划模式", systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
+            }
+
+            Button {
+                setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
+            } label: {
+                Label(composerState.isGoalModeSelected ? "关闭目标任务" : "目标任务", systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+            }
+        } label: {
+            composerToolbarControlLabel(
+                title: nil,
+                systemImage: "slider.horizontal.3",
+                isSelected: composerState.isPlanModeSelected || composerState.isGoalModeSelected,
+                tint: permissionTint,
+                accessibilityLabel: "会话选项"
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("会话选项")
+        .accessibilityHint("调整模型、权限、语音语言和发送模式")
     }
 
     private var voiceMicControl: some View {

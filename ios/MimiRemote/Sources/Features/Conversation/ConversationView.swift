@@ -46,12 +46,9 @@ struct ConversationView: View {
                 .padding(.horizontal, layout.horizontalInset)
                 .padding(.top, layout.composerTopPadding)
                 .padding(.bottom, layout.composerBottomPadding)
-                .background(tokens.surface.opacity(0.94))
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(tokens.border)
-                        .frame(height: 1)
-                }
+                // 首页依靠暖色底和浮层卡片建立层级；会话页底部沿用同一语义，
+                // 去掉旧版整宽白色 dock 与硬分隔线，让输入卡片成为唯一主操作表面。
+                .background(tokens.background.opacity(0.97))
             }
             .background(tokens.background.ignoresSafeArea())
         }
@@ -683,20 +680,22 @@ struct ConversationLayout: Equatable {
     let emptyStateMaxWidth: CGFloat
 
     var messageRowInsets: EdgeInsets {
-        EdgeInsets(top: 7, leading: horizontalInset, bottom: 7, trailing: horizontalInset)
+        EdgeInsets(top: 8, leading: horizontalInset, bottom: 8, trailing: horizontalInset)
     }
 
     init(containerWidth: CGFloat, horizontalSizeClass: UserInterfaceSizeClass?) {
         let isCompactWidth = horizontalSizeClass == .compact || containerWidth < 560
+        let isVeryCompactWidth = containerWidth < 360
         let isTightPadWidth = containerWidth < 820
 
-        horizontalInset = isCompactWidth ? 12 : (isTightPadWidth ? 16 : 24)
+        // 与会话库 20pt 的卡片轨道接近，同时给 320/344pt 极窄屏保留必要内容宽度。
+        horizontalInset = isCompactWidth ? (isVeryCompactWidth ? 12 : 16) : (isTightPadWidth ? 16 : 24)
         messageSideSpacer = isCompactWidth ? 12 : (isTightPadWidth ? 24 : 56)
         composerAvailableWidth = max(240, containerWidth - horizontalInset * 2)
         composerMaxWidth = isCompactWidth ? .infinity : min(920, max(360, composerAvailableWidth))
-        composerTopPadding = isCompactWidth ? 7 : 8
+        composerTopPadding = isCompactWidth ? 10 : 12
         // 底部输入区是触屏主操作区，但 iPad dock 过厚会抢走会话主体重心；保持可点空间，同时减少空闲态压迫感。
-        composerBottomPadding = isCompactWidth ? 16 : 18
+        composerBottomPadding = isCompactWidth ? 12 : 16
 
         // 气泡宽度按实际容器收缩，保留左右身份感，同时避免 iPhone/mini 竖屏横向溢出。
         let rowAvailableWidth = max(240, containerWidth - horizontalInset * 2 - messageSideSpacer)
@@ -813,7 +812,7 @@ struct ConversationTimelineView: View {
                     // 44pt 点击区也能让它稳定贴在时间线右下角。
                     .buttonStyle(.plain)
                     .frame(width: 44, height: 44)
-                    .background(tokens.accent, in: Circle())
+                    .background(tokens.primaryAction, in: Circle())
                     .overlay {
                         Circle()
                             .stroke(Color.white.opacity(0.20), lineWidth: 1)
@@ -1077,17 +1076,35 @@ struct ConversationTimelineView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Text("还没有对话")
-                .font(themeStore.uiFont(.headline, weight: .semibold))
-                .foregroundStyle(workbenchPrimaryText)
-            Text("选择历史会话会加载上下文；输入任务会启动或继续当前会话。")
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(workbenchSecondaryText)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: layout.emptyStateMaxWidth)
+        let tokens = themeStore.tokens(for: colorScheme)
+        return VStack(spacing: 14) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(themeStore.uiFont(size: 24, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.primaryAction)
+                .frame(width: 52, height: 52)
+                .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            VStack(spacing: 6) {
+                Text("开始这次会话")
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(workbenchPrimaryText)
+                Text("在下方输入任务，Mimi Remote 会保留当前工作区与会话上下文。")
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(workbenchSecondaryText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: layout.emptyStateMaxWidth)
+            }
         }
-        .padding(.vertical, 40)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 26)
+        .frame(maxWidth: layout.emptyStateMaxWidth)
+        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(tokens.border.opacity(0.58), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(tokens.resolvedScheme == .light ? 0.045 : 0.16), radius: 12, y: 5)
         .frame(maxWidth: .infinity)
     }
 
@@ -2097,11 +2114,16 @@ private struct MessageBubble: View {
     }
 
     private var bubbleChrome: some View {
-        contentWithTimestamp
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        return contentWithTimestamp
             .foregroundStyle(foreground)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(background, in: shape)
+            .overlay {
+                shape.strokeBorder(bubbleBorder, lineWidth: 1)
+            }
+            .shadow(color: bubbleShadowColor, radius: message.role == .user ? 2 : 6, y: message.role == .user ? 1 : 2)
     }
 
     private var contentWithTimestamp: some View {
@@ -2352,6 +2374,25 @@ private struct MessageBubble: View {
         default:
             return tokens.assistantBubble
         }
+    }
+
+    private var bubbleBorder: Color {
+        let tokens = themeStore.tokens(for: colorScheme)
+        if message.role == .user, tokens.preset == .codex {
+            return Color.white.opacity(tokens.resolvedScheme == .light ? 0.12 : 0.08)
+        }
+        return tokens.border.opacity(message.role == .assistant ? 0.58 : 0.42)
+    }
+
+    private var bubbleShadowColor: Color {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let opacity: Double
+        if message.role == .user {
+            opacity = tokens.resolvedScheme == .light ? 0.05 : 0.12
+        } else {
+            opacity = tokens.resolvedScheme == .light ? 0.045 : 0.16
+        }
+        return Color.black.opacity(opacity)
     }
 
     private var foreground: Color {
