@@ -733,11 +733,13 @@ private struct NewSessionSheet: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("newSession.lastWorkspaceID") private var lastWorkspaceID = ""
     @AppStorage("newSession.lastRuntime") private var lastRuntimeID = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var selectedWorkspaceID = ""
     @State private var isCreating = false
     @State private var didLeaveSheetForCreation = false
+    @State private var creationErrorMessage: String?
 
     let onCreated: (SessionID) -> Void
     let onOpenWorkspaces: () -> Void
@@ -761,30 +763,29 @@ private struct NewSessionSheet: View {
                         .tint(tokens.primaryAction)
                     }
                 } else {
-                    Form {
-                        Section("工作区") {
-                            Picker("项目", selection: $selectedWorkspaceID) {
-                                ForEach(sessionStore.sidebarProjects) { project in
-                                    VStack(alignment: .leading) {
-                                        Text(project.name)
-                                        Text(project.path)
-                                    }
-                                    .tag(project.id)
-                                }
-                            }
-                            .pickerStyle(.inline)
-                        }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 26) {
+                            workspaceSection(tokens: tokens)
+                            runtimeSection(tokens: tokens)
 
-                        Section("运行时") {
-                            Picker("运行时", selection: $lastRuntimeID) {
-                                ForEach(WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel)) { choice in
-                                    Label(choice == .codex ? "Codex" : "Claude Code", systemImage: choice.systemImage)
-                                        .tag(choice.rawValue)
-                                }
+                            if let creationErrorMessage {
+                                Label(creationErrorMessage, systemImage: "exclamationmark.circle.fill")
+                                    .font(themeStore.uiFont(.caption))
+                                    .foregroundStyle(tokens.warning)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                                    .background(tokens.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .accessibilityIdentifier("newSession.creationError")
                             }
-                            .pickerStyle(.segmented)
                         }
+                        .frame(maxWidth: 520)
+                        .padding(.horizontal, horizontalSizeClass == .compact ? 20 : 24)
+                        .padding(.top, 22)
+                        .padding(.bottom, 32)
+                        .frame(maxWidth: .infinity, alignment: .top)
                     }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .background(tokens.background)
                 }
             }
             .navigationTitle("新会话")
@@ -792,6 +793,9 @@ private struct NewSessionSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
+                        .disabled(isCreating)
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("newSession.cancel")
                 }
                 if !sessionStore.sidebarProjects.isEmpty {
                     ToolbarItem(placement: .confirmationAction) {
@@ -799,30 +803,33 @@ private struct NewSessionSheet: View {
                             Task { await createSession() }
                         } label: {
                             if isCreating {
-                                ProgressView().controlSize(.small)
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("创建中")
+                                }
                             } else {
                                 Text("创建")
                             }
                         }
+                        .frame(minWidth: 48)
+                        .buttonStyle(.glassProminent)
                         .disabled(isCreating || selectedProject == nil)
                         .tint(tokens.primaryAction)
+                        .keyboardShortcut(.defaultAction)
+                        .accessibilityIdentifier("newSession.create")
                     }
                 }
             }
         }
         .onAppear {
-            let projects = sessionStore.sidebarProjects
-            if projects.contains(where: { $0.id == lastWorkspaceID }) {
-                selectedWorkspaceID = lastWorkspaceID
-            } else if let selected = sessionStore.selectedProject,
-                      projects.contains(where: { $0.id == selected.id }) {
-                selectedWorkspaceID = selected.id
-            } else {
-                selectedWorkspaceID = projects.first?.id ?? ""
-            }
-            if !sessionStore.hasClaudeRuntimeChannel {
-                lastRuntimeID = WorkspaceSessionRuntimeChoice.codex.rawValue
-            }
+            synchronizeWorkspaceSelection()
+            normalizeRuntimeSelection()
+        }
+        .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
+            synchronizeWorkspaceSelection()
+        }
+        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, _ in
+            normalizeRuntimeSelection()
         }
         .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
             guard isCreating,
@@ -830,22 +837,226 @@ private struct NewSessionSheet: View {
                   sessionID.hasPrefix("local:") else { return }
             leaveSheetForCreatedSession(sessionID)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        // iPhone 默认用紧凑高度展示完整配置，减少大面积空白；iPad 继续交给系统 form 尺寸适配。
+        .modifier(NewSessionPresentationModifier(isCompact: horizontalSizeClass == .compact))
+        .interactiveDismissDisabled(isCreating)
+    }
+
+    private func workspaceSection(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(
+                title: "工作区",
+                subtitle: "会话会在所选目录中运行",
+                tokens: tokens
+            )
+
+            if let project = selectedProject ?? sessionStore.sidebarProjects.first {
+                Menu {
+                    ForEach(sessionStore.sidebarProjects) { candidate in
+                        Button {
+                            // 工作区属于创建参数，选择时只更新 Sheet 本地状态，不提前切换全局会话上下文。
+                            selectedWorkspaceID = candidate.id
+                            creationErrorMessage = nil
+                        } label: {
+                            if candidate.id == selectedWorkspaceID {
+                                Label(workspaceMenuTitle(for: candidate), systemImage: "checkmark")
+                            } else {
+                                Text(workspaceMenuTitle(for: candidate))
+                            }
+                        }
+                    }
+                } label: {
+                    workspaceSummary(project, tokens: tokens)
+                }
+                .buttonStyle(.plain)
+                .disabled(isCreating)
+                .accessibilityLabel("选择工作区")
+                .accessibilityValue("\(project.name)，\(compactWorkspacePath(project.path))")
+                .accessibilityIdentifier("newSession.workspace")
+            }
+        }
+    }
+
+    private func runtimeSection(tokens: ThemeTokens) -> some View {
+        let choices = WorkspaceSessionRuntimeChoice.available(
+            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+        )
+
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(
+                title: "运行时",
+                subtitle: "选择负责执行任务的 Agent",
+                tokens: tokens
+            )
+
+            if choices.count > 1 {
+                Picker("运行时", selection: $lastRuntimeID) {
+                    ForEach(choices) { choice in
+                        Text(runtimeTitle(for: choice))
+                            .tag(choice.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(isCreating)
+                .accessibilityIdentifier("newSession.runtime")
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "terminal.fill")
+                        .font(themeStore.uiFont(size: 16, weight: .semibold))
+                        .foregroundStyle(tokens.primaryAction)
+                        .frame(width: 36, height: 36)
+                        .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Codex")
+                            .font(themeStore.uiFont(.body, weight: .semibold))
+                            .foregroundStyle(tokens.primaryText)
+                        Text("当前唯一可用运行时")
+                            .font(themeStore.uiFont(.caption))
+                            .foregroundStyle(tokens.tertiaryText)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(themeStore.uiFont(size: 20, weight: .semibold))
+                        .foregroundStyle(tokens.primaryAction)
+                }
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity, minHeight: 64)
+                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(tokens.border.opacity(0.76), lineWidth: 1)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("newSession.runtime")
+            }
+
+            Text("创建后运行时不能切换")
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.tertiaryText)
+        }
+    }
+
+    private func sectionHeader(title: String, subtitle: String, tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(themeStore.uiFont(.headline, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+            Text(subtitle)
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.tertiaryText)
+        }
+    }
+
+    private func workspaceSummary(_ project: AgentProject, tokens: ThemeTokens) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder.fill")
+                .font(themeStore.uiFont(size: 17, weight: .semibold))
+                .foregroundStyle(tokens.primaryAction)
+                .frame(width: 38, height: 38)
+                .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(project.name)
+                    .font(themeStore.uiFont(.body, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+
+                Text(compactWorkspacePath(project.path))
+                    .font(themeStore.codeFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+                .frame(width: 24, height: 24)
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, minHeight: 70)
+        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(tokens.border.opacity(0.76), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func runtimeTitle(for choice: WorkspaceSessionRuntimeChoice) -> String {
+        choice == .codex ? "Codex" : "Claude Code"
+    }
+
+    private func compactWorkspacePath(_ path: String) -> String {
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard path.hasPrefix("/"),
+              components.count >= 2,
+              components.first == "Users" else {
+            return path
+        }
+        // 隐去本机用户名既能降低视觉噪音，也避免在远程屏幕共享时反复暴露完整绝对路径。
+        let relativeComponents = components.dropFirst(2)
+        return relativeComponents.isEmpty ? "~" : "~/" + relativeComponents.joined(separator: "/")
+    }
+
+    private func workspaceMenuTitle(for project: AgentProject) -> String {
+        let hasDuplicateName = sessionStore.sidebarProjects.filter { $0.name == project.name }.count > 1
+        guard hasDuplicateName else { return project.name }
+
+        let components = project.path.split(separator: "/", omittingEmptySubsequences: true)
+        let parentName = components.dropLast().last.map(String.init) ?? compactWorkspacePath(project.path)
+        return "\(project.name) — \(parentName)"
     }
 
     private var selectedProject: AgentProject? {
         sessionStore.sidebarProjects.first { $0.id == selectedWorkspaceID }
     }
 
+    private func synchronizeWorkspaceSelection() {
+        let projects = sessionStore.sidebarProjects
+        guard !projects.contains(where: { $0.id == selectedWorkspaceID }) else { return }
+
+        if projects.contains(where: { $0.id == lastWorkspaceID }) {
+            selectedWorkspaceID = lastWorkspaceID
+        } else if let selected = sessionStore.selectedProject,
+                  projects.contains(where: { $0.id == selected.id }) {
+            selectedWorkspaceID = selected.id
+        } else {
+            selectedWorkspaceID = projects.first?.id ?? ""
+        }
+    }
+
+    private func normalizeRuntimeSelection() {
+        let choices = WorkspaceSessionRuntimeChoice.available(
+            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+        )
+        guard choices.contains(where: { $0.rawValue == lastRuntimeID }) else {
+            lastRuntimeID = choices.first?.rawValue ?? WorkspaceSessionRuntimeChoice.codex.rawValue
+            return
+        }
+    }
+
     private func createSession() async {
         guard let project = selectedProject else { return }
         isCreating = true
+        creationErrorMessage = nil
         defer { isCreating = false }
-        let choice = WorkspaceSessionRuntimeChoice(rawValue: lastRuntimeID) ?? .codex
+        let choices = WorkspaceSessionRuntimeChoice.available(
+            claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel
+        )
+        // 创建前再次按当前通道能力校验，避免 Sheet 打开期间通道状态变化造成错误路由。
+        let choice = choices.first(where: { $0.rawValue == lastRuntimeID }) ?? .codex
         lastWorkspaceID = project.id
         await sessionStore.startNewSession(in: project, runtimeProvider: choice.runtimeProvider)
-        guard let sessionID = sessionStore.selectedSessionID else { return }
+        guard let sessionID = sessionStore.selectedSessionID else {
+            creationErrorMessage = sessionStore.errorMessage ?? "创建失败，请稍后重试。"
+            return
+        }
         leaveSheetForCreatedSession(sessionID)
     }
 
@@ -854,5 +1065,20 @@ private struct NewSessionSheet: View {
         didLeaveSheetForCreation = true
         dismiss()
         onCreated(sessionID)
+    }
+}
+
+private struct NewSessionPresentationModifier: ViewModifier {
+    let isCompact: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isCompact {
+            content
+                .presentationDetents([.height(430), .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            content.presentationSizing(.form)
+        }
     }
 }
