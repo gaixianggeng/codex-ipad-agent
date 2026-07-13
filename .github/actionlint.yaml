@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    # 仓库专用 TestFlight Mac 的自定义 runner 标签。
+    - mimi-testflight

@@ -955,8 +955,8 @@ final class SessionStore: ObservableObject {
     private static let optimisticSessionSource = "local"
     static let sessionPreviewLimit = 3
     static let sessionExpansionStep = 5
-    // 远程/VPS 中转链路下，thread/list 的响应会经过 WebSocket + SSH 隧道。
-    // 首屏先拿较小窗口，避免弱网下为了预览历史会话而卡住整个工作台。
+    // Tailscale 在弱网下可能经 Peer Relay 或 DERP 转发 thread/list 的较大响应。
+    // 首屏先拿较小窗口，避免为了预览历史会话而卡住整个工作台。
     private static let initialSessionPageLimit = 20
     private static let expandedSessionPageLimit = 20
     private static let commandActionHistoryLimit = 10
@@ -1512,7 +1512,6 @@ final class SessionStore: ObservableObject {
         guard appStore.isConfigured else {
             return
         }
-        _ = await refreshConnectionRoute(preferPrimary: true)
         // 冷启动有两层“没就绪”：① VPN / Tailscale 隧道还没建好，首个 HTTP 请求就失败；
         // ② agentd 的 HTTP 端口先于 app-server gateway 上游就绪——projects 能立刻拿到，但首个
         // 会话请求 / WebSocket 连接会因为上游还没接受连接而失败。scenePhase 的 .active 回调在
@@ -1710,30 +1709,10 @@ final class SessionStore: ObservableObject {
     // refreshAll 成功拿到数据、或后端确实为空时都会清空 errorMessage；只要还有 errorMessage，
     // 就说明 projects / sessions / gateway 至少有一环没就绪，需要继续重试让首屏自愈。
     //
-    // 冷启动失败基本是后端还没就绪（agentd / 隧道未通，或 app-server 上游还没接受连接），这类失败
+    // 冷启动失败基本是后端还没就绪（agentd / Tailscale 未通，或 app-server 上游还没接受连接），这类失败
     // 都很快返回，所以用较短的固定退避高频轮询：后端一就绪就能在 ~1s 内被探测到并自愈，而不是用
     // 慢退避白等。按总时长封顶而非固定次数，后端晚十几二十秒才起来也能等到，不会提前放弃又卡回
     // “要杀进程”的老问题。
-    @discardableResult
-    private func refreshConnectionRoute(preferPrimary: Bool) async -> Bool {
-        do {
-            let selectedEndpoint = try await appStore.prepareReachableRoute(preferPrimary: preferPrimary)
-            guard selectedEndpoint != appStore.activeEndpoint else {
-                return false
-            }
-            // 路由切换是连接代次边界：先停止旧订阅，再让所有新 client 读取同一个 active endpoint。
-            disconnectWebSocket()
-            let changed = try appStore.activateConnectionRoute(selectedEndpoint)
-            if changed {
-                setStatusMessage("已切换到\(appStore.activeConnectionRouteTitle)")
-            }
-            return changed
-        } catch {
-            // 这里不覆盖业务错误；refreshAll 会给出更具体的 projects / gateway 失败原因。
-            return false
-        }
-    }
-
     private func refreshUntilLoaded(maxWait: TimeInterval, autoAttach: Bool) async {
         let deadline = Date().addingTimeInterval(max(0, maxWait))
         var attempt = 0
@@ -1746,7 +1725,7 @@ final class SessionStore: ObservableObject {
                 return
             }
             // Gateway 已明确给出 retryAfter 时必须尊重该窗口；继续按 0.3/0.9 秒探测只会把一次限流
-            // 放大成重试风暴，也不能把业务限流误判成主链路故障并切到备用地址。
+            // 放大成重试风暴。
             if let workspace = selectedProjectID.flatMap({ workspacesByID[$0] }),
                let cooldownDelay = sessionListCooldownDelayNanoseconds(for: workspace) {
                 attempt += 1
@@ -1754,10 +1733,7 @@ final class SessionStore: ObservableObject {
                 if Task.isCancelled { return }
                 continue
             }
-            if await refreshConnectionRoute(preferPrimary: false) {
-                continue
-            }
-            // 普通隧道/启动失败仍保留原来的快速恢复节奏。
+            // Tailscale 会在同一个地址下自行选择直连、Peer Relay 或 DERP；App 只需重试业务请求。
             let backoffNanoseconds: UInt64 = attempt == 0 ? 300_000_000 : 900_000_000
             attempt += 1
             await sessionListSleep(backoffNanoseconds)
@@ -3076,12 +3052,10 @@ final class SessionStore: ObservableObject {
     @discardableResult
     func applyConnectionSettings(
         endpoint: String,
-        fallbackEndpoint: String,
         token: String
     ) async throws -> Bool {
         let prepared = try await appStore.prepareConnectionSettings(
             endpoint: endpoint,
-            fallbackEndpoint: fallbackEndpoint,
             token: token
         )
         return try commitPreparedConnection(prepared)
@@ -3094,7 +3068,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func commitPreparedConnection(_ prepared: PreparedConnectionSettings) throws -> Bool {
-        // 连接切换必须先结束旧 WebSocket，再原子提交新的 active endpoint；后续 REST 与
+        // 连接切换必须先结束旧 WebSocket，再原子提交新的 endpoint；后续 REST 与
         // WebSocket 都从同一个 runtime bundle 创建，避免一次会话被拆到两条链路上。
         disconnectWebSocket()
         let didChange = try appStore.commitConnectionSettings(prepared)
@@ -3557,7 +3531,6 @@ final class SessionStore: ObservableObject {
         guard appStore.isConfigured else {
             return
         }
-        _ = await refreshConnectionRoute(preferPrimary: true)
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: true)
@@ -5691,7 +5664,6 @@ final class SessionStore: ObservableObject {
               let latestSession = sessionsByID[sessionID] else {
             return
         }
-        _ = await refreshConnectionRoute(preferPrimary: false)
         guard selectedSessionID == sessionID else {
             return
         }

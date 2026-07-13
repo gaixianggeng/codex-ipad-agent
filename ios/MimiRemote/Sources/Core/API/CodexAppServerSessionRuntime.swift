@@ -71,7 +71,9 @@ actor CodexAppServerSessionRuntime {
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     private var threadsResumedOnConnection: Set<SessionID> = []
     private var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
-    private var eventContinuationsBySessionID: [SessionID: AsyncStream<AgentEvent>.Continuation] = [:]
+    private var eventContinuationsBySessionID: [
+        SessionID: (token: UUID, continuation: AsyncStream<AgentEvent>.Continuation)
+    ] = [:]
     private var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     private var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
     private var userInputPromptsEnabledBySessionID: [SessionID: Bool] = [:]
@@ -94,7 +96,7 @@ actor CodexAppServerSessionRuntime {
     private var stateDBOnlyListUnavailable = false
     private var stateDBOnlyScanRequiredCWDs: Set<String> = []
     private var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
-    // thread/list 在远程/VPS 中转链路上可能要扫本机 Codex 历史并传回较大的 JSON。
+    // thread/list 在 Tailscale Peer Relay/DERP 弱链路上可能要扫本机 Codex 历史并传回较大的 JSON。
     // 只给列表请求放宽超时，避免影响 turn/start 等交互命令的失败反馈速度。
     private let threadListRequestTimeout: TimeInterval = 60
     private let requestTimeout: TimeInterval
@@ -597,12 +599,11 @@ actor CodexAppServerSessionRuntime {
         let authoritativeCompletedTurnItems = Self.authoritativeCompletedTurnItems(fromTurns: turns)
         var context: SessionContextSnapshot?
         if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
-            contextsBySessionID[sessionID] = CodexAppServerSessionContext(
-                session: session,
-                cwd: session.dir,
-                activeTurnID: session.activeTurnID
-            )
+            let recoveredCompletedTurnID = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             context = session.context
+            if let recoveredCompletedTurnID {
+                emit(.turnCompleted(metadata(threadID: session.id, turnID: recoveredCompletedTurnID)))
+            }
         }
         threadHistoryCacheBySessionID[sessionID] = messages
         threadAuthoritativeCompletedTurnItemsBySessionID[sessionID] = authoritativeCompletedTurnItems
@@ -850,7 +851,7 @@ actor CodexAppServerSessionRuntime {
             // 控制 turn 页大小，比降低 WebSocket message size 更温和，不会制造重连风暴。
             return max(5, min(20, (requestedMessages + 3) / 4))
         case .full:
-            // full 手动加载仍要服从 Go gateway 的硬上限，避免按钮在公网模式下被 50 limit 拒绝。
+            // full 手动加载仍要服从 Go gateway 的硬上限，避免弱网下大响应被 50 limit 拒绝。
             return max(10, min(50, (requestedMessages + 1) / 2))
         }
     }
@@ -977,13 +978,14 @@ actor CodexAppServerSessionRuntime {
             continuation = $0
         }
         if let continuation {
-            eventContinuationsBySessionID[sessionID] = continuation
+            let token = UUID()
+            eventContinuationsBySessionID[sessionID] = (token, continuation)
             for event in bufferedEvents(sessionID: sessionID, replayPolicy: replayPolicy) {
                 continuation.yield(event)
             }
             continuation.onTermination = { [weak self] _ in
                 Task {
-                    await self?.detachEvents(sessionID: sessionID)
+                    await self?.detachEvents(sessionID: sessionID, token: token)
                 }
             }
         }
@@ -1235,14 +1237,51 @@ actor CodexAppServerSessionRuntime {
             projects: (try? projectsFromCache()) ?? [],
             fallbackProject: nil
            ) {
-            contextsBySessionID[session.id] = CodexAppServerSessionContext(
-                session: session,
-                cwd: session.dir,
-                activeTurnID: session.activeTurnID
-            )
+            let recoveredCompletedTurnID = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             emit(.session(session))
+            if let recoveredCompletedTurnID {
+                // 断线可能发生在最终 item/completed 与 turn/completed 之间。resume 返回的 turns
+                // 是当前连接的权威快照；确认旧 active turn 已进入终态后，补回完成事件，让上层
+                // 清理陈旧 activeTurnID 并继续发送本地排队消息。
+                emit(.turnCompleted(metadata(threadID: session.id, turnID: recoveredCompletedTurnID)))
+            }
         }
         threadsResumedOnConnection.insert(sessionID)
+    }
+
+    private func storeAuthoritativeTurnsSnapshot(
+        _ session: AgentSession,
+        thread: [String: CodexAppServerJSONValue]
+    ) -> TurnID? {
+        let previouslyActiveTurnID = contextsBySessionID[session.id]?.activeTurnID
+        let recoveredCompletedTurnID = completedTurnConfirmedByAuthoritativeSnapshot(
+            thread,
+            previouslyActiveTurnID: previouslyActiveTurnID,
+            currentActiveTurnID: session.activeTurnID
+        )
+        contextsBySessionID[session.id] = CodexAppServerSessionContext(
+            session: session,
+            cwd: session.dir,
+            activeTurnID: session.activeTurnID
+        )
+        return recoveredCompletedTurnID
+    }
+
+    private func completedTurnConfirmedByAuthoritativeSnapshot(
+        _ thread: [String: CodexAppServerJSONValue],
+        previouslyActiveTurnID: TurnID?,
+        currentActiveTurnID: TurnID?
+    ) -> TurnID? {
+        guard currentActiveTurnID == nil,
+              let previouslyActiveTurnID,
+              let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue),
+              let previousTurn = turns.last(where: { $0["id"]?.stringValue == previouslyActiveTurnID })
+        else {
+            return nil
+        }
+        let hasTerminalStatus = isTerminalHistoryStatus(previousTurn["status"])
+        let hasCompletionTimestamp = firstDate(in: previousTurn, keys: ["completedAt", "completed_at"]) != nil
+        return hasTerminalStatus || hasCompletionTimestamp ? previouslyActiveTurnID : nil
     }
 
     private func shouldFallbackFromInitialTurnsPage(_ error: Error) -> Bool {
@@ -1340,7 +1379,10 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    private func detachEvents(sessionID: SessionID) {
+    private func detachEvents(sessionID: SessionID, token: UUID) {
+        guard eventContinuationsBySessionID[sessionID]?.token == token else {
+            return
+        }
         eventContinuationsBySessionID.removeValue(forKey: sessionID)
     }
 
@@ -1427,15 +1469,50 @@ actor CodexAppServerSessionRuntime {
         // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
-        notificationPumpTask = Task { [weak self, notifications = prepared.notifications] in
+        notificationPumpTask = Task { [weak self, notifications = prepared.notifications, installedConnection = prepared.connection] in
             for await notification in notifications {
                 await self?.handle(notification)
             }
+            guard !Task.isCancelled else {
+                return
+            }
+            await self?.handleNotificationStreamEnded(for: installedConnection)
         }
         serverRequestPumpTask = Task { [weak self, serverRequests = prepared.serverRequests] in
             for await request in serverRequests {
                 await self?.handle(request)
             }
+        }
+    }
+
+    private func handleNotificationStreamEnded(for endedConnection: CodexAppServerConnection) async {
+        guard let current = connection, current === endedConnection else {
+            return
+        }
+
+        // 底层 receive 失败会结束 notification stream。这里必须继续结束上层 AgentEvent stream，
+        // 否则 SessionWebSocketClient 的 for-await 永远不退出，UI 会一直误认为连接仍是 connected。
+        notificationPumpTask = nil
+        serverRequestPumpTask?.cancel()
+        serverRequestPumpTask = nil
+        connection = nil
+        threadsResumedOnConnection.removeAll(keepingCapacity: true)
+        let affected = clearAllPendingServerRequests()
+        for sessionID in affected.approvalSessionIDs {
+            emitApprovalResolved(sessionID: sessionID)
+        }
+        for sessionID in affected.userInputSessionIDs {
+            emitUserInputResolved(sessionID: sessionID, skipped: false)
+        }
+        finishAttachedEventStreams()
+        await endedConnection.disconnect()
+    }
+
+    private func finishAttachedEventStreams() {
+        let continuations = eventContinuationsBySessionID.values.map { $0.continuation }
+        eventContinuationsBySessionID.removeAll(keepingCapacity: true)
+        for continuation in continuations {
+            continuation.finish()
         }
     }
 
@@ -1478,6 +1555,11 @@ actor CodexAppServerSessionRuntime {
     }
 
     private func retireConnection(_ stale: CodexAppServerConnection) async {
+        guard let current = connection, current === stale else {
+            // actor 在前面的 await 期间可能已经安装了新连接；旧请求只能关闭自己，不能清理新代次。
+            await stale.disconnect()
+            return
+        }
         notificationPumpTask?.cancel()
         notificationPumpTask = nil
         serverRequestPumpTask?.cancel()
@@ -1491,6 +1573,9 @@ actor CodexAppServerSessionRuntime {
         for sessionID in affected.userInputSessionIDs {
             emitUserInputResolved(sessionID: sessionID, skipped: false)
         }
+        // 主动淘汰不可用连接时也要结束上层订阅；否则被取消的 notification pump 不会再走
+        // 异常结束 handler，SessionStore 仍可能把这条已失效连接看成 connected。
+        finishAttachedEventStreams()
         await stale.disconnect()
     }
 
@@ -1752,8 +1837,8 @@ actor CodexAppServerSessionRuntime {
         guard let sessionID else {
             return
         }
-        if let continuation = eventContinuationsBySessionID[sessionID] {
-            continuation.yield(event)
+        if let entry = eventContinuationsBySessionID[sessionID] {
+            entry.continuation.yield(event)
         } else {
             bufferedEventsBySessionID[sessionID, default: []].append(event)
         }
@@ -2611,7 +2696,7 @@ actor CodexAppServerSessionRuntime {
             return nil
         }
         let activeTurnID = turns.last { turn in
-            turn["status"]?.stringValue == "inProgress"
+            isActiveHistoryStatus(turn["status"])
         }?["id"]?.stringValue
         return .some(activeTurnID)
     }
@@ -3879,21 +3964,33 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let eventHandler = onEvent
         let replayPolicy: CodexAppServerBufferedEventReplayPolicy = replayBufferedEvents ? .all : .stateOnly
         eventPumpTask = Task { [runtime] in
+            let events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
             do {
                 try await runtime.connectForEvents(sessionID: threadID)
-                let events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
+                guard !Task.isCancelled else {
+                    return
+                }
                 await MainActor.run {
                     statusHandler?(.connected)
                 }
                 for await event in events {
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     await MainActor.run {
                         eventHandler?(event)
                     }
+                }
+                guard !Task.isCancelled else {
+                    return
                 }
                 await MainActor.run {
                     statusHandler?(.disconnected)
                 }
             } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
                 await MainActor.run {
                     statusHandler?(.failed(error.localizedDescription))
                 }

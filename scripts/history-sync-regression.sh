@@ -6,14 +6,15 @@ CONFIG_PATH="${AGENTD_CONFIG:-$HOME/Library/Application Support/codex-ipad-agent
 ROUNDS=10
 LIST_LIMIT=20
 TIMEOUT="15s"
-ENDPOINTS=("local=http://127.0.0.1:8787" "public=http://124.221.80.250")
+ENDPOINTS=()
 
 usage() {
   cat <<'USAGE'
 用法：
   bash ./scripts/history-sync-regression.sh [options]
 
-只读执行 initialize + thread/list，并输出各链路的成功率、P50、P95 和最大耗时。
+只读执行 initialize + thread/list，并输出 Endpoint 的成功率、P50、P95 和最大耗时。
+未传 --endpoint 时，默认使用当前 Mac 的 Tailscale IPv4 地址和 8787 端口。
 
 Options:
   --endpoint NAME=URL   增加验收入口；第一次传入时替换默认入口，可重复
@@ -24,10 +25,12 @@ Options:
   -h, --help            显示帮助
 
 示例：
+  # 默认验证当前 Mac 的 Tailscale Endpoint
+  bash ./scripts/history-sync-regression.sh --rounds 10
+
+  # 显式指定其他 Tailscale/MagicDNS Endpoint
   bash ./scripts/history-sync-regression.sh \
-    --endpoint local=http://127.0.0.1:8787 \
-    --endpoint tailscale=http://<Mac-Tailscale-IP>:8787 \
-    --endpoint public=http://124.221.80.250
+    --endpoint tailscale=http://<Mac-Tailscale-IP>:8787
 
 Token 优先读取 AGENTD_TOKEN；为空时读取 --config 的 .auth.token。脚本不会打印 Token。
 USAGE
@@ -93,6 +96,16 @@ require_command jq
 require_command perl
 require_positive_integer "--rounds" "$ROUNDS"
 require_positive_integer "--limit" "$LIST_LIMIT"
+
+if [[ "$custom_endpoints" == "0" ]]; then
+  require_command tailscale
+  tailscale_ip="$(tailscale ip -4 2>/dev/null || true)"
+  if [[ -z "${tailscale_ip//[[:space:]]/}" || "$tailscale_ip" == *$'\n'* ]]; then
+    echo "无法确定唯一的 Mac Tailscale IPv4 地址；请确认 Tailscale 已连接，或用 --endpoint 显式指定" >&2
+    exit 2
+  fi
+  ENDPOINTS=("tailscale=http://${tailscale_ip}:8787")
+fi
 
 TOKEN="${AGENTD_TOKEN:-}"
 if [[ -z "${TOKEN//[[:space:]]/}" && -f "$CONFIG_PATH" ]]; then

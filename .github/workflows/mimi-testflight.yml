@@ -20,7 +20,7 @@ on:
       xcode_path:
         description: 可选 Xcode 路径
         required: false
-        default: /Applications/Xcode_26.3.app
+        default: /Applications/Xcode-beta.app
         type: string
 
 permissions:
@@ -32,7 +32,8 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: macos-15
+    # 仓库专用标签防止其他项目占用本机的 iOS 发布环境。
+    runs-on: [self-hosted, macOS, ARM64, mimi-testflight]
     timeout-minutes: 90
     env:
       IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
@@ -42,53 +43,58 @@ jobs:
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test || format('自动内测：{0}', github.event.head_commit.message) }}
       APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-      IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
-      IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
-      IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
-      IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
-      XCODE_APP_PATH: ${{ inputs.xcode_path || '/Applications/Xcode_26.3.app' }}
-      FASTLANE_SKIP_UPDATE_CHECK: '1'
-      FASTLANE_HIDE_TIMESTAMP: '1'
+      APP_STORE_CONNECT_API_KEY_PATH: ${{ vars.MIMI_ASC_API_KEY_PATH || '/Users/gaixiaotongxue/secure/AuthKey_6WL48ZRJB6.p8' }}
+      XCODE_APP_PATH: ${{ inputs.xcode_path || '/Applications/Xcode-beta.app' }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
 
-      - name: 选择 Xcode 26
+      - name: 检查本机发布环境
         run: |
           set -euo pipefail
-          test -d "$XCODE_APP_PATH"
-          sudo xcode-select -s "$XCODE_APP_PATH"
-          xcodebuild -version
-          fastlane --version
 
-      - name: 安装发布签名与 App Store Connect Key
-        run: |
-          set -euo pipefail
-          keychain="$RUNNER_TEMP/mimi-signing.keychain-db"
-          certificate="$RUNNER_TEMP/mimi-distribution.p12"
-          profile="$RUNNER_TEMP/mimi-appstore.mobileprovision"
-          profile_plist="$RUNNER_TEMP/mimi-appstore.plist"
-          asc_key="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          ruby -rbase64 -e 'File.binwrite(ARGV[0], Base64.decode64(ENV.fetch("IOS_DISTRIBUTION_CERTIFICATE_BASE64")))' "$certificate"
-          ruby -rbase64 -e 'File.binwrite(ARGV[0], Base64.decode64(ENV.fetch("IOS_APPSTORE_PROVISIONING_PROFILE_BASE64")))' "$profile"
-          printf '%s' "$ASC_PRIVATE_KEY" > "$asc_key"
-          chmod 600 "$asc_key"
-          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
-          security set-keychain-settings -lut 7200 "$keychain"
-          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
-          security import "$certificate" -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
-          security set-key-partition-list -S apple-tool:,apple: -k "$IOS_KEYCHAIN_PASSWORD" "$keychain"
-          security list-keychains -d user -s "$keychain"
-          security cms -D -i "$profile" > "$profile_plist"
-          profile_uuid="$(plutil -extract UUID raw -o - "$profile_plist")"
-          profile_name="$(plutil -extract Name raw -o - "$profile_plist")"
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
-          echo "APP_STORE_CONNECT_API_KEY_PATH=$asc_key" >> "$GITHUB_ENV"
+          # 持久 runner 不修改系统 xcode-select，避免并发任务互相影响。
+          developer_dir="$XCODE_APP_PATH/Contents/Developer"
+          test -d "$developer_dir"
+          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$developer_dir"
+          xcodebuild -version
+          xcrun altool --version
+
+          test -n "$IOS_BUNDLE_ID"
+          test -n "$DEVELOPMENT_TEAM"
+          test -n "$APP_STORE_CONNECT_API_KEY_ID"
+          test -n "$APP_STORE_CONNECT_API_ISSUER_ID"
+          test -f "$APP_STORE_CONNECT_API_KEY_PATH"
+
+          # 本机 runner 复用 login keychain 中的证书，不每次创建和遗留临时 keychain。
+          if ! security find-identity -v -p codesigning \
+            | grep -E '"(Apple|iPhone) Distribution:.*\('"$DEVELOPMENT_TEAM"'\)"'; then
+            echo "未找到团队 $DEVELOPMENT_TEAM 的 Distribution 签名证书" >&2
+            exit 1
+          fi
+
+          # 按 bundle id 动态查找已安装的 App Store profile，避免续期后绑定旧 UUID。
+          profile_plist="$RUNNER_TEMP/mimi-installed-profile.plist"
+          profile_name=""
+          shopt -s nullglob
+          for profile in "$HOME/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision; do
+            security cms -D -i "$profile" > "$profile_plist" 2>/dev/null || continue
+            application_identifier="$(plutil -extract Entitlements.application-identifier raw -o - "$profile_plist" 2>/dev/null || true)"
+            # App Store profile 不包含 ProvisionedDevices，避免误选开发或 Ad Hoc profile。
+            if [[ "$application_identifier" == "$DEVELOPMENT_TEAM.$IOS_BUNDLE_ID" ]] \
+              && ! plutil -extract ProvisionedDevices xml1 -o - "$profile_plist" >/dev/null 2>&1; then
+              profile_name="$(plutil -extract Name raw -o - "$profile_plist")"
+              break
+            fi
+          done
+          rm -f "$profile_plist"
+          if [[ -z "$profile_name" ]]; then
+            echo "未找到 $IOS_BUNDLE_ID 的 App Store provisioning profile" >&2
+            exit 1
+          fi
           echo "IOS_PROVISIONING_PROFILE_SPECIFIER=$profile_name" >> "$GITHUB_ENV"
-          echo "IOS_INSTALLED_PROFILE_PATH=$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision" >> "$GITHUB_ENV"
 
       - name: 归档并导出 IPA
         run: |
@@ -99,6 +105,8 @@ jobs:
           archive="$output/MimiRemote.xcarchive"
           export_path="$output/export"
           export_options="$output/ExportOptions.plist"
+          # 先记录输出目录，即使归档失败，always 步骤也能清理。
+          echo "IOS_OUTPUT_PATH=$output" >> "$GITHUB_ENV"
           mkdir -p "$output"
           cat > "$export_options" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -142,37 +150,23 @@ jobs:
       - name: 上传到 App Store Connect
         run: |
           set -euo pipefail
-          api_key_json="$RUNNER_TEMP/fastlane-api-key.json"
-          ruby -rjson -e '
-            File.write(ARGV[0], JSON.generate({
-              key_id: ENV.fetch("APP_STORE_CONNECT_API_KEY_ID"),
-              issuer_id: ENV.fetch("APP_STORE_CONNECT_API_ISSUER_ID"),
-              key: File.read(ENV.fetch("APP_STORE_CONNECT_API_KEY_PATH")),
-              in_house: false
-            }))
-          ' "$api_key_json"
-          chmod 600 "$api_key_json"
-          fastlane pilot upload \
-            --ipa "$IOS_IPA_PATH" \
-            --api_key_path "$api_key_json" \
-            --skip_waiting_for_build_processing true
+          # 使用 Xcode 自带的上传器，避免在持久 runner 上维护全局 fastlane/Ruby 环境。
+          xcrun altool --upload-app \
+            --file "$IOS_IPA_PATH" \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
+            --p8-file-path "$APP_STORE_CONNECT_API_KEY_PATH"
 
       - name: 精确分发到咪咪 Internal
         run: |
           set -euo pipefail
           ruby scripts/distribute_internal_build.rb "$IOS_IPA_PATH"
 
-      - name: 保存 IPA
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: MimiRemote-TestFlight-IPA
-          path: ${{ env.IOS_IPA_PATH }}
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: 清理签名材料
+      - name: 清理本地构建产物
         if: ${{ always() }}
         run: |
-          security delete-keychain "$RUNNER_TEMP/mimi-signing.keychain-db" || true
-          rm -f "${IOS_INSTALLED_PROFILE_PATH:-}"
+          set -euo pipefail
+          # 只删除本次在 RUNNER_TEMP 中生成的目录，避免持久机磁盘累积。
+          if [[ -n "${IOS_OUTPUT_PATH:-}" && "$IOS_OUTPUT_PATH" == "$RUNNER_TEMP"/mimi-* ]]; then
+            rm -rf "$IOS_OUTPUT_PATH"
+          fi

@@ -97,9 +97,9 @@ final class PairingLinkTests: XCTestCase {
         }
     }
 
-    func testAllowsPublicHTTPIPv4RelayHost() throws {
-        XCTAssertEqual(try AppStore.validatedEndpoint("http://14.103.53.126"), "http://14.103.53.126")
-        XCTAssertEqual(try AppStore.validatedEndpoint("14.103.53.126:80"), "http://14.103.53.126:80")
+    func testRejectsRetiredPublicHTTPIPv4Endpoint() throws {
+        XCTAssertThrowsError(try AppStore.validatedEndpoint("http://14.103.53.126"))
+        XCTAssertThrowsError(try AppStore.validatedEndpoint("14.103.53.126:80"))
     }
 
     func testRejectsSingleLabelHTTPHost() throws {
@@ -136,48 +136,16 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(credentials.token, "0123456789abcdef0123456789abcdef")
     }
 
-    func testConnectionCandidatesPreferPrimaryAndDeduplicateFallback() throws {
-        let candidates = try AppStore.connectionCandidates(
-            endpoint: "100.64.0.1:8787",
-            fallbackEndpoint: "http://100.64.0.1:8787/",
-            activeEndpoint: "http://100.64.0.1:8787",
-            preferPrimary: true
-        )
-
-        XCTAssertEqual(candidates, ["http://100.64.0.1:8787"])
-    }
-
-    func testConnectionCandidatesKeepActiveFallbackFirstDuringRecovery() throws {
-        let candidates = try AppStore.connectionCandidates(
-            endpoint: "http://100.64.0.1:8787",
-            fallbackEndpoint: "https://relay.example.com",
-            activeEndpoint: "https://relay.example.com",
-            preferPrimary: false
-        )
-
-        XCTAssertEqual(candidates, ["https://relay.example.com", "http://100.64.0.1:8787"])
-    }
-
-    func testReachableRouteFallsBackAfterPrimaryProbeFails() async throws {
-        let suiteName = "PairingLinkTests.ConnectionRoute.\(UUID().uuidString)"
+    func testInitializationRemovesRetiredFallbackEndpoint() throws {
+        let suiteName = "PairingLinkTests.RetiredFallback.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
         defaults.set("https://relay.example.com", forKey: "agentd.fallbackEndpoint")
-        let recorder = ConnectionRouteProbeRecorder()
-        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
-            await recorder.record(endpoint)
-            if endpoint == "http://100.64.0.1:8787" {
-                throw URLError(.cannotConnectToHost)
-            }
-        }
-        store.token = "test-token"
+        let store = AppStore(defaults: defaults)
 
-        let selected = try await store.prepareReachableRoute(preferPrimary: true)
-        let probedEndpoints = await recorder.endpoints()
-
-        XCTAssertEqual(selected, "https://relay.example.com")
-        XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787", "https://relay.example.com"])
+        XCTAssertEqual(store.endpoint, "http://100.64.0.1:8787")
+        XCTAssertNil(defaults.object(forKey: "agentd.fallbackEndpoint"))
     }
 
     func testConnectionPreflightPublishesConnectedStatus() async throws {
@@ -195,7 +163,7 @@ final class PairingLinkTests: XCTestCase {
         let probedEndpoints = await recorder.endpoints()
 
         XCTAssertTrue(connected)
-        XCTAssertEqual(store.connectionStatus, .connected("首选链路"))
+        XCTAssertEqual(store.connectionStatus, .connected("Tailscale"))
         XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787"])
     }
 

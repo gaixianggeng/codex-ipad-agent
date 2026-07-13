@@ -207,23 +207,7 @@ struct ConnectionTestStageStability: Identifiable, Equatable {
 
 struct PreparedConnectionSettings: Equatable {
     let endpoint: String
-    let fallbackEndpoint: String
-    let activeEndpoint: String
     let token: String
-}
-
-enum ConnectionRouteSelectionError: LocalizedError {
-    case unavailable(lastError: Error?)
-
-    var errorDescription: String? {
-        switch self {
-        case .unavailable(let lastError):
-            if let lastError {
-                return "首选和备用连接都不可用：\(lastError.localizedDescription)"
-            }
-            return "首选和备用连接都不可用"
-        }
-    }
 }
 
 typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> Void
@@ -231,8 +215,6 @@ typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout
 @MainActor
 final class AppStore: ObservableObject {
     @Published var endpoint: String
-    @Published var fallbackEndpoint: String
-    @Published private(set) var activeEndpoint: String
     @Published private(set) var connectionGeneration = 0
     @Published var token: String
     @Published var connectionStatus: ConnectionStatus = .idle
@@ -242,7 +224,7 @@ final class AppStore: ObservableObject {
     @Published var recentConnectionTestReports: [ConnectionTestReport] = []
 
     private let endpointKey = "agentd.endpoint"
-    private let fallbackEndpointKey = "agentd.fallbackEndpoint"
+    private let retiredFallbackEndpointKey = "agentd.fallbackEndpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
     private let defaultEndpoint = "http://127.0.0.1:8787"
     private let maxConnectionTestReportHistory = 20
@@ -268,48 +250,32 @@ final class AppStore: ObservableObject {
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
 
         var initialEndpoint = defaults.string(forKey: endpointKey) ?? defaultEndpoint
-        var initialFallbackEndpoint = defaults.string(forKey: fallbackEndpointKey) ?? ""
         var initialToken = tokenStore.load()
 #if DEBUG
         // Debug 启动参数只影响本次内存态，避免把本地调试 token 写进 Keychain 或带进 Release 流程。
         if let debugEndpoint = debugLaunchConfiguration.endpoint,
            let normalizedEndpoint = try? Self.validatedEndpoint(debugEndpoint) {
             initialEndpoint = normalizedEndpoint
-            initialFallbackEndpoint = ""
         }
         if let debugToken = debugLaunchConfiguration.token {
             initialToken = debugToken
         }
 #endif
         initialEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
-        if let normalizedFallback = try? Self.validatedOptionalEndpoint(initialFallbackEndpoint),
-           normalizedFallback != initialEndpoint {
-            initialFallbackEndpoint = normalizedFallback
-        } else {
-            initialFallbackEndpoint = ""
-        }
         self.endpoint = initialEndpoint
-        self.fallbackEndpoint = initialFallbackEndpoint
-        self.activeEndpoint = initialEndpoint
         self.token = initialToken
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
 #endif
-        // 当前移动客户端只保留 Codex app-server JSON-RPC 直连链路；旧版本写入的连接模式配置直接清理掉。
+        // 当前客户端只保留一个 Tailscale 地址；网络直连、Peer Relay 与 DERP 切换统一交给 Tailscale。
+        // 启动即清理旧公网备用地址，避免升级后继续保留已下线入口或敏感公网配置。
+        defaults.removeObject(forKey: retiredFallbackEndpointKey)
         defaults.removeObject(forKey: retiredConnectionModeKey)
     }
 
     var isConfigured: Bool {
         !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var isUsingFallbackEndpoint: Bool {
-        !fallbackEndpoint.isEmpty && activeEndpoint == fallbackEndpoint
-    }
-
-    var activeConnectionRouteTitle: String {
-        isUsingFallbackEndpoint ? "公网备用" : "首选链路"
     }
 
     var canEnterWorkbench: Bool {
@@ -334,25 +300,25 @@ final class AppStore: ObservableObject {
 #endif
 
     func client() throws -> AgentAPIClient {
-        let endpoint = try Self.validatedEndpoint(activeEndpoint)
+        let endpoint = try Self.validatedEndpoint(endpoint)
         return AgentAPIClient(endpoint: endpoint, token: token)
     }
 
     func makeSessionStoreAPIClient() throws -> any SessionStoreAPIClient {
-        let endpoint = try Self.validatedEndpoint(activeEndpoint)
+        let endpoint = try Self.validatedEndpoint(endpoint)
         return CodexAppServerRuntimeRoutingSessionAPIClient(bundle: runtimeBundle(endpoint: endpoint, token: token))
     }
 
     func makeSessionWebSocketClient() -> any SessionWebSocketClient {
         MultiRuntimeSessionWebSocketClient(bundle: runtimeBundle(
-            endpoint: AgentAPIClient.normalizedEndpoint(activeEndpoint),
+            endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
             token: token
         ))
     }
 
     func makeSessionWebSocketClient(for session: AgentSession) -> any SessionWebSocketClient {
         let bundle = runtimeBundle(
-            endpoint: AgentAPIClient.normalizedEndpoint(activeEndpoint),
+            endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
             token: token
         )
         bundle.routes.remember(session)
@@ -361,37 +327,13 @@ final class AppStore: ObservableObject {
 
     func prepareConnectionSettings(
         endpoint: String,
-        fallbackEndpoint: String,
         token: String
     ) async throws -> PreparedConnectionSettings {
         let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
-        let normalizedFallback = try Self.validatedOptionalEndpoint(fallbackEndpoint)
-        let candidates = try Self.connectionCandidates(
-            endpoint: normalizedEndpoint,
-            fallbackEndpoint: normalizedFallback,
-            activeEndpoint: normalizedEndpoint,
-            preferPrimary: true
-        )
-
-        var lastError: Error?
-        for candidate in candidates {
-            do {
-                // 先用短超时验证真实 REST + WebSocket 链路，避免首选地址断网时等待默认 20 秒
-                // 才开始测试公网备用入口；通过后再跑完整诊断并生成用户可见报告。
-                try await routeProbe(candidate, token, routeProbeTimeout)
-                let selected = try await validateConnection(endpoint: candidate, token: token)
-                lastError = nil
-                return PreparedConnectionSettings(
-                    endpoint: normalizedEndpoint,
-                    fallbackEndpoint: normalizedFallback == normalizedEndpoint ? "" : normalizedFallback,
-                    activeEndpoint: selected,
-                    token: token
-                )
-            } catch {
-                lastError = error
-            }
-        }
-        throw ConnectionRouteSelectionError.unavailable(lastError: lastError)
+        // 保存前先用短超时验证控制面和 WebSocket，失败时快速反馈；通过后再跑完整诊断报告。
+        try await routeProbe(normalizedEndpoint, token, routeProbeTimeout)
+        let validatedEndpoint = try await validateConnection(endpoint: normalizedEndpoint, token: token)
+        return PreparedConnectionSettings(endpoint: validatedEndpoint, token: token)
     }
 
     func preparePairingURL(_ url: URL) async throws -> PreparedConnectionSettings {
@@ -399,15 +341,12 @@ final class AppStore: ObservableObject {
             let credentials = try await claimPairing(ticket)
             return try await prepareConnectionSettings(
                 endpoint: credentials.endpoint,
-                fallbackEndpoint: "",
                 token: credentials.token
             )
         }
         let credentials = try Self.pairingCredentials(from: url)
-        // 配对链接只签名首选地址，不能沿用上一台 Mac 的备用地址，否则可能把新 Token 发给旧服务器。
         return try await prepareConnectionSettings(
             endpoint: credentials.endpoint,
-            fallbackEndpoint: "",
             token: credentials.token
         )
     }
@@ -415,36 +354,16 @@ final class AppStore: ObservableObject {
     @discardableResult
     func commitConnectionSettings(_ prepared: PreparedConnectionSettings) throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
-        let normalizedFallback = try Self.validatedOptionalEndpoint(prepared.fallbackEndpoint)
-        let normalizedActive = try Self.validatedEndpoint(prepared.activeEndpoint)
-        let candidates = try Self.connectionCandidates(
-            endpoint: normalizedEndpoint,
-            fallbackEndpoint: normalizedFallback,
-            activeEndpoint: normalizedActive,
-            preferPrimary: true
-        )
-        guard candidates.contains(normalizedActive) else {
-            throw AgentAPIError.invalidEndpoint
-        }
-
-        let storedFallback = normalizedFallback == normalizedEndpoint ? "" : normalizedFallback
         let didChange = normalizedEndpoint != endpoint ||
-            storedFallback != fallbackEndpoint ||
             prepared.token != token
 
         try tokenStore.save(prepared.token)
         defaults.set(normalizedEndpoint, forKey: endpointKey)
-        if storedFallback.isEmpty {
-            defaults.removeObject(forKey: fallbackEndpointKey)
-        } else {
-            defaults.set(storedFallback, forKey: fallbackEndpointKey)
-        }
+        defaults.removeObject(forKey: retiredFallbackEndpointKey)
         defaults.removeObject(forKey: retiredConnectionModeKey)
 
         endpoint = normalizedEndpoint
-        fallbackEndpoint = storedFallback
         token = prepared.token
-        activeEndpoint = normalizedActive
         // 每次提交都开启新的连接代次。即使地址没变，也要清掉旧 config/allowlist 缓存。
         connectionGeneration += 1
         resetDirectRuntime()
@@ -466,13 +385,11 @@ final class AppStore: ObservableObject {
 
     func clearPairing() throws {
         defaults.removeObject(forKey: endpointKey)
-        defaults.removeObject(forKey: fallbackEndpointKey)
+        defaults.removeObject(forKey: retiredFallbackEndpointKey)
         defaults.removeObject(forKey: retiredConnectionModeKey)
         try tokenStore.delete(allowMissing: true)
         resetDirectRuntime()
         endpoint = defaultEndpoint
-        fallbackEndpoint = ""
-        activeEndpoint = defaultEndpoint
         connectionGeneration += 1
         token = ""
         connectionStatus = .idle
@@ -620,19 +537,6 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func testConnection(endpoint: String, fallbackEndpoint: String, token: String) async {
-        do {
-            _ = try await prepareConnectionSettings(
-                endpoint: endpoint,
-                fallbackEndpoint: fallbackEndpoint,
-                token: token
-            )
-        } catch {
-            connectionStatus = .failed(error.localizedDescription)
-            lastError = error.localizedDescription
-        }
-    }
-
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
     @discardableResult
     func preflightConnection(force: Bool = false) async -> Bool {
@@ -654,25 +558,12 @@ final class AppStore: ObservableObject {
         lastError = nil
 
         do {
-            let candidates = try Self.connectionCandidates(
-                endpoint: endpoint,
-                fallbackEndpoint: fallbackEndpoint,
-                activeEndpoint: activeEndpoint,
-                preferPrimary: true
-            )
-            var latestError: Error?
-            for candidate in candidates {
-                do {
-                    try await routeProbe(candidate, token, routeProbeTimeout)
-                    _ = try activateConnectionRoute(candidate)
-                    connectionStatus = .connected(activeConnectionRouteTitle)
-                    lastError = nil
-                    return true
-                } catch {
-                    latestError = error
-                }
-            }
-            throw ConnectionRouteSelectionError.unavailable(lastError: latestError)
+            let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
+            // 应用只探测固定的 Tailscale 地址；底层直连、Peer Relay 或 DERP 由 Tailscale 自行选择。
+            try await routeProbe(normalizedEndpoint, token, routeProbeTimeout)
+            connectionStatus = .connected("Tailscale")
+            lastError = nil
+            return true
         } catch {
             if Task.isCancelled || error is CancellationError {
                 connectionStatus = .idle
@@ -682,53 +573,6 @@ final class AppStore: ObservableObject {
             lastError = error.localizedDescription
             return false
         }
-    }
-
-    func prepareReachableRoute(preferPrimary: Bool) async throws -> String {
-        let candidates = try Self.connectionCandidates(
-            endpoint: endpoint,
-            fallbackEndpoint: fallbackEndpoint,
-            activeEndpoint: activeEndpoint,
-            preferPrimary: preferPrimary
-        )
-        // 单地址模式维持原行为，不在每次回前台时额外做一次 WebSocket 探测。
-        guard candidates.count > 1 else {
-            return candidates[0]
-        }
-
-        var lastError: Error?
-        for candidate in candidates {
-            do {
-                try await routeProbe(candidate, token, routeProbeTimeout)
-                return candidate
-            } catch {
-                lastError = error
-            }
-        }
-        throw ConnectionRouteSelectionError.unavailable(lastError: lastError)
-    }
-
-    @discardableResult
-    func activateConnectionRoute(_ selectedEndpoint: String) throws -> Bool {
-        let normalized = try Self.validatedEndpoint(selectedEndpoint)
-        let candidates = try Self.connectionCandidates(
-            endpoint: endpoint,
-            fallbackEndpoint: fallbackEndpoint,
-            activeEndpoint: activeEndpoint,
-            preferPrimary: true
-        )
-        guard candidates.contains(normalized) else {
-            throw AgentAPIError.invalidEndpoint
-        }
-        guard normalized != activeEndpoint else {
-            return false
-        }
-
-        activeEndpoint = normalized
-        connectionGeneration += 1
-        resetDirectRuntime()
-        lastError = nil
-        return true
     }
 
     static func connectionTestStageStabilities(reports: [ConnectionTestReport]) -> [ConnectionTestStageStability] {
@@ -864,35 +708,6 @@ final class AppStore: ObservableObject {
         return formatter.date(from: raw)
     }
 
-    static func connectionCandidates(
-        endpoint: String,
-        fallbackEndpoint: String,
-        activeEndpoint: String,
-        preferPrimary: Bool
-    ) throws -> [String] {
-        let primary = try validatedEndpoint(endpoint)
-        let fallback = try validatedOptionalEndpoint(fallbackEndpoint)
-        var configured = [primary]
-        if !fallback.isEmpty && fallback != primary {
-            configured.append(fallback)
-        }
-
-        guard !preferPrimary,
-              let active = try? validatedEndpoint(activeEndpoint),
-              configured.contains(active) else {
-            return configured
-        }
-        return [active] + configured.filter { $0 != active }
-    }
-
-    static func validatedOptionalEndpoint(_ raw: String) throws -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return ""
-        }
-        return try validatedEndpoint(trimmed)
-    }
-
     static func validatedEndpoint(_ raw: String) throws -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -976,9 +791,8 @@ final class AppStore: ObservableObject {
         case 192:
             return parts[1] == 168
         default:
-            // 允许手动填写自建 VPS / 公网 IPv4 中转地址。
-            // 仍然拒绝 http://example.com 这类公网域名，建议域名走 HTTPS。
-            return 1...223 ~= parts[0]
+            // 公网 HTTP IPv4 是旧 VPS 代理入口，单 Tailscale 架构下不再接受；公网域名如确有需要必须走 HTTPS。
+            return false
         }
     }
 

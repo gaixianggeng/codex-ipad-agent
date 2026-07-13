@@ -1712,7 +1712,6 @@ private struct MacConnectionPanel: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var endpoint = ""
-    @State private var fallbackEndpoint = ""
     @State private var token = ""
     @State private var didLoadInitialConnection = false
     @State private var isSavingConnection = false
@@ -1730,14 +1729,7 @@ private struct MacConnectionPanel: View {
 
             DisclosureGroup(isExpanded: $isShowingManualFields) {
                 VStack(alignment: .leading, spacing: 10) {
-                    TextField("首选地址（Tailscale）", text: $endpoint)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .font(themeStore.uiFont(.callout))
-                        .padding(10)
-                        .background(tokens.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    TextField("备用公网地址（可选）", text: $fallbackEndpoint)
+                    TextField("Tailscale 地址", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -1828,9 +1820,7 @@ private struct MacConnectionPanel: View {
                         .padding(.vertical, 4)
                         .background(connectionTone(tokens: tokens).opacity(0.12), in: Capsule())
                 }
-                Text(appStore.isConfigured
-                    ? "\(appStore.activeConnectionRouteTitle) · \(appStore.activeEndpoint)"
-                    : "尚未配置 Mac 连接")
+                Text(appStore.isConfigured ? appStore.endpoint : "尚未配置 Mac 连接")
                     .font(themeStore.uiFont(.callout))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(2)
@@ -1879,7 +1869,6 @@ private struct MacConnectionPanel: View {
                 Task {
                     await appStore.testConnection(
                         endpoint: endpoint,
-                        fallbackEndpoint: fallbackEndpoint,
                         token: token
                     )
                 }
@@ -1966,7 +1955,6 @@ private struct MacConnectionPanel: View {
             Task {
                 await appStore.testConnection(
                     endpoint: endpoint,
-                    fallbackEndpoint: fallbackEndpoint,
                     token: token
                 )
             }
@@ -2051,7 +2039,6 @@ private struct MacConnectionPanel: View {
         }
         didLoadInitialConnection = true
         endpoint = appStore.endpoint
-        fallbackEndpoint = appStore.fallbackEndpoint
         token = appStore.token
     }
 
@@ -2061,11 +2048,9 @@ private struct MacConnectionPanel: View {
         do {
             _ = try await sessionStore.applyConnectionSettings(
                 endpoint: endpoint,
-                fallbackEndpoint: fallbackEndpoint,
                 token: token
             )
             endpoint = appStore.endpoint
-            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
@@ -2086,7 +2071,6 @@ private struct MacConnectionPanel: View {
             }
             _ = try await sessionStore.applyPairingURL(url)
             endpoint = appStore.endpoint
-            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             localError = nil
             await sessionStore.refreshAll(autoAttach: true)
@@ -2101,7 +2085,6 @@ private struct MacConnectionPanel: View {
         do {
             try appStore.clearPairing()
             endpoint = appStore.endpoint
-            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil

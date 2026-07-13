@@ -12261,6 +12261,20 @@ private func waitForWebSocketStatus(_ expected: WebSocketStatus, store: SessionS
 }
 
 @MainActor
+private func waitForStatus(
+    _ expected: WebSocketStatus,
+    in statuses: () -> [WebSocketStatus]
+) async throws {
+    for _ in 0..<100 {
+        if statuses().contains(expected) {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("WebSocket 状态序列未出现 \(expected)，当前为 \(statuses())")
+}
+
+@MainActor
 private func waitForSentTurnCount(_ expected: Int, socket: MockWebSocketClient) async throws {
     for _ in 0..<80 {
         if socket.sentTurns.count == expected {
@@ -14677,6 +14691,153 @@ extension ConversationDataFlowTests {
         let secondRequests = secondSentMessages.compactMap { try? decodeAppServerRequest($0) }
         XCTAssertEqual(secondRequests.filter { $0.method == "thread/resume" }.count, 1)
         XCTAssertEqual(secondRequests.filter { $0.method == "turn/start" }.count, 1)
+    }
+
+    func testCodexAppServerSessionWebSocketReportsDisconnectedAfterTransportReceiveFailure() async throws {
+        let project = AgentProject(id: "proj_stream_disconnect", name: "Stream Disconnect", path: "/tmp/stream-disconnect")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "",
+                resumeID: "",
+                clientMessageID: "client_stream_disconnect"
+            ))
+        }
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let threadStart = try await waitForFakeAppServerRequest(transport, method: "thread/start", after: 2)
+        transportResponse(
+            transport,
+            id: threadStart.id,
+            result: #"{"thread":{"id":"thr_stream_disconnect","sessionId":"thr_stream_disconnect","preview":"断线传播","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"idle"},"path":null,"cwd":"/tmp/stream-disconnect","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"断线传播","turns":[]}}"#
+        )
+        _ = try await createTask.value
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        socket.onStatus = { status in
+            statuses.append(status)
+        }
+        socket.connect(sessionID: "thr_stream_disconnect")
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
+        transportResponse(
+            transport,
+            id: resume.id,
+            result: #"{"thread":{"id":"thr_stream_disconnect","sessionId":"thr_stream_disconnect","preview":"断线传播","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490202,"status":{"type":"idle"},"path":null,"cwd":"/tmp/stream-disconnect","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"断线传播","turns":[]}}"#
+        )
+        try await waitForStatus(.connected, in: { statuses })
+
+        transport.failReceive()
+        try await waitForStatus(.disconnected, in: { statuses })
+
+        XCTAssertEqual(statuses.last, .disconnected)
+        XCTAssertFalse(statuses.contains {
+            if case .failed = $0 {
+                return true
+            }
+            return false
+        })
+        let ready = await runtime.hasReadyConnectionForTesting()
+        XCTAssertFalse(ready)
+    }
+
+    func testAuthoritativeThreadReadRecoversMissingTurnCompleted() async throws {
+        let project = AgentProject(id: "proj_snapshot_completion", name: "Snapshot Completion", path: "/tmp/snapshot-completion")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let listTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let listRequest = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 2)
+        transportResponse(
+            transport,
+            id: listRequest.id,
+            result: #"{"data":[{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"active"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"inProgress","items":[]}]}],"nextCursor":null,"backwardsCursor":null}"#
+        )
+        let sessions = try await listTask.value
+        XCTAssertEqual(sessions.sessions.first?.activeTurnID, "turn_snapshot_old")
+
+        let events = await runtime.attachEvents(sessionID: "thr_snapshot_completion")
+        var recoveredMetadata: AgentEventMetadata?
+        let recovered = expectation(description: "权威快照补回 turn/completed")
+        let eventTask = Task { @MainActor in
+            for await event in events {
+                guard case .turnCompleted(let metadata) = event else {
+                    continue
+                }
+                recoveredMetadata = metadata
+                recovered.fulfill()
+                return
+            }
+        }
+
+        // 权威快照仍显示旧 turn 运行时不能补完成事件，否则会提前放行本地队列。
+        let activeHistoryTask = Task {
+            try await client.messagesPage(
+                sessionID: "thr_snapshot_completion",
+                before: nil,
+                limit: 50,
+                loadMode: .full
+            )
+        }
+        let activeReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 3)
+        transportResponse(
+            transport,
+            id: activeReadRequest.id,
+            result: #"{"thread":{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490201,"status":{"type":"active"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"inProgress","items":[]}]}}"#
+        )
+        _ = try await activeHistoryTask.value
+        try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertNil(recoveredMetadata)
+
+        let completedHistoryTask = Task {
+            try await client.messagesPage(
+                sessionID: "thr_snapshot_completion",
+                before: nil,
+                limit: 50,
+                loadMode: .full
+            )
+        }
+        let completedReadRequest = try await waitForFakeAppServerRequest(transport, method: "thread/read", after: 4)
+        transportResponse(
+            transport,
+            id: completedReadRequest.id,
+            result: #"{"thread":{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490202,"status":{"type":"idle"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"completed","completedAt":1780490202,"items":[]}]}}"#
+        )
+        _ = try await completedHistoryTask.value
+        await fulfillment(of: [recovered], timeout: 1)
+        eventTask.cancel()
+
+        XCTAssertEqual(recoveredMetadata?.sessionID, "thr_snapshot_completion")
+        XCTAssertEqual(recoveredMetadata?.turnID, "turn_snapshot_old")
     }
 
     func testCodexAppServerSessionRuntimeRetiresConnectionAfterTurnStartTimeout() async throws {

@@ -13,7 +13,7 @@ Mimi Remote 是一个原生 iPhone / iPad 控制台，用来连接用户自己 M
 - `Codex`、`OpenAI` 等名称只用于说明兼容的用户自有工具链；项目不会使用官方 Logo 或容易造成混淆的品牌元素。
 - 如果后续参考其他开源项目的代码、设计或文案，必须保留许可证和归属说明，并优先做出自己的产品取舍。
 - 本项目使用 [MIT License](LICENSE)，第三方归属说明见 [NOTICE.md](NOTICE.md)。
-- 当前个人部署使用公网 VPS + SSH 反向隧道访问本机 `agentd`；迁移记录、架构说明和排障命令见 [docs/relay-vps-ops.md](docs/relay-vps-ops.md)。
+- 当前个人部署只让 App 访问 Mac 的 Tailscale Endpoint；Tailscale 会自动选择直连、上海 VPS Peer Relay 或官方 DERP。VPS 不再提供 nginx + SSH 反向隧道形式的应用层公网入口，配置和排障命令见 [docs/tailscale-peer-relay-ops.md](docs/tailscale-peer-relay-ops.md)。
 
 ## 方案
 
@@ -24,6 +24,12 @@ iPhone / iPad 原生 App
   |
   | WebSocket + app-server JSON-RPC
   | Authorization: Bearer <AGENTD_TOKEN>
+  v
+Mac Tailscale Endpoint（唯一应用入口）
+  |
+  | Tailscale 自动选择 direct
+  | -> 上海 VPS Peer Relay
+  | -> 官方 DERP
   v
 Mac agentd control plane / thin gateway
   |
@@ -412,6 +418,8 @@ iPad App 设置页填写 Endpoint：
 http://<Mac 的 Tailscale IP>:8787
 ```
 
+App 始终使用这一个 Endpoint，不配置公网备用地址。网络直连失败时，由 Tailscale 在底层自动切换到上海 VPS Peer Relay，再失败则使用官方 DERP；切换过程不改变 App 的 Endpoint。上海 Peer Relay 的部署和运维见 [Tailscale 直连与上海 Peer Relay 运维手册](docs/tailscale-peer-relay-ops.md)。
+
 如果使用 MagicDNS，也可以打开：
 
 ```text
@@ -651,6 +659,14 @@ CGO_ENABLED=0 go build \
 go run github.com/goreleaser/goreleaser/v2@v2.9.0 check
 go run github.com/goreleaser/goreleaser/v2@v2.9.0 release --snapshot --clean --skip=publish
 ```
+
+### iOS TestFlight 内测
+
+`main` 收到 `ios/MimiRemote/**` 改动后，[默认工作流](./.github/workflows/mimi-testflight.yml) 会自动发布新的内部 TestFlight 构建。GitHub 负责触发、排队和日志，标签为 `mimi-testflight` 的仓库专用 self-hosted ARM64 Mac 负责 Xcode 归档、上传和内部组分发，因此日常发布不消耗 GitHub 托管 macOS 分钟。
+
+本机 runner 使用 `/Applications/Xcode-beta.app`、登录钥匙串中的 Distribution 证书、已安装的 Mimi App Store profile，以及只读的 App Store Connect `.p8` 文件。runner 必须以持有这些材料的 macOS 用户运行，并保持联网和唤醒。仓库仍需配置 `IOS_BUNDLE_ID`、`DEVELOPMENT_TEAM`、内部测试组变量，以及 `ASC_KEY_ID`、`ASC_ISSUER_ID`；如果 `.p8` 不在默认位置，再设置 `MIMI_ASC_API_KEY_PATH`。
+
+如果本机不可用，可手动运行 [GitHub 托管应急工作流](./.github/workflows/mimi-testflight-hosted-fallback.yml)。应急入口会消耗 macOS 托管分钟，并继续使用仓库中的证书、profile、App Store Connect Key 等 Secrets。两条工作流共用 `mimi-testflight` 并发组，避免同时上传构建。
 
 ## 风险与优化
 

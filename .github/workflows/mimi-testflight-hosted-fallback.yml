@@ -1,0 +1,168 @@
+name: Mimi TestFlight 托管应急发布
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 要发布的 Git commit、tag 或分支
+        required: true
+        default: main
+        type: string
+      what_to_test:
+        description: TestFlight 的“测试内容”
+        required: true
+        type: string
+      xcode_path:
+        description: 可选 Xcode 路径
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# 与默认 self-hosted 工作流共用并发组，避免同时上传两个构建。
+concurrency:
+  group: mimi-testflight
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+      DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
+      TESTFLIGHT_BETA_GROUP_NAME: ${{ vars.TESTFLIGHT_BETA_GROUP_NAME }}
+      TESTFLIGHT_BETA_GROUP_ID: ${{ vars.TESTFLIGHT_BETA_GROUP_ID }}
+      TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+      IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+      IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+      IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+      XCODE_APP_PATH: ${{ inputs.xcode_path }}
+      FASTLANE_SKIP_UPDATE_CHECK: '1'
+      FASTLANE_HIDE_TIMESTAMP: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: 选择 Xcode
+        run: |
+          set -euo pipefail
+          if [[ -n "$XCODE_APP_PATH" ]]; then
+            test -d "$XCODE_APP_PATH"
+            sudo xcode-select -s "$XCODE_APP_PATH"
+          fi
+          xcodebuild -version
+          fastlane --version
+
+      - name: 安装临时发布签名与 App Store Connect Key
+        run: |
+          set -euo pipefail
+          # GitHub-hosted runner 每次都是全新环境，所以应急链路仍使用一次性 keychain。
+          keychain="$RUNNER_TEMP/mimi-signing.keychain-db"
+          certificate="$RUNNER_TEMP/mimi-distribution.p12"
+          profile="$RUNNER_TEMP/mimi-appstore.mobileprovision"
+          profile_plist="$RUNNER_TEMP/mimi-appstore.plist"
+          asc_key="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          ruby -rbase64 -e 'File.binwrite(ARGV[0], Base64.decode64(ENV.fetch("IOS_DISTRIBUTION_CERTIFICATE_BASE64")))' "$certificate"
+          ruby -rbase64 -e 'File.binwrite(ARGV[0], Base64.decode64(ENV.fetch("IOS_APPSTORE_PROVISIONING_PROFILE_BASE64")))' "$profile"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$asc_key"
+          chmod 600 "$asc_key"
+          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security cms -D -i "$profile" > "$profile_plist"
+          profile_uuid="$(plutil -extract UUID raw -o - "$profile_plist")"
+          profile_name="$(plutil -extract Name raw -o - "$profile_plist")"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+          echo "APP_STORE_CONNECT_API_KEY_PATH=$asc_key" >> "$GITHUB_ENV"
+          echo "IOS_PROVISIONING_PROFILE_SPECIFIER=$profile_name" >> "$GITHUB_ENV"
+          echo "IOS_INSTALLED_PROFILE_PATH=$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision" >> "$GITHUB_ENV"
+
+      - name: 归档并导出 IPA
+        run: |
+          set -euo pipefail
+          # 应急工作流使用独立号段，避免它与默认工作流的 run number 重号。
+          build_number="$((200000 + GITHUB_RUN_NUMBER))"
+          marketing_version="1.0"
+          output="$RUNNER_TEMP/mimi-$marketing_version-$build_number"
+          archive="$output/MimiRemote.xcarchive"
+          export_path="$output/export"
+          export_options="$output/ExportOptions.plist"
+          mkdir -p "$output"
+          cat > "$export_options" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>$DEVELOPMENT_TEAM</string>
+            <key>provisioningProfiles</key>
+            <dict><key>$IOS_BUNDLE_ID</key><string>$IOS_PROVISIONING_PROFILE_SPECIFIER</string></dict>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild archive \
+            -project ios/MimiRemote/MimiRemote.xcodeproj \
+            -scheme MimiRemote \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$archive" \
+            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            MARKETING_VERSION="$marketing_version" \
+            CURRENT_PROJECT_VERSION="$build_number" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
+            -quiet
+          xcodebuild -exportArchive \
+            -archivePath "$archive" \
+            -exportPath "$export_path" \
+            -exportOptionsPlist "$export_options" \
+            -quiet
+          ipa="$export_path/MimiRemote.ipa"
+          test -f "$ipa"
+          echo "IOS_IPA_PATH=$ipa" >> "$GITHUB_ENV"
+          echo "IOS_MARKETING_VERSION=$marketing_version" >> "$GITHUB_ENV"
+          echo "IOS_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+
+      - name: 上传到 App Store Connect
+        run: |
+          set -euo pipefail
+          api_key_json="$RUNNER_TEMP/fastlane-api-key.json"
+          ruby -rjson -e '
+            File.write(ARGV[0], JSON.generate({
+              key_id: ENV.fetch("APP_STORE_CONNECT_API_KEY_ID"),
+              issuer_id: ENV.fetch("APP_STORE_CONNECT_API_ISSUER_ID"),
+              key: File.read(ENV.fetch("APP_STORE_CONNECT_API_KEY_PATH")),
+              in_house: false
+            }))
+          ' "$api_key_json"
+          chmod 600 "$api_key_json"
+          fastlane pilot upload \
+            --ipa "$IOS_IPA_PATH" \
+            --api_key_path "$api_key_json" \
+            --skip_waiting_for_build_processing true
+
+      - name: 精确分发到咪咪 Internal
+        run: |
+          set -euo pipefail
+          ruby scripts/distribute_internal_build.rb "$IOS_IPA_PATH"
+
+      - name: 清理临时签名材料
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/mimi-signing.keychain-db" || true
+          rm -f "${IOS_INSTALLED_PROFILE_PATH:-}"

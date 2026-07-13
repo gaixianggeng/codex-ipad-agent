@@ -61,7 +61,7 @@ struct SettingsView: View {
                 } label: {
                     LabeledContent("状态", value: appStore.connectionStatus.title)
                 }
-                LabeledContent("当前链路", value: appStore.activeConnectionRouteTitle)
+                LabeledContent("连接地址", value: appStore.endpoint)
             }
 
             Section("Codex 用量") {
@@ -427,7 +427,6 @@ private struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var endpoint = ""
-    @State private var fallbackEndpoint = ""
     @State private var token = ""
     @State private var didLoadInitialConnection = false
     @State private var isShowingQRCodeScanner = false
@@ -474,9 +473,7 @@ private struct InitialConnectionSettingsSections: View {
 
             Section {
                 DisclosureGroup(isExpanded: $isShowingAdvancedManualConnection) {
-                    StableEndpointTextField(placeholder: "首选地址（Tailscale）", text: $endpoint)
-                        .frame(minHeight: 28)
-                    StableEndpointTextField(placeholder: "备用公网地址（可选）", text: $fallbackEndpoint)
+                    StableEndpointTextField(placeholder: "Tailscale 地址", text: $endpoint)
                         .frame(minHeight: 28)
                     SecureField("访问码", text: $token)
                         .textInputAutocapitalization(.never)
@@ -487,7 +484,7 @@ private struct InitialConnectionSettingsSections: View {
             } header: {
                 Text("其他方式")
             } footer: {
-                Text("优先连接 Tailscale 地址；首选链路不可用时自动切到备用公网 VPS。")
+                Text("App 始终连接这台 Mac 的 Tailscale 地址；直连与中继切换由 Tailscale 自动处理。")
             }
 
             Section {
@@ -495,7 +492,6 @@ private struct InitialConnectionSettingsSections: View {
                     Task {
                         await appStore.testConnection(
                             endpoint: endpoint,
-                            fallbackEndpoint: fallbackEndpoint,
                             token: token
                         )
                     }
@@ -854,7 +850,7 @@ private struct InitialConnectionSettingsSections: View {
         if diagnostics.writeBackMillisMax >= 500 {
             return GatewayDiagnosticSummary(
                 title: "写回链路慢",
-                detail: "优先看 iPad/VPS/公网转发",
+                detail: "优先检查 iPad 与 Tailscale 网络",
                 color: gatewayMetricColor(milliseconds: diagnostics.writeBackMillisMax)
             )
         }
@@ -909,7 +905,7 @@ private struct InitialConnectionSettingsSections: View {
             return "这台设备没有通过 Mac 助手验证，请重新扫码连接。"
         }
         if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {
-            return "当前设备暂时找不到这台 Mac。请确认 Mimi Mac 助手正在运行，并且当前设备能访问局域网、Tailscale 或自建 VPS 中转地址。"
+            return "当前设备暂时找不到这台 Mac。请确认 Mimi Mac 助手正在运行，并且当前设备已连接 Tailscale。"
         }
         if raw.contains("Endpoint") || raw.contains("连接链接") {
             return raw
@@ -923,7 +919,6 @@ private struct InitialConnectionSettingsSections: View {
         }
         didLoadInitialConnection = true
         endpoint = appStore.endpoint
-        fallbackEndpoint = appStore.fallbackEndpoint
         token = appStore.token
     }
 
@@ -933,11 +928,9 @@ private struct InitialConnectionSettingsSections: View {
         do {
             _ = try await sessionStore.applyConnectionSettings(
                 endpoint: endpoint,
-                fallbackEndpoint: fallbackEndpoint,
                 token: token
             )
             endpoint = appStore.endpoint
-            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             connectionSuccessMessage = ""
             localError = nil
@@ -959,7 +952,6 @@ private struct InitialConnectionSettingsSections: View {
             }
             _ = try await sessionStore.applyPairingURL(url)
             endpoint = appStore.endpoint
-            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             connectionSuccessMessage = "已连接这台 Mac，正在进入工作台。"
             localError = nil
@@ -977,7 +969,6 @@ private struct InitialConnectionSettingsSections: View {
         do {
             try appStore.clearPairing()
             endpoint = appStore.endpoint
-            fallbackEndpoint = appStore.fallbackEndpoint
             token = appStore.token
             connectionSuccessMessage = ""
             sessionStore.resetConnectionForSettingsChange(clearData: true)
