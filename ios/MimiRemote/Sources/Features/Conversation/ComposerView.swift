@@ -1,5 +1,6 @@
 import AVFoundation
 import AudioToolbox
+import ImageIO
 import PhotosUI
 import QuickLook
 import SwiftUI
@@ -96,10 +97,9 @@ struct ComposerView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var composerState = ComposerState()
     @State private var activeComposerDraftScope = ComposerDraftScopeKey.none
-    @State private var composerDraftCache = ComposerDraftCache()
     @State private var composerTextExternalRevision = 0
     @StateObject private var voiceInput = VoiceInputController()
-    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var manualInputKind: ManualInputKind = .localImage
     @State private var showsAddContentPanel = false
     @State private var showsManualInputSheet = false
@@ -132,6 +132,7 @@ struct ComposerView: View {
 
     private static let minimumUsableVoiceDuration: TimeInterval = 0.35
     private static let completedGoalAutoHideDelayNanoseconds: UInt64 = 3_500_000_000
+    private static let maximumImageAttachmentCount = 8
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -177,21 +178,26 @@ struct ComposerView: View {
                 .environmentObject(sessionStore)
                 .environmentObject(themeStore)
         }
-        .fileImporter(isPresented: $showsImageFileImporter, allowedContentTypes: [.image]) { result in
+        .fileImporter(
+            isPresented: $showsImageFileImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
             showsAddContentPanel = false
             switch result {
-            case .success(let url):
-                loadImageFileAttachment(url)
+            case .success(let urls):
+                loadImageFileAttachments(urls)
             case .failure(let error):
                 attachmentErrorMessage = userFacingAttachmentError(error)
             }
         }
-        .onChange(of: selectedPhotoItem) { _, item in
-            guard let item else {
+        .onChange(of: selectedPhotoItems) { _, items in
+            guard !items.isEmpty else {
                 return
             }
             showsAddContentPanel = false
-            loadPhotoAttachment(item)
+            selectedPhotoItems = []
+            loadPhotoAttachments(items)
         }
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
@@ -208,6 +214,10 @@ struct ComposerView: View {
         }
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
+        }
+        .onChange(of: composerState.draftSnapshot()) { _, snapshot in
+            // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
+            sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
             clampModelSelectionToSelectedSessionRuntime()
@@ -236,6 +246,8 @@ struct ComposerView: View {
             await sessionStore.refreshCapabilities()
         }
         .onDisappear {
+            synchronizeComposerTextBeforeDraftScopeChange()
+            sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             cancelVoiceInteraction(clearStatus: true)
         }
     }
@@ -253,7 +265,7 @@ struct ComposerView: View {
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
-        composerDraftCache.remove(scope: submittedDraftScope)
+        sessionStore.removeComposerDraft(for: submittedDraftScope)
         let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
         clearVoiceTransientStatus()
@@ -265,7 +277,7 @@ struct ComposerView: View {
                 }
             } else {
                 await MainActor.run {
-                    composerDraftCache.remove(scope: submittedDraftScope)
+                    sessionStore.removeComposerDraft(for: submittedDraftScope)
                     guidedFollowUpEnabled = false
                     composerState.resetSendModeAfterSubmit()
                 }
@@ -288,11 +300,11 @@ struct ComposerView: View {
         ) else {
             return false
         }
-        composerDraftCache.remove(scope: submittedDraftScope)
+        sessionStore.removeComposerDraft(for: submittedDraftScope)
         let objective = submitted.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !objective.isEmpty else {
             composerState.restore(submitted)
-            composerDraftCache.save(composerState.draftSnapshot(), for: submittedDraftScope)
+            sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: submittedDraftScope)
             return false
         }
         let runningDelivery = runningTurnDeliveryForSubmit
@@ -310,7 +322,7 @@ struct ComposerView: View {
                 }
             } else {
                 await MainActor.run {
-                    composerDraftCache.remove(scope: submittedDraftScope)
+                    sessionStore.removeComposerDraft(for: submittedDraftScope)
                     guidedFollowUpEnabled = false
                     composerState.resetSendModeAfterSubmit()
                 }
@@ -352,15 +364,16 @@ struct ComposerView: View {
             return
         }
         synchronizeComposerTextBeforeDraftScopeChange()
-        composerDraftCache.save(composerState.draftSnapshot(), for: activeComposerDraftScope)
+        sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
         cancelVoiceInteraction(clearStatus: true)
 
         // 草稿跟会话走；运行参数仍维持全局体验，只重置下一次发送这种临时开关。
         composerState.resetTransientSendMode()
         applyDefaultPermissionMode()
-        composerState.restoreDraftSnapshot(composerDraftCache.snapshot(for: nextScope))
-        composerTextExternalRevision += 1
+        // 先切 scope 再恢复，避免 restore 触发的 onChange 把新会话草稿误写回旧 scope。
         activeComposerDraftScope = nextScope
+        composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
+        composerTextExternalRevision += 1
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
@@ -370,15 +383,14 @@ struct ComposerView: View {
         guard let snapshot = composerTextSubmitBridge.snapshotForSubmit() else {
             return
         }
-        guard !snapshot.isComposing else {
-            // marked text 还在输入法候选态，不能当成已确认草稿跨会话保存。
+        if snapshot.isComposing {
+            // resize/切会话时即使仍在输入法候选态，也保留当前可见文本；恢复拼音比静默丢失整个草稿更安全。
             isComposerTextComposing = true
-            return
         }
         if composerState.draft != snapshot.text {
             composerState.draft = snapshot.text
         }
-        if isComposerTextComposing {
+        if isComposerTextComposing && !snapshot.isComposing {
             isComposerTextComposing = false
         }
     }
@@ -389,7 +401,7 @@ struct ComposerView: View {
         if restoreScope == activeComposerDraftScope {
             composerState.restore(submitted)
         } else {
-            composerDraftCache.save(ComposerDraftSnapshot(submitted: submitted), for: restoreScope)
+            sessionStore.saveComposerDraft(ComposerDraftSnapshot(submitted: submitted), for: restoreScope)
         }
     }
 
@@ -973,7 +985,8 @@ struct ComposerView: View {
         .help("添加图片、Skill、Mention 或快捷短语")
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
-                selectedPhotoItem: $selectedPhotoItem,
+                selectedPhotoItems: $selectedPhotoItems,
+                maxPhotoSelectionCount: Self.maximumImageAttachmentCount,
                 skillShortcuts: enabledSkillShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
@@ -2293,47 +2306,148 @@ struct ComposerView: View {
         return nil
     }
 
-    private func loadPhotoAttachment(_ item: PhotosPickerItem) {
+    private func loadPhotoAttachments(_ items: [PhotosPickerItem]) {
+        let targetScope = activeComposerDraftScope
+        let availableCount = remainingImageAttachmentCapacity(for: targetScope)
+        let selectedItems = Array(items.prefix(availableCount))
+        let skippedCount = max(0, items.count - selectedItems.count)
+        guard !selectedItems.isEmpty else {
+            attachmentErrorMessage = "每个草稿最多添加 \(Self.maximumImageAttachmentCount) 张图片"
+            return
+        }
+
         Task {
-            do {
-                guard let data = try await item.loadTransferable(type: Data.self) else {
-                    return
-                }
-                let url = await Task.detached(priority: .userInitiated) {
-                    let encoded = Self.compressedImageData(from: data) ?? data
-                    return "data:image/jpeg;base64,\(encoded.base64EncodedString())"
-                }.value
-                await MainActor.run {
-                    attachmentErrorMessage = nil
-                    composerState.addAttachment(.image(url: url, detail: .auto))
-                    selectedPhotoItem = nil
-                }
-            } catch {
-                await MainActor.run {
-                    attachmentErrorMessage = userFacingAttachmentError(error)
-                    selectedPhotoItem = nil
+            var preparedInputs: [CodexAppServerUserInput] = []
+            var failedCount = 0
+            var firstError: Error?
+
+            // 串行读取和下采样，避免多张 iPad 截图同时完整解码造成瞬时内存峰值。
+            for item in selectedItems {
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        failedCount += 1
+                        continue
+                    }
+                    let prepared = try await Task.detached(priority: .userInitiated) {
+                        try ImageAttachmentEncoder.prepare(data)
+                    }.value
+                    preparedInputs.append(.image(url: prepared.dataURL, detail: .auto))
+                } catch {
+                    failedCount += 1
+                    firstError = firstError ?? error
                 }
             }
+
+            let addedCount = addPreparedImageAttachments(preparedInputs, to: targetScope)
+            updateBatchAttachmentNotice(
+                addedCount: addedCount,
+                failedCount: failedCount,
+                skippedCount: skippedCount + max(0, preparedInputs.count - addedCount),
+                firstError: firstError
+            )
         }
     }
 
-    private func loadImageFileAttachment(_ url: URL) {
+    private func loadImageFileAttachments(_ urls: [URL]) {
+        let targetScope = activeComposerDraftScope
+        let availableCount = remainingImageAttachmentCapacity(for: targetScope)
+        let selectedURLs = Array(urls.prefix(availableCount))
+        let skippedCount = max(0, urls.count - selectedURLs.count)
+        guard !selectedURLs.isEmpty else {
+            attachmentErrorMessage = "每个草稿最多添加 \(Self.maximumImageAttachmentCount) 张图片"
+            return
+        }
+
         Task {
-            do {
-                let data = try Self.readSecurityScopedFile(url)
-                let inlineURL = await Task.detached(priority: .userInitiated) {
-                    let encoded = Self.compressedImageData(from: data) ?? data
-                    return "data:image/jpeg;base64,\(encoded.base64EncodedString())"
-                }.value
-                await MainActor.run {
-                    attachmentErrorMessage = nil
-                    composerState.addAttachment(.image(url: inlineURL, detail: .auto))
-                }
-            } catch {
-                await MainActor.run {
-                    attachmentErrorMessage = userFacingAttachmentError(error)
+            var preparedInputs: [CodexAppServerUserInput] = []
+            var failedCount = 0
+            var firstError: Error?
+
+            for url in selectedURLs {
+                do {
+                    let prepared = try await Task.detached(priority: .userInitiated) {
+                        let data = try Self.readSecurityScopedFile(url)
+                        return try ImageAttachmentEncoder.prepare(data)
+                    }.value
+                    preparedInputs.append(.image(url: prepared.dataURL, detail: .auto))
+                } catch {
+                    failedCount += 1
+                    firstError = firstError ?? error
                 }
             }
+
+            let addedCount = addPreparedImageAttachments(preparedInputs, to: targetScope)
+            updateBatchAttachmentNotice(
+                addedCount: addedCount,
+                failedCount: failedCount,
+                skippedCount: skippedCount + max(0, preparedInputs.count - addedCount),
+                firstError: firstError
+            )
+        }
+    }
+
+    @MainActor
+    private func addPreparedImageAttachments(
+        _ inputs: [CodexAppServerUserInput],
+        to targetScope: ComposerDraftScopeKey
+    ) -> Int {
+        guard targetScope != .none, !inputs.isEmpty else {
+            return 0
+        }
+
+        if targetScope == activeComposerDraftScope {
+            let allowed = Array(inputs.prefix(remainingImageAttachmentCapacity(in: composerState.attachments)))
+            composerState.attachments.append(contentsOf: allowed)
+            // 异步图片任务可能在旧 ComposerView 已消失后才完成，必须直接写稳定仓，不能只依赖 onChange。
+            sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: targetScope)
+            return allowed.count
+        }
+
+        // 图片处理期间如果用户切了会话，结果仍写回发起选择时的草稿，不能串到当前会话。
+        var snapshot = sessionStore.composerDraft(for: targetScope)
+        let allowed = Array(inputs.prefix(remainingImageAttachmentCapacity(in: snapshot.attachments)))
+        snapshot.attachments.append(contentsOf: allowed)
+        sessionStore.saveComposerDraft(snapshot, for: targetScope)
+        return allowed.count
+    }
+
+    private func remainingImageAttachmentCapacity(for scope: ComposerDraftScopeKey) -> Int {
+        if scope == activeComposerDraftScope {
+            return remainingImageAttachmentCapacity(in: composerState.attachments)
+        }
+        return remainingImageAttachmentCapacity(in: sessionStore.composerDraft(for: scope).attachments)
+    }
+
+    private func remainingImageAttachmentCapacity(in attachments: [CodexAppServerUserInput]) -> Int {
+        let imageCount = attachments.reduce(into: 0) { count, input in
+            switch input {
+            case .image, .localImage:
+                count += 1
+            case .text, .skill, .mention:
+                break
+            }
+        }
+        return max(0, Self.maximumImageAttachmentCount - imageCount)
+    }
+
+    @MainActor
+    private func updateBatchAttachmentNotice(
+        addedCount: Int,
+        failedCount: Int,
+        skippedCount: Int,
+        firstError: Error?
+    ) {
+        if failedCount == 0, skippedCount == 0 {
+            attachmentErrorMessage = nil
+        } else if addedCount > 0 {
+            let omitted = failedCount + skippedCount
+            attachmentErrorMessage = "已添加 \(addedCount) 张图片，另有 \(omitted) 张未添加"
+        } else if skippedCount > 0, failedCount == 0 {
+            attachmentErrorMessage = "每个草稿最多添加 \(Self.maximumImageAttachmentCount) 张图片"
+        } else if let firstError {
+            attachmentErrorMessage = userFacingAttachmentError(firstError)
+        } else {
+            attachmentErrorMessage = "图片读取失败"
         }
     }
 
@@ -2345,24 +2459,6 @@ struct ComposerView: View {
             }
         }
         return try Data(contentsOf: url)
-    }
-
-    nonisolated private static func compressedImageData(from data: Data) -> Data? {
-        guard let image = UIImage(data: data) else {
-            return nil
-        }
-        let maxDimension: CGFloat = 1_280
-        let largestSide = max(image.size.width, image.size.height)
-        let scale = largestSide > maxDimension ? maxDimension / largestSide : 1
-        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        let resized = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-        // 移动端只负责把截图/照片作为上下文传给 app-server；先降采样再 JPEG 编码，
-        // 避免原图 base64 把 SwiftUI state、WebSocket payload 和内存峰值一起撑大。
-        return resized.jpegData(compressionQuality: 0.82)
     }
 
     private func canPreviewAttachment(_ item: CodexAppServerUserInput) -> Bool {
@@ -2390,6 +2486,97 @@ struct ComposerView: View {
         case .text:
             return "text.alignleft"
         }
+    }
+}
+
+struct PreparedImageAttachment: Sendable, Equatable {
+    let dataURL: String
+    let encodedByteCount: Int
+    let pixelWidth: Int
+    let pixelHeight: Int
+}
+
+enum ImageAttachmentEncodingError: LocalizedError {
+    case emptyData
+    case inputTooLarge
+    case unsupportedImage
+    case jpegEncodingFailed
+    case outputTooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyData:
+            return "图片内容为空"
+        case .inputTooLarge:
+            return "原始图片超过 50 MB，请先裁剪后再试"
+        case .unsupportedImage:
+            return "图片格式无法读取"
+        case .jpegEncodingFailed:
+            return "图片压缩失败"
+        case .outputTooLarge:
+            return "图片压缩后仍超过 2 MB，请先裁剪后再试"
+        }
+    }
+}
+
+enum ImageAttachmentEncoder {
+    static let maximumInputByteCount = 50 * 1_024 * 1_024
+    static let maximumPixelDimension = 1_600
+    static let targetEncodedByteCount = 2 * 1_024 * 1_024
+
+    nonisolated static func prepare(_ data: Data) throws -> PreparedImageAttachment {
+        guard !data.isEmpty else {
+            throw ImageAttachmentEncodingError.emptyData
+        }
+        guard data.count <= maximumInputByteCount else {
+            throw ImageAttachmentEncodingError.inputTooLarge
+        }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw ImageAttachmentEncodingError.unsupportedImage
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelDimension,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw ImageAttachmentEncodingError.unsupportedImage
+        }
+
+        let size = CGSize(width: thumbnail.width, height: thumbnail.height)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = true
+        let normalized = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            // JPEG 不支持透明通道；统一白底，避免透明 PNG 转码后出现黑色背景。
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIImage(cgImage: thumbnail).draw(in: CGRect(origin: .zero, size: size))
+        }
+
+        var encoded: Data?
+        // 普通截图通常第一档就小于 2 MB；高噪声照片逐级降质量，控制 base64/WebSocket 体积。
+        for quality in [0.80, 0.68, 0.56] {
+            encoded = normalized.jpegData(compressionQuality: quality)
+            if let encoded, encoded.count <= targetEncodedByteCount {
+                break
+            }
+        }
+        guard let encoded else {
+            throw ImageAttachmentEncodingError.jpegEncodingFailed
+        }
+        guard encoded.count <= targetEncodedByteCount else {
+            throw ImageAttachmentEncodingError.outputTooLarge
+        }
+
+        return PreparedImageAttachment(
+            dataURL: "data:image/jpeg;base64,\(encoded.base64EncodedString())",
+            encodedByteCount: encoded.count,
+            pixelWidth: thumbnail.width,
+            pixelHeight: thumbnail.height
+        )
     }
 }
 
@@ -2983,8 +3170,9 @@ private struct AttachmentPreviewSheet: View {
 private struct AddContentPanel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    @Binding var selectedPhotoItem: PhotosPickerItem?
+    @Binding var selectedPhotoItems: [PhotosPickerItem]
 
+    let maxPhotoSelectionCount: Int
     let skillShortcuts: [SkillCapability]
     let capabilityErrorMessage: String?
     let isRefreshingCapabilities: Bool
@@ -3005,8 +3193,14 @@ private struct AddContentPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             panelSection("图片") {
                 LazyVGrid(columns: columns, spacing: 8) {
-                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        panelActionLabel("图片", systemImage: "photo")
+                    PhotosPicker(
+                        selection: $selectedPhotoItems,
+                        maxSelectionCount: maxPhotoSelectionCount,
+                        selectionBehavior: .ordered,
+                        matching: .images,
+                        preferredItemEncoding: .automatic
+                    ) {
+                        panelActionLabel("图片（可多选）", systemImage: "photo.on.rectangle.angled")
                     }
                     .buttonStyle(.bordered)
 

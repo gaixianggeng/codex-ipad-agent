@@ -2044,7 +2044,7 @@ private struct MessageRow: View, Equatable {
                 deliveryCaption("已引导对话")
             }
         case .local:
-            deliveryCaption("待发送")
+            deliveryCaption(message.userDelivery == .queued ? "已排队，等待当前回复完成" : "待发送")
         }
     }
 

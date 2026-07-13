@@ -18,6 +18,7 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @Binding var showingInspector: Bool
     @State private var selection: AppDestination? = .sessions
@@ -79,12 +80,14 @@ struct UnifiedWorkbenchShell: View {
                     sidebarDestinationRow(
                         destination: .sessions,
                         title: "会话",
-                        systemImage: "bubble.left.and.bubble.right"
+                        systemImage: "bubble.left.and.bubble.right",
+                        tokens: tokens
                     )
                     sidebarDestinationRow(
                         destination: .workspaces,
                         title: "工作区",
-                        systemImage: "folder"
+                        systemImage: "folder",
+                        tokens: tokens
                     )
                 }
 
@@ -165,49 +168,44 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarFooter(tokens: ThemeTokens) -> some View {
-        HStack {
-            Button {
+        WorkbenchSidebarFooter(
+            tokens: tokens,
+            onOpenSettings: {
                 // 设置是全局配置，不改变当前会话或工作区选择。
                 presentedSheet = .settings
-            } label: {
-                Label("设置", systemImage: "gearshape")
-                    .font(themeStore.uiFont(.subheadline, weight: .medium))
-                    .padding(.horizontal, 12)
-                    .frame(height: 36)
+            },
+            onNewSession: {
+                // 侧栏底部保留全局新建入口，和会话页右上角共用同一个创建流程。
+                presentedSheet = .newSession
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(tokens.secondaryText)
-            .background(tokens.surface.opacity(0.72), in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(tokens.border.opacity(0.6), lineWidth: 1)
-            }
-            .accessibilityLabel("打开设置")
-            .accessibilityIdentifier("sidebar.settings")
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(tokens.sidebarBackground)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(tokens.border.opacity(0.55))
-                .frame(height: 1)
-        }
+        )
     }
 
     private func sidebarDestinationRow(
         destination: AppDestination,
         title: String,
-        systemImage: String
+        systemImage: String,
+        tokens: ThemeTokens
     ) -> some View {
-        NavigationLink(value: destination) {
-            Label(title, systemImage: systemImage)
-                .font(themeStore.uiFont(.body, weight: selection == destination ? .semibold : .medium))
-                .padding(.vertical, 4)
+        let isSelected = selection == destination
+
+        return WorkbenchSidebarDestinationButton(
+            title: title,
+            systemImage: systemImage,
+            isSelected: isSelected,
+            tokens: tokens,
+            action: { selectSidebarDestination(destination) }
+        )
+    }
+
+    private func selectSidebarDestination(_ destination: AppDestination) {
+        selection = destination
+
+        guard horizontalSizeClass == .compact else {
+            return
         }
-        .listRowSeparator(.hidden)
+        // 固定入口改为自绘按钮后，紧凑布局需要显式进入详情列，保持原 NavigationLink 的体验。
+        columnVisibility = .detailOnly
     }
 
     @ViewBuilder
@@ -371,6 +369,103 @@ struct UnifiedWorkbenchShell: View {
         case .connecting: return tokens.warning
         case .failed: return .red
         case .disconnected: return tokens.tertiaryText
+        }
+    }
+}
+
+/// 固定导航入口自绘选中态，避免 iOS 26 SidebarListStyle 自动套用过圆的胶囊背景。
+struct WorkbenchSidebarDestinationButton: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let title: String
+    let systemImage: String
+    let isSelected: Bool
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? tokens.primaryActionForeground : tokens.primaryAction)
+                    .frame(width: 24)
+
+                Text(title)
+                    .font(themeStore.uiFont(.body, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? tokens.primaryActionForeground : tokens.primaryText)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .background(
+                isSelected ? tokens.primaryAction : Color.clear,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+    }
+}
+
+/// 全局配置放左侧，主创建动作放右侧；两端布局在侧栏高度变化时保持稳定。
+struct WorkbenchSidebarFooter: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let tokens: ThemeTokens
+    let onOpenSettings: () -> Void
+    let onNewSession: () -> Void
+
+    var body: some View {
+        HStack {
+            Button(action: onOpenSettings) {
+                Label("设置", systemImage: "gearshape")
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(tokens.secondaryText)
+            .background(tokens.surface.opacity(0.72), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tokens.border.opacity(0.6), lineWidth: 1)
+            }
+            .accessibilityLabel("打开设置")
+            .accessibilityIdentifier("sidebar.settings")
+
+            Spacer(minLength: 0)
+
+            Button(action: onNewSession) {
+                Image(systemName: "plus")
+                    .font(themeStore.uiFont(size: 15, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .background(tokens.primaryAction, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(tokens.primaryAction.opacity(0.72), lineWidth: 1)
+                    }
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(tokens.primaryActionForeground)
+            .accessibilityLabel("新建会话")
+            .accessibilityIdentifier("sidebar.newSession")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(tokens.sidebarBackground)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(tokens.border.opacity(0.55))
+                .frame(height: 1)
         }
     }
 }

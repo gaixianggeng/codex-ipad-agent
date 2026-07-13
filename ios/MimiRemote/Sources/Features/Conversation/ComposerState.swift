@@ -57,6 +57,8 @@ struct ComposerDraftSnapshot: Equatable {
 
 struct ComposerDraftCache {
     private var snapshotsByScope: [ComposerDraftScopeKey: ComposerDraftSnapshot] = [:]
+    private var recentlyUsedScopes: [ComposerDraftScopeKey] = []
+    static let retainedDraftLimit = 24
 
     mutating func save(_ snapshot: ComposerDraftSnapshot, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -64,18 +66,35 @@ struct ComposerDraftCache {
         }
         // 空草稿直接移除，避免用户发出或删空后再次切回时恢复旧内容。
         if snapshot.isEmpty {
-            snapshotsByScope.removeValue(forKey: scope)
+            remove(scope: scope)
         } else {
             snapshotsByScope[scope] = snapshot
+            touch(scope)
+            // 图片已经是 base64 内联数据；限制保留的会话数，避免长期切换会话后草稿无限占用内存。
+            while recentlyUsedScopes.count > Self.retainedDraftLimit {
+                let evictedScope = recentlyUsedScopes.removeFirst()
+                snapshotsByScope.removeValue(forKey: evictedScope)
+            }
         }
     }
 
     mutating func remove(scope: ComposerDraftScopeKey) {
         snapshotsByScope.removeValue(forKey: scope)
+        recentlyUsedScopes.removeAll { $0 == scope }
+    }
+
+    mutating func removeAll() {
+        snapshotsByScope.removeAll(keepingCapacity: false)
+        recentlyUsedScopes.removeAll(keepingCapacity: false)
     }
 
     func snapshot(for scope: ComposerDraftScopeKey) -> ComposerDraftSnapshot {
         snapshotsByScope[scope] ?? .empty
+    }
+
+    private mutating func touch(_ scope: ComposerDraftScopeKey) {
+        recentlyUsedScopes.removeAll { $0 == scope }
+        recentlyUsedScopes.append(scope)
     }
 }
 

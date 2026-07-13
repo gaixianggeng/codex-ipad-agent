@@ -328,6 +328,52 @@ final class ConversationSnapshotTests: XCTestCase {
         )
     }
 
+    func testUnifiedWorkbenchSidebarNavigationChrome() {
+        let themeStore = makeThemeStore()
+        let tokens = themeStore.tokens(for: .light)
+
+        let view = VStack(spacing: 0) {
+            List {
+                Section {
+                    WorkbenchSidebarDestinationButton(
+                        title: "会话",
+                        systemImage: "bubble.left.and.bubble.right",
+                        isSelected: true,
+                        tokens: tokens,
+                        action: {}
+                    )
+                    WorkbenchSidebarDestinationButton(
+                        title: "工作区",
+                        systemImage: "folder",
+                        isSelected: false,
+                        tokens: tokens,
+                        action: {}
+                    )
+                }
+
+                Section("最近") {
+                    Text("优化侧栏创建入口")
+                        .font(themeStore.uiFont(.subheadline, weight: .medium))
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+
+            // 直接渲染生产组件，避免 NavigationSplitView 在测试宿主中自动折叠侧栏。
+            WorkbenchSidebarFooter(tokens: tokens, onOpenSettings: {}, onNewSession: {})
+        }
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .background(tokens.sidebarBackground)
+        .frame(width: 340, height: 768)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 340, height: 768))
+        )
+    }
+
     func testAppearancePreview() {
         let defaults = UserDefaults(suiteName: "ConversationSnapshotTests.Appearance.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)
