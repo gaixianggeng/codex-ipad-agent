@@ -736,11 +736,14 @@ bash ./scripts/verify-release.sh
 
 ### iOS TestFlight 内测
 
-`main` 收到 `ios/MimiRemote/**` 改动后，[默认工作流](./.github/workflows/mimi-testflight.yml) 会自动发布新的内部 TestFlight 构建。GitHub 负责触发、排队和日志，标签为 `mimi-testflight` 的仓库专用 self-hosted ARM64 Mac 负责 Xcode 归档、上传和内部组分发，因此日常发布不消耗 GitHub 托管 macOS 分钟。
+Mimi TestFlight 不再使用 GitHub Actions。安装通用命令后，使用 `git testflight-push` 代替 `git push`：它先推送 `main`、确认远端 SHA，再在本机自动选择下一个 build、签名归档、上传并分发到 `咪咪 Internal`。
 
-本机 runner 使用 `/Applications/Xcode-beta.app` 和只读的 App Store Connect `.p8` 文件；每次发布从 GitHub Secrets 把 Distribution P12 与 App Store profile 导入独立临时 keychain，显式授权 `codesign` 后再归档，结束时恢复原始 keychain 搜索列表并删除所有临时签名材料。runner 必须保持联网和唤醒。仓库需要配置 `IOS_BUNDLE_ID`、`DEVELOPMENT_TEAM`、内部测试组变量，以及 `ASC_KEY_ID`、`ASC_ISSUER_ID`、`IOS_DISTRIBUTION_CERTIFICATE_BASE64`、`IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`、`IOS_APPSTORE_PROVISIONING_PROFILE_BASE64`、`IOS_KEYCHAIN_PASSWORD`；如果 `.p8` 不在默认位置，再设置 `MIMI_ASC_API_KEY_PATH`。
+```bash
+./scripts/install_git_testflight_push.sh
+git testflight-push --what-to-test '验证 iPad 连接、项目、会话、日志和审批链路。'
+```
 
-如果本机不可用，可手动运行 [GitHub 托管应急工作流](./.github/workflows/mimi-testflight-hosted-fallback.yml)。应急入口会消耗 macOS 托管分钟，并继续使用仓库中的证书、profile、App Store Connect Key 等 Secrets。两条工作流共用 `mimi-testflight` 并发组，避免同时上传构建。
+push 失败不会上传，同一 commit 发布成功后默认不会重复生成构建。ASC Key、Distribution P12 和密码只存在本机 `~/.config/ios-testflight/mimi/`。完整配置、dry-run 和恢复方式见 [本地自动发布 Mimi TestFlight](docs/local-testflight.md)。公开二进制、Go/iOS CI 和协议检查仍使用现有 GitHub workflows。
 
 ## 风险与优化
 

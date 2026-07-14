@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_NAME="origin"
+TARGET_BRANCH=""
+WHATS_NEW=""
+FORCE_RELEASE=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  git testflight-push [options]
+
+Options:
+  --remote NAME          Git remote，默认 origin
+  --branch NAME          目标分支，默认读取项目发布配置
+  --what-to-test TEXT    TestFlight 测试说明，默认使用当前 commit 标题
+  --force-release        即使当前 commit 已成功发布，也重新生成一个 build
+  -h, --help             显示帮助
+USAGE
+}
+
+fail() {
+  echo "git-testflight-push: $1" >&2
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --remote)
+      [[ $# -ge 2 ]] || fail "--remote requires a value"
+      REMOTE_NAME="$2"
+      shift 2
+      ;;
+    --branch)
+      [[ $# -ge 2 ]] || fail "--branch requires a value"
+      TARGET_BRANCH="$2"
+      shift 2
+      ;;
+    --what-to-test)
+      [[ $# -ge 2 ]] || fail "--what-to-test requires a value"
+      WHATS_NEW="$2"
+      shift 2
+      ;;
+    --force-release)
+      FORCE_RELEASE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "unknown argument: $1"
+      ;;
+  esac
+done
+
+for command in git awk; do
+  command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
+done
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "not inside a Git repository"
+CURRENT_BRANCH="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD)" \
+  || fail "detached HEAD is not supported"
+RELEASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+PROJECT_CONFIG_RELATIVE="config/release/ios-testflight.local.env"
+
+# 配置从待推送 commit 读取，避免未提交配置改变发布目标。
+project_config_content="$(git -C "$REPO_ROOT" show "$RELEASE_COMMIT:$PROJECT_CONFIG_RELATIVE" 2>/dev/null)" \
+  || fail "missing tracked project config: $PROJECT_CONFIG_RELATIVE"
+set -a
+# shellcheck disable=SC1090
+source /dev/stdin <<< "$project_config_content"
+set +a
+
+[[ -n "${IOS_RELEASE_PROJECT_ID:-}" ]] || fail "IOS_RELEASE_PROJECT_ID is required"
+TARGET_BRANCH="${TARGET_BRANCH:-${IOS_RELEASE_REQUIRED_BRANCH:-$CURRENT_BRANCH}}"
+[[ "$CURRENT_BRANCH" == "$TARGET_BRANCH" ]] \
+  || fail "current branch $CURRENT_BRANCH does not match release branch $TARGET_BRANCH"
+[[ "$(git -C "$REPO_ROOT" rev-parse "refs/heads/$TARGET_BRANCH")" == "$RELEASE_COMMIT" ]] \
+  || fail "HEAD must equal local $TARGET_BRANCH tip"
+
+RUNNER="${IOS_TESTFLIGHT_LOCAL_RUNNER:-$REPO_ROOT/scripts/ios_testflight_local.sh}"
+[[ -x "$RUNNER" ]] || fail "local TestFlight runner is not executable: $RUNNER"
+git -C "$REPO_ROOT" remote get-url "$REMOTE_NAME" >/dev/null \
+  || fail "Git remote not found: $REMOTE_NAME"
+
+remote_sha() {
+  git -C "$REPO_ROOT" ls-remote --heads "$REMOTE_NAME" "refs/heads/$TARGET_BRANCH" \
+    | awk 'NR == 1 { print $1 }'
+}
+
+before_sha="$(remote_sha)"
+if [[ "$before_sha" != "$RELEASE_COMMIT" ]]; then
+  echo "git-testflight-push: push $RELEASE_COMMIT to $REMOTE_NAME/$TARGET_BRANCH"
+  git -C "$REPO_ROOT" push "$REMOTE_NAME" "HEAD:refs/heads/$TARGET_BRANCH"
+else
+  echo "git-testflight-push: $REMOTE_NAME/$TARGET_BRANCH already points to $RELEASE_COMMIT"
+fi
+
+# 只有远端明确指向本地 commit 才允许上传，保证发布发生在 push 成功之后。
+after_sha=""
+for _ in 1 2 3 4 5 6; do
+  after_sha="$(remote_sha)"
+  [[ "$after_sha" == "$RELEASE_COMMIT" ]] && break
+  sleep 1
+done
+[[ "$after_sha" == "$RELEASE_COMMIT" ]] \
+  || fail "remote verification failed: expected $RELEASE_COMMIT, got ${after_sha:-<empty>}"
+
+STATE_DIR="${IOS_RELEASE_STATE_DIR:-$HOME/Library/Application Support/ios-testflight-local/$IOS_RELEASE_PROJECT_ID}"
+STATE_FILE="$STATE_DIR/last-run.env"
+if [[ "$FORCE_RELEASE" == "0" && -f "$STATE_FILE" ]]; then
+  IOS_RELEASE_COMMIT=""
+  IOS_RELEASE_MODE=""
+  # 状态文件由本地执行器生成，权限为 600，只用于防止相同 commit 重复发布。
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+  if [[ "$IOS_RELEASE_COMMIT" == "$RELEASE_COMMIT" && "$IOS_RELEASE_MODE" == "upload" ]]; then
+    echo "git-testflight-push: commit already released, skip duplicate upload"
+    exit 0
+  fi
+fi
+
+if [[ -z "$WHATS_NEW" ]]; then
+  WHATS_NEW="自动发布：$(git -C "$REPO_ROOT" log -1 --format=%s "$RELEASE_COMMIT")"
+fi
+
+echo "git-testflight-push: remote verified; start local TestFlight release"
+exec "$RUNNER" \
+  --repo "$REPO_ROOT" \
+  --upload \
+  --ref "$RELEASE_COMMIT" \
+  --what-to-test "$WHATS_NEW"

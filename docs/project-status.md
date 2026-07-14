@@ -93,7 +93,7 @@ xcodebuild \
   build-for-testing
 ```
 
-生产发布使用 `.github/workflows/mimi-testflight.yml`。iOS 改动进入 `main` 后，由仓库专用 self-hosted Mac 完成归档、上传和内部组分发；托管 runner 只作为应急入口。
+Mimi TestFlight 使用本机 `git testflight-push`：先推送并核对远端 commit，再在干净 worktree 中归档、上传和内部组分发，不依赖 GitHub Actions。其他 CI 与公开 Release workflows 保持不变。
 
 ### 文档入口
 
