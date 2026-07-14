@@ -2333,10 +2333,13 @@ struct WorkbenchLayout: Equatable {
     let usesAttachedInspector: Bool
 
     init(containerWidth: CGFloat, horizontalSizeClass: UserInterfaceSizeClass?) {
-        let isCompactWidth = horizontalSizeClass == .compact || containerWidth < 760
+        let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
+        // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
+        // 这类宽度也必须使用真正的 push 导航，否则系统不会提供返回按钮和左缘返回手势。
+        let needsCompactNavigation = horizontalSizeClass == .compact || containerWidth < 860
         let isTightPadWidth = containerWidth < 980
 
-        if isCompactWidth {
+        if usesCompactMetrics {
             projectColumn = ColumnWidth(min: 220, ideal: 260, max: 300)
             // 手机导航栏同时有返回、连接状态、日志和设置按钮；标题必须主动让位，避免挤压工具按钮。
             titleMaxWidth = max(86, min(150, containerWidth - 250))
@@ -2354,8 +2357,8 @@ struct WorkbenchLayout: Equatable {
 
         // 三栏只在真正宽的横向空间里附着；窄窗口改用 sheet，保住会话阅读/输入区域。
         usesAttachedInspector = horizontalSizeClass != .compact && containerWidth >= 1180
-        usesCompactNavigation = isCompactWidth
-        prefersDetailOnly = isCompactWidth || containerWidth < 860
+        usesCompactNavigation = needsCompactNavigation
+        prefersDetailOnly = needsCompactNavigation
     }
 }
 

@@ -378,6 +378,14 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 86)
     }
 
+    func testWorkbenchLayoutUsesCompactNavigationOnLegacyIPadMiniPortraitWidth() {
+        let layout = WorkbenchLayout(containerWidth: 768, horizontalSizeClass: .regular)
+
+        XCTAssertTrue(layout.usesCompactNavigation)
+        XCTAssertTrue(layout.prefersDetailOnly)
+        XCTAssertFalse(layout.usesAttachedInspector)
+    }
+
     func testWorkbenchLayoutKeepsSplitNavigationOnWidePadWidth() {
         let layout = WorkbenchLayout(containerWidth: 1180, horizontalSizeClass: .regular)
 
@@ -394,8 +402,16 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertEqual(layout.horizontalInset, 12)
         XCTAssertEqual(layout.composerAvailableWidth, 366)
         XCTAssertEqual(layout.composerMaxWidth, .infinity)
+        XCTAssertEqual(layout.composerBottomPadding, 8)
         XCTAssertLessThanOrEqual(layout.userBubbleMaxWidth, 354)
         XCTAssertLessThanOrEqual(layout.assistantBubbleMaxWidth, 354)
         XCTAssertLessThanOrEqual(layout.runtimeCardMaxWidth, 366)
+    }
+
+    func testConversationLayoutKeepsPadComposerCloseToBottomSafeArea() {
+        let layout = ConversationLayout(containerWidth: 716, horizontalSizeClass: .regular)
+
+        XCTAssertEqual(layout.composerTopPadding, 12)
+        XCTAssertEqual(layout.composerBottomPadding, 10)
     }
 }

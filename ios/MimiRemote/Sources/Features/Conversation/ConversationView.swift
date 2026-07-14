@@ -694,8 +694,9 @@ struct ConversationLayout: Equatable {
         composerAvailableWidth = max(240, containerWidth - horizontalInset * 2)
         composerMaxWidth = isCompactWidth ? .infinity : min(920, max(360, composerAvailableWidth))
         composerTopPadding = isCompactWidth ? 10 : 12
-        // 底部输入区是触屏主操作区，但 iPad dock 过厚会抢走会话主体重心；保持可点空间，同时减少空闲态压迫感。
-        composerBottomPadding = isCompactWidth ? 12 : 16
+        // safeAreaInset 已经负责系统手势区；这里只保留卡片与安全区之间的轻量呼吸感，
+        // 避免两层底距叠加后让输入卡看起来悬得过高。
+        composerBottomPadding = isCompactWidth ? 8 : 10
 
         // 气泡宽度按实际容器收缩，保留左右身份感，同时避免 iPhone/mini 竖屏横向溢出。
         let rowAvailableWidth = max(240, containerWidth - horizontalInset * 2 - messageSideSpacer)

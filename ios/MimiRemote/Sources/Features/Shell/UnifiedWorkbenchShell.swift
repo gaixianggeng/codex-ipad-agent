@@ -13,7 +13,8 @@ private enum AppSheetDestination: String, Identifiable {
     var id: String { rawValue }
 }
 
-/// iPad 和 iPhone 共用同一套导航状态；iPad 展开为单侧栏，窄屏由系统自动折叠成 push 导航。
+/// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
+/// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
@@ -24,21 +25,66 @@ struct UnifiedWorkbenchShell: View {
     @Binding var showingInspector: Bool
     @State private var selection: AppDestination? = .sessions
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var compactPath: [AppDestination] = []
     @State private var presentedSheet: AppSheetDestination?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         GeometryReader { proxy in
-            let layout = WorkbenchLayout(containerWidth: proxy.size.width, horizontalSizeClass: nil)
+            let layout = WorkbenchLayout(
+                containerWidth: proxy.size.width,
+                horizontalSizeClass: horizontalSizeClass
+            )
 
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                sidebar(tokens: tokens)
-                    .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 340)
-            } detail: {
-                detail(layout: layout, tokens: tokens)
+            Group {
+                if layout.usesCompactNavigation {
+                    compactLayout(
+                        layout: layout,
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
+                    )
+                } else {
+                    splitLayout(
+                        layout: layout,
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
+                    )
+                }
             }
-            .navigationSplitViewStyle(.balanced)
+            .sheet(item: $presentedSheet) { sheet in
+                switch sheet {
+                case .newSession:
+                    NewSessionSheet(
+                        onCreated: { sessionID in
+                            open(.session(sessionID), layout: layout)
+                        },
+                        onOpenWorkspaces: {
+                            open(.workspaces, layout: layout)
+                        }
+                    )
+                case .settings:
+                    SettingsView(isInitialSetup: false)
+                }
+            }
+            .onAppear {
+                synchronizeNavigation(for: layout)
+            }
+            .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
+                guard usesCompactNavigation else { return }
+                synchronizeNavigation(for: layout)
+            }
+            .onChange(of: selection) { _, destination in
+                guard case .session(let sessionID) = destination,
+                      sessionID != sessionStore.selectedSessionID,
+                      let session = sessionStore.sessionLibrarySessions.first(where: { $0.id == sessionID })
+                else { return }
+                Task { await sessionStore.selectSession(session) }
+            }
+            .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
+                guard let sessionID else { return }
+                open(.session(sessionID), layout: layout)
+            }
         }
         .background(tokens.background.ignoresSafeArea())
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -48,37 +94,40 @@ struct UnifiedWorkbenchShell: View {
                 networkUnavailableBanner(tokens: tokens)
             }
         }
-        .sheet(item: $presentedSheet) { sheet in
-            switch sheet {
-            case .newSession:
-                NewSessionSheet(
-                    onCreated: { sessionID in
-                        selection = .session(sessionID)
-                    },
-                    onOpenWorkspaces: {
-                        selection = .workspaces
-                    }
-                )
-            case .settings:
-                SettingsView(isInitialSetup: false)
-            }
+    }
+
+    private func compactLayout(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
+        NavigationStack(path: $compactPath) {
+            sidebar(tokens: tokens, layout: layout, bottomSafeAreaInset: bottomSafeAreaInset)
+                .navigationDestination(for: AppDestination.self) { destination in
+                    compactDestination(destination, layout: layout, tokens: tokens)
+                }
         }
-        .onAppear {
-            if let sessionID = sessionStore.selectedSessionID {
-                selection = .session(sessionID)
-            }
+        .themedWorkbenchNavigationChrome(
+            tokens: tokens,
+            colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
+        )
+        .onChange(of: compactPath) { oldPath, newPath in
+            handleCompactPathChange(from: oldPath, to: newPath)
         }
-        .onChange(of: selection) { _, destination in
-            guard case .session(let sessionID) = destination,
-                  sessionID != sessionStore.selectedSessionID,
-                  let session = sessionStore.sessionLibrarySessions.first(where: { $0.id == sessionID })
-            else { return }
-            Task { await sessionStore.selectSession(session) }
+    }
+
+    private func splitLayout(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebar(tokens: tokens, layout: layout, bottomSafeAreaInset: bottomSafeAreaInset)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 340)
+        } detail: {
+            detail(layout: layout, tokens: tokens)
         }
-        .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
-            guard let sessionID else { return }
-            selection = .session(sessionID)
-        }
+        .navigationSplitViewStyle(.balanced)
     }
 
     private func credentialsInvalidBanner(tokens: ThemeTokens) -> some View {
@@ -143,7 +192,11 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("connection.networkUnavailable")
     }
 
-    private func sidebar(tokens: ThemeTokens) -> some View {
+    private func sidebar(
+        tokens: ThemeTokens,
+        layout: WorkbenchLayout,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
         VStack(spacing: 0) {
             List(selection: $selection) {
                 Section {
@@ -151,13 +204,15 @@ struct UnifiedWorkbenchShell: View {
                         destination: .sessions,
                         title: "会话",
                         systemImage: "bubble.left.and.bubble.right",
-                        tokens: tokens
+                        tokens: tokens,
+                        layout: layout
                     )
                     sidebarDestinationRow(
                         destination: .workspaces,
                         title: "工作区",
                         systemImage: "folder",
-                        tokens: tokens
+                        tokens: tokens,
+                        layout: layout
                     )
                 }
 
@@ -194,7 +249,7 @@ struct UnifiedWorkbenchShell: View {
             .environment(\.defaultMinListRowHeight, 38)
 
             // 设置属于整个工作台而不是某个列表项，固定在侧栏底部可让顶部只保留品牌和当前内容。
-            sidebarFooter(tokens: tokens)
+            sidebarFooter(tokens: tokens, bottomSafeAreaInset: bottomSafeAreaInset)
         }
         .background(tokens.sidebarBackground.ignoresSafeArea())
         .toolbar {
@@ -237,9 +292,10 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func sidebarFooter(tokens: ThemeTokens) -> some View {
+    private func sidebarFooter(tokens: ThemeTokens, bottomSafeAreaInset: CGFloat) -> some View {
         WorkbenchSidebarFooter(
             tokens: tokens,
+            bottomSafeAreaInset: bottomSafeAreaInset,
             onOpenSettings: {
                 // 设置是全局配置，不改变当前会话或工作区选择。
                 presentedSheet = .settings
@@ -255,7 +311,8 @@ struct UnifiedWorkbenchShell: View {
         destination: AppDestination,
         title: String,
         systemImage: String,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        layout: WorkbenchLayout
     ) -> some View {
         let isSelected = selection == destination
 
@@ -264,18 +321,24 @@ struct UnifiedWorkbenchShell: View {
             systemImage: systemImage,
             isSelected: isSelected,
             tokens: tokens,
-            action: { selectSidebarDestination(destination) }
+            action: { open(destination, layout: layout) }
         )
     }
 
-    private func selectSidebarDestination(_ destination: AppDestination) {
-        selection = destination
-
-        guard horizontalSizeClass == .compact else {
-            return
+    @ViewBuilder
+    private func compactDestination(
+        _ destination: AppDestination,
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens
+    ) -> some View {
+        switch destination {
+        case .sessions:
+            sessionList(layout: layout)
+        case .workspaces:
+            workspaces(layout: layout)
+        case .session:
+            sessionDetail(layout: layout, tokens: tokens)
         }
-        // 固定入口改为自绘按钮后，紧凑布局需要显式进入详情列，保持原 NavigationLink 的体验。
-        columnVisibility = .detailOnly
     }
 
     @ViewBuilder
@@ -283,45 +346,53 @@ struct UnifiedWorkbenchShell: View {
         switch selection ?? .sessions {
         case .sessions:
             NavigationStack {
-                SessionListView(
-                    onNewSession: { presentedSheet = .newSession },
-                    onSelectSession: { session in
-                        selection = .session(session.id)
-                    }
-                )
+                sessionList(layout: layout)
             }
         case .workspaces:
-            WorkspaceRootView(
-                onOpenInSessions: { project in
-                    Task {
-                        await sessionStore.selectProject(project)
-                        selection = .sessions
-                    }
-                },
-                onStartSession: { project, runtimeChoice in
-                    Task {
-                        await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)
-                        if let sessionID = sessionStore.selectedSessionID {
-                            selection = .session(sessionID)
-                        }
-                    }
-                },
-                onOpenSession: { session in
-                    Task {
-                        // 最近会话属于当前工作区索引，先恢复会话上下文，再切换详情路由。
-                        await sessionStore.selectSession(session)
-                        selection = .session(session.id)
-                    }
-                }
-            )
+            workspaces(layout: layout)
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
         }
     }
 
+    private func sessionList(layout: WorkbenchLayout) -> some View {
+        SessionListView(
+            onNewSession: { presentedSheet = .newSession },
+            onSelectSession: { session in
+                open(.session(session.id), layout: layout)
+            }
+        )
+    }
+
+    private func workspaces(layout: WorkbenchLayout) -> some View {
+        WorkspaceRootView(
+            onOpenInSessions: { project in
+                Task {
+                    await sessionStore.selectProject(project)
+                    open(.sessions, layout: layout)
+                }
+            },
+            onStartSession: { project, runtimeChoice in
+                Task {
+                    await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)
+                    if let sessionID = sessionStore.selectedSessionID {
+                        open(.session(sessionID), layout: layout)
+                    }
+                }
+            },
+            onOpenSession: { session in
+                Task {
+                    // 最近会话属于当前工作区索引，先恢复会话上下文，再切换详情路由。
+                    await sessionStore.selectSession(session)
+                    open(.session(session.id), layout: layout)
+                }
+            }
+        )
+    }
+
     private func sessionDetail(layout: WorkbenchLayout, tokens: ThemeTokens) -> some View {
         WorkspaceView {
-            selection = .workspaces
+            open(.workspaces, layout: layout)
         }
         .navigationTitle(sessionStore.selectedSession?.title ?? "会话")
         .navigationBarTitleDisplayMode(.inline)
@@ -371,6 +442,52 @@ struct UnifiedWorkbenchShell: View {
         .background(tokens.background.ignoresSafeArea())
         .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .sessionInspectorPresentation(isPresented: $showingInspector, layout: layout)
+    }
+
+    private func open(_ destination: AppDestination, layout: WorkbenchLayout) {
+        selection = destination
+
+        guard layout.usesCompactNavigation,
+              compactPath.last != destination else {
+            return
+        }
+        // 窄屏路由必须进入 NavigationStack，系统才会同时提供返回按钮和左缘交互式返回。
+        compactPath.append(destination)
+    }
+
+    private func synchronizeNavigation(for layout: WorkbenchLayout) {
+        let destination = sessionStore.selectedSessionID.map(AppDestination.session)
+            ?? selection
+            ?? .sessions
+        selection = destination
+
+        guard layout.usesCompactNavigation,
+              compactPath.last != destination else {
+            return
+        }
+        // 首次进入窄屏或从宽屏旋转过来时，以当前可见内容建立一层确定的返回栈。
+        compactPath = [destination]
+    }
+
+    private func handleCompactPathChange(
+        from oldPath: [AppDestination],
+        to newPath: [AppDestination]
+    ) {
+        let destination = newPath.last ?? .sessions
+        selection = destination
+
+        if isSessionDestination(oldPath.last), !isSessionDestination(newPath.last) {
+            // 返回列表后停止当前会话订阅，沿用原紧凑导航的资源释放语义。
+            sessionStore.returnToSessionList()
+        }
+    }
+
+    private func isSessionDestination(_ destination: AppDestination?) -> Bool {
+        guard let destination else { return false }
+        if case .session = destination {
+            return true
+        }
+        return false
     }
 
     /// 工具栏使用单层圆形底，不再叠加系统 glass 的外圈；在浅色和深色主题下都和列表操作一致。
@@ -500,10 +617,27 @@ struct WorkbenchSidebarFooter: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let tokens: ThemeTokens
+    let bottomSafeAreaInset: CGFloat
     let onOpenSettings: () -> Void
     let onNewSession: () -> Void
 
+    init(
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat = 0,
+        onOpenSettings: @escaping () -> Void,
+        onNewSession: @escaping () -> Void
+    ) {
+        self.tokens = tokens
+        self.bottomSafeAreaInset = bottomSafeAreaInset
+        self.onOpenSettings = onOpenSettings
+        self.onNewSession = onNewSession
+    }
+
     var body: some View {
+        // footer 下方还包含系统安全区；向下补偿其一半（最多 10pt），让控件在整块可见底栏中视觉居中，
+        // 同时仍把完整触控区域留在安全区之上。
+        let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
+
         HStack {
             Button(action: onOpenSettings) {
                 Label("设置", systemImage: "gearshape")
@@ -539,6 +673,7 @@ struct WorkbenchSidebarFooter: View {
             .accessibilityLabel("新建会话")
             .accessibilityIdentifier("sidebar.newSession")
         }
+        .offset(y: safeAreaVisualOffset)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(tokens.sidebarBackground)
