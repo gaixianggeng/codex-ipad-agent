@@ -1104,6 +1104,13 @@ final class AppStore: ObservableObject {
         if let seconds = TimeInterval(raw) {
             return Date(timeIntervalSince1970: seconds)
         }
+        // agentd 为保证同一秒刷新出的短期票据可以独立消费，会输出 RFC3339Nano 小数秒。
+        // 先解析新版格式，再回退到旧版无小数秒格式，保持已发布二维码兼容。
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: raw) {
+            return date
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: raw)

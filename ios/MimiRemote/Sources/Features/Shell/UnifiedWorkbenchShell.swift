@@ -386,7 +386,11 @@ struct UnifiedWorkbenchShell: View {
                     await sessionStore.selectSession(session)
                     open(.session(session.id), layout: layout)
                 }
-            }
+            },
+            // 紧凑布局的 destination 必须复用外层绑定 path 的 NavigationStack。
+            embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
+                usesCompactNavigation: layout.usesCompactNavigation
+            )
         )
     }
 
@@ -447,12 +451,25 @@ struct UnifiedWorkbenchShell: View {
     private func open(_ destination: AppDestination, layout: WorkbenchLayout) {
         selection = destination
 
-        guard layout.usesCompactNavigation,
-              compactPath.last != destination else {
+        guard layout.usesCompactNavigation else {
             return
         }
-        // 窄屏路由必须进入 NavigationStack，系统才会同时提供返回按钮和左缘交互式返回。
-        compactPath.append(destination)
+
+        switch destination {
+        case .sessions, .workspaces:
+            // 固定入口是同级页面；切换时替换路径，避免首次进入工作区还要让 SwiftUI
+            // 同时保留并重算前一个入口的导航列。
+            let nextPath = [destination]
+            if compactPath != nextPath {
+                compactPath = nextPath
+            }
+        case .session:
+            guard compactPath.last != destination else {
+                return
+            }
+            // 会话详情保留来源页，系统返回按钮和左缘手势可以回到会话或工作区。
+            compactPath.append(destination)
+        }
     }
 
     private func synchronizeNavigation(for layout: WorkbenchLayout) {

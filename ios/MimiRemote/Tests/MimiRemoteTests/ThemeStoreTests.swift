@@ -372,6 +372,9 @@ final class ResponsiveLayoutTests: XCTestCase {
         let layout = WorkbenchLayout(containerWidth: 390, horizontalSizeClass: .compact)
 
         XCTAssertTrue(layout.usesCompactNavigation)
+        XCTAssertFalse(WorkspaceRootView.shouldEmbedNavigationStack(
+            usesCompactNavigation: layout.usesCompactNavigation
+        ))
         XCTAssertTrue(layout.prefersDetailOnly)
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 150)
@@ -382,6 +385,9 @@ final class ResponsiveLayoutTests: XCTestCase {
         let layout = WorkbenchLayout(containerWidth: 768, horizontalSizeClass: .regular)
 
         XCTAssertTrue(layout.usesCompactNavigation)
+        XCTAssertFalse(WorkspaceRootView.shouldEmbedNavigationStack(
+            usesCompactNavigation: layout.usesCompactNavigation
+        ))
         XCTAssertTrue(layout.prefersDetailOnly)
         XCTAssertFalse(layout.usesAttachedInspector)
     }
@@ -390,6 +396,9 @@ final class ResponsiveLayoutTests: XCTestCase {
         let layout = WorkbenchLayout(containerWidth: 1180, horizontalSizeClass: .regular)
 
         XCTAssertFalse(layout.usesCompactNavigation)
+        XCTAssertTrue(WorkspaceRootView.shouldEmbedNavigationStack(
+            usesCompactNavigation: layout.usesCompactNavigation
+        ))
         XCTAssertFalse(layout.prefersDetailOnly)
         XCTAssertTrue(layout.usesAttachedInspector)
         XCTAssertEqual(layout.projectColumn.ideal, 330)

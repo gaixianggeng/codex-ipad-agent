@@ -43,7 +43,7 @@ enum QRCodeScannerFailure: Equatable {
 }
 
 enum QRCodeScannerSubmissionResult: Equatable {
-    case accepted
+    case accepted(String)
     case rejected(String)
 }
 
@@ -52,6 +52,7 @@ struct QRCodeScannerSheet: View {
     @State private var scannerFailure: QRCodeScannerFailure?
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
+    @State private var completionMessage: String?
     @State private var submissionTask: Task<Void, Never>?
 
     let onChooseManualConnection: () -> Void
@@ -89,6 +90,26 @@ struct QRCodeScannerSheet: View {
                     .padding(20)
                     .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .padding()
+                } else if let completionMessage {
+                    VStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 44, weight: .semibold))
+                            .foregroundStyle(.green)
+                            .accessibilityHidden(true)
+                        Text("连接成功")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Text(completionMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.82))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(20)
+                    .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding()
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("qrScanner.connectionSuccess")
                 } else if isSubmittingCode {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -147,7 +168,7 @@ struct QRCodeScannerSheet: View {
     }
 
     private var isScanningEnabled: Bool {
-        isCameraReady && !isSubmittingCode && scannerFailure == nil
+        isCameraReady && !isSubmittingCode && completionMessage == nil && scannerFailure == nil
     }
 
     private var scannerFailureBinding: Binding<Bool> {
@@ -196,7 +217,19 @@ struct QRCodeScannerSheet: View {
             }
 
             switch result {
-            case .accepted:
+            case .accepted(let message):
+                // 二维码可能在相机首帧就被识别；先展示明确完成态，避免直接关闭被误认为相机没有打开。
+                isSubmittingCode = false
+                completionMessage = message
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                do {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else {
+                    return
+                }
                 dismiss()
             case .rejected(let message):
                 isSubmittingCode = false

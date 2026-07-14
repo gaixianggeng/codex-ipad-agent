@@ -2179,7 +2179,7 @@ private struct MacConnectionPanel: View {
                 defer { isSavingConnection = false }
                 _ = await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45)
             }
-            return .accepted
+            return .accepted("已连接这台 Mac")
         } catch is CancellationError {
             isSavingConnection = false
             localError = nil

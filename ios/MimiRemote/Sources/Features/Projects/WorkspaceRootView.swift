@@ -47,6 +47,7 @@ struct WorkspaceRootView: View {
     let onOpenInSessions: (AgentProject) -> Void
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
+    let embedsNavigationStack: Bool
 
     @State private var selectedWorkspaceID: String?
     @State private var catalogState: CatalogState = .idle
@@ -55,31 +56,33 @@ struct WorkspaceRootView: View {
     init(
         onOpenInSessions: @escaping (AgentProject) -> Void,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
-        onOpenSession: @escaping (AgentSession) -> Void = { _ in }
+        onOpenSession: @escaping (AgentSession) -> Void = { _ in },
+        embedsNavigationStack: Bool = true
     ) {
         self.onOpenInSessions = onOpenInSessions
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
+        self.embedsNavigationStack = embedsNavigationStack
+    }
+
+    static func shouldEmbedNavigationStack(usesCompactNavigation: Bool) -> Bool {
+        // 紧凑布局的 destination 已经在根导航栈内；只有独立/宽屏入口需要自己建栈。
+        !usesCompactNavigation
     }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        NavigationStack {
-            workspaceBrowser(tokens: tokens)
-                .navigationTitle("工作区")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            isPresentingOpenWorkspace = true
-                        } label: {
-                            Label("打开目录", systemImage: "folder.badge.plus")
-                        }
-                        .buttonStyle(.glassProminent)
-                        .tint(tokens.primaryAction)
-                    }
+        Group {
+            if embedsNavigationStack {
+                NavigationStack {
+                    navigationContent(tokens: tokens)
                 }
+            } else {
+                // iPhone 紧凑布局已由 UnifiedWorkbenchShell 持有绑定 path 的导航栈。
+                // 这里再嵌套 NavigationStack 会让 SwiftUI 在首次打开工作区时同时重算两层导航状态。
+                navigationContent(tokens: tokens)
+            }
         }
         .task {
             synchronizeSelection()
@@ -101,6 +104,23 @@ struct WorkspaceRootView: View {
             }
         }
         .background(tokens.background.ignoresSafeArea())
+    }
+
+    private func navigationContent(tokens: ThemeTokens) -> some View {
+        workspaceBrowser(tokens: tokens)
+            .navigationTitle("工作区")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isPresentingOpenWorkspace = true
+                    } label: {
+                        Label("打开目录", systemImage: "folder.badge.plus")
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(tokens.primaryAction)
+                }
+            }
     }
 
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {

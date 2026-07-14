@@ -461,8 +461,6 @@ private struct InitialConnectionSettingsSections: View {
     @State private var token = ""
     @State private var didLoadInitialConnection = false
     @State private var isShowingQRCodeScanner = false
-    @State private var isShowingConnectionSuccess = false
-    @State private var connectionSuccessMessage = ""
     @State private var isSavingConnection = false
     @State private var isAddingConnectionProfile = false
     @State private var profileDisplayName = ""
@@ -572,6 +570,38 @@ private struct InitialConnectionSettingsSections: View {
             } footer: {
                 Text("推荐扫码连接；会自动验证新连接，失败时保留当前 Mac。")
             }
+            // Form 会把透明 Group 展开成多个 Section。所有弹窗必须挂在这个始终存在的
+            // 具体 Section 上，确保已连接时新增的“已保存/状态”Section 不会生成多个 presenter。
+            .sheet(isPresented: $isShowingQRCodeScanner) {
+                QRCodeScannerSheet(onChooseManualConnection: {
+                    isShowingAdvancedManualConnection = true
+                }) { rawValue in
+                    await applyScannedConnection(rawValue)
+                }
+            }
+            .sheet(item: $profileRenameTarget) { profile in
+                ConnectionProfileRenameSheet(profile: profile) { displayName in
+                    try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
+                    localError = nil
+                }
+            }
+            .confirmationDialog(
+                pendingRemovalConfirmation?.title ?? "确认删除连接凭据？",
+                isPresented: removalConfirmationBinding,
+                titleVisibility: .visible,
+                presenting: pendingRemovalConfirmation
+            ) { confirmation in
+                Button(confirmation.confirmButtonTitle, role: .destructive) {
+                    performCredentialRemoval(confirmation)
+                }
+                .accessibilityIdentifier(removalConfirmationAccessibilityIdentifier(confirmation))
+
+                Button("取消", role: .cancel) {
+                    pendingRemovalConfirmation = nil
+                }
+            } message: { confirmation in
+                Text(confirmation.message)
+            }
 
             if shouldShowConnectionStatus {
                 Section {
@@ -636,46 +666,6 @@ private struct InitialConnectionSettingsSections: View {
         .listRowBackground(tokens.elevatedSurface)
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
-        .sheet(isPresented: $isShowingQRCodeScanner) {
-            QRCodeScannerSheet(onChooseManualConnection: {
-                isShowingAdvancedManualConnection = true
-            }) { rawValue in
-                await applyScannedConnection(rawValue)
-            }
-        }
-        .onChange(of: isShowingQRCodeScanner) { _, isPresented in
-            if !isPresented, !connectionSuccessMessage.isEmpty {
-                isShowingConnectionSuccess = true
-            }
-        }
-        .sheet(item: $profileRenameTarget) { profile in
-            ConnectionProfileRenameSheet(profile: profile) { displayName in
-                try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
-                localError = nil
-            }
-        }
-        .alert("已找到这台 Mac", isPresented: $isShowingConnectionSuccess) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(connectionSuccessMessage)
-        }
-        .confirmationDialog(
-            pendingRemovalConfirmation?.title ?? "确认删除连接凭据？",
-            isPresented: removalConfirmationBinding,
-            titleVisibility: .visible,
-            presenting: pendingRemovalConfirmation
-        ) { confirmation in
-            Button(confirmation.confirmButtonTitle, role: .destructive) {
-                performCredentialRemoval(confirmation)
-            }
-            .accessibilityIdentifier(removalConfirmationAccessibilityIdentifier(confirmation))
-
-            Button("取消", role: .cancel) {
-                pendingRemovalConfirmation = nil
-            }
-        } message: { confirmation in
-            Text(confirmation.message)
-        }
     }
 
     private var removalConfirmationBinding: Binding<Bool> {
@@ -1174,7 +1164,6 @@ private struct InitialConnectionSettingsSections: View {
             token = ""
             localError = nil
         }
-        connectionSuccessMessage = ""
         isShowingAdvancedManualConnection = false
         isShowingQRCodeScanner = true
     }
@@ -1185,7 +1174,6 @@ private struct InitialConnectionSettingsSections: View {
         endpoint = appStore.endpoint
         token = ""
         localError = nil
-        connectionSuccessMessage = ""
         isShowingAdvancedManualConnection = false
         isShowingQRCodeScanner = true
     }
@@ -1265,7 +1253,6 @@ private struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            connectionSuccessMessage = ""
             guard await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45) else {
                 return
             }
@@ -1286,7 +1273,8 @@ private struct InitialConnectionSettingsSections: View {
             guard let url = URL(string: raw) else {
                 throw PairingLinkError.unsupportedURL
             }
-            if isAddingConnectionProfile {
+            let wasAddingConnectionProfile = isAddingConnectionProfile
+            if wasAddingConnectionProfile {
                 _ = try await sessionStore.addConnectionProfile(
                     pairingURL: url,
                     displayName: profileDisplayName
@@ -1297,15 +1285,17 @@ private struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            connectionSuccessMessage = "已连接这台 Mac，正在进入工作台。"
-            isShowingConnectionSuccess = false
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描一次性配对码。
             Task { @MainActor in
                 defer { isSavingConnection = false }
                 _ = await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45)
             }
-            return .accepted
+            return .accepted(
+                wasAddingConnectionProfile
+                    ? "已添加并切换到这台 Mac"
+                    : "已连接这台 Mac"
+            )
         } catch is CancellationError {
             isSavingConnection = false
             localError = nil
@@ -1336,7 +1326,6 @@ private struct InitialConnectionSettingsSections: View {
             try appStore.clearPairing()
             endpoint = appStore.endpoint
             token = appStore.token
-            connectionSuccessMessage = ""
             sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
         } catch {

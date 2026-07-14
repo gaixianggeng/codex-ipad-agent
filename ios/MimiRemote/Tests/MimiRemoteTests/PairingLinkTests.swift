@@ -27,7 +27,10 @@ final class PairingLinkTests: XCTestCase {
 
         XCTAssertEqual(failure.message, "二维码已过期")
         XCTAssertEqual(failure.recoveryActions, [.retryScanning, .manualConnection])
-        XCTAssertEqual(QRCodeScannerSubmissionResult.accepted, .accepted)
+        XCTAssertEqual(
+            QRCodeScannerSubmissionResult.accepted("已添加并切换到这台 Mac"),
+            .accepted("已添加并切换到这台 Mac")
+        )
         XCTAssertEqual(
             QRCodeScannerSubmissionResult.rejected("连接失败"),
             .rejected("连接失败")
@@ -541,6 +544,16 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertThrowsError(try AppStore.pairingCredentials(from: url)) { error in
             XCTAssertEqual(error as? PairingLinkError, .missingToken)
         }
+    }
+
+    func testParsesSignedPairingTicketWithRFC3339NanoTimestamps() throws {
+        let url = try XCTUnwrap(URL(string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787&issued_at=2026-07-14T15%3A07%3A00.819278Z&expires_at=2099-12-31T23%3A59%3A59.123456Z&pair_sig=abcdef"))
+
+        let ticket = try XCTUnwrap(AppStore.pairingTicket(from: url))
+
+        XCTAssertEqual(ticket.issuedAt, "2026-07-14T15:07:00.819278Z")
+        XCTAssertEqual(ticket.expiresAt, "2099-12-31T23:59:59.123456Z")
+        XCTAssertEqual(ticket.pairSignature, "abcdef")
     }
 
     func testRejectsExpiredPairingURL() throws {
