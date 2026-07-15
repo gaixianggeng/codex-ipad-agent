@@ -5023,6 +5023,73 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(store.sidebarProjects.map(\.id), [project.id])
     }
 
+    func testWorkspaceSessionRefreshLoadsBrowsedWorkspaceWithoutChangingActiveSession() async throws {
+        let activeProject = makeProject(id: "proj_active_session")
+        let browsedProject = makeProject(id: "proj_browsed_workspace")
+        let activeSession = makeSession(
+            id: "sess_active_session",
+            projectID: activeProject.id,
+            title: "正在运行的会话",
+            status: "running",
+            source: "codex",
+            resumeID: "active-session"
+        )
+        let browsedSession = makeSession(
+            id: "sess_browsed_workspace",
+            projectID: browsedProject.id,
+            title: "首次进入即可看到的会话",
+            status: "history",
+            source: "codex",
+            resumeID: "browsed-session"
+        )
+        let appStore = AppStore()
+        let recentStore = makeRecentWorkspaceStore(
+            workspaces: [
+                AgentWorkspace(project: activeProject, lastOpenedAt: Date(timeIntervalSince1970: 20)),
+                AgentWorkspace(project: browsedProject, lastOpenedAt: Date(timeIntervalSince1970: 10))
+            ],
+            endpoint: appStore.endpoint
+        )
+        let client = MockSessionStoreClient(
+            projects: [activeProject, browsedProject],
+            sessions: [],
+            workspaceSessions: [
+                activeProject.id: [activeSession],
+                browsedProject.id: [browsedSession]
+            ],
+            messagesResult: []
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.selectProject(activeProject)
+        await store.selectSession(activeSession)
+        store.takeOverSession(activeSession)
+        XCTAssertEqual(sockets.count, 1)
+        let socketCount = sockets.count
+        let disconnectCallCount = sockets.first?.disconnectCallCount
+
+        try await store.refreshWorkspaceSessions(projectID: browsedProject.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: browsedProject.id).map(\.id), [browsedSession.id])
+        XCTAssertEqual(store.selectedProjectID, activeProject.id)
+        XCTAssertEqual(store.selectedSessionID, activeSession.id)
+        XCTAssertEqual(sockets.count, socketCount)
+        XCTAssertEqual(sockets.first?.disconnectCallCount, disconnectCallCount)
+        XCTAssertEqual(client.requestedWorkspaceIDs, [activeProject.id, browsedProject.id])
+    }
+
     func testWorkspaceCatalogKeepsOnlyExplicitlyOpenedDirectories() async throws {
         let openedProject = makeProject(id: "opened-project")
         let legacyAutoProject = makeProject(id: "legacy-auto-project")

@@ -51,6 +51,7 @@ struct WorkspaceRootView: View {
 
     @State private var selectedWorkspaceID: String?
     @State private var catalogState: CatalogState = .idle
+    @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var isPresentingOpenWorkspace = false
 
     init(
@@ -89,6 +90,17 @@ struct WorkspaceRootView: View {
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
             await refreshCatalog()
+            synchronizeSelection()
+        }
+        .task(id: selectedWorkspaceID) {
+            guard let selectedWorkspaceID else { return }
+            // 首次进入或切换工作区时，如果本地还没有数据就主动补齐会话首屏。
+            // 已有内容时保留即时展示，用户仍可通过刷新按钮或下拉手动同步。
+            guard sessionStore.sessions(forProjectID: selectedWorkspaceID).isEmpty else {
+                sessionLoadStates[selectedWorkspaceID] = .loaded
+                return
+            }
+            await refreshWorkspaceSessions(projectID: selectedWorkspaceID)
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeSelection()
@@ -134,7 +146,7 @@ struct WorkspaceRootView: View {
                 workspaceDetail(project: selectedProject)
                     .id(selectedProject.id)
                     .refreshable {
-                        await refreshCatalog()
+                        await refreshWorkspaceContent(projectID: selectedProject.id)
                     }
             } else if !sessionStore.sidebarProjects.isEmpty {
                 ContentUnavailableView("请选择工作区", systemImage: "folder")
@@ -218,8 +230,14 @@ struct WorkspaceRootView: View {
     private func workspaceDetail(project: AgentProject) -> some View {
         WorkspaceDetailView(
             recentSessions: Array(sessionStore.sessions(forProjectID: project.id).prefix(5)),
+            sessionLoadState: sessionLoadState(for: project.id),
             isShownInSessions: sessionStore.isWorkspaceShownInSessions(project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
+            onRefreshSessions: {
+                Task {
+                    await refreshWorkspaceSessions(projectID: project.id)
+                }
+            },
             onToggleSessionVisibility: {
                 sessionStore.toggleWorkspaceInSessions(project)
             },
@@ -287,11 +305,58 @@ struct WorkspaceRootView: View {
         }
     }
 
+    private func refreshWorkspaceContent(projectID: String) async {
+        await refreshCatalog()
+        guard !Task.isCancelled,
+              selectedWorkspaceID == projectID,
+              sessionStore.sidebarProjects.contains(where: { $0.id == projectID })
+        else {
+            return
+        }
+        await refreshWorkspaceSessions(projectID: projectID)
+    }
+
+    private func refreshWorkspaceSessions(projectID: String) async {
+        guard sessionLoadStates[projectID] != .loading else { return }
+        sessionLoadStates[projectID] = .loading
+        do {
+            try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
+            guard !Task.isCancelled else {
+                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+                return
+            }
+            sessionLoadStates[projectID] = .loaded
+        } catch is CancellationError {
+            sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+        } catch {
+            sessionLoadStates[projectID] = .failed(error.localizedDescription)
+        }
+    }
+
+    private func sessionLoadState(for projectID: String) -> WorkspaceSessionLoadState {
+        sessionLoadStates[projectID] ?? fallbackSessionLoadState(for: projectID)
+    }
+
+    private func fallbackSessionLoadState(for projectID: String) -> WorkspaceSessionLoadState {
+        sessionStore.sessions(forProjectID: projectID).isEmpty ? .idle : .loaded
+    }
+
     private enum CatalogState: Equatable {
         case idle
         case loading
         case loaded
         case failed(String)
+    }
+}
+
+private enum WorkspaceSessionLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+
+    var isLoading: Bool {
+        self == .loading
     }
 }
 
@@ -373,8 +438,10 @@ private struct WorkspaceDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     let recentSessions: [AgentSession]
+    let sessionLoadState: WorkspaceSessionLoadState
     let isShownInSessions: Bool
     let claudeChannelAvailable: Bool
+    let onRefreshSessions: () -> Void
     let onToggleSessionVisibility: () -> Void
     let onOpenInSessions: () -> Void
     let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
@@ -460,12 +527,37 @@ private struct WorkspaceDetailView: View {
                     .font(themeStore.uiFont(.headline, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                 Spacer()
-                Text("当前项目")
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.tertiaryText)
+                Button(action: onRefreshSessions) {
+                    HStack(spacing: 5) {
+                        if sessionLoadState.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        Text(sessionLoadState.isLoading ? "加载中" : "刷新")
+                    }
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.primaryAction)
+                }
+                .buttonStyle(.plain)
+                .disabled(sessionLoadState.isLoading)
+                .accessibilityLabel(sessionLoadState.isLoading ? "正在加载最近会话" : "刷新最近会话")
             }
 
-            if recentSessions.isEmpty {
+            if recentSessions.isEmpty, sessionLoadState.isLoading {
+                recentSessionPlaceholders(tokens: tokens)
+            } else if recentSessions.isEmpty, case .failed(let message) = sessionLoadState {
+                ContentUnavailableView {
+                    Label("无法加载会话", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message)
+                } actions: {
+                    Button("重新加载", action: onRefreshSessions)
+                }
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else if recentSessions.isEmpty {
                 ContentUnavailableView("还没有会话", systemImage: "bubble.left.and.bubble.right", description: Text("在这个工作区新建会话后，会显示在这里。"))
                     .frame(maxWidth: .infinity, minHeight: 150)
                     .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -493,6 +585,44 @@ private struct WorkspaceDetailView: View {
                 }
             }
         }
+    }
+
+    private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 0) {
+            ForEach(0..<3, id: \.self) { index in
+                HStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(tokens.elevatedSurface)
+                        .frame(width: 34, height: 34)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(tokens.elevatedSurface)
+                            .frame(width: 180, height: 12)
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(tokens.elevatedSurface)
+                            .frame(width: 108, height: 9)
+                    }
+                    Spacer(minLength: 8)
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 62)
+
+                if index < 2 {
+                    Divider()
+                        .overlay(tokens.border.opacity(0.62))
+                        .padding(.leading, 48)
+                }
+            }
+        }
+        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+        }
+        .redacted(reason: .placeholder)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("正在加载最近会话")
     }
 
     private func recentSessionRow(_ session: AgentSession, tokens: ThemeTokens) -> some View {

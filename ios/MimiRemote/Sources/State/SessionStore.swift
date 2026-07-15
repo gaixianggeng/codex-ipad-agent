@@ -907,6 +907,17 @@ enum WorktreeCleanupSelectionError: LocalizedError, Equatable {
     }
 }
 
+enum WorkspaceSessionRefreshError: LocalizedError, Equatable {
+    case workspaceUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .workspaceUnavailable:
+            return "工作区已失效，请重新打开"
+        }
+    }
+}
+
 private struct SessionListProjection: Equatable {
     enum Source: Equatable {
         case localUser
@@ -2264,6 +2275,42 @@ final class SessionStore: ObservableObject {
             }
         recentWorkspaceStore.save(nextWorkspaces, endpoint: appStore.endpoint)
         setRecentWorkspacesIfChanged(nextWorkspaces)
+    }
+
+    /// 刷新工作区页正在浏览的会话，但不改变全局会话选择或 WebSocket。
+    /// 工作区页有自己的本地浏览选择，不能复用 selectProject，否则刷新另一个目录会打断当前任务。
+    func refreshWorkspaceSessions(projectID: String) async throws {
+#if DEBUG
+        guard !isDebugWorkbenchUISeedActive else { return }
+#endif
+        guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+            throw WorkspaceSessionRefreshError.workspaceUnavailable
+        }
+
+        let requestToken = beginSessionPageRequest(projectID: workspace.id)
+        defer { finishSessionPageRequest(projectID: workspace.id, token: requestToken) }
+
+        do {
+            let page = try await sessionListFirstPage(
+                workspace: workspace,
+                limit: Self.initialSessionPageLimit,
+                reuseRecent: false
+            )
+            guard isCurrentSessionPageRequest(projectID: workspace.id, token: requestToken) else {
+                return
+            }
+
+            let pageSessions = sessions(page.sessions, in: workspace)
+            replaceSessionsIfChanged(
+                with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: workspace.id),
+                projectID: workspace.id
+            )
+            updateSessionPageState(projectID: workspace.id, page: page)
+            clearWorkspaceUnavailable(workspace.id)
+        } catch {
+            _ = terminateConnectionIfCredentialsInvalid(error)
+            throw error
+        }
     }
 
     @discardableResult
