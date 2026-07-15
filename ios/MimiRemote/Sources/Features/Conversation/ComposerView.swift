@@ -7,80 +7,10 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-enum VoiceInputLanguage: String, CaseIterable, Identifiable {
-    case automatic
-    case chineseSimplified
-    case englishUS
-    case japanese
-    case korean
-
-    static let storageKey = "voice.input.language"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .automatic:
-            return "自动"
-        case .chineseSimplified:
-            return "中文"
-        case .englishUS:
-            return "English"
-        case .japanese:
-            return "日本語"
-        case .korean:
-            return "한국어"
-        }
-    }
-
-    var localeCandidates: [Locale] {
-        switch self {
-        case .automatic:
-            return [Locale(identifier: "zh_CN"), Locale.current]
-        case .chineseSimplified:
-            return [Locale(identifier: "zh_CN"), Locale.current]
-        case .englishUS:
-            return [Locale(identifier: "en_US"), Locale.current]
-        case .japanese:
-            return [Locale(identifier: "ja_JP"), Locale.current]
-        case .korean:
-            return [Locale(identifier: "ko_KR"), Locale.current]
-        }
-    }
-
-    var transcriptionLanguageCode: String? {
-        switch self {
-        case .automatic:
-            return nil
-        case .chineseSimplified:
-            return "zh"
-        case .englishUS:
-            return "en"
-        case .japanese:
-            return "ja"
-        case .korean:
-            return "ko"
-        }
-    }
-
-    var transcriptionPrompt: String {
-        switch self {
-        case .automatic:
-            return "这是一段给编程助手的口述指令，请准确转写，保留原始语言、技术术语和自然标点。"
-        case .chineseSimplified:
-            return "这是一段中文口述给编程助手的指令，请准确转写，保留技术术语、英文词和自然标点。"
-        case .englishUS:
-            return "This is an English dictated instruction to a coding assistant. Preserve technical terms and natural punctuation."
-        case .japanese:
-            return "これはコーディング支援への日本語の音声指示です。技術用語と自然な句読点を保って正確に書き起こしてください。"
-        case .korean:
-            return "코딩 도우미에게 말한 한국어 음성 지시입니다. 기술 용어와 자연스러운 문장 부호를 유지해 정확히 받아써 주세요."
-        }
-    }
-
-    static func stored(_ rawValue: String) -> VoiceInputLanguage {
-        VoiceInputLanguage(rawValue: rawValue) ?? .automatic
-    }
+enum VoiceTranscriptionDefaults {
+    // iPad 端以中文口述为主，固定语言能降低短句和中英混合技术词的误判率。
+    static let languageCode = "zh"
+    static let prompt = "这是一段中文口述给编程助手的指令，请准确转写，保留技术术语、英文词和自然标点。"
 }
 
 struct ComposerView: View {
@@ -116,7 +46,6 @@ struct ComposerView: View {
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @State private var guidedFollowUpEnabled = false
-    @AppStorage(VoiceInputLanguage.storageKey) private var selectedVoiceLanguageID = VoiceInputLanguage.automatic.rawValue
 
     var availableWidth: CGFloat?
 
@@ -211,9 +140,6 @@ struct ComposerView: View {
         }
         .onChange(of: defaultPermissionModeID) { _, _ in
             applyDefaultPermissionMode()
-        }
-        .onChange(of: selectedVoiceLanguageID) { _, _ in
-            clearVoiceTransientStatus()
         }
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
@@ -837,6 +763,7 @@ struct ComposerView: View {
         HStack(spacing: 8) {
             addContentButton
             modelOptionsMenu
+            reasoningEffortMenu
             if !isCompactComposer {
                 permissionMenu
             }
@@ -846,7 +773,6 @@ struct ComposerView: View {
 
     private var composerOptionsMenu: some View {
         Menu {
-            voiceLanguageMenu
             runSettingsMenu
             if isCompactComposer {
                 permissionMenu
@@ -875,7 +801,7 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel("会话选项")
-        .accessibilityHint("调整语音语言、生成设置和发送模式")
+        .accessibilityHint("调整生成设置和发送模式")
     }
 
     private var voiceMicControl: some View {
@@ -1231,34 +1157,8 @@ struct ComposerView: View {
         }
     }
 
-    private var selectedVoiceLanguage: VoiceInputLanguage {
-        VoiceInputLanguage.stored(selectedVoiceLanguageID)
-    }
-
-    private var voiceLanguageMenu: some View {
-        Menu {
-            ForEach(VoiceInputLanguage.allCases) { language in
-                Button {
-                    selectedVoiceLanguageID = language.rawValue
-                } label: {
-                    Label(language.title, systemImage: selectedVoiceLanguage == language ? "checkmark" : "globe")
-                }
-            }
-        } label: {
-            composerToolbarControlLabel(
-                title: selectedVoiceLanguage.title,
-                systemImage: "globe",
-                accessibilityLabel: "语音语言"
-            )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel("语音语言")
-        .accessibilityValue(selectedVoiceLanguage.title)
-    }
-
     private var runSettingsMenu: some View {
         Menu {
-            reasoningOptionsMenu
             serviceTierOptionsMenu
             outputOptionsMenu
             if developerModeEnabled {
@@ -1278,7 +1178,7 @@ struct ComposerView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("生成设置")
-        .accessibilityHint("调整推理强度、速度和输出")
+        .accessibilityHint("调整速度和输出")
     }
 
     private var modelOptionsMenu: some View {
@@ -1321,15 +1221,35 @@ struct ComposerView: View {
         .accessibilityHint("选择下一轮使用的模型")
     }
 
-    private var reasoningOptionsMenu: some View {
+    private var reasoningEffortMenu: some View {
         Menu {
-            Button("默认") { composerState.turnOptions.reasoningEffort = nil }
+            Button {
+                composerState.turnOptions.reasoningEffort = nil
+            } label: {
+                Label("默认", systemImage: composerState.turnOptions.reasoningEffort == nil ? "checkmark" : "brain.head.profile")
+            }
             ForEach(CodexAppServerReasoningEffort.allCases) { effort in
-                Button(effort.rawValue) { composerState.turnOptions.reasoningEffort = effort }
+                Button {
+                    composerState.turnOptions.reasoningEffort = effort
+                } label: {
+                    Label(
+                        effort.rawValue,
+                        systemImage: composerState.turnOptions.reasoningEffort == effort ? "checkmark" : "brain.head.profile"
+                    )
+                }
             }
         } label: {
-            Label(composerState.turnOptions.reasoningEffort?.rawValue ?? "推理默认", systemImage: "brain.head.profile")
+            composerToolbarControlLabel(
+                title: composerState.turnOptions.reasoningEffort?.rawValue ?? "默认",
+                systemImage: "brain.head.profile",
+                titleMaxWidth: 72,
+                accessibilityLabel: "推理强度"
+            )
         }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel("推理强度")
+        .accessibilityValue(composerState.turnOptions.reasoningEffort?.rawValue ?? "默认")
+        .accessibilityHint("选择下一轮使用的模型推理强度")
     }
 
     private var serviceTierOptionsMenu: some View {
@@ -1405,7 +1325,7 @@ struct ComposerView: View {
                     .controlSize(.small)
                     .tint(tokens.accent)
                 if !isCompactComposer {
-                    Text("模型转写中 · \(selectedVoiceLanguage.title)")
+                    Text("模型转写中")
                         .lineLimit(1)
                 }
             }
@@ -1414,7 +1334,7 @@ struct ComposerView: View {
                 VoiceWaveformView(meter: voiceInput.levelMeter, isActive: true, colors: tokens.voiceWaveformGradient)
                     .frame(width: isCompactComposer ? 124 : 190, height: isCompactComposer ? 32 : 34)
                 if !isCompactComposer {
-                    Text("正在听，松手转写 · \(selectedVoiceLanguage.title)")
+                    Text("正在听，松手转写")
                         .lineLimit(1)
                 }
             }
@@ -1838,7 +1758,6 @@ struct ComposerView: View {
         clearVoiceTransientStatus()
         isVoicePressActive = true
         composerState.beginVoiceInput()
-        let language = selectedVoiceLanguage
         let context = VoiceTranscriptionContext(sessionID: sessionStore.selectedSessionID)
         activeVoiceTranscriptionContext = context
         voiceInput.start { recording in
@@ -1856,7 +1775,7 @@ struct ComposerView: View {
                 return
             }
             voiceTranscriptionTask = Task {
-                await transcribeVoiceRecording(recording, language: language, context: context)
+                await transcribeVoiceRecording(recording, context: context)
             }
         }
     }
@@ -1947,7 +1866,6 @@ struct ComposerView: View {
     @MainActor
     private func transcribeVoiceRecording(
         _ recording: VoiceRecordingResult,
-        language: VoiceInputLanguage,
         context: VoiceTranscriptionContext
     ) async {
         guard isVoiceTranscriptionContextCurrent(context) else {
@@ -1985,7 +1903,6 @@ struct ComposerView: View {
                 filename: recording.fileURL.lastPathComponent,
                 contentType: "audio/mp4",
                 audioData: data,
-                language: language,
                 recordedDuration: usableDuration,
                 pressDuration: recording.pressDuration,
                 sessionID: context.sessionID
@@ -1994,8 +1911,8 @@ struct ComposerView: View {
                 filename: recording.fileURL.lastPathComponent,
                 contentType: "audio/mp4",
                 audioData: data,
-                language: language.transcriptionLanguageCode,
-                prompt: language.transcriptionPrompt
+                language: VoiceTranscriptionDefaults.languageCode,
+                prompt: VoiceTranscriptionDefaults.prompt
             )
             try Task.checkCancellation()
             guard isVoiceTranscriptionContextCurrent(context) else {
@@ -2054,8 +1971,8 @@ struct ComposerView: View {
                 filename: cached.filename,
                 contentType: cached.contentType,
                 audioData: cached.audioData,
-                language: cached.language.transcriptionLanguageCode,
-                prompt: cached.language.transcriptionPrompt
+                language: VoiceTranscriptionDefaults.languageCode,
+                prompt: VoiceTranscriptionDefaults.prompt
             )
             try Task.checkCancellation()
             guard isVoiceTranscriptionContextCurrent(context) else {
@@ -4059,7 +3976,6 @@ private struct RetryableVoiceTranscription: Identifiable {
     let filename: String
     let contentType: String
     let audioData: Data
-    let language: VoiceInputLanguage
     let recordedDuration: TimeInterval
     let pressDuration: TimeInterval
     let sessionID: SessionID?

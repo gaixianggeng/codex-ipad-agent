@@ -443,41 +443,32 @@ struct ConversationScreenModel: Equatable {
 
 enum ConversationTimelineItem: Identifiable, Equatable {
     case message(ConversationMessage)
-    case processed(ProcessedConversationGroup)
+    case activity(ConversationMessage)
+    case exploration(ConversationExplorationGroup)
 
     var id: String {
         switch self {
         case .message(let message):
             return "message:\(message.id.uuidString)"
-        case .processed(let group):
+        case .activity(let message):
+            return "activity:\(message.id.uuidString)"
+        case .exploration(let group):
             return group.id
         }
     }
 }
 
-struct ProcessedConversationGroup: Identifiable, Equatable {
+struct ConversationExplorationGroup: Identifiable, Equatable {
     let id: String
     let messages: [ConversationMessage]
-    let startedAt: Date
-    let completedAt: Date
-
-    var duration: TimeInterval {
-        max(0, completedAt.timeIntervalSince(startedAt))
-    }
+    let isCompleted: Bool
 
     var title: String {
-        let durationText = Self.compactDuration(duration)
-        return "已处理 \(messages.count) 步 · \(durationText)"
+        isCompleted ? "已探索 \(messages.count) 项" : "正在探索 \(messages.count) 项"
     }
 
-    private static func compactDuration(_ duration: TimeInterval) -> String {
-        let seconds = max(0, Int(duration.rounded()))
-        let minutes = seconds / 60
-        let remainingSeconds = seconds % 60
-        if minutes > 0 {
-            return "\(minutes)m \(remainingSeconds)s"
-        }
-        return "\(remainingSeconds)s"
+    var latestDetail: String? {
+        messages.last?.activityPayload?.displayTitle.trimmedNonEmpty
     }
 }
 
@@ -517,12 +508,12 @@ struct ConversationTimelineItemBuilder {
                isCompletedAssistantMessage(message),
                let processMessages = processMessagesByTurnID[turnID],
                !insertedProcessTurnIDs.contains(turnID) {
-                // app-server 事件可能先到最终 assistant、后到 diff/approval；渲染层按 turnID 归位，
-                // 保持“已处理”入口在最终回答之前，避免过程卡散落在最终回答之后。
-                items.append(.processed(group(from: processMessages, completedBy: message)))
+                // app-server 事件可能先到最终 assistant、后到 diff；仍按 turnID 把过程归位到
+                // 最终回答之前，但不再压成一个会整体展开的手风琴。
+                items.append(contentsOf: activityItems(from: processMessages, turnCompleted: true))
                 insertedProcessTurnIDs.insert(turnID)
             }
-            guard isCollapsibleProcessMessage(message) else {
+            guard isActivityMessage(message) else {
                 items.append(.message(message))
                 if let turnID = message.turnID,
                    isCompletedAssistantMessage(message),
@@ -535,34 +526,78 @@ struct ConversationTimelineItemBuilder {
                 continue
             }
 
-            var processMessages: [ConversationMessage] = []
-            while index < messages.endIndex, isCollapsibleProcessMessage(messages[index]) {
-                processMessages.append(messages[index])
-                index = messages.index(after: index)
-            }
-
-            if let completedAssistant = fallbackCompletedAssistant(for: processMessages, nextIndex: index, messages: messages) {
-                items.append(.processed(group(from: processMessages, completedBy: completedAssistant)))
+            if isExplorationMessage(message) {
+                var explorationMessages: [ConversationMessage] = []
+                while index < messages.endIndex,
+                      isExplorationMessage(messages[index]),
+                      belongsToSameExplorationGroup(message, messages[index]) {
+                    explorationMessages.append(messages[index])
+                    index = messages.index(after: index)
+                }
+                let turnCompleted = fallbackCompletedAssistant(
+                    for: explorationMessages,
+                    nextIndex: index,
+                    messages: messages
+                ) != nil
+                items.append(.exploration(explorationGroup(from: explorationMessages, turnCompleted: turnCompleted)))
             } else {
-                // 对齐 Codex TUI 的安静转录：运行中的探索、命令和文件变更也只保留一个稳定入口。
-                // 审批、用户输入和错误不进入该分支，因此仍然直接可见。
-                items.append(.processed(group(from: processMessages)))
+                items.append(.activity(message))
+                index = messages.index(after: index)
             }
         }
 
         return items
     }
 
-    private static func isCollapsibleProcessMessage(_ message: ConversationMessage) -> Bool {
+    private static func isActivityMessage(_ message: ConversationMessage) -> Bool {
         guard message.role == .system else {
             return false
         }
         switch message.kind {
         case .reasoningSummary, .commandSummary, .fileChangeSummary:
             return true
-        case .plan, .approval, .userInput, .error, .message:
+        case .approval, .userInput:
+            return isResolvedInteractionMessage(message)
+        case .plan, .error, .message:
             return false
         }
+    }
+
+    private static func isResolvedInteractionMessage(_ message: ConversationMessage) -> Bool {
+        let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch message.kind {
+        case .approval:
+            return content.hasPrefix("审批已批准") ||
+                content.hasPrefix("已批准") ||
+                content.hasPrefix("审批已拒绝") ||
+                content.hasPrefix("已拒绝")
+        case .userInput:
+            return content.hasPrefix("补充信息已提交") ||
+                content.hasPrefix("引导输入已提交") ||
+                content.hasPrefix("已跳过补充信息") ||
+                content.hasPrefix("已跳过引导输入")
+        case .message, .plan, .reasoningSummary, .commandSummary, .fileChangeSummary, .error:
+            return false
+        }
+    }
+
+    private static func isExplorationMessage(_ message: ConversationMessage) -> Bool {
+        guard isActivityMessage(message),
+              let payload = message.activityPayload,
+              payload.category == .runCommand
+        else {
+            return false
+        }
+        return payload.displayTitle.hasPrefix("查看 ") ||
+            payload.displayTitle.hasPrefix("列出 ") ||
+            payload.displayTitle.hasPrefix("搜索 ")
+    }
+
+    private static func belongsToSameExplorationGroup(
+        _ first: ConversationMessage,
+        _ candidate: ConversationMessage
+    ) -> Bool {
+        first.turnID == candidate.turnID
     }
 
     private static func isCompletedAssistantMessage(_ message: ConversationMessage) -> Bool {
@@ -591,7 +626,7 @@ struct ConversationTimelineItemBuilder {
         for message in messages {
             guard let turnID = message.turnID,
                   completedTurnIDs.contains(turnID),
-                  isCollapsibleProcessMessage(message)
+                  isActivityMessage(message)
             else {
                 continue
             }
@@ -640,33 +675,49 @@ struct ConversationTimelineItemBuilder {
         return turnID
     }
 
-    private static func group(
+    private static func activityItems(
         from messages: [ConversationMessage],
-        completedBy assistant: ConversationMessage
-    ) -> ProcessedConversationGroup {
-        let firstID = messages.first?.id.uuidString ?? assistant.id.uuidString
-        let processStart = messages.map(\.createdAt).min() ?? assistant.createdAt
-        let processEnd = messages.map(\.createdAt).max() ?? assistant.createdAt
-        let startedAt = min(processStart, assistant.createdAt)
-        let completedAt = max(processEnd, assistant.createdAt)
-        return ProcessedConversationGroup(
-            // 只用第一个过程项定位：后续过程追加或最终回复落定时，展开状态不会因 ID 变化丢失。
-            id: "processed:\(firstID)",
-            messages: messages,
-            startedAt: startedAt,
-            completedAt: completedAt
-        )
+        turnCompleted: Bool
+    ) -> [ConversationTimelineItem] {
+        var result: [ConversationTimelineItem] = []
+        var explorations: [ConversationMessage] = []
+
+        func flushExplorations() {
+            guard !explorations.isEmpty else {
+                return
+            }
+            result.append(.exploration(explorationGroup(from: explorations, turnCompleted: turnCompleted)))
+            explorations.removeAll(keepingCapacity: true)
+        }
+
+        for message in messages {
+            if isExplorationMessage(message) {
+                explorations.append(message)
+            } else {
+                flushExplorations()
+                result.append(.activity(message))
+            }
+        }
+        flushExplorations()
+        return result
     }
 
-    private static func group(from messages: [ConversationMessage]) -> ProcessedConversationGroup {
+    private static func explorationGroup(
+        from messages: [ConversationMessage],
+        turnCompleted: Bool
+    ) -> ConversationExplorationGroup {
         let firstID = messages.first?.id.uuidString ?? UUID().uuidString
-        let startedAt = messages.map(\.createdAt).min() ?? .now
-        let completedAt = messages.map(\.createdAt).max() ?? startedAt
-        return ProcessedConversationGroup(
-            id: "processed:\(firstID)",
+        let allItemsTerminal = messages.allSatisfy { message in
+            guard let status = message.activityPayload?.status?.lowercased() else {
+                return false
+            }
+            return status == "completed" || status == "failed" || status == "cancelled"
+        }
+        return ConversationExplorationGroup(
+            // 只使用第一条探索事件作为身份；后续追加和回合完成只更新同一行，不触发 List 换行重锚。
+            id: "exploration:\(firstID)",
             messages: messages,
-            startedAt: startedAt,
-            completedAt: completedAt
+            isCompleted: turnCompleted || allItemsTerminal
         )
     }
 }
@@ -732,7 +783,7 @@ struct ConversationTimelineView: View {
     @State private var isTimelineNearBottom = true
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
-    @State private var expandedProcessedGroupIDs: Set<String> = []
+    @State private var expandedActivityIDs: Set<String> = []
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var timelineScrollPosition = ScrollPosition(edge: .bottom)
     @State private var pendingTailScrollTask: Task<Void, Never>?
@@ -775,7 +826,11 @@ struct ConversationTimelineView: View {
                         ForEach(timelineItems) { item in
                             // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
                             // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                            timelineRow(item, activeUserDeliveryMessageID: activeUserDeliveryMessageID)
+                            timelineRow(
+                                item,
+                                activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                                proxy: proxy
+                            )
                                 .simultaneousGesture(TapGesture().onEnded {
                                     KeyboardDismissal.dismiss()
                                 })
@@ -846,7 +901,7 @@ struct ConversationTimelineView: View {
                 hasUnseenTailMessage = false
                 isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
-                expandedProcessedGroupIDs.removeAll()
+                expandedActivityIDs.removeAll()
                 timelineItemCache.removeAll()
                 cancelPendingTailScrollAttempts()
                 // ScrollPosition 是 View 级状态，不会随 selectedSessionID 自动重建；
@@ -916,8 +971,7 @@ struct ConversationTimelineView: View {
                 )
             }
             .onChange(of: timelineItemIDs) { _, _ in
-                // turn 完成可能只改变 sendStatus，却让过程卡从多行收成“已处理”一行；
-                // 监听派生 row id，确保折叠发生时底部跟随逻辑仍然有机会重锚。
+                // 新探索组或独立进度行出现时，只有用户原本贴底才继续跟随。
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
@@ -952,7 +1006,11 @@ struct ConversationTimelineView: View {
     }
 
     @ViewBuilder
-    private func timelineRow(_ item: ConversationTimelineItem, activeUserDeliveryMessageID: UUID?) -> some View {
+    private func timelineRow(
+        _ item: ConversationTimelineItem,
+        activeUserDeliveryMessageID: UUID?,
+        proxy: ScrollViewProxy
+    ) -> some View {
         switch item {
         case .message(let message):
             MessageRow(
@@ -962,19 +1020,42 @@ struct ConversationTimelineView: View {
                 showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID
             )
                 .equatable()
-        case .processed(let group):
-            ProcessedTurnRow(
-                group: group,
+        case .activity(let message):
+            ConversationActivityRow(
+                message: message,
                 layout: layout,
-                isExpanded: expandedProcessedGroupIDs.contains(group.id),
+                isExpanded: expandedActivityIDs.contains(item.id),
                 toggle: {
-                    if expandedProcessedGroupIDs.contains(group.id) {
-                        expandedProcessedGroupIDs.remove(group.id)
-                    } else {
-                        expandedProcessedGroupIDs.insert(group.id)
-                    }
+                    toggleActivityDetails(itemID: item.id, proxy: proxy)
                 }
             )
+                .equatable()
+        case .exploration(let group):
+            ConversationExplorationRow(group: group, layout: layout)
+                .equatable()
+        }
+    }
+
+    private func toggleActivityDetails(itemID: String, proxy: ScrollViewProxy) {
+        let isExpanding = !expandedActivityIDs.contains(itemID)
+        if isExpanding {
+            expandedActivityIDs.insert(itemID)
+        } else {
+            expandedActivityIDs.remove(itemID)
+        }
+        guard isExpanding, isTimelineNearBottom else {
+            return
+        }
+        Task { @MainActor in
+            await Task.yield()
+            guard expandedActivityIDs.contains(itemID) else {
+                return
+            }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(itemID, anchor: .bottom)
+            }
         }
     }
 
@@ -1401,66 +1482,349 @@ private struct ConversationTimelineCacheKey: Equatable {
     }
 }
 
-private struct ProcessedTurnRow: View, Equatable {
+private struct ConversationExplorationRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let group: ProcessedConversationGroup
+    let group: ConversationExplorationGroup
     let layout: ConversationLayout
-    let isExpanded: Bool
-    let toggle: () -> Void
 
-    static func == (lhs: ProcessedTurnRow, rhs: ProcessedTurnRow) -> Bool {
-        lhs.group == rhs.group && lhs.layout == rhs.layout && lhs.isExpanded == rhs.isExpanded
+    static func == (lhs: ConversationExplorationRow, rhs: ConversationExplorationRow) -> Bool {
+        lhs.group == rhs.group && lhs.layout == rhs.layout
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                Button(action: toggle) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle")
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                        Text(group.title)
-                            .font(themeStore.uiFont(.caption, weight: .medium))
-                        Image(systemName: "chevron.right")
-                            .font(themeStore.uiFont(.caption2, weight: .semibold))
-                            .frame(width: 10, height: 10)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .animation(disclosureAnimation, value: isExpanded)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Group {
+                    if group.isCompleted {
+                        Image(systemName: "circle.fill")
+                            .font(themeStore.uiFont(size: 5, weight: .semibold))
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
                     }
-                    .foregroundStyle(tokens.secondaryText)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isExpanded ? "收起已处理过程" : "展开已处理过程")
+                .frame(width: 14, height: 16)
+                .foregroundStyle(tokens.secondaryText)
 
-                if isExpanded {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(group.messages) { message in
-                            RuntimeSummaryCard(message: message, layout: layout)
-                        }
-                    }
-                    .padding(.top, 8)
-                    .transition(.opacity)
-                }
+                Text(explorationText)
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .contentTransition(.numericText())
             }
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
-            .animation(disclosureAnimation, value: isExpanded)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(explorationText)
 
             Spacer(minLength: layout.messageSideSpacer)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+
+    private var explorationText: String {
+        guard let detail = group.latestDetail else {
+            return group.title
+        }
+        return "\(group.title) · \(detail)"
     }
 
     private var tokens: ThemeTokens {
         themeStore.tokens(for: colorScheme)
     }
+}
 
-    private var disclosureAnimation: Animation {
-        reduceMotion
-            ? .easeOut(duration: 0.12)
-            : .spring(response: 0.32, dampingFraction: 1, blendDuration: 0.08)
+private struct ConversationActivityRow: View, Equatable {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let message: ConversationMessage
+    let layout: ConversationLayout
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    static func == (lhs: ConversationActivityRow, rhs: ConversationActivityRow) -> Bool {
+        lhs.message.id == rhs.message.id
+            && lhs.message.renderFingerprint == rhs.message.renderFingerprint
+            && lhs.message.activityPayload == rhs.message.activityPayload
+            && lhs.layout == rhs.layout
+            && lhs.isExpanded == rhs.isExpanded
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            rowSurface
+                .messageContextMenu(for: message) {
+                    rowSurface.frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
+                }
+                .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
+
+            Spacer(minLength: layout.messageSideSpacer)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var rowSurface: some View {
+        if hasExpandableDetails {
+            Button(action: toggle) {
+                rowContent
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(activityTitle)
+            .accessibilityValue(isExpanded ? "已展开" : "已收起")
+            .accessibilityHint(isExpanded ? "收起当前过程详情" : "展开当前过程详情")
+        } else {
+            rowContent
+        }
+    }
+
+    private var rowContent: some View {
+        HStack(alignment: isReasoning ? .top : .firstTextBaseline, spacing: 8) {
+            activityMarker
+
+            if isReasoning {
+                Text(reasoningText)
+                    .font(themeStore.uiFont(.caption))
+                    .italic()
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(isExpanded ? nil : 3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(activityTitle)
+                        .font(themeStore.uiFont(.caption, weight: .medium))
+                        .foregroundStyle(activityTint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let detail = activityDetail {
+                        Text(detail)
+                            .font(themeStore.uiFont(.caption2))
+                            .foregroundStyle(tokens.secondaryText.opacity(0.84))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    if isExpanded {
+                        expandedDetails
+                            .padding(.top, 3)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if hasExpandableDetails {
+                Image(systemName: "chevron.right")
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText.opacity(0.75))
+                    .frame(width: 12, height: 16)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+        }
+        .frame(minHeight: 28)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var expandedDetails: some View {
+        if let payload = message.activityPayload {
+            VStack(alignment: .leading, spacing: 4) {
+                if let command = payload.command?.trimmedNonEmpty {
+                    activityDetailLine("命令", value: command, monospaced: true)
+                }
+                if let cwd = payload.cwd?.trimmedNonEmpty {
+                    activityDetailLine("目录", value: cwd, monospaced: true)
+                }
+                if !payload.filePaths.isEmpty {
+                    activityDetailLine("文件", value: payload.filePaths.joined(separator: "\n"), monospaced: true)
+                }
+                let status = [
+                    payload.status?.trimmedNonEmpty,
+                    payload.exitCode.map { "退出码 \($0)" }
+                ]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
+                if !status.isEmpty {
+                    activityDetailLine("状态", value: status)
+                }
+                if let output = payload.outputPreview?.trimmedNonEmpty {
+                    Text(output)
+                        .font(themeStore.uiFont(.caption2).monospaced())
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(8)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func activityDetailLine(_ label: String, value: String, monospaced: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label)
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText.opacity(0.76))
+                .frame(width: 30, alignment: .leading)
+            Text(value)
+                .font(monospaced ? themeStore.uiFont(.caption2).monospaced() : themeStore.uiFont(.caption2))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var activityMarker: some View {
+        if isRunning {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(activityTint)
+                .frame(width: 14, height: 16)
+        } else {
+            Image(systemName: markerSymbol)
+                .font(themeStore.uiFont(size: markerSymbol == "circle.fill" ? 5 : 11, weight: .semibold))
+                .foregroundStyle(activityTint)
+                .frame(width: 14, height: 16)
+        }
+    }
+
+    private var isReasoning: Bool {
+        message.kind == .reasoningSummary
+    }
+
+    private var reasoningText: String {
+        message.activityPayload?.subtitle?.trimmedNonEmpty ?? message.content
+    }
+
+    private var activityTitle: String {
+        if let payload = message.activityPayload {
+            return payload.displayTitle
+        }
+        switch message.kind {
+        case .commandSummary:
+            return message.content.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? "运行命令"
+        case .fileChangeSummary:
+            return message.content.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? "文件变更"
+        case .approval:
+            if isApprovedInteraction {
+                return "审批已批准"
+            }
+            if isDeclinedInteraction {
+                return "审批已拒绝"
+            }
+            return "审批状态"
+        case .userInput:
+            return isSkippedInteraction ? "已跳过补充信息" : "补充信息已提交"
+        default:
+            return message.content
+        }
+    }
+
+    private var activityDetail: String? {
+        guard let payload = message.activityPayload else {
+            return interactionDetail
+        }
+        switch payload.category {
+        case .editFile:
+            return payload.filePaths.isEmpty ? payload.subtitle : payload.filePaths.prefix(4).joined(separator: ", ")
+        case .runCommand:
+            if let exitCode = payload.exitCode, exitCode != 0 {
+                return "退出码 \(exitCode)"
+            }
+            return payload.cwd
+        case .toolCall:
+            return payload.status
+        case .thinking, .plan, .error:
+            return payload.subtitle
+        }
+    }
+
+    private var interactionDetail: String? {
+        guard message.kind == .approval || message.kind == .userInput else {
+            return nil
+        }
+        let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let separator = content.firstIndex(where: { $0 == "：" || $0 == ":" }) {
+            return String(content[content.index(after: separator)...]).trimmedNonEmpty
+        }
+        return nil
+    }
+
+    private var hasExpandableDetails: Bool {
+        if isReasoning {
+            return reasoningText.count > 160 || reasoningText.filter { $0 == "\n" }.count >= 3
+        }
+        guard let payload = message.activityPayload else {
+            return false
+        }
+        return payload.command?.trimmedNonEmpty != nil ||
+            payload.cwd?.trimmedNonEmpty != nil ||
+            !payload.filePaths.isEmpty ||
+            payload.outputPreview?.trimmedNonEmpty != nil
+    }
+
+    private var isRunning: Bool {
+        guard let status = message.activityPayload?.status?.lowercased() else {
+            return false
+        }
+        return status == "running" || status == "in_progress" || status == "started"
+    }
+
+    private var isFailure: Bool {
+        if let exitCode = message.activityPayload?.exitCode, exitCode != 0 {
+            return true
+        }
+        let status = message.activityPayload?.status?.lowercased()
+        return status == "failed" || status == "error"
+    }
+
+    private var markerSymbol: String {
+        if isFailure {
+            return "exclamationmark.circle.fill"
+        }
+        if isApprovedInteraction || (message.kind == .userInput && !isSkippedInteraction) {
+            return "checkmark.circle.fill"
+        }
+        if isDeclinedInteraction || isSkippedInteraction {
+            return "xmark.circle"
+        }
+        if message.activityPayload?.category == .editFile {
+            return "pencil"
+        }
+        return "circle.fill"
+    }
+
+    private var activityTint: Color {
+        if isFailure {
+            return .red
+        }
+        if isApprovedInteraction || (message.kind == .userInput && !isSkippedInteraction) {
+            return tokens.success
+        }
+        if message.activityPayload?.category == .editFile {
+            return tokens.accent
+        }
+        return tokens.secondaryText
+    }
+
+    private var isApprovedInteraction: Bool {
+        message.kind == .approval &&
+            (message.content.hasPrefix("审批已批准") || message.content.hasPrefix("已批准"))
+    }
+
+    private var isDeclinedInteraction: Bool {
+        message.kind == .approval &&
+            (message.content.hasPrefix("审批已拒绝") || message.content.hasPrefix("已拒绝"))
+    }
+
+    private var isSkippedInteraction: Bool {
+        message.kind == .userInput &&
+            (message.content.hasPrefix("已跳过补充信息") || message.content.hasPrefix("已跳过引导输入"))
+    }
+
+    private var tokens: ThemeTokens {
+        themeStore.tokens(for: colorScheme)
     }
 }
 
@@ -1627,10 +1991,41 @@ private struct MessageBubble: View {
     @State private var previewError: String?
 
     var body: some View {
-        bubbleSurface
+        Group {
+            if shouldRenderUserImages {
+                userImageBubbleSurface
+            } else {
+                bubbleSurface
+            }
+        }
             .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
             .opacity(message.sendStatus == .sending ? 0.72 : 1)
             .quickLookPreview($previewURL)
+    }
+
+    private var userImageBubbleSurface: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let style = MarkdownStyle.make(
+            role: message.role,
+            colorScheme: colorScheme,
+            fontScale: themeStore.fontScale,
+            tokens: tokens
+        )
+        return userImageContent(style: style)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .messageContextMenu(
+                for: message,
+                retry: {
+                    Task { await sessionStore.retryFailedUserMessage(message) }
+                },
+                stop: {
+                    sessionStore.sendCtrlC()
+                },
+                preview: {
+                    userImageContent(style: style)
+                        .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
+                }
+            )
     }
 
     private var bubbleSurface: some View {
@@ -1711,37 +2106,20 @@ private struct MessageBubble: View {
     }
 
     private func userImageContent(style: MarkdownStyle) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return VStack(alignment: .trailing, spacing: 8) {
             let text = userImageText
             if !text.isEmpty {
                 Text(text)
                     .font(style.bodyFont)
+                    .foregroundStyle(userBubbleForeground)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(tokens.userBubble, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
 
-            ForEach(payloadImageItems) { item in
-                if let source = ConversationImageSource.input(item) {
-                    ConversationImagePreview(
-                        source: source,
-                        title: nil,
-                        style: style,
-                        maxHeight: 240,
-                        showsCaption: false
-                    )
-                }
-            }
-
-            if payloadImageItems.isEmpty {
-                ForEach(contentImageReferences) { reference in
-                    ConversationImagePreview(
-                        source: .localPath(reference.path),
-                        title: nil,
-                        style: style,
-                        maxHeight: 240,
-                        showsCaption: false
-                    )
-                }
-            }
+            userImageGallery(style: style)
 
             let accessoryText = payloadAccessoryText
             if !accessoryText.isEmpty {
@@ -1750,8 +2128,53 @@ private struct MessageBubble: View {
                     .foregroundStyle(style.secondaryColor)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            MessageTimestampCaption(
+                text: message.timestampCaptionText,
+                isFallback: message.isTimestampFallback,
+                foreground: tokens.secondaryText
+            )
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func userImageGallery(style: MarkdownStyle) -> some View {
+        if userImageSources.count > 1 {
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 8),
+                    GridItem(.flexible(), spacing: 8)
+                ],
+                alignment: .trailing,
+                spacing: 8
+            ) {
+                ForEach(userImageSources) { source in
+                    ConversationImagePreview(
+                        source: source,
+                        title: nil,
+                        style: style,
+                        maxHeight: 208,
+                        showsCaption: false,
+                        fillsAvailableWidth: true
+                    )
+                    .frame(height: 220, alignment: .center)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+            ForEach(userImageSources) { source in
+                ConversationImagePreview(
+                    source: source,
+                    title: nil,
+                    style: style,
+                    maxHeight: 320,
+                    showsCaption: false,
+                    fillsAvailableWidth: true
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
     }
 
     @ViewBuilder
@@ -1792,6 +2215,14 @@ private struct MessageBubble: View {
             return []
         }
         return ConversationFileReferenceDetector.imageReferences(in: message.content)
+    }
+
+    private var userImageSources: [ConversationImageSource] {
+        let payloadSources = payloadImageItems.compactMap(ConversationImageSource.input)
+        if !payloadSources.isEmpty {
+            return payloadSources
+        }
+        return contentImageReferences.map { .localPath($0.path) }
     }
 
     private var userImageText: String {

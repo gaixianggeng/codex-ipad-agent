@@ -353,6 +353,7 @@ struct ConversationImagePreview: View {
     let style: MarkdownStyle
     var maxHeight: CGFloat = 280
     var showsCaption = true
+    var fillsAvailableWidth = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -461,8 +462,18 @@ struct ConversationImagePreview: View {
         image
             .resizable()
             .scaledToFit()
-            // 高度只负责限制长图；宽度跟随缩放后的图片，避免描边被撑满消息气泡。
-            .frame(maxHeight: maxHeight, alignment: .leading)
+            // 普通 Markdown 图片保持自然宽度；用户多图消息使用统一的中性画布，
+            // 避免不同宽高比让紫色消息底色露出一大块不对称空白。
+            .frame(
+                maxWidth: fillsAvailableWidth ? .infinity : nil,
+                maxHeight: maxHeight,
+                alignment: fillsAvailableWidth ? .center : .leading
+            )
+            .padding(fillsAvailableWidth ? 4 : 0)
+            .background(
+                fillsAvailableWidth ? style.tableBackground : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

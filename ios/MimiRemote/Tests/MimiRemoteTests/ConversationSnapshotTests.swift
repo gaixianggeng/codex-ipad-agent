@@ -128,6 +128,139 @@ final class ConversationSnapshotTests: XCTestCase {
             .frame(width: 1024, height: 768)
     }
 
+    private func makeMixedActivityConversation() -> some View {
+        let sessionID = "snapshot_mixed_activity"
+        let turnID = "turn_mixed_activity"
+        let conversationStore = ConversationStore()
+        let themeStore = makeThemeStore()
+        let landscapeImage = snapshotImageDataURL(size: CGSize(width: 420, height: 210), accent: .systemPurple)
+        let portraitImage = snapshotImageDataURL(size: CGSize(width: 240, height: 360), accent: .systemOrange)
+        let history = [
+            CodexHistoryMessage(
+                id: "mixed-user",
+                role: "user",
+                content: "请检查这两张 iPad 截图 [图片] [图片]",
+                turnPayload: CodexAppServerTurnPayload(input: [
+                    .text("请检查这两张 iPad 截图"),
+                    .image(url: landscapeImage),
+                    .image(url: portraitImage)
+                ]),
+                createdAt: snapshotMessageDate,
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-reasoning",
+                role: "system",
+                kind: .reasoningSummary,
+                content: "先核对输入框和过程时间线的层级。",
+                activityPayload: ConversationActivityPayload(
+                    category: .thinking,
+                    displayTitle: "推理摘要",
+                    subtitle: "先核对输入框和过程时间线的层级。"
+                ),
+                createdAt: snapshotMessageDate.addingTimeInterval(1),
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-read",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：sed -n 1,180p ConversationView.swift",
+                activityPayload: ConversationActivityPayload(
+                    category: .runCommand,
+                    displayTitle: "查看 ConversationView.swift",
+                    status: "completed",
+                    command: "sed -n 1,180p ConversationView.swift"
+                ),
+                createdAt: snapshotMessageDate.addingTimeInterval(2),
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-search",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：rg ProcessedTurnRow",
+                activityPayload: ConversationActivityPayload(
+                    category: .runCommand,
+                    displayTitle: "搜索 ProcessedTurnRow",
+                    status: "completed",
+                    command: "rg ProcessedTurnRow"
+                ),
+                createdAt: snapshotMessageDate.addingTimeInterval(3),
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-build",
+                role: "system",
+                kind: .commandSummary,
+                content: "命令：xcodebuild test",
+                activityPayload: ConversationActivityPayload(
+                    category: .runCommand,
+                    displayTitle: "运行 xcodebuild test",
+                    status: "completed",
+                    command: "xcodebuild test",
+                    cwd: "/Users/me/code/codex-ipad-agent",
+                    exitCode: 0,
+                    outputPreview: "Testing started\n** TEST SUCCEEDED **"
+                ),
+                createdAt: snapshotMessageDate.addingTimeInterval(4),
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-diff",
+                role: "system",
+                kind: .fileChangeSummary,
+                content: "文件变更：ConversationView.swift modified",
+                activityPayload: ConversationActivityPayload(
+                    category: .editFile,
+                    displayTitle: "修改 ConversationView.swift",
+                    status: "completed",
+                    filePaths: ["ios/MimiRemote/Sources/Features/Conversation/ConversationView.swift"]
+                ),
+                createdAt: snapshotMessageDate.addingTimeInterval(5),
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-input",
+                role: "system",
+                kind: .userInput,
+                content: "补充信息已提交：固定中文",
+                createdAt: snapshotMessageDate.addingTimeInterval(6),
+                turnID: turnID,
+                sendStatus: .confirmed
+            ),
+            CodexHistoryMessage(
+                id: "mixed-final",
+                role: "assistant",
+                content: "已按 iPad 高频操作方式整理完成。",
+                createdAt: snapshotMessageDate.addingTimeInterval(7),
+                turnID: turnID,
+                sendStatus: .confirmed
+            )
+        ]
+        conversationStore.setHistory(history, sessionID: sessionID)
+
+        let sessionStore = SessionStore(
+            appStore: makeSnapshotAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.selectedSessionID = sessionID
+
+        return ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
+            .frame(width: 1024, height: 900)
+    }
+
     func testConversationBubbleAlignment() {
         assertSnapshot(
             of: makeSeededConversation(),
@@ -139,6 +272,13 @@ final class ConversationSnapshotTests: XCTestCase {
         assertSnapshot(
             of: makeRichMarkdownConversation(),
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+        )
+    }
+
+    func testMixedActivityAndImageConversationRendering() {
+        assertSnapshot(
+            of: makeMixedActivityConversation(),
+            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
         )
     }
 
@@ -402,6 +542,21 @@ final class ConversationSnapshotTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return ThemeStore(defaults: defaults)
+    }
+
+    private func snapshotImageDataURL(size: CGSize, accent: UIColor) -> String {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            UIColor.systemBackground.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            accent.withAlphaComponent(0.16).setFill()
+            context.fill(CGRect(x: 12, y: 12, width: size.width - 24, height: size.height - 24))
+            accent.setStroke()
+            context.cgContext.setLineWidth(6)
+            context.cgContext.stroke(CGRect(x: 24, y: 24, width: size.width - 48, height: size.height - 48))
+        }
+        let data = image.pngData() ?? Data()
+        return "data:image/png;base64,\(data.base64EncodedString())"
     }
 
     /// 快照不能读取模拟器里真实配对过的 Mac；隔离偏好与 Keychain 后，composer 的默认状态才可复现。
