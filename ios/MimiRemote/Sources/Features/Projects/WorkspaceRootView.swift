@@ -38,6 +38,14 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     }
 }
 
+enum WorkspaceStripLayout {
+    static let horizontalPadding: CGFloat = 24
+
+    static func minimumContentWidth(viewportWidth: CGFloat) -> CGFloat {
+        max(0, viewportWidth - horizontalPadding * 2)
+    }
+}
+
 /// 工作区只维护本地浏览选择。只有用户明确进入会话或新建会话时，才交给 SessionStore 改变活动上下文。
 struct WorkspaceRootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
@@ -173,41 +181,49 @@ struct WorkspaceRootView: View {
 
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
         ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 12) {
-                    if catalogState == .loading && sessionStore.sidebarProjects.isEmpty {
-                        ForEach(0..<4, id: \.self) { index in
-                            WorkspaceLibraryCard(
-                                project: AgentProject(id: "loading-\(index)", name: "正在加载工作区", path: "/Users/you/code/project"),
-                                sessionCount: 0,
-                                worktreeCount: 0,
-                                isUnavailable: false,
-                                isSelected: false,
-                                tokens: tokens
-                            ) {}
-                            .frame(width: 300)
-                            .redacted(reason: .placeholder)
-                        }
-                    } else {
-                        ForEach(sessionStore.sidebarProjects) { project in
-                            WorkspaceLibraryCard(
-                                project: project,
-                                sessionCount: sessionStore.sessions(forProjectID: project.id).count,
-                                worktreeCount: sessionStore.managedWorktrees(rootProjectID: sessionStore.rootProjectID(forProjectID: project.id)).count,
-                                isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
-                                isSelected: selectedWorkspaceID == project.id,
-                                tokens: tokens
-                            ) {
-                                // 工作区页面只更新本地浏览选择，避免切换卡片时意外改变当前会话上下文。
-                                selectedWorkspaceID = project.id
+            GeometryReader { geometry in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 12) {
+                        if catalogState == .loading && sessionStore.sidebarProjects.isEmpty {
+                            ForEach(0..<4, id: \.self) { index in
+                                WorkspaceLibraryCard(
+                                    project: AgentProject(id: "loading-\(index)", name: "正在加载工作区", path: "/Users/you/code/project"),
+                                    sessionCount: 0,
+                                    worktreeCount: 0,
+                                    isUnavailable: false,
+                                    isSelected: false,
+                                    tokens: tokens
+                                ) {}
+                                .frame(width: 300)
+                                .redacted(reason: .placeholder)
                             }
-                            .frame(width: 300)
-                            .id(project.id)
+                        } else {
+                            ForEach(sessionStore.sidebarProjects) { project in
+                                WorkspaceLibraryCard(
+                                    project: project,
+                                    sessionCount: sessionStore.sessions(forProjectID: project.id).count,
+                                    worktreeCount: sessionStore.managedWorktrees(rootProjectID: sessionStore.rootProjectID(forProjectID: project.id)).count,
+                                    isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
+                                    isSelected: selectedWorkspaceID == project.id,
+                                    tokens: tokens
+                                ) {
+                                    // 工作区页面只更新本地浏览选择，避免切换卡片时意外改变当前会话上下文。
+                                    selectedWorkspaceID = project.id
+                                }
+                                .frame(width: 300)
+                                .id(project.id)
+                            }
                         }
                     }
+                    // 少量卡片作为一个组居中；卡片较多时 LazyHStack 按固有宽度增长，
+                    // 仍保持正常横向滚动和选中项定位。
+                    .frame(
+                        minWidth: WorkspaceStripLayout.minimumContentWidth(viewportWidth: geometry.size.width),
+                        alignment: .center
+                    )
+                    .padding(.horizontal, WorkspaceStripLayout.horizontalPadding)
+                    .padding(.vertical, 14)
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 14)
             }
             .frame(height: 150)
             .onChange(of: selectedWorkspaceID) { _, selectedID in

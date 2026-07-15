@@ -2854,11 +2854,23 @@ actor CodexAppServerSessionRuntime {
         case "mcpToolCall":
             let title = nonEmpty(item["tool"]?.stringValue, item["name"]?.stringValue, "工具调用") ?? "工具调用"
             let subtitle = nonEmpty(item["server"]?.stringValue, item["namespace"]?.stringValue, item["pluginId"]?.stringValue)
-            return SessionContextTask(id: id, kind: "mcp_tool", title: title, subtitle: subtitle, status: status)
+            return SessionContextTask(
+                id: id,
+                kind: "mcp_tool",
+                title: ConversationActivityPayload(item: item)?.displayTitle ?? title,
+                subtitle: subtitle,
+                status: status
+            )
         case "dynamicToolCall":
             let title = nonEmpty(item["tool"]?.stringValue, item["name"]?.stringValue, "动态工具") ?? "动态工具"
-            let subtitle = nonEmpty(item["pluginId"]?.stringValue, item["namespace"]?.stringValue, "dynamic tool")
-            return SessionContextTask(id: id, kind: "dynamic_tool", title: title, subtitle: subtitle, status: status)
+            let subtitle = nonEmpty(item["pluginId"]?.stringValue, item["namespace"]?.stringValue)
+            return SessionContextTask(
+                id: id,
+                kind: "dynamic_tool",
+                title: ConversationActivityPayload(item: item)?.displayTitle ?? title,
+                subtitle: subtitle,
+                status: status
+            )
         case "collabAgentToolCall":
             let title = nonEmpty(item["agentNickname"]?.stringValue, item["nickname"]?.stringValue, item["tool"]?.stringValue, "子 Agent") ?? "子 Agent"
             let subtitle = nonEmpty(item["agentRole"]?.stringValue, item["role"]?.stringValue)

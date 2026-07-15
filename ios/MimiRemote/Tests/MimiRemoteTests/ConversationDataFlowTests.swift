@@ -579,6 +579,70 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertLessThanOrEqual(distanceFromBottom(secondScrollView), 4)
     }
 
+    func testConversationTimelineRapidSessionSwitchesKeepValidTailTarget() async throws {
+        let longSessionID = "tail-race-long"
+        let shortSessionID = "tail-race-short"
+        let conversationStore = ConversationStore()
+        for index in 0..<72 {
+            conversationStore.appendSystem("长会话消息 \(index)", sessionID: longSessionID)
+        }
+        for index in 0..<3 {
+            conversationStore.appendSystem("短会话消息 \(index)", sessionID: shortSessionID)
+        }
+
+        let sessionStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.selectedSessionID = shortSessionID
+        let themeSuiteName = "TailRaceTests.\(UUID().uuidString)"
+        let themeDefaults = try XCTUnwrap(UserDefaults(suiteName: themeSuiteName))
+        let themeStore = ThemeStore(defaults: themeDefaults)
+
+        let view = ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
+        let host = UIHostingController(rootView: view)
+        let windowScene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let window = UIWindow(windowScene: windowScene)
+        window.frame = CGRect(x: 0, y: 0, width: 420, height: 820)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            themeDefaults.removePersistentDomain(forName: themeSuiteName)
+        }
+
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // iOS 27 的 List 底层使用 UICollectionView；快速从 3 行切到 72 行时，
+        // 不能把新尾行 ID 解析成旧快照中的 IndexPath，否则 UIKit 会直接断言崩溃。
+        for index in 0..<24 {
+            sessionStore.selectedSessionID = index.isMultiple(of: 2) ? longSessionID : shortSessionID
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        sessionStore.selectedSessionID = longSessionID
+
+        // 同一会话持续追加过程项时，SwiftUI 数据已经包含新尾行，但 UICollectionView
+        // 可能还在提交上一份快照；这是线上自动跟随最常见的竞态窗口。
+        for index in 0..<48 {
+            conversationStore.appendSystem("流式过程 \(index)", sessionID: longSessionID)
+            try await Task.sleep(nanoseconds: 8_000_000)
+        }
+        try await Task.sleep(nanoseconds: 700_000_000)
+        host.view.layoutIfNeeded()
+
+        let scrollView = try XCTUnwrap(conversationTimelineScrollView(in: host.view))
+        XCTAssertLessThanOrEqual(distanceFromBottom(scrollView), 4)
+    }
+
     func testTimestampCaptionMarksFallbackTimes() {
         let fallback = ConversationMessage(
             role: .assistant,
@@ -703,6 +767,53 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(message.activityPayload, payload)
         XCTAssertEqual(message.activityPayload?.displayTitle, "搜索 ConversationStore")
         XCTAssertEqual(message.content, payload.summaryText)
+    }
+
+    func testActivityPresentationHidesProtocolNoiseAndKeepsRawDiagnostics() throws {
+        let failedTool: [String: CodexAppServerJSONValue] = [
+            "type": .string("mcpToolCall"),
+            "id": .string("tool_xcode_test"),
+            "server": .string("xcodebuildmcp"),
+            "tool": .string("test_sim"),
+            "status": .string("failed")
+        ]
+        let failedPayload = try XCTUnwrap(ConversationActivityPayload(item: failedTool))
+
+        XCTAssertEqual(failedPayload.displayTitle, "运行模拟器测试")
+        XCTAssertEqual(failedPayload.toolName, "xcodebuildmcp.test_sim", "底层工具标识仍保留给诊断数据")
+        XCTAssertEqual(failedPayload.displayStatusText, "失败")
+        XCTAssertTrue(failedPayload.isFailure)
+        XCTAssertEqual(failedPayload.summaryText, "工具：运行模拟器测试\n状态：失败")
+
+        let futureStatus: [String: CodexAppServerJSONValue] = [
+            "type": .string("dynamicToolCall"),
+            "namespace": .string("future_runtime"),
+            "tool": .string("unknown_action"),
+            "status": .string("unknown")
+        ]
+        let futurePayload = try XCTUnwrap(ConversationActivityPayload(item: futureStatus))
+
+        XCTAssertEqual(futurePayload.displayTitle, "调用工具")
+        XCTAssertNil(futurePayload.displayStatusText)
+        XCTAssertFalse(futurePayload.summaryText.lowercased().contains("unknown"))
+        XCTAssertEqual(
+            ConversationActivityPayload.plainProgressText("**Planning release build**\n`ENABLE_TESTABILITY=YES`"),
+            "Planning release build\nENABLE_TESTABILITY=YES"
+        )
+    }
+
+    func testFileChangeProgressUsesCompactFilenameButKeepsFullPath() throws {
+        let path = "/Users/me/code/CatName/Features/Me/MeView.swift"
+        let item: [String: CodexAppServerJSONValue] = [
+            "type": .string("fileChange"),
+            "status": .string("completed"),
+            "changes": .array([.object(["path": .string(path), "kind": .string("update")])])
+        ]
+        let payload = try XCTUnwrap(ConversationActivityPayload(item: item))
+
+        XCTAssertEqual(payload.displayTitle, "修改 MeView.swift")
+        XCTAssertEqual(payload.filePaths, [path])
+        XCTAssertEqual(payload.displayStatusText, "已完成")
     }
 
     func testSessionDisplayStatusUsesForegroundAndGoalProgress() {
@@ -1460,6 +1571,31 @@ final class ConversationDataFlowTests: XCTestCase {
         } else {
             XCTFail("Expected assistant delta mutation")
         }
+    }
+
+    func testEventReducerReportsEachUnsupportedEventTypeOnlyOnce() async {
+        let reducer = EventReducer()
+
+        let first = await reducer.reduce(
+            .unknown("future/progress"),
+            fallbackSessionID: "session",
+            outputIdleClearDelay: 0
+        )
+        let duplicate = await reducer.reduce(
+            .unknown("future/progress"),
+            fallbackSessionID: "session",
+            outputIdleClearDelay: 0
+        )
+        let nextType = await reducer.reduce(
+            .unknown("future/status"),
+            fallbackSessionID: "session",
+            outputIdleClearDelay: 0
+        )
+
+        XCTAssertEqual(first.logAppends.count, 1)
+        XCTAssertTrue(first.logAppends[0].text.contains("已忽略暂不支持的事件：future/progress"))
+        XCTAssertTrue(duplicate.logAppends.isEmpty)
+        XCTAssertEqual(nextType.logAppends.count, 1)
     }
 
     func testEventReducerRoutesRuntimeErrorToOwningSessionAndMarksFailed() async throws {
@@ -7680,6 +7816,11 @@ final class ConversationDataFlowTests: XCTestCase {
         )
         XCTAssertNil(WorkspaceSessionRuntimeChoice.codex.runtimeProvider)
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
+    }
+
+    func testWorkspaceStripUsesViewportWidthToCenterSmallCardGroups() {
+        XCTAssertEqual(WorkspaceStripLayout.minimumContentWidth(viewportWidth: 1_400), 1_352)
+        XCTAssertEqual(WorkspaceStripLayout.minimumContentWidth(viewportWidth: 40), 0)
     }
 
     func testStartNewSessionWithClaudeRuntimeCarriesRuntimeProviderInCreatePayload() async throws {
@@ -18217,11 +18358,11 @@ extension ConversationDataFlowTests {
         if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(toolCompleted)) {
             XCTAssertEqual(message.role, .system)
             XCTAssertEqual(message.kind, .commandSummary)
-            XCTAssertEqual(message.content, "工具：browser.open\n状态：completed")
+            XCTAssertEqual(message.content, "工具：打开网页\n状态：已完成")
             XCTAssertEqual(message.activityPayload?.category, .toolCall)
-            XCTAssertEqual(message.activityPayload?.displayTitle, "browser.open")
+            XCTAssertEqual(message.activityPayload?.displayTitle, "打开网页")
             XCTAssertEqual(context?.tasks.first?.kind, "dynamic_tool")
-            XCTAssertEqual(context?.tasks.first?.title, "browser.open")
+            XCTAssertEqual(context?.tasks.first?.title, "打开网页")
             XCTAssertEqual(context?.tasks.first?.status, "completed")
         } else {
             XCTFail("Expected tool completed processItemCompleted")

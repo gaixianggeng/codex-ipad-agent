@@ -39,6 +39,8 @@ struct EventReducerLogAppend {
 }
 
 actor EventReducer {
+    private var reportedUnsupportedEventTypes: Set<String> = []
+
     func reduce(
         _ event: AgentEvent,
         fallbackSessionID: SessionID,
@@ -265,8 +267,16 @@ actor EventReducer {
             ))
             output.messageMutations.append(.system("运行错误：\(payload.message)", id, .error, metadata))
         case .unknown(let type):
+            let eventType = type.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !eventType.isEmpty,
+                  reportedUnsupportedEventTypes.insert(eventType).inserted
+            else {
+                break
+            }
+            // 新版 runtime 可能先增加事件再升级客户端。诊断区每种类型只提示一次，
+            // 避免高频心跳/进度事件把用户真正关心的输出淹没。
             output.logAppends.append(EventReducerLogAppend(
-                text: "\n[agentd] 未知消息类型：\(type)\n",
+                text: "\n[agentd] 已忽略暂不支持的事件：\(eventType)\n",
                 sessionID: fallbackSessionID,
                 seq: nil
             ))

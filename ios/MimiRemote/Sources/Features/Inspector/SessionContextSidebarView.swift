@@ -270,7 +270,7 @@ struct SessionContextSidebarView: View {
                         symbolName: symbolName(forTaskKind: task.kind),
                         title: task.title,
                         subtitle: task.subtitle,
-                        badge: task.status
+                        badge: task.status.map(statusText)
                     )
                 }
             }
@@ -326,11 +326,11 @@ struct SessionContextSidebarView: View {
 
     private func statusText(_ status: String) -> String {
         switch status {
-        case "active", "running":
+        case "active", "running", "inProgress", "in_progress", "started":
             return "运行中"
         case "idle":
             return "空闲"
-        case "completed":
+        case "completed", "complete", "success", "succeeded":
             return "完成"
         case "notLoaded", "history":
             return "历史"
@@ -342,6 +342,8 @@ struct SessionContextSidebarView: View {
             return "待输入"
         case "closed":
             return "已结束"
+        case "unknown", "":
+            return "待确认"
         default:
             return status.replacingOccurrences(of: "_", with: " ")
         }

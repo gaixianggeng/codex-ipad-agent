@@ -788,7 +788,7 @@ struct CodexAppServerEventProjector {
             return SessionContextTask(
                 id: id,
                 kind: "mcp_tool",
-                title: title.isEmpty ? "MCP 工具" : title,
+                title: ConversationActivityPayload(item: item)?.displayTitle ?? (title.isEmpty ? "MCP 工具" : title),
                 subtitle: firstString(in: item, keys: ["pluginId"]),
                 status: status
             )
@@ -796,7 +796,13 @@ struct CodexAppServerEventProjector {
             let namespace = firstString(in: item, keys: ["namespace"])
             let tool = firstString(in: item, keys: ["tool"]) ?? "动态工具"
             let title = [namespace, tool].compactMap { $0 }.joined(separator: ".")
-            return SessionContextTask(id: id, kind: "dynamic_tool", title: title, subtitle: "dynamic tool", status: status)
+            return SessionContextTask(
+                id: id,
+                kind: "dynamic_tool",
+                title: ConversationActivityPayload(item: item)?.displayTitle ?? title,
+                subtitle: nil,
+                status: status
+            )
         case "collabAgentToolCall":
             let title = firstString(in: item, keys: ["tool", "agentNickname", "nickname"]) ?? "子 Agent"
             return SessionContextTask(id: id, kind: "subagent", title: title, subtitle: firstString(in: item, keys: ["agentRole", "role"]), status: status)

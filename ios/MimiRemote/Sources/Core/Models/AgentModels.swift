@@ -400,6 +400,8 @@ extension AgentSession {
             return AgentSessionDisplayStatus(title: "已结束", systemImage: "checkmark.circle", tone: .neutral, showsSpinner: false)
         case SessionStatus.idle.rawValue:
             return AgentSessionDisplayStatus(title: "空闲", systemImage: "pause.circle", tone: .neutral, showsSpinner: false)
+        case SessionStatus.unknown.rawValue, "":
+            return AgentSessionDisplayStatus(title: "状态待确认", systemImage: "circle", tone: .neutral, showsSpinner: false)
         default:
             let text = status.replacingOccurrences(of: "_", with: " ")
             return AgentSessionDisplayStatus(title: text, systemImage: "circle", tone: .neutral, showsSpinner: false)
@@ -1541,19 +1543,20 @@ struct ConversationActivityPayload: Codable, Hashable {
             let changes = item["changes"]?.arrayValue?.compactMap(\.objectValue) ?? []
             let filePaths = Self.filePaths(from: changes)
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty ?? "modified"
-            let summary = Self.fileChangeSummary(from: changes) ?? "workspace"
+            let summary = filePaths.first.map(Self.shortPath) ?? "工作区"
             let title = filePaths.count > 1 ? "修改 \(filePaths.count) 个文件" : "修改 \(summary)"
             self.init(category: .editFile, displayTitle: title, subtitle: status, status: status, filePaths: filePaths)
 
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
+            let identifier = Self.toolIdentifier(from: item, type: type)
             let title = Self.toolTitle(from: item, type: type)
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty
             self.init(
                 category: .toolCall,
                 displayTitle: title,
-                subtitle: status,
+                subtitle: nil,
                 status: status,
-                toolName: title
+                toolName: identifier
             )
 
         default:
@@ -1591,6 +1594,81 @@ struct ConversationActivityPayload: Codable, Hashable {
         }
     }
 
+    /// 协议状态保留原值用于诊断；会话时间线只显示稳定、可理解的用户状态。
+    /// 未知或未来新增状态不应直接泄漏成 `unknown` 或内部枚举名。
+    var displayStatusText: String? {
+        switch normalizedStatus {
+        case "completed", "complete", "success", "succeeded":
+            return "已完成"
+        case "failed", "failure", "error":
+            return "失败"
+        case "inprogress", "running", "started":
+            return "进行中"
+        case "pending", "queued":
+            return "等待中"
+        case "cancelled", "canceled":
+            return "已取消"
+        case "modified":
+            return "已修改"
+        case "added", "created":
+            return "已新增"
+        case "deleted", "removed":
+            return "已删除"
+        default:
+            return nil
+        }
+    }
+
+    var isInProgress: Bool {
+        switch normalizedStatus {
+        case "inprogress", "running", "started":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isFailure: Bool {
+        if let exitCode, exitCode != 0 {
+            return true
+        }
+        switch normalizedStatus {
+        case "failed", "failure", "error":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 过程行不是 Markdown 正文。这里移除最常见的强调和行内代码标记，
+    /// 避免把格式符号当成运行日志打印，同时保留原始 payload 供详情和诊断使用。
+    static func plainProgressText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                var value = String(line).trimmingCharacters(in: .whitespaces)
+                for level in (1...6).reversed() {
+                    let headingPrefix = String(repeating: "#", count: level) + " "
+                    if value.hasPrefix(headingPrefix) {
+                        value.removeFirst(headingPrefix.count)
+                        break
+                    }
+                }
+                if value.count >= 2,
+                   let marker = value.first,
+                   (marker == "*" || marker == "_"),
+                   value.last == marker {
+                    value.removeFirst()
+                    value.removeLast()
+                }
+                return value
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func == (lhs: ConversationActivityPayload, rhs: ConversationActivityPayload) -> Bool {
         lhs.category == rhs.category
             && lhs.displayTitle == rhs.displayTitle
@@ -1625,7 +1703,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         if let cwd {
             lines.append("目录：\(cwd)")
         }
-        let statusLine = [status.map { "状态：\($0)" }, exitCode.map { "退出码：\($0)" }]
+        let statusLine = [displayStatusText.map { "状态：\($0)" }, exitCode.map { "退出码：\($0)" }]
             .compactMap { $0 }
             .joined(separator: "，")
         if !statusLine.isEmpty {
@@ -1639,16 +1717,26 @@ struct ConversationActivityPayload: Codable, Hashable {
 
     private var fileChangeSummaryText: String {
         let summary = filePaths.isEmpty ? (displayTitle.replacingOccurrences(of: "修改 ", with: "")) : Self.compactFileSummary(filePaths)
-        let statusText = status ?? "modified"
-        return "文件变更：\(summary) \(statusText)"
+        guard let displayStatusText else {
+            return "文件变更：\(summary)"
+        }
+        return "文件变更：\(summary) \(displayStatusText)"
     }
 
     private var toolSummaryText: String {
-        let title = toolName ?? displayTitle
-        guard let status, !status.isEmpty else {
-            return "工具：\(title)"
+        guard let displayStatusText else {
+            return "工具：\(displayTitle)"
         }
-        return "工具：\(title)\n状态：\(status)"
+        return "工具：\(displayTitle)\n状态：\(displayStatusText)"
+    }
+
+    private var normalizedStatus: String {
+        (status ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
     }
 
     private static let outputPreviewLimit = 1_000
@@ -1695,26 +1783,79 @@ struct ConversationActivityPayload: Codable, Hashable {
     }
 
     private static func toolTitle(from item: [String: CodexAppServerJSONValue], type: String) -> String {
-        switch type {
-        case "mcpToolCall":
-            let title = [firstString(in: item, keys: ["server"]), firstString(in: item, keys: ["tool"])]
-                .compactMap { $0?.trimmedNonEmpty }
-                .joined(separator: ".")
-            return title.isEmpty ? "MCP 工具调用" : title
-        case "dynamicToolCall":
-            let title = [firstString(in: item, keys: ["namespace"]), firstString(in: item, keys: ["tool"])]
-                .compactMap { $0?.trimmedNonEmpty }
-                .joined(separator: ".")
-            return title.isEmpty ? "动态工具调用" : title
-        case "collabAgentToolCall":
-            return firstString(in: item, keys: ["tool", "agentNickname", "nickname"])?.trimmedNonEmpty ?? "子 Agent 调用"
-        case "webSearch":
+        if type == "webSearch" {
             if let query = firstString(in: item, keys: ["query"])?.trimmedNonEmpty {
                 return "网络搜索：\(query)"
             }
             return "网络搜索"
+        }
+
+        let namespace = firstString(in: item, keys: ["server", "namespace"])?.trimmedNonEmpty
+        let tool = firstString(in: item, keys: ["tool", "name"])?.trimmedNonEmpty
+        switch tool?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_") {
+        case "session_set_defaults": return "配置 Xcode 会话"
+        case "test_sim": return "运行模拟器测试"
+        case "test_device": return "运行真机测试"
+        case "build_sim": return "构建模拟器版本"
+        case "build_device": return "构建真机版本"
+        case "build_run_sim": return "构建并运行 App"
+        case "launch_app_sim": return "启动 App"
+        case "stop_app_sim": return "停止 App"
+        case "clean": return "清理构建产物"
+        case "screenshot": return "截取界面"
+        case "ui_describe_all": return "读取界面结构"
+        case "tap": return "点击界面"
+        case "swipe": return "滑动界面"
+        case "type_text": return "输入文本"
+        case "key_press": return "按下按键"
+        case "open", "navigate": return namespace?.lowercased() == "browser" ? "打开网页" : "打开内容"
+        case "click": return "点击页面"
+        case "find": return "查找页面内容"
+        case "search", "search_query": return "搜索网络"
+        case "view_image": return "查看图片"
+        case "imagegen": return "生成图片"
+        case "apply_patch": return "修改文件"
+        case "exec_command": return "运行命令"
+        case "wait": return "等待任务完成"
+        case "update_plan": return "更新计划"
+        case "request_user_input": return "请求补充信息"
+        case "read_mcp_resource": return "读取资源"
+        case "list_mcp_resources", "list_mcp_resource_templates": return "列出资源"
+        case "spawn_agent": return "启动子任务"
+        case "send_message": return "发送协作消息"
         default:
-            return "工具调用"
+            break
+        }
+
+        switch namespace?.lowercased() {
+        case "xcodebuildmcp": return "运行 Xcode 工具"
+        case "browser": return "操作网页"
+        case "image_gen", "imagegen": return "生成图片"
+        default: return type == "collabAgentToolCall" ? "执行协作任务" : "调用工具"
+        }
+    }
+
+    private static func toolIdentifier(from item: [String: CodexAppServerJSONValue], type: String) -> String? {
+        switch type {
+        case "mcpToolCall":
+            return [firstString(in: item, keys: ["server"]), firstString(in: item, keys: ["tool"])]
+                .compactMap { $0?.trimmedNonEmpty }
+                .joined(separator: ".")
+                .trimmedNonEmpty
+        case "dynamicToolCall":
+            return [firstString(in: item, keys: ["namespace"]), firstString(in: item, keys: ["tool"])]
+                .compactMap { $0?.trimmedNonEmpty }
+                .joined(separator: ".")
+                .trimmedNonEmpty
+        case "collabAgentToolCall":
+            return firstString(in: item, keys: ["tool", "agentNickname", "nickname"])?.trimmedNonEmpty
+        case "webSearch":
+            return "web.search"
+        default:
+            return nil
         }
     }
 

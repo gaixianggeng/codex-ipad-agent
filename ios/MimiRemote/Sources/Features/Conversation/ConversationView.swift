@@ -785,12 +785,12 @@ struct ConversationTimelineView: View {
     @State private var isPreservingHistoryScroll = false
     @State private var expandedActivityIDs: Set<String> = []
     @State private var timelineItemCache = ConversationTimelineItemCache()
-    @State private var timelineScrollPosition = ScrollPosition(edge: .bottom)
     @State private var pendingTailScrollTask: Task<Void, Never>?
     @State private var tailScrollAttemptGeneration = 0
     @State private var userScrollAwayGeneration = 0
 
     private let messageTailFollowThreshold: CGFloat = 120
+    private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -805,49 +805,59 @@ struct ConversationTimelineView: View {
         let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: sessionStore.selectedSessionID) != nil
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
-                // 用 List（底层 UITableView）替代 ScrollView + LazyVStack：行高是真实测量值、
+                // 用 List 替代 ScrollView + LazyVStack：行高是真实测量值、
                 // 有 cell 复用，scrollTo 对尚未实例化的行也可靠。这样既消除首屏/切换会话
                 // “空白要手滑一下”的竞态，右侧滚动条也不再因 LazyVStack 高度估算而长度/位置乱跳。
                 List {
-                    if timelineItems.isEmpty {
-                        timelineEmptyState(isHistoryLoading: isHistoryLoading)
-                            .padding(.top, 80)
-                            .frame(maxWidth: .infinity)
+                    Section {
+                        if timelineItems.isEmpty {
+                            timelineEmptyState(isHistoryLoading: isHistoryLoading)
+                                .padding(.top, 80)
+                                .frame(maxWidth: .infinity)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(layout.messageRowInsets)
+                                .listRowBackground(Color.clear)
+                        } else {
+                            if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
+                                loadEarlierRow(proxy: proxy, timelineItems: timelineItems)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(layout.messageRowInsets)
+                                    .listRowBackground(Color.clear)
+                            }
+                            ForEach(timelineItems) { item in
+                                // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
+                                // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
+                                timelineRow(
+                                    item,
+                                    activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                                    proxy: proxy
+                                )
+                                    .simultaneousGesture(TapGesture().onEnded {
+                                        KeyboardDismissal.dismiss()
+                                    })
+                                    .id(item.id)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(layout.messageRowInsets)
+                                    .listRowBackground(Color.clear)
+                            }
+                        }
+                    }
+
+                    Section {
+                        // 尾部哨兵独占固定 Section，始终是 row 0。消息增删只影响前一个
+                        // Section，scrollTo 不会把新快照行号用于旧 UICollectionView 快照。
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.timelineTailSentinelID)
                             .listRowSeparator(.hidden)
-                            .listRowInsets(layout.messageRowInsets)
+                            .listRowInsets(EdgeInsets())
                             .listRowBackground(Color.clear)
-                    } else {
-                        if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
-                            loadEarlierRow(proxy: proxy, timelineItems: timelineItems)
-                                .listRowSeparator(.hidden)
-                                .listRowInsets(layout.messageRowInsets)
-                                .listRowBackground(Color.clear)
-                        }
-                        ForEach(timelineItems) { item in
-                            // .equatable() 让流式输出时只重绘内容变化的那一行，其余行直接复用，
-                            // 长对话下 ForEach 的 diff 成本降到只看可见行的值比较。
-                            timelineRow(
-                                item,
-                                activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                                proxy: proxy
-                            )
-                                .simultaneousGesture(TapGesture().onEnded {
-                                    KeyboardDismissal.dismiss()
-                                })
-                                .id(item.id)
-                                .listRowSeparator(.hidden)
-                                .listRowInsets(layout.messageRowInsets)
-                                .listRowBackground(Color.clear)
-                        }
                     }
                 }
                 .listStyle(.plain)
-                // 每个会话使用独立的 List 身份，避免 UITableView 复用上一个会话的 contentOffset。
-                // 新会话挂载时从底部创建，比事后纠正旧滚动位置更稳定。
+                // 每个会话使用独立的 List 身份，避免复用上一个会话的 contentOffset；
+                // 挂载后再定位到固定尾部哨兵。
                 .id(sessionStore.selectedSessionID)
-                // ScrollPosition 负责持续跟随；首帧和会话切换还会用已校验存在的末行 ID 兜底，
-                // 避免 List 只更新绑定、却没有真正提交底层 contentOffset。
-                .scrollPosition($timelineScrollPosition)
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .background(tokens.background)
@@ -904,9 +914,6 @@ struct ConversationTimelineView: View {
                 expandedActivityIDs.removeAll()
                 timelineItemCache.removeAll()
                 cancelPendingTailScrollAttempts()
-                // ScrollPosition 是 View 级状态，不会随 selectedSessionID 自动重建；
-                // 切换会话时必须显式丢弃旧位置，并立即为已有缓存消息安排强制贴底。
-                timelineScrollPosition = ScrollPosition(edge: .bottom)
                 if newID != nil {
                     queueTailScrollAttempts(
                         timelineItems: timelineItems,
@@ -1239,7 +1246,7 @@ struct ConversationTimelineView: View {
         proxy: ScrollViewProxy,
         animated: Bool
     ) {
-        guard let tailItemID = timelineItems.last?.id else {
+        guard !timelineItems.isEmpty else {
             return
         }
         guard !isPreservingHistoryScroll else {
@@ -1249,7 +1256,7 @@ struct ConversationTimelineView: View {
         hasUnseenTailMessage = false
         isTimelineNearBottom = true
         forceNextMessageTailScroll = false
-        scrollToTimelineTail(tailItemID: tailItemID, proxy: proxy, animated: animated)
+        scrollToTimelineTail(proxy: proxy, animated: animated)
     }
 
     private func queueTailScrollAttempts(
@@ -1347,24 +1354,16 @@ struct ConversationTimelineView: View {
         )
     }
 
-    private func scrollToTimelineTail(
-        tailItemID: String,
-        proxy: ScrollViewProxy,
-        animated: Bool
-    ) {
+    private func scrollToTimelineTail(proxy: ScrollViewProxy, animated: Bool) {
         if animated {
             withAnimation(.easeOut(duration: 0.18)) {
-                timelineScrollPosition.scrollTo(edge: .bottom)
-                proxy.scrollTo(tailItemID, anchor: .bottom)
+                proxy.scrollTo(Self.timelineTailSentinelID, anchor: .bottom)
             }
         } else {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                timelineScrollPosition.scrollTo(edge: .bottom)
-                // ScrollPosition 在 List 首帧可能只更新绑定而没有落到底层 contentOffset；
-                // 对已验证仍存在的最后一行做显式定位，保证打开会话默认看到最新消息。
-                proxy.scrollTo(tailItemID, anchor: .bottom)
+                proxy.scrollTo(Self.timelineTailSentinelID, anchor: .bottom)
             }
         }
     }
@@ -1642,7 +1641,7 @@ private struct ConversationActivityRow: View, Equatable {
                     activityDetailLine("文件", value: payload.filePaths.joined(separator: "\n"), monospaced: true)
                 }
                 let status = [
-                    payload.status?.trimmedNonEmpty,
+                    payload.displayStatusText,
                     payload.exitCode.map { "退出码 \($0)" }
                 ]
                     .compactMap { $0 }
@@ -1694,7 +1693,9 @@ private struct ConversationActivityRow: View, Equatable {
     }
 
     private var reasoningText: String {
-        message.activityPayload?.subtitle?.trimmedNonEmpty ?? message.content
+        ConversationActivityPayload.plainProgressText(
+            message.activityPayload?.subtitle?.trimmedNonEmpty ?? message.content
+        )
     }
 
     private var activityTitle: String {
@@ -1727,16 +1728,16 @@ private struct ConversationActivityRow: View, Equatable {
         }
         switch payload.category {
         case .editFile:
-            return payload.filePaths.isEmpty ? payload.subtitle : payload.filePaths.prefix(4).joined(separator: ", ")
+            return payload.filePaths.isEmpty ? payload.displayStatusText : payload.filePaths.prefix(4).joined(separator: ", ")
         case .runCommand:
             if let exitCode = payload.exitCode, exitCode != 0 {
                 return "退出码 \(exitCode)"
             }
             return payload.cwd
         case .toolCall:
-            return payload.status
+            return payload.displayStatusText == "已完成" ? nil : payload.displayStatusText
         case .thinking, .plan, .error:
-            return payload.subtitle
+            return payload.subtitle.map(ConversationActivityPayload.plainProgressText)
         }
     }
 
@@ -1765,18 +1766,11 @@ private struct ConversationActivityRow: View, Equatable {
     }
 
     private var isRunning: Bool {
-        guard let status = message.activityPayload?.status?.lowercased() else {
-            return false
-        }
-        return status == "running" || status == "in_progress" || status == "started"
+        message.activityPayload?.isInProgress == true
     }
 
     private var isFailure: Bool {
-        if let exitCode = message.activityPayload?.exitCode, exitCode != 0 {
-            return true
-        }
-        let status = message.activityPayload?.status?.lowercased()
-        return status == "failed" || status == "error"
+        message.activityPayload?.isFailure == true
     }
 
     private var markerSymbol: String {
