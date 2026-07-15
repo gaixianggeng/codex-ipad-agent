@@ -119,6 +119,27 @@ xcodebuild \
   clean build-for-testing
 ```
 
+Mac Catalyst 使用同一套 SwiftUI 源码和 iPad 缩放界面，不增加 Mac 专用功能。生成工程后，可在 Apple Silicon Mac 上验证独立 Catalyst 构建：
+
+```bash
+xcodebuild \
+  -project ios/MimiRemote/MimiRemote.xcodeproj \
+  -scheme MimiRemote \
+  -configuration Debug \
+  -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+  CODE_SIGNING_ALLOWED=NO \
+  clean build
+```
+
+在 Mac 上运行：
+
+1. 用 Xcode 打开 `ios/MimiRemote/MimiRemote.xcodeproj`。
+2. 选择 `MimiRemote` scheme。
+3. 运行目标选择 `My Mac (Mac Catalyst)`。
+4. 设置开发者 Team 和签名后 Run。
+
+Catalyst 产物使用独立的 Mac `Info.plist`、App Sandbox 权限和标准 Mac 图标；现有 iPhone/iPad 构建、部署与 TestFlight 流程不变。
+
 真机运行：
 
 1. 用 Xcode 打开 `ios/MimiRemote/MimiRemote.xcodeproj`。

@@ -8,8 +8,8 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: 9HZ89R58PZ
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
-    SDKROOT: iphoneos
-    SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SDKROOT: auto
 packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
@@ -20,7 +20,10 @@ packages:
 targets:
   MimiRemote:
     type: application
-    platform: iOS
+    platform: auto
+    supportedDestinations:
+      - iOS
+      - macCatalyst
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
@@ -28,6 +31,7 @@ targets:
       - path: Resources/PrivacyInfo.xcprivacy
         buildPhase: resources
       - path: ../../THIRD_PARTY_NOTICES.md
+        group: Resources
         buildPhase: resources
     dependencies:
       - package: swift-markdown
@@ -39,27 +43,45 @@ targets:
         PRODUCT_MODULE_NAME: MimiRemote
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SDKROOT: iphoneos
-        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        "INFOPLIST_FILE[sdk=macosx*]": Resources/Info-Catalyst.plist
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Resources/MimiRemote-Catalyst.entitlements
+        "ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]": AppIconMac
+        SDKROOT: auto
         TARGETED_DEVICE_FAMILY: "1,2"
-        SUPPORTS_MACCATALYST: "NO"
+        SUPPORTS_MACCATALYST: "YES"
+        SUPPORTS_MACCATALYST_OPTIMIZED_FOR_MAC: "NO"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: "NO"
+        "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": "YES"
         CURRENT_PROJECT_VERSION: "100029"
         MARKETING_VERSION: "1.0"
   MimiRemoteTests:
     type: bundle.unit-test
-    platform: iOS
+    platform: auto
+    supportedDestinations:
+      - iOS
+      - macCatalyst
     sources:
       - path: Tests
+        excludes:
+          - MimiRemoteTests/ConversationSnapshotTests.swift
+      - path: Tests/MimiRemoteTests/ConversationSnapshotTests.swift
+        destinationFilters:
+          - iOS
     dependencies:
       - target: MimiRemote
       - package: SnapshotTesting
+        destinationFilters:
+          - iOS
         product: SnapshotTesting
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiTests
-        SDKROOT: iphoneos
-        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SDKROOT: auto
         TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: "YES"
+        SUPPORTS_MACCATALYST_OPTIMIZED_FOR_MAC: "NO"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
         GENERATE_INFOPLIST_FILE: "YES"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MimiRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MimiRemote"
         BUNDLE_LOADER: "$(TEST_HOST)"

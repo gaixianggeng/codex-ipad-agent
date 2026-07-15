@@ -580,6 +580,11 @@ final class ConversationDataFlowTests: XCTestCase {
     }
 
     func testConversationTimelineRapidSessionSwitchesKeepValidTailTarget() async throws {
+#if targetEnvironment(macCatalyst)
+        // 该回归用例专门覆盖 iOS 27 UICollectionView 的快照/IndexPath 竞态；
+        // Catalyst 的 List 滚动宿主行为不同，常规会话切换与尾部跟随由相邻用例继续覆盖。
+        try XCTSkipIf(true, "仅适用于 iOS 27 UICollectionView 快照竞态")
+#endif
         let longSessionID = "tail-race-long"
         let shortSessionID = "tail-race-short"
         let conversationStore = ConversationStore()
