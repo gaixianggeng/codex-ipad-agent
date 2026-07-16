@@ -356,6 +356,21 @@ struct PreparedConnectionSettings: Equatable {
 }
 
 typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> Void
+typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async throws -> Void
+
+enum ActiveConnectionRoute: Equatable {
+    case configured
+    case local
+
+    var statusTitle: String {
+        switch self {
+        case .configured:
+            return "Tailscale"
+        case .local:
+            return "本机直连"
+        }
+    }
+}
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -372,6 +387,8 @@ final class AppStore: ObservableObject {
     @Published var lastConnectionTestDurationMillis: Int?
     @Published var lastConnectionTestReport: ConnectionTestReport?
     @Published var recentConnectionTestReports: [ConnectionTestReport] = []
+    @Published private(set) var localAgentDetected = false
+    @Published private(set) var activeConnectionRoute: ActiveConnectionRoute = .configured
 
     private let endpointKey = "agentd.endpoint"
     private static let profilesKey = "agentd.connectionProfiles.v1"
@@ -379,12 +396,17 @@ final class AppStore: ObservableObject {
     private let retiredFallbackEndpointKey = "agentd.fallbackEndpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
     private let defaultEndpoint = "http://127.0.0.1:8787"
+    private let localAgentEndpoint = "http://127.0.0.1:8787"
     private let maxConnectionTestReportHistory = 20
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
     private let routeProbeTimeout: TimeInterval
+    private let prefersLocalConnection: Bool
+    private let localAgentProbe: LocalAgentProbe
     private let routeProbe: ConnectionRouteProbe
     private var isConnectionPreflightRunning = false
+    private var isLocalAgentProbeRunning = false
+    private var activeRouteEndpoint: String?
     private var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
 #if DEBUG
@@ -396,11 +418,15 @@ final class AppStore: ObservableObject {
         defaults: UserDefaults = .standard,
         tokenStore: TokenStore = TokenStore(),
         routeProbeTimeout: TimeInterval = 5,
+        prefersLocalConnection: Bool? = nil,
+        localAgentProbe: LocalAgentProbe? = nil,
         routeProbe: ConnectionRouteProbe? = nil
     ) {
         self.defaults = defaults
         self.tokenStore = tokenStore
         self.routeProbeTimeout = routeProbeTimeout
+        self.prefersLocalConnection = prefersLocalConnection ?? Self.isRunningOnMacCatalyst
+        self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
 
         var initialProfiles = Self.loadConnectionProfiles(from: defaults)
@@ -489,6 +515,16 @@ final class AppStore: ObservableObject {
         return connectionProfiles.first { $0.id == activeConnectionProfileID }
     }
 
+    /// `endpoint` 始终保留档案里的规范地址，用于通知、缓存和跨设备身份；真实网络请求在
+    /// Catalyst 检测到同机 agentd 后临时走 loopback，避免把同一台 Mac 拆成两套本地数据。
+    var connectionEndpoint: String {
+        activeRouteEndpoint ?? endpoint
+    }
+
+    var isUsingLocalConnection: Bool {
+        activeConnectionRoute == .local
+    }
+
     /// 通知路由优先使用持久化 profile ID；legacy/debug 单连接才退回规范 endpoint 的 SHA-256。
     /// 哈希仅用于同机比对，避免把 endpoint 明文写进系统通知数据库。
     var notificationRoutingProfileID: String {
@@ -541,25 +577,25 @@ final class AppStore: ObservableObject {
 #endif
 
     func client() throws -> AgentAPIClient {
-        let endpoint = try Self.validatedEndpoint(endpoint)
+        let endpoint = try Self.validatedEndpoint(connectionEndpoint)
         return AgentAPIClient(endpoint: endpoint, token: token)
     }
 
     func makeSessionStoreAPIClient() throws -> any SessionStoreAPIClient {
-        let endpoint = try Self.validatedEndpoint(endpoint)
+        let endpoint = try Self.validatedEndpoint(connectionEndpoint)
         return CodexAppServerRuntimeRoutingSessionAPIClient(bundle: runtimeBundle(endpoint: endpoint, token: token))
     }
 
     func makeSessionWebSocketClient() -> any SessionWebSocketClient {
         MultiRuntimeSessionWebSocketClient(bundle: runtimeBundle(
-            endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
+            endpoint: AgentAPIClient.normalizedEndpoint(connectionEndpoint),
             token: token
         ))
     }
 
     func makeSessionWebSocketClient(for session: AgentSession) -> any SessionWebSocketClient {
         let bundle = runtimeBundle(
-            endpoint: AgentAPIClient.normalizedEndpoint(endpoint),
+            endpoint: AgentAPIClient.normalizedEndpoint(connectionEndpoint),
             token: token
         )
         bundle.routes.remember(session)
@@ -703,7 +739,7 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，也要清掉旧 config/allowlist 缓存。
         connectionGeneration += 1
-        resetDirectRuntime()
+        resetConnectionRoute()
         lastError = nil
         return didChange
     }
@@ -740,7 +776,7 @@ final class AppStore: ObservableObject {
         defaults.removeObject(forKey: endpointKey)
         defaults.removeObject(forKey: retiredFallbackEndpointKey)
         defaults.removeObject(forKey: retiredConnectionModeKey)
-        resetDirectRuntime()
+        resetConnectionRoute()
         endpoint = defaultEndpoint
         connectionProfiles = nextProfiles
         activeConnectionProfileID = nil
@@ -936,6 +972,7 @@ final class AppStore: ObservableObject {
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
     @discardableResult
     func preflightConnection(force: Bool = false) async -> Bool {
+        let localAvailable = await detectLocalAgent(force: force)
         guard isConfigured else {
             connectionStatus = .idle
             return false
@@ -953,25 +990,88 @@ final class AppStore: ObservableObject {
         connectionStatus = .testing
         lastError = nil
 
+        let normalizedEndpoint: String
         do {
-            let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
-            // 应用只探测固定的 Tailscale 地址；底层直连、Peer Relay 或 DERP 由 Tailscale 自行选择。
-            try await routeProbe(normalizedEndpoint, token, routeProbeTimeout)
-            connectionTermination = nil
-            connectionStatus = .connected("Tailscale")
-            lastError = nil
+            normalizedEndpoint = try Self.validatedEndpoint(endpoint)
+        } catch {
+            connectionStatus = .failed(error.localizedDescription)
+            lastError = error.localizedDescription
+            return false
+        }
+
+        var candidates: [(endpoint: String, route: ActiveConnectionRoute, timeout: TimeInterval)] = []
+        if localAvailable,
+           AgentAPIClient.normalizedEndpoint(normalizedEndpoint) != AgentAPIClient.normalizedEndpoint(localAgentEndpoint) {
+            candidates.append((
+                endpoint: localAgentEndpoint,
+                route: .local,
+                timeout: min(routeProbeTimeout, 1.5)
+            ))
+        }
+        let configuredRoute: ActiveConnectionRoute = Self.isLoopbackEndpoint(normalizedEndpoint) ? .local : .configured
+        candidates.append((endpoint: normalizedEndpoint, route: configuredRoute, timeout: routeProbeTimeout))
+
+        var configuredRouteError: Error?
+        for candidate in candidates {
+            do {
+                try await routeProbe(candidate.endpoint, token, candidate.timeout)
+                activateConnectionRoute(candidate.route, endpoint: candidate.endpoint)
+                connectionTermination = nil
+                connectionStatus = .connected(candidate.route.statusTitle)
+                lastError = nil
+                return true
+            } catch {
+                if Task.isCancelled || error is CancellationError {
+                    connectionStatus = .idle
+                    return false
+                }
+                // loopback 可能运行着另一个用户配置；本机 Token 不匹配时继续尝试档案地址，
+                // 不能提前把仍有效的 Tailscale 凭据标记为失效。
+                if candidate.endpoint == normalizedEndpoint {
+                    configuredRouteError = error
+                }
+            }
+        }
+
+        resetConnectionRoute()
+        let finalError = configuredRouteError ?? URLError(.cannotConnectToHost)
+        if isCredentialInvalidatingError(finalError) {
+            markCredentialsInvalid()
+            return false
+        }
+        connectionStatus = .failed(finalError.localizedDescription)
+        lastError = finalError.localizedDescription
+        return false
+    }
+
+    /// Catalyst 只探测固定 loopback 健康端点，不扫描局域网，也不读取服务端配置文件。
+    /// 这一步不携带 Token；真正选路仍需用当前档案凭据完成控制面和 WebSocket 验证。
+    @discardableResult
+    func detectLocalAgent(force: Bool = false) async -> Bool {
+        guard prefersLocalConnection else {
+            localAgentDetected = false
+            return false
+        }
+        if !force, localAgentDetected {
+            return true
+        }
+        guard !isLocalAgentProbeRunning else {
+            return localAgentDetected
+        }
+        isLocalAgentProbeRunning = true
+        defer { isLocalAgentProbeRunning = false }
+        do {
+            try await localAgentProbe(localAgentEndpoint, min(routeProbeTimeout, 1))
+            guard !Task.isCancelled else {
+                return localAgentDetected
+            }
+            localAgentDetected = true
             return true
         } catch {
             if Task.isCancelled || error is CancellationError {
-                connectionStatus = .idle
-                return false
+                return localAgentDetected
             }
-            if isCredentialInvalidatingError(error) {
-                markCredentialsInvalid()
-                return false
-            }
-            connectionStatus = .failed(error.localizedDescription)
-            lastError = error.localizedDescription
+            localAgentDetected = false
             return false
         }
     }
@@ -1175,6 +1275,40 @@ final class AppStore: ObservableObject {
         )
         // 同时验证控制面和 WebSocket，避免 /healthz 可用但真实 Codex 通道不可用时误选该地址。
         try await runtime.validateDirectGateway()
+    }
+
+    private static func defaultLocalAgentProbe(endpoint: String, timeout: TimeInterval) async throws {
+        _ = try await AgentAPIClient(endpoint: endpoint, token: "").health(timeout: timeout)
+    }
+
+    private static var isRunningOnMacCatalyst: Bool {
+#if targetEnvironment(macCatalyst)
+        true
+#else
+        false
+#endif
+    }
+
+    private static func isLoopbackEndpoint(_ endpoint: String) -> Bool {
+        guard let host = URLComponents(string: endpoint)?.host?.lowercased() else {
+            return false
+        }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    private func activateConnectionRoute(_ route: ActiveConnectionRoute, endpoint: String) {
+        let normalized = AgentAPIClient.normalizedEndpoint(endpoint)
+        if AgentAPIClient.normalizedEndpoint(connectionEndpoint) != normalized {
+            resetDirectRuntime()
+        }
+        activeRouteEndpoint = normalized
+        activeConnectionRoute = route
+    }
+
+    private func resetConnectionRoute() {
+        activeRouteEndpoint = nil
+        activeConnectionRoute = .configured
+        resetDirectRuntime()
     }
 
     private func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {

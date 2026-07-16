@@ -21,7 +21,7 @@ Mac agentd control plane / thin gateway
 
 已下线旧链路：`/api/sessions*`、`/api/sessions/{id}/ws`、Web/PWA 和 iOS PTY 文本解析回退都已经删除。后续不要再基于这些入口增加功能。
 
-目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex，也不做 Mac 自动发现。用户先在 Mac 上执行：
+目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex；Mac Catalyst 只自动检测同机固定 loopback，不扫描局域网或其它 Mac。用户先在 Mac 上执行：
 
 ```bash
 codex --version
@@ -140,6 +140,8 @@ xcodebuild \
 
 Catalyst 产物使用独立的 Mac `Info.plist`、App Sandbox 权限和标准 Mac 图标；现有 iPhone/iPad 构建、部署与 TestFlight 流程不变。
 
+同机连接有一条轻量优化链路：当 `agentd` 配置为具体的 Tailscale 或局域网 IP 时，服务端会同时监听相同端口的 `127.0.0.1`，不会扩大到 `0.0.0.0`。Catalyst 冷启动先探测 `http://127.0.0.1:8787/healthz`，再用当前 Mac 档案已经保存的 Token 验证本机链路；验证成功后本次运行优先走 loopback，但档案身份和缓存仍使用原 Tailscale Endpoint。首次配对仍需扫描二维码或输入访问码，本机健康检查不会返回 Token。手动填写私网 HTTP 地址时省略端口会自动补为 `8787`。
+
 真机运行：
 
 1. 用 Xcode 打开 `ios/MimiRemote/MimiRemote.xcodeproj`。
@@ -198,7 +200,7 @@ REFRESH_INSTALL=1 ./scripts/deploy-ipad.sh
 
 当前限制：
 
-- 可以保存多台 Mac，但只支持一个当前档案和一条活动后端连接；不做 Bonjour/SSH 自动发现或档案云同步。
+- 可以保存多台 Mac，但只支持一个当前档案和一条活动后端连接；Catalyst 仅检测同机固定 loopback，不做 Bonjour/SSH 任意主机发现或档案云同步。
 - direct 模式仍需要 app-server WebSocket transport 或 agentd 薄网关。
 - 每个 session 当前只允许一个 iOS WebSocket attach。
 - app-server runtime 走结构化事件；iOS 不再用 PTY/TUI 文本启发式解析消息气泡。

@@ -27,6 +27,30 @@ func TestVersionDoesNotRequireConfig(t *testing.T) {
 	}
 }
 
+func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		want       []string
+	}{
+		{name: "Tailscale IPv4", configured: "100.127.16.9:8787", want: []string{"100.127.16.9:8787", "127.0.0.1:8787"}},
+		{name: "LAN IPv4", configured: "192.168.31.10:9000", want: []string{"192.168.31.10:9000", "127.0.0.1:9000"}},
+		{name: "loopback", configured: "127.0.0.1:8787", want: []string{"127.0.0.1:8787"}},
+		{name: "localhost", configured: "localhost:8787", want: []string{"localhost:8787"}},
+		{name: "IPv4 wildcard", configured: "0.0.0.0:8787", want: []string{"0.0.0.0:8787"}},
+		{name: "IPv6 wildcard", configured: "[::]:8787", want: []string{"[::]:8787"}},
+		{name: "invalid keeps original", configured: "bad-address", want: []string{"bad-address"}},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := agentDListenAddresses(testCase.configured); !reflect.DeepEqual(got, testCase.want) {
+				t.Fatalf("监听地址不符合预期：got=%v want=%v", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	const longLivedToken = "0123456789abcdef0123456789abcdef"

@@ -143,40 +143,112 @@ struct WorkspaceRootView: View {
             }
     }
 
+    @ViewBuilder
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {
+        if sessionStore.sidebarProjects.isEmpty {
+            if catalogState == .loading {
+                workspaceLoadingState(tokens: tokens)
+            } else {
+                workspaceEmptyState(tokens: tokens)
+            }
+        } else {
+            VStack(spacing: 0) {
+                workspaceStrip(tokens: tokens)
+
+                Divider()
+                    .overlay(tokens.border.opacity(0.7))
+
+                if let selectedProject {
+                    workspaceDetail(project: selectedProject)
+                        .id(selectedProject.id)
+                        .refreshable {
+                            await refreshWorkspaceContent(projectID: selectedProject.id)
+                        }
+                } else {
+                    ContentUnavailableView("请选择工作区", systemImage: "folder")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .background(tokens.background.ignoresSafeArea())
+        }
+    }
+
+    private func workspaceLoadingState(tokens: ThemeTokens) -> some View {
         VStack(spacing: 0) {
             workspaceStrip(tokens: tokens)
 
             Divider()
                 .overlay(tokens.border.opacity(0.7))
 
-            if let selectedProject {
-                workspaceDetail(project: selectedProject)
-                    .id(selectedProject.id)
-                    .refreshable {
-                        await refreshWorkspaceContent(projectID: selectedProject.id)
-                    }
-            } else if !sessionStore.sidebarProjects.isEmpty {
-                ContentUnavailableView("请选择工作区", systemImage: "folder")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            ProgressView("正在加载工作区")
+                .font(themeStore.uiFont(.callout, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .tint(tokens.primaryAction)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(tokens.background.ignoresSafeArea())
-        .overlay {
-            if sessionStore.sidebarProjects.isEmpty, catalogState != .loading {
-                ContentUnavailableView {
-                    Label(emptyWorkspaceTitle, systemImage: emptyWorkspaceSymbol)
-                } description: {
+        .accessibilityIdentifier("workspace.loadingState")
+    }
+
+    private func workspaceEmptyState(tokens: ThemeTokens) -> some View {
+        let isFailure: Bool
+        if case .failed = catalogState {
+            isFailure = true
+        } else {
+            isFailure = false
+        }
+        let tint = isFailure ? tokens.warning : tokens.primaryAction
+
+        return VStack(spacing: 0) {
+            Spacer(minLength: 40)
+
+            VStack(spacing: 18) {
+                Image(systemName: emptyWorkspaceSymbol)
+                    .font(themeStore.uiFont(size: 28, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tint)
+                    .frame(width: 64, height: 64)
+                    .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                VStack(spacing: 7) {
+                    Text(emptyWorkspaceTitle)
+                        .font(themeStore.uiFont(.title3, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+
                     Text(emptyWorkspaceMessage)
-                } actions: {
-                    Button("打开目录") {
+                        .font(themeStore.uiFont(.callout))
+                        .foregroundStyle(tokens.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                }
+
+                Button {
+                    if isFailure {
+                        Task { await refreshCatalog() }
+                    } else {
                         isPresentingOpenWorkspace = true
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(tokens.primaryAction)
+                } label: {
+                    Label(isFailure ? "重新加载" : "打开目录", systemImage: isFailure ? "arrow.clockwise" : "folder.badge.plus")
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .padding(.horizontal, 4)
                 }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                .tint(tokens.primaryAction)
+                .accessibilityIdentifier("workspace.emptyAction")
             }
+            .frame(maxWidth: 420)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 36)
+
+            Spacer(minLength: 40)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("workspace.emptyState")
     }
 
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
@@ -376,6 +448,29 @@ private enum WorkspaceSessionLoadState: Equatable {
     }
 }
 
+private enum WorkspaceActionEmphasis: Equatable {
+    case primary
+    case accented
+    case secondary
+}
+
+private struct WorkspaceActionPressButtonStyle: ButtonStyle {
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // 按下反馈直接跟随触点；减少动态效果时仅改变透明度，避免不必要的缩放运动。
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .animation(
+                reduceMotion
+                    ? .easeOut(duration: 0.08)
+                    : .spring(response: 0.22, dampingFraction: 1),
+                value: configuration.isPressed
+            )
+    }
+}
+
 private struct WorkspaceLibraryCard: View {
     @EnvironmentObject private var themeStore: ThemeStore
     let project: AgentProject
@@ -452,6 +547,8 @@ private struct WorkspaceLibraryCard: View {
 private struct WorkspaceDetailView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let recentSessions: [AgentSession]
     let sessionLoadState: WorkspaceSessionLoadState
@@ -483,24 +580,41 @@ private struct WorkspaceDetailView: View {
     }
 
     private func workspaceActions(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("快捷操作")
                 .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], spacing: 10) {
-                actionButton(title: "在会话中打开", systemImage: "bubble.left.and.bubble.right", tokens: tokens, action: onOpenInSessions)
-
+            // 创建会话是工作区页的主任务；固定为一行两列，避免 iPad 上出现“三加一”的孤立按钮。
+            LazyVGrid(columns: actionColumns, spacing: 12) {
                 ForEach(WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: claudeChannelAvailable)) { choice in
-                    actionButton(title: choice.title, systemImage: choice.systemImage, tokens: tokens) {
+                    actionButton(
+                        title: choice.title,
+                        subtitle: choice == .codex ? "使用默认运行时开始" : "使用 Claude Code 运行时开始",
+                        systemImage: choice.systemImage,
+                        emphasis: choice == .codex ? .primary : .accented,
+                        tokens: tokens
+                    ) {
                         // thread 创建时就绑定 runtime；这里必须把用户选择一路传到 SessionStore。
                         onStartSession(choice)
                     }
                 }
+            }
+
+            // 导航和侧栏可见性属于辅助操作，降低视觉权重但保留完整 44pt 以上触控区域。
+            LazyVGrid(columns: actionColumns, spacing: 12) {
+                actionButton(
+                    title: "在会话中打开",
+                    systemImage: "bubble.left.and.bubble.right",
+                    emphasis: .secondary,
+                    tokens: tokens,
+                    action: onOpenInSessions
+                )
 
                 actionButton(
                     title: isShownInSessions ? "从会话侧栏隐藏" : "显示在会话侧栏",
                     systemImage: isShownInSessions ? "eye.slash" : "eye",
+                    emphasis: .secondary,
                     tokens: tokens,
                     action: onToggleSessionVisibility
                 )
@@ -508,32 +622,105 @@ private struct WorkspaceDetailView: View {
         }
     }
 
+    private var actionColumns: [GridItem] {
+        if horizontalSizeClass == .compact {
+            return [GridItem(.flexible(minimum: 0), spacing: 12)]
+        }
+        return [
+            GridItem(.flexible(minimum: 0), spacing: 12),
+            GridItem(.flexible(minimum: 0), spacing: 12)
+        ]
+    }
+
     private func actionButton(
         title: String,
+        subtitle: String? = nil,
         systemImage: String,
+        emphasis: WorkspaceActionEmphasis,
         tokens: ThemeTokens,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
+        let foreground = actionForeground(emphasis: emphasis, tokens: tokens)
+        let background = actionBackground(emphasis: emphasis, tokens: tokens)
+        let border = actionBorder(emphasis: emphasis, tokens: tokens)
+        let cornerRadius: CGFloat = emphasis == .secondary ? 12 : 16
+
+        return Button(action: action) {
+            HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .foregroundStyle(tokens.primaryAction)
-                    .frame(width: 20)
-                Text(title)
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
+                    .font(themeStore.uiFont(size: emphasis == .secondary ? 17 : 19, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(foreground)
+                    .frame(width: emphasis == .secondary ? 34 : 40, height: emphasis == .secondary ? 34 : 40)
+                    .background(actionIconBackground(emphasis: emphasis, tokens: tokens), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .foregroundStyle(foreground)
+                        .lineLimit(1)
+
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(themeStore.uiFont(.caption))
+                            .foregroundStyle(actionSecondaryForeground(emphasis: emphasis, tokens: tokens))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 8)
             }
-            .font(themeStore.uiFont(.callout, weight: .medium))
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: emphasis == .secondary ? 52 : 72, alignment: .leading)
+            .background(background, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(border, lineWidth: emphasis == .accented ? 1.2 : 1)
             }
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+    }
+
+    private func actionForeground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
+        emphasis == .primary ? tokens.primaryActionForeground : tokens.primaryText
+    }
+
+    private func actionSecondaryForeground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
+        emphasis == .primary ? tokens.primaryActionForeground.opacity(0.78) : tokens.secondaryText
+    }
+
+    private func actionBackground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
+        switch emphasis {
+        case .primary:
+            return tokens.primaryAction
+        case .accented:
+            return tokens.surface
+        case .secondary:
+            return tokens.elevatedSurface.opacity(0.58)
+        }
+    }
+
+    private func actionIconBackground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
+        switch emphasis {
+        case .primary:
+            return tokens.primaryActionForeground.opacity(0.15)
+        case .accented:
+            return tokens.accentSoft
+        case .secondary:
+            return tokens.surface.opacity(0.82)
+        }
+    }
+
+    private func actionBorder(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
+        switch emphasis {
+        case .primary:
+            return tokens.primaryAction.opacity(0.92)
+        case .accented:
+            return tokens.primaryAction.opacity(0.24)
+        case .secondary:
+            return tokens.border.opacity(0.58)
+        }
     }
 
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {

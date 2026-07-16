@@ -114,7 +114,7 @@ bash ./scripts/install-linux.sh install
 
 历史版本如果只存在 `codex-ipad-agent/config.json`，新版在默认路径启动时会把原始配置安全复制到 `mimi-remote/config.json`，新文件使用 `0600`，旧文件保留作为回退；不会重写 auth、projects、未知字段或移动旧 upstream Token/Worktree 路径。显式 `--config` 和 `AGENTD_CONFIG` 永远不触发自动迁移。
 
-如果 Mac 已安装并登录 Tailscale，`setup` 会优先把 `agentd` 绑定到 Tailscale IP；否则会使用 `127.0.0.1:8787` 并给出真机 iPad 不可直连的警告。
+如果 Mac 已安装并登录 Tailscale，`setup` 会优先把 `agentd` 绑定到 Tailscale IP；`serve` 同时增加相同端口的 `127.0.0.1` 监听，供同机 Catalyst 安全直连，不扩大到所有网卡。没有 Tailscale 时仍使用 `127.0.0.1:8787`，并给出真机 iPad 不可直连的警告。
 
 `agentd up`、`agentd start`、`agentd restart` 和后台 `serve` 会在启动服务前检查 `codex.bin`。旧绝对路径失效时，程序会依次检查当前 PATH、ChatGPT App 和 Codex App 内置二进制，并将可执行的绝对路径原子写回配置；这个修复只修改 `codex.bin`，不会轮换 Token 或覆盖项目。随后命令使用当前平台的系统服务管理器后台启动服务：macOS 调用 `brew services start mimi-remote`，Linux Release 调用 `systemctl --user start mimi-remote.service`。命令等待带鉴权的 `/api/readyz` 通过后，才在当前终端输出扫码连接二维码。`agentd serve` 只有在交互式前台终端运行时才会输出二维码；后台 service 不会把 Token 写入服务日志。`agentd up`、`agentd start` 和 `agentd pair` 会输出连接信息：
 
@@ -329,6 +329,8 @@ App 首次启动会进入设置页：
 
 - Endpoint：例如 `http://127.0.0.1:8787` 或 `http://100.x.y.z:8787`
 - Token：`AGENTD_TOKEN`
+
+Mac Catalyst 会在冷启动时检测同机 `127.0.0.1:8787`，并用当前档案已有 Token 验证后优先本机直连；首次配对仍需二维码或访问码。手动输入本机、局域网或 Tailscale HTTP 地址时，省略端口会按 `agentd` 默认值补为 `8787`。
 
 App 可以保存多台 Mac，但同一时间只连接一台。每台 Mac 的 Token 使用独立 iOS Keychain account 保存，UserDefaults 只保存显示名、Endpoint、最近成功时间和当前档案 ID，不保存 Token；已有档案可在设置中重命名，这个操作只更新本地显示名称，不读取 Token，也不重建当前连接。“忘记当前 Mac”或删除其它档案会先展示目标和重新配对影响，只有二次确认后才删除 Keychain 访问码。iPad App 固定走 `/api/app-server/ws` + app-server JSON-RPC 直连链路。为了支持本机/Tailscale 裸 IP HTTP，App 在系统层声明 `NSAllowsArbitraryLoads`；iOS 27 实测中只声明 `NSAllowsLocalNetworking` 仍会触发 ATS `-1022`。安全边界由应用层在设置提交、REST 请求和 WebSocket 握手前统一校验 Endpoint，只允许本机、局域网、Tailscale、`.ts.net` 或 HTTPS。CI 会防止 ATS 配置再次拦截 Tailscale HTTP，并保留应用层公网 HTTP 拒绝测试。不要把 agentd 暴露到公网。
 

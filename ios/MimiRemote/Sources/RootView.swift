@@ -29,12 +29,21 @@ struct RootView: View {
             }
         }
         .task {
+#if targetEnvironment(macCatalyst)
+            // Catalyst 先完成本机选路，再创建首批 REST/WebSocket client；否则并行 bootstrap
+            // 可能已经拿 Tailscale 地址建好 runtime，导致本次启动无法真正切到 loopback。
+            await appStore.preflightConnection()
+#endif
             await sessionStore.bootstrap(restoring: decodedSessionRestoreSnapshot)
             hasCompletedInitialBootstrap = true
         }
         .task {
+#if targetEnvironment(macCatalyst)
+            // 已在上面的有序启动任务中完成。
+#else
             // 冷启动先并行探测真实控制面和 WebSocket，设置页无需用户手动测试即可看到连接状态。
             await appStore.preflightConnection()
+#endif
         }
         .task(id: notificationRouteTaskID) {
             // 冷启动恢复必须先结束，否则 restoreSessionIfPossible 可能覆盖通知刚选中的会话。

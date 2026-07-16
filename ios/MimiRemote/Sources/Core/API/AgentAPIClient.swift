@@ -150,18 +150,19 @@ enum EndpointTransportPolicy {
               components.query == nil,
               components.fragment == nil,
               components.user == nil,
-              components.password == nil,
-              let url = components.url
+              components.password == nil
         else {
             return EndpointTransportAssessment(status: .invalid, host: rawHost, normalizedEndpoint: nil)
         }
 
-        let normalizedEndpoint = url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if scheme == "https" {
+            guard let url = components.url else {
+                return EndpointTransportAssessment(status: .invalid, host: rawHost, normalizedEndpoint: nil)
+            }
             return EndpointTransportAssessment(
                 status: .allowedHTTPS,
                 host: normalizedHost(rawHost),
-                normalizedEndpoint: normalizedEndpoint
+                normalizedEndpoint: url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             )
         }
         guard isAllowedInsecureHost(rawHost) else {
@@ -171,10 +172,18 @@ enum EndpointTransportPolicy {
                 normalizedEndpoint: nil
             )
         }
+        // agentd 的约定端口是 8787。私网 HTTP 未显式填写端口时自动补齐，
+        // 避免在 Mac 上输入 127.0.0.1 后被 URLSession 静默发送到 80 端口。
+        if components.port == nil {
+            components.port = 8787
+        }
+        guard let url = components.url else {
+            return EndpointTransportAssessment(status: .invalid, host: rawHost, normalizedEndpoint: nil)
+        }
         return EndpointTransportAssessment(
             status: .allowedPrivateHTTP,
             host: normalizedHost(rawHost),
-            normalizedEndpoint: normalizedEndpoint
+            normalizedEndpoint: url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         )
     }
 
@@ -248,8 +257,14 @@ struct AgentAPIClient {
         self.session = session
     }
 
-    func health() async throws -> HealthResponse {
-        try await request(path: "/healthz", method: "GET", requiresAuth: false, body: Optional<Data>.none)
+    func health(timeout: TimeInterval = 20) async throws -> HealthResponse {
+        try await request(
+            path: "/healthz",
+            method: "GET",
+            requiresAuth: false,
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
     }
 
     func claimPairing(_ claim: PairingClaimRequest) async throws -> PairingClaimResponse {

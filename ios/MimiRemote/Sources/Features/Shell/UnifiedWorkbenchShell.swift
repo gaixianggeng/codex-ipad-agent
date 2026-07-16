@@ -48,6 +48,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var selection: AppDestination? = .sessions
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var compactSessionPath: [AppDestination] = []
+    @State private var compactWorkspacePath: [AppDestination] = []
     @State private var compactSelectedTab: CompactWorkbenchTab = .sessions
     @State private var presentedSheet: AppSheetDestination?
 
@@ -134,8 +135,11 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.sessions)
 
-            NavigationStack {
+            NavigationStack(path: $compactWorkspacePath) {
                 workspaces(layout: layout)
+                    .navigationDestination(for: AppDestination.self) { destination in
+                        compactDestination(destination, layout: layout, tokens: tokens)
+                    }
             }
             .tabItem {
                 Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
@@ -161,12 +165,15 @@ struct UnifiedWorkbenchShell: View {
         .onChange(of: compactSessionPath) { oldPath, newPath in
             handleCompactPathChange(from: oldPath, to: newPath)
         }
+        .onChange(of: compactWorkspacePath) { oldPath, newPath in
+            handleCompactWorkspacePathChange(from: oldPath, to: newPath)
+        }
         .onChange(of: compactSelectedTab) { _, tab in
             switch tab {
             case .sessions:
                 selection = compactSessionPath.last ?? .sessions
             case .workspaces:
-                selection = .workspaces
+                selection = compactWorkspacePath.last ?? .workspaces
             case .settings:
                 // 设置是全局配置，不改变当前会话或工作区上下文。
                 break
@@ -522,21 +529,38 @@ struct UnifiedWorkbenchShell: View {
             }
         case .workspaces:
             compactSelectedTab = .workspaces
-        case .session:
-            compactSelectedTab = .sessions
-            guard compactSessionPath.last != destination else {
-                return
+            if !compactWorkspacePath.isEmpty {
+                compactWorkspacePath.removeAll()
             }
-            if let currentDestination = compactSessionPath.last,
-               case .session = currentDestination {
-                // 新建会话会先展示 local:* 占位，接口返回真实 ID 时只替换当前详情。
-                // 如果继续 append，系统会再 push 一层会话，视觉上就是“输入中又弹出新会话”。
-                compactSessionPath[compactSessionPath.index(before: compactSessionPath.endIndex)] = destination
+        case .session:
+            if compactSelectedTab == .workspaces {
+                // 会话详情压入工作区自己的导航栈，系统侧滑返回才能恢复进入前的工作区页面。
+                compactWorkspacePath = sessionPath(afterOpening: destination, currentPath: compactWorkspacePath)
             } else {
-                // 会话详情属于“会话”Tab；从工作区创建或打开后切回该 Tab 并保留系统返回手势。
-                compactSessionPath.append(destination)
+                compactSelectedTab = .sessions
+                compactSessionPath = sessionPath(afterOpening: destination, currentPath: compactSessionPath)
             }
         }
+    }
+
+    private func sessionPath(
+        afterOpening destination: AppDestination,
+        currentPath: [AppDestination]
+    ) -> [AppDestination] {
+        guard currentPath.last != destination else {
+            return currentPath
+        }
+
+        var updatedPath = currentPath
+        if let currentDestination = updatedPath.last,
+           case .session = currentDestination {
+            // 新建会话会先展示 local:* 占位，接口返回真实 ID 时只替换当前详情。
+            // 如果继续 append，系统会再 push 一层会话，视觉上就是“输入中又弹出新会话”。
+            updatedPath[updatedPath.index(before: updatedPath.endIndex)] = destination
+        } else {
+            updatedPath.append(destination)
+        }
+        return updatedPath
     }
 
     private func synchronizeNavigation(for layout: WorkbenchLayout) {
@@ -556,10 +580,16 @@ struct UnifiedWorkbenchShell: View {
         case .workspaces:
             compactSelectedTab = .workspaces
         case .session:
-            compactSelectedTab = .sessions
-            if compactSessionPath.last != destination {
-                // 首次进入窄屏或从宽屏旋转过来时，以当前会话建立一层确定的返回栈。
-                compactSessionPath = [destination]
+            if compactSelectedTab == .workspaces {
+                if compactWorkspacePath.last != destination {
+                    compactWorkspacePath = [destination]
+                }
+            } else {
+                compactSelectedTab = .sessions
+                if compactSessionPath.last != destination {
+                    // 首次进入窄屏或从宽屏旋转过来时，以当前会话建立一层确定的返回栈。
+                    compactSessionPath = [destination]
+                }
             }
         }
     }
@@ -574,6 +604,20 @@ struct UnifiedWorkbenchShell: View {
 
         if isSessionDestination(oldPath.last), !isSessionDestination(newPath.last) {
             // 返回列表后停止当前会话订阅，沿用原紧凑导航的资源释放语义。
+            sessionStore.returnToSessionList()
+        }
+    }
+
+    private func handleCompactWorkspacePathChange(
+        from oldPath: [AppDestination],
+        to newPath: [AppDestination]
+    ) {
+        let destination = newPath.last ?? .workspaces
+        selection = destination
+        compactSelectedTab = .workspaces
+
+        if isSessionDestination(oldPath.last), !isSessionDestination(newPath.last) {
+            // 返回工作区后释放当前会话订阅，但保留工作区和卡片选择。
             sessionStore.returnToSessionList()
         }
     }

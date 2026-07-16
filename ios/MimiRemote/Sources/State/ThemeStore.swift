@@ -216,7 +216,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.976, green: 0.973, blue: 0.961)
         case .dark:
-            return Color(red: 0.129, green: 0.114, blue: 0.106)
+            return Color(red: 0.090, green: 0.098, blue: 0.118)
         }
     }
 
@@ -228,7 +228,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.941, green: 0.937, blue: 0.929)
         case .dark:
-            return Color(red: 0.188, green: 0.157, blue: 0.137)
+            return Color(red: 0.137, green: 0.153, blue: 0.180)
         }
     }
 
@@ -240,7 +240,7 @@ extension ThemeTokens {
         case .light:
             return .white
         case .dark:
-            return Color(red: 0.157, green: 0.129, blue: 0.118)
+            return Color(red: 0.125, green: 0.137, blue: 0.165)
         }
     }
 
@@ -252,7 +252,7 @@ extension ThemeTokens {
         case .light:
             return .white
         case .dark:
-            return Color(red: 0.200, green: 0.161, blue: 0.114)
+            return Color(red: 0.125, green: 0.141, blue: 0.169)
         }
     }
 
@@ -264,14 +264,19 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.902, green: 0.890, blue: 0.878)
         case .dark:
-            return Color(red: 0.431, green: 0.345, blue: 0.204)
+            return Color(red: 0.231, green: 0.259, blue: 0.302)
         }
     }
 
-    /// 浅色保留品牌深紫；深色改用浅薰衣草色，避免深紫前景沉入暖黑背景。
+    /// 深色主按钮使用明确的梅紫实色；亮紫只留给小面积焦点，避免大按钮呈现灰紫雾感。
     var primaryAction: Color {
         guard preset == .codex else { return accent }
-        return resolvedScheme == .dark ? accent : .mimiPrimary
+        switch resolvedScheme {
+        case .light:
+            return .mimiPrimary
+        case .dark:
+            return Color(red: 0.584, green: 0.333, blue: 0.620)
+        }
     }
 
     var livelyAccent: Color {
@@ -279,10 +284,9 @@ extension ThemeTokens {
         return primaryAction
     }
 
-    /// 主操作填充变亮后，深色模式改用暖黑字，避免浅紫底继续叠白字造成低对比。
+    /// 主按钮在两种外观下都使用白字，维持一致、清晰的操作语义。
     var primaryActionForeground: Color {
-        guard preset == .codex, resolvedScheme == .dark else { return .white }
-        return background
+        .white
     }
 
     var accentSoft: Color {
@@ -291,7 +295,7 @@ extension ThemeTokens {
         case .light:
             return Color(red: 0.949, green: 0.933, blue: 0.945)
         case .dark:
-            return Color(red: 0.243, green: 0.224, blue: 0.247)
+            return Color(red: 0.165, green: 0.137, blue: 0.180)
         }
     }
 
@@ -303,7 +307,7 @@ extension ThemeTokens {
     func tint(for tone: AgentSessionStatusTone) -> Color {
         switch tone {
         case .active:
-            // 运行态是产品主操作的延续，Default 主题统一使用 #4A144A；真正完成/成功仍使用 success。
+            // 运行态延续当前外观的主操作色；真正完成/成功仍使用 success。
             return primaryAction
         case .warning:
             return warning
@@ -524,33 +528,33 @@ final class ThemeStore: ObservableObject {
     }
 
     private var codexDarkTokens: ThemeTokens {
-        // 深色使用暖石墨与低饱和浅薰衣草；品牌深紫只留在浅色模式，避免暗底可读性不足。
+        // 大面积区域保持中性石墨灰，只在交互和用户内容上使用明确的梅紫，避免棕色与灰紫叠加发闷。
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .dark,
-            background: Color(red: 0.098, green: 0.086, blue: 0.078),
-            surface: Color(red: 0.129, green: 0.114, blue: 0.106),
-            elevatedSurface: Color(red: 0.169, green: 0.145, blue: 0.133),
-            userBubble: Color(red: 0.318, green: 0.239, blue: 0.306),
-            assistantBubble: Color(red: 0.129, green: 0.114, blue: 0.106),
-            systemBubble: Color(red: 0.176, green: 0.161, blue: 0.157),
-            codeBlock: Color(red: 0.047, green: 0.039, blue: 0.035),
-            codeText: Color(red: 1.000, green: 0.969, blue: 0.941),
-            primaryText: Color(red: 1.000, green: 0.969, blue: 0.941),
-            secondaryText: Color(red: 0.827, green: 0.749, blue: 0.706),
-            tertiaryText: Color(red: 0.631, green: 0.525, blue: 0.467),
-            accent: Color(red: 0.835, green: 0.765, blue: 0.867),
-            warning: Color(red: 0.941, green: 0.702, blue: 0.361),
-            success: Color(red: 0.384, green: 0.769, blue: 0.576),
-            goalActive: Color(red: 0.851, green: 0.604, blue: 0.718),
-            voiceRecording: Color(red: 0.835, green: 0.765, blue: 0.867),
+            background: Color(red: 0.063, green: 0.067, blue: 0.078),
+            surface: Color(red: 0.098, green: 0.106, blue: 0.125),
+            elevatedSurface: Color(red: 0.141, green: 0.153, blue: 0.180),
+            userBubble: Color(red: 0.376, green: 0.231, blue: 0.404),
+            assistantBubble: Color(red: 0.098, green: 0.106, blue: 0.125),
+            systemBubble: Color(red: 0.125, green: 0.137, blue: 0.165),
+            codeBlock: Color(red: 0.043, green: 0.051, blue: 0.067),
+            codeText: Color(red: 0.949, green: 0.957, blue: 0.969),
+            primaryText: Color(red: 0.949, green: 0.957, blue: 0.969),
+            secondaryText: Color(red: 0.663, green: 0.690, blue: 0.729),
+            tertiaryText: Color(red: 0.494, green: 0.529, blue: 0.576),
+            accent: Color(red: 0.773, green: 0.541, blue: 0.831),
+            warning: Color(red: 0.941, green: 0.702, blue: 0.353),
+            success: Color(red: 0.396, green: 0.757, blue: 0.545),
+            goalActive: Color(red: 0.808, green: 0.498, blue: 0.631),
+            voiceRecording: Color(red: 0.773, green: 0.541, blue: 0.831),
             voiceWaveformGradient: [
-                Color(red: 0.929, green: 0.867, blue: 0.941),
-                Color(red: 0.835, green: 0.765, blue: 0.867),
-                Color(red: 0.655, green: 0.545, blue: 0.647)
+                Color(red: 0.871, green: 0.682, blue: 0.914),
+                Color(red: 0.773, green: 0.541, blue: 0.831),
+                Color(red: 0.584, green: 0.333, blue: 0.620)
             ],
-            border: Color(red: 0.286, green: 0.255, blue: 0.278),
-            selectionFill: Color(red: 0.235, green: 0.216, blue: 0.235)
+            border: Color(red: 0.204, green: 0.224, blue: 0.259),
+            selectionFill: Color(red: 0.180, green: 0.149, blue: 0.196)
         )
     }
 

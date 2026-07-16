@@ -753,20 +753,31 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listener, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		_ = shutdownServeResources(manager, appServerWSProcess)
-		return err
+	listenAddresses := agentDListenAddresses(cfg.Listen)
+	listeners := make([]net.Listener, 0, len(listenAddresses))
+	for _, address := range listenAddresses {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			_ = shutdownServeResources(manager, appServerWSProcess)
+			return fmt.Errorf("监听 %s 失败：%w", address, err)
+		}
+		listeners = append(listeners, listener)
 	}
 	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 
-	// HTTP 与 managed upstream 各自最多发送一次退出事件；容量必须覆盖二者，确保 shutdown
-	// 同时触发两个 goroutine 退出时不会因为主 goroutine 已选中另一事件而遗留阻塞发送。
-	errCh := make(chan error, 2)
-	go func() {
-		log.Printf("agentd listening on http://%s", cfg.Listen)
-		errCh <- server.Serve(listener)
-	}()
+	// 每个 HTTP listener 与 managed upstream 各自最多发送一次退出事件；容量必须覆盖全部来源，
+	// 确保 shutdown 同时触发多个 goroutine 退出时不会因主 goroutine 已选中另一事件而阻塞。
+	errCh := make(chan error, len(listeners)+1)
+	for _, listener := range listeners {
+		listener := listener
+		go func() {
+			log.Printf("agentd listening on http://%s", listener.Addr())
+			errCh <- server.Serve(listener)
+		}()
+	}
 	if appServerWSProcess != nil {
 		go func() {
 			<-appServerWSProcess.Done()
@@ -782,6 +793,24 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			return shutdownServeResources(manager, appServerWSProcess)
 		})
 	})
+}
+
+func agentDListenAddresses(configured string) []string {
+	address := strings.TrimSpace(configured)
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return []string{address}
+	}
+
+	normalizedHost := strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(normalizedHost)
+	// loopback 和通配地址本身已经覆盖 127.0.0.1；只在绑定具体的 Tailscale/局域网地址时
+	// 增加同端口 loopback，避免为了 Catalyst 本机直连而把服务扩大暴露到所有网卡。
+	if normalizedHost == "" || strings.EqualFold(normalizedHost, "localhost") ||
+		(ip != nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+		return []string{address}
+	}
+	return []string{address, net.JoinHostPort("127.0.0.1", port)}
 }
 
 func waitForServeExit(stopCh <-chan os.Signal, errCh <-chan error, shutdown func() error) error {

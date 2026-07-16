@@ -656,6 +656,29 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertTrue(publicHTTP.guidance.contains("明文传输"))
     }
 
+    func testPrivateHTTPEndpointWithoutPortUsesAgentDDefaultPort() throws {
+        XCTAssertEqual(
+            try AppStore.validatedEndpoint("127.0.0.1"),
+            "http://127.0.0.1:8787"
+        )
+        XCTAssertEqual(
+            try AppStore.validatedEndpoint("localhost"),
+            "http://localhost:8787"
+        )
+        XCTAssertEqual(
+            try AppStore.validatedEndpoint("100.100.10.20"),
+            "http://100.100.10.20:8787"
+        )
+        XCTAssertEqual(
+            try AppStore.validatedEndpoint("127.0.0.1:9000"),
+            "http://127.0.0.1:9000"
+        )
+        XCTAssertEqual(
+            try AppStore.validatedEndpoint("https://example.com"),
+            "https://example.com"
+        )
+    }
+
     func testAllowsLoopbackAndPrivateIPv6HTTP() throws {
         XCTAssertEqual(try AppStore.validatedEndpoint("http://[::1]:8787"), "http://[::1]:8787")
         XCTAssertEqual(
@@ -669,9 +692,14 @@ final class PairingLinkTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let recorder = ConnectionRouteProbeRecorder()
-        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
-            await recorder.record(endpoint)
-        }
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+            }
+        )
 
         do {
             _ = try await store.prepareConnectionSettings(
@@ -831,9 +859,14 @@ final class PairingLinkTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
         let recorder = ConnectionRouteProbeRecorder()
-        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
-            await recorder.record(endpoint)
-        }
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+            }
+        )
         store.token = "test-token"
 
         let connected = await store.preflightConnection()
@@ -850,9 +883,14 @@ final class PairingLinkTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
         let recorder = ConnectionRouteProbeRecorder()
-        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
-            await recorder.record(endpoint)
-        }
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+            }
+        )
         store.token = "test-token"
 
         let firstConnected = await store.preflightConnection()
@@ -869,9 +907,14 @@ final class PairingLinkTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
-        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { _, _, _ in
-            throw URLError(.cannotConnectToHost)
-        }
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in
+                throw URLError(.cannotConnectToHost)
+            }
+        )
         store.token = "test-token"
 
         let connected = await store.preflightConnection()
@@ -887,9 +930,14 @@ final class PairingLinkTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let recorder = ConnectionRouteProbeRecorder()
-        let store = AppStore(defaults: defaults, routeProbeTimeout: 0.1) { endpoint, _, _ in
-            await recorder.record(endpoint)
-        }
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+            }
+        )
         store.token = ""
 
         let connected = await store.preflightConnection()
@@ -898,6 +946,97 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertFalse(connected)
         XCTAssertEqual(store.connectionStatus, .idle)
         XCTAssertEqual(probedEndpoints, [])
+    }
+
+    func testMacCatalystPreflightPrefersDetectedLoopbackWithoutChangingProfileIdentity() async throws {
+        let suiteName = "PairingLinkTests.LocalRoutePreferred.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: true,
+            localAgentProbe: { _, _ in },
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+            }
+        )
+        store.token = "test-token"
+
+        let connected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertTrue(connected)
+        XCTAssertTrue(store.localAgentDetected)
+        XCTAssertTrue(store.isUsingLocalConnection)
+        XCTAssertEqual(store.connectionStatus, .connected("本机直连"))
+        XCTAssertEqual(store.endpoint, "http://100.64.0.1:8787")
+        XCTAssertEqual(store.connectionEndpoint, "http://127.0.0.1:8787")
+        XCTAssertEqual(try store.client().endpoint, "http://127.0.0.1:8787")
+        XCTAssertEqual(probedEndpoints, ["http://127.0.0.1:8787"])
+    }
+
+    func testMacCatalystPreflightFallsBackToConfiguredRouteWhenLocalTokenDoesNotMatch() async throws {
+        let suiteName = "PairingLinkTests.LocalRouteFallback.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("http://100.64.0.1:8787", forKey: "agentd.endpoint")
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: true,
+            localAgentProbe: { _, _ in },
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+                if endpoint == "http://127.0.0.1:8787" {
+                    throw AgentAPIError.credentialsInvalid(status: 401)
+                }
+            }
+        )
+        store.token = "test-token"
+
+        let connected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertTrue(connected)
+        XCTAssertTrue(store.localAgentDetected)
+        XCTAssertFalse(store.isUsingLocalConnection)
+        XCTAssertEqual(store.connectionStatus, .connected("Tailscale"))
+        XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.1:8787")
+        XCTAssertEqual(
+            probedEndpoints,
+            ["http://127.0.0.1:8787", "http://100.64.0.1:8787"]
+        )
+    }
+
+    func testMacCatalystPreflightDetectsLocalAgentBeforeFirstPairing() async throws {
+        let suiteName = "PairingLinkTests.LocalAgentDetection.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(
+            defaults: defaults,
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: true,
+            localAgentProbe: { endpoint, _ in
+                await recorder.record(endpoint)
+            },
+            routeProbe: { _, _, _ in
+                XCTFail("首次配对前没有 Token，不应执行鉴权选路")
+            }
+        )
+        store.token = ""
+
+        let connected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertFalse(connected)
+        XCTAssertTrue(store.localAgentDetected)
+        XCTAssertEqual(store.connectionStatus, .idle)
+        XCTAssertEqual(probedEndpoints, ["http://127.0.0.1:8787"])
     }
 
     func testFormatsConnectionTestDuration() {

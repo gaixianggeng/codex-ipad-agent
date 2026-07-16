@@ -20,9 +20,9 @@ final class ConversationSnapshotTests: XCTestCase {
     }
 
     // 固定尺寸 + 固定内容，专门锁住气泡对齐这类纯视觉回归（user 贴右、assistant/system 贴左）。
-    // 使用模拟器默认外观，避免 snapshot 基准图和真实首屏默认 UI 不一致。
+    // 默认保持浅色基线；需要验证深色配色时显式传入 colorScheme，避免依赖 Simulator 当前外观。
     // 首次运行会自动录制参考图到 __Snapshots__/，之后逐像素对比。
-    private func makeSeededConversation() -> some View {
+    private func makeSeededConversation(colorScheme: ColorScheme = .light) -> some View {
         let sessionID = "snapshot_session"
         let conversationStore = ConversationStore()
         let themeStore = makeThemeStore()
@@ -68,7 +68,7 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
-            .environment(\.colorScheme, .light)
+            .environment(\.colorScheme, colorScheme)
             .frame(width: 1024, height: 768)
     }
 
@@ -264,6 +264,13 @@ final class ConversationSnapshotTests: XCTestCase {
     func testConversationBubbleAlignment() {
         assertSnapshot(
             of: makeSeededConversation(),
+            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+        )
+    }
+
+    func testDefaultDarkConversationPalette() {
+        assertSnapshot(
+            of: makeSeededConversation(colorScheme: .dark),
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
         )
     }

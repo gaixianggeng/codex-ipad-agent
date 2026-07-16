@@ -84,6 +84,9 @@ struct SettingsView: View {
                     )
                 }
                 LabeledContent("连接地址", value: appStore.endpoint)
+                if appStore.isUsingLocalConnection {
+                    LabeledContent("连接方式", value: "本机直连")
+                }
                 if let termination = appStore.connectionTermination {
                     Label(termination.message, systemImage: "lock.trianglebadge.exclamationmark")
                         .font(.footnote)
@@ -515,6 +518,24 @@ private struct InitialConnectionSettingsSections: View {
             }
 
             Section {
+#if targetEnvironment(macCatalyst)
+                if appStore.localAgentDetected {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(
+                            appStore.isUsingLocalConnection ? "已通过本机助手直连" : "已检测到这台 Mac 上的助手",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .font(themeStore.uiFont(.body, weight: .semibold))
+                        .foregroundStyle(tokens.success)
+                        if !appStore.isConfigured {
+                            Text("首次连接仍需访问码完成配对；验证后会优先使用本机直连。")
+                                .font(themeStore.uiFont(.footnote))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+#endif
                 if !appStore.isConfigured {
                     VStack(alignment: .leading, spacing: 5) {
                         Label("先在 Mac 启动 Mimi 助手", systemImage: "desktopcomputer")
@@ -701,6 +722,10 @@ private struct InitialConnectionSettingsSections: View {
         .listRowBackground(tokens.elevatedSurface)
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
+        .task {
+            // AppStore 负责探测和状态发布；View 生命周期只触发一次可取消任务，不直接发网络请求。
+            _ = await appStore.detectLocalAgent()
+        }
     }
 
     private var removalConfirmationBinding: Binding<Bool> {

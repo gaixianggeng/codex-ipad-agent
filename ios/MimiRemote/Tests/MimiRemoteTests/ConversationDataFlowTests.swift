@@ -204,10 +204,11 @@ final class ConversationDataFlowTests: XCTestCase {
         let appStore = AppStore(
             defaults: defaults,
             tokenStore: TokenStore(keychain: keychain),
-            routeProbeTimeout: 0.1
-        ) { _, _, _ in
-            throw URLError(.cannotConnectToHost)
-        }
+            routeProbeTimeout: 0.1,
+            routeProbe: { _, _, _ in
+                throw URLError(.cannotConnectToHost)
+            }
+        )
         let project = makeProject(id: "proj_profile_validation_failure")
         let running = makeSession(id: "sess_profile_validation_failure", projectID: project.id, title: "旧连接", status: "running", source: "codex")
         let client = MockSessionStoreClient(projects: [project], sessions: [running])

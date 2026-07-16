@@ -541,7 +541,7 @@ struct DoctorView: View {
         defer { activeOperation = nil }
 
         do {
-            let url = try DoctorDiagnosticsParser.doctorURL(endpoint: appStore.endpoint)
+            let url = try DoctorDiagnosticsParser.doctorURL(endpoint: appStore.connectionEndpoint)
             var request = URLRequest(url: url)
             request.timeoutInterval = 20
             request.setValue("Bearer \(appStore.token)", forHTTPHeaderField: "Authorization")
@@ -565,7 +565,7 @@ struct DoctorView: View {
         defer { activeOperation = nil }
 
         do {
-            guard var components = URLComponents(string: AgentAPIClient.normalizedEndpoint(appStore.endpoint)) else {
+            guard var components = URLComponents(string: AgentAPIClient.normalizedEndpoint(appStore.connectionEndpoint)) else {
                 throw DoctorDiagnosticError.invalidEndpoint
             }
             components.path = "/api/debug/codex-history"
