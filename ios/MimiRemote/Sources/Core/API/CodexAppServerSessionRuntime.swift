@@ -151,8 +151,31 @@ actor CodexAppServerSessionRuntime {
     }
 
     func capabilities(path: String?) async throws -> CapabilityListResponse {
-        // Skills/MCP 浏览是 agentd 控制面的只读发现能力，不走 app-server JSON-RPC。
-        try await AgentAPIClient(endpoint: endpoint, token: token).capabilities(path: path)
+        let legacyClient = AgentAPIClient(endpoint: endpoint, token: token)
+        guard let cwd = path?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty else {
+            return try await legacyClient.capabilities(path: path)
+        }
+
+        // Skill 以官方 app-server skills/list 为准，它能覆盖 system skill 与插件缓存；
+        // 旧 REST 发现仍保留为兼容兜底，并继续提供 MCP 列表。
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+                    .skillsList(cwd: cwd, forceReload: true)
+            )
+            let skills = SkillCapability.parseAppServerListResult(result, cwd: cwd)
+            let legacy = try? await legacyClient.capabilities(path: cwd)
+            return CapabilityListResponse(
+                path: cwd,
+                skills: skills.isEmpty ? (legacy?.skills ?? []) : skills,
+                mcpServers: legacy?.mcpServers ?? []
+            )
+        } catch {
+            if let legacy = try? await legacyClient.capabilities(path: cwd) {
+                return legacy
+            }
+            throw error
+        }
     }
 
     func transcribeVoice(filename: String, contentType: String, audioData: Data, language: String?, prompt: String?) async throws -> VoiceTranscriptionResponse {

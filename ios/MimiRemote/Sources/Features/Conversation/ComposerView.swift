@@ -27,6 +27,8 @@ struct ComposerView: View {
     @State private var photoLibraryPickerRequest: PhotoLibraryPickerRequest?
     @State private var manualInputKind: ManualInputKind = .localImage
     @State private var showsAddContentPanel = false
+    @State private var showsSkillPicker = false
+    @State private var showsModelGridPicker = false
     @State private var showsManualInputSheet = false
     @State private var showsAdvancedOptionsSheet = false
     @State private var showsImageFileImporter = false
@@ -43,6 +45,8 @@ struct ComposerView: View {
     @State private var measuredComposerTextHeight: CGFloat = 0
     @State private var isComposerTextComposing = false
     @State private var composerTextSubmitBridge = ComposerTextSubmitBridge()
+    @State private var activeSkillQuery: ComposerSkillQuery?
+    @State private var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @State private var guidedFollowUpEnabled = false
@@ -89,6 +93,7 @@ struct ComposerView: View {
         .animation(composerMotionAnimation, value: isVoicePressActive)
         .animation(composerMotionAnimation, value: isVoiceTranscribing)
         .animation(composerMotionAnimation, value: composerState.draft.isEmpty)
+        .animation(composerMotionAnimation, value: activeSkillQuery != nil)
         .sheet(isPresented: $showsManualInputSheet) {
             ManualUserInputSheet(kind: manualInputKind) { input in
                 composerState.addAttachment(input)
@@ -178,6 +183,7 @@ struct ComposerView: View {
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             cancelVoiceInteraction(clearStatus: true)
+            activeSkillQuery = nil
         }
     }
 
@@ -623,6 +629,7 @@ struct ComposerView: View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
             composerTextArea(tokens: tokens)
+            skillAutocompletePanel
             voiceReviewNotice
             composerToolbar(tokens: tokens)
         }
@@ -679,6 +686,22 @@ struct ComposerView: View {
                     } else {
                         endHoldToTalk()
                     }
+                },
+                skillAutocompleteActive: activeSkillQuery != nil && !filteredSkillSuggestions.isEmpty,
+                onSkillQueryChange: { query in
+                    if query != activeSkillQuery {
+                        activeSkillQuery = query
+                        selectedSkillSuggestionIndex = 0
+                    }
+                },
+                onSkillAutocompleteMove: { offset in
+                    moveSkillSuggestion(by: offset)
+                },
+                onSkillAutocompleteCommit: {
+                    commitSelectedSkillSuggestion()
+                },
+                onSkillAutocompleteDismiss: {
+                    activeSkillQuery = nil
                 }
             )
             .frame(height: composerTextHeight)
@@ -705,6 +728,56 @@ struct ComposerView: View {
                 clearVoiceTransientStatus()
             }
         )
+    }
+
+    @ViewBuilder
+    private var skillAutocompletePanel: some View {
+        if activeSkillQuery != nil, !filteredSkillSuggestions.isEmpty {
+            SkillAutocompletePanel(
+                skills: filteredSkillSuggestions,
+                selectedIndex: min(selectedSkillSuggestionIndex, filteredSkillSuggestions.count - 1),
+                onSelect: { skill in
+                    selectSkillFromAutocomplete(skill)
+                }
+            )
+            .environmentObject(themeStore)
+            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
+        }
+    }
+
+    private var filteredSkillSuggestions: [SkillCapability] {
+        guard let activeSkillQuery else { return [] }
+        let query = activeSkillQuery.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = enabledSkillShortcuts.filter { skill in
+            guard !selectedSkillPaths.contains(skill.path) else { return false }
+            return query.isEmpty
+                || skill.name.localizedCaseInsensitiveContains(query)
+                || skill.presentationName.localizedCaseInsensitiveContains(query)
+        }
+        return Array(matches.prefix(5))
+    }
+
+    private func moveSkillSuggestion(by offset: Int) {
+        guard !filteredSkillSuggestions.isEmpty else { return }
+        let count = filteredSkillSuggestions.count
+        selectedSkillSuggestionIndex = (selectedSkillSuggestionIndex + offset + count) % count
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func commitSelectedSkillSuggestion() {
+        guard !filteredSkillSuggestions.isEmpty else { return }
+        let index = min(selectedSkillSuggestionIndex, filteredSkillSuggestions.count - 1)
+        selectSkillFromAutocomplete(filteredSkillSuggestions[index])
+    }
+
+    private func selectSkillFromAutocomplete(_ skill: SkillCapability) {
+        guard let query = activeSkillQuery else { return }
+        if let updatedText = composerTextSubmitBridge.replaceText(in: query.replacementRange, with: "") {
+            composerState.draft = updatedText
+        }
+        addSkillAttachment(skill, closesPanel: false)
+        activeSkillQuery = nil
+        selectedSkillSuggestionIndex = 0
     }
 
     private func composerCardBorderColor(_ tokens: ThemeTokens) -> Color {
@@ -762,8 +835,9 @@ struct ComposerView: View {
         // 让添加、语音和发送成为稳定的一级操作。
         HStack(spacing: 8) {
             addContentButton
+            skillPickerButton
+            modelPickerControl
             if !isCompactComposer {
-                modelOptionsMenu
                 permissionMenu
             }
             composerOptionsMenu
@@ -772,9 +846,6 @@ struct ComposerView: View {
 
     private var composerOptionsMenu: some View {
         Menu {
-            if isCompactComposer {
-                compactModelOptionsMenu
-            }
             reasoningEffortOptionsMenu
             if isCompactComposer {
                 permissionMenu
@@ -918,46 +989,41 @@ struct ComposerView: View {
         }
     }
 
-    private var skillShortcutMenu: some View {
-        Menu {
-            let skills = enabledSkillShortcuts
-            if skills.isEmpty {
-                if let error = sessionStore.capabilityErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
-                    Text("Skill 列表不可用：\(error)")
-                } else {
-                    Text("暂无可用 Skill")
-                }
-            } else {
-                Section("可用 Skill") {
-                    ForEach(skills.prefix(12)) { skill in
-                        Button {
-                            addSkillAttachment(skill)
-                        } label: {
-                            Label(skill.name, systemImage: "wand.and.stars")
-                        }
-                    }
-                }
-            }
-            Divider()
-            Button {
-                Task { await sessionStore.refreshCapabilities() }
-            } label: {
-                Label(sessionStore.isRefreshingCapabilities ? "刷新中" : "刷新 Skill 列表", systemImage: "arrow.clockwise")
-            }
-            .disabled(sessionStore.isRefreshingCapabilities)
-            Button {
-                openManualInput(.skill)
-            } label: {
-                Label("手动添加 Skill", systemImage: "square.and.pencil")
-            }
+    private var skillPickerButton: some View {
+        Button {
+            showsSkillPicker.toggle()
         } label: {
-            Label("Skill", systemImage: "wand.and.stars")
-                .foregroundStyle(themeStore.tokens(for: colorScheme).accent)
+            composerToolbarControlLabel(
+                title: isCompactComposer ? nil : "Skill",
+                systemImage: "wand.and.stars",
+                isSelected: !selectedSkillPaths.isEmpty,
+                accessibilityLabel: "选择 Skill"
+            )
         }
-        .buttonStyle(.bordered)
-        .tint(themeStore.tokens(for: colorScheme).accent)
-        .keyboardShortcut("k", modifiers: [.command, .shift])
-        .help("从 capabilities.skills 一键插入 .skill(name:path)")
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel("选择 Skill")
+        .accessibilityValue(selectedSkillPaths.isEmpty ? "未选择" : "已选择 \(selectedSkillPaths.count) 个")
+        .help("选择 Skill，或在输入框键入 $ 快速调用")
+        .popover(isPresented: $showsSkillPicker, arrowEdge: .bottom) {
+            SkillPickerPanel(
+                skills: enabledSkillShortcuts,
+                selectedPaths: selectedSkillPaths,
+                errorMessage: sessionStore.capabilityErrorMessage,
+                isRefreshing: sessionStore.isRefreshingCapabilities,
+                onToggle: { skill in
+                    toggleSkillAttachment(skill)
+                },
+                onRefresh: {
+                    Task { await sessionStore.refreshCapabilities() }
+                },
+                onManualAdd: {
+                    showsSkillPicker = false
+                    openManualInput(.skill)
+                }
+            )
+            .environmentObject(themeStore)
+            .presentationCompactAdaptation(.sheet)
+        }
     }
 
     private var enabledSkillShortcuts: [SkillCapability] {
@@ -969,10 +1035,38 @@ struct ComposerView: View {
             }
     }
 
-    private func addSkillAttachment(_ skill: SkillCapability) {
+    private var selectedSkillPaths: Set<String> {
+        Set(composerState.attachments.compactMap { item in
+            guard case .skill(_, let path) = item else { return nil }
+            return path
+        })
+    }
+
+    private func addSkillAttachment(_ skill: SkillCapability, closesPanel: Bool = true) {
+        guard !selectedSkillPaths.contains(skill.path) else {
+            if closesPanel {
+                showsAddContentPanel = false
+            }
+            return
+        }
         composerState.addAttachment(.skill(name: skill.name, path: skill.path))
         clearVoiceTransientStatus()
-        showsAddContentPanel = false
+        if closesPanel {
+            showsAddContentPanel = false
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func toggleSkillAttachment(_ skill: SkillCapability) {
+        if let index = composerState.attachments.firstIndex(where: { item in
+            guard case .skill(_, let path) = item else { return false }
+            return path == skill.path
+        }) {
+            composerState.removeAttachment(at: index)
+            UISelectionFeedbackGenerator().selectionChanged()
+        } else {
+            addSkillAttachment(skill, closesPanel: false)
+        }
     }
 
     private func setSendMode(_ mode: ComposerSendMode) {
@@ -1187,6 +1281,49 @@ struct ComposerView: View {
         .accessibilityHint("调整速度和输出")
     }
 
+    @ViewBuilder
+    private var modelPickerControl: some View {
+        if selectedSessionRuntimeProviderForModelMenu == "claude" {
+            modelOptionsMenu
+        } else {
+            Button {
+                showsModelGridPicker.toggle()
+            } label: {
+                composerToolbarControlLabel(
+                    title: isCompactComposer ? nil : modelPickerTriggerTitle,
+                    systemImage: "cpu",
+                    titleMaxWidth: 150,
+                    accessibilityLabel: "切换模型与推理强度"
+                )
+                .contentTransition(.opacity)
+            }
+            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityLabel("切换模型与推理强度")
+            .accessibilityValue(modelPickerTriggerTitle)
+            .accessibilityHint("打开三乘三模型选择器，可沿两个方向滑动")
+            .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
+                ModelReasoningGridPicker(
+                    options: modelOptionsForMenu,
+                    selection: selectedModelGridSelection,
+                    selectedModelID: composerState.turnOptions.model,
+                    isRefreshing: sessionStore.isRefreshingAppServerModels,
+                    onSelect: { option, effort in
+                        selectGridModel(option, effort: effort)
+                    },
+                    onSelectModelOnly: { option in
+                        selectModelOnly(option)
+                    },
+                    onRefresh: {
+                        Task { await sessionStore.refreshAppServerModelOptions(force: true) }
+                    }
+                )
+                .environmentObject(themeStore)
+                .presentationCompactAdaptation(.sheet)
+            }
+            .animation(composerMotionAnimation, value: modelPickerTriggerTitle)
+        }
+    }
+
     private var modelOptionsMenu: some View {
         Menu {
             modelOptionItems
@@ -1204,14 +1341,52 @@ struct ComposerView: View {
         .accessibilityHint("选择下一轮使用的模型")
     }
 
-    private var compactModelOptionsMenu: some View {
-        Menu {
-            modelOptionItems
-        } label: {
-            Label("模型 · \(selectedModelSummaryTitle)", systemImage: "cpu")
+    private var selectedModelGridSelection: GPT56ModelGridSelection {
+        let rows = GPT56ModelGridCatalog.rows(from: modelOptionsForMenu)
+        let selectedID = composerState.turnOptions.model
+        let option = rows.first(where: { $0.model == selectedID })
+            ?? rows.first(where: \.isDefault)
+            ?? rows.first
+        let effort = composerState.turnOptions.reasoningEffort.flatMap { selected in
+            GPT56ModelGridCatalog.efforts.contains(selected) ? selected : nil
+        } ?? option.flatMap { option in
+            option.defaultReasoningEffort.flatMap(CodexAppServerReasoningEffort.init(rawValue:))
+        } ?? .medium
+        return GPT56ModelGridSelection(
+            modelID: option?.model ?? "gpt-5.6-sol",
+            effort: effort
+        )
+    }
+
+    private var modelPickerTriggerTitle: String {
+        guard let selectedModel = composerState.turnOptions.model,
+              GPT56ModelGridCatalog.modelOrder.contains(selectedModel.lowercased())
+        else {
+            return selectedModelSummaryTitle
         }
-        .accessibilityLabel("切换模型")
-        .accessibilityValue(selectedModelSummaryTitle)
+        let model = GPT56ModelGridCatalog.shortTitle(for: selectedModel)
+        let effort = composerState.turnOptions.reasoningEffort ?? selectedModelGridSelection.effort
+        return "5.6 \(model) · \(GPT56ModelGridCatalog.effortTitle(effort))"
+    }
+
+    private func selectGridModel(_ option: CodexAppServerModelOption, effort: CodexAppServerReasoningEffort) {
+        withAnimation(composerMotionAnimation) {
+            composerState.turnOptions.runtimeProvider = option.runtimeProvider
+            composerState.turnOptions.model = option.model
+            composerState.turnOptions.modelProvider = option.provider
+            composerState.turnOptions.reasoningEffort = effort
+        }
+    }
+
+    private func selectModelOnly(_ option: CodexAppServerModelOption?) {
+        withAnimation(composerMotionAnimation) {
+            composerState.turnOptions.runtimeProvider = option?.runtimeProvider ?? payloadRuntimeProviderForSelectedSessionLock()
+            composerState.turnOptions.model = option?.model
+            composerState.turnOptions.modelProvider = option?.provider
+            if let defaultEffort = option?.defaultReasoningEffort.flatMap(CodexAppServerReasoningEffort.init(rawValue:)) {
+                composerState.turnOptions.reasoningEffort = defaultEffort
+            }
+        }
     }
 
     @ViewBuilder
@@ -1396,7 +1571,8 @@ struct ComposerView: View {
     }
 
     private var modelOptionsForMenu: [CodexAppServerModelOption] {
-        let options = sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
+        let source = sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
+        let options = source.filter { !$0.hidden }
         guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
             return options
         }
@@ -1493,40 +1669,59 @@ struct ComposerView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(Array(composerState.attachments.enumerated()), id: \.offset) { index, item in
-                        HStack(spacing: 6) {
-                            Button {
-                                previewingAttachment = item
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: attachmentSymbol(for: item))
-                                    Text(item.previewText)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!canPreviewAttachment(item))
-
-                            Button {
-                                composerState.removeAttachment(at: index)
-                                if previewingAttachment?.id == item.id {
-                                    previewingAttachment = nil
-                                }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .accessibilityLabel("移除")
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .font(themeStore.uiFont(.caption))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background(themeStore.tokens(for: colorScheme).elevatedSurface, in: Capsule())
-                        .overlay {
-                            Capsule().strokeBorder(themeStore.tokens(for: colorScheme).border)
-                        }
+                        attachmentChip(item, index: index)
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func attachmentChip(_ item: CodexAppServerUserInput, index: Int) -> some View {
+        if case .skill(let name, let path) = item {
+            let capability = enabledSkillShortcuts.first { $0.path == path || $0.name == name }
+            SkillAttachmentToken(
+                metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
+                onOpen: canPreviewAttachment(item) ? { previewingAttachment = item } : nil,
+                onRemove: { removeAttachment(item, at: index) }
+            )
+            .environmentObject(themeStore)
+        } else {
+            HStack(spacing: 6) {
+                Button {
+                    previewingAttachment = item
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: attachmentSymbol(for: item))
+                        Text(item.previewText)
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canPreviewAttachment(item))
+
+                Button {
+                    removeAttachment(item, at: index)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .accessibilityLabel("移除")
+                }
+                .buttonStyle(.plain)
+            }
+            .font(themeStore.uiFont(.caption))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(themeStore.tokens(for: colorScheme).elevatedSurface, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(themeStore.tokens(for: colorScheme).border)
+            }
+        }
+    }
+
+    private func removeAttachment(_ item: CodexAppServerUserInput, at index: Int) {
+        composerState.removeAttachment(at: index)
+        if previewingAttachment?.id == item.id {
+            previewingAttachment = nil
         }
     }
 
@@ -4065,6 +4260,19 @@ private final class ComposerTextSubmitBridge {
             isComposing: textView.hasMarkedText
         )
     }
+
+    func replaceText(in range: NSRange, with replacement: String) -> String? {
+        guard let textView,
+              range.location >= 0,
+              NSMaxRange(range) <= ((textView.text ?? "") as NSString).length
+        else {
+            return nil
+        }
+        textView.textStorage.replaceCharacters(in: range, with: replacement)
+        textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+        textView.delegate?.textViewDidChange?(textView)
+        return textView.text
+    }
 }
 
 private struct ComposerTextView: UIViewRepresentable {
@@ -4080,6 +4288,11 @@ private struct ComposerTextView: UIViewRepresentable {
     let onContentHeightChange: (CGFloat) -> Void
     let onCompositionStateChange: (Bool) -> Void
     let onVoiceShortcutPressChanged: (Bool) -> Void
+    let skillAutocompleteActive: Bool
+    let onSkillQueryChange: (ComposerSkillQuery?) -> Void
+    let onSkillAutocompleteMove: (Int) -> Void
+    let onSkillAutocompleteCommit: () -> Void
+    let onSkillAutocompleteDismiss: () -> Void
 
     func makeUIView(context: Context) -> CommandSubmitTextView {
         let textView = CommandSubmitTextView()
@@ -4093,6 +4306,10 @@ private struct ComposerTextView: UIViewRepresentable {
             context.coordinator.reportContentHeight(for: textView)
         }
         textView.onVoiceShortcutPressChanged = onVoiceShortcutPressChanged
+        textView.isSkillAutocompleteActive = skillAutocompleteActive
+        textView.onSkillAutocompleteMove = onSkillAutocompleteMove
+        textView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
+        textView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
         textView.backgroundColor = .clear
         textView.font = font
         textView.textColor = textColor
@@ -4121,6 +4338,10 @@ private struct ComposerTextView: UIViewRepresentable {
             context.coordinator.reportContentHeight(for: textView)
         }
         uiView.onVoiceShortcutPressChanged = onVoiceShortcutPressChanged
+        uiView.isSkillAutocompleteActive = skillAutocompleteActive
+        uiView.onSkillAutocompleteMove = onSkillAutocompleteMove
+        uiView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
+        uiView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
         context.coordinator.updateCompositionState(uiView.hasMarkedText)
         let shouldForceExternalTextSync = context.coordinator.lastAppliedExternalRevision != externalTextRevision
 
@@ -4187,6 +4408,7 @@ private struct ComposerTextView: UIViewRepresentable {
         private var isComposingText = false
         private var pendingCompositionState: Bool?
         private var isCompositionStateReportScheduled = false
+        private var lastSkillQuery: ComposerSkillQuery?
 
         init(_ parent: ComposerTextView) {
             self.parent = parent
@@ -4202,6 +4424,7 @@ private struct ComposerTextView: UIViewRepresentable {
             if !hasMarkedText {
                 syncCommittedTextIfNeeded(currentText, force: false)
             }
+            updateSkillQuery(for: textView)
             reportContentHeight(for: textView)
         }
 
@@ -4215,6 +4438,7 @@ private struct ComposerTextView: UIViewRepresentable {
                 // 部分输入法结束 marked text 时只触发 selection 变化；这里补一次收敛。
                 syncCommittedTextIfNeeded(textView.text ?? "", force: false)
             }
+            updateSkillQuery(for: textView)
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
@@ -4224,6 +4448,7 @@ private struct ComposerTextView: UIViewRepresentable {
             updateCompositionState(false)
             // 失焦是最后兜底边界，保证 UIKit 文本不会滞留在旧 draft 之外。
             syncCommittedTextIfNeeded(textView.text ?? "", force: true)
+            publishSkillQuery(nil)
         }
 
         func updateCompositionState(_ isComposing: Bool) {
@@ -4289,6 +4514,21 @@ private struct ComposerTextView: UIViewRepresentable {
             }
         }
 
+        private func updateSkillQuery(for textView: UITextView) {
+            let query = textView.hasMarkedText
+                ? nil
+                : ComposerSkillQuery.match(text: textView.text ?? "", selectedRange: textView.selectedRange)
+            publishSkillQuery(query)
+        }
+
+        private func publishSkillQuery(_ query: ComposerSkillQuery?) {
+            guard query != lastSkillQuery else { return }
+            lastSkillQuery = query
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.onSkillQueryChange(query)
+            }
+        }
+
         private func visibleContentHeight(for textView: UITextView) -> CGFloat {
             let contentHeight = ceil(textView.contentSize.height)
             if contentHeight > 0 {
@@ -4315,6 +4555,10 @@ private final class CommandSubmitTextView: UITextView {
     var onCommandSubmit: (() -> Bool)?
     var onContentLayoutChanged: ((CommandSubmitTextView) -> Void)?
     var onVoiceShortcutPressChanged: ((Bool) -> Void)?
+    var onSkillAutocompleteMove: ((Int) -> Void)?
+    var onSkillAutocompleteCommit: (() -> Void)?
+    var onSkillAutocompleteDismiss: (() -> Void)?
+    var isSkillAutocompleteActive = false
     private var isVoiceShortcutPressed = false
     private var lastReportedLayoutWidth: CGFloat = 0
 
@@ -4335,7 +4579,26 @@ private final class CommandSubmitTextView: UITextView {
             modifierFlags: .command,
             discoverabilityTitle: "发送"
         )
-        return (super.keyCommands ?? []) + [submit]
+        return (super.keyCommands ?? []) + [
+            submit,
+            UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(selectPreviousSkill)),
+            UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(selectNextSkill)),
+            UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(commitSkillAutocomplete)),
+            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(commitSkillAutocomplete)),
+            UIKeyCommand(input: "\u{1B}", modifierFlags: [], action: #selector(dismissSkillAutocomplete))
+        ]
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        switch action {
+        case #selector(selectPreviousSkill),
+             #selector(selectNextSkill),
+             #selector(commitSkillAutocomplete),
+             #selector(dismissSkillAutocomplete):
+            return isSkillAutocompleteActive
+        default:
+            return super.canPerformAction(action, withSender: sender)
+        }
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -4369,6 +4632,22 @@ private final class CommandSubmitTextView: UITextView {
     @objc private func handleCommandReturn() {
         // 普通回车仍由 UITextView 插入换行；只有 Command + Return 走发送。
         _ = onCommandSubmit?()
+    }
+
+    @objc private func selectPreviousSkill() {
+        onSkillAutocompleteMove?(-1)
+    }
+
+    @objc private func selectNextSkill() {
+        onSkillAutocompleteMove?(1)
+    }
+
+    @objc private func commitSkillAutocomplete() {
+        onSkillAutocompleteCommit?()
+    }
+
+    @objc private func dismissSkillAutocomplete() {
+        onSkillAutocompleteDismiss?()
     }
 
     private func finishVoiceShortcutPress() {

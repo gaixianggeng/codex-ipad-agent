@@ -487,6 +487,91 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(parsed.first?.isDefault, true)
     }
 
+    func testSkillsListBuilderAndRichMetadataParser() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let request = try CodexAppServerRequestBuilder(allowlistedProjects: [project])
+            .skillsList(cwd: project.path, forceReload: true)
+        XCTAssertEqual(request.method, "skills/list")
+        XCTAssertEqual(request.params?.objectValue?["cwds"]?.arrayValue?.first?.stringValue, project.path)
+        XCTAssertEqual(request.params?.objectValue?["forceReload"]?.boolValue, true)
+
+        let parsed = SkillCapability.parseAppServerListResult(.object([
+            "data": .array([
+                .object([
+                    "cwd": .string(project.path),
+                    "errors": .array([]),
+                    "skills": .array([
+                        .object([
+                            "name": .string("review"),
+                            "description": .string("Review changes"),
+                            "scope": .string("system"),
+                            "path": .string("/Users/me/.codex/skills/.system/review/SKILL.md"),
+                            "enabled": .bool(true),
+                            "interface": .object([
+                                "displayName": .string("Code Review"),
+                                "shortDescription": .string("Find risky changes"),
+                                "brandColor": .string("#43A7A8")
+                            ])
+                        ])
+                    ])
+                ])
+            ])
+        ]), cwd: project.path)
+
+        let skill = try XCTUnwrap(parsed.first)
+        XCTAssertEqual(skill.name, "review")
+        XCTAssertEqual(skill.presentationName, "Code Review")
+        XCTAssertEqual(skill.presentationDescription, "Find risky changes")
+        XCTAssertEqual(skill.scope, "system")
+        XCTAssertEqual(skill.brandColor, "#43A7A8")
+    }
+
+    func testModelListParserRetainsReasoningGridMetadata() throws {
+        let parsed = CodexAppServerModelOption.parseListResult(.object([
+            "data": .array([
+                .object([
+                    "model": .string("gpt-5.6-sol"),
+                    "displayName": .string("GPT-5.6 Sol"),
+                    "description": .string("Detail and polish"),
+                    "isDefault": .bool(true),
+                    "hidden": .bool(false),
+                    "defaultReasoningEffort": .string("low"),
+                    "supportedReasoningEfforts": .array([
+                        .object(["reasoningEffort": .string("medium"), "description": .string("Balanced")]),
+                        .object(["reasoningEffort": .string("high"), "description": .string("Deep")]),
+                        .object(["reasoningEffort": .string("xhigh"), "description": .string("Deepest")])
+                    ])
+                ])
+            ])
+        ]))
+
+        let option = try XCTUnwrap(parsed.first)
+        XCTAssertEqual(option.title, "GPT-5.6 Sol")
+        XCTAssertEqual(option.supportedReasoningEfforts, ["medium", "high", "xhigh"])
+        XCTAssertEqual(option.defaultReasoningEffort, "low")
+        XCTAssertFalse(option.hidden)
+        XCTAssertEqual(GPT56ModelGridCatalog.rows(from: parsed).map(\.model), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+    }
+
+    func testComposerSkillQueryOnlyMatchesWhitespaceDelimitedTokenAtCursor() throws {
+        let text = "请检查 $apple-de"
+        let query = try XCTUnwrap(ComposerSkillQuery.match(
+            text: text,
+            selectedRange: NSRange(location: (text as NSString).length, length: 0)
+        ))
+        XCTAssertEqual(query.query, "apple-de")
+        XCTAssertEqual((text as NSString).substring(with: query.replacementRange), "$apple-de")
+
+        XCTAssertNil(ComposerSkillQuery.match(
+            text: "price$skill",
+            selectedRange: NSRange(location: 11, length: 0)
+        ))
+        XCTAssertNil(ComposerSkillQuery.match(
+            text: "$skill",
+            selectedRange: NSRange(location: 0, length: 2)
+        ))
+    }
+
     func testModelListParserAcceptsKeyedSnakeCaseDefaults() throws {
         let parsed = CodexAppServerModelOption.parseListResult(.object([
             "data": .object([

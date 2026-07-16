@@ -14,7 +14,7 @@
 
 ## 当前开放能力
 
-Go Gateway 当前开放 23 个 client frame method，其中 `initialized` 是 notification，其余是 request：
+Go Gateway 当前开放 24 个 client frame method，其中 `initialized` 是 notification，其余是 request：
 
 | 能力 | 方法 |
 | --- | --- |
@@ -24,7 +24,7 @@ Go Gateway 当前开放 23 个 client frame method，其中 `initialized` 是 no
 | 目标任务 | `thread/goal/get`、`thread/goal/set`、`thread/goal/clear` |
 | Review | `review/start` |
 | Turn | `turn/start`、`turn/steer`、`turn/interrupt` |
-| 只读账号能力 | `model/list`、`account/rateLimits/read` |
+| 只读发现能力 | `model/list`、`skills/list`、`account/rateLimits/read` |
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
 
@@ -35,6 +35,12 @@ Go Gateway 当前开放 23 个 client frame method，其中 `initialized` 是 no
 - cwd 缺失、畸形、目录不存在或越权时，整条 thread 和 snippet 一并删除；
 - 只有实际下发的 thread 才进入 Gateway 授权缓存，供后续 `thread/read` / `thread/resume` 使用；
 - 搜索复用历史读取的请求频率、请求字节、响应字节和单帧大小预算。
+
+`skills/list` 只用于只读发现：
+
+- `cwds` 必须且只能包含一个 project、`browse_roots` 或 managed Worktree 内的授权目录；
+- Gateway 只保留 `cwds` 与布尔型 `forceReload`，未知参数全部剔除；
+- Skill 配置写入、启停、安装与插件管理仍不开放。
 
 `review/start` 额外收紧为：
 
