@@ -365,8 +365,92 @@ struct SkillCapability: Codable, Hashable, Identifiable {
     let scope: String
     let path: String
     let enabled: Bool
+    let displayName: String?
+    let shortDescription: String?
+    let iconSmall: String?
+    let iconLarge: String?
+    let brandColor: String?
+
+    init(
+        name: String,
+        description: String?,
+        scope: String,
+        path: String,
+        enabled: Bool,
+        displayName: String? = nil,
+        shortDescription: String? = nil,
+        iconSmall: String? = nil,
+        iconLarge: String? = nil,
+        brandColor: String? = nil
+    ) {
+        self.name = name
+        self.description = description
+        self.scope = scope
+        self.path = path
+        self.enabled = enabled
+        self.displayName = displayName
+        self.shortDescription = shortDescription
+        self.iconSmall = iconSmall
+        self.iconLarge = iconLarge
+        self.brandColor = brandColor
+    }
 
     var id: String { path }
+
+    var presentationName: String {
+        displayName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? name
+    }
+
+    var presentationDescription: String? {
+        shortDescription?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? description?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    static func parseAppServerListResult(_ result: CodexAppServerJSONValue?, cwd: String) -> [SkillCapability] {
+        guard let entries = result?.objectValue?["data"]?.arrayValue else {
+            return []
+        }
+        let normalizedCWD = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        let matchingEntries = entries.filter { entry in
+            guard let entryCWD = entry.objectValue?["cwd"]?.stringValue else {
+                return false
+            }
+            return URL(fileURLWithPath: entryCWD).standardizedFileURL.path == normalizedCWD
+        }
+        let sourceEntries = matchingEntries.isEmpty ? entries : matchingEntries
+        var seenPaths: Set<String> = []
+        return sourceEntries
+            .flatMap { $0.objectValue?["skills"]?.arrayValue ?? [] }
+            .compactMap { value in
+                guard let object = value.objectValue,
+                      let name = object["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty,
+                      let path = object["path"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !path.isEmpty,
+                      !seenPaths.contains(path)
+                else {
+                    return nil
+                }
+                seenPaths.insert(path)
+                let interface = object["interface"]?.objectValue
+                return SkillCapability(
+                    name: name,
+                    description: object["description"]?.stringValue,
+                    scope: object["scope"]?.stringValue ?? "repo",
+                    path: path,
+                    enabled: object["enabled"]?.boolValue ?? true,
+                    displayName: interface?["displayName"]?.stringValue,
+                    shortDescription: interface?["shortDescription"]?.stringValue
+                        ?? object["shortDescription"]?.stringValue,
+                    iconSmall: interface?["iconSmall"]?.stringValue,
+                    iconLarge: interface?["iconLarge"]?.stringValue,
+                    brandColor: interface?["brandColor"]?.stringValue
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.presentationName.localizedStandardCompare(rhs.presentationName) == .orderedAscending
+            }
+    }
 }
 
 struct MCPCapability: Codable, Hashable, Identifiable {
@@ -2157,6 +2241,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
     let runtimeProvider: String?
     let description: String?
     let isDefault: Bool
+    let supportedReasoningEfforts: [String]
+    let defaultReasoningEffort: String?
+    let hidden: Bool
 
     init(
         id: String,
@@ -2164,7 +2251,10 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
         provider: String? = nil,
         runtimeProvider: String? = nil,
         description: String? = nil,
-        isDefault: Bool = false
+        isDefault: Bool = false,
+        supportedReasoningEfforts: [String] = [],
+        defaultReasoningEffort: String? = nil,
+        hidden: Bool = false
     ) {
         let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
         self.model = trimmedID
@@ -2173,6 +2263,14 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
         self.runtimeProvider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.description = description?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.isDefault = isDefault
+        self.supportedReasoningEfforts = supportedReasoningEfforts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        self.defaultReasoningEffort = defaultReasoningEffort?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .nilIfEmpty
+        self.hidden = hidden
     }
 
     var id: String {
@@ -2188,7 +2286,10 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             provider: provider,
             runtimeProvider: runtimeProvider,
             description: description,
-            isDefault: isDefault
+            isDefault: isDefault,
+            supportedReasoningEfforts: supportedReasoningEfforts,
+            defaultReasoningEffort: defaultReasoningEffort,
+            hidden: hidden
         )
     }
 
@@ -2200,6 +2301,27 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
     }
 
     static let builtInFallback: [CodexAppServerModelOption] = [
+        CodexAppServerModelOption(
+            id: "gpt-5.6-sol",
+            title: "GPT-5.6 Sol",
+            description: "Detail and polish",
+            supportedReasoningEfforts: ["medium", "high", "xhigh"],
+            defaultReasoningEffort: "medium"
+        ),
+        CodexAppServerModelOption(
+            id: "gpt-5.6-terra",
+            title: "GPT-5.6 Terra",
+            description: "Everyday workhorse",
+            supportedReasoningEfforts: ["medium", "high", "xhigh"],
+            defaultReasoningEffort: "medium"
+        ),
+        CodexAppServerModelOption(
+            id: "gpt-5.6-luna",
+            title: "GPT-5.6 Luna",
+            description: "Clear and repeatable",
+            supportedReasoningEfforts: ["medium", "high", "xhigh"],
+            defaultReasoningEffort: "medium"
+        ),
         CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true),
         CodexAppServerModelOption(id: "gpt-5-codex", title: "gpt-5-codex"),
         CodexAppServerModelOption(id: "gpt-5.1-codex", title: "gpt-5.1-codex"),
@@ -2302,8 +2424,26 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             runtimeProvider: firstString(in: object, keys: ["runtimeProvider", "runtime_provider", "runtime"]),
             description: firstString(in: object, keys: ["description", "summary"]),
             // app-server 历史返回里默认标记存在 camelCase 和 snake_case 两种形态。
-            isDefault: object["isDefault"]?.boolValue ?? object["is_default"]?.boolValue ?? object["default"]?.boolValue ?? false
+            isDefault: object["isDefault"]?.boolValue ?? object["is_default"]?.boolValue ?? object["default"]?.boolValue ?? false,
+            supportedReasoningEfforts: reasoningEfforts(in: object),
+            defaultReasoningEffort: firstString(in: object, keys: ["defaultReasoningEffort", "default_reasoning_effort"]),
+            hidden: object["hidden"]?.boolValue ?? false
         )
+    }
+
+    private static func reasoningEfforts(in object: [String: CodexAppServerJSONValue]) -> [String] {
+        let values = object["supportedReasoningEfforts"]?.arrayValue
+            ?? object["supported_reasoning_efforts"]?.arrayValue
+            ?? []
+        return values.compactMap { value in
+            if let raw = value.stringValue {
+                return raw
+            }
+            guard let option = value.objectValue else {
+                return nil
+            }
+            return firstString(in: option, keys: ["reasoningEffort", "reasoning_effort", "effort", "id"])
+        }
     }
 
     private static func firstString(in object: [String: CodexAppServerJSONValue], keys: [String]) -> String? {
@@ -2799,6 +2939,14 @@ struct CodexAppServerRequestBuilder {
 
     func modelList() -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "model/list")
+    }
+
+    func skillsList(cwd: String, forceReload: Bool = false) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        return CodexAppServerRequestSpec(method: "skills/list", params: .object([
+            "cwds": .array([.string(path)]),
+            "forceReload": .bool(forceReload)
+        ]))
     }
 
     func accountRateLimitsRead() -> CodexAppServerRequestSpec {

@@ -88,6 +88,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"turn/steer":              {},
 	"turn/interrupt":          {},
 	"model/list":              {},
+	"skills/list":             {},
 	"account/rateLimits/read": {},
 }
 
@@ -1091,6 +1092,8 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewayInitializeParams(params)
 	case "initialized", "model/list", "account/rateLimits/read":
 		sanitized = map[string]any{}
+	case "skills/list":
+		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)
 	case "thread/list":
 		sanitized = sanitizedGatewayThreadListParams(params)
 	case "thread/search":
@@ -1137,6 +1140,15 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		return nil, fmt.Errorf("重写 app-server 安全参数失败：%w", err)
 	}
 	return rewritten, nil
+}
+
+func sanitizedGatewaySkillsListParams(params map[string]any, cwd string) map[string]any {
+	// 移动端只能扫描一个已经授权的工作区，不能借 skills/list 枚举任意目录。
+	safe := map[string]any{"cwds": []any{cwd}}
+	if forceReload, ok := gatewayBoolParam(params, "forceReload"); ok {
+		safe["forceReload"] = forceReload
+	}
+	return safe
 }
 
 func sanitizedGatewayGoalSetParams(params map[string]any) map[string]any {
@@ -3022,6 +3034,25 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			return validated, err
 		}
 	}
+	if method == "skills/list" {
+		cwd, err := gatewaySkillsListCWD(params)
+		if err != nil {
+			return validated, err
+		}
+		scope, ok := r.gatewayScopeForPath(cwd)
+		if !ok {
+			return validated, fmt.Errorf("skills/list.cwds 必须来自 projects allowlist 或 browse_roots")
+		}
+		if _, exists := params["forceReload"]; exists {
+			if _, ok := gatewayBoolParam(params, "forceReload"); !ok {
+				return validated, fmt.Errorf("skills/list.forceReload 必须是布尔值")
+			}
+		}
+		validated.cwd = cwd
+		validated.hasCWD = true
+		validated.cwdScope = scope
+		validated.cwdScopeOK = true
+	}
 	if cwd, ok := gatewayStringParam(params, "cwd"); ok {
 		scope, pendingManagedPath, scopeOK := r.gatewayScopeForPathWithPendingUse(cwd, gatewayMethodNeedsManagedPendingUse(method))
 		if !scopeOK {
@@ -3076,6 +3107,23 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	}
 	committedPendingUse = true
 	return validated, nil
+}
+
+func gatewaySkillsListCWD(params map[string]any) (string, error) {
+	raw, ok := params["cwds"]
+	if !ok {
+		return "", fmt.Errorf("skills/list.cwds 必须包含一个授权工作区")
+	}
+	values, ok := raw.([]any)
+	if !ok || len(values) != 1 {
+		return "", fmt.Errorf("skills/list.cwds 只能包含一个授权工作区")
+	}
+	cwd, ok := values[0].(string)
+	cwd = strings.TrimSpace(cwd)
+	if !ok || cwd == "" {
+		return "", fmt.Errorf("skills/list.cwds 必须包含一个授权工作区")
+	}
+	return cwd, nil
 }
 
 func gatewayMethodNeedsManagedPendingUse(method string) bool {

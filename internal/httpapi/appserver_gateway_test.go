@@ -76,7 +76,7 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 	}
 	for _, method := range []string{
 		"thread/turns/list", "thread/name/set", "thread/compact/start", "thread/unsubscribe",
-		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start", "turn/steer",
+		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start", "turn/steer", "skills/list",
 	} {
 		if !containsAnyString(allowedMethods, method) {
 			t.Fatalf("allowed_methods 应包含 %s：%v", method, allowedMethods)

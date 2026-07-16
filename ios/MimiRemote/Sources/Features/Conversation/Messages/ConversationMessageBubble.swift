@@ -100,6 +100,8 @@ struct MessageBubble: View {
         )
         if shouldRenderUserImages {
             userImageContent(style: style)
+        } else if shouldRenderStructuredUserPayload {
+            structuredUserContent(style: style)
         } else if shouldRenderMarkdown {
             let plan = MessageRenderPlanCache.shared.plan(for: message)
             let references = fileReferences
@@ -142,13 +144,7 @@ struct MessageBubble: View {
 
             userImageGallery(style: style)
 
-            let accessoryText = payloadAccessoryText
-            if !accessoryText.isEmpty {
-                Text(accessoryText)
-                    .font(style.captionFont)
-                    .foregroundStyle(style.secondaryColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            userPayloadAccessories(style: style)
 
             MessageTimestampCaption(
                 text: message.timestampCaptionText,
@@ -222,6 +218,60 @@ struct MessageBubble: View {
         message.role == .user
             && message.kind == .message
             && (!payloadImageItems.isEmpty || !contentImageReferences.isEmpty)
+    }
+
+    private var shouldRenderStructuredUserPayload: Bool {
+        message.role == .user
+            && message.kind == .message
+            && (!payloadSkillItems.isEmpty || !payloadMentionItems.isEmpty)
+    }
+
+    private func structuredUserContent(style: MarkdownStyle) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            let text = structuredPayloadText
+            if !text.isEmpty {
+                Text(text)
+                    .font(style.bodyFont)
+                    .foregroundStyle(userBubbleForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            userPayloadAccessories(style: style)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var structuredPayloadText: String {
+        if !payloadText.isEmpty {
+            return payloadText
+        }
+        var text = message.content
+        for item in payloadSkillItems + payloadMentionItems {
+            text = text.replacingOccurrences(of: item.previewText, with: "")
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @ViewBuilder
+    private func userPayloadAccessories(style: MarkdownStyle) -> some View {
+        ForEach(payloadSkillItems) { item in
+            if case .skill(let name, let path) = item {
+                let capability = sessionStore.capabilityList?.skills.first { $0.path == path || $0.name == name }
+                SkillInvocationCard(
+                    metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
+                    sendStatus: message.sendStatus,
+                    usesUserBubbleContrast: true
+                )
+                .environmentObject(themeStore)
+            }
+        }
+
+        let accessoryText = payloadAccessoryText
+        if !accessoryText.isEmpty {
+            Text(accessoryText)
+                .font(style.captionFont)
+                .foregroundStyle(style.secondaryColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var payloadImageItems: [CodexAppServerUserInput] {
@@ -304,14 +354,28 @@ struct MessageBubble: View {
         }
         return payload.input.compactMap { item in
             switch item {
-            case .skill, .mention:
+            case .mention:
                 return item.previewText
-            case .text, .image, .localImage:
+            case .text, .image, .localImage, .skill:
                 return nil
             }
         }
         .joined(separator: " ")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var payloadSkillItems: [CodexAppServerUserInput] {
+        message.turnPayload?.input.filter { item in
+            if case .skill = item { return true }
+            return false
+        } ?? []
+    }
+
+    private var payloadMentionItems: [CodexAppServerUserInput] {
+        message.turnPayload?.input.filter { item in
+            if case .mention = item { return true }
+            return false
+        } ?? []
     }
 
     private var fileReferences: [ConversationFileReference] {
