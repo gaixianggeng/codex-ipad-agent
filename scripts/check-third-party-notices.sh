@@ -9,7 +9,7 @@ PACKAGE_RESOLVED="ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshar
 
 for command_name in go ruby rg awk; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "第三方许可门禁失败：缺少命令 $command_name。" >&2
+    echo "第三方许可门禁失败：缺少命令 ${command_name}。" >&2
     exit 127
   fi
 done

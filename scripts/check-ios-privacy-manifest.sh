@@ -19,7 +19,7 @@ expect_raw() {
   local actual
   actual="$(plutil -extract "$key_path" raw -o - "$MANIFEST")"
   if [[ "$actual" != "$expected" ]]; then
-    echo "隐私清单门禁失败：$key_path = $actual，期望 $expected。" >&2
+    echo "隐私清单门禁失败：$key_path = ${actual}，期望 ${expected}。" >&2
     exit 1
   fi
 }

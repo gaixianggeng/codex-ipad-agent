@@ -11,7 +11,7 @@ fi
 
 for command_name in rsync tar; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "导出失败：缺少命令 $command_name。" >&2
+    echo "导出失败：缺少命令 ${command_name}。" >&2
     exit 127
   fi
 done
