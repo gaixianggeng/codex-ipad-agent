@@ -168,7 +168,9 @@ actor EventReducer {
                     body: request.body,
                     kind: request.kind,
                     risk: request.risk,
-                    count: nil
+                    count: nil,
+                    availableDecisions: request.availableDecisions,
+                    persistentPermissionRules: request.persistentPermissionRules
                 )
             ))
             output.contextUpdates.append((

@@ -97,6 +97,7 @@ private final class StaticNetworkPathStatusSource: NetworkPathStatusSource {
 protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
     func capabilities(path: String?) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -147,11 +148,20 @@ protocol SessionStoreAPIClient {
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
+    func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
 }
 
 extension SessionStoreAPIClient {
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        let value = runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value.isEmpty || value == "codex" || value == "openai"
+    }
+
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
         nil
+    }
+    func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
+        try await refreshRateLimit(sessionID: nil)
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []
@@ -1257,6 +1267,8 @@ final class SessionStore: ObservableObject {
     @Published private(set) var isUpdatingThreadGoal = false
     @Published private(set) var threadGoalErrorMessage: String?
     @Published private(set) var appServerModelOptions: [CodexAppServerModelOption] = []
+    @Published private(set) var isClaudeRuntimeChannelAvailable = false
+    @Published private(set) var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     @Published private(set) var isRefreshingAppServerModels = false
     @Published private(set) var capabilityList: CapabilityListResponse?
     @Published private(set) var isRefreshingCapabilities = false
@@ -2288,30 +2300,31 @@ final class SessionStore: ObservableObject {
     }
 
     var accountCodexUsageWindowsDisplay: CodexUsageWindowsDisplay {
-        CodexUsageWindowsDisplay.make(rateLimit: latestCodexRateLimit)
+        CodexUsageWindowsDisplay.make(rateLimit: latestRateLimit(runtimeProvider: "codex"), fallbackDisplayName: "Codex")
     }
 
-    private var latestCodexRateLimit: RateLimitSummary? {
-        if let rateLimit = selectedSession?.rateLimit {
-            return rateLimit
-        }
-        if let rateLimit = mostRecentSessionRateLimit(preferCodexRuntime: true) {
-            return rateLimit
-        }
-        return mostRecentSessionRateLimit(preferCodexRuntime: false)
+    var accountClaudeUsageWindowsDisplay: CodexUsageWindowsDisplay {
+        CodexUsageWindowsDisplay.make(rateLimit: latestRateLimit(runtimeProvider: "claude"), fallbackDisplayName: "Claude")
     }
 
-    private func mostRecentSessionRateLimit(preferCodexRuntime: Bool) -> RateLimitSummary? {
+    private func latestRateLimit(runtimeProvider: String) -> RateLimitSummary? {
+        let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
+        if let cached = accountRateLimitsByRuntime[normalizedProvider] {
+            return cached
+        }
+        if let session = selectedSession,
+           Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == normalizedProvider,
+           let rateLimit = session.rateLimit {
+            return rateLimit
+        }
+        return mostRecentSessionRateLimit(runtimeProvider: normalizedProvider)
+    }
+
+    private func mostRecentSessionRateLimit(runtimeProvider: String) -> RateLimitSummary? {
         sessions
             .filter { session in
-                guard session.rateLimit != nil else {
-                    return false
-                }
-                guard preferCodexRuntime else {
-                    return true
-                }
-                return session.runtimeProvider?.lowercased() == "codex"
-                    || session.source.lowercased() == "codex"
+                session.rateLimit != nil
+                    && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == runtimeProvider
             }
             .sorted {
                 ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
@@ -4253,13 +4266,26 @@ final class SessionStore: ObservableObject {
     }
 
     func refreshCodexUsage() async {
+        await refreshUsage(runtimeProvider: "codex")
+    }
+
+    func refreshClaudeUsage() async {
+        await refreshUsage(runtimeProvider: "claude")
+    }
+
+    private func refreshUsage(runtimeProvider: String) async {
         do {
-            let summary = try await clientFactory().refreshRateLimit(sessionID: selectedSessionID)
-            guard let summary, var session = selectedSession else {
+            let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
+            let summary = try await clientFactory().refreshRateLimit(runtimeProvider: normalizedProvider)
+            guard let summary else {
                 return
             }
-            session.rateLimit = summary
-            upsert(session)
+            accountRateLimitsByRuntime[normalizedProvider] = summary
+            if var session = selectedSession,
+               Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == normalizedProvider {
+                session.rateLimit = summary
+                upsert(session)
+            }
         } catch {
             setErrorMessage(error.localizedDescription)
         }
@@ -4314,17 +4340,22 @@ final class SessionStore: ObservableObject {
         if isRefreshingAppServerModels {
             return
         }
-        if !force,
-           !appServerModelOptions.isEmpty,
-           let appServerModelOptionsLastRefresh,
-           Date().timeIntervalSince(appServerModelOptionsLastRefresh) < 300 {
-            return
-        }
 
         isRefreshingAppServerModels = true
         defer { isRefreshingAppServerModels = false }
+        var didRefreshRuntimeAvailability = false
         do {
             let client = try clientFactory()
+            // Claude 卡片以 config.channels 的真实可用性为准，不能依赖 model/list 是否成功。
+            // 即使模型列表处于 5 分钟缓存期，也要重新读取轻量 channel 元数据。
+            isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(runtimeProvider: "claude")) == true
+            didRefreshRuntimeAvailability = true
+            if !force,
+               !appServerModelOptions.isEmpty,
+               let appServerModelOptionsLastRefresh,
+               Date().timeIntervalSince(appServerModelOptionsLastRefresh) < 300 {
+                return
+            }
             let options = try await client.modelOptions()
             appServerModelOptionsLastRefresh = Date()
             if !options.isEmpty || force {
@@ -4334,6 +4365,9 @@ final class SessionStore: ObservableObject {
                 setStatusMessage(options.isEmpty ? "未发现 app-server 模型列表，继续使用内置选项" : "已刷新模型列表")
             }
         } catch {
+            if !didRefreshRuntimeAvailability {
+                isClaudeRuntimeChannelAvailable = false
+            }
             appServerModelOptionsLastRefresh = Date()
             if force {
                 setStatusMessage("模型列表不可用，继续使用内置选项")
@@ -4860,7 +4894,9 @@ final class SessionStore: ObservableObject {
     }
 
     var hasClaudeRuntimeChannel: Bool {
-        appServerModelOptions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider) == "claude" }
+        isClaudeRuntimeChannelAvailable
+            || appServerModelOptions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider) == "claude" }
+            || sessions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider ?? $0.source) == "claude" }
     }
 
     @discardableResult
@@ -5540,6 +5576,10 @@ final class SessionStore: ObservableObject {
     }
 
     func decideApproval(_ approval: ApprovalSummary, accept: Bool) {
+        decideApproval(approval, decision: accept ? "accept" : "decline")
+    }
+
+    func decideApproval(_ approval: ApprovalSummary, decision: String) {
         guard let session = selectedSession, session.isRunning else {
             setErrorMessage("审批失败：WebSocket 未连接")
             return
@@ -5556,14 +5596,19 @@ final class SessionStore: ObservableObject {
             setStatusMessage("审批决定正在发送")
             return
         }
-        let decision = accept ? "accept" : "decline"
+        let normalizedDecision = decision.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isAccepting = normalizedDecision.lowercased().hasPrefix("accept")
         markApprovalDecisionPending(approval.id, sessionID: session.id)
-        guard socket.sendApprovalDecision(approvalID: approval.id, decision: decision, message: nil) else {
+        guard socket.sendApprovalDecision(approvalID: approval.id, decision: normalizedDecision, message: nil) else {
             clearPendingApprovalDecision(sessionID: session.id, approvalID: approval.id)
             setErrorMessage("审批发送失败：WebSocket 未连接")
             return
         }
-        setStatusMessage(accept ? "批准决定已发送，等待 Agent 继续执行" : "拒绝决定已发送，等待 Agent 确认")
+        if normalizedDecision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame {
+            setStatusMessage("已发送批准并记住规则的决定，等待 Claude 确认")
+        } else {
+            setStatusMessage(isAccepting ? "批准决定已发送，等待 Agent 继续执行" : "拒绝决定已发送，等待 Agent 确认")
+        }
     }
 
     func isApprovalDecisionPending(_ approval: ApprovalSummary) -> Bool {

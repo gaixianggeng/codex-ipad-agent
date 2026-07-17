@@ -446,7 +446,9 @@ struct CodexAppServerEventProjector {
                 title: approvalTitle(kind: kind, params: params),
                 body: approvalBody(kind: kind, params: params),
                 kind: kind,
-                risk: "high"
+                risk: firstString(in: params, keys: ["risk"]) ?? "high",
+                availableDecisions: params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue),
+                persistentPermissionRules: eligiblePersistentPermissionRules(from: params)
             ),
             metadata
         )
@@ -1026,7 +1028,8 @@ struct CodexAppServerEventProjector {
             question: object["question"]?.stringValue ?? "",
             isOther: object["isOther"]?.boolValue ?? object["is_other"]?.boolValue ?? false,
             isSecret: object["isSecret"]?.boolValue ?? object["is_secret"]?.boolValue ?? false,
-            options: options
+            options: options,
+            multiSelect: object["multiSelect"]?.boolValue ?? object["multi_select"]?.boolValue
         )
     }
 
@@ -1156,6 +1159,9 @@ struct CodexAppServerEventProjector {
             if let command = commandSummary(params: params) {
                 return "Agent 请求执行命令：\(command)"
             }
+            if let toolName = firstString(in: params, keys: ["toolName", "tool_name"]) {
+                return "Claude 请求使用工具：\(toolName)"
+            }
             return "Agent 请求执行命令"
         }
     }
@@ -1163,8 +1169,10 @@ struct CodexAppServerEventProjector {
     private func approvalBody(kind: String, params: [String: CodexAppServerJSONValue]) -> String? {
         if kind == "command" {
             let command = commandSummary(params: params)
+            let toolName = firstString(in: params, keys: ["toolName", "tool_name"])
+            let inputSummary = firstString(in: params, keys: ["inputSummary", "input_summary"])
             let reason = firstString(in: params, keys: ["reason", "message"])
-            return [command, reason].compactMap { $0 }.joined(separator: "\n\n")
+            return [command, toolName, inputSummary, reason].compactMap { $0 }.joined(separator: "\n\n").nilIfEmpty
         }
         if kind == "mcp_elicitation" {
             return [
@@ -1172,7 +1180,45 @@ struct CodexAppServerEventProjector {
                 firstString(in: params, keys: ["url"])
             ].compactMap { $0 }.joined(separator: "\n\n")
         }
-        return firstString(in: params, keys: ["reason", "message", "diff", "path", "prompt"])
+        let path = firstString(in: params, keys: ["path", "filePath", "file_path", "grantRoot", "grant_root"])
+        let diff = firstString(in: params, keys: ["diff", "patch"])
+        let inputSummary = firstString(in: params, keys: ["inputSummary", "input_summary", "prompt"])
+        let reason = firstString(in: params, keys: ["reason", "message"])
+        return [path, diff, inputSummary, reason].compactMap { $0 }.joined(separator: "\n\n").nilIfEmpty
+    }
+
+    private func eligiblePersistentPermissionRules(
+        from params: [String: CodexAppServerJSONValue]
+    ) -> [String]? {
+        let suggestions = params["permissionSuggestions"]?.arrayValue
+            ?? params["permission_suggestions"]?.arrayValue
+            ?? []
+        var rules: [String] = []
+        for value in suggestions {
+            guard let suggestion = value.objectValue,
+                  firstString(in: suggestion, keys: ["type"])?.lowercased() == "addrules",
+                  firstString(in: suggestion, keys: ["behavior"])?.lowercased() == "allow",
+                  firstString(in: suggestion, keys: ["destination"])?.lowercased() == "localsettings"
+            else {
+                continue
+            }
+            for ruleValue in suggestion["rules"]?.arrayValue ?? [] {
+                if let rule = ruleValue.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rule.isEmpty {
+                    rules.append(rule)
+                    continue
+                }
+                guard let object = ruleValue.objectValue,
+                      let toolName = firstString(in: object, keys: ["toolName", "tool_name"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !toolName.isEmpty else {
+                    continue
+                }
+                let content = firstString(in: object, keys: ["ruleContent", "rule_content"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+                rules.append(content?.isEmpty == false ? "\(toolName)(\(content!))" : toolName)
+            }
+        }
+        var seen: Set<String> = []
+        let unique = rules.filter { seen.insert($0).inserted }
+        return unique.isEmpty ? nil : unique
     }
 
     private func commandSummary(params: [String: CodexAppServerJSONValue]) -> String? {

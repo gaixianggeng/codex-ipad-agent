@@ -552,11 +552,12 @@ final class ConversationSnapshotTests: XCTestCase {
         XCTAssertEqual(layout.horizontalInset, 24)
         XCTAssertEqual(layout.composerAvailableWidth, 785)
         XCTAssertEqual(layout.composerMaxWidth, 785)
-        XCTAssertTrue(
+        XCTAssertFalse(
             ConversationLayout.usesCompactComposerToolbar(
                 availableWidth: layout.composerMaxWidth,
                 horizontalSizeClass: .regular
-            )
+            ),
+            "regular size class 的 iPad 分栏仍使用完整工具栏"
         )
         XCTAssertLessThanOrEqual(
             layout.composerMaxWidth + layout.horizontalInset * 2,
@@ -565,7 +566,7 @@ final class ConversationSnapshotTests: XCTestCase {
         )
     }
 
-    func testConversationLayoutUsesCompactToolbarInIPadMiniPortrait() {
+    func testConversationLayoutUsesExpandedToolbarInIPadMiniPortrait() {
         let layout = ConversationLayout(
             containerWidth: 744,
             horizontalSizeClass: .regular
@@ -574,12 +575,37 @@ final class ConversationSnapshotTests: XCTestCase {
         XCTAssertEqual(layout.horizontalInset, 16)
         XCTAssertEqual(layout.composerAvailableWidth, 712)
         XCTAssertEqual(layout.composerMaxWidth, 712)
-        XCTAssertTrue(
+        XCTAssertFalse(
             ConversationLayout.usesCompactComposerToolbar(
                 availableWidth: layout.composerMaxWidth,
                 horizontalSizeClass: .regular
             ),
-            "iPad mini 竖屏不能继续平铺完整工具栏"
+            "iPad mini 竖屏应展示完整工具栏和自定义模型选择器"
+        )
+    }
+
+    func testConversationLayoutUsesCompactToolbarOnPhone() {
+        XCTAssertTrue(
+            ConversationLayout.usesCompactComposerToolbar(
+                availableWidth: 390,
+                horizontalSizeClass: .compact
+            ),
+            "手机端继续使用紧凑菜单"
+        )
+    }
+
+    func testConversationLayoutFallsBackToWidthWithoutSizeClass() {
+        XCTAssertTrue(
+            ConversationLayout.usesCompactComposerToolbar(
+                availableWidth: 390,
+                horizontalSizeClass: nil
+            )
+        )
+        XCTAssertFalse(
+            ConversationLayout.usesCompactComposerToolbar(
+                availableWidth: 744,
+                horizontalSizeClass: nil
+            )
         )
     }
 

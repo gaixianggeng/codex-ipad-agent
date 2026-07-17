@@ -25,13 +25,11 @@ struct ComposerView: View {
     @State private var composerTextExternalRevision = 0
     @StateObject private var voiceInput = VoiceInputController()
     @State private var photoLibraryPickerRequest: PhotoLibraryPickerRequest?
-    @State private var manualInputKind: ManualInputKind = .localImage
     @State private var showsAddContentPanel = false
     @State private var showsSkillPicker = false
     @State private var showsModelGridPicker = false
-    @State private var showsManualInputSheet = false
+    @State private var showsManualSkillInputSheet = false
     @State private var showsAdvancedOptionsSheet = false
-    @State private var showsImageFileImporter = false
     @State private var previewingAttachment: CodexAppServerUserInput?
     @State private var goalEditor: ThreadGoalEditorDraft?
     @State private var isGoalStatusExpanded = false
@@ -97,8 +95,8 @@ struct ComposerView: View {
         .animation(composerMotionAnimation, value: isVoiceTranscribing)
         .animation(composerMotionAnimation, value: composerState.draft.isEmpty)
         .animation(composerMotionAnimation, value: activeSkillQuery != nil)
-        .sheet(isPresented: $showsManualInputSheet) {
-            ManualUserInputSheet(kind: manualInputKind) { input in
+        .sheet(isPresented: $showsManualSkillInputSheet) {
+            ManualSkillInputSheet { input in
                 composerState.addAttachment(input)
             }
         }
@@ -151,19 +149,6 @@ struct ComposerView: View {
             }
             .ignoresSafeArea()
         }
-        .fileImporter(
-            isPresented: $showsImageFileImporter,
-            allowedContentTypes: [.image],
-            allowsMultipleSelection: true
-        ) { result in
-            showsAddContentPanel = false
-            switch result {
-            case .success(let urls):
-                loadImageFileAttachments(urls)
-            case .failure(let error):
-                attachmentErrorMessage = userFacingAttachmentError(error)
-            }
-        }
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -183,6 +168,7 @@ struct ComposerView: View {
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
             clampModelSelectionToSelectedSessionRuntime()
+            clampPermissionSelectionToSelectedSessionRuntime()
         }
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
             if !canGuide {
@@ -203,6 +189,7 @@ struct ComposerView: View {
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
             clampModelSelectionToSelectedSessionRuntime()
+            clampPermissionSelectionToSelectedSessionRuntime()
         }
         .task {
             switchComposerDraftScope(to: currentComposerDraftScope)
@@ -1182,24 +1169,24 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel("添加内容")
-        .help("添加图片、Skill、Mention 或快捷短语")
+        .help("添加图片、@ 插件、Skill 或快捷短语")
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
                 skillShortcuts: enabledSkillShortcuts,
+                pluginShortcuts: installedPluginShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
                 onPickPhotos: {
                     presentPhotoLibraryPicker()
                 },
-                onPickImageFile: {
-                    showsAddContentPanel = false
-                    showsImageFileImporter = true
-                },
-                onManualInput: { kind in
-                    openManualInput(kind)
-                },
                 onSkillShortcut: { skill in
                     addSkillAttachment(skill)
+                },
+                onPluginShortcut: { plugin in
+                    composerState.insertPluginMention(plugin.presentationName)
+                    clearVoiceTransientStatus()
+                    showsAddContentPanel = false
+                    UISelectionFeedbackGenerator().selectionChanged()
                 },
                 onRefreshCapabilities: {
                     Task { await sessionStore.refreshCapabilities() }
@@ -1244,7 +1231,7 @@ struct ComposerView: View {
                 },
                 onManualAdd: {
                     showsSkillPicker = false
-                    openManualInput(.skill)
+                    showsManualSkillInputSheet = true
                 }
             )
             .environmentObject(themeStore)
@@ -1258,6 +1245,16 @@ struct ComposerView: View {
             .filter(\.enabled)
             .sorted { lhs, rhs in
                 lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private var installedPluginShortcuts: [CodexPluginCapability] {
+        (sessionStore.capabilityList?.plugins ?? [])
+            .sorted { lhs, rhs in
+                if lhs.enabled != rhs.enabled {
+                    return lhs.enabled && !rhs.enabled
+                }
+                return lhs.presentationName.localizedStandardCompare(rhs.presentationName) == .orderedAscending
             }
     }
 
@@ -1743,7 +1740,7 @@ struct ComposerView: View {
     private var permissionMenu: some View {
         Menu {
             Section("权限模式") {
-                ForEach(ComposerPermissionMode.allCases) { mode in
+                ForEach(availablePermissionModes) { mode in
                     Button {
                         setPermissionMode(mode)
                     } label: {
@@ -1849,12 +1846,38 @@ struct ComposerView: View {
     }
 
     private func applyDefaultPermissionMode() {
-        composerState.applyPermissionMode(ComposerPermissionMode.stored(defaultPermissionModeID))
+        let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
+        composerState.applyPermissionMode(safePermissionMode(stored))
     }
 
     private func setPermissionMode(_ mode: ComposerPermissionMode) {
-        defaultPermissionModeID = mode.rawValue
-        composerState.applyPermissionMode(mode)
+        let safeMode = safePermissionMode(mode)
+        // Claude 的安全降级只影响当前会话，不覆盖用户为 Codex 保存的“完全访问”默认值。
+        if selectedSessionRuntimeProviderForModelMenu != "claude" {
+            defaultPermissionModeID = safeMode.rawValue
+        }
+        composerState.applyPermissionMode(safeMode)
+    }
+
+    private var availablePermissionModes: [ComposerPermissionMode] {
+        if selectedSessionRuntimeProviderForModelMenu == "claude" {
+            return [.requestApproval, .readOnly, .autoApprove]
+        }
+        return ComposerPermissionMode.allCases
+    }
+
+    private func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
+        selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
+            ? .requestApproval
+            : mode
+    }
+
+    private func clampPermissionSelectionToSelectedSessionRuntime() {
+        let safeMode = safePermissionMode(composerState.permissionMode)
+        guard safeMode != composerState.permissionMode else {
+            return
+        }
+        composerState.applyPermissionMode(safeMode)
     }
 
     private var selectedModelSummaryTitle: String {
@@ -2065,8 +2088,9 @@ struct ComposerView: View {
             PendingApprovalActionCard(
                 approval: approval,
                 isSendingDecision: sessionStore.isApprovalDecisionPending(approval),
-                onApprove: { sessionStore.decideApproval(approval, accept: true) },
-                onDecline: { sessionStore.decideApproval(approval, accept: false) }
+                onDecision: { decision in
+                    sessionStore.decideApproval(approval, decision: decision)
+                }
             )
         }
     }
@@ -2205,12 +2229,6 @@ struct ComposerView: View {
             return base
         }
         return UIFont(descriptor: descriptor, size: size)
-    }
-
-    private func openManualInput(_ kind: ManualInputKind) {
-        manualInputKind = kind
-        showsAddContentPanel = false
-        showsManualInputSheet = true
     }
 
     private func beginHoldToTalk() {
@@ -2672,44 +2690,6 @@ struct ComposerView: View {
         }
     }
 
-    private func loadImageFileAttachments(_ urls: [URL]) {
-        let targetScope = activeComposerDraftScope
-        let availableCount = remainingImageAttachmentCapacity(for: targetScope)
-        let selectedURLs = Array(urls.prefix(availableCount))
-        let skippedCount = max(0, urls.count - selectedURLs.count)
-        guard !selectedURLs.isEmpty else {
-            attachmentErrorMessage = "每个草稿最多添加 \(Self.maximumImageAttachmentCount) 张图片"
-            return
-        }
-
-        Task {
-            var preparedInputs: [CodexAppServerUserInput] = []
-            var failedCount = 0
-            var firstError: Error?
-
-            for url in selectedURLs {
-                do {
-                    let prepared = try await Task.detached(priority: .userInitiated) {
-                        let data = try Self.readSecurityScopedFile(url)
-                        return try ImageAttachmentEncoder.prepare(data)
-                    }.value
-                    preparedInputs.append(.image(url: prepared.dataURL, detail: .auto))
-                } catch {
-                    failedCount += 1
-                    firstError = firstError ?? error
-                }
-            }
-
-            let addedCount = addPreparedImageAttachments(preparedInputs, to: targetScope)
-            updateBatchAttachmentNotice(
-                addedCount: addedCount,
-                failedCount: failedCount,
-                skippedCount: skippedCount + max(0, preparedInputs.count - addedCount),
-                firstError: firstError
-            )
-        }
-    }
-
     @MainActor
     private func addPreparedImageAttachments(
         _ inputs: [CodexAppServerUserInput],
@@ -2773,16 +2753,6 @@ struct ComposerView: View {
         } else {
             attachmentErrorMessage = "图片读取失败"
         }
-    }
-
-    nonisolated private static func readSecurityScopedFile(_ url: URL) throws -> Data {
-        let didStartAccessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-        return try Data(contentsOf: url)
     }
 
     private func canPreviewAttachment(_ item: CodexAppServerUserInput) -> Bool {
@@ -3788,140 +3758,436 @@ struct PhotoLibraryPicker: UIViewControllerRepresentable {
     }
 }
 
+private enum AddContentPanelPage: Equatable {
+    case root
+    case plugins
+    case skills
+    case shortcuts
+}
+
 private struct AddContentPanel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var page: AddContentPanelPage = .root
+    @State private var searchText = ""
 
     let skillShortcuts: [SkillCapability]
+    let pluginShortcuts: [CodexPluginCapability]
     let capabilityErrorMessage: String?
     let isRefreshingCapabilities: Bool
     let onPickPhotos: () -> Void
-    let onPickImageFile: () -> Void
-    let onManualInput: (ManualInputKind) -> Void
     let onSkillShortcut: (SkillCapability) -> Void
+    let onPluginShortcut: (CodexPluginCapability) -> Void
     let onRefreshCapabilities: () -> Void
     let onShortcut: (String) -> Void
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8)
-    ]
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 14) {
-            panelSection("图片") {
-                LazyVGrid(columns: columns, spacing: 8) {
-                    Button {
-                        onPickPhotos()
-                    } label: {
-                        panelActionLabel("图片（可多选）", systemImage: "photo.on.rectangle.angled")
-                    }
-                    .buttonStyle(.bordered)
+        VStack(spacing: 0) {
+            panelHeader(tokens: tokens)
+                .padding(.bottom, 12)
 
-                    Button {
-                        onPickImageFile()
-                    } label: {
-                        panelActionLabel("文件图片", systemImage: "doc.viewfinder")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        onManualInput(.localImage)
-                    } label: {
-                        panelActionLabel("本机图片", systemImage: "folder")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        onManualInput(.imageURL)
-                    } label: {
-                        panelActionLabel("图片 URL", systemImage: "link")
-                    }
-                    .buttonStyle(.bordered)
+            Group {
+                switch page {
+                case .root:
+                    rootActions(tokens: tokens)
+                case .plugins:
+                    pluginList(tokens: tokens)
+                case .skills:
+                    skillList(tokens: tokens)
+                case .shortcuts:
+                    shortcutList(tokens: tokens)
                 }
             }
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    )
+            )
+        }
+        .padding(16)
+        .frame(minWidth: 320, idealWidth: 390, maxWidth: 420)
+        .background(tokens.surface)
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 1),
+            value: page
+        )
+        // compact adaptation 默认会拉成大页；固定内容高度能消除“下半屏全空”的原始感。
+        .presentationDetents([.height(page == .root ? 390 : 470)])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(28)
+    }
 
-            panelSection("快捷短语") {
-                Menu {
-                    ForEach(Self.shortcuts, id: \.self) { shortcut in
-                        Button(shortcut) {
-                            onShortcut(shortcut)
-                        }
-                    }
+    private func panelHeader(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 10) {
+            if page != .root {
+                Button {
+                    searchText = ""
+                    page = .root
                 } label: {
-                    panelActionLabel("快捷短语", systemImage: "bolt")
+                    Image(systemName: "chevron.left")
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .background(tokens.selectionFill, in: Circle())
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                .accessibilityLabel("返回添加内容")
+            } else {
+                Image(systemName: "plus")
+                    .font(themeStore.uiFont(.callout, weight: .bold))
+                    .foregroundStyle(tokens.accent)
+                    .frame(width: 34, height: 34)
+                    .background(tokens.selectionFill, in: Circle())
+                    .accessibilityHidden(true)
             }
 
-            panelSection("引用") {
-                LazyVGrid(columns: columns, spacing: 8) {
-                    Menu {
-                        let error = capabilityErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if skillShortcuts.isEmpty {
-                            if let error, !error.isEmpty {
-                                Text("Skill 列表不可用：\(error)")
-                            } else {
-                                Text("暂无可用 Skill")
-                            }
-                        } else {
-                            Section("可用 Skill") {
-                                ForEach(skillShortcuts.prefix(12)) { skill in
-                                    Button {
-                                        onSkillShortcut(skill)
-                                    } label: {
-                                        Label(skill.name, systemImage: "wand.and.stars")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pageTitle)
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(pageSubtitle)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(themeStore.uiFont(.caption, weight: .bold))
+                    .foregroundStyle(tokens.secondaryText)
+                    .frame(width: 32, height: 32)
+                    .background(tokens.selectionFill.opacity(0.72), in: Circle())
+            }
+            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityLabel("关闭添加内容")
+        }
+    }
+
+    private func rootActions(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 8) {
+            panelActionButton(
+                title: "图片",
+                subtitle: "从照片图库选择，可多选",
+                systemImage: "photo.on.rectangle.angled",
+                tokens: tokens,
+                action: onPickPhotos
+            )
+            panelActionButton(
+                title: "@ 插件",
+                subtitle: pluginShortcuts.isEmpty ? "查看已安装的 Codex 插件" : "\(pluginShortcuts.count) 个已安装插件",
+                systemImage: "at",
+                tokens: tokens
+            ) {
+                page = .plugins
+            }
+            panelActionButton(
+                title: "Skill",
+                subtitle: skillShortcuts.isEmpty ? "添加结构化工作流" : "\(skillShortcuts.count) 个可用 Skill",
+                systemImage: "wand.and.stars",
+                tokens: tokens
+            ) {
+                page = .skills
+            }
+            panelActionButton(
+                title: "快捷短语",
+                subtitle: "插入常用任务模板",
+                systemImage: "bolt.fill",
+                tokens: tokens
+            ) {
+                page = .shortcuts
+            }
+        }
+    }
+
+    private func panelActionButton(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        tokens: ThemeTokens,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(themeStore.uiFont(size: 17, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+                    .frame(width: 38, height: 38)
+                    .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(subtitle)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.right")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .strokeBorder(tokens.border.opacity(0.72), lineWidth: 0.75)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+    }
+
+    private func pluginList(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 10) {
+            searchField(placeholder: "搜索插件", tokens: tokens)
+            if filteredPlugins.isEmpty {
+                emptyCapabilities(
+                    title: searchText.isEmpty ? "暂无已安装插件" : "没有匹配的插件",
+                    detail: searchText.isEmpty ? "请先在 Mac 端安装并启用 Codex 插件" : "换个名称试试",
+                    tokens: tokens
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 7) {
+                        ForEach(filteredPlugins) { plugin in
+                            Button {
+                                onPluginShortcut(plugin)
+                            } label: {
+                                HStack(spacing: 11) {
+                                    pluginIcon(tokens: tokens)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("@\(plugin.presentationName)")
+                                            .font(themeStore.uiFont(.callout, weight: .semibold))
+                                            .foregroundStyle(tokens.primaryText)
+                                            .lineLimit(1)
+                                        Text(pluginSubtitle(plugin))
+                                            .font(themeStore.uiFont(.caption))
+                                            .foregroundStyle(tokens.secondaryText)
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    if plugin.enabled {
+                                        Image(systemName: "plus.circle.fill")
+                                            .foregroundStyle(tokens.accent)
+                                    } else {
+                                        Text("已停用")
+                                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                                            .foregroundStyle(tokens.tertiaryText)
                                     }
                                 }
+                                .padding(10)
+                                .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
+                            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                            .disabled(!plugin.enabled)
+                            .opacity(plugin.enabled ? 1 : 0.58)
                         }
-                        Divider()
-                        Button {
-                            onRefreshCapabilities()
-                        } label: {
-                            Label(isRefreshingCapabilities ? "刷新中" : "刷新 Skill 列表", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(isRefreshingCapabilities)
-                        Button {
-                            onManualInput(.skill)
-                        } label: {
-                            Label("手动添加 Skill", systemImage: "square.and.pencil")
-                        }
-                    } label: {
-                        panelActionLabel("Skill", systemImage: "wand.and.stars")
                     }
-                    .buttonStyle(.bordered)
+                }
+                .frame(maxHeight: 320)
+                .scrollIndicators(.hidden)
+            }
+        }
+    }
 
-                    Button {
-                        onManualInput(.mention)
-                    } label: {
-                        panelActionLabel("Mention", systemImage: "at")
+    private func skillList(tokens: ThemeTokens) -> some View {
+        VStack(spacing: 10) {
+            searchField(placeholder: "搜索 Skill", tokens: tokens)
+            if filteredSkills.isEmpty {
+                emptyCapabilities(
+                    title: searchText.isEmpty ? "暂无可用 Skill" : "没有匹配的 Skill",
+                    detail: searchText.isEmpty ? "刷新后仍为空时，请检查 Mac 端配置" : "换个名称试试",
+                    tokens: tokens
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 7) {
+                        ForEach(filteredSkills) { skill in
+                            Button {
+                                onSkillShortcut(skill)
+                            } label: {
+                                HStack(spacing: 11) {
+                                    SkillIconView(metadata: SkillVisualMetadata(capability: skill), size: 38)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("$\(skill.presentationName)")
+                                            .font(themeStore.uiFont(.callout, weight: .semibold))
+                                            .foregroundStyle(tokens.primaryText)
+                                            .lineLimit(1)
+                                        Text(skill.presentationDescription ?? "添加为结构化能力")
+                                            .font(themeStore.uiFont(.caption))
+                                            .foregroundStyle(tokens.secondaryText)
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    Image(systemName: "plus.circle.fill")
+                                        .foregroundStyle(tokens.accent)
+                                }
+                                .padding(10)
+                                .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                        }
                     }
-                    .buttonStyle(.bordered)
+                }
+                .frame(maxHeight: 320)
+                .scrollIndicators(.hidden)
+            }
+        }
+    }
+
+    private func shortcutList(tokens: ThemeTokens) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 7) {
+                ForEach(Self.shortcuts, id: \.self) { shortcut in
+                    Button {
+                        onShortcut(shortcut)
+                    } label: {
+                        HStack(spacing: 11) {
+                            Image(systemName: "bolt.fill")
+                                .font(themeStore.uiFont(.callout, weight: .semibold))
+                                .foregroundStyle(tokens.accent)
+                                .frame(width: 36, height: 36)
+                                .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            Text(shortcut)
+                                .font(themeStore.uiFont(.callout, weight: .medium))
+                                .foregroundStyle(tokens.primaryText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .multilineTextAlignment(.leading)
+                            Image(systemName: "plus.circle.fill")
+                                .foregroundStyle(tokens.accent)
+                        }
+                        .padding(10)
+                        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
                 }
             }
         }
-        .font(themeStore.uiFont(.callout))
-        .padding(16)
-        .frame(maxWidth: 360)
-        .background(tokens.surface)
+        .frame(maxHeight: 330)
+        .scrollIndicators(.hidden)
     }
 
-    private func panelSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func searchField(placeholder: String, tokens: ThemeTokens) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(tokens.tertiaryText)
+            TextField(placeholder, text: $searchText)
+                .font(themeStore.uiFont(.callout))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(tokens.tertiaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 40)
+        .background(tokens.selectionFill.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func emptyCapabilities(title: String, detail: String, tokens: ThemeTokens) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: page == .plugins ? "puzzlepiece.extension" : "wand.and.stars")
+                .font(themeStore.uiFont(size: 24, weight: .medium))
+                .foregroundStyle(tokens.tertiaryText)
             Text(title)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
-            content()
+                .font(themeStore.uiFont(.callout, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+            Text(nonEmpty(capabilityErrorMessage) ?? detail)
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+            if searchText.isEmpty {
+                Button {
+                    onRefreshCapabilities()
+                } label: {
+                    Label(isRefreshingCapabilities ? "刷新中" : "刷新列表", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(isRefreshingCapabilities)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 230)
+    }
+
+    private func pluginIcon(tokens: ThemeTokens) -> some View {
+        Image(systemName: "at")
+            .font(themeStore.uiFont(size: 17, weight: .bold))
+            .foregroundStyle(tokens.accent)
+            .frame(width: 38, height: 38)
+            .background(tokens.selectionFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var filteredPlugins: [CodexPluginCapability] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return pluginShortcuts }
+        return pluginShortcuts.filter { plugin in
+            plugin.presentationName.localizedCaseInsensitiveContains(query)
+                || (plugin.description?.localizedCaseInsensitiveContains(query) ?? false)
+                || plugin.marketplace.localizedCaseInsensitiveContains(query)
         }
     }
 
-    private func panelActionLabel(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, minHeight: 30)
+    private var filteredSkills: [SkillCapability] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return skillShortcuts }
+        return skillShortcuts.filter { skill in
+            skill.name.localizedCaseInsensitiveContains(query)
+                || skill.presentationName.localizedCaseInsensitiveContains(query)
+                || (skill.presentationDescription?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
+    private func pluginSubtitle(_ plugin: CodexPluginCapability) -> String {
+        nonEmpty(plugin.description)
+            ?? nonEmpty(plugin.marketplace)
+            ?? "已安装插件"
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private var pageTitle: String {
+        switch page {
+        case .root: return "添加内容"
+        case .plugins: return "@ 插件"
+        case .skills: return "选择 Skill"
+        case .shortcuts: return "快捷短语"
+        }
+    }
+
+    private var pageSubtitle: String {
+        switch page {
+        case .root: return "补充下一条消息的上下文"
+        case .plugins: return "引用 Mac 端已安装的 Codex 插件"
+        case .skills: return "选择后作为结构化能力发送"
+        case .shortcuts: return "点按即可插入输入框"
+        }
     }
 
     private static let shortcuts = [
@@ -4142,37 +4408,24 @@ private enum VoiceHaptics {
     }
 }
 
-private struct ManualUserInputSheet: View {
+private struct ManualSkillInputSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var kind: ManualInputKind
     @State private var name = ""
-    @State private var pathOrURL = ""
+    @State private var path = ""
 
     let onAdd: (CodexAppServerUserInput) -> Void
-
-    init(kind: ManualInputKind, onAdd: @escaping (CodexAppServerUserInput) -> Void) {
-        _kind = State(initialValue: kind)
-        self.onAdd = onAdd
-    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Picker("类型", selection: $kind) {
-                    ForEach(ManualInputKind.allCases) { item in
-                        Text(item.title).tag(item)
-                    }
-                }
-                if kind.requiresName {
-                    TextField("名称", text: $name)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                TextField(kind.valuePlaceholder, text: $pathOrURL)
+                TextField("Skill 名称", text: $name)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("allowlist 内的路径", text: $path)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
-            .navigationTitle("添加引用")
+            .navigationTitle("手动添加 Skill")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
@@ -4191,69 +4444,12 @@ private struct ManualUserInputSheet: View {
     }
 
     private var input: CodexAppServerUserInput? {
-        let value = pathOrURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !value.isEmpty else {
             return nil
         }
-        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch kind {
-        case .imageURL:
-            return .image(url: value, detail: .auto)
-        case .localImage:
-            return .localImage(path: value, detail: .auto)
-        case .skill:
-            guard !title.isEmpty else {
-                return nil
-            }
-            return .skill(name: title, path: value)
-        case .mention:
-            guard !title.isEmpty else {
-                return nil
-            }
-            return .mention(name: title, path: value)
-        }
-    }
-}
-
-private enum ManualInputKind: String, CaseIterable, Identifiable {
-    case imageURL
-    case localImage
-    case skill
-    case mention
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .imageURL:
-            return "图片 URL"
-        case .localImage:
-            return "本机图片"
-        case .skill:
-            return "Skill"
-        case .mention:
-            return "Mention"
-        }
-    }
-
-    var requiresName: Bool {
-        switch self {
-        case .skill, .mention:
-            return true
-        case .imageURL, .localImage:
-            return false
-        }
-    }
-
-    var valuePlaceholder: String {
-        switch self {
-        case .imageURL:
-            return "https://... 或 data:image/..."
-        case .localImage:
-            return "app-server 可读取的绝对路径"
-        case .skill, .mention:
-            return "allowlist 内的路径"
-        }
+        return .skill(name: title, path: value)
     }
 }
 
@@ -5166,8 +5362,9 @@ private final class CommandSubmitTextView: UITextView {
 private struct PendingApprovalActionCard: View {
     let approval: ApprovalSummary
     let isSendingDecision: Bool
-    let onApprove: () -> Void
-    let onDecline: () -> Void
+    let onDecision: (String) -> Void
+
+    @State private var persistentGrant: PersistentPermissionGrant?
 
     var body: some View {
         GroupBox {
@@ -5197,6 +5394,12 @@ private struct PendingApprovalActionCard: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                if !approval.hasDecisionContext {
+                    Label("Claude bridge 未提供可核对的命令、路径或工具输入；为避免误批准，只能拒绝。请升级 bridge 后重试。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 approvalButtons
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -5206,27 +5409,98 @@ private struct PendingApprovalActionCard: View {
         }
         // 审批卡位于输入框上方，用户无需跳转到 Inspector 才能作出决定。
         .accessibilityElement(children: .contain)
+        .sheet(item: $persistentGrant) { grant in
+            PersistentPermissionConfirmationSheet(grant: grant) {
+                onDecision("acceptWithPermissionUpdate")
+            }
+        }
     }
 
     private var approvalButtons: some View {
         ControlGroup {
-            Button(role: .destructive, action: onDecline) {
+            Button(role: .destructive) {
+                onDecision("decline")
+            } label: {
                 Label("拒绝", systemImage: "xmark.circle")
             }
             .disabled(isSendingDecision)
             .accessibilityLabel("拒绝审批")
             .accessibilityHint("拒绝始终可用")
 
-            Button(action: onApprove) {
-                Label("批准", systemImage: "checkmark.circle.fill")
+            Button {
+                onDecision("accept")
+            } label: {
+                Label("批准一次", systemImage: "checkmark.circle.fill")
             }
             .disabled(isSendingDecision || !approval.hasDecisionContext)
             .accessibilityLabel("批准审批")
             .accessibilityValue(approval.hasDecisionContext ? "可用" : "审批详情不可用")
             .accessibilityHint(approval.hasDecisionContext ? "批准这项请求" : "缺少审批详情，无法批准")
+
+            if approval.canPersistPermission, let rules = approval.persistentPermissionRules {
+                Button {
+                    persistentGrant = PersistentPermissionGrant(
+                        id: approval.id,
+                        approvalTitle: approval.title,
+                        rules: rules
+                    )
+                } label: {
+                    Label("始终允许", systemImage: "checkmark.shield")
+                }
+                .disabled(isSendingDecision || !approval.hasDecisionContext)
+                .accessibilityHint("确认后把 Claude 建议的精确规则写入当前项目本地设置")
+            }
         }
         .controlGroupStyle(.navigation)
         .controlSize(.large)
+    }
+}
+
+private struct PersistentPermissionGrant: Identifiable {
+    let id: String
+    let approvalTitle: String
+    let rules: [String]
+}
+
+private struct PersistentPermissionConfirmationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let grant: PersistentPermissionGrant
+    let onConfirm: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("当前请求") {
+                    Text(grant.approvalTitle)
+                }
+                Section("将始终允许") {
+                    ForEach(grant.rules, id: \.self) { rule in
+                        Text(rule)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+                Section {
+                    Text("Claude 会把以上精确规则追加到当前项目的 .claude/settings.local.json。不会授予全局权限，也不会扩大规则范围。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("确认始终允许")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("确认允许") {
+                        onConfirm()
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -5237,7 +5511,7 @@ private struct PendingUserInputActionCard: View {
     let isSubmitting: Bool
     let onSubmit: ([String: [String]]) -> Void
 
-    @State private var selectedAnswers: [String: String] = [:]
+    @State private var selectedAnswers: [String: Set<String>] = [:]
     @State private var freeformAnswers: [String: String] = [:]
 
     var body: some View {
@@ -5250,23 +5524,32 @@ private struct PendingUserInputActionCard: View {
                 questionBlock(question)
             }
 
-            Button {
-                onSubmit(answerPayload)
-            } label: {
-                if isSubmitting {
-                    Label("提交中", systemImage: "hourglass")
-                        .font(.body.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                } else {
-                    Label("提交补充信息", systemImage: "arrow.up.circle.fill")
-                        .font(.body.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 30)
+            HStack(spacing: 10) {
+                Button("跳过") {
+                    onSubmit([:])
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(isSubmitting)
+
+                Button {
+                    onSubmit(answerPayload)
+                } label: {
+                    if isSubmitting {
+                        Label("提交中", systemImage: "hourglass")
+                            .font(.body.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    } else {
+                        Label("提交补充信息", systemImage: "arrow.up.circle.fill")
+                            .font(.body.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(tokens.accent)
+                .controlSize(.large)
+                .disabled(isSubmitting || !canSubmit)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(tokens.accent)
-            .controlSize(.large)
-            .disabled(isSubmitting || !canSubmit)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -5318,6 +5601,11 @@ private struct PendingUserInputActionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !question.options.isEmpty {
+                if question.allowsMultipleSelection {
+                    Text("可多选")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 optionButtons(for: question)
             }
             if question.isOther || question.options.isEmpty {
@@ -5331,9 +5619,17 @@ private struct PendingUserInputActionCard: View {
 
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .leading)], alignment: .leading, spacing: 8) {
             ForEach(question.options) { option in
-                let isSelected = selectedAnswers[question.id] == option.label
+                let isSelected = selectedAnswers[question.id, default: []].contains(option.label)
                 Button {
-                    selectedAnswers[question.id] = option.label
+                    if question.allowsMultipleSelection {
+                        if isSelected {
+                            selectedAnswers[question.id, default: []].remove(option.label)
+                        } else {
+                            selectedAnswers[question.id, default: []].insert(option.label)
+                        }
+                    } else {
+                        selectedAnswers[question.id] = [option.label]
+                    }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Label(option.label, systemImage: isSelected ? "checkmark.circle.fill" : "circle")
@@ -5395,10 +5691,8 @@ private struct PendingUserInputActionCard: View {
     }
 
     private func answers(for question: AgentUserInputQuestion) -> [String] {
-        var values: [String] = []
-        if let selected = selectedAnswers[question.id]?.trimmingCharacters(in: .whitespacesAndNewlines), !selected.isEmpty {
-            values.append(selected)
-        }
+        let selected = selectedAnswers[question.id] ?? []
+        var values = question.options.map(\.label).filter { selected.contains($0) }
         let freeform = (freeformAnswers[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !freeform.isEmpty {
             values.append(freeform)

@@ -70,7 +70,8 @@ struct SettingsView: View {
     }
 
     private func settingsForm(tokens: ThemeTokens) -> some View {
-        let usage = sessionStore.accountCodexUsageWindowsDisplay
+        let codexUsage = sessionStore.accountCodexUsageWindowsDisplay
+        let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
 
         return Form {
             Section("Mac 连接") {
@@ -113,9 +114,19 @@ struct SettingsView: View {
             }
 
             Section {
-                CodexUsageSettingsCard(display: usage)
+                RuntimeUsageSettingsCard(runtimeProvider: "codex", display: codexUsage)
             } header: {
                 Text("Codex 用量")
+            }
+
+            if sessionStore.hasClaudeRuntimeChannel {
+                Section {
+                    RuntimeUsageSettingsCard(runtimeProvider: "claude", display: claudeUsage)
+                } header: {
+                    Text("Claude 用量")
+                } footer: {
+                    Text("Claude Code headless 当前不提供完整使用百分比；收到官方 rate-limit 事件后会显示真实窗口与重置时间，不会估算或抓取网页数据。")
+                }
             }
 
             Section {
@@ -167,6 +178,13 @@ struct SettingsView: View {
             }
             guard await appStore.preflightConnection(), appStore.isConfigured else {
                 return
+            }
+            // 用 channel/model 元数据判断 Claude 是否真正接入；设置页独立打开时也要刷新，
+            // 不能依赖用户先进入 Conversation 才出现 Claude 用量卡。
+            await sessionStore.refreshAppServerModelOptions()
+            await sessionStore.refreshCodexUsage()
+            if sessionStore.hasClaudeRuntimeChannel {
+                await sessionStore.refreshClaudeUsage()
             }
             let hasNotLoadedInitialData = sessionStore.projects.isEmpty
                 && sessionStore.statusMessage == nil
@@ -446,13 +464,14 @@ private struct ConnectionSpeedMetricRow: View {
     }
 }
 
-private struct CodexUsageSettingsCard: View {
+private struct RuntimeUsageSettingsCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var isRefreshing = false
 
+    let runtimeProvider: String
     let display: CodexUsageWindowsDisplay
 
     var body: some View {
@@ -496,12 +515,12 @@ private struct CodexUsageSettingsCard: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(tokens.accent)
                 .disabled(isRefreshing)
-                .accessibilityLabel(isRefreshing ? "正在刷新 Codex 用量" : "刷新 Codex 用量")
-                .accessibilityIdentifier("settings.codexUsage.refresh")
+                .accessibilityLabel(isRefreshing ? "正在刷新 \(display.displayName) 用量" : "刷新 \(display.displayName) 用量")
+                .accessibilityIdentifier("settings.\(runtimeProvider)Usage.refresh")
             }
 
             if display.windows.isEmpty {
-                Text("刷新后显示 Codex 返回的账号窗口")
+                Text(emptyStateText)
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(tokens.secondaryText)
             } else {
@@ -538,7 +557,18 @@ private struct CodexUsageSettingsCard: View {
         }
         isRefreshing = true
         defer { isRefreshing = false }
-        await sessionStore.refreshCodexUsage()
+        if runtimeProvider == "claude" {
+            await sessionStore.refreshClaudeUsage()
+        } else {
+            await sessionStore.refreshCodexUsage()
+        }
+    }
+
+    private var emptyStateText: String {
+        if runtimeProvider == "claude" {
+            return "Claude headless 暂未返回可展示的额度窗口"
+        }
+        return "刷新后显示 \(display.displayName) 返回的账号窗口"
     }
 }
 

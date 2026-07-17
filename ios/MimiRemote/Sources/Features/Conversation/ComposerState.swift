@@ -375,6 +375,22 @@ struct ComposerState {
         }
     }
 
+    mutating func insertPluginMention(_ name: String) {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return
+        }
+        let mention = "@\(normalized)"
+        // 插件引用属于正文 token，不伪装成文件 mention；前后留空格可避免和用户已有文字粘连。
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = "\(mention) "
+        } else if draft.last?.isWhitespace == true {
+            draft += "\(mention) "
+        } else {
+            draft += " \(mention) "
+        }
+    }
+
     mutating func beginVoiceInput() {
         voiceDraftBase = draft
         voiceLastRenderedDraft = draft

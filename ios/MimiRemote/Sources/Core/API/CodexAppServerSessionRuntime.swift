@@ -156,19 +156,24 @@ actor CodexAppServerSessionRuntime {
             return try await legacyClient.capabilities(path: path)
         }
 
-        // Skill 以官方 app-server skills/list 为准，它能覆盖 system skill 与插件缓存；
-        // 旧 REST 发现仍保留为兼容兜底，并继续提供 MCP 列表。
+        // Skill 与已安装插件都以 app-server 的只读列表为准；旧 REST 发现继续作为
+        // Skill 兼容兜底并提供 MCP 摘要。plugin/installed 失败时只降级为空列表。
         do {
-            let result = try await sendRecoveringFromStaleInitialization(
-                CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
-                    .skillsList(cwd: cwd, forceReload: true)
+            let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+            let skillResult = try await sendRecoveringFromStaleInitialization(
+                builder.skillsList(cwd: cwd, forceReload: true)
             )
-            let skills = SkillCapability.parseAppServerListResult(result, cwd: cwd)
+            let pluginResult = try? await sendRecoveringFromStaleInitialization(
+                builder.installedPluginList(cwd: cwd)
+            )
+            let skills = SkillCapability.parseAppServerListResult(skillResult, cwd: cwd)
+            let plugins = CodexPluginCapability.parseAppServerInstalledResult(pluginResult)
             let legacy = try? await legacyClient.capabilities(path: cwd)
             return CapabilityListResponse(
                 path: cwd,
                 skills: skills.isEmpty ? (legacy?.skills ?? []) : skills,
-                mcpServers: legacy?.mcpServers ?? []
+                mcpServers: legacy?.mcpServers ?? [],
+                plugins: plugins
             )
         } catch {
             if let legacy = try? await legacyClient.capabilities(path: cwd) {
@@ -2603,7 +2608,9 @@ actor CodexAppServerSessionRuntime {
             ).flatMap { Int(exactly: $0) },
             hasCredits: firstBool(in: credits, keys: ["hasCredits", "has_credits"]),
             creditsUnlimited: firstBool(in: credits, keys: ["unlimited", "credits_unlimited"]),
-            creditBalance: firstString(in: credits ?? [:], keys: ["balance", "credit_balance"])
+            creditBalance: firstString(in: credits ?? [:], keys: ["balance", "credit_balance"]),
+            availability: firstString(in: snapshot, keys: ["availability"]),
+            unavailableReason: firstString(in: snapshot, keys: ["unavailableReason", "unavailable_reason"])
         )
         if summary.limitID == nil,
            summary.limitName == nil,
@@ -2616,7 +2623,9 @@ actor CodexAppServerSessionRuntime {
            summary.primaryWindowDurationMins == nil,
            summary.secondaryWindowDurationMins == nil,
            summary.hasCredits == nil,
-           summary.creditBalance == nil {
+           summary.creditBalance == nil,
+           summary.availability == nil,
+           summary.unavailableReason == nil {
             return nil
         }
         return summary
@@ -3632,6 +3641,8 @@ actor CodexAppServerSessionRuntime {
             return "accept"
         case "acceptforsession", "accept_for_session":
             return "acceptForSession"
+        case "acceptwithpermissionupdate", "accept_with_permission_update":
+            return "acceptWithPermissionUpdate"
         case "cancel":
             return "cancel"
         default:
@@ -3735,6 +3746,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         try await runtime.modelOptions()
+    }
+
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        try await runtime.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
     func capabilities(path: String?) async throws -> CapabilityListResponse {
@@ -3864,6 +3879,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     }
 
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
+        await runtime.refreshRateLimit()
+    }
+
+    func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         await runtime.refreshRateLimit()
     }
 
@@ -4090,6 +4109,10 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         }
     }
 
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        try await bundle.codex.channelAvailable(runtimeProvider: runtimeProvider)
+    }
+
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
         try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit).sessions
     }
@@ -4128,7 +4151,14 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     }
 
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
-        await bundle.codex.refreshRateLimit()
+        if let sessionID {
+            return await bundle.runtime(forSessionID: sessionID).refreshRateLimit()
+        }
+        return await bundle.codex.refreshRateLimit()
+    }
+
+    func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
+        await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {

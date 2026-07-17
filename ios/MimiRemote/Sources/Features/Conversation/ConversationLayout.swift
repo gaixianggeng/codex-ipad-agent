@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct ConversationLayout: Equatable {
-    // 完整工具栏包含模型、权限、推理、发送方式和语音入口；低于这个宽度时继续平铺会
-    // 反向撑大 composer。iPad mini 竖屏和带侧栏横屏统一收进紧凑工具栏。
-    static let expandedComposerToolbarMinimumWidth: CGFloat = 840
+    // 只有拿不到系统 size class（例如部分预览宿主）时才按宽度兜底；真实设备优先按
+    // compact/regular 区分手机与 iPad，避免 iPad mini 竖屏误入多级系统菜单。
+    static let compactComposerFallbackMaximumWidth: CGFloat = 560
 
     let horizontalInset: CGFloat
     let messageSideSpacer: CGFloat
@@ -25,8 +25,10 @@ struct ConversationLayout: Equatable {
         availableWidth: CGFloat?,
         horizontalSizeClass: UserInterfaceSizeClass?
     ) -> Bool {
-        horizontalSizeClass == .compact ||
-            (availableWidth.map { $0 < expandedComposerToolbarMinimumWidth } ?? false)
+        if let horizontalSizeClass {
+            return horizontalSizeClass == .compact
+        }
+        return availableWidth.map { $0 < compactComposerFallbackMaximumWidth } ?? false
     }
 
     init(

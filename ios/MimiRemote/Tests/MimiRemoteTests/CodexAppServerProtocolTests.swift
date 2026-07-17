@@ -526,6 +526,53 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(skill.brandColor, "#43A7A8")
     }
 
+    func testInstalledPluginListBuilderAndComposerMetadataParser() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let request = try CodexAppServerRequestBuilder(allowlistedProjects: [project])
+            .installedPluginList(cwd: project.path)
+        XCTAssertEqual(request.method, "plugin/installed")
+        XCTAssertEqual(request.params?.objectValue?["cwds"]?.arrayValue?.first?.stringValue, project.path)
+        XCTAssertNil(request.params?.objectValue?["installSuggestionPluginNames"])
+
+        let parsed = CodexPluginCapability.parseAppServerInstalledResult(.object([
+            "marketplaces": .array([
+                .object([
+                    "name": .string("openai-curated"),
+                    "interface": .object(["displayName": .string("OpenAI")]),
+                    "plugins": .array([
+                        .object([
+                            "id": .string("github@openai-curated"),
+                            "name": .string("github"),
+                            "enabled": .bool(true),
+                            "installed": .bool(true),
+                            "interface": .object([
+                                "displayName": .string("GitHub"),
+                                "shortDescription": .string("读取仓库与 Pull Request"),
+                                "composerIconUrl": .string("https://example.test/github.png"),
+                                "brandColor": .string("#24292F")
+                            ])
+                        ]),
+                        .object([
+                            "id": .string("unused@openai-curated"),
+                            "name": .string("unused"),
+                            "enabled": .bool(true),
+                            "installed": .bool(false)
+                        ])
+                    ])
+                ])
+            ])
+        ]))
+
+        let plugin = try XCTUnwrap(parsed.first)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(plugin.id, "github@openai-curated")
+        XCTAssertEqual(plugin.presentationName, "GitHub")
+        XCTAssertEqual(plugin.description, "读取仓库与 Pull Request")
+        XCTAssertEqual(plugin.marketplace, "OpenAI")
+        XCTAssertTrue(plugin.enabled)
+        XCTAssertTrue(plugin.installed)
+    }
+
     func testModelListParserRetainsReasoningGridMetadata() throws {
         let parsed = CodexAppServerModelOption.parseListResult(.object([
             "data": .array([
@@ -748,6 +795,55 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertTrue(approval.body?.contains("验证改动") == true)
     }
 
+    func testProjectorMapsClaudeFileApprovalAndPersistentLocalRule() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("claude-approval-1"),
+            method: "item/fileChange/requestApproval",
+            params: .object([
+                "threadId": .string("thread-claude"),
+                "turnId": .string("turn-claude"),
+                "itemId": .string("edit-1"),
+                "toolName": .string("Edit"),
+                "path": .string("Sources/App.swift"),
+                "diff": .string("-old\n+new"),
+                "availableDecisions": .array([
+                    .string("accept"),
+                    .string("acceptWithPermissionUpdate"),
+                    .string("decline")
+                ]),
+                "permissionSuggestions": .array([
+                    .object([
+                        "type": .string("addRules"),
+                        "behavior": .string("allow"),
+                        "destination": .string("localSettings"),
+                        "rules": .array([
+                            .object([
+                                "toolName": .string("Edit"),
+                                "ruleContent": .string("Sources/**")
+                            ])
+                        ])
+                    ]),
+                    .object([
+                        "type": .string("setMode"),
+                        "behavior": .string("allow"),
+                        "destination": .string("userSettings"),
+                        "rules": .array([.string("Bash(*)")])
+                    ])
+                ])
+            ])
+        )
+
+        var projector = CodexAppServerEventProjector()
+        guard case .approvalRequest(let approval, _) = projector.project(request) else {
+            return XCTFail("expected Claude file approval")
+        }
+        XCTAssertEqual(approval.kind, "file_change")
+        XCTAssertTrue(approval.body?.contains("Sources/App.swift") == true)
+        XCTAssertTrue(approval.body?.contains("+new") == true)
+        XCTAssertEqual(approval.persistentPermissionRules, ["Edit(Sources/**)"])
+        XCTAssertTrue(approval.availableDecisions?.contains("acceptWithPermissionUpdate") == true)
+    }
+
     func testProjectorMapsUserInputServerRequestSeparatelyFromApproval() throws {
         let request = CodexAppServerServerRequest(
             id: .string("request-1"),
@@ -778,6 +874,36 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.id, "input-1")
         XCTAssertEqual(userInput.questions.first?.id, "scope")
         XCTAssertEqual(userInput.questions.first?.options.first?.label, "后端")
+        XCTAssertFalse(userInput.questions.first?.allowsMultipleSelection ?? true)
+    }
+
+    func testProjectorMapsClaudeMultiSelectQuestion() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("claude-question"),
+            method: "item/tool/requestUserInput",
+            params: .object([
+                "threadId": .string("thread-claude"),
+                "itemId": .string("question-1"),
+                "questions": .array([
+                    .object([
+                        "id": .string("features"),
+                        "header": .string("范围"),
+                        "question": .string("需要哪些能力？"),
+                        "multiSelect": .bool(true),
+                        "options": .array([
+                            .object(["label": .string("审批")]),
+                            .object(["label": .string("额度")])
+                        ])
+                    ])
+                ])
+            ])
+        )
+
+        var projector = CodexAppServerEventProjector()
+        guard case .userInputRequest(let input, _) = projector.project(request) else {
+            return XCTFail("expected Claude user input")
+        }
+        XCTAssertTrue(input.questions.first?.allowsMultipleSelection == true)
     }
 
     func testProjectorMapsThreadGoalNotifications() throws {

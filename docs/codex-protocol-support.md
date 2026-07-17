@@ -14,7 +14,7 @@
 
 ## 当前开放能力
 
-Go Gateway 当前开放 24 个 client frame method，其中 `initialized` 是 notification，其余是 request：
+Go Gateway 当前开放 25 个 client frame method，其中 `initialized` 是 notification，其余是 request：
 
 | 能力 | 方法 |
 | --- | --- |
@@ -24,9 +24,13 @@ Go Gateway 当前开放 24 个 client frame method，其中 `initialized` 是 no
 | 目标任务 | `thread/goal/get`、`thread/goal/set`、`thread/goal/clear` |
 | Review | `review/start` |
 | Turn | `turn/start`、`turn/steer`、`turn/interrupt` |
-| 只读发现能力 | `model/list`、`skills/list`、`account/rateLimits/read` |
+| 只读发现能力 | `model/list`、`skills/list`、`plugin/installed`、`account/rateLimits/read` |
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
+
+Claude 实验通道使用更小的独立 allowlist。`alleycat-claude-bridge >= 0.2.0` 时额外开放 `account/rateLimits/read`，请求参数固定改写为 `{}`。Claude Code 2.1.92 headless `stream-json` 不执行 statusline sink，bridge 没有事件缓存时返回 `rateLimits.availability=unavailable`、`unavailableReason=headless_statusline_unavailable`；收到官方 `rate_limit_event` 后返回 `availability=partial`、`unavailableReason=usage_percentage_unavailable`，只映射真实存在的 `rateLimitReachedType`，以及对应 `primary`（5h）或 `secondary`（7d）的 `resetsAt/windowDurationMins`，不补 `usedPercent=0`。Gateway 不访问 Anthropic 私有接口或凭证文件。
+
+Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；审批反向请求的响应和随后到达的 `serverRequest/resolved` notification 均透明透传。bridge 版本缺失、低于 `0.2.0` 或运行中退出时，Gateway 返回结构化错误并终止等待。
 
 `thread/search` 是跨工作区全文搜索，额外执行以下边界：
 
@@ -41,6 +45,12 @@ Go Gateway 当前开放 24 个 client frame method，其中 `initialized` 是 no
 - `cwds` 必须且只能包含一个 project、`browse_roots` 或 managed Worktree 内的授权目录；
 - Gateway 只保留 `cwds` 与布尔型 `forceReload`，未知参数全部剔除；
 - Skill 配置写入、启停、安装与插件管理仍不开放。
+
+`plugin/installed` 只用于 Composer 的 `@ 插件`候选列表：
+
+- `cwds` 必须且只能包含一个已授权工作区；
+- 不允许 `installSuggestionPluginNames`，移动端不会借候选列表建议或安装插件；
+- 只读取已安装插件的名称、启用状态和展示元数据，插件安装、卸载、授权与配置写入仍不开放。
 
 `review/start` 额外收紧为：
 

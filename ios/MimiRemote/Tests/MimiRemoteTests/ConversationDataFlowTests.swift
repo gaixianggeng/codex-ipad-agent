@@ -1738,6 +1738,19 @@ final class ConversationDataFlowTests: XCTestCase {
         withExtendedLifetime((conversationCancellable, logCancellable)) {}
     }
 
+    func testComposerStateInsertsPluginMentionWithoutUsingFileMentionPayload() {
+        var composerState = ComposerState()
+
+        composerState.insertPluginMention("  GitHub  ")
+        XCTAssertEqual(composerState.draft, "@GitHub ")
+        XCTAssertTrue(composerState.attachments.isEmpty)
+
+        composerState.draft += "检查这个 PR"
+        composerState.insertPluginMention("Linear")
+        XCTAssertEqual(composerState.draft, "@GitHub 检查这个 PR @Linear ")
+        XCTAssertTrue(composerState.attachments.isEmpty)
+    }
+
     func testComposerStateTracksSubmitEligibilityWithoutTrimmingDraft() {
         var composerState = ComposerState()
 
@@ -10278,6 +10291,40 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
 
+    func testClaudeUsageChannelUsesConfigAvailabilityWhenModelListFails() async {
+        let claudeRateLimit = RateLimitSummary(
+            limitID: "claude",
+            limitName: "Claude",
+            availability: "unavailable",
+            unavailableReason: "headless_statusline_unavailable"
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            modelOptionsError: MockError.unimplemented,
+            runtimeChannelAvailability: ["claude": true],
+            rateLimitsByRuntime: ["claude": claudeRateLimit]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAppServerModelOptions(force: true)
+        await store.refreshClaudeUsage()
+
+        XCTAssertTrue(store.isClaudeRuntimeChannelAvailable)
+        XCTAssertTrue(store.hasClaudeRuntimeChannel)
+        XCTAssertTrue(store.appServerModelOptions.isEmpty)
+        XCTAssertEqual(client.requestedRateLimitProviders, ["claude"])
+        XCTAssertEqual(store.accountClaudeUsageWindowsDisplay.displayName, "Claude")
+        XCTAssertEqual(store.accountClaudeUsageWindowsDisplay.creditText, "Headless 暂无额度百分比")
+        XCTAssertEqual(store.accountCodexUsageWindowsDisplay.displayName, "Codex")
+        XCTAssertFalse(store.accountCodexUsageWindowsDisplay.hasLiveData)
+    }
+
     func testNewSessionResolvesMissingModelFromAppServerDefaultBeforeCreate() async throws {
         let project = makeProject(id: "proj_resolve_model_create")
         let created = makeSession(id: "sess_resolve_model_create", projectID: project.id, title: "模型解析", status: "running", source: "codex")
@@ -12683,6 +12730,10 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(store.selectedSession?.status, "waiting_for_approval")
         XCTAssertEqual(store.selectedSession?.pendingApproval?.title, "运行 curl")
         XCTAssertTrue(conversationStore.messages(for: running.id).contains { $0.kind == .approval })
+        // pendingApproval 会先落到主状态，通知调度随后跨 actor 完成；完整测试集下不能假设两者同一拍结束。
+        for _ in 0..<80 where scheduler.runtimeNotifications.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(scheduler.runtimeNotifications, [
             SessionRuntimeNotification(
                 id: "approval:\(running.id):cmd-approval",
@@ -14552,6 +14603,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     let messagesError: Error?
     let modelOptionsResult: [CodexAppServerModelOption]
     let modelOptionsError: Error?
+    let runtimeChannelAvailability: [String: Bool]
+    let rateLimitsByRuntime: [String: RateLimitSummary]
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
@@ -14599,6 +14652,7 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
     var createPayloads: [CreateSessionRequest] = []
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
+    private(set) var requestedRateLimitProviders: [String] = []
 
     init(
         projects: [AgentProject],
@@ -14641,6 +14695,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         messagesError: Error? = nil,
         modelOptions: [CodexAppServerModelOption] = [],
         modelOptionsError: Error? = nil,
+        runtimeChannelAvailability: [String: Bool] = [:],
+        rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil
     ) {
         self.projectsResult = projects
@@ -14686,6 +14742,8 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
         self.messagesError = messagesError
         self.modelOptionsResult = modelOptions
         self.modelOptionsError = modelOptionsError
+        self.runtimeChannelAvailability = runtimeChannelAvailability
+        self.rateLimitsByRuntime = rateLimitsByRuntime
         self.threadSearchHandler = threadSearchHandler
     }
 
@@ -14699,6 +14757,15 @@ private final class MockSessionStoreClient: SessionStoreAPIClient {
             throw modelOptionsError
         }
         return modelOptionsResult
+    }
+
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        runtimeChannelAvailability[runtimeProvider] ?? false
+    }
+
+    func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
+        requestedRateLimitProviders.append(runtimeProvider)
+        return rateLimitsByRuntime[runtimeProvider]
     }
 
     func capabilities(path: String?) async throws -> CapabilityListResponse {
@@ -16433,6 +16500,51 @@ extension ConversationDataFlowTests {
         let options = try await modelTask.value
         XCTAssertEqual(options.map(\.model), ["gpt-live"])
         XCTAssertEqual(options.first?.runtimeProvider, "codex")
+    }
+
+    func testMultiRuntimeClaudeRateLimitReadUsesClaudeGateway() async throws {
+        let project = AgentProject(id: "proj_claude_quota", name: "Claude Quota", path: "/tmp/claude-quota")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: ["initialize", "initialized", "account/rateLimits/read"],
+            channels: [makeClaudeChannelMetadata()]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let client = MultiRuntimeSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "outer-token",
+                runtimeProvider: "codex",
+                transportFactory: { codexTransport },
+                configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "outer-token",
+                runtimeProvider: "claude",
+                transportFactory: { claudeTransport },
+                configProvider: { config }
+            )
+        )
+
+        let refreshTask = Task { try await client.refreshRateLimit(runtimeProvider: "claude") }
+        let initialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(claudeTransport, id: initialize.id, result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#)
+        let rateLimitRead = try await waitForFakeAppServerRequest(claudeTransport, method: "account/rateLimits/read", after: 1)
+        transportResponse(
+            claudeTransport,
+            id: rateLimitRead.id,
+            result: #"{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"partial","unavailableReason":"usage_percentage_unavailable","rateLimitReachedType":"rejected","primary":{"resetsAt":1780494300,"windowDurationMins":300}}}"#
+        )
+
+        let summary = try await refreshTask.value
+        XCTAssertEqual(summary?.limitID, "claude")
+        XCTAssertEqual(summary?.availability, "partial")
+        XCTAssertEqual(summary?.primaryResetsAt, 1_780_494_300)
+        XCTAssertNil(summary?.primaryUsedPercent)
+        let codexMessages = await codexTransport.sentMessages()
+        XCTAssertTrue(codexMessages.isEmpty)
     }
 
     func testMultiRuntimeCompositeCursorCarriesBuffersAndContinuesRuntimeCursors() async throws {
@@ -19317,6 +19429,35 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(pendingWindowsDisplay.hasLiveData)
         XCTAssertTrue(pendingWindowsDisplay.windows.isEmpty)
         XCTAssertEqual(pendingWindowsDisplay.windowSummaryText, "尚未取得账号用量")
+
+        let claudeWindowsDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: RateLimitSummary(
+                limitID: "claude",
+                limitName: "Claude",
+                primaryUsedPercent: 35,
+                secondaryUsedPercent: 12,
+                primaryWindowDurationMins: 300,
+                secondaryWindowDurationMins: 10_080
+            ),
+            now: now,
+            fallbackDisplayName: "Claude"
+        )
+        XCTAssertEqual(claudeWindowsDisplay.displayName, "Claude")
+        XCTAssertEqual(claudeWindowsDisplay.windows.map(\.label), ["5h", "7d"])
+        XCTAssertTrue(claudeWindowsDisplay.windows.allSatisfy { $0.accessibilityName.hasPrefix("Claude") })
+
+        let unavailableClaude = CodexUsageWindowsDisplay.make(
+            rateLimit: RateLimitSummary(
+                limitID: "claude",
+                limitName: "Claude",
+                availability: "unavailable",
+                unavailableReason: "headless_statusline_unavailable"
+            ),
+            now: now,
+            fallbackDisplayName: "Claude"
+        )
+        XCTAssertEqual(unavailableClaude.creditText, "Headless 暂无额度百分比")
+        XCTAssertTrue(unavailableClaude.windows.isEmpty)
 
         let boundedWindows = CodexUsageWindowsDisplay.make(
             rateLimit: RateLimitSummary(primaryUsedPercent: -10, secondaryUsedPercent: 125),

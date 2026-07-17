@@ -351,11 +351,117 @@ struct CapabilityListResponse: Codable, Hashable {
     let path: String?
     let skills: [SkillCapability]
     let mcpServers: [MCPCapability]
+    let plugins: [CodexPluginCapability]
 
     enum CodingKeys: String, CodingKey {
         case path
         case skills
         case mcpServers = "mcp_servers"
+        case plugins
+    }
+
+    init(
+        path: String?,
+        skills: [SkillCapability],
+        mcpServers: [MCPCapability],
+        plugins: [CodexPluginCapability] = []
+    ) {
+        self.path = path
+        self.skills = skills
+        self.mcpServers = mcpServers
+        self.plugins = plugins
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decodeIfPresent(String.self, forKey: .path)
+        skills = try container.decodeIfPresent([SkillCapability].self, forKey: .skills) ?? []
+        mcpServers = try container.decodeIfPresent([MCPCapability].self, forKey: .mcpServers) ?? []
+        // 旧版 agentd 没有 plugins 字段；解码为空数组即可平滑兼容，不能让整个能力页失效。
+        plugins = try container.decodeIfPresent([CodexPluginCapability].self, forKey: .plugins) ?? []
+    }
+}
+
+struct CodexPluginCapability: Codable, Hashable, Identifiable {
+    let id: String
+    let name: String
+    let description: String?
+    let marketplace: String
+    let enabled: Bool
+    let installed: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case description
+        case marketplace
+        case enabled
+        case installed
+    }
+
+    init(
+        id: String,
+        name: String,
+        description: String? = nil,
+        marketplace: String = "",
+        enabled: Bool = true,
+        installed: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.marketplace = marketplace
+        self.enabled = enabled
+        self.installed = installed
+    }
+
+    var presentationName: String {
+        name
+    }
+
+    static func parseAppServerInstalledResult(_ result: CodexAppServerJSONValue?) -> [CodexPluginCapability] {
+        guard let marketplaces = result?.objectValue?["marketplaces"]?.arrayValue else {
+            return []
+        }
+        var seenIDs: Set<String> = []
+        return marketplaces.flatMap { marketplaceValue -> [CodexPluginCapability] in
+            guard let marketplace = marketplaceValue.objectValue else { return [] }
+            let marketplaceName = marketplace["interface"]?.objectValue?["displayName"]?.stringValue
+                ?? marketplace["name"]?.stringValue
+                ?? ""
+            return marketplace["plugins"]?.arrayValue?.compactMap { pluginValue in
+                guard let object = pluginValue.objectValue,
+                      let id = object["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !id.isEmpty,
+                      !seenIDs.contains(id),
+                      let fallbackName = object["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !fallbackName.isEmpty
+                else {
+                    return nil
+                }
+                let interface = object["interface"]?.objectValue
+                let displayName = interface?["displayName"]?.stringValue?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                    ?? fallbackName
+                seenIDs.insert(id)
+                return CodexPluginCapability(
+                    id: id,
+                    name: displayName,
+                    description: interface?["shortDescription"]?.stringValue
+                        ?? interface?["longDescription"]?.stringValue,
+                    marketplace: marketplaceName,
+                    enabled: object["enabled"]?.boolValue ?? true,
+                    installed: object["installed"]?.boolValue ?? false
+                )
+            } ?? []
+        }
+        .filter(\.installed)
+        .sorted { lhs, rhs in
+            if lhs.enabled != rhs.enabled {
+                return lhs.enabled && !rhs.enabled
+            }
+            return lhs.presentationName.localizedStandardCompare(rhs.presentationName) == .orderedAscending
+        }
     }
 }
 
@@ -2127,9 +2233,18 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         guard sanitized.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "claude" else {
             return sanitized
         }
-        // Claude v1 通过 per-connection bridge 执行；移动端必须在发出前把权限压到
-        // workspace-write/read-only，避免默认 fullAccess 被 gateway 拒绝，也避免旧草稿绕过 UI。
-        if sanitized.sandboxMode == .dangerFullAccess {
+        // Claude 只开放 default / plan / auto 三档安全映射。旧草稿或高级 JSON 即使携带
+        // fullAccess/never，也必须在移动端和 gateway 两端同时降级，绝不映射 bypassPermissions。
+        let reviewer = sanitized.approvalsReviewer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitized.sandboxMode == .readOnly {
+            sanitized.approvalPolicy = .onRequest
+            sanitized.approvalsReviewer = "user"
+        } else if sanitized.approvalPolicy == .onFailure, reviewer == "auto_review" {
+            sanitized.sandboxMode = .workspaceWrite
+            sanitized.approvalsReviewer = "auto_review"
+        } else {
+            sanitized.approvalPolicy = .onRequest
+            sanitized.approvalsReviewer = "user"
             sanitized.sandboxMode = .workspaceWrite
         }
         sanitized.networkAccess = false
@@ -3024,6 +3139,13 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "skills/list", params: .object([
             "cwds": .array([.string(path)]),
             "forceReload": .bool(forceReload)
+        ]))
+    }
+
+    func installedPluginList(cwd: String) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        return CodexAppServerRequestSpec(method: "plugin/installed", params: .object([
+            "cwds": .array([.string(path)])
         ]))
     }
 

@@ -1988,6 +1988,8 @@ struct RateLimitSummary: Codable, Hashable {
     let hasCredits: Bool?
     let creditsUnlimited: Bool?
     let creditBalance: String?
+    let availability: String?
+    let unavailableReason: String?
 
     enum CodingKeys: String, CodingKey {
         case remainingRequests = "remaining_requests"
@@ -2006,6 +2008,8 @@ struct RateLimitSummary: Codable, Hashable {
         case hasCredits = "has_credits"
         case creditsUnlimited = "credits_unlimited"
         case creditBalance = "credit_balance"
+        case availability
+        case unavailableReason = "unavailable_reason"
     }
 
     init(
@@ -2024,7 +2028,9 @@ struct RateLimitSummary: Codable, Hashable {
         secondaryWindowDurationMins: Int? = nil,
         hasCredits: Bool? = nil,
         creditsUnlimited: Bool? = nil,
-        creditBalance: String? = nil
+        creditBalance: String? = nil,
+        availability: String? = nil,
+        unavailableReason: String? = nil
     ) {
         self.remainingRequests = remainingRequests
         self.remainingTokens = remainingTokens
@@ -2042,6 +2048,8 @@ struct RateLimitSummary: Codable, Hashable {
         self.hasCredits = hasCredits
         self.creditsUnlimited = creditsUnlimited
         self.creditBalance = creditBalance
+        self.availability = availability
+        self.unavailableReason = unavailableReason
     }
 
     var compactText: String? {
@@ -2211,6 +2219,7 @@ struct CodexUsageWindowDisplay: Equatable, Identifiable {
     let resetText: String
     let isNearLimit: Bool
     let isExhausted: Bool
+    let providerName: String
 
     var id: String { kind.id }
 
@@ -2227,15 +2236,15 @@ struct CodexUsageWindowDisplay: Equatable, Identifiable {
 
     var accessibilityName: String {
         guard let durationMinutes, durationMinutes > 0 else {
-            return "Codex 账号窗口"
+            return "\(providerName) 账号窗口"
         }
         if durationMinutes % (24 * 60) == 0 {
-            return "Codex \(durationMinutes / (24 * 60)) 天窗口"
+            return "\(providerName) \(durationMinutes / (24 * 60)) 天窗口"
         }
         if durationMinutes % 60 == 0 {
-            return "Codex \(durationMinutes / 60) 小时窗口"
+            return "\(providerName) \(durationMinutes / 60) 小时窗口"
         }
-        return "Codex \(durationMinutes) 分钟窗口"
+        return "\(providerName) \(durationMinutes) 分钟窗口"
     }
 
     var primaryText: String {
@@ -2285,9 +2294,14 @@ struct CodexUsageWindowsDisplay: Equatable {
         return "\(windows.map(\.label).joined(separator: " 和 ")) 账号窗口"
     }
 
-    static func make(rateLimit: RateLimitSummary?, now: Date = Date()) -> CodexUsageWindowsDisplay {
+    static func make(
+        rateLimit: RateLimitSummary?,
+        now: Date = Date(),
+        fallbackDisplayName: String = "Codex"
+    ) -> CodexUsageWindowsDisplay {
+        let providerName = rateLimit?.displayName ?? fallbackDisplayName
         let windows = CodexUsageWindowKind.allCases.compactMap { kind in
-            window(kind: kind, rateLimit: rateLimit, now: now)
+            window(kind: kind, rateLimit: rateLimit, now: now, providerName: providerName)
         }
         .sorted { lhs, rhs in
             let lhsDuration = lhs.durationMinutes ?? Int.max
@@ -2298,8 +2312,8 @@ struct CodexUsageWindowsDisplay: Equatable {
             return lhsDuration < rhsDuration
         }
         return CodexUsageWindowsDisplay(
-            displayName: rateLimit?.displayName ?? "Codex",
-            creditText: creditText(rateLimit),
+            displayName: providerName,
+            creditText: creditText(rateLimit, fallbackDisplayName: providerName),
             windows: windows,
             hasLiveData: windows.contains { $0.progress != nil || $0.resetDate != nil }
         )
@@ -2308,7 +2322,8 @@ struct CodexUsageWindowsDisplay: Equatable {
     private static func window(
         kind: CodexUsageWindowKind,
         rateLimit: RateLimitSummary?,
-        now: Date
+        now: Date,
+        providerName: String
     ) -> CodexUsageWindowDisplay? {
         let percent: Double?
         let resetEpoch: Int64?
@@ -2352,7 +2367,8 @@ struct CodexUsageWindowsDisplay: Equatable {
             resetDate: resetDate,
             resetText: resetText(resetDate, now: now),
             isNearLimit: (progress ?? 0) >= CodexUsageWindowDisplay.nearLimitThreshold,
-            isExhausted: isExhausted
+            isExhausted: isExhausted,
+            providerName: providerName
         )
     }
 
@@ -2397,9 +2413,20 @@ struct CodexUsageWindowsDisplay: Equatable {
         return "\(formatter.string(from: date)) 重置"
     }
 
-    private static func creditText(_ rateLimit: RateLimitSummary?) -> String {
+    private static func creditText(_ rateLimit: RateLimitSummary?, fallbackDisplayName: String) -> String {
         guard let rateLimit else {
-            return "等待 Codex 返回账号用量"
+            return "等待 \(fallbackDisplayName) 返回账号用量"
+        }
+        switch rateLimit.availability?.lowercased() {
+        case "unavailable":
+            if rateLimit.unavailableReason == "headless_statusline_unavailable" {
+                return "Headless 暂无额度百分比"
+            }
+            return "账号额度数据暂不可用"
+        case "partial":
+            return "仅显示已观测的限流窗口"
+        default:
+            break
         }
         if rateLimit.creditsUnlimited == true {
             return "Credits 无限制"
@@ -2510,6 +2537,10 @@ struct ApprovalSummary: Codable, Hashable {
     let kind: String
     let risk: String?
     let count: Int?
+    // Claude 只有在明确给出 localSettings addRules 建议时，客户端才展示“始终允许”。
+    // 规则仅用于确认展示，真正回传的 PermissionUpdate 由 bridge 按 request id 保存并校验。
+    let availableDecisions: [String]?
+    let persistentPermissionRules: [String]?
 
     init(
         id: String,
@@ -2517,7 +2548,9 @@ struct ApprovalSummary: Codable, Hashable {
         body: String? = nil,
         kind: String,
         risk: String? = nil,
-        count: Int?
+        count: Int?,
+        availableDecisions: [String]? = nil,
+        persistentPermissionRules: [String]? = nil
     ) {
         let normalizedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let normalizedRisk = risk?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -2527,6 +2560,8 @@ struct ApprovalSummary: Codable, Hashable {
         self.kind = kind
         self.risk = normalizedRisk.isEmpty ? nil : normalizedRisk
         self.count = count
+        self.availableDecisions = availableDecisions
+        self.persistentPermissionRules = persistentPermissionRules
     }
 
     var hasDecisionContext: Bool {
@@ -2540,6 +2575,13 @@ struct ApprovalSummary: Codable, Hashable {
         // 旧事件只带 title。含参数、路径或命令分隔符的标题仍能明确表达动作；
         // “运行命令”这类泛化标题则必须等服务端补齐 body 后才能批准。
         return command.contains(" ") || command.contains("/") || command.contains("：") || command.contains(":")
+    }
+
+    var canPersistPermission: Bool {
+        let supportsDecision = availableDecisions?.contains { decision in
+            decision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame
+        } == true
+        return supportsDecision && persistentPermissionRules?.isEmpty == false
     }
 }
 
@@ -2572,6 +2614,27 @@ struct AgentUserInputQuestion: Identifiable, Codable, Hashable {
     let isOther: Bool
     let isSecret: Bool
     let options: [AgentUserInputOption]
+    let multiSelect: Bool?
+
+    init(
+        id: String,
+        header: String,
+        question: String,
+        isOther: Bool,
+        isSecret: Bool,
+        options: [AgentUserInputOption],
+        multiSelect: Bool? = nil
+    ) {
+        self.id = id
+        self.header = header
+        self.question = question
+        self.isOther = isOther
+        self.isSecret = isSecret
+        self.options = options
+        self.multiSelect = multiSelect
+    }
+
+    var allowsMultipleSelection: Bool { multiSelect == true }
 }
 
 struct AgentUserInputOption: Identifiable, Codable, Hashable {
@@ -2848,6 +2911,26 @@ struct AgentApprovalRequest: Codable, Hashable {
     let body: String?
     let kind: String
     let risk: String?
+    let availableDecisions: [String]?
+    let persistentPermissionRules: [String]?
+
+    init(
+        id: String,
+        title: String,
+        body: String?,
+        kind: String,
+        risk: String?,
+        availableDecisions: [String]? = nil,
+        persistentPermissionRules: [String]? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.body = body
+        self.kind = kind
+        self.risk = risk
+        self.availableDecisions = availableDecisions
+        self.persistentPermissionRules = persistentPermissionRules
+    }
 }
 
 struct AgentErrorPayload: Codable, Hashable {

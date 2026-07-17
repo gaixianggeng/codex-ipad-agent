@@ -202,6 +202,17 @@ agentd serve --config /path/to/config.json
 
 方案：`agentd` 通过外部 `alleycat-claude-bridge` 子进程把 iPad 的 app-server JSON-RPC WebSocket 转成 Claude bridge 的 stdio JSONL。bridge 不并入本仓库，属于可选依赖；launchd/Homebrew service 的 `PATH` 很窄，建议 `claude.bridge_bin` 写绝对路径。
 
+当前要求 `alleycat-claude-bridge >= 0.2.0`。旧版本和没有标准 `--version` 输出的 bridge 会被 `agentd` 拒绝，避免把“能启动”误判为“协议兼容”。兼容修复形成已审阅的远端 commit 前，不使用仍指向 `0.1.0` 的旧 main 冒充兼容版本；开发环境从已审阅的本地源码安装，安装后重启 `agentd`：
+
+```bash
+cd /path/to/reviewed/alleycat-source
+cargo install --path crates/claude-bridge --locked --force
+
+agentd doctor
+```
+
+正式发布前必须把上述本地安装替换为 `cargo install --git <repo> --rev <reviewed-sha> --locked --force alleycat-claude-bridge`，并让 README、doctor 提示和发布清单使用同一个 SHA。
+
 配置示例：
 
 ```json
@@ -244,8 +255,10 @@ go run ./scripts/ipad-ws-probe.go \
 
 - `/api/app-server/config.channels[]` 会暴露 `runtime_id=claude`、`experimental=true`、`lifecycle=per_connection`、bridge 状态和能力声明。
 - v1 是每个 WebSocket 一个 bridge 进程；iPad 锁屏、切后台或网络断开会结束 Claude bridge，正在跑的 Claude turn 可能中断。iOS 侧会落到失败/中断状态，用户可以重新发送。
-- Claude v1 只声明并放行基础会话、历史、流式输出、审批、文件 diff、模型列表；目标任务、archive、fork、rate limits 不作为 v1 能力。
-- `approvalPolicy=never`、`networkAccess=true`、`danger-full-access` 不会写入 Claude bridge；默认 sandbox 会降到 `workspace-write`。
+- Claude 兼容版声明并放行基础会话、历史、流式输出、审批、文件 diff、模型列表和 `account/rateLimits/read`；目标任务、archive、fork 仍不开放。
+- Claude 额度入口与 Codex 并列，但数据严格按 Claude Code headless 进程实际提供的字段展示。Claude Code `2.1.92` 的 `stream-json` 模式不会执行 statusline sink，因此 bridge 通常拿不到 [statusline 文档](https://code.claude.com/docs/en/statusline#available-data) 中的 5h/7d `used_percentage`；此时 `account/rateLimits/read` 返回 `availability=unavailable`、`unavailableReason=headless_statusline_unavailable`，设置页显示暂无百分比。若运行中收到官方 `rate_limit_event`，返回 `availability=partial`、`unavailableReason=usage_percentage_unavailable`，只展示事件真实携带的 5h/7d 窗口、重置时间和阻断状态，绝不把缺失百分比伪造成 `0%`。`agentd` 不调用 Anthropic 私有网页接口，也不读取或返回登录凭证。
+- `approvalPolicy=never`、`networkAccess=true`、`danger-full-access` 不会写入 Claude bridge；默认 sandbox 会降到 `workspace-write`。`CLAUDE_BRIDGE_BYPASS_PERMISSIONS` 在子进程边界固定为 `false`，本机环境或配置不能将其覆盖为 `true`。
+- bridge 完成审批决定转发后必须发送 `serverRequest/resolved`；iPad 据此结束审批卡等待态。bridge 退出、断线和协议错误会以结构化错误码结束连接，不静默等待。
 - 关闭方式：把 `claude.enabled` 改回 `false` 并重启 `agentd`。
 
 ### 1.1 语音输入
