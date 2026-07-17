@@ -494,7 +494,7 @@ final class ConversationDataFlowTests: XCTestCase {
             force: false,
             shouldFollowMessageTail: false,
             forceNextMessageTailScroll: true,
-            isTailFollowLockedByLocalSubmit: false,
+            isTailFollowLocked: false,
             isTimelineNearBottom: false
         ))
 
@@ -502,7 +502,7 @@ final class ConversationDataFlowTests: XCTestCase {
             force: false,
             shouldFollowMessageTail: false,
             forceNextMessageTailScroll: false,
-            isTailFollowLockedByLocalSubmit: false,
+            isTailFollowLocked: false,
             isTimelineNearBottom: true
         ))
 
@@ -510,7 +510,7 @@ final class ConversationDataFlowTests: XCTestCase {
             force: false,
             shouldFollowMessageTail: false,
             forceNextMessageTailScroll: false,
-            isTailFollowLockedByLocalSubmit: false,
+            isTailFollowLocked: false,
             isTimelineNearBottom: false
         ))
 
@@ -518,7 +518,17 @@ final class ConversationDataFlowTests: XCTestCase {
             force: true,
             shouldFollowMessageTail: false,
             forceNextMessageTailScroll: false,
-            isTailFollowLockedByLocalSubmit: false,
+            isTailFollowLocked: false,
+            isTimelineNearBottom: false
+        ))
+
+        // 切换会话时要防住旧 List 的 geometry 回调：即使它先报“不在底部”，
+        // 也要继续执行尾部重锚，直到用户明确上翻。
+        XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
+            force: false,
+            shouldFollowMessageTail: false,
+            forceNextMessageTailScroll: false,
+            isTailFollowLocked: true,
             isTimelineNearBottom: false
         ))
     }

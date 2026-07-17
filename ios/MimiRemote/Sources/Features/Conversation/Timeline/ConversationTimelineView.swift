@@ -10,7 +10,10 @@ struct ConversationTimelineView: View {
     let layout: ConversationLayout
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
-    @State private var isTailFollowLockedByLocalSubmit = false
+    // 在会话切换、本地提交或用户主动“回到底部”后，旧 List 的滚动几何可能还会
+    // 回报上一个会话的 offset。锁住跟随直到用户明确上翻，避免这份过期几何把
+    // 新会话的首帧尾部定位提前关掉。
+    @State private var isTailFollowLocked = false
     @State private var isTimelineNearBottom = true
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
@@ -106,7 +109,7 @@ struct ConversationTimelineView: View {
                     if nearBottom {
                         shouldFollowMessageTail = true
                         hasUnseenTailMessage = false
-                    } else if !isTailFollowLockedByLocalSubmit {
+                    } else if !isTailFollowLocked {
                         shouldFollowMessageTail = false
                     }
                 }
@@ -134,12 +137,15 @@ struct ConversationTimelineView: View {
                 }
             }
             .onChange(of: sessionStore.selectedSessionID) { oldID, newID in
-                let shouldPreserveTailFollowLock = isTailFollowLockedByLocalSubmit
+                let shouldPreserveTailFollowLock = isTailFollowLocked
                     && Self.isOptimisticSessionID(oldID)
                     && newID != nil
                 shouldFollowMessageTail = true
                 forceNextMessageTailScroll = true
-                isTailFollowLockedByLocalSubmit = shouldPreserveTailFollowLock
+                // 会话切换本来就要进入最新上下文。首帧 List 尚未替换前，旧会话的
+                // geometry 可能先报“未贴底”；把锁延续到用户主动上翻，后续流式消息
+                // 才不会被错误地当成历史阅读状态而停止重锚。
+                isTailFollowLocked = newID != nil || shouldPreserveTailFollowLock
                 hasUnseenTailMessage = false
                 isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
@@ -165,7 +171,7 @@ struct ConversationTimelineView: View {
                 if Self.shouldForceTailFollow(forNewTailMessage: messages.last) {
                     // 本地发送代表用户明确进入最新上下文；即使滚动几何刚好误判为“不在底部”，
                     // 也要立即贴到尾部，避免发完消息后还停在历史位置。
-                    isTailFollowLockedByLocalSubmit = true
+                    isTailFollowLocked = true
                     queueTailScrollAttempts(
                         timelineItems: timelineItems,
                         proxy: proxy,
@@ -380,7 +386,7 @@ struct ConversationTimelineView: View {
                     return
                 }
                 // 用户向下拖动列表是在主动回看更早内容；解除本轮发送后的尾部跟随锁。
-                isTailFollowLockedByLocalSubmit = false
+                isTailFollowLocked = false
                 shouldFollowMessageTail = false
                 userScrollAwayGeneration += 1
                 cancelPendingTailScrollAttempts()
@@ -400,13 +406,13 @@ struct ConversationTimelineView: View {
         force: Bool,
         shouldFollowMessageTail: Bool,
         forceNextMessageTailScroll: Bool,
-        isTailFollowLockedByLocalSubmit: Bool,
+        isTailFollowLocked: Bool,
         isTimelineNearBottom: Bool
     ) -> Bool {
         force ||
             shouldFollowMessageTail ||
             forceNextMessageTailScroll ||
-            isTailFollowLockedByLocalSubmit ||
+            isTailFollowLocked ||
             isTimelineNearBottom
     }
 
@@ -565,7 +571,7 @@ struct ConversationTimelineView: View {
             force: force,
             shouldFollowMessageTail: shouldFollowMessageTail,
             forceNextMessageTailScroll: forceNextMessageTailScroll,
-            isTailFollowLockedByLocalSubmit: isTailFollowLockedByLocalSubmit,
+            isTailFollowLocked: isTailFollowLocked,
             isTimelineNearBottom: isTimelineNearBottom
         ) else {
             hasUnseenTailMessage = true
@@ -598,10 +604,10 @@ struct ConversationTimelineView: View {
             guard retriesAfterLayout else {
                 return
             }
-            // 首次挂载、Markdown 排版和 iOS 27 List 快照可能分多个布局周期完成。
-            // 长列表在 320ms 后仍可能再结算一次行高，因此补一次较晚重锚；
-            // 用户一旦主动上翻，generation 检查会立刻停止后续滚动。
-            for delay in [120_000_000, 320_000_000, 900_000_000] as [UInt64] {
+            // 首次挂载、Markdown 排版和 List 快照可能分多个布局周期完成。长列表在
+            // 高负载下会晚于首轮 1.3 秒重试才提交最终 contentSize，因此保留一次
+            // 较晚的无动画重锚；用户一旦主动上翻，generation 检查会立刻停止后续滚动。
+            for delay in [120_000_000, 320_000_000, 900_000_000, 1_800_000_000] as [UInt64] {
                 try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled,
                       tailScrollAttemptGeneration == attemptGeneration,
@@ -629,7 +635,7 @@ struct ConversationTimelineView: View {
     ) {
         hasUnseenTailMessage = false
         shouldFollowMessageTail = true
-        isTailFollowLockedByLocalSubmit = true
+        isTailFollowLocked = true
         isTimelineNearBottom = true
         queueTailScrollAttempts(
             timelineItems: timelineItems,
