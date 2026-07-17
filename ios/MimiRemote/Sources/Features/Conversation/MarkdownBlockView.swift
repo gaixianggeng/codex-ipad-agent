@@ -342,6 +342,7 @@ enum ConversationImageSource: Hashable, Identifiable {
 
 struct ConversationImagePreview: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    @State private var embeddedImage: UIImage?
     @State private var localImage: UIImage?
     @State private var localFileURL: URL?
     @State private var quickLookURL: URL?
@@ -354,6 +355,28 @@ struct ConversationImagePreview: View {
     var maxHeight: CGFloat = 280
     var showsCaption = true
     var fillsAvailableWidth = false
+
+    init(
+        source: ConversationImageSource,
+        title: String?,
+        style: MarkdownStyle,
+        maxHeight: CGFloat = 280,
+        showsCaption: Bool = true,
+        fillsAvailableWidth: Bool = false
+    ) {
+        self.source = source
+        self.title = title
+        self.style = style
+        self.maxHeight = maxHeight
+        self.showsCaption = showsCaption
+        self.fillsAvailableWidth = fillsAvailableWidth
+        _embeddedImage = State(
+            initialValue: DataURLImageDecoder.cachedImage(
+                cacheKey: source.id,
+                maxPixelSize: 1_600
+            )
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -369,21 +392,18 @@ struct ConversationImagePreview: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .quickLookPreview($quickLookURL)
         .task(id: source.id) {
-            guard case .historyMedia(let id) = source else {
-                return
-            }
-            // history-media 默认接口返回 1600px 内的派生图；只在图片进入 LazyVStack 可见区域时加载，
-            // 既让截图直接展示，也避免打开长会话时一次性下载全部原图。
-            await loadHistoryMedia(id: id)
+            await loadSourceIfNeeded()
         }
     }
 
     @ViewBuilder
     private var content: some View {
         switch source {
-        case .dataURL(let value):
-            if let image = Self.image(fromDataURL: value) {
+        case .dataURL:
+            if let image = embeddedImage {
                 imageView(Image(uiImage: image))
+            } else if isLoadingLocalImage {
+                loadingPlaceholder
             } else {
                 fallback("图片数据无法解码", detail: "data:image/...")
             }
@@ -409,6 +429,43 @@ struct ConversationImagePreview: View {
             historyMediaContent(id: id)
         case .unsupported(let value):
             fallback("暂不支持这个图片地址", detail: compactSource(value))
+        }
+    }
+
+    @MainActor
+    private func loadSourceIfNeeded() async {
+        let expectedSourceID = source.id
+        switch source {
+        case .dataURL(let value):
+            loadError = nil
+            if let cached = DataURLImageDecoder.cachedImage(
+                cacheKey: expectedSourceID,
+                maxPixelSize: 1_600
+            ) {
+                embeddedImage = cached
+                isLoadingLocalImage = false
+                return
+            }
+            embeddedImage = nil
+            isLoadingLocalImage = true
+            let image = await DataURLImageDecoder.image(
+                from: value,
+                cacheKey: expectedSourceID,
+                maxPixelSize: 1_600
+            )
+            guard !Task.isCancelled, source.id == expectedSourceID else {
+                return
+            }
+            embeddedImage = image
+            isLoadingLocalImage = false
+        case .historyMedia(let id):
+            embeddedImage = nil
+            isLoadingLocalImage = false
+            // history-media 默认接口返回 1600px 内的派生图；只在图片进入可见区域时加载。
+            await loadHistoryMedia(id: id)
+        case .remoteURL, .localPath, .unsupported:
+            embeddedImage = nil
+            isLoadingLocalImage = false
         }
     }
 
@@ -615,17 +672,4 @@ struct ConversationImagePreview: View {
         return value
     }
 
-    private static func image(fromDataURL value: String) -> UIImage? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.range(of: "data:image/", options: [.anchored, .caseInsensitive]) != nil,
-              let comma = trimmed.firstIndex(of: ",")
-        else {
-            return nil
-        }
-        let payload = trimmed[trimmed.index(after: comma)...]
-        guard let data = Data(base64Encoded: String(payload), options: [.ignoreUnknownCharacters]) else {
-            return nil
-        }
-        return UIImage(data: data)
-    }
 }

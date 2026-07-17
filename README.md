@@ -264,14 +264,11 @@ go run ./scripts/ipad-ws-probe.go \
 
 ### 1.1 语音输入
 
-`/api/voice/transcribe` 默认使用 `voice.transcription_provider=openai`：
+`/api/voice/transcribe` 只使用本机 Codex 登录态请求 ChatGPT `/transcribe`，不读取也不接受 OpenAI API Key。首次使用前需在 Mac 上运行 `codex login`，并确保当前是 ChatGPT 登录模式。
 
-- 配置 `AGENTD_TRANSCRIPTION_API_KEY` 或 `OPENAI_API_KEY` 后，走公开 OpenAI Speech-to-text API。
-- 没有 API Key 时返回明确的配置错误，不会自动读取 `~/.codex/auth.json`。
-- 旧配置里的 `auto` 仅作为兼容别名，同样只走公开 API。
-- 如需个人实验，可显式设置 `AGENTD_TRANSCRIPTION_PROVIDER=codex`，使用本机 Codex 登录态请求 ChatGPT `/transcribe`；这是非公开接口，可能随 Codex 升级失效，不作为开源发布的稳定能力承诺。Token 只在 Mac 上使用，不会返回给 iPad。
-
-iPad 端录音只上传给自己的 `agentd`，由 Mac 端完成转写，再把文本送进真实对话。
+- 默认读取 `~/.codex/auth.json`；自定义路径可设置 `AGENTD_CODEX_AUTH_FILE`。
+- iPad 只把录音上传给自己的 `agentd`，Codex access token 只在 Mac 上使用，不会返回给移动端。
+- 该转写接口属于 Codex Desktop 的非公开能力，可能随 Codex 升级变化；失败时应先更新并重新登录 Codex。
 
 ### 1.2 开发构建
 

@@ -24,7 +24,7 @@
 | 会话与项目 | 项目 allowlist、历史恢复、目标、Review、fork、archive、本地 pin、协议漂移门禁 | 多 server 会话、跨 server 入口和更宽的移动运行时能力 | Mimi 的单 server 会话闭环已够第一版；多 Mac profile 比继续扩 app-server 方法优先 |
 | Worktree / Git | managed Worktree 创建、分支、fork、受保护删除和人工清理；文件/hunk stage、revert、commit、push、草稿 PR | 当前仓库更侧重多端运行时、server discovery、终端和移动系统集成 | Worktree 生命周期、安全清理和受控 Git 写操作是 Mimi 的差异化优势 |
 | 命令执行 | 只允许配置中的 action，带确认、超时、输出截断和队列 | 有 SSH/终端相关界面与运行时 | Mimi 不应为“功能对齐”开放任意 Shell；allowlist action 继续作为 P1 边界 |
-| 语音 | iOS 本地听写或经 agentd 转写，生成草稿后由用户确认发送 | 支持 Realtime Voice/WebRTC，并延伸到 Watch、CarPlay 等场景 | Realtime Voice 维护面和成本更高，第一版不追；先保证普通语音输入稳定 |
+| 语音 | 录音经 agentd 复用 Codex 登录态转写，生成草稿后由用户确认发送 | 支持 Realtime Voice/WebRTC，并延伸到 Watch、CarPlay 等场景 | Codex 非公开转写接口存在兼容风险；先保证普通语音输入稳定，不引入 Realtime Voice 的额外维护面 |
 | 移动系统体验 | 前台运行态通知、本地提醒、常亮、iPhone/iPad 自适应 | 另有 Live Activity、Watch、Widget、CarPlay、PiP 和更深通知链路 | Live Activity/通知深链可列 P2；Watch、CarPlay、PiP 不进入当前 P0/P1 |
 | Artifact / 生成式 UI | 安全文件读取、图片/PDF 等交给 QuickLook；回复路径可点击 | 有 Dynamic Tools、Generative UI、图片生成结果和更丰富的展示组件 | Mimi 先补常见图片/PDF 轻预览；不建设通用前端运行时 |
 | 平台 | 原生 iPhone / iPad | iOS、Android，并包含 watchOS 等目标 | Android 是产品扩张，不是第一版发布阻断；没有真实用户需求前不复制双端核心 |

@@ -1,0 +1,1955 @@
+import Foundation
+
+// WebSocket 生命周期、事件投影与通知保持在同一 MainActor 隔离域。
+extension SessionStore {
+    func connectWebSocket(
+        _ session: AgentSession,
+        isReconnectAttempt: Bool = false,
+        replayBufferedEvents: Bool = true,
+        allowNonRunning: Bool = false
+    ) {
+        guard connectionTermination == nil, !appStore.requiresRePairing else {
+            setWebSocketStatus(.terminated(.credentialsInvalid))
+            return
+        }
+        guard !isAppInBackground else {
+            // 后台前已启动的 refresh/bootstrap 可能稍后才走到 attach；不能让它在退役连接后
+            // 又创建新 socket，否则系统挂起时仍会留下第二条幽灵连接。
+            appLifecycleSuspendedSessionID = session.id
+            setWebSocketStatus(.disconnected)
+            return
+        }
+        guard !isNetworkUnavailable else {
+            networkSuspendedSessionID = session.id
+            setWebSocketStatus(.disconnected)
+            setStatusMessage("网络不可用，恢复后自动重连")
+            return
+        }
+        // allowNonRunning：非运行会话的订阅同样有价值——thread/resume 会带回权威状态
+        // 纠正被误降级的会话，后续 turn 事件也能实时推进来。
+        guard session.isRunning || allowNonRunning else {
+            return
+        }
+        if !isReconnectAttempt {
+            cancelWebSocketReconnect(resetAttempts: true)
+        }
+        if connectedSessionID == session.id, case .connected = webSocketStatus {
+            return
+        }
+        disconnectWebSocket(cancelReconnect: !isReconnectAttempt)
+
+        webSocketConnectionGeneration += 1
+        let connectionGeneration = webSocketConnectionGeneration
+        let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
+        socket.onStatus = { [weak self] status in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                switch status {
+                case .failed, .disconnected, .terminated:
+                    await self?.flushRuntimeEvents(sessionID: session.id)
+                default:
+                    break
+                }
+                self?.applyWebSocketStatus(status, sessionID: session.id)
+            }
+        }
+        let terminalStreamStore = terminalStreamStore
+        socket.onEvent = { [weak self, terminalStreamStore] event in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                if let metadata = self?.metadata(for: event) {
+                    self?.recordEventWatermark(metadata, fallbackSessionID: session.id)
+                }
+                let shouldFlushImmediately = await terminalStreamStore.append(event, sessionID: session.id)
+                if shouldFlushImmediately {
+                    if self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true {
+                        await self?.flushRuntimeEvents(sessionID: session.id)
+                    }
+                } else {
+                    guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                        return
+                    }
+                    self?.scheduleRuntimeEventFlush(sessionID: session.id)
+                }
+            }
+        }
+        socket.onSendAccepted = { [weak self] clientMessageID in
+            Task { @MainActor in
+                guard let clientMessageID else {
+                    return
+                }
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                if self?.handleQueuedSendAccepted(
+                    clientMessageID: clientMessageID,
+                    sessionID: session.id
+                ) == true {
+                    return
+                }
+                self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sent)
+                self?.conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: session.id)
+            }
+        }
+        socket.onSendFailure = { [weak self] clientMessageID, message in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                if let clientMessageID {
+                    if self?.handleQueuedSendFailure(
+                        clientMessageID: clientMessageID,
+                        sessionID: session.id,
+                        message: message
+                    ) == true {
+                        return
+                    }
+                    guard self?.conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed) == true else {
+                        return
+                    }
+                }
+                self?.clearForegroundActivity(sessionID: session.id)
+                self?.setErrorMessage("发送失败：\(message)")
+            }
+        }
+        socket.onApprovalDecisionFailure = { [weak self] approvalID, message in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                self?.clearPendingApprovalDecision(sessionID: session.id, approvalID: approvalID)
+                self?.setErrorMessage("审批发送失败：\(message)")
+            }
+        }
+        socket.onUserInputResponseFailure = { [weak self] requestID, message in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                let request = self?.clearPendingUserInputResponse(sessionID: session.id, requestID: requestID)
+                if let request {
+                    self?.restoreUserInputRequestAfterFailure(request, sessionID: session.id)
+                }
+                self?.setErrorMessage("补充信息发送失败：\(message)")
+            }
+        }
+        socket.onControlFailure = { [weak self] message in
+            Task { @MainActor in
+                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                    return
+                }
+                self?.setErrorMessage("控制指令发送失败：\(message)")
+            }
+        }
+        webSocket = socket
+        connectedSessionID = session.id
+        conversationStore.resetLiveTranscript(sessionID: session.id)
+        syncRuntimeActivity(with: session)
+        runtimeEventFlushTasks[session.id]?.cancel()
+        runtimeEventFlushTasks[session.id] = nil
+        socket.connect(sessionID: session.id, replayBufferedEvents: replayBufferedEvents)
+    }
+
+    func replayWatermark(for sessionID: SessionID) -> EventSequence? {
+        // WS/REST 的 last_seen_seq 取四处最大值：结构化事件、历史快照、对话投影和日志，
+        // 避免某一侧 store 清理或重置后造成事件重放/漏拉。
+        [
+            lastSeenEventSeqBySessionID[sessionID],
+            historySnapshotSeqBySessionID[sessionID],
+            conversationStore.lastSeenSeq(for: sessionID),
+            logStore.lastSeq(for: sessionID)
+        ]
+        .compactMap { $0 }
+        .max()
+    }
+
+    func readyWebSocket(
+        for session: AgentSession,
+        allowNonRunning: Bool = false
+    ) -> (any SessionWebSocketClient)? {
+        // 凭据失效是确定性终态，即使设备同时离线，也必须优先引导用户重新配对。
+        if let termination = connectionTermination {
+            setErrorMessage(termination.message)
+            return nil
+        }
+        if appStore.requiresRePairing {
+            setErrorMessage(ConnectionTerminationStatus.credentialsInvalid.message)
+            return nil
+        }
+        guard !isNetworkUnavailable else {
+            setErrorMessage("网络不可用，恢复后将自动重连")
+            return nil
+        }
+        let shouldReconnect: Bool
+        switch webSocketStatus {
+        case .failed, .disconnected:
+            shouldReconnect = true
+        case .connecting, .connected, .terminated:
+            shouldReconnect = false
+        }
+        if connectedSessionID != session.id || webSocket == nil || shouldReconnect {
+            connectWebSocket(session, allowNonRunning: allowNonRunning)
+        }
+        guard let webSocket, connectedSessionID == session.id else {
+            setErrorMessage("WebSocket 正在重新接入，请稍后再发送")
+            return nil
+        }
+        guard webSocketStatus == .connected else {
+            if case .terminated(let reason) = webSocketStatus {
+                setErrorMessage(reason.message)
+            } else {
+                setErrorMessage("WebSocket 正在连接，请稍后再发送")
+            }
+            return nil
+        }
+        return webSocket
+    }
+
+    func applyWebSocketStatus(_ status: WebSocketStatus, sessionID: String) {
+        switch status {
+        case .connected:
+            guard !isNetworkUnavailable else {
+                suspendWebSocketForNetworkLoss(sessionID: sessionID)
+                return
+            }
+            cancelWebSocketReconnect(resetAttempts: false)
+            webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
+            setWebSocketStatus(.connected)
+            setErrorMessage(nil)
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        case .failed(let message):
+            if isNetworkUnavailable {
+                suspendWebSocketForNetworkLoss(sessionID: sessionID)
+                setStatusMessage("网络不可用，恢复后自动重连")
+                return
+            }
+            let policyRejected = Self.isDeterministicGatewayPolicyFailure(message)
+            let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID) && !policyRejected
+            if connectedSessionID == sessionID {
+                connectedSessionID = nil
+                webSocket = nil
+            }
+            markDispatchingQueuedTurnsNeedsConfirmation(
+                sessionID: sessionID,
+                message: "连接已中断，发送结果需要确认"
+            )
+            conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+            clearPendingApprovalDecisions(sessionID: sessionID)
+            clearPendingUserInputResponses(sessionID: sessionID)
+            clearForegroundActivity(sessionID: sessionID)
+            if canReconnect {
+                scheduleWebSocketReconnect(sessionID: sessionID, reason: message)
+            } else {
+                setWebSocketStatus(.failed(message))
+                setErrorMessage(policyRejected ? "连接被服务器策略拒绝，已停止自动重连：\(message)" : message)
+            }
+        case .terminated(let reason):
+            terminateConnection(reason)
+        case .disconnected:
+            if isNetworkUnavailable {
+                suspendWebSocketForNetworkLoss(sessionID: sessionID)
+                setStatusMessage("网络不可用，恢复后自动重连")
+                return
+            }
+            let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
+            if connectedSessionID == sessionID {
+                connectedSessionID = nil
+                webSocket = nil
+            }
+            markDispatchingQueuedTurnsNeedsConfirmation(
+                sessionID: sessionID,
+                message: "连接已中断，发送结果需要确认"
+            )
+            conversationStore.markSendingUserMessagesFailed(sessionID: sessionID)
+            clearPendingApprovalDecisions(sessionID: sessionID)
+            clearForegroundActivity(sessionID: sessionID)
+            if canReconnect {
+                scheduleWebSocketReconnect(sessionID: sessionID, reason: "连接已断开")
+            } else {
+                setWebSocketStatus(.disconnected)
+            }
+        case .connecting:
+            setWebSocketStatus(.connecting)
+        }
+    }
+
+    @discardableResult
+    func terminateConnectionIfCredentialsInvalid(_ error: Error) -> Bool {
+        guard isCredentialInvalidatingError(error) else {
+            return false
+        }
+        terminateConnection(.credentialsInvalid)
+        return true
+    }
+
+    func terminateConnection(_ reason: ConnectionTerminationStatus) {
+        // 认证失败是确定性终止态：保留 projects、sessions、选择和本地消息，只退役无法再使用的
+        // 网络连接并取消重试。新凭据提交成功后 commitPreparedConnection 会显式解除该状态。
+        connectionTermination = reason
+        cancelRemoteSessionSearchRequestsPreservingResults()
+        appStore.markCredentialsInvalid()
+        appLifecycleSuspendedSessionID = nil
+        networkSuspendedSessionID = nil
+        networkRecoveryTask?.cancel()
+        networkRecoveryTask = nil
+        cancelWebSocketReconnect(resetAttempts: true)
+        webSocketConnectionGeneration += 1
+        if let connectedSessionID {
+            markDispatchingQueuedTurnsNeedsConfirmation(
+                sessionID: connectedSessionID,
+                message: "连接凭据已失效，发送结果需要确认"
+            )
+        }
+        stopAllQueuedSessionMonitoring()
+        let socket = webSocket
+        webSocket = nil
+        connectedSessionID = nil
+        socket?.disconnect()
+        setWebSocketStatus(.terminated(reason))
+        setErrorMessage(reason.message)
+        setStatusMessage(reason.message)
+    }
+
+    func disconnectWebSocket(cancelReconnect: Bool = true) {
+        if cancelReconnect {
+            cancelWebSocketReconnect(resetAttempts: true)
+        }
+        let sessionIDsToFlush = Set(([connectedSessionID].compactMap { $0 }) + Array(runtimeEventFlushTasks.keys))
+        for sessionID in sessionIDsToFlush {
+            runtimeEventFlushTasks[sessionID]?.cancel()
+            runtimeEventFlushTasks[sessionID] = nil
+            Task { [weak self] in
+                // 手动切会话/断开时，最后一个合并窗口里的事件已经在本地 actor 中；
+                // 先异步 drain，避免新连接启动时把尾包清掉。
+                await self?.flushRuntimeEvents(sessionID: sessionID)
+            }
+        }
+        webSocketConnectionGeneration += 1
+        let previousSessionID = connectedSessionID
+        let socket = webSocket
+        webSocket = nil
+        connectedSessionID = nil
+        socket?.disconnect()
+        if let previousSessionID {
+            markDispatchingQueuedTurnsNeedsConfirmation(
+                sessionID: previousSessionID,
+                message: "连接已中断，发送结果需要确认"
+            )
+            conversationStore.markSendingUserMessagesFailed(sessionID: previousSessionID)
+        }
+        pendingApprovalDecisionIDsBySessionID.removeAll()
+        pendingUserInputResponseIDsBySessionID.removeAll()
+        pendingUserInputRequestsBySessionID.removeAll()
+        setWebSocketStatus(.disconnected)
+    }
+
+    func isCurrentWebSocketConnection(sessionID: SessionID, generation: Int) -> Bool {
+        connectedSessionID == sessionID && webSocketConnectionGeneration == generation
+    }
+
+    func shouldAutoReconnectWebSocket(sessionID: SessionID) -> Bool {
+        // 不再要求 isRunning：状态可能刚被瞬时 idle 误读降级，订阅对历史会话同样有效；
+        // 只要还是当前选中的会话就继续自动重连。
+        guard connectionTermination == nil,
+              !appStore.requiresRePairing,
+              !isNetworkUnavailable,
+              connectedSessionID == sessionID,
+              selectedSessionID == sessionID,
+              sessionsByID[sessionID] != nil,
+              appStore.isConfigured else {
+            return false
+        }
+        return true
+    }
+
+    func scheduleWebSocketReconnect(sessionID: SessionID, reason: String) {
+        // 终态不能被迟到的断线回调覆盖成普通失败，否则 UI 会丢失重新配对入口。
+        if let termination = connectionTermination {
+            setWebSocketStatus(.terminated(termination))
+            setErrorMessage(termination.message)
+            return
+        }
+        if appStore.requiresRePairing {
+            let termination = ConnectionTerminationStatus.credentialsInvalid
+            setWebSocketStatus(.terminated(termination))
+            setErrorMessage(termination.message)
+            return
+        }
+        guard selectedSessionID == sessionID,
+              sessionsByID[sessionID] != nil else {
+            setWebSocketStatus(.failed(reason))
+            setErrorMessage(reason)
+            return
+        }
+        guard !isNetworkUnavailable else {
+            suspendWebSocketForNetworkLoss(sessionID: sessionID)
+            setStatusMessage("网络不可用，恢复后自动重连")
+            return
+        }
+
+        let attempt = webSocketReconnectAttemptBySessionID[sessionID, default: 0] + 1
+        webSocketReconnectTask?.cancel()
+        webSocketReconnectAttemptBySessionID[sessionID] = attempt
+        let delay = webSocketReconnectDelayNanoseconds(attempt)
+        setWebSocketStatus(.connecting)
+        setErrorMessage("WebSocket 断开，正在自动重连：\(reason)")
+        setStatusMessage("WebSocket 第 \(attempt) 次重连")
+        let reconnectSleep = webSocketReconnectSleep
+
+        // 重连任务只服务当前选中的会话；切项目/停止/返回列表都会取消它。
+        webSocketReconnectTask = Task { [weak self] in
+            if delay > 0 {
+                do {
+                    try await reconnectSleep(delay)
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                self?.webSocketReconnectTask = nil
+            }
+            await self?.runScheduledWebSocketReconnect(sessionID: sessionID, attempt: attempt)
+        }
+    }
+
+    func cancelWebSocketReconnect(resetAttempts: Bool) {
+        webSocketReconnectTask?.cancel()
+        webSocketReconnectTask = nil
+        if resetAttempts {
+            webSocketReconnectAttemptBySessionID.removeAll()
+        }
+    }
+
+    func runScheduledWebSocketReconnect(sessionID: SessionID, attempt: Int) async {
+        guard connectionTermination == nil,
+              !appStore.requiresRePairing,
+              !isNetworkUnavailable,
+              selectedSessionID == sessionID,
+              webSocketReconnectAttemptBySessionID[sessionID] == attempt,
+              let latestSession = sessionsByID[sessionID] else {
+            return
+        }
+        guard selectedSessionID == sessionID else {
+            return
+        }
+        let refreshedSession = await refreshSessionSnapshotBeforeReconnect(sessionID: sessionID) ?? latestSession
+        guard connectionTermination == nil,
+              !appStore.requiresRePairing,
+              !isNetworkUnavailable,
+              selectedSessionID == sessionID else {
+            return
+        }
+        // 快照可能在上游刚恢复时把运行中的 turn 误读成 idle；不能据此一次性放弃重连。
+        // 订阅对历史会话同样有效：resume 后权威状态自行纠正，turn 真结束也会由
+        // turn/completed 事件如实呈现。
+        connectWebSocket(refreshedSession, isReconnectAttempt: true, allowNonRunning: true)
+    }
+
+    func refreshSessionSnapshotBeforeReconnect(sessionID: SessionID) async -> AgentSession? {
+        guard let current = sessionsByID[sessionID] else {
+            return nil
+        }
+        do {
+            let client = try clientFactory()
+            let response = try await client.session(id: sessionID, afterSeq: replayWatermark(for: sessionID))
+            let refreshed = self.session(response.session, in: workspaceForSession(current))
+            upsert(refreshed)
+            if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
+                // 重连前只补诊断日志；结构化消息由 history 和 app-server event 补齐。
+                logStore.append(recentOutput, sessionID: sessionID, seq: response.lastSeq)
+            }
+            // 重连前先刷新一次消息页，用 cursor/id/revision 合并可能错过的结构化消息。
+            await loadHistory(for: refreshed)
+            return refreshed
+        } catch {
+            if terminateConnectionIfCredentialsInvalid(error) {
+                return nil
+            }
+            setStatusMessage("重连前快照刷新失败：\(error.localizedDescription)")
+            return current
+        }
+    }
+
+    func scheduleRuntimeEventFlush(sessionID: SessionID) {
+        guard runtimeEventFlushTasks[sessionID] == nil else {
+            return
+        }
+        let delay = runtimeEventFlushDelayNanoseconds
+        runtimeEventFlushTasks[sessionID] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            await self?.flushRuntimeEvents(sessionID: sessionID)
+        }
+    }
+
+    func flushRuntimeEvents(sessionID: SessionID) async {
+        runtimeEventFlushTasks[sessionID]?.cancel()
+        runtimeEventFlushTasks[sessionID] = nil
+        let events = await terminalStreamStore.drain(sessionID: sessionID)
+        guard !events.isEmpty else {
+            return
+        }
+        for event in events {
+            await applyRuntimeEvent(event, sessionID: sessionID)
+        }
+    }
+
+    func applyRuntimeEvent(_ event: AgentEvent, sessionID: String) async {
+        if let metadata = metadata(for: event) {
+            recordEventWatermark(metadata, fallbackSessionID: sessionID)
+        }
+        if case .turnCompleted(let metadata) = event,
+           shouldIgnoreStaleTurnCompletion(metadata, fallbackSessionID: sessionID) {
+            // 历史回放可能晚于新 turn 到达。旧完成事件既不能把新 turn 标成 completed，
+            // 也不能清掉或放行绑定到另一 turn 的本地队列。
+            return
+        }
+        recordRuntimeActivity(for: event, fallbackSessionID: sessionID)
+        let runtimeNotification = runtimeNotification(for: event, fallbackSessionID: sessionID)
+        let output = await eventReducer.reduce(
+            event,
+            fallbackSessionID: sessionID,
+            outputIdleClearDelay: foregroundOutputIdleClearDelay
+        )
+        applyEventReducerOutput(output)
+        if case .turnStarted(let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let turnID = metadata.turnID {
+                queuedTurnAwaitingStartSessionIDs.remove(id)
+                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                queuedTurnStartedIDBySessionID[id] = turnID
+                // 第一条已派发时，后续队列项统一改为等待这个新 turn；不能继续绑定旧完成事件。
+                _ = mutateAndPersistQueuedTurns {
+                    guard var queue = queuedRunningTurnsBySessionID[id] else { return }
+                    for index in queue.indices where queue[index].dispatchState == .waiting {
+                        queue[index].expectedTurnID = turnID
+                        queue[index].waitsForAcceptedTurnStart = nil
+                        queue[index].blockedCompletionID = nil
+                    }
+                    queuedRunningTurnsBySessionID[id] = queue
+                }
+            }
+        }
+        if case .turnCompleted(let metadata) = event {
+            let id = metadata.sessionID ?? sessionID
+            if let projectID = sessionsByID[id]?.projectID {
+                scheduleSessionListReconciliation(projectID: projectID)
+            }
+            if let completedTurnID = metadata.turnID {
+                let hasPersistedAcceptedTurnBarrier = queuedRunningTurnsBySessionID[id]?.contains(where: {
+                    $0.dispatchState == .waiting
+                        && $0.waitsForAcceptedTurnStart == true
+                        && $0.blockedCompletionID == completedTurnID
+                }) == true
+                let isRepeatedCompletionWhileAwaitingStart = hasPersistedAcceptedTurnBarrier
+                    || (queuedTurnAwaitingStartSessionIDs.contains(id)
+                        && queuedTurnBlockedCompletionIDBySessionID[id] == completedTurnID)
+                if !isRepeatedCompletionWhileAwaitingStart {
+                    let completedBeforeObservedStart = queuedTurnAwaitingStartSessionIDs.remove(id) != nil
+                    queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: id)
+                    // 只解除明确绑定到本次完成 turn 的等待项。dispatching / needsConfirmation
+                    // 绝不能被完成事件自动重放，否则断线窗口会制造重复消息。
+                    _ = mutateAndPersistQueuedTurns {
+                        guard var queue = queuedRunningTurnsBySessionID[id] else { return }
+                        if completedBeforeObservedStart {
+                            for index in queue.indices where queue[index].dispatchState == .waiting {
+                                queue[index].expectedTurnID = completedTurnID
+                            }
+                        }
+                        for index in queue.indices
+                        where queue[index].dispatchState == .waiting
+                            && queue[index].waitsForAcceptedTurnStart == true {
+                            queue[index].waitsForAcceptedTurnStart = nil
+                            queue[index].blockedCompletionID = nil
+                            queue[index].expectedTurnID = completedTurnID
+                        }
+                        for index in queue.indices
+                        where queue[index].dispatchState == .waiting
+                            && queue[index].expectedTurnID == completedTurnID {
+                            queue[index].expectedTurnID = nil
+                        }
+                        queuedRunningTurnsBySessionID[id] = queue
+                    }
+                    queuedTurnStartedIDBySessionID.removeValue(forKey: id)
+                    if queuedRunningTurnsBySessionID[id]?.first?.dispatchState == .waiting,
+                       queuedRunningTurnsBySessionID[id]?.first?.waitsForAcceptedTurnStart != true,
+                       queuedRunningTurnsBySessionID[id]?.first?.expectedTurnID == nil {
+                        queuedTurnBlockedCompletionIDBySessionID[id] = completedTurnID
+                    }
+                    dispatchNextQueuedRunningTurnIfIdle(sessionID: id)
+                }
+            }
+        }
+        await scheduleRuntimeNotificationIfNeeded(runtimeNotification)
+    }
+
+    func shouldIgnoreStaleTurnCompletion(
+        _ metadata: AgentEventMetadata,
+        fallbackSessionID: SessionID
+    ) -> Bool {
+        guard let completedTurnID = metadata.turnID else {
+            return false
+        }
+        let sessionID = metadata.sessionID ?? fallbackSessionID
+        if let activeTurnID = sessionsByID[sessionID]?.activeTurnID,
+           activeTurnID != completedTurnID {
+            return true
+        }
+        return false
+    }
+
+    func scheduleSessionListReconciliation(projectID: String) {
+        sessionListReconciliationTasksByProjectID[projectID]?.cancel()
+        sessionListReconciliationTasksByProjectID[projectID] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: self.sessionListReconciliationDelayNanoseconds)
+            } catch {
+                return
+            }
+            await self.refreshSessions(
+                forProjectID: projectID,
+                showLoading: false,
+                clearErrorOnSuccess: false,
+                updateStatusMessage: false,
+                reportErrorOnFailure: false
+            )
+            self.sessionListReconciliationTasksByProjectID.removeValue(forKey: projectID)
+        }
+    }
+
+    func scheduleRuntimeNotificationIfNeeded(_ notification: SessionRuntimeNotification?) async {
+        guard let notification else {
+            return
+        }
+        guard !deliveredRuntimeNotificationIDs.contains(notification.id) else {
+            return
+        }
+        deliveredRuntimeNotificationIDs.insert(notification.id)
+        do {
+            // 运行态通知不持久化：它只是实时提示，不应该在会话列表状态里留下“待处理任务”的假象。
+            guard let session = sessionsByID[notification.sessionID] else {
+                setStatusMessage("通知调度失败：找不到对应会话")
+                return
+            }
+            let route = SessionNotificationRoute.current(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: session.projectID,
+                sessionID: session.id
+            )
+            try await sessionReminderScheduler.notify(notification, route: route)
+        } catch {
+            setStatusMessage("通知调度失败：\(error.localizedDescription)")
+        }
+    }
+
+    func applyEventReducerOutput(_ output: EventReducerOutput) {
+        for session in output.upsertSessions {
+            upsert(session)
+        }
+        for (id, status) in output.statusUpdates {
+            updateSession(id) { item in
+                item.status = status
+            }
+            if status == SessionStatus.completed.rawValue {
+                locallyCompletedSessionIDs.insert(id)
+            } else if Self.isRunningStatus(status) {
+                locallyCompletedSessionIDs.remove(id)
+            }
+            if !Self.isRunningStatus(status) {
+                clearRuntimeActivity(sessionID: id)
+            }
+            contextStore.updateStatus(sessionID: id, status: status)
+            if status == SessionStatus.completed.rawValue {
+                completeActiveThreadGoalIfNeeded(sessionID: id)
+            }
+        }
+        for mutation in output.activeTurnMutations {
+            applyActiveTurnMutation(mutation)
+        }
+        for (id, approval) in output.pendingApprovalUpdates {
+            if approval == nil {
+                clearPendingApprovalDecisions(sessionID: id)
+            }
+            updateSession(id) { item in
+                item.pendingApproval = approval
+            }
+        }
+        for (id, userInput) in output.pendingUserInputUpdates {
+            if userInput == nil {
+                clearPendingUserInputResponses(sessionID: id)
+            }
+            updateSession(id) { item in
+                item.pendingUserInput = userInput
+            }
+        }
+        for (context, fallbackSessionID) in output.contextUpdates {
+            contextStore.upsert(context, fallbackSessionID: fallbackSessionID)
+        }
+        for (id, goal) in output.goalUpdates {
+            if let goal {
+                applyThreadGoal(goal, fallbackSessionID: id)
+            } else {
+                clearThreadGoal(sessionID: id)
+            }
+        }
+        for id in output.pendingApprovalTaskClears {
+            contextStore.clearPendingApprovalTasks(sessionID: id)
+        }
+        for (id, activity, delay) in output.foregroundUpdates {
+            setForegroundActivity(activity, sessionID: id, autoClearAfter: delay)
+        }
+        for id in output.foregroundClears {
+            clearForegroundActivity(sessionID: id)
+        }
+        for append in output.logAppends {
+            logStore.append(append.text, sessionID: append.sessionID, seq: append.seq)
+        }
+        for mutation in output.messageMutations {
+            applyMessageMutation(mutation)
+        }
+        if let statusMessage = output.statusMessage {
+            setStatusMessage(statusMessage)
+        }
+        if let errorMessage = output.errorMessage {
+            setErrorMessage(errorMessage)
+        }
+        if output.disconnectWebSocket {
+            disconnectWebSocket()
+        }
+    }
+
+    func applyActiveTurnMutation(_ mutation: EventReducerActiveTurnMutation) {
+        switch mutation {
+        case .set(let sessionID, let turnID):
+            updateSession(sessionID) { item in
+                guard item.isRunning else {
+                    return
+                }
+                item.activeTurnID = turnID
+            }
+        case .clear(let sessionID, let completedTurnID):
+            updateSession(sessionID) { item in
+                // 完成事件可能延迟到达；带 turn id 时只清理对应的活跃回合，避免误伤随后开始的新回合。
+                guard completedTurnID == nil || item.activeTurnID == nil || item.activeTurnID == completedTurnID else {
+                    return
+                }
+                item.activeTurnID = nil
+            }
+        }
+    }
+
+    func applyMessageMutation(_ mutation: EventReducerMessageMutation) {
+        switch mutation {
+        case .assistantDelta(let delta, let metadata, let fallbackSessionID):
+            conversationStore.applyAssistantDelta(delta, metadata: metadata, fallbackSessionID: fallbackSessionID)
+        case .completed(let message, let metadata, let fallbackSessionID):
+            conversationStore.completeMessage(message, metadata: metadata, fallbackSessionID: fallbackSessionID)
+            if message.role == .assistant {
+                setSessionListProjection(
+                    sessionID: metadata.sessionID ?? message.sessionID,
+                    preview: message.content,
+                    source: .localAssistant,
+                    clientMessageID: nil
+                )
+            }
+        case .system(let text, let sessionID, let kind, let metadata):
+            conversationStore.appendSystem(text, sessionID: sessionID, kind: kind, metadata: metadata)
+        case .resolveLatestPendingApproval(let sessionID):
+            conversationStore.resolveLatestPendingApproval(sessionID: sessionID)
+        case .resolveLatestPendingUserInput(let sessionID, let skipped):
+            conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: skipped)
+        case .markCurrentAssistantCompleted(let metadata, let fallbackSessionID):
+            conversationStore.markCurrentAssistantCompleted(metadata: metadata, fallbackSessionID: fallbackSessionID)
+        }
+    }
+
+    func metadata(for event: AgentEvent) -> AgentEventMetadata? {
+        switch event {
+        case .session:
+            return nil
+        case .sessionRow(_, let metadata),
+             .sessionStatus(_, let metadata),
+             .sessionContext(_, let metadata),
+             .goalUpdated(_, let metadata),
+             .goalCleared(let metadata),
+             .turnStarted(let metadata),
+             .assistantDelta(_, let metadata),
+             .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
+             .logDelta(_, let metadata),
+             .diffUpdated(_, let metadata),
+             .approvalRequest(_, let metadata),
+             .approvalResolved(let metadata),
+             .userInputRequest(_, let metadata),
+             .userInputResolved(let metadata, _),
+             .turnCompleted(let metadata),
+             .warning(_, let metadata),
+             .error(_, let metadata):
+            return metadata
+        case .unknown:
+            return nil
+        }
+    }
+
+    func runtimeNotification(for event: AgentEvent, fallbackSessionID: SessionID) -> SessionRuntimeNotification? {
+        switch event {
+        case .approvalRequest(let request, let metadata):
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            return SessionRuntimeNotification(
+                id: "approval:\(sessionID):\(request.id)",
+                sessionID: sessionID,
+                title: "等待审批",
+                body: "\(sessionDisplayTitle(sessionID: sessionID))：\(request.title)",
+                kind: .approval
+            )
+        case .userInputRequest(let request, let metadata):
+            let sessionID = metadata.sessionID ?? request.threadID
+            return SessionRuntimeNotification(
+                id: "user-input:\(sessionID):\(request.id)",
+                sessionID: sessionID,
+                title: "等待补充信息",
+                body: "\(sessionDisplayTitle(sessionID: sessionID))：\(request.title)",
+                kind: .approval
+            )
+        case .turnCompleted(let metadata):
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            // 还有下一轮待发送时，这只是队列中的中间完成点，不应通知用户“会话已完成”。
+            guard queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false else {
+                return nil
+            }
+            let token = metadata.turnID ?? metadata.messageID ?? metadata.seq.map(String.init) ?? "latest"
+            return SessionRuntimeNotification(
+                id: "completed:\(sessionID):\(token)",
+                sessionID: sessionID,
+                title: "会话已完成",
+                body: sessionDisplayTitle(sessionID: sessionID),
+                kind: .completed
+            )
+        case .sessionStatus(let status, let metadata) where status == "failed":
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            let token = metadata.turnID ?? metadata.seq.map(String.init) ?? "latest"
+            return SessionRuntimeNotification(
+                id: "failed:\(sessionID):\(token)",
+                sessionID: sessionID,
+                title: "会话失败",
+                body: sessionDisplayTitle(sessionID: sessionID),
+                kind: .failed
+            )
+        case .error(let payload, let metadata):
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            return SessionRuntimeNotification(
+                id: "failed:\(sessionID):\(payload.message)",
+                sessionID: sessionID,
+                title: "会话错误",
+                body: payload.message,
+                kind: .failed
+            )
+        default:
+            return nil
+        }
+    }
+
+    func sessionDisplayTitle(sessionID: SessionID) -> String {
+        if let title = sessionsByID[sessionID]?.title.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        return "当前会话"
+    }
+
+    func recordEventWatermark(_ metadata: AgentEventMetadata, fallbackSessionID: SessionID) {
+        guard let seq = metadata.seq else {
+            return
+        }
+        let sessionID = metadata.sessionID ?? fallbackSessionID
+        if let last = lastSeenEventSeqBySessionID[sessionID], seq <= last {
+            return
+        }
+        lastSeenEventSeqBySessionID[sessionID] = seq
+    }
+
+    func recordHistorySnapshotSeq(_ seq: EventSequence?, sessionID: SessionID) {
+        guard let seq else {
+            return
+        }
+        if let last = historySnapshotSeqBySessionID[sessionID], seq <= last {
+            return
+        }
+        historySnapshotSeqBySessionID[sessionID] = seq
+    }
+
+    func recordRuntimeActivity(for event: AgentEvent, fallbackSessionID: SessionID) {
+        let now = Date()
+        switch event {
+        case .turnStarted(let metadata):
+            let sessionID = metadata.sessionID ?? fallbackSessionID
+            recordRuntimeActivity(sessionID: sessionID, turnStartedAt: metadata.createdAt ?? now, activityAt: now)
+        case .assistantDelta(_, let metadata),
+             .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
+             .logDelta(_, let metadata),
+             .diffUpdated(_, let metadata),
+             .approvalRequest(_, let metadata),
+             .approvalResolved(let metadata),
+             .userInputRequest(_, let metadata),
+             .userInputResolved(let metadata, _),
+             .warning(_, let metadata):
+            recordRuntimeActivity(sessionID: metadata.sessionID ?? fallbackSessionID, activityAt: now)
+        case .turnCompleted(let metadata):
+            clearRuntimeActivity(sessionID: metadata.sessionID ?? fallbackSessionID)
+        case .sessionStatus(let status, let metadata):
+            guard let sessionID = metadata.sessionID else {
+                return
+            }
+            if Self.isRunningStatus(status), runtimeActivityBySessionID[sessionID] != nil {
+                recordRuntimeActivity(sessionID: sessionID, activityAt: now)
+            } else if !Self.isRunningStatus(status) {
+                clearRuntimeActivity(sessionID: sessionID)
+            }
+        case .error(_, let metadata):
+            clearRuntimeActivity(sessionID: metadata.sessionID ?? fallbackSessionID)
+        case .session(let session):
+            syncRuntimeActivity(with: session)
+        case .sessionRow(let row, _):
+            syncRuntimeActivity(with: AgentSession(row: row))
+        case .sessionContext, .goalUpdated, .goalCleared, .unknown:
+            return
+        }
+    }
+
+    func recordRuntimeActivity(
+        sessionID: SessionID,
+        turnStartedAt: Date? = nil,
+        activityAt: Date
+    ) {
+        let existing = runtimeActivityBySessionID[sessionID]
+        let resolvedStart = turnStartedAt ?? existing?.turnStartedAt ?? activityAt
+        let next = RuntimeActivitySnapshot(turnStartedAt: resolvedStart, lastActivityAt: activityAt)
+        guard existing != next else {
+            return
+        }
+        runtimeActivityBySessionID[sessionID] = next
+    }
+
+    func syncRuntimeActivity(with session: AgentSession) {
+        guard session.isRunning else {
+            clearRuntimeActivity(sessionID: session.id)
+            return
+        }
+        guard session.activeTurnID != nil, runtimeActivityBySessionID[session.id] == nil else {
+            return
+        }
+        let activityAt = session.updatedAt ?? Date()
+        // 列表/快照只告诉我们“有活跃 turn”，不保证携带 turn 开始时间；
+        // 这里用最近更新时间兜底，让用户至少能看到当前连接是否持续有事件。
+        recordRuntimeActivity(sessionID: session.id, turnStartedAt: activityAt, activityAt: activityAt)
+    }
+
+    func clearRuntimeActivity(sessionID: SessionID) {
+        guard runtimeActivityBySessionID[sessionID] != nil else {
+            return
+        }
+        runtimeActivityBySessionID.removeValue(forKey: sessionID)
+    }
+
+    static func isRunningStatus(_ status: String?) -> Bool {
+        switch status {
+        case .some(SessionStatus.running.rawValue),
+             .some(SessionStatus.waitingForApproval.rawValue),
+             .some(SessionStatus.waitingForInput.rawValue):
+            return true
+        default:
+            return false
+        }
+    }
+
+    func isNoOpHistorySelection(_ session: AgentSession) -> Bool {
+        // 历史会话的稳态是"已订阅事件 + 已加载缓存"；重复点选同一会话时不再重建连接、
+        // 也不重复静默刷新（订阅本身会把新内容推进来）。
+        selectedSessionID == session.id
+            && selectedProjectID == session.projectID
+            && !session.isRunning
+            && conversationStore.hasLoadedHistory(sessionID: session.id)
+            && errorMessage == nil
+            && connectedSessionID == session.id
+            && webSocket != nil
+            && webSocketStatus == .connected
+    }
+
+    func setProjectsIfChanged(_ value: [AgentProject]) {
+        guard projects != value else {
+            return
+        }
+        projects = value
+    }
+
+    func setRecentWorkspacesIfChanged(_ value: [AgentWorkspace]) {
+        guard recentWorkspaces != value else {
+            return
+        }
+        recentWorkspaces = value
+    }
+
+    func setManagedWorktreesIfChanged(_ value: [WorktreeListItem]) {
+        guard managedWorktrees != value else {
+            return
+        }
+        managedWorktrees = value
+    }
+
+    func setSidebarProjectsIfChanged(_ value: [AgentProject]) {
+        guard sidebarProjects != value else {
+            return
+        }
+        sidebarProjects = value
+
+        var byID: [String: AgentProject] = [:]
+        byID.reserveCapacity(value.count)
+        for project in value {
+            byID[project.id] = project
+        }
+        sidebarProjectsByID = byID
+        if let sessionWorkspaceIDs {
+            setSessionWorkspaceIDs(sessionWorkspaceIDs)
+        }
+    }
+
+    func reloadRecentWorkspaces() {
+        setRecentWorkspacesIfChanged(recentWorkspaceStore.load(endpoint: appStore.endpoint))
+        reloadSessionListPreferences()
+        reloadSessionControlStates()
+        reloadSessionReminders()
+    }
+
+    func reloadSessionListPreferences() {
+        let preferences = sessionListPreferenceStore.load(endpoint: appStore.endpoint)
+        let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(preferences.sessionWorkspaceIDs)
+        guard pinnedSessionIDs != preferences.pinnedSessionIDs
+            || archivedSessionIDs != preferences.archivedSessionIDs
+            || sessionWorkspaceIDs != loadedSessionWorkspaceIDs
+        else {
+            return
+        }
+        pinnedSessionIDs = preferences.pinnedSessionIDs
+        archivedSessionIDs = preferences.archivedSessionIDs
+        sessionWorkspaceIDs = loadedSessionWorkspaceIDs
+        if loadedSessionWorkspaceIDs != preferences.sessionWorkspaceIDs {
+            saveSessionListPreferences()
+        }
+        rebuildSessionIndexes()
+    }
+
+    func saveSessionListPreferences() {
+        sessionListPreferenceStore.save(
+            SessionListPreferences(
+                pinnedSessionIDs: pinnedSessionIDs,
+                archivedSessionIDs: archivedSessionIDs,
+                sessionWorkspaceIDs: sessionWorkspaceIDs
+            ),
+            endpoint: appStore.endpoint
+        )
+    }
+
+    func setSessionWorkspaceIDs(_ value: Set<String>?) {
+        let normalized = normalizedSessionWorkspaceIDs(value)
+        guard sessionWorkspaceIDs != normalized else {
+            return
+        }
+        sessionWorkspaceIDs = normalized
+        saveSessionListPreferences()
+        rebuildProjectSessionListSnapshots()
+        reconcileSelectedProjectAfterSessionWorkspaceChange()
+    }
+
+    func normalizedSessionWorkspaceIDs(_ value: Set<String>?) -> Set<String>? {
+        let validProjectIDs = Set(sidebarProjects.map(\.id))
+        guard let value else {
+            return nil
+        }
+        let selectedIDs = value.intersection(validProjectIDs)
+        // 全选和默认显示全部是同一个语义，归一成 nil，避免 UI 出现多余的“恢复全部显示”按钮。
+        return selectedIDs == validProjectIDs ? nil : selectedIDs
+    }
+
+    func reconcileSelectedProjectAfterSessionWorkspaceChange() {
+        guard let selectedProjectID,
+              !isWorkspaceShownInSessions(selectedProjectID),
+              selectedSessionID == nil
+        else {
+            return
+        }
+        setSelectedProjectID(sessionSidebarProjects.first?.id)
+        setSelectedSessionID(nil)
+        disconnectWebSocket()
+    }
+
+    func reloadSessionControlStates() {
+        let states = sessionControlStateStore.load(endpoint: appStore.endpoint)
+        guard sessionControlStateByID != states else {
+            return
+        }
+        sessionControlStateByID = states
+    }
+
+    func saveSessionControlStates() {
+        sessionControlStateStore.save(sessionControlStateByID, endpoint: appStore.endpoint)
+    }
+
+    func setSessionControlState(_ state: SessionControlState, sessionID: SessionID) {
+        guard sessionControlStateByID[sessionID] != state else {
+            return
+        }
+        sessionControlStateByID[sessionID] = state
+        saveSessionControlStates()
+    }
+
+    func reloadSessionReminders() {
+        let loaded = sessionReminderStore.load(endpoint: appStore.endpoint)
+        let now = sessionReminderNow()
+        var reminders: [SessionID: SessionReminder] = [:]
+        reminders.reserveCapacity(loaded.count)
+        var expiredSessionIDs: [SessionID] = []
+        for (sessionID, reminder) in loaded {
+            if reminder.isDue(now: now) {
+                expiredSessionIDs.append(sessionID)
+            } else {
+                reminders[sessionID] = reminder
+            }
+        }
+        if reminders != loaded {
+            // 提醒触发后只需在加载/回前台时收敛持久化状态；不为精确秒级 UI 增加后台 timer。
+            sessionReminderStore.save(reminders, endpoint: appStore.endpoint)
+            for sessionID in expiredSessionIDs {
+                sessionReminderScheduler.cancel(sessionID: sessionID)
+            }
+        }
+        guard sessionRemindersByID != reminders else {
+            return
+        }
+        sessionRemindersByID = reminders
+    }
+
+    func saveSessionReminders() {
+        sessionReminderStore.save(sessionRemindersByID, endpoint: appStore.endpoint)
+    }
+
+    func clearSessionReminders(forProjectID projectID: String) {
+        let sessionIDs = sessions
+            .filter { $0.projectID == projectID }
+            .map(\.id)
+        guard !sessionIDs.isEmpty else {
+            return
+        }
+        for sessionID in sessionIDs {
+            sessionRemindersByID.removeValue(forKey: sessionID)
+            sessionReminderScheduler.cancel(sessionID: sessionID)
+        }
+        saveSessionReminders()
+    }
+
+    func rememberWorkspace(_ workspace: AgentWorkspace) {
+        let next = recentWorkspaceStore.upsert(workspace, endpoint: appStore.endpoint)
+        setRecentWorkspacesIfChanged(next)
+    }
+
+    func upsertManagedWorktree(_ item: WorktreeListItem) {
+        var next = managedWorktrees.filter { $0.id != item.id }
+        next.insert(item, at: 0)
+        setManagedWorktreesIfChanged(next)
+    }
+
+    func normalizedWorktreeCleanupPath(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    func forgetManagedWorktreeAfterDeletion(_ workspace: AgentWorkspace) {
+        forgetWorkspaceAfterWorktreeDeletion(workspace)
+        gitStatusByPath.removeValue(forKey: workspace.path)
+        gitStatusErrorByPath.removeValue(forKey: workspace.path)
+        gitActionErrorByPath.removeValue(forKey: workspace.path)
+        commandActionsByPath.removeValue(forKey: workspace.path)
+        commandActionErrorByPath.removeValue(forKey: workspace.path)
+        commandActionResultByPath.removeValue(forKey: workspace.path)
+        commandActionHistoryByPath.removeValue(forKey: workspace.path)
+        queuedCommandActionRuns.removeAll { $0.path == workspace.path }
+        queuedCommandActionIDsByPath.removeValue(forKey: workspace.path)
+        worktreeBranchesByPath.removeValue(forKey: workspace.path)
+        worktreeBranchErrorByPath.removeValue(forKey: workspace.path)
+        pullRequestURLByPath.removeValue(forKey: workspace.path)
+        pullRequestStatusByPath.removeValue(forKey: workspace.path)
+        pullRequestStatusErrorByPath.removeValue(forKey: workspace.path)
+    }
+
+    func forgetWorkspaceAfterWorktreeDeletion(_ workspace: AgentWorkspace) {
+        let project = workspace.project
+        let next = recentWorkspaceStore.forget(id: project.id, endpoint: appStore.endpoint)
+        setRecentWorkspacesIfChanged(next)
+        removeExpandedProjectID(project.id)
+        removeShowingAllSessionProjectID(project.id)
+        sessionPageCursorByProjectID.removeValue(forKey: project.id)
+        sessionHasMoreByProjectID.removeValue(forKey: project.id)
+        sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
+        sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
+        clearSessionReminders(forProjectID: project.id)
+        sessions = sessions.filter { $0.projectID != project.id }
+        clearWorkspaceUnavailable(project.id)
+        if selectedProjectID == project.id {
+            setSelectedProjectID(nil)
+            setSelectedSessionID(nil)
+            disconnectWebSocket()
+        }
+    }
+
+    func ensureWorkspace(for project: AgentProject) -> AgentWorkspace {
+        if let workspace = workspacesByID[project.id] {
+            return workspace
+        }
+        let workspace = AgentWorkspace(project: project)
+        rememberWorkspace(workspace)
+        return workspacesByID[workspace.id] ?? workspace
+    }
+
+    func ensureWorkspaceForKnownProjectID(_ projectID: String) -> AgentWorkspace? {
+        if let workspace = workspacesByID[projectID] {
+            return workspace
+        }
+        if let project = sidebarProjectsByID[projectID] ?? projectsByID[projectID] {
+            return ensureWorkspace(for: project)
+        }
+        return nil
+    }
+
+    enum WorkspaceAvailability {
+        case available
+        case unavailable(String)
+        case indeterminate
+    }
+
+    // 会话加载失败时，用 resolve 复核这个工作区到底是“真没了”还是“暂时连不上”：
+    // - resolve 成功 → 路径仍在 allowlist 内，原失败多半是网关冷启动等瞬时问题。
+    // - resolve 返回 4xx → agentd 明确判定路径不可用（被删 / 掉出 allowlist）。
+    // - resolve 抛传输层错误（连不上 agentd） → 无法判定，按瞬时处理，不冤枉标记。
+    func evaluateWorkspaceAvailability(_ workspace: AgentWorkspace) async -> WorkspaceAvailability {
+        do {
+            let client = try clientFactory()
+            _ = try await client.resolveWorkspace(path: workspace.path)
+            return .available
+        } catch let error as AgentAPIError {
+            if case let .server(status, _) = error, (400..<500).contains(status) {
+                return .unavailable("“\(workspace.name)”已不在允许范围或已被删除，可重试或从当前设备移除")
+            }
+            return .indeterminate
+        } catch {
+            return .indeterminate
+        }
+    }
+
+    func handleWorkspaceLoadFailure(workspace: AgentWorkspace, error: Error) async {
+        if terminateConnectionIfCredentialsInvalid(error) {
+            return
+        }
+        if let policyFailure = sessionListPolicyFailure(from: error) {
+            registerSessionListCooldown(policyFailure, for: workspace)
+            if sessions(forProjectID: workspace.id).isEmpty {
+                // 首屏还没有可展示数据时保留一个友好错误标记，让 bootstrap 按 cooldown 继续自愈。
+                let message = "会话列表刷新过快，将在 \(policyFailure.retryAfterSeconds) 秒后自动重试。"
+                setStatusMessage(message)
+                setErrorMessage(message)
+            } else {
+                // 已有列表时继续展示旧数据，限流只是后台同步延迟，不应升级成红色全局错误。
+                setStatusMessage("会话列表刷新过快，已保留现有会话，稍后自动重试。")
+                setErrorMessage(nil)
+            }
+            return
+        }
+        switch await evaluateWorkspaceAvailability(workspace) {
+        case .unavailable(let message):
+            markWorkspaceUnavailable(workspace.id)
+            // 明确的不可用态：清掉全局错误，bootstrap 的退避重试不再死磕一个已失效的目录。
+            setErrorMessage(nil)
+            setStatusMessage(message)
+        case .available, .indeterminate:
+            clearWorkspaceUnavailable(workspace.id)
+            setErrorMessage(error.localizedDescription)
+        }
+    }
+
+    func markWorkspaceUnavailable(_ id: String) {
+        guard !unavailableWorkspaceIDs.contains(id) else {
+            return
+        }
+        unavailableWorkspaceIDs.insert(id)
+    }
+
+    func clearWorkspaceUnavailable(_ id: String) {
+        guard unavailableWorkspaceIDs.contains(id) else {
+            return
+        }
+        unavailableWorkspaceIDs.remove(id)
+    }
+
+    func sessionForExplicitSelection(_ item: AgentSession) -> AgentSession {
+        if let workspace = workspaceForSession(item) {
+            let aligned = session(item, in: workspace)
+            upsert(aligned)
+            return aligned
+        }
+        if let project = sidebarProjectsByID[item.projectID] ?? projectsByID[item.projectID] {
+            let workspace = ensureWorkspace(for: project)
+            let aligned = session(item, in: workspace)
+            upsert(aligned)
+            return aligned
+        }
+        let aligned = alignSessionToKnownWorkspace(item)
+        upsert(aligned)
+        return aligned
+    }
+
+    func setExpandedProjectIDs(_ value: Set<String>) {
+        guard expandedProjectIDs != value else {
+            return
+        }
+        expandedProjectIDs = value
+        rebuildProjectSessionListSnapshots()
+    }
+
+    func insertExpandedProjectID(_ value: String) {
+        guard !expandedProjectIDs.contains(value) else {
+            return
+        }
+        expandedProjectIDs.insert(value)
+        rebuildProjectSessionListSnapshot(forProjectID: value)
+    }
+
+    func removeExpandedProjectID(_ value: String) {
+        guard expandedProjectIDs.contains(value) else {
+            return
+        }
+        expandedProjectIDs.remove(value)
+        rebuildProjectSessionListSnapshot(forProjectID: value)
+    }
+
+    func revealProjectInSidebar(_ projectID: String) {
+        // 选中历史会话、恢复前台或 create 成功后，只展开所属项目这一支。
+        // snapshot 按项目增量重建，避免右侧高频会话内容变化时牵动整个侧栏列表。
+        insertExpandedProjectID(projectID)
+    }
+
+    func setShowingAllSessionProjectIDs(_ value: Set<String>) {
+        guard showingAllSessionProjectIDs != value else {
+            return
+        }
+        showingAllSessionProjectIDs = value
+        sessionVisibleLimitByProjectID = sessionVisibleLimitByProjectID.filter { value.contains($0.key) }
+        rebuildProjectSessionListSnapshots()
+    }
+
+    func insertShowingAllSessionProjectID(_ value: String) {
+        setSessionVisibleLimit(Self.sessionPreviewLimit + Self.sessionExpansionStep, forProjectID: value)
+    }
+
+    func removeShowingAllSessionProjectID(_ value: String) {
+        setSessionVisibleLimit(nil, forProjectID: value)
+    }
+
+    func sessionVisibleLimit(forProjectID projectID: String) -> Int {
+        max(Self.sessionPreviewLimit, sessionVisibleLimitByProjectID[projectID] ?? Self.sessionPreviewLimit)
+    }
+
+    func setSessionVisibleLimit(_ limit: Int?, forProjectID projectID: String) {
+        let normalized = limit.map { max(Self.sessionPreviewLimit, $0) }
+        let current = sessionVisibleLimitByProjectID[projectID]
+        let next = normalized.flatMap { $0 > Self.sessionPreviewLimit ? $0 : nil }
+        guard current != next else {
+            return
+        }
+        if let next {
+            sessionVisibleLimitByProjectID[projectID] = next
+            showingAllSessionProjectIDs.insert(projectID)
+        } else {
+            sessionVisibleLimitByProjectID.removeValue(forKey: projectID)
+            showingAllSessionProjectIDs.remove(projectID)
+        }
+        rebuildProjectSessionListSnapshot(forProjectID: projectID)
+    }
+
+    func setSelectedProjectID(_ value: String?) {
+        guard selectedProjectID != value else {
+            return
+        }
+        selectedProjectID = value
+    }
+
+    func setSelectedSessionID(_ value: SessionID?) {
+        guard selectedSessionID != value else {
+            return
+        }
+        selectedSessionID = value
+    }
+
+    func setStatusMessage(_ value: String?) {
+        guard statusMessage != value else {
+            return
+        }
+        statusMessage = value
+    }
+
+    func setErrorMessage(_ value: String?) {
+        guard errorMessage != value else {
+            return
+        }
+        errorMessage = value
+    }
+
+    func setHistoryLoadProgress(sessionID: SessionID, title: String, fraction: Double) {
+        let bounded = min(max(fraction, 0), 1)
+        let next = HistoryLoadProgress(sessionID: sessionID, title: title, fraction: bounded)
+        guard historyLoadProgressBySessionID[sessionID] != next else {
+            return
+        }
+        historyLoadProgressBySessionID[sessionID] = next
+    }
+
+    func clearHistoryLoadProgress(sessionID: SessionID) {
+        historyLoadProgressBySessionID.removeValue(forKey: sessionID)
+    }
+
+    func setWebSocketStatus(_ value: WebSocketStatus) {
+        guard webSocketStatus != value else {
+            return
+        }
+        webSocketStatus = value
+    }
+
+    func clearConnectionData() {
+        sessionSearchTask?.cancel()
+        sessionSearchTask = nil
+        sessionSearchGeneration &+= 1
+        resetRemoteSessionSearchState()
+        // 搜索词属于当前 Mac 的浏览上下文；切换 endpoint 后直接清空，避免新 Mac 展示旧查询却未发首屏请求。
+        // didSet 会再次同步失效代次，但空查询只 reset，不会启动异步搜索。
+        if !sessionSearchQuery.isEmpty {
+            sessionSearchQuery = ""
+        }
+        // endpoint 切换后 session/project ID 可能重复；旧 Mac 的草稿不能恢复到新连接。
+        composerDraftCache.removeAll()
+        composerSendModeCache.removeAll()
+        stopAllQueuedSessionMonitoring()
+        queuedRunningTurnsBySessionID.removeAll()
+        queuedTurnStartedIDBySessionID.removeAll()
+        queuedTurnAwaitingStartSessionIDs.removeAll()
+        queuedTurnBlockedCompletionIDBySessionID.removeAll()
+        queuedGuidanceDispatchClientMessageIDs.removeAll()
+        setSelectedSessionID(nil)
+        setSelectedProjectID(nil)
+        setProjectsIfChanged([])
+        setRecentWorkspacesIfChanged([])
+        setSidebarProjectsIfChanged([])
+        unavailableWorkspaceIDs = []
+        sessions = []
+        setExpandedProjectIDs([])
+        setShowingAllSessionProjectIDs([])
+        frozenAllSessionOrder = []
+        frozenSessionOrderByProjectID = [:]
+        sessionPageCursorByProjectID = [:]
+        sessionHasMoreByProjectID = [:]
+        sessionPageRequestTokenByProjectID = [:]
+        sessionPageLoadingTokenByProjectID = [:]
+        sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
+        sessionListFirstPageInFlightByKey = [:]
+        sessionListFirstPageCacheByKey = [:]
+        sessionListCooldownUntilByBudgetKey = [:]
+        sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
+        sessionListReconciliationTasksByProjectID = [:]
+        historyPreviousCursorBySessionID = [:]
+        historyHasMoreBeforeBySessionID = [:]
+        historySnapshotSeqBySessionID = [:]
+        historyPageRequestTokenBySessionID = [:]
+        historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
+        historyFirstPageInFlightByKey = [:]
+        historyFirstPageCacheByKey = [:]
+        historyLoadJobsBySessionID.values.forEach { $0.task.cancel() }
+        historyLoadJobsBySessionID = [:]
+        historyLoadJobTokenBySessionID = [:]
+        historyLoadedSignatureBySessionID = [:]
+        historyLoadedQualityBySessionID = [:]
+        freshEmptyHistorySignatureBySessionID = [:]
+        initialHistoryLoadingSessionIDs = []
+        historyLoadProgressBySessionID = [:]
+        historySavingsNoticesBySessionID = [:]
+        loadingEarlierHistorySessionIDs = []
+        lastSeenEventSeqBySessionID = [:]
+        listProjectionBySessionID = [:]
+        reloadSessionControlStates()
+        foregroundActivityBySessionID = [:]
+        runtimeActivityBySessionID = [:]
+        locallyCompletedSessionIDs = []
+        locallyCompletedGoalThreadIDs = []
+        runtimeEventFlushTasks.values.forEach { $0.cancel() }
+        runtimeEventFlushTasks = [:]
+        foregroundActivityClearTasks.values.forEach { $0.cancel() }
+        foregroundActivityClearTasks = [:]
+        rebuildProjectSessionListSnapshots()
+    }
+
+    func upsert(_ session: AgentSession) {
+        let session = sessionPreparedForStorage(alignSessionToKnownWorkspace(session))
+        syncRuntimeActivity(with: session)
+        contextStore.upsert(from: session)
+        if let index = sessionIndexByID[session.id] {
+            guard sessions[index] != session else {
+                return
+            }
+            var next = sessions
+            next[index] = session
+            // 单次赋值让 @Published 只通知一次，也让派生索引只重建一次。
+            sessions = next
+            return
+        }
+        sessions = [session] + sessions
+    }
+
+    func ingestSessionContexts(_ items: [AgentSession]) {
+        for session in items {
+            contextStore.upsert(from: session)
+        }
+    }
+
+    func ingestHistoryContext(_ context: SessionContextSnapshot?, fallbackSessionID: SessionID) {
+        guard let context else {
+            return
+        }
+        contextStore.upsert(context, fallbackSessionID: fallbackSessionID)
+    }
+
+    func updateSession(_ id: String, mutate: (inout AgentSession) -> Void) {
+        guard let index = sessionIndexByID[id] else {
+            return
+        }
+        var next = sessions
+        let oldValue = next[index]
+        mutate(&next[index])
+        guard next[index] != oldValue else {
+            return
+        }
+        sessions = next
+    }
+
+    func applyThreadGoal(
+        _ goal: ThreadGoal,
+        fallbackSessionID: SessionID? = nil,
+        respectsLocalCompletion: Bool = true
+    ) {
+        let sessionID = fallbackSessionID ?? goal.threadID
+        let goal = normalizedThreadGoalForApply(goal, sessionID: sessionID, respectsLocalCompletion: respectsLocalCompletion)
+        updateSession(sessionID) { item in
+            item.goal = goal
+        }
+        if sessionID != goal.threadID {
+            updateSession(goal.threadID) { item in
+                item.goal = goal
+            }
+        }
+        contextStore.upsert(
+            SessionContextSnapshot(
+                sessionID: sessionID,
+                threadID: goal.threadID,
+                goal: goal,
+                updatedAt: Date()
+            ),
+            fallbackSessionID: sessionID
+        )
+    }
+
+    func clearThreadGoal(sessionID: SessionID) {
+        locallyCompletedGoalThreadIDs.remove(sessionID)
+        updateSession(sessionID) { item in
+            if let goal = item.goal {
+                clearLocalCompletedGoalMark(goal, sessionID: sessionID)
+            }
+            item.goal = nil
+        }
+        contextStore.clearGoal(sessionID: sessionID)
+    }
+
+    func sessionPreservingLocalCompletedStatus(_ incoming: AgentSession) -> AgentSession {
+        var next = incoming
+        if next.status == SessionStatus.completed.rawValue {
+            locallyCompletedSessionIDs.insert(next.id)
+            return next
+        }
+        guard Self.isRunningStatus(next.status),
+              locallyCompletedSessionIDs.contains(next.id)
+        else {
+            return next
+        }
+        // 列表刷新可能落后于实时 turn/completed；这时不要让旧 running 快照把 UI 拉回运行态。
+        next.status = SessionStatus.completed.rawValue
+        next.activeTurnID = nil
+        next.pendingApproval = nil
+        next.pendingUserInput = nil
+        return next
+    }
+
+    func sessionPreservingLocalCompletedGoal(_ incoming: AgentSession) -> AgentSession {
+        guard let goal = incoming.goal else {
+            return incoming
+        }
+        var next = incoming
+        next.goal = normalizedThreadGoalForApply(goal, sessionID: incoming.id, respectsLocalCompletion: true)
+        return next
+    }
+
+    func completeActiveThreadGoalIfNeeded(sessionID: SessionID) {
+        // 目标消息仍在下一轮队列中时，本次完成属于前一个 turn，不能提前结束目标。
+        guard !hasQueuedGoalTurn(sessionID: sessionID) else {
+            return
+        }
+        guard let session = sessionsByID[sessionID],
+              let goal = Self.matchingThreadGoal(for: session, context: contextStore.context(for: session.id)),
+              goal.status == .active
+        else {
+            return
+        }
+        // turn/completed 是本地实时链路看到的权威完成信号；目标元数据刷新可能稍晚，
+        // 先把 UI 收敛到完成态，避免任务结束后 composer 仍显示“运行中”。
+        applyThreadGoal(completedGoal(from: goal), fallbackSessionID: sessionID, respectsLocalCompletion: false)
+    }
+
+    func normalizedThreadGoalForApply(
+        _ goal: ThreadGoal,
+        sessionID: SessionID,
+        respectsLocalCompletion: Bool
+    ) -> ThreadGoal {
+        if respectsLocalCompletion,
+           goal.status == .active,
+           hasLocalCompletedGoalMark(goal, sessionID: sessionID) {
+            return completedGoal(from: goal)
+        }
+        if goal.status == .complete {
+            markLocalCompletedGoal(goal, sessionID: sessionID)
+        } else if respectsLocalCompletion, goal.status != .active {
+            clearLocalCompletedGoalMark(goal, sessionID: sessionID)
+        } else if !respectsLocalCompletion {
+            clearLocalCompletedGoalMark(goal, sessionID: sessionID)
+        }
+        return goal
+    }
+
+    func completedGoal(from goal: ThreadGoal) -> ThreadGoal {
+        ThreadGoal(
+            threadID: goal.threadID,
+            objective: goal.objective,
+            status: .complete,
+            tokenBudget: goal.tokenBudget,
+            tokensUsed: goal.tokensUsed,
+            timeUsedSeconds: goal.timeUsedSeconds,
+            createdAt: goal.createdAt,
+            updatedAt: Date()
+        )
+    }
+
+    func markLocalCompletedGoal(_ goal: ThreadGoal, sessionID: SessionID) {
+        locallyCompletedGoalThreadIDs.formUnion(goalIdentityCandidates(goal, sessionID: sessionID))
+    }
+
+    func clearLocalCompletedGoalMark(_ goal: ThreadGoal, sessionID: SessionID) {
+        locallyCompletedGoalThreadIDs.subtract(goalIdentityCandidates(goal, sessionID: sessionID))
+    }
+
+    func hasLocalCompletedGoalMark(_ goal: ThreadGoal, sessionID: SessionID) -> Bool {
+        !locallyCompletedGoalThreadIDs.isDisjoint(with: goalIdentityCandidates(goal, sessionID: sessionID))
+    }
+
+    func goalIdentityCandidates(_ goal: ThreadGoal, sessionID: SessionID) -> Set<SessionID> {
+        var candidates: Set<SessionID> = []
+        for value in [sessionID, goal.threadID, sessionsByID[sessionID]?.resumeID, contextStore.context(for: sessionID)?.threadID] {
+            if let identity = Self.nonEmptyThreadIdentity(value) {
+                candidates.insert(identity)
+            }
+        }
+        return candidates
+    }
+
+    func markApprovalDecisionPending(_ approvalID: String, sessionID: SessionID) {
+        var ids = pendingApprovalDecisionIDsBySessionID[sessionID] ?? []
+        ids.insert(approvalID)
+        pendingApprovalDecisionIDsBySessionID[sessionID] = ids
+    }
+
+    func clearPendingApprovalDecision(sessionID: SessionID, approvalID: String) {
+        guard var ids = pendingApprovalDecisionIDsBySessionID[sessionID] else {
+            return
+        }
+        ids.remove(approvalID)
+        if ids.isEmpty {
+            pendingApprovalDecisionIDsBySessionID.removeValue(forKey: sessionID)
+        } else {
+            pendingApprovalDecisionIDsBySessionID[sessionID] = ids
+        }
+    }
+
+    func clearPendingApprovalDecisions(sessionID: SessionID) {
+        pendingApprovalDecisionIDsBySessionID.removeValue(forKey: sessionID)
+    }
+
+    func isApprovalDecisionPending(_ approval: ApprovalSummary, sessionID: SessionID) -> Bool {
+        pendingApprovalDecisionIDsBySessionID[sessionID]?.contains(approval.id) == true
+    }
+
+    func markUserInputResponsePending(_ request: AgentUserInputRequest, sessionID: SessionID) {
+        var ids = pendingUserInputResponseIDsBySessionID[sessionID] ?? []
+        ids.insert(request.id)
+        pendingUserInputResponseIDsBySessionID[sessionID] = ids
+        var requests = pendingUserInputRequestsBySessionID[sessionID] ?? [:]
+        requests[request.id] = request
+        pendingUserInputRequestsBySessionID[sessionID] = requests
+    }
+
+    @discardableResult
+    func clearPendingUserInputResponse(sessionID: SessionID, requestID: String) -> AgentUserInputRequest? {
+        let request = pendingUserInputRequestsBySessionID[sessionID]?[requestID]
+        pendingUserInputRequestsBySessionID[sessionID]?[requestID] = nil
+        if pendingUserInputRequestsBySessionID[sessionID]?.isEmpty == true {
+            pendingUserInputRequestsBySessionID.removeValue(forKey: sessionID)
+        }
+        guard var ids = pendingUserInputResponseIDsBySessionID[sessionID] else {
+            return request
+        }
+        ids.remove(requestID)
+        if ids.isEmpty {
+            pendingUserInputResponseIDsBySessionID.removeValue(forKey: sessionID)
+        } else {
+            pendingUserInputResponseIDsBySessionID[sessionID] = ids
+        }
+        return request
+    }
+
+    func clearPendingUserInputResponses(sessionID: SessionID) {
+        pendingUserInputResponseIDsBySessionID.removeValue(forKey: sessionID)
+        pendingUserInputRequestsBySessionID.removeValue(forKey: sessionID)
+    }
+
+    func isUserInputResponsePending(_ request: AgentUserInputRequest, sessionID: SessionID) -> Bool {
+        pendingUserInputResponseIDsBySessionID[sessionID]?.contains(request.id) == true
+    }
+
+    func acceptUserInputResponseLocally(_ request: AgentUserInputRequest, sessionID: SessionID) {
+        updateSession(sessionID) { item in
+            if let currentInput = item.pendingUserInput, currentInput.id != request.id {
+                return
+            }
+            // 服务端确认事件可能要等一会；本地先把阻塞点收起，避免用户看到一个置灰的旧表单。
+            item.status = "running"
+            item.pendingUserInput = nil
+        }
+        contextStore.upsert(
+            SessionContextSnapshot(sessionID: sessionID, status: SessionContextStatus(type: "active"), updatedAt: Date()),
+            fallbackSessionID: sessionID
+        )
+        conversationStore.resolveLatestPendingUserInput(sessionID: sessionID, skipped: false)
+    }
+
+    func restoreUserInputRequestAfterFailure(_ request: AgentUserInputRequest, sessionID: SessionID) {
+        updateSession(sessionID) { item in
+            item.status = "waiting_for_input"
+            item.pendingUserInput = request
+        }
+        contextStore.upsert(
+            SessionContextSnapshot(
+                sessionID: sessionID,
+                status: SessionContextStatus(type: "active", activeFlags: ["waitingOnUserInput"]),
+                tasks: [SessionContextTask(id: request.id, kind: "user_input", title: request.title, subtitle: nil, status: "waiting")],
+                updatedAt: Date()
+            ),
+            fallbackSessionID: sessionID
+        )
+        conversationStore.restorePendingUserInput(request, sessionID: sessionID)
+    }
+
+    static func normalizedSession(_ session: AgentSession) -> AgentSession {
+        var next = session
+        if next.status != "waiting_for_approval" {
+            next.pendingApproval = nil
+        }
+        if next.status != "waiting_for_input" {
+            next.pendingUserInput = nil
+        }
+        return next
+    }
+
+    func sessionPreservingActiveApproval(_ incoming: AgentSession) -> AgentSession {
+        sessionPreservingActiveApproval(incoming, existing: sessionsByID[incoming.id])
+    }
+
+    func sessionPreservingActiveApproval(_ incoming: AgentSession, existing: AgentSession?) -> AgentSession {
+        var next = Self.normalizedSession(incoming)
+        if shouldPreserveConnectedRunningSessionAgainstHistorySnapshot(incoming: next, existing: existing) {
+            next.status = existing?.status ?? next.status
+            next.activeTurnID = existing?.activeTurnID ?? next.activeTurnID
+            next.pendingApproval = existing?.pendingApproval ?? next.pendingApproval
+            next.pendingUserInput = existing?.pendingUserInput ?? next.pendingUserInput
+        }
+        if let userInput = next.pendingUserInput,
+           isUserInputResponsePending(userInput, sessionID: next.id) {
+            // 列表刷新可能读到补充信息提交前的旧快照；已在本地提交中的 request 不应重新顶回可见表单。
+            next.status = "running"
+            next.pendingUserInput = nil
+        }
+        // goal 是 thread 级元数据；列表刷新或上下文回填时必须按当前 thread 身份校验，
+        // 否则同项目内切换对话会短暂显示另一个 thread 的目标状态。
+        next.goal = Self.matchingThreadGoal(
+            for: next,
+            existingGoal: existing?.goal,
+            context: contextStore.context(for: next.id)
+        )
+        if next.pendingApproval == nil,
+           let existingApproval = existing?.pendingApproval,
+           Self.canPreservePendingApproval(whileStatusIs: next.status) {
+            // 列表/历史刷新拿到的 session 可能只是通用 running 快照；本地已有明确 approval_request 时，
+            // 以实时事件为准保留审批入口，直到 approval_resolved/turn_completed/error 显式清理。
+            next.status = "waiting_for_approval"
+            next.pendingApproval = existingApproval
+            return next
+        }
+        if next.pendingUserInput == nil,
+           let existingInput = existing?.pendingUserInput,
+           !isUserInputResponsePending(existingInput, sessionID: next.id),
+           Self.canPreservePendingApproval(whileStatusIs: next.status) {
+            next.status = "waiting_for_input"
+            next.pendingUserInput = existingInput
+        }
+        return next
+    }
+
+    func shouldPreserveConnectedRunningSessionAgainstHistorySnapshot(incoming: AgentSession, existing: AgentSession?) -> Bool {
+        guard incoming.status == SessionStatus.history.rawValue,
+              let existing,
+              existing.isRunning,
+              incoming.id == selectedSessionID,
+              connectedSessionID == incoming.id,
+              webSocket != nil
+        else {
+            return false
+        }
+        switch webSocketStatus {
+        case .connecting, .connected:
+            // 长任务运行中，thread/list 偶尔会返回滞后的 idle/notLoaded 快照。
+            // 当前 iPad 仍有活动实时连接时，以本地运行态为准，避免下一次发送误走历史 resume。
+            return true
+        case .disconnected, .failed, .terminated:
+            return false
+        }
+    }
+
+    static func matchingThreadGoal(
+        for session: AgentSession,
+        existingGoal: ThreadGoal? = nil,
+        context: SessionContextSnapshot?
+    ) -> ThreadGoal? {
+        if let goal = session.goal, threadGoal(goal, belongsTo: session, context: context) {
+            return goal
+        }
+        if let goal = existingGoal, threadGoal(goal, belongsTo: session, context: context) {
+            return goal
+        }
+        if let goal = context?.goal, threadGoal(goal, belongsTo: session, context: context) {
+            return goal
+        }
+        return nil
+    }
+
+    static func threadGoal(
+        _ goal: ThreadGoal,
+        belongsTo session: AgentSession,
+        context: SessionContextSnapshot?
+    ) -> Bool {
+        guard let goalThreadID = nonEmptyThreadIdentity(goal.threadID) else {
+            return false
+        }
+        return threadIdentityCandidates(for: session, context: context).contains(goalThreadID)
+    }
+
+    static func threadIdentityCandidates(
+        for session: AgentSession,
+        context: SessionContextSnapshot?
+    ) -> Set<SessionID> {
+        var candidates: Set<SessionID> = []
+        for value in [session.id, session.resumeID, context?.threadID] {
+            if let identity = nonEmptyThreadIdentity(value) {
+                candidates.insert(identity)
+            }
+        }
+        return candidates
+    }
+
+    static func nonEmptyThreadIdentity(_ value: String?) -> SessionID? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
+    }
+
+    static func canPreservePendingApproval(whileStatusIs status: String) -> Bool {
+        switch status {
+        case "running", "waiting_for_approval", "waiting_for_input":
+            return true
+        default:
+            return false
+        }
+    }
+
+    func setForegroundActivity(
+        _ activity: SessionForegroundActivity,
+        sessionID: SessionID,
+        autoClearAfter delay: UInt64? = nil
+    ) {
+        // 流式输出时每个 app-server 分片都会调到这里。@Published 字典即使赋同值也会触发
+        // objectWillChange，进而让整张边栏 List 反复重绘、抢占主线程，导致点击发涩。
+        // 因此仅在活动真正变化时才写回；计时器仍每次重置（它不是 @Published）。
+        if foregroundActivityBySessionID[sessionID] != activity {
+            foregroundActivityBySessionID[sessionID] = activity
+        }
+        foregroundActivityClearTasks[sessionID]?.cancel()
+        guard let delay else {
+            foregroundActivityClearTasks[sessionID] = nil
+            return
+        }
+        // 部分 app-server 流式事件可能缺少完成事件，用空闲超时兜底，避免输出结束后仍一直显示正在回复。
+        foregroundActivityClearTasks[sessionID] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else {
+                return
+            }
+            await MainActor.run {
+                guard self?.foregroundActivityBySessionID[sessionID] == activity else {
+                    return
+                }
+                self?.clearForegroundActivity(sessionID: sessionID)
+            }
+        }
+    }
+
+    func clearForegroundActivity(sessionID: SessionID) {
+        foregroundActivityClearTasks[sessionID]?.cancel()
+        foregroundActivityClearTasks.removeValue(forKey: sessionID)
+        if foregroundActivityBySessionID[sessionID] != nil {
+            foregroundActivityBySessionID.removeValue(forKey: sessionID)
+        }
+    }
+}

@@ -5,6 +5,11 @@ struct ConversationView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
+    // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
+    // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
+    // 内容真实排版宽度才是唯一可信来源，提案算术只用于测量到达前的首帧。
+    @State private var measuredContentWidth: CGFloat?
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -25,7 +30,12 @@ struct ConversationView: View {
         )
 
         GeometryReader { proxy in
-            let layout = ConversationLayout(
+            let layout = measuredContentWidth.map { width in
+                ConversationLayout(
+                    containerWidth: width,
+                    horizontalSizeClass: horizontalSizeClass
+                )
+            } ?? ConversationLayout(
                 containerWidth: proxy.size.width,
                 horizontalSizeClass: horizontalSizeClass,
                 safeAreaInsets: proxy.safeAreaInsets
@@ -35,6 +45,14 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
                 ConversationTimelineView(layout: layout)
+            }
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.width
+            } action: { width in
+                guard width > 0, measuredContentWidth != width else {
+                    return
+                }
+                measuredContentWidth = width
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack {

@@ -21,6 +21,7 @@ enum ComposerDraftScopeKey: Hashable {
         }
         return .none
     }
+
 }
 
 struct ComposerDraftSnapshot: Equatable {
@@ -228,6 +229,39 @@ enum ComposerSendMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct ComposerSendModeCache {
+    private var storedScope: ComposerDraftScopeKey = .none
+    private var storedMode: ComposerSendMode = .standard
+
+    func modeForScopeActivation(
+        previousScope: ComposerDraftScopeKey,
+        nextScope: ComposerDraftScopeKey,
+        currentMode: ComposerSendMode,
+        isOptimisticSessionHandoff: Bool
+    ) -> ComposerSendMode {
+        if isOptimisticSessionHandoff {
+            // local:* 切换到服务端 thread ID 是同一会话的身份交接，不应清掉发送模式。
+            return currentMode
+        }
+        guard previousScope == .none, storedScope == nextScope else {
+            // 真正切换 thread / 项目时回到标准发送，避免跨会话带入目标或计划。
+            return .standard
+        }
+        // 横竖屏或导航容器重建时，恢复同一 SessionStore、同一 scope 的选择。
+        return storedMode
+    }
+
+    mutating func save(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
+        storedScope = scope
+        storedMode = mode
+    }
+
+    mutating func removeAll() {
+        storedScope = .none
+        storedMode = .standard
+    }
+}
+
 struct ComposerState {
     var draft = "" {
         didSet {
@@ -262,7 +296,26 @@ struct ComposerState {
     }
 
     mutating func applyPermissionMode(_ mode: ComposerPermissionMode) {
-        mode.apply(to: &turnOptions)
+        updateTurnOptions { options in
+            mode.apply(to: &options)
+        }
+    }
+
+    mutating func updateTurnOptions(_ update: (inout CodexAppServerTurnOptions) -> Void) {
+        var updatedOptions = turnOptions
+        update(&updatedOptions)
+        guard updatedOptions != turnOptions else {
+            return
+        }
+        // 每次用户操作只发布一个完整 options 快照，避免连续改多个字段导致工具栏多次刷新。
+        turnOptions = updatedOptions
+    }
+
+    mutating func setSendMode(_ mode: ComposerSendMode) {
+        guard sendMode != mode else {
+            return
+        }
+        sendMode = mode
     }
 
     var isGoalModeSelected: Bool {

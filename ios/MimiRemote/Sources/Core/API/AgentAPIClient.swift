@@ -440,15 +440,13 @@ struct AgentAPIClient {
         filename: String,
         contentType: String,
         audioData: Data,
-        language: String?,
-        prompt: String?
+        language: String?
     ) async throws -> VoiceTranscriptionResponse {
         let body = try JSONEncoder().encode(VoiceTranscriptionRequest(
             filename: filename,
             contentType: contentType,
             audioBase64: audioData.base64EncodedString(),
-            language: language,
-            prompt: prompt
+            language: language
         ))
         return try await request(path: "/api/voice/transcribe", method: "POST", body: body, timeout: 60)
     }

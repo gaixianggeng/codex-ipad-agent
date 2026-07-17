@@ -1,0 +1,465 @@
+import SwiftUI
+import UIKit
+
+struct TextSelectionPolicy {
+    static func rangeAfterExternalTextSync(previousText: String, nextText: String, previousRange: NSRange) -> NSRange {
+        let previousLength = utf16Length(of: previousText)
+        let nextLength = utf16Length(of: nextText)
+        let caretWasAtPreviousEnd = previousRange.length == 0 && previousRange.location >= previousLength
+        if caretWasAtPreviousEnd {
+            return NSRange(location: nextLength, length: 0)
+        }
+        return clampedRange(previousRange, in: nextText)
+    }
+
+    static func clampedRange(_ range: NSRange, in text: String) -> NSRange {
+        let length = utf16Length(of: text)
+        let location = min(max(0, range.location), length)
+        let remaining = max(0, length - location)
+        return NSRange(location: location, length: min(max(0, range.length), remaining))
+    }
+
+    private static func utf16Length(of text: String) -> Int {
+        (text as NSString).length
+    }
+}
+
+struct ComposerTextSubmitSnapshot {
+    let text: String
+    let isComposing: Bool
+}
+
+final class ComposerTextSubmitBridge {
+    private weak var textView: CommandSubmitTextView?
+
+    func attach(_ textView: CommandSubmitTextView) {
+        self.textView = textView
+    }
+
+    func snapshotForSubmit() -> ComposerTextSubmitSnapshot? {
+        guard let textView else {
+            return nil
+        }
+        return ComposerTextSubmitSnapshot(
+            text: textView.text ?? "",
+            isComposing: textView.hasMarkedText
+        )
+    }
+
+    func replaceText(in range: NSRange, with replacement: String) -> String? {
+        guard let textView,
+              range.location >= 0,
+              NSMaxRange(range) <= ((textView.text ?? "") as NSString).length
+        else {
+            return nil
+        }
+        textView.textStorage.replaceCharacters(in: range, with: replacement)
+        textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+        textView.delegate?.textViewDidChange?(textView)
+        return textView.text
+    }
+}
+
+struct ComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let submitBridge: ComposerTextSubmitBridge
+    let font: UIFont
+    let textColor: UIColor
+    let tintColor: UIColor
+    let externalTextRevision: Int
+    let minHeight: CGFloat
+    let maxHeight: CGFloat
+    let onSubmit: () -> Bool
+    let onContentHeightChange: (CGFloat) -> Void
+    let onCompositionStateChange: (Bool) -> Void
+    let onVoiceShortcutPressChanged: (Bool) -> Void
+    let skillAutocompleteActive: Bool
+    let onSkillQueryChange: (ComposerSkillQuery?) -> Void
+    let onSkillAutocompleteMove: (Int) -> Void
+    let onSkillAutocompleteCommit: () -> Void
+    let onSkillAutocompleteDismiss: () -> Void
+
+    func makeUIView(context: Context) -> CommandSubmitTextView {
+        let textView = CommandSubmitTextView()
+        textView.delegate = context.coordinator
+        textView.text = text
+        context.coordinator.lastSyncedText = text
+        context.coordinator.lastAppliedExternalRevision = externalTextRevision
+        submitBridge.attach(textView)
+        textView.onCommandSubmit = onSubmit
+        textView.onContentLayoutChanged = { textView in
+            context.coordinator.reportContentHeight(for: textView)
+        }
+        textView.onVoiceShortcutPressChanged = onVoiceShortcutPressChanged
+        textView.isSkillAutocompleteActive = skillAutocompleteActive
+        textView.onSkillAutocompleteMove = onSkillAutocompleteMove
+        textView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
+        textView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
+        textView.backgroundColor = .clear
+        textView.font = font
+        textView.textColor = textColor
+        textView.tintColor = tintColor
+        textView.isScrollEnabled = true
+        textView.alwaysBounceVertical = false
+        textView.showsVerticalScrollIndicator = true
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.keyboardDismissMode = .interactive
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.autocorrectionType = .no
+        textView.spellCheckingType = .no
+        textView.accessibilityLabel = "输入任务或后续指令"
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+
+    func updateUIView(_ uiView: CommandSubmitTextView, context: Context) {
+        context.coordinator.parent = self
+        submitBridge.attach(uiView)
+        uiView.onCommandSubmit = onSubmit
+        uiView.onContentLayoutChanged = { textView in
+            context.coordinator.reportContentHeight(for: textView)
+        }
+        uiView.onVoiceShortcutPressChanged = onVoiceShortcutPressChanged
+        uiView.isSkillAutocompleteActive = skillAutocompleteActive
+        uiView.onSkillAutocompleteMove = onSkillAutocompleteMove
+        uiView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
+        uiView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
+        context.coordinator.updateCompositionState(uiView.hasMarkedText)
+        let shouldForceExternalTextSync = context.coordinator.lastAppliedExternalRevision != externalTextRevision
+
+        // 字体/颜色只在真正变化时赋值：UITextView 的 font setter 会让 TextKit 对整段文本重新排版，
+        // 打字时（尤其是中文 marked text 合成期间）每次按键都重设会打断输入法合成并造成可感知卡顿。
+        var needsContentHeightReport = false
+        if uiView.font != font {
+            uiView.font = font
+            needsContentHeightReport = true
+        }
+        if uiView.textColor != textColor {
+            uiView.textColor = textColor
+        }
+        if uiView.tintColor != tintColor {
+            uiView.tintColor = tintColor
+        }
+
+        if uiView.hasMarkedText, context.coordinator.lastSyncedText == text, !shouldForceExternalTextSync {
+            // 中文/日文等输入法会先把拼音或假名放在 marked text 中。此时外层草稿仍是
+            // 上一次已确认文本，不能把 SwiftUI 状态回灌到 UITextView，否则首个字母会被提交成正文。
+            if needsContentHeightReport {
+                context.coordinator.reportContentHeight(for: uiView)
+            }
+            return
+        }
+
+        guard context.coordinator.lastSyncedText != text || shouldForceExternalTextSync else {
+            if needsContentHeightReport {
+                context.coordinator.reportContentHeight(for: uiView)
+            }
+            return
+        }
+
+        // 外部清空/恢复草稿时才同步 UIKit 文本；用户正常输入由 delegate 单向写回，
+        // 避免中文 marked text 和光标位置在 SwiftUI 重算时被反复重置。
+        let previousText = uiView.text ?? ""
+        let selectedRange = uiView.selectedRange
+        context.coordinator.isApplyingExternalText = true
+        uiView.text = text
+        context.coordinator.lastSyncedText = text
+        context.coordinator.lastAppliedExternalRevision = externalTextRevision
+        context.coordinator.isApplyingExternalText = false
+        context.coordinator.updateCompositionState(false)
+        uiView.selectedRange = TextSelectionPolicy.rangeAfterExternalTextSync(
+            previousText: previousText,
+            nextText: text,
+            previousRange: selectedRange
+        )
+        context.coordinator.reportContentHeight(for: uiView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ComposerTextView
+        var isApplyingExternalText = false
+        var lastSyncedText = ""
+        var lastAppliedExternalRevision = 0
+        private var lastReportedContentHeight: CGFloat = 0
+        private var pendingContentHeight: CGFloat?
+        private var isContentHeightReportScheduled = false
+        private var isComposingText = false
+        private var pendingCompositionState: Bool?
+        private var isCompositionStateReportScheduled = false
+        private var lastSkillQuery: ComposerSkillQuery?
+
+        init(_ parent: ComposerTextView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !isApplyingExternalText else {
+                return
+            }
+            let currentText = textView.text ?? ""
+            let hasMarkedText = textView.hasMarkedText
+            updateCompositionState(hasMarkedText)
+            if !hasMarkedText {
+                syncCommittedTextIfNeeded(currentText, force: false)
+            }
+            updateSkillQuery(for: textView)
+            reportContentHeight(for: textView)
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !isApplyingExternalText else {
+                return
+            }
+            let hasMarkedText = textView.hasMarkedText
+            updateCompositionState(hasMarkedText)
+            if !hasMarkedText {
+                // 部分输入法结束 marked text 时只触发 selection 变化；这里补一次收敛。
+                syncCommittedTextIfNeeded(textView.text ?? "", force: false)
+            }
+            updateSkillQuery(for: textView)
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            guard !isApplyingExternalText else {
+                return
+            }
+            updateCompositionState(false)
+            // 失焦是最后兜底边界，保证 UIKit 文本不会滞留在旧 draft 之外。
+            syncCommittedTextIfNeeded(textView.text ?? "", force: true)
+            publishSkillQuery(nil)
+        }
+
+        func updateCompositionState(_ isComposing: Bool) {
+            guard isComposingText != isComposing else {
+                return
+            }
+            isComposingText = isComposing
+            pendingCompositionState = isComposing
+            guard !isCompositionStateReportScheduled else {
+                return
+            }
+            isCompositionStateReportScheduled = true
+            // updateUIView 也会检查 marked text；状态回写放到下一拍，避免在 SwiftUI 更新周期内直接改 @State。
+            DispatchQueue.main.async { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.isCompositionStateReportScheduled = false
+                guard let isComposing = self.pendingCompositionState else {
+                    return
+                }
+                self.pendingCompositionState = nil
+                self.parent.onCompositionStateChange(isComposing)
+            }
+        }
+
+        func reportContentHeight(for textView: UITextView) {
+            let height = visibleContentHeight(for: textView)
+            guard abs(lastReportedContentHeight - height) > 0.5 else {
+                return
+            }
+            pendingContentHeight = height
+            guard !isContentHeightReportScheduled else {
+                return
+            }
+            isContentHeightReportScheduled = true
+            // UIKit 布局回调可能发生在 SwiftUI 更新周期里，异步并合并回写可避免
+            // 长语音草稿编辑时 size/状态更新形成一串主线程抖动。
+            DispatchQueue.main.async { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.isContentHeightReportScheduled = false
+                guard let height = self.pendingContentHeight else {
+                    return
+                }
+                self.pendingContentHeight = nil
+                guard abs(self.lastReportedContentHeight - height) > 0.5 else {
+                    return
+                }
+                self.lastReportedContentHeight = height
+                self.parent.onContentHeightChange(height)
+            }
+        }
+
+        private func syncCommittedTextIfNeeded(_ currentText: String, force: Bool) {
+            guard force || currentText != lastSyncedText || currentText != parent.text else {
+                return
+            }
+            lastSyncedText = currentText
+            if parent.text != currentText {
+                parent.text = currentText
+            }
+        }
+
+        private func updateSkillQuery(for textView: UITextView) {
+            let query = textView.hasMarkedText
+                ? nil
+                : ComposerSkillQuery.match(text: textView.text ?? "", selectedRange: textView.selectedRange)
+            publishSkillQuery(query)
+        }
+
+        private func publishSkillQuery(_ query: ComposerSkillQuery?) {
+            guard query != lastSkillQuery else { return }
+            lastSkillQuery = query
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.onSkillQueryChange(query)
+            }
+        }
+
+        private func visibleContentHeight(for textView: UITextView) -> CGFloat {
+            let contentHeight = ceil(textView.contentSize.height)
+            if contentHeight > 0 {
+                return clampedVisibleHeight(contentHeight)
+            }
+            let width = max(textView.bounds.width, 1)
+            let fittingSize = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+            return clampedVisibleHeight(ceil(textView.sizeThatFits(fittingSize).height))
+        }
+
+        private func clampedVisibleHeight(_ height: CGFloat) -> CGFloat {
+            min(max(height, parent.minHeight), parent.maxHeight)
+        }
+    }
+}
+
+extension UITextView {
+    var hasMarkedText: Bool {
+        markedTextRange != nil
+    }
+}
+
+final class CommandSubmitTextView: UITextView {
+    var onCommandSubmit: (() -> Bool)?
+    var onContentLayoutChanged: ((CommandSubmitTextView) -> Void)?
+    var onVoiceShortcutPressChanged: ((Bool) -> Void)?
+    var onSkillAutocompleteMove: ((Int) -> Void)?
+    var onSkillAutocompleteCommit: (() -> Void)?
+    var onSkillAutocompleteDismiss: (() -> Void)?
+    var isSkillAutocompleteActive = false
+    private var isVoiceShortcutPressed = false
+    private var lastReportedLayoutWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard abs(bounds.width - lastReportedLayoutWidth) > 0.5 else {
+            return
+        }
+        lastReportedLayoutWidth = bounds.width
+        onContentLayoutChanged?(self)
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        let submit = UIKeyCommand(
+            title: "发送",
+            action: #selector(handleCommandReturn),
+            input: "\r",
+            modifierFlags: .command,
+            discoverabilityTitle: "发送"
+        )
+        return (super.keyCommands ?? []) + [
+            submit,
+            UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(selectPreviousSkill)),
+            UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(selectNextSkill)),
+            UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(commitSkillAutocomplete)),
+            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(commitSkillAutocomplete)),
+            UIKeyCommand(input: "\u{1B}", modifierFlags: [], action: #selector(dismissSkillAutocomplete))
+        ]
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        switch action {
+        case #selector(selectPreviousSkill),
+             #selector(selectNextSkill),
+             #selector(commitSkillAutocomplete),
+             #selector(dismissSkillAutocomplete):
+            return isSkillAutocompleteActive
+        default:
+            return super.canPerformAction(action, withSender: sender)
+        }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if containsVoiceShortcutPress(presses) {
+            guard !isVoiceShortcutPressed else {
+                return
+            }
+            isVoiceShortcutPressed = true
+            onVoiceShortcutPressChanged?(true)
+            return
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if containsVoiceShortcutPress(presses) {
+            finishVoiceShortcutPress()
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if containsVoiceShortcutPress(presses) {
+            finishVoiceShortcutPress()
+            return
+        }
+        super.pressesCancelled(presses, with: event)
+    }
+
+    @objc private func handleCommandReturn() {
+        // 普通回车仍由 UITextView 插入换行；只有 Command + Return 走发送。
+        _ = onCommandSubmit?()
+    }
+
+    @objc private func selectPreviousSkill() {
+        onSkillAutocompleteMove?(-1)
+    }
+
+    @objc private func selectNextSkill() {
+        onSkillAutocompleteMove?(1)
+    }
+
+    @objc private func commitSkillAutocomplete() {
+        onSkillAutocompleteCommit?()
+    }
+
+    @objc private func dismissSkillAutocomplete() {
+        onSkillAutocompleteDismiss?()
+    }
+
+    private func finishVoiceShortcutPress() {
+        guard isVoiceShortcutPressed else {
+            return
+        }
+        isVoiceShortcutPressed = false
+        onVoiceShortcutPressChanged?(false)
+    }
+
+    private func containsVoiceShortcutPress(_ presses: Set<UIPress>) -> Bool {
+        presses.contains { press in
+            Self.isVoiceShortcutKey(press.key)
+        }
+    }
+
+    private static func isVoiceShortcutKey(_ key: UIKey?) -> Bool {
+        guard let key else {
+            return false
+        }
+        switch key.keyCode {
+        case .keyboardLANG1, .keyboardLANG2, .keyboardLANG3, .keyboardLANG4, .keyboardLANG5,
+             .keyboardLANG6, .keyboardLANG7, .keyboardLANG8, .keyboardLANG9:
+            // UIKit 没有公开 Fn/Globe 的专用 keyCode；部分硬件键盘会把输入法切换键上报为 LANG1...LANG9。
+            return key.charactersIgnoringModifiers.isEmpty
+        default:
+            return false
+        }
+    }
+}

@@ -1,0 +1,1019 @@
+import XCTest
+import Combine
+import Security
+import SwiftUI
+import UIKit
+@testable import MimiRemote
+
+@MainActor
+extension ConversationDataFlowTests {
+    func testBootstrapRetriesUntilProjectsLoadAfterTransientFailures() async {
+        let project = makeProject(id: "proj_1")
+        let session = makeSession(id: "codex_1", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
+        let client = FlakyBootstrapClient(failuresBeforeSuccess: 2, projects: [project], sessions: [session])
+        let appStore = AppStore()
+        appStore.token = "test-token" // 让 isConfigured 为真，否则 bootstrap 直接返回。
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.projectsCallCount, 3) // 失败 2 次 + 成功 1 次
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testRefreshAfterConnectionCommitRetriesUntilProjectsLoad() async {
+        let project = makeProject(id: "proj_pairing_projects_recovery")
+        let client = FlakyBootstrapClient(
+            failuresBeforeSuccess: 2,
+            projects: [project],
+            sessions: []
+        )
+        let appStore = AppStore()
+        appStore.token = "committed-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListSleep: { _ in }
+        )
+
+        let didLoad = await store.refreshAfterConnectionCommit(maxWait: 45)
+
+        XCTAssertTrue(didLoad)
+        XCTAssertEqual(client.projectsCallCount, 3)
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testRefreshAfterConnectionCommitRetriesUntilGatewaySessionsLoad() async {
+        let project = makeProject(id: "proj_pairing_gateway_recovery")
+        let session = makeSession(
+            id: "thread_pairing_gateway_recovery",
+            projectID: project.id,
+            title: "首配恢复",
+            status: "history",
+            source: "codex"
+        )
+        let client = FlakyBootstrapClient(
+            failuresBeforeSuccess: 0,
+            sessionFailuresBeforeSuccess: 2,
+            projects: [project],
+            sessions: [session]
+        )
+        let appStore = AppStore()
+        appStore.token = "committed-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListSleep: { _ in }
+        )
+
+        let didLoad = await store.refreshAfterConnectionCommit(maxWait: 45)
+
+        XCTAssertTrue(didLoad)
+        XCTAssertEqual(client.sessionsCallCount, 3)
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testRefreshAfterConnectionCommitTimeoutKeepsCommittedCredentials() async throws {
+        let suiteName = "ConversationDataFlowTests.PairingRefreshTimeout.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations()
+        let appStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        let client = FlakyBootstrapClient(
+            failuresBeforeSuccess: 1,
+            projects: [],
+            sessions: []
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListSleep: { _ in }
+        )
+        let endpoint = "http://100.64.0.88:8787"
+        let token = "committed-after-pairing"
+        XCTAssertTrue(try store.commitPreparedConnection(PreparedConnectionSettings(
+            endpoint: endpoint,
+            token: token
+        )))
+
+        let didLoad = await store.refreshAfterConnectionCommit(maxWait: 0)
+
+        XCTAssertFalse(didLoad)
+        XCTAssertEqual(client.projectsCallCount, 1)
+        XCTAssertEqual(appStore.endpoint, endpoint)
+        XCTAssertEqual(appStore.token, token)
+        XCTAssertTrue(appStore.isConfigured)
+        XCTAssertTrue(appStore.lastError?.contains("连接凭据已安全保存") == true)
+        XCTAssertEqual(store.errorMessage, appStore.lastError)
+
+        // 重建 AppStore 验证凭据仍在持久化档案和 Keychain 中，而不是只留在当前内存。
+        let reloaded = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertEqual(reloaded.endpoint, endpoint)
+        XCTAssertEqual(reloaded.token, token)
+        XCTAssertTrue(reloaded.isConfigured)
+
+        // 设置页 preflight 恢复健康后会再次进入同一短恢复入口；下一次成功必须清掉首配错误。
+        let retryDidLoad = await store.refreshAfterConnectionCommit(maxWait: 10)
+        XCTAssertTrue(retryDidLoad)
+        XCTAssertEqual(client.projectsCallCount, 2)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testBootstrapStopsImmediatelyWhenCredentialsAreRejected() async {
+        let client = CredentialRejectingBootstrapClient(status: 401)
+        let appStore = AppStore()
+        appStore.token = "expired-token"
+        var requestedSleeps: [UInt64] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListSleep: { requestedSleeps.append($0) }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.projectsCallCount, 1, "确定性的鉴权失败不能进入 45 秒冷启动轮询")
+        XCTAssertTrue(requestedSleeps.isEmpty)
+        XCTAssertEqual(store.connectionTermination, .credentialsInvalid)
+        XCTAssertEqual(store.webSocketStatus, .terminated(.credentialsInvalid))
+        XCTAssertTrue(appStore.requiresRePairing)
+        XCTAssertEqual(store.errorMessage, ConnectionTerminationStatus.credentialsInvalid.message)
+    }
+
+    func testWebSocketClientPublishesCredentialTerminalStatusForHandshakeRejection() async throws {
+        let project = makeProject(id: "proj_ws_auth_rejected")
+
+        for status in [401, 403] {
+            let runtime = CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "expired-token",
+                transportFactory: { CredentialRejectingCodexAppServerTransport(status: status) },
+                configProvider: { makeDirectAppServerConfig(project: project) }
+            )
+            let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+            var statuses: [WebSocketStatus] = []
+            socket.onStatus = { statuses.append($0) }
+
+            socket.connect(sessionID: "thread_auth_\(status)")
+            try await waitForStatus(.terminated(.credentialsInvalid), in: { statuses })
+
+            XCTAssertEqual(statuses.first, .connecting)
+            XCTAssertTrue(statuses.contains(.terminated(.credentialsInvalid)))
+            XCTAssertFalse(statuses.contains { value in
+                if case .failed = value { return true }
+                return false
+            })
+            socket.disconnect()
+        }
+    }
+
+    func testCredentialTerminalStatusStopsReconnectAndPreservesLocalSessionState() async throws {
+        let project = makeProject(id: "proj_ws_auth_terminal")
+        let running = makeSession(
+            id: "sess_ws_auth_terminal",
+            projectID: project.id,
+            title: "保留中的会话",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "expired-token"
+        let conversationStore = ConversationStore()
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        conversationStore.appendSystem("访问码失效前已经保存在本地的消息", sessionID: running.id)
+        let messagesBeforeTermination = conversationStore.messages(for: running.id)
+
+        socket.emitStatus(.terminated(.credentialsInvalid))
+        try await waitForWebSocketStatus(.terminated(.credentialsInvalid), store: store)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(sockets.count, 1, "访问码失效后不能继续创建 WebSocket 重连")
+        XCTAssertEqual(socket.disconnectCallCount, 1)
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertEqual(store.sessions.map(\.id), [running.id])
+        XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertEqual(store.selectedSessionID, running.id)
+        XCTAssertEqual(conversationStore.messages(for: running.id), messagesBeforeTermination)
+        XCTAssertEqual(store.connectionTermination, .credentialsInvalid)
+        XCTAssertTrue(appStore.requiresRePairing)
+    }
+
+    func testLateOlderNetworkPathUpdateCannotOverwriteSatisfiedState() async throws {
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let pathSource = TestNetworkPathStatusSource(initialStatus: .unsatisfied)
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: [], messagesResult: []) },
+            networkPathStatusSource: pathSource
+        )
+
+        // monitor 先观察到离线(1)、再观察到在线(2)，这里只把主线程交付顺序反转，
+        // 确定性模拟旧 Task 在新 Task 之后才执行。
+        pathSource.deliver(.satisfied, sequence: 2)
+        try await waitForNetworkReachability(.satisfied, store: store)
+        pathSource.deliver(.unsatisfied, sequence: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(store.networkReachabilityStatus, .satisfied)
+        XCTAssertFalse(store.isNetworkUnavailable)
+        XCTAssertNotEqual(store.statusMessage, "网络不可用，恢复后自动重连")
+    }
+
+    func testUnknownToSatisfiedRecoversExistingNetworkErrorExactlyOnce() async throws {
+        let project = makeProject(id: "proj_unknown_network_recovery")
+        let running = makeSession(
+            id: "sess_unknown_network_recovery",
+            projectID: project.id,
+            title: "首次网络状态恢复",
+            status: "history",
+            source: "codex"
+        )
+        let page = SessionsPage(sessions: [running])
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [
+                .success(page),
+                .failure(CodexAppServerSessionRuntimeError.gatewayUnavailable),
+                .success(page)
+            ]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let pathSource = TestNetworkPathStatusSource(initialStatus: .unknown)
+        var now = Date(timeIntervalSince1970: 0)
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project, lastOpenedAt: now)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            networkPathStatusSource: pathSource,
+            sessionListNow: { now }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        now = Date(timeIntervalSince1970: 10) // 让下一次请求绕过 2 秒首屏短缓存。
+        await store.refreshSelectedProjectSessions()
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        XCTAssertNotNil(store.errorMessage)
+
+        pathSource.emit(.satisfied)
+        pathSource.emit(.satisfied) // 重复在线事件不能启动第二个恢复任务。
+        for _ in 0..<80 where client.sessionsPageCallCount < 3 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(store.networkReachabilityStatus, .satisfied)
+        XCTAssertEqual(client.sessionsPageCallCount, 3)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testOfflineSuspendsReconnectAndPreservesSessionQueueAndMessages() async throws {
+        let project = makeProject(id: "proj_network_offline")
+        let running = makeSession(
+            id: "sess_network_offline",
+            projectID: project.id,
+            title: "离线保留",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn_network_active"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let conversationStore = ConversationStore()
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
+        let delayRecorder = ReconnectDelayRecorder()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectSleep: { delay in await delayRecorder.record(delay) },
+            networkPathStatusSource: pathSource
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "网络恢复后仍等待当前 Turn 完成"))
+        XCTAssertTrue(queued)
+        conversationStore.appendSystem("离线前本地消息", sessionID: running.id)
+        let messagesBeforeOffline = conversationStore.messages(for: running.id)
+
+        pathSource.emit(.unsatisfied)
+        try await waitForNetworkReachability(.unsatisfied, store: store)
+        try await waitForWebSocketStatus(.disconnected, store: store)
+        socket.emitStatus(.failed("late network callback"))
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(socket.disconnectCallCount, 1)
+        let offlineDelays = await delayRecorder.snapshot()
+        XCTAssertEqual(offlineDelays, [], "离线后不能继续安排 WebSocket 退避")
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertEqual(store.sessions.map(\.id), [running.id])
+        XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertEqual(store.selectedSessionID, running.id)
+        XCTAssertEqual(conversationStore.messages(for: running.id), messagesBeforeOffline)
+        XCTAssertNil(conversationStore.messages(for: running.id).first { $0.content == "网络恢复后仍等待当前 Turn 完成" })
+        XCTAssertEqual(store.selectedQueuedTurns.map(\.previewText), ["网络恢复后仍等待当前 Turn 完成"])
+        XCTAssertEqual(store.statusMessage, "网络不可用，恢复后自动重连")
+    }
+
+    func testNetworkRecoveryReconnectsExactlyOnce() async throws {
+        let project = makeProject(id: "proj_network_recovery")
+        let running = makeSession(
+            id: "sess_network_recovery",
+            projectID: project.id,
+            title: "恢复一次",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
+        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            networkPathStatusSource: pathSource
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        pathSource.emit(.unsatisfied)
+        try await waitForNetworkReachability(.unsatisfied, store: store)
+        pathSource.emit(.satisfied)
+        pathSource.emit(.satisfied) // NWPathMonitor 可能重复报告同一状态，恢复逻辑必须去重。
+        try await waitForNetworkReachability(.satisfied, store: store)
+        for _ in 0..<80 where sockets.count < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertEqual(sockets[1].connectedSessionIDs, [running.id])
+    }
+
+    func testCredentialTerminalStateDoesNotRecoverWhenNetworkReturns() async throws {
+        let project = makeProject(id: "proj_auth_before_network_recovery")
+        let running = makeSession(
+            id: "sess_auth_before_network_recovery",
+            projectID: project.id,
+            title: "认证终态",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "expired-token"
+        let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            networkPathStatusSource: pathSource
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        sockets[0].emitStatus(.terminated(.credentialsInvalid))
+        try await waitForWebSocketStatus(.terminated(.credentialsInvalid), store: store)
+
+        pathSource.emit(.unsatisfied)
+        pathSource.emit(.satisfied)
+        try await waitForNetworkReachability(.satisfied, store: store)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(store.webSocketStatus, .terminated(.credentialsInvalid))
+        XCTAssertEqual(store.connectionTermination, .credentialsInvalid)
+        XCTAssertTrue(appStore.requiresRePairing)
+    }
+
+    func testTransientReconnectUsesExponentialJitterAndMaximumDelay() async throws {
+        let project = makeProject(id: "proj_reconnect_jitter")
+        let running = makeSession(
+            id: "sess_reconnect_jitter",
+            projectID: project.id,
+            title: "退避",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let delayRecorder = ReconnectDelayRecorder()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            },
+            webSocketReconnectRandom: { 1.0 },
+            webSocketReconnectSleep: { delay in await delayRecorder.record(delay) },
+            networkPathStatusSource: TestNetworkPathStatusSource(initialStatus: .satisfied)
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        for attempt in 0..<6 {
+            sockets[attempt].emitStatus(.failed("transient \(attempt)"))
+            for _ in 0..<100 where sockets.count < attempt + 2 {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertEqual(sockets.count, attempt + 2)
+        }
+
+        let recordedDelays = await delayRecorder.snapshot()
+        XCTAssertEqual(
+            recordedDelays,
+            [1_200_000_000, 2_400_000_000, 4_800_000_000, 9_600_000_000, 19_200_000_000, 30_000_000_000]
+        )
+    }
+
+    func testBootstrapRetriesUntilSessionsLoadWhenGatewayStartsLate() async {
+        let project = makeProject(id: "proj_late_gateway")
+        let session = makeSession(id: "codex_late", projectID: project.id, title: "首启恢复", status: "history", source: "codex", resumeID: "history")
+        // projects 立刻可用（agentd HTTP 已就绪），但 app-server gateway 上游晚 2 次才接受连接，
+        // sessions 前两次抛错。冷启动 bootstrap 必须继续重试，而不能一拿到 projects 就收手。
+        let client = FlakyBootstrapClient(
+            failuresBeforeSuccess: 0,
+            sessionFailuresBeforeSuccess: 2,
+            projects: [project],
+            sessions: [session]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project, lastOpenedAt: Date(timeIntervalSince1970: 10))],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.sessionsCallCount, 3) // 会话失败 2 次 + 成功 1 次
+        XCTAssertEqual(store.projects.map(\.id), [project.id])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testBootstrapDoesNotRetryWhenBackendHasNoProjects() async {
+        let client = FlakyBootstrapClient(failuresBeforeSuccess: 0, projects: [], sessions: [])
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.bootstrap()
+
+        // 成功但后端确实没有项目时不应空转重试。
+        XCTAssertEqual(client.projectsCallCount, 1)
+        XCTAssertTrue(store.projects.isEmpty)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testConcurrentSelectedProjectRefreshesShareOneListRequest() async throws {
+        let project = makeProject(id: "proj_coalesced_list")
+        let session = makeSession(id: "thread_coalesced_list", projectID: project.id, title: "合并列表", status: "history", source: "codex")
+        let client = BlockingSessionListRefreshClient(projects: [project], page: SessionsPage(sessions: [session]))
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        let first = Task { await store.refreshSelectedProjectSessions(showLoading: true) }
+        let second = Task { await store.refreshSelectedProjectSessions(showLoading: true) }
+        await client.waitForBlockedSessionListRefresh()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2, "bootstrap 后的两个并发刷新必须共享一个上游 thread/list")
+        client.releaseBlockedSessionListRefresh()
+        await first.value
+        await second.value
+    }
+
+    func testRefreshAllAndSelectedProjectRefreshShareOneListRequest() async throws {
+        let project = makeProject(id: "proj_cross_refresh_list")
+        let session = makeSession(
+            id: "thread_cross_refresh_list",
+            projectID: project.id,
+            title: "跨入口合并列表",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session]),
+            blockOnCall: 1
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        let refreshAll = Task { await store.refreshAll(autoAttach: false) }
+        await client.waitForBlockedSessionListRefresh()
+        let selectedRefresh = Task { await store.refreshSelectedProjectSessions(showLoading: false) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // refreshAll 与列表轮询共用同一个 thread/list；否则 gateway 会把后发请求拒绝为 -32080。
+        XCTAssertEqual(client.sessionsPageCallCount, 1)
+        client.releaseBlockedSessionListRefresh()
+        await refreshAll.value
+        await selectedRefresh.value
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testBootstrapHonorsThreadListRetryAfterBeforeRetrying() async {
+        let project = makeProject(id: "proj_list_retry_after")
+        let session = makeSession(id: "thread_list_retry_after", projectID: project.id, title: "限流恢复", status: "history", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [
+                .failure(sessionListPolicyError(retryAfterMs: 15_000)),
+                .success(SessionsPage(sessions: [session]))
+            ]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        var now = Date(timeIntervalSince1970: 1_780_000_000)
+        var requestedSleeps: [UInt64] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListNow: { now },
+            sessionListSleep: { nanoseconds in
+                requestedSleeps.append(nanoseconds)
+                now = now.addingTimeInterval(Double(nanoseconds) / 1_000_000_000)
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        XCTAssertEqual(requestedSleeps, [15_000_000_000])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testThreadListRateLimitKeepsExistingSessionsAndSuppressesGlobalError() async {
+        let project = makeProject(id: "proj_list_cooldown")
+        let existing = makeSession(id: "thread_existing", projectID: project.id, title: "已有会话", status: "history", source: "codex")
+        let refreshed = makeSession(id: "thread_refreshed", projectID: project.id, title: "恢复后会话", status: "history", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [
+                .success(SessionsPage(sessions: [existing])),
+                .failure(sessionListPolicyError(retryAfterMs: 15_000)),
+                .success(SessionsPage(sessions: [refreshed]))
+            ]
+        )
+        let appStore = AppStore()
+        var now = Date(timeIntervalSince1970: 1_780_000_000)
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListNow: { now },
+            sessionListSleep: { _ in }
+        )
+        store.selectedProjectID = project.id
+
+        await store.refreshAll(autoAttach: false)
+        await store.refreshSelectedProjectSessions(showLoading: true)
+
+        XCTAssertEqual(store.filteredSessions.map(\.id), [existing.id])
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(store.statusMessage, "会话列表刷新过快，已保留现有会话，稍后自动重试。")
+        XCTAssertFalse(store.statusMessage?.contains("itemsView") == true)
+
+        // 冷却窗口内继续刷新必须复用旧页，不能再撞 gateway。
+        await store.refreshSelectedProjectSessions(showLoading: true)
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+
+        now = now.addingTimeInterval(15)
+        await store.refreshSelectedProjectSessions(showLoading: true)
+        XCTAssertEqual(client.sessionsPageCallCount, 3)
+        XCTAssertEqual(store.filteredSessions.map(\.id), [refreshed.id])
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testSessionLibrarySkipsSelectedWorkspaceAlreadyLoadedByRefreshAll() async {
+        let project = makeProject(id: "proj_library_reuse")
+        let session = makeSession(id: "thread_library_reuse", projectID: project.id, title: "已加载", status: "history", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [.success(SessionsPage(sessions: [session]))]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.selectedProjectID = project.id
+
+        await store.refreshAll(autoAttach: false)
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1)
+        XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
+    }
+
+    func testRecentSessionsUsesLatestActivityAcrossEveryWorkspace() async {
+        let projects = (0..<9).map { makeProject(id: "proj_recent_\($0)") }
+        let workspaces = projects.enumerated().map { index, project in
+            AgentWorkspace(
+                project: project,
+                lastOpenedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let projectSessions = Dictionary(uniqueKeysWithValues: projects.enumerated().map { index, project in
+            let updatedAt = index == 8 ? 1_000 : 100 + index
+            return (
+                project.id,
+                [makeSession(
+                    id: "thread_recent_\(index)",
+                    projectID: project.id,
+                    title: "最近会话 \(index)",
+                    status: "history",
+                    source: "codex",
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(updatedAt))
+                )]
+            )
+        })
+        let client = MockSessionStoreClient(
+            projects: projects,
+            sessions: [],
+            projectSessions: projectSessions
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: workspaces,
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: true)
+        await store.refreshSessionLibraryIndex()
+
+        // 第 9 个工作区虽然更早打开，但它的会话活动时间最新，必须排在全局“最近”第一位。
+        XCTAssertEqual(
+            store.recentSessions.map(\.id),
+            (1...8).reversed().map { "thread_recent_\($0)" }
+        )
+        XCTAssertEqual(Set(client.requestedWorkspaceIDs), Set(projects.map(\.id)))
+    }
+
+    func testSidebarKeepsEveryActiveSessionAndLimitsOnlyHistory() async {
+        let project = makeProject(id: "proj_sidebar_lifecycle")
+        let active = (0..<10).map { index in
+            makeSession(
+                id: "thread_active_\(index)",
+                projectID: project.id,
+                title: "进行中 \(index)",
+                status: SessionStatus.running.rawValue,
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+        let history = (0..<10).map { index in
+            makeSession(
+                id: "thread_history_\(index)",
+                projectID: project.id,
+                title: "历史 \(index)",
+                status: SessionStatus.history.rawValue,
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 + index))
+            )
+        }
+        let client = MockSessionStoreClient(projects: [project], sessions: active + history)
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectProject(project)
+
+        // 进行中任务不能因为更新时间较早或超过 8 条而从侧栏消失；只限制历史预览数量。
+        XCTAssertEqual(Set(store.activeSessions.map(\.id)), Set(active.map(\.id)))
+        XCTAssertEqual(store.activeSessions.count, 10)
+        XCTAssertEqual(store.recentHistorySessions.map(\.id), (2...9).reversed().map { "thread_history_\($0)" })
+    }
+
+    func testRefreshingGlobalIndexMovesNonSelectedWorkspaceSessionIntoHistory() async {
+        let selectedProject = makeProject(id: "proj_selected_refresh")
+        let backgroundProject = makeProject(id: "proj_background_refresh")
+        let selectedHistory = makeSession(
+            id: "selected_history",
+            projectID: selectedProject.id,
+            title: "当前工作区历史",
+            status: SessionStatus.history.rawValue,
+            source: "codex"
+        )
+        let backgroundRunning = makeSession(
+            id: "background_running",
+            projectID: backgroundProject.id,
+            title: "后台任务",
+            status: SessionStatus.running.rawValue,
+            source: "codex"
+        )
+        var now = Date(timeIntervalSince1970: 1_000)
+        let client = MutableSessionPageClient(
+            projects: [selectedProject, backgroundProject],
+            page: SessionsPage(sessions: []),
+            projectPages: [
+                selectedProject.id: SessionsPage(sessions: [selectedHistory]),
+                backgroundProject.id: SessionsPage(sessions: [backgroundRunning])
+            ]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [
+                    AgentWorkspace(project: selectedProject),
+                    AgentWorkspace(project: backgroundProject)
+                ],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListNow: { now }
+        )
+
+        store.selectedProjectID = selectedProject.id
+        await store.refreshAll(autoAttach: false)
+        await store.refreshSessionLibraryIndex()
+        XCTAssertTrue(store.activeSessions.contains { $0.id == backgroundRunning.id })
+
+        client.projectPages[backgroundProject.id] = SessionsPage(sessions: [
+            makeSession(
+                id: backgroundRunning.id,
+                projectID: backgroundProject.id,
+                title: backgroundRunning.title,
+                status: SessionStatus.completed.rawValue,
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 1_001)
+            )
+        ])
+        now = now.addingTimeInterval(3)
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertFalse(store.activeSessions.contains { $0.id == backgroundRunning.id })
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == backgroundRunning.id })
+    }
+
+    func testSessionStoreStartsOnlyValidatedInlineReviewTargets() async {
+        let project = makeProject(id: "proj_review")
+        let session = makeSession(
+            id: "thread_review",
+            projectID: project.id,
+            title: "发布前检查",
+            status: "idle",
+            source: "codex",
+            runtimeProvider: "codex"
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+
+        let startedBaseBranch = await store.startReview(session, target: .baseBranch(" main "))
+        XCTAssertTrue(startedBaseBranch)
+        XCTAssertEqual(client.requestedSessionReviews, [
+            RequestedSessionReview(
+                threadID: session.id,
+                target: .baseBranch("main"),
+                delivery: .inline
+            )
+        ])
+
+        let startedCompatibilityReview = await store.reviewUncommittedChanges(session)
+        XCTAssertTrue(startedCompatibilityReview)
+        XCTAssertEqual(client.requestedSessionReviews.last?.target, .uncommittedChanges)
+        XCTAssertEqual(client.requestedSessionReviews.last?.delivery, .inline)
+
+        let rejectedEmptyCommit = await store.startReview(session, target: .commit(sha: " \n "))
+        let rejectedCustom = await store.startReview(session, target: .custom("绕过安全入口"))
+        let running = makeSession(
+            id: "thread_running_review",
+            projectID: project.id,
+            title: "正在运行",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex"
+        )
+        let rejectedRunning = await store.startReview(running, target: .uncommittedChanges)
+
+        XCTAssertFalse(rejectedEmptyCommit)
+        XCTAssertFalse(rejectedCustom)
+        XCTAssertFalse(rejectedRunning)
+        XCTAssertEqual(client.requestedSessionReviews.count, 2)
+    }
+
+    func testMultiRuntimeHistoryPreservesEconomyAndFullLoadModes() async throws {
+        let project = AgentProject(id: "proj_multi_history_mode", name: "History Mode", path: "/tmp/multi-history-mode")
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: [
+                "initialize", "initialized", "thread/list", "thread/start", "thread/read",
+                "thread/turns/list", "turn/start", "turn/interrupt"
+            ]
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let client = MultiRuntimeSessionAPIClient(
+            codexRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "outer-token",
+                transportFactory: { codexTransport },
+                configProvider: { config }
+            ),
+            claudeRuntime: CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "outer-token",
+                runtimeProvider: "claude",
+                transportFactory: { claudeTransport },
+                configProvider: { config }
+            )
+        )
+
+        let listTask = Task { try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(codexTransport, method: "initialize")
+        transportResponse(codexTransport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let list = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: 1)
+        transportResponse(codexTransport, id: list.id, result: appServerThreadListResult([
+            appServerThreadJSON(id: "thread_history_mode", cwd: project.path, source: "appServer", updatedAt: 1780493000)
+        ], nextCursor: nil))
+        _ = try await listTask.value
+
+        let economyTask = Task {
+            try await client.messagesPage(sessionID: "thread_history_mode", before: nil, limit: 20, loadMode: .economy)
+        }
+        let economyRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 2)
+        XCTAssertEqual(economyRequest.params?.objectValue?["itemsView"]?.stringValue, "summary")
+        transportResponse(codexTransport, id: economyRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+        let economyPage = try await economyTask.value
+        XCTAssertEqual(economyPage.loadMode, .economy)
+
+        let fullTask = Task {
+            try await client.messagesPage(sessionID: "thread_history_mode", before: nil, limit: 20, loadMode: .full)
+        }
+        // sentMessages[3] 仍是上一条 economy 请求；full 请求从下一个下标开始等待。
+        let fullRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/turns/list", after: 4)
+        XCTAssertEqual(fullRequest.params?.objectValue?["itemsView"]?.stringValue, "full")
+        transportResponse(codexTransport, id: fullRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+        let fullPage = try await fullTask.value
+        XCTAssertEqual(fullPage.loadMode, .full)
+    }
+}

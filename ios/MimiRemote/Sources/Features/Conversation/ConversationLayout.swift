@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct ConversationLayout: Equatable {
-    // 只有拿不到系统 size class（例如部分预览宿主）时才按宽度兜底；真实设备优先按
-    // compact/regular 区分手机与 iPad，避免 iPad mini 竖屏误入多级系统菜单。
-    static let compactComposerFallbackMaximumWidth: CGFloat = 560
+    // 560pt 以下的实际可用宽度无法稳定容纳带文字标签的主操作行。即使系统仍报
+    // regular size class（某些 iPad 极窄分屏），也必须使用紧凑指标。
+    static let compactComposerMaximumWidth: CGFloat = 560
 
     let horizontalInset: CGFloat
     let messageSideSpacer: CGFloat
@@ -21,14 +21,14 @@ struct ConversationLayout: Equatable {
         EdgeInsets(top: 8, leading: horizontalInset, bottom: 8, trailing: horizontalInset)
     }
 
-    static func usesCompactComposerToolbar(
+    static func usesCompactComposerMetrics(
         availableWidth: CGFloat?,
         horizontalSizeClass: UserInterfaceSizeClass?
     ) -> Bool {
-        if let horizontalSizeClass {
-            return horizontalSizeClass == .compact
+        if horizontalSizeClass == .compact {
+            return true
         }
-        return availableWidth.map { $0 < compactComposerFallbackMaximumWidth } ?? false
+        return availableWidth.map { $0 < compactComposerMaximumWidth } ?? false
     }
 
     init(

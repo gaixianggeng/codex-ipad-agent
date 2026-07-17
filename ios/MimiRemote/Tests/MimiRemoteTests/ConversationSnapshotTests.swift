@@ -147,13 +147,24 @@ final class ConversationSnapshotTests: XCTestCase {
             .frame(width: 1024, height: 768)
     }
 
-    private func makeMixedActivityConversation() -> some View {
+    private func makeMixedActivityConversation() async -> some View {
         let sessionID = "snapshot_mixed_activity"
         let turnID = "turn_mixed_activity"
         let conversationStore = ConversationStore()
         let themeStore = makeThemeStore()
         let landscapeImage = snapshotImageDataURL(size: CGSize(width: 420, height: 210), accent: .systemPurple)
         let portraitImage = snapshotImageDataURL(size: CGSize(width: 240, height: 360), accent: .systemOrange)
+        // 生产视图仍通过 `.task(id:)` 异步解码；快照先填充同一缓存，确保捕获的是稳定完成态。
+        _ = await DataURLImageDecoder.image(
+            from: landscapeImage,
+            cacheKey: ConversationImageSource.dataURL(landscapeImage).id,
+            maxPixelSize: 1_600
+        )
+        _ = await DataURLImageDecoder.image(
+            from: portraitImage,
+            cacheKey: ConversationImageSource.dataURL(portraitImage).id,
+            maxPixelSize: 1_600
+        )
         let history = [
             CodexHistoryMessage(
                 id: "mixed-user",
@@ -497,9 +508,11 @@ final class ConversationSnapshotTests: XCTestCase {
         )
     }
 
-    func testMixedActivityAndImageConversationRendering() {
+    func testMixedActivityAndImageConversationRendering() async {
+        let view = await makeMixedActivityConversation()
+
         assertSnapshot(
-            of: makeMixedActivityConversation(),
+            of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
         )
     }
@@ -553,11 +566,11 @@ final class ConversationSnapshotTests: XCTestCase {
         XCTAssertEqual(layout.composerAvailableWidth, 785)
         XCTAssertEqual(layout.composerMaxWidth, 785)
         XCTAssertFalse(
-            ConversationLayout.usesCompactComposerToolbar(
+            ConversationLayout.usesCompactComposerMetrics(
                 availableWidth: layout.composerMaxWidth,
                 horizontalSizeClass: .regular
             ),
-            "regular size class 的 iPad 分栏仍使用完整工具栏"
+            "regular size class 的 iPad 分栏使用标准输入指标"
         )
         XCTAssertLessThanOrEqual(
             layout.composerMaxWidth + layout.horizontalInset * 2,
@@ -566,7 +579,7 @@ final class ConversationSnapshotTests: XCTestCase {
         )
     }
 
-    func testConversationLayoutUsesExpandedToolbarInIPadMiniPortrait() {
+    func testConversationLayoutKeepsIPadMiniComposerInsideConversationTrack() {
         let layout = ConversationLayout(
             containerWidth: 744,
             horizontalSizeClass: .regular
@@ -575,36 +588,64 @@ final class ConversationSnapshotTests: XCTestCase {
         XCTAssertEqual(layout.horizontalInset, 16)
         XCTAssertEqual(layout.composerAvailableWidth, 712)
         XCTAssertEqual(layout.composerMaxWidth, 712)
+        XCTAssertEqual(layout.composerMaxWidth + layout.horizontalInset * 2, 744)
         XCTAssertFalse(
-            ConversationLayout.usesCompactComposerToolbar(
+            ConversationLayout.usesCompactComposerMetrics(
                 availableWidth: layout.composerMaxWidth,
                 horizontalSizeClass: .regular
             ),
-            "iPad mini 竖屏应展示完整工具栏和自定义模型选择器"
+            "iPad mini 竖屏仍使用标准输入尺寸"
         )
     }
 
-    func testConversationLayoutUsesCompactToolbarOnPhone() {
+    func testConversationLayoutUsesStandardMetricsForMeasuredLandscapeDetailTrack() {
+        // 真机横屏：1133pt 整窗减去约 300pt 侧栏后，内容测量宽度约 832pt。
+        // 布局直接采用测量值，不再做 safe area 减法，因此不会重复扣除侧栏
+        // 被误算成 528pt 而落入紧凑分支、隐藏快捷行开关。
+        let layout = ConversationLayout(
+            containerWidth: 832,
+            horizontalSizeClass: .regular
+        )
+
+        XCTAssertFalse(
+            ConversationLayout.usesCompactComposerMetrics(
+                availableWidth: min(layout.composerAvailableWidth, layout.composerMaxWidth),
+                horizontalSizeClass: .regular
+            ),
+            "横屏 detail 列必须使用标准输入指标"
+        )
+    }
+
+    func testConversationLayoutUsesCompactMetricsOnPhone() {
         XCTAssertTrue(
-            ConversationLayout.usesCompactComposerToolbar(
+            ConversationLayout.usesCompactComposerMetrics(
                 availableWidth: 390,
                 horizontalSizeClass: .compact
             ),
-            "手机端继续使用紧凑菜单"
+            "手机端继续使用紧凑指标"
         )
     }
 
     func testConversationLayoutFallsBackToWidthWithoutSizeClass() {
         XCTAssertTrue(
-            ConversationLayout.usesCompactComposerToolbar(
+            ConversationLayout.usesCompactComposerMetrics(
                 availableWidth: 390,
                 horizontalSizeClass: nil
             )
         )
         XCTAssertFalse(
-            ConversationLayout.usesCompactComposerToolbar(
+            ConversationLayout.usesCompactComposerMetrics(
                 availableWidth: 744,
                 horizontalSizeClass: nil
+            )
+        )
+    }
+
+    func testConversationLayoutForcesCompactMetricsInExtremelyNarrowRegularSplit() {
+        XCTAssertTrue(
+            ConversationLayout.usesCompactComposerMetrics(
+                availableWidth: 520,
+                horizontalSizeClass: .regular
             )
         )
     }
@@ -615,6 +656,29 @@ final class ConversationSnapshotTests: XCTestCase {
         assertSnapshot(
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+        )
+    }
+
+    func testComposerStatusTrayIPadMiniPortraitWidth() async {
+        let view = await makeComposerStatusTrayCrowdedView(width: 744, height: 1133)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 744, height: 1133))
+        )
+    }
+
+    func testComposerStatusTrayIPadMiniLandscapeDetailWidth() async {
+        // 横屏回归：1133pt 整窗减去约 300pt 侧栏后，detail 列约 832pt。
+        // Composer 按内容测量宽度必须用标准指标（快捷行、按钮文字标签都在），
+        // 不允许被 safe area 提案算术把宽度算小而退化成紧凑布局。
+        // NavigationSplitView 在快照宿主中的列宽提案与真机不一致，无法直接包装；
+        // 这里固定为真实 detail 列宽，真机横屏行为仍需设备验收。
+        let view = await makeComposerStatusTrayCrowdedView(width: 832, height: 744)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 832, height: 744))
         )
     }
 
@@ -697,12 +761,18 @@ final class ConversationSnapshotTests: XCTestCase {
         await sessionStore.toggleProjectExpansion(project)
         sessionStore.selectedSessionID = sessionID
 
+        let composerDefaultsSuite = "ConversationSnapshotTests.Composer.\(UUID().uuidString)"
+        let composerDefaults = UserDefaults(suiteName: composerDefaultsSuite)!
+        composerDefaults.removePersistentDomain(forName: composerDefaultsSuite)
+        composerDefaults.set(true, forKey: "composer.shortcuts.expanded")
+
         return ConversationView(initialGoalStatusExpanded: goalExpanded)
             .environmentObject(sessionStore)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
             // 快照固定为浅色，避免运行测试前手动切过模拟器外观就整组误报。
             .environment(\.colorScheme, .light)
+            .defaultAppStorage(composerDefaults)
             .frame(width: width, height: height)
     }
 

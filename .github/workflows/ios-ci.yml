@@ -7,6 +7,7 @@ on:
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
+      - "scripts/check-source-size.sh"
       - ".github/workflows/ios-ci.yml"
   push:
     branches:
@@ -16,6 +17,7 @@ on:
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
+      - "scripts/check-source-size.sh"
       - ".github/workflows/ios-ci.yml"
   workflow_dispatch:
 
@@ -52,6 +54,9 @@ jobs:
 
       - name: Check privacy manifest
         run: bash ./scripts/check-ios-privacy-manifest.sh
+
+      - name: Check source size
+        run: bash ./scripts/check-source-size.sh
 
       - name: Run core regressions
         run: bash ./scripts/test-conversation-regressions.sh
