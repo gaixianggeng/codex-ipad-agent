@@ -1,40 +1,64 @@
 import SwiftUI
 
-struct ConversationExplorationRow: View, Equatable {
+struct ConversationActivityBatchRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
-    let group: ConversationExplorationGroup
+    let group: ConversationActivityBatch
     let layout: ConversationLayout
+    let isExpanded: Bool
+    let expandedActivityIDs: Set<String>
+    let toggleGroup: () -> Void
+    let toggleActivity: (ConversationMessage) -> Void
 
-    static func == (lhs: ConversationExplorationRow, rhs: ConversationExplorationRow) -> Bool {
-        lhs.group == rhs.group && lhs.layout == rhs.layout
+    static func == (lhs: ConversationActivityBatchRow, rhs: ConversationActivityBatchRow) -> Bool {
+        guard lhs.group.id == rhs.group.id,
+              lhs.group.kind == rhs.group.kind,
+              lhs.group.status == rhs.group.status,
+              lhs.group.messages.count == rhs.group.messages.count,
+              lhs.group.latestDetail == rhs.group.latestDetail,
+              lhs.group.failedCount == rhs.group.failedCount,
+              lhs.layout == rhs.layout,
+              lhs.isExpanded == rhs.isExpanded,
+              lhs.expandedActivityIDs == rhs.expandedActivityIDs
+        else {
+            return false
+        }
+        // 折叠时忽略 stdout/stderr 摘要变化，避免终端增量驱动整行重绘；
+        // 用户主动展开后再比较完整消息，让诊断详情保持实时。
+        return !lhs.isExpanded || lhs.group.messages == rhs.group.messages
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Group {
-                    if group.isCompleted {
-                        Image(systemName: "circle.fill")
-                            .font(themeStore.uiFont(size: 5, weight: .semibold))
-                    } else {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
+            VStack(alignment: .leading, spacing: 2) {
+                Button(action: toggleGroup) {
+                    header
                 }
-                .frame(width: 14, height: 16)
-                .foregroundStyle(tokens.secondaryText)
+                .buttonStyle(.plain)
+                .accessibilityLabel(summaryText)
+                .accessibilityValue(accessibilityValue)
+                .accessibilityHint(isExpanded ? L10n.text("ui.collapse_this_stage_of_activities") : L10n.text("ui.expand_this_stage_of_activities"))
 
-                Text(explorationText)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .contentTransition(.numericText())
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(group.messages) { message in
+                            ConversationActivityRow(
+                                message: message,
+                                layout: layout,
+                                isExpanded: expandedActivityIDs.contains(
+                                    ConversationTimelineItem.activityID(for: message)
+                                ),
+                                toggle: { toggleActivity(message) }
+                            )
+                            .equatable()
+                            .padding(.leading, 20)
+                        }
+                    }
+                    .transition(activityTransition)
+                }
             }
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(explorationText)
 
             Spacer(minLength: layout.messageSideSpacer)
         }
@@ -42,11 +66,76 @@ struct ConversationExplorationRow: View, Equatable {
         .padding(.vertical, 2)
     }
 
-    private var explorationText: String {
-        guard let detail = group.latestDetail else {
-            return group.title
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            statusMarker
+
+            Text(summaryText)
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .foregroundStyle(headerTint)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "chevron.right")
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText.opacity(0.76))
+                .frame(width: 18, height: 18)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
         }
-        return "\(group.title) · \(detail)"
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var statusMarker: some View {
+        switch group.status {
+        case .running:
+            ProgressView()
+                .controlSize(.mini)
+                .tint(tokens.secondaryText)
+                .frame(width: 14, height: 18)
+        case .completed:
+            Image(systemName: "circle.fill")
+                .font(themeStore.uiFont(size: 5, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: 14, height: 18)
+        case .interrupted:
+            Image(systemName: "stop.circle.fill")
+                .font(themeStore.uiFont(size: 11, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: 14, height: 18)
+        case .failed:
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(themeStore.uiFont(size: 11, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .frame(width: 14, height: 18)
+        }
+    }
+
+    private var summaryText: String {
+        [group.title, group.latestDetail, group.failureDetail]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    private var accessibilityValue: String {
+        let state = isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected")
+        return L10n.format(
+            "ui.value_contains_value",
+            state,
+            L10n.plural("ui.activities_count", count: group.messages.count)
+        )
+    }
+
+    private var activityTransition: AnyTransition {
+        accessibilityReduceMotion
+            ? .opacity
+            : .opacity.combined(with: .move(edge: .top))
+    }
+
+    private var headerTint: Color {
+        group.status == .failed ? .red : tokens.secondaryText
     }
 
     private var tokens: ThemeTokens {

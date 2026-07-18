@@ -489,6 +489,24 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertFalse(ConversationTimelineView.shouldForceTailFollow(forNewTailMessage: processSummary))
     }
 
+    func testConversationTimelineDoesNotRescrollForEveryBatchedCommand() {
+        let command = ConversationMessage(
+            role: .system,
+            kind: .commandSummary,
+            content: "命令输出增量",
+            sendStatus: .confirmed
+        )
+        let commentary = ConversationMessage(
+            role: .assistant,
+            kind: .commentary,
+            content: "继续处理。",
+            sendStatus: .sending
+        )
+
+        XCTAssertFalse(ConversationTimelineView.shouldScheduleTailFollowForNewTailMessage(command))
+        XCTAssertTrue(ConversationTimelineView.shouldScheduleTailFollowForNewTailMessage(commentary))
+    }
+
     func testConversationTimelineAllowsInitialTailRetryButRespectsUserScrollAway() {
         XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
             force: false,
@@ -782,7 +800,25 @@ final class ConversationDataFlowTests: XCTestCase {
         let message = try XCTUnwrap(store.messages(for: sessionID).first)
         XCTAssertEqual(message.activityPayload, payload)
         XCTAssertEqual(message.activityPayload?.displayTitle, L10n.format("ui.search_query", "ConversationStore"))
+        XCTAssertEqual(message.activityPayload?.commandPresentationKind, .exploration)
         XCTAssertEqual(message.content, payload.summaryText)
+    }
+
+    func testLegacyActivityPayloadDecodesWithoutCommandPresentationKind() throws {
+        let data = Data(#"{"category":"run_command","display_title":"运行命令","status":"completed","command":"echo ok","file_paths":[]}"#.utf8)
+
+        let payload = try JSONDecoder().decode(ConversationActivityPayload.self, from: data)
+
+        XCTAssertEqual(payload.category, .runCommand)
+        XCTAssertNil(payload.commandPresentationKind)
+    }
+
+    func testActivityPayloadToleratesFutureCommandPresentationKind() throws {
+        let data = Data(#"{"category":"run_command","display_title":"运行命令","status":"completed","command":"echo ok","file_paths":[],"command_presentation_kind":"future_kind"}"#.utf8)
+
+        let payload = try JSONDecoder().decode(ConversationActivityPayload.self, from: data)
+
+        XCTAssertEqual(payload.commandPresentationKind, .execution)
     }
 
     func testActivityPresentationHidesProtocolNoiseAndKeepsRawDiagnostics() throws {
@@ -842,8 +878,41 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(payload.displayTitle, L10n.text("ui.run_command"))
         XCTAssertEqual(payload.command, command, "完整命令仍保留在展开详情与诊断数据中")
+        XCTAssertEqual(payload.commandPresentationKind, .execution)
         XCTAssertFalse(payload.displayTitle.lowercased().contains("unknown"))
         XCTAssertTrue(payload.summaryText.contains(command))
+    }
+
+    func testOfficialReadAndListFileActionsAreExplorationCommands() throws {
+        let readItem: [String: CodexAppServerJSONValue] = [
+            "type": .string("commandExecution"),
+            "command": .string("sed -n '1,80p' Sources/App.swift"),
+            "status": .string("completed"),
+            "commandActions": .array([.object([
+                "type": .string("read"),
+                "command": .string("sed -n '1,80p' Sources/App.swift"),
+                "name": .string("sed"),
+                "path": .string("Sources/App.swift")
+            ])])
+        ]
+        let listItem: [String: CodexAppServerJSONValue] = [
+            "type": .string("commandExecution"),
+            "command": .string("find Sources -maxdepth 1"),
+            "status": .string("completed"),
+            "commandActions": .array([.object([
+                "type": .string("listFiles"),
+                "command": .string("find Sources -maxdepth 1"),
+                "path": .string("Sources")
+            ])])
+        ]
+
+        let readPayload = try XCTUnwrap(ConversationActivityPayload(item: readItem))
+        let listPayload = try XCTUnwrap(ConversationActivityPayload(item: listItem))
+
+        XCTAssertEqual(readPayload.commandPresentationKind, .exploration)
+        XCTAssertEqual(readPayload.displayTitle, "查看 App.swift")
+        XCTAssertEqual(listPayload.commandPresentationKind, .exploration)
+        XCTAssertEqual(listPayload.displayTitle, "列出 Sources")
     }
 
     func testFileChangeProgressUsesCompactFilenameButKeepsFullPath() throws {
@@ -1059,10 +1128,10 @@ final class ConversationDataFlowTests: XCTestCase {
         } else {
             XCTFail("用户消息不应被折叠")
         }
-        guard case .activity(let visibleCommand) = items[1] else {
-            return XCTFail("真实命令应作为独立进度行")
+        guard case .activityBatch(let visibleCommands) = items[1] else {
+            return XCTFail("真实命令应进入活动批次")
         }
-        XCTAssertEqual(visibleCommand.content, "命令：xcodebuild test")
+        XCTAssertEqual(visibleCommands.messages.first?.content, "命令：xcodebuild test")
         guard case .activity(let visibleDiff) = items[2] else {
             return XCTFail("文件变更应作为独立进度行")
         }
@@ -1098,8 +1167,8 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        if case .activity(let activity) = items[0] {
-            XCTAssertEqual(activity.turnID, "turn-a")
+        if case .activityBatch(let activity) = items[0] {
+            XCTAssertEqual(activity.messages.first?.turnID, "turn-a")
         } else {
             XCTFail("过程消息应保持独立，不得并入另一个 turn 的 assistant")
         }
@@ -1179,17 +1248,18 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        guard case .activity(let visibleCommand) = items[0] else {
-            return XCTFail("运行中的真实命令应作为独立进度行")
+        guard case .activityBatch(let visibleCommands) = items[0] else {
+            return XCTFail("运行中的真实命令应进入活动批次")
         }
-        XCTAssertEqual(visibleCommand.kind, .commandSummary)
+        XCTAssertEqual(visibleCommands.messages.first?.kind, .commandSummary)
+        XCTAssertEqual(visibleCommands.status, .running)
         guard case .message(let streamingAssistant) = items[1] else {
             return XCTFail("assistant streaming 内容仍应直接展示")
         }
         XCTAssertEqual(streamingAssistant.sendStatus, .sending)
     }
 
-    func testTimelineBuilderOnlyCoalescesConsecutiveExplorationAndKeepsStableID() throws {
+    func testTimelineBuilderCoalescesConsecutiveCommandsAndKeepsStableID() throws {
         let base = Date(timeIntervalSince1970: 2_100)
         let read = ConversationMessage(
             stableID: "read-active",
@@ -1203,7 +1273,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 category: .runCommand,
                 displayTitle: "查看 App.swift",
                 status: "running",
-                command: "sed -n 1,80p App.swift"
+                command: "sed -n 1,80p App.swift",
+                commandPresentationKind: .exploration
             )
         )
         let search = ConversationMessage(
@@ -1218,7 +1289,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 category: .runCommand,
                 displayTitle: "搜索 ComposerView",
                 status: "running",
-                command: "rg ComposerView"
+                command: "rg ComposerView",
+                commandPresentationKind: .exploration
             )
         )
         let build = ConversationMessage(
@@ -1233,7 +1305,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 category: .runCommand,
                 displayTitle: "运行 xcodebuild test",
                 status: "running",
-                command: "xcodebuild test"
+                command: "xcodebuild test",
+                commandPresentationKind: .execution
             )
         )
         let assistant = ConversationMessage(
@@ -1246,26 +1319,249 @@ final class ConversationDataFlowTests: XCTestCase {
         )
 
         let activeItems = ConversationTimelineItemBuilder.items(from: [read, search, build])
-        XCTAssertEqual(activeItems.count, 2)
-        let activeGroup: ConversationExplorationGroup
-        if case .exploration(let group) = activeItems[0] {
+        XCTAssertEqual(activeItems.count, 1)
+        let activeGroup: ConversationActivityBatch
+        if case .activityBatch(let group) = activeItems[0] {
             activeGroup = group
         } else {
-            return XCTFail("连续读取和搜索应合并为单行探索进度")
+            return XCTFail("连续命令应合并为单行活动进度")
         }
-        XCTAssertEqual(activeGroup.messages.count, 2)
-        XCTAssertFalse(activeGroup.isCompleted)
-        guard case .activity(let visibleBuild) = activeItems[1] else {
-            return XCTFail("真实构建命令必须另起一行")
-        }
-        XCTAssertEqual(visibleBuild.stableID, "build-active")
+        XCTAssertEqual(activeGroup.messages.count, 3)
+        XCTAssertEqual(activeGroup.kind, .execution, "混合探索和真实执行时使用更稳妥的执行语义")
+        XCTAssertEqual(activeGroup.status, .running)
 
         let completedItems = ConversationTimelineItemBuilder.items(from: [read, search, build, assistant])
-        guard case .exploration(let completedGroup) = completedItems[0] else {
-            return XCTFail("完成后仍应保留探索进度行")
+        guard case .activityBatch(let completedGroup) = completedItems[0] else {
+            return XCTFail("完成后仍应保留活动进度行")
         }
         XCTAssertEqual(completedGroup.id, activeGroup.id)
-        XCTAssertTrue(completedGroup.isCompleted)
+        XCTAssertEqual(completedGroup.status, .completed)
+    }
+
+    func testTimelineBuilderCompactsCommandBurstsAroundCommentary() {
+        let turnID = "turn-command-bursts"
+        func command(_ index: Int) -> ConversationMessage {
+            ConversationMessage(
+                stableID: "burst-command-\(index)",
+                turnID: turnID,
+                role: .system,
+                kind: .commandSummary,
+                content: "运行命令 \(index)",
+                sendStatus: .confirmed,
+                activityPayload: ConversationActivityPayload(
+                    category: .runCommand,
+                    displayTitle: "运行命令",
+                    status: "completed",
+                    command: "echo \(index)",
+                    commandPresentationKind: .execution
+                ),
+                turnLifecycle: .inProgress
+            )
+        }
+        let commentary = ConversationMessage(
+            stableID: "burst-commentary",
+            turnID: turnID,
+            role: .assistant,
+            kind: .commentary,
+            content: "初步结果已经确认，继续核对剩余配置。",
+            sendStatus: .confirmed,
+            turnLifecycle: .inProgress
+        )
+        let messages = Array((0..<12).map(command)) + [commentary] + Array((12..<20).map(command))
+
+        let items = ConversationTimelineItemBuilder.items(from: messages)
+
+        XCTAssertEqual(items.count, 3, "20 条命令只应形成 commentary 前后的两个稳定活动批次")
+        guard case .activityBatch(let firstBatch) = items[0],
+              case .message(let visibleCommentary) = items[1],
+              case .activityBatch(let secondBatch) = items[2]
+        else {
+            return XCTFail("命令批次与 commentary 必须保持原始顺序")
+        }
+        XCTAssertEqual(firstBatch.messages.count, 12)
+        XCTAssertEqual(firstBatch.status, .completed)
+        XCTAssertEqual(visibleCommentary.kind, .commentary)
+        XCTAssertEqual(secondBatch.messages.count, 8)
+        XCTAssertEqual(secondBatch.status, .running)
+    }
+
+    func testCommentaryClosesPreviousCommandBatchWhileTurnContinues() {
+        let turnID = "turn-commentary-boundary"
+        let command = ConversationMessage(
+            stableID: "command-before-commentary",
+            turnID: turnID,
+            role: .system,
+            kind: .commandSummary,
+            content: "运行命令",
+            sendStatus: .confirmed,
+            activityPayload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行命令",
+                status: "completed",
+                command: "pwd",
+                commandPresentationKind: .execution
+            ),
+            turnLifecycle: .inProgress
+        )
+        let commentary = ConversationMessage(
+            stableID: "commentary-after-command",
+            turnID: turnID,
+            role: .assistant,
+            kind: .commentary,
+            content: "目录已确认，继续检查配置。",
+            sendStatus: .confirmed,
+            turnLifecycle: .inProgress
+        )
+
+        let items = ConversationTimelineItemBuilder.items(from: [command, commentary])
+
+        XCTAssertEqual(items.count, 2)
+        guard case .activityBatch(let batch) = items[0], case .message = items[1] else {
+            return XCTFail("commentary 必须保留在批次后方")
+        }
+        XCTAssertEqual(batch.status, .completed)
+    }
+
+    func testActivityBatchUsesWeakFailureUntilTurnFails() {
+        let turnID = "turn-command-recovery"
+        let first = ConversationMessage(
+            stableID: "recovery-first",
+            turnID: turnID,
+            role: .system,
+            kind: .commandSummary,
+            content: "尝试第一条命令",
+            sendStatus: .confirmed,
+            activityPayload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行命令",
+                status: "failed",
+                command: "missing-command",
+                exitCode: 127,
+                commandPresentationKind: .execution
+            ),
+            turnLifecycle: .inProgress
+        )
+        let second = ConversationMessage(
+            stableID: "recovery-second",
+            turnID: turnID,
+            role: .system,
+            kind: .commandSummary,
+            content: "尝试备用命令",
+            sendStatus: .confirmed,
+            activityPayload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行备用命令",
+                status: "completed",
+                command: "working-command",
+                exitCode: 0,
+                commandPresentationKind: .execution
+            ),
+            turnLifecycle: .inProgress
+        )
+
+        let runningItems = ConversationTimelineItemBuilder.items(from: [first, second])
+        guard case .activityBatch(let runningBatch) = runningItems.first else {
+            return XCTFail("恢复过程应显示为活动批次")
+        }
+        XCTAssertEqual(runningBatch.status, .running)
+        XCTAssertEqual(runningBatch.failedCount, 1)
+
+        let completedMessages = [first, second].map { message -> ConversationMessage in
+            var next = message
+            next.turnLifecycle = .completed
+            return next
+        }
+        guard case .activityBatch(let completedBatch) = ConversationTimelineItemBuilder.items(from: completedMessages).first else {
+            return XCTFail("恢复成功后仍应保留活动批次")
+        }
+        XCTAssertEqual(completedBatch.id, runningBatch.id)
+        XCTAssertEqual(completedBatch.status, .completed)
+        XCTAssertEqual(completedBatch.failedCount, 1)
+
+        let failedMessages = [first, second].map { message -> ConversationMessage in
+            var next = message
+            next.turnLifecycle = .failed
+            return next
+        }
+        guard case .activityBatch(let failedBatch) = ConversationTimelineItemBuilder.items(from: failedMessages).first else {
+            return XCTFail("turn 失败后仍应保留活动批次")
+        }
+        XCTAssertEqual(failedBatch.status, .failed)
+
+        let interruptedMessages = [first, second].map { message -> ConversationMessage in
+            var next = message
+            next.turnLifecycle = .interrupted
+            return next
+        }
+        guard case .activityBatch(let interruptedBatch) = ConversationTimelineItemBuilder.items(from: interruptedMessages).first else {
+            return XCTFail("turn 中断后仍应保留活动批次")
+        }
+        XCTAssertEqual(interruptedBatch.status, .interrupted)
+    }
+
+    func testCollapsedActivityBatchRowIgnoresOutputOnlyChanges() {
+        let messageID = UUID()
+        func message(output: String, digest: UInt64) -> ConversationMessage {
+            ConversationMessage(
+                id: messageID,
+                stableID: "output-command",
+                turnID: "turn-output-command",
+                role: .system,
+                kind: .commandSummary,
+                content: "运行命令",
+                sendStatus: .confirmed,
+                activityPayload: ConversationActivityPayload(
+                    category: .runCommand,
+                    displayTitle: "运行命令",
+                    status: "running",
+                    command: "long-running-command",
+                    outputPreview: output,
+                    outputDigest: digest,
+                    outputByteCount: output.utf8.count,
+                    commandPresentationKind: .execution
+                )
+            )
+        }
+        let firstGroup = ConversationActivityBatch(
+            id: "activity-batch:output-command",
+            messages: [message(output: "first chunk", digest: 1)],
+            kind: .execution,
+            status: .running
+        )
+        let secondGroup = ConversationActivityBatch(
+            id: firstGroup.id,
+            messages: [message(output: "first chunk\nsecond chunk", digest: 2)],
+            kind: .execution,
+            status: .running
+        )
+        let layout = ConversationLayout(containerWidth: 1_024, horizontalSizeClass: .regular)
+        let collapsedBefore = ConversationActivityBatchRow(
+            group: firstGroup,
+            layout: layout,
+            isExpanded: false,
+            expandedActivityIDs: [],
+            toggleGroup: {},
+            toggleActivity: { _ in }
+        )
+        let collapsedAfter = ConversationActivityBatchRow(
+            group: secondGroup,
+            layout: layout,
+            isExpanded: false,
+            expandedActivityIDs: [],
+            toggleGroup: {},
+            toggleActivity: { _ in }
+        )
+        let expandedAfter = ConversationActivityBatchRow(
+            group: secondGroup,
+            layout: layout,
+            isExpanded: true,
+            expandedActivityIDs: [],
+            toggleGroup: {},
+            toggleActivity: { _ in }
+        )
+
+        XCTAssertEqual(collapsedBefore, collapsedAfter, "折叠行不应被 stdout/stderr 增量反复重绘")
+        XCTAssertNotEqual(collapsedBefore, expandedAfter, "用户展开后仍需刷新完整诊断详情")
     }
 
     func testTimelineBuilderDoesNotMergeExplorationAcrossTurns() {
@@ -1282,7 +1578,8 @@ final class ConversationDataFlowTests: XCTestCase {
                 category: .runCommand,
                 displayTitle: "查看 A.swift",
                 status: "completed",
-                command: "cat A.swift"
+                command: "cat A.swift",
+                commandPresentationKind: .exploration
             )
         )
         let second = ConversationMessage(
@@ -1297,15 +1594,16 @@ final class ConversationDataFlowTests: XCTestCase {
                 category: .runCommand,
                 displayTitle: "查看 B.swift",
                 status: "completed",
-                command: "cat B.swift"
+                command: "cat B.swift",
+                commandPresentationKind: .exploration
             )
         )
 
         let items = ConversationTimelineItemBuilder.items(from: [first, second])
 
         XCTAssertEqual(items.count, 2)
-        guard case .exploration(let firstGroup) = items[0],
-              case .exploration(let secondGroup) = items[1]
+        guard case .activityBatch(let firstGroup) = items[0],
+              case .activityBatch(let secondGroup) = items[1]
         else {
             return XCTFail("不同 turn 的探索必须保留各自的时间线身份")
         }
@@ -1381,10 +1679,10 @@ final class ConversationDataFlowTests: XCTestCase {
 
         // 命令、审批和 streaming assistant 都直接可见；审批仍然保留交互卡片。
         XCTAssertEqual(items.count, 3)
-        guard case .activity(let visibleCommand) = items[0] else {
-            return XCTFail("运行中的命令应作为独立进度行")
+        guard case .activityBatch(let visibleCommands) = items[0] else {
+            return XCTFail("运行中的命令应进入活动批次")
         }
-        XCTAssertEqual(visibleCommand.kind, .commandSummary)
+        XCTAssertEqual(visibleCommands.messages.first?.kind, .commandSummary)
         guard case .message(let visibleApproval) = items[1] else {
             return XCTFail("运行中的审批必须保持可见可操作")
         }
@@ -1418,10 +1716,11 @@ final class ConversationDataFlowTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
 
         XCTAssertEqual(items.count, 2)
-        guard case .activity(let failedCommand) = items[0] else {
-            return XCTFail("失败回合的命令仍应作为独立进度行")
+        guard case .activityBatch(let failedCommands) = items[0] else {
+            return XCTFail("失败回合的命令仍应保留在活动批次")
         }
-        XCTAssertEqual(failedCommand.kind, .commandSummary)
+        XCTAssertEqual(failedCommands.messages.first?.kind, .commandSummary)
+        XCTAssertEqual(failedCommands.status, .failed)
         guard case .message(let failedAssistant) = items[1] else {
             return XCTFail("失败 assistant 必须直接可见")
         }
@@ -1656,6 +1955,36 @@ final class ConversationDataFlowTests: XCTestCase {
             XCTAssertEqual(fallbackSessionID, "fallback")
         } else {
             XCTFail("Expected assistant delta mutation")
+        }
+    }
+
+    func testTurnCompletedNotificationPreservesFailedAndInterruptedLifecycle() async throws {
+        for (wireStatus, expectedLifecycle, expectedSessionStatus) in [
+            ("failed", ConversationTurnLifecycle.failed, SessionStatus.failed.rawValue),
+            ("interrupted", ConversationTurnLifecycle.interrupted, SessionStatus.completed.rawValue)
+        ] {
+            var projector = CodexAppServerEventProjector()
+            let notification = try decodeAppServerNotification(
+                #"{"method":"turn/completed","params":{"threadId":"thr_terminal","turn":{"id":"turn_terminal","status":"STATUS"}}}"#
+                    .replacingOccurrences(of: "STATUS", with: wireStatus)
+            )
+            let event = try XCTUnwrap(projector.project(notification))
+            guard case .turnCompleted(let metadata) = event else {
+                return XCTFail("Expected turnCompleted")
+            }
+            XCTAssertEqual(metadata.turnLifecycle, expectedLifecycle)
+
+            let output = await EventReducer().reduce(
+                event,
+                fallbackSessionID: "fallback",
+                outputIdleClearDelay: 0
+            )
+            XCTAssertEqual(output.statusUpdates.first?.1, expectedSessionStatus)
+            let lifecycle = output.messageMutations.compactMap { mutation -> ConversationTurnLifecycle? in
+                guard case .turnLifecycle(let lifecycle, _, _) = mutation else { return nil }
+                return lifecycle
+            }.first
+            XCTAssertEqual(lifecycle, expectedLifecycle)
         }
     }
 

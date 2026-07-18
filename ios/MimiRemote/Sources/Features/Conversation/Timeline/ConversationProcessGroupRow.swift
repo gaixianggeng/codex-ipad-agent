@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ConversationProcessGroupRow: View {
+struct ConversationProcessGroupRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -12,6 +12,21 @@ struct ConversationProcessGroupRow: View {
     let toggleGroup: () -> Void
     let toggleActivity: (ConversationMessage) -> Void
 
+    static func == (lhs: ConversationProcessGroupRow, rhs: ConversationProcessGroupRow) -> Bool {
+        guard lhs.group.id == rhs.group.id,
+              lhs.group.title == rhs.group.title,
+              lhs.group.status == rhs.group.status,
+              lhs.group.activities.count == rhs.group.activities.count,
+              lhs.group.failedCount == rhs.group.failedCount,
+              lhs.layout == rhs.layout,
+              lhs.isExpanded == rhs.isExpanded,
+              lhs.expandedActivityIDs == rhs.expandedActivityIDs
+        else {
+            return false
+        }
+        return !lhs.isExpanded || lhs.group.activities == rhs.group.activities
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
@@ -19,7 +34,7 @@ struct ConversationProcessGroupRow: View {
                     header
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(group.title)
+                .accessibilityLabel(summaryText)
                 .accessibilityValue(accessibilityValue)
                 .accessibilityHint(isExpanded ? L10n.text("ui.collapse_this_stage_of_activities") : L10n.text("ui.expand_this_stage_of_activities"))
 
@@ -53,7 +68,7 @@ struct ConversationProcessGroupRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             statusMarker
 
-            Text(group.title)
+            Text(summaryText)
                 .font(themeStore.uiFont(.caption, weight: .medium))
                 .italic()
                 .foregroundStyle(headerTint)
@@ -84,6 +99,11 @@ struct ConversationProcessGroupRow: View {
                 .font(themeStore.uiFont(size: 5, weight: .semibold))
                 .foregroundStyle(tokens.secondaryText)
                 .frame(width: 14, height: 18)
+        case .interrupted:
+            Image(systemName: "stop.circle.fill")
+                .font(themeStore.uiFont(size: 11, weight: .semibold))
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: 14, height: 18)
         case .failed:
             Image(systemName: "exclamationmark.circle.fill")
                 .font(themeStore.uiFont(size: 11, weight: .semibold))
@@ -105,6 +125,12 @@ struct ConversationProcessGroupRow: View {
             state,
             L10n.plural("ui.activities_count", count: group.activities.count)
         )
+    }
+
+    private var summaryText: String {
+        [group.title, group.failureDetail]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 
     private var headerTint: Color {

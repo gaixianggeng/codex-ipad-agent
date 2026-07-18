@@ -1013,6 +1013,7 @@ struct AgentEventMetadata: Codable, Hashable {
     let clientMessageID: ClientMessageID?
     let revision: ModelRevision?
     let createdAt: Date?
+    let turnLifecycle: ConversationTurnLifecycle?
 
     enum CodingKeys: String, CodingKey {
         case seq
@@ -1023,6 +1024,43 @@ struct AgentEventMetadata: Codable, Hashable {
         case clientMessageID = "client_message_id"
         case revision
         case createdAt = "created_at"
+        case turnLifecycle = "turn_lifecycle"
+    }
+
+    init(
+        seq: EventSequence?,
+        sessionID: SessionID?,
+        turnID: TurnID?,
+        itemID: AgentItemID?,
+        messageID: MessageID?,
+        clientMessageID: ClientMessageID?,
+        revision: ModelRevision?,
+        createdAt: Date?,
+        turnLifecycle: ConversationTurnLifecycle? = nil
+    ) {
+        self.seq = seq
+        self.sessionID = sessionID
+        self.turnID = turnID
+        self.itemID = itemID
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.revision = revision
+        self.createdAt = createdAt
+        self.turnLifecycle = turnLifecycle
+    }
+
+    func withTurnLifecycle(_ lifecycle: ConversationTurnLifecycle) -> AgentEventMetadata {
+        AgentEventMetadata(
+            seq: seq,
+            sessionID: sessionID,
+            turnID: turnID,
+            itemID: itemID,
+            messageID: messageID,
+            clientMessageID: clientMessageID,
+            revision: revision,
+            createdAt: createdAt,
+            turnLifecycle: lifecycle
+        )
     }
 }
 

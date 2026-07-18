@@ -1273,8 +1273,24 @@ extension ConversationDataFlowTests {
         )
         let metadata = AgentEventMetadata.empty
         let completed = AgentMessage(id: "m1", sessionID: "s1", role: .system, kind: .commandSummary, content: "命令：ls", revision: 1)
+        let started = AgentMessage(
+            id: "m1",
+            sessionID: "s1",
+            role: .system,
+            kind: .commandSummary,
+            content: "命令：ls",
+            activityPayload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行命令",
+                status: "inProgress",
+                command: "ls",
+                commandPresentationKind: .execution
+            ),
+            revision: 1
+        )
 
         XCTAssertTrue(runtime.shouldReplayBufferedStateEvent(.processItemCompleted(completed, nil, metadata)))
+        XCTAssertFalse(runtime.shouldReplayBufferedStateEvent(.processItemCompleted(started, nil, metadata)))
         XCTAssertTrue(runtime.shouldReplayBufferedStateEvent(.messageCompleted(completed, metadata)))
         XCTAssertTrue(runtime.shouldReplayBufferedStateEvent(.turnCompleted(metadata)))
         XCTAssertFalse(runtime.shouldReplayBufferedStateEvent(.assistantDelta(AgentDelta(text: "t", role: .assistant, kind: .message), metadata)))

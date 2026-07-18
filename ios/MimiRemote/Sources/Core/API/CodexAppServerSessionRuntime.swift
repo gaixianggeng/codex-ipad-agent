@@ -734,10 +734,13 @@ actor CodexAppServerSessionRuntime {
         let authoritativeCompletedTurnItems = Self.authoritativeCompletedTurnItems(fromTurns: turns)
         var context: SessionContextSnapshot?
         if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
-            let recoveredCompletedTurnID = storeAuthoritativeTurnsSnapshot(session, thread: thread)
+            let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             context = session.context
-            if let recoveredCompletedTurnID {
-                emit(.turnCompleted(metadata(threadID: session.id, turnID: recoveredCompletedTurnID)))
+            if let recoveredTerminalTurn {
+                emit(.turnCompleted(
+                    metadata(threadID: session.id, turnID: recoveredTerminalTurn.turnID)
+                        .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
+                ))
             }
         }
         threadHistoryCacheBySessionID[sessionID] = messages
@@ -782,7 +785,7 @@ actor CodexAppServerSessionRuntime {
         // iPad 在 turn 结束后才恢复连接时，会错过实时 turn/completed，但分页历史已经能看到
         // 对应 turn 的终态。这里用最新一页的权威 turn 结果补回完成事件，避免消息已显示完成，
         // runtime 仍保留陈旧 activeTurnID，进而让后续输入永久卡在本地队列。
-        let recoveredCompletedTurnID = cursor == nil
+        let recoveredTerminalTurn = cursor == nil
             ? recoverCompletedActiveTurnFromLatestTurnsPage(
                 sessionID: sessionID,
                 turns: chronologicalTurns
@@ -799,8 +802,11 @@ actor CodexAppServerSessionRuntime {
             snapshotReadAt: Date()
         )
         let context = contextForHistoryThread(thread, sessionID: sessionID, projects: projects)
-        if let recoveredCompletedTurnID {
-            emit(.turnCompleted(metadata(threadID: sessionID, turnID: recoveredCompletedTurnID)))
+        if let recoveredTerminalTurn {
+            emit(.turnCompleted(
+                metadata(threadID: sessionID, turnID: recoveredTerminalTurn.turnID)
+                    .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
+            ))
         }
         let nextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
         return HistoryMessagesPage(
@@ -817,7 +823,7 @@ actor CodexAppServerSessionRuntime {
     func recoverCompletedActiveTurnFromLatestTurnsPage(
         sessionID: SessionID,
         turns: [[String: CodexAppServerJSONValue]]
-    ) -> TurnID? {
+    ) -> (turnID: TurnID, lifecycle: ConversationTurnLifecycle)? {
         guard var context = contextsBySessionID[sessionID],
               let activeTurnID = context.activeTurnID,
               let activeTurnIndex = turns.lastIndex(where: { $0["id"]?.stringValue == activeTurnID })
@@ -847,7 +853,14 @@ actor CodexAppServerSessionRuntime {
         context.session.pendingApproval = nil
         context.session.pendingUserInput = nil
         contextsBySessionID[sessionID] = context
-        return activeTurnID
+        return (
+            activeTurnID,
+            historyTurnLifecycle(
+                activeTurn,
+                isInProgress: false,
+                completedAt: firstDate(in: activeTurn, keys: ["completedAt", "completed_at"])
+            )
+        )
     }
 
     func threadMetadataForHistoryPage(
@@ -1213,11 +1226,14 @@ actor CodexAppServerSessionRuntime {
              .error,
              .unknown:
             return true
-        case .messageCompleted,
-             .processItemCompleted:
+        case .messageCompleted:
             // thread/read 快照不含 commandExecution 等过程 item；completed 内容事件必须补播，
             // 否则离开期间完成的命令卡会永久丢失。排序与去重由 ConversationStore 兜底。
             return true
+        case .processItemCompleted(let message, _, _):
+            // item/started 复用该事件类型以便当前页面立即看到运行态；stateOnly 恢复已经先加载
+            // thread/read 权威快照，不能让旧 started 再把已完成命令覆盖回 inProgress。
+            return message.activityPayload?.isInProgress != true
         case .assistantDelta,
              .logDelta,
              .diffUpdated:
@@ -1425,13 +1441,16 @@ actor CodexAppServerSessionRuntime {
             projects: (try? projectsFromCache()) ?? [],
             fallbackProject: nil
            ) {
-            let recoveredCompletedTurnID = storeAuthoritativeTurnsSnapshot(session, thread: thread)
+            let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(session, thread: thread)
             emit(.session(session))
-            if let recoveredCompletedTurnID {
+            if let recoveredTerminalTurn {
                 // 断线可能发生在最终 item/completed 与 turn/completed 之间。resume 返回的 turns
                 // 是当前连接的权威快照；确认旧 active turn 已进入终态后，补回完成事件，让上层
                 // 清理陈旧 activeTurnID 并继续发送本地排队消息。
-                emit(.turnCompleted(metadata(threadID: session.id, turnID: recoveredCompletedTurnID)))
+                emit(.turnCompleted(
+                    metadata(threadID: session.id, turnID: recoveredTerminalTurn.turnID)
+                        .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
+                ))
             }
         }
         threadsResumedOnConnection.insert(sessionID)
@@ -1440,9 +1459,9 @@ actor CodexAppServerSessionRuntime {
     func storeAuthoritativeTurnsSnapshot(
         _ session: AgentSession,
         thread: [String: CodexAppServerJSONValue]
-    ) -> TurnID? {
+    ) -> (turnID: TurnID, lifecycle: ConversationTurnLifecycle)? {
         let previouslyActiveTurnID = contextsBySessionID[session.id]?.activeTurnID
-        let recoveredCompletedTurnID = completedTurnConfirmedByAuthoritativeSnapshot(
+        let recoveredTerminalTurn = completedTurnConfirmedByAuthoritativeSnapshot(
             thread,
             previouslyActiveTurnID: previouslyActiveTurnID,
             currentActiveTurnID: session.activeTurnID
@@ -1452,14 +1471,14 @@ actor CodexAppServerSessionRuntime {
             cwd: session.dir,
             activeTurnID: session.activeTurnID
         )
-        return recoveredCompletedTurnID
+        return recoveredTerminalTurn
     }
 
     func completedTurnConfirmedByAuthoritativeSnapshot(
         _ thread: [String: CodexAppServerJSONValue],
         previouslyActiveTurnID: TurnID?,
         currentActiveTurnID: TurnID?
-    ) -> TurnID? {
+    ) -> (turnID: TurnID, lifecycle: ConversationTurnLifecycle)? {
         guard currentActiveTurnID == nil,
               let previouslyActiveTurnID,
               let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue),
@@ -1469,7 +1488,17 @@ actor CodexAppServerSessionRuntime {
         }
         let hasTerminalStatus = isTerminalHistoryStatus(previousTurn["status"])
         let hasCompletionTimestamp = firstDate(in: previousTurn, keys: ["completedAt", "completed_at"]) != nil
-        return hasTerminalStatus || hasCompletionTimestamp ? previouslyActiveTurnID : nil
+        guard hasTerminalStatus || hasCompletionTimestamp else {
+            return nil
+        }
+        return (
+            previouslyActiveTurnID,
+            historyTurnLifecycle(
+                previousTurn,
+                isInProgress: false,
+                completedAt: firstDate(in: previousTurn, keys: ["completedAt", "completed_at"])
+            )
+        )
     }
 
     func shouldFallbackFromInitialTurnsPage(_ error: Error) -> Bool {

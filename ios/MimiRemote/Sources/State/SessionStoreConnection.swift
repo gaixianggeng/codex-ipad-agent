@@ -836,12 +836,21 @@ extension SessionStore {
                 return nil
             }
             let token = metadata.turnID ?? metadata.messageID ?? metadata.seq.map(String.init) ?? "latest"
+            let notification: (prefix: String, titleKey: String, kind: SessionRuntimeNotification.Kind)
+            switch metadata.turnLifecycle {
+            case .failed:
+                notification = ("failed", "ui.session_failed", .failed)
+            case .interrupted:
+                notification = ("stopped", "ui.session_stopped", .completed)
+            default:
+                notification = ("completed", "ui.session_completed", .completed)
+            }
             return SessionRuntimeNotification(
-                id: "completed:\(sessionID):\(token)",
+                id: "\(notification.prefix):\(sessionID):\(token)",
                 sessionID: sessionID,
-                title: L10n.text("ui.session_completed"),
+                title: L10n.text(notification.titleKey),
                 body: sessionDisplayTitle(sessionID: sessionID),
-                kind: .completed
+                kind: notification.kind
             )
         case .sessionStatus(let status, let metadata) where status == "failed":
             let sessionID = metadata.sessionID ?? fallbackSessionID

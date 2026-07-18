@@ -140,7 +140,7 @@ extension ConversationDataFlowTests {
         transportResponse(
             transport,
             id: turnsRequest.id,
-            result: #"{"data":[{"id":"turn_page_recovery","status":"completed","startedAt":1780490300,"completedAt":1780490310,"itemsView":"full","items":[{"type":"userMessage","id":"user_page_recovery","content":[{"type":"text","text":"恢复前的问题"}]},{"type":"agentMessage","id":"assistant_page_recovery","text":"恢复后的最终回答","phase":"final_answer"}]}],"nextCursor":null}"#
+            result: #"{"data":[{"id":"turn_page_recovery","status":"failed","startedAt":1780490300,"completedAt":1780490310,"itemsView":"full","items":[{"type":"userMessage","id":"user_page_recovery","content":[{"type":"text","text":"恢复前的问题"}]},{"type":"agentMessage","id":"assistant_page_recovery","text":"恢复后的最终回答","phase":"final_answer"}]}],"nextCursor":null}"#
         )
         let page = try await pageTask.value
         await fulfillment(of: [recovered], timeout: 1)
@@ -149,6 +149,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(page.messages.map(\.content), ["恢复前的问题", "恢复后的最终回答"])
         XCTAssertEqual(recoveredMetadata?.sessionID, "thr_turn_page_recovery")
         XCTAssertEqual(recoveredMetadata?.turnID, "turn_page_recovery")
+        XCTAssertEqual(recoveredMetadata?.turnLifecycle, .failed)
+        XCTAssertEqual(Set(page.messages.compactMap(\.turnLifecycle)), [.failed])
         let sent = await transport.sentMessages()
         let requests = sent.compactMap { try? decodeAppServerRequest($0) }
         XCTAssertFalse(requests.contains { request in
@@ -844,7 +846,7 @@ extension ConversationDataFlowTests {
         transportResponse(
             transport,
             id: completedReadRequest.id,
-            result: #"{"thread":{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490202,"status":{"type":"idle"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"completed","completedAt":1780490202,"items":[]}]}}"#
+            result: #"{"thread":{"id":"thr_snapshot_completion","sessionId":"thr_snapshot_completion","preview":"快照恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490200,"updatedAt":1780490202,"status":{"type":"idle"},"path":null,"cwd":"/tmp/snapshot-completion","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"快照恢复","turns":[{"id":"turn_snapshot_old","status":"interrupted","completedAt":1780490202,"items":[]}]}}"#
         )
         _ = try await completedHistoryTask.value
         await fulfillment(of: [recovered], timeout: 1)
@@ -852,6 +854,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(recoveredMetadata?.sessionID, "thr_snapshot_completion")
         XCTAssertEqual(recoveredMetadata?.turnID, "turn_snapshot_old")
+        XCTAssertEqual(recoveredMetadata?.turnLifecycle, .interrupted)
     }
 
     func testCodexAppServerSessionRuntimeRetiresConnectionAfterTurnStartTimeout() async throws {
@@ -1307,6 +1310,8 @@ extension ConversationDataFlowTests {
 
     func testCodexAppServerProjectorMapsCommonNotifications() throws {
         var projector = CodexAppServerEventProjector()
+        var startedCommandMessage: AgentMessage?
+        var startedCommandMetadata: AgentEventMetadata?
 
         let started = try decodeAppServerNotification(#"{"method":"turn/started","params":{"threadId":"thr_demo","turn":{"id":"turn_demo"}}}"#)
         if case .turnStarted(let meta) = try XCTUnwrap(projector.project(started)) {
@@ -1326,13 +1331,19 @@ extension ConversationDataFlowTests {
         }
 
         let commandStarted = try decodeAppServerNotification(#"{"method":"item/started","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"commandExecution","id":"cmd_1","command":"go test ./...","cwd":"/tmp/demo","status":"inProgress"}}}"#)
-        if case .sessionContext(let context, let meta) = try XCTUnwrap(projector.project(commandStarted)) {
+        if case .processItemCompleted(let message, let context, let meta) = try XCTUnwrap(projector.project(commandStarted)) {
             XCTAssertEqual(meta.sessionID, "thr_demo")
-            XCTAssertEqual(context.tasks.first?.kind, "command")
-            XCTAssertEqual(context.tasks.first?.title, "go test ./...")
-            XCTAssertEqual(context.tasks.first?.status, "inProgress")
+            XCTAssertEqual(message.id, "appserver:turn_demo:cmd_1")
+            XCTAssertEqual(message.kind, .commandSummary)
+            XCTAssertEqual(message.activityPayload?.status, "inProgress")
+            XCTAssertEqual(message.activityPayload?.commandPresentationKind, .execution)
+            XCTAssertEqual(context?.tasks.first?.kind, "command")
+            XCTAssertEqual(context?.tasks.first?.title, "go test ./...")
+            XCTAssertEqual(context?.tasks.first?.status, "inProgress")
+            startedCommandMessage = message
+            startedCommandMetadata = meta
         } else {
-            XCTFail("Expected command started sessionContext")
+            XCTFail("Expected visible command process item at start")
         }
 
         let completed = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"agentMessage","id":"assistant_1","text":"hello world"}}}"#)
@@ -1368,18 +1379,35 @@ extension ConversationDataFlowTests {
             XCTFail("Expected plan processItemCompleted")
         }
 
-        let commandCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"commandExecution","id":"cmd_1","command":"go test ./...","cwd":"/tmp/demo","status":"completed","commandActions":[{"name":"read","path":"README.md"}],"aggregatedOutput":"ok","exitCode":0}}}"#)
-        if case .processItemCompleted(let message, let context, _) = try XCTUnwrap(projector.project(commandCompleted)) {
+        let commandCompleted = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"commandExecution","id":"cmd_1","command":"go test ./...","cwd":"/tmp/demo","status":"completed","commandActions":[{"type":"read","command":"sed -n '1,80p' README.md","name":"sed","path":"README.md"}],"aggregatedOutput":"ok","exitCode":0}}}"#)
+        if case .processItemCompleted(let message, let context, let completedMetadata) = try XCTUnwrap(projector.project(commandCompleted)) {
+            XCTAssertEqual(message.id, startedCommandMessage?.id, "started/completed 必须原位更新同一条时间线消息")
             XCTAssertEqual(message.role, .system)
             XCTAssertEqual(message.kind, .commandSummary)
             XCTAssertTrue(message.content.contains("命令：go test ./..."))
             XCTAssertTrue(message.content.contains("输出：\nok"))
             XCTAssertEqual(message.activityPayload?.category, .runCommand)
             XCTAssertEqual(message.activityPayload?.displayTitle, "查看 README.md")
+            XCTAssertEqual(message.activityPayload?.commandPresentationKind, .exploration)
             XCTAssertEqual(message.activityPayload?.cwd, "/tmp/demo")
             XCTAssertEqual(message.activityPayload?.exitCode, 0)
             XCTAssertEqual(context?.tasks.first?.kind, "command")
             XCTAssertEqual(context?.tasks.first?.status, "completed")
+
+            let store = ConversationStore()
+            let startMessage = try XCTUnwrap(startedCommandMessage)
+            let startMetadata = try XCTUnwrap(startedCommandMetadata)
+            store.completeMessage(startMessage, metadata: startMetadata, fallbackSessionID: "thr_demo")
+            let runningConversation = try XCTUnwrap(store.messages(for: "thr_demo").first)
+            let runningUUID = runningConversation.id
+            let runningBatchID = try XCTUnwrap(ConversationTimelineItemBuilder.items(from: [runningConversation]).first?.id)
+            XCTAssertTrue(runningConversation.activityPayload?.isInProgress == true)
+
+            store.completeMessage(message, metadata: completedMetadata, fallbackSessionID: "thr_demo")
+            let completedConversation = try XCTUnwrap(store.messages(for: "thr_demo").first)
+            XCTAssertEqual(completedConversation.id, runningUUID)
+            XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [completedConversation]).first?.id, runningBatchID)
+            XCTAssertFalse(completedConversation.activityPayload?.isInProgress == true)
         } else {
             XCTFail("Expected command processItemCompleted")
         }

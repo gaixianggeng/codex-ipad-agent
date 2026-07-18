@@ -227,17 +227,19 @@ actor EventReducer {
             output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: skipped))
         case .turnCompleted(let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
-            output.statusUpdates.append((id, SessionStatus.completed.rawValue))
+            let lifecycle = metadata.turnLifecycle ?? .completed
+            let sessionStatus = lifecycle == .failed ? SessionStatus.failed : .completed
+            output.statusUpdates.append((id, sessionStatus.rawValue))
             output.pendingApprovalUpdates.append((id, nil))
             output.pendingUserInputUpdates.append((id, nil))
             output.contextUpdates.append((
-                SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: SessionStatus.completed.rawValue), updatedAt: Date()),
+                SessionContextSnapshot(sessionID: id, status: SessionContextStatus(type: sessionStatus.rawValue), updatedAt: Date()),
                 id
             ))
             output.pendingApprovalTaskClears.append(id)
             output.messageMutations.append(.resolveLatestPendingApproval(id))
             output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
-            output.messageMutations.append(.turnLifecycle(.completed, metadata, fallbackSessionID))
+            output.messageMutations.append(.turnLifecycle(lifecycle, metadata, fallbackSessionID))
             output.messageMutations.append(.markCurrentAssistantCompleted(metadata, fallbackSessionID))
             output.activeTurnMutations.append(.clear(id, metadata.turnID))
             output.foregroundClears.append(id)

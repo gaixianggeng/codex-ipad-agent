@@ -18,7 +18,7 @@ struct ConversationTimelineView: View {
     @State private var hasUnseenTailMessage = false
     @State private var isPreservingHistoryScroll = false
     @State private var expandedActivityIDs: Set<String> = []
-    @State private var expandedProcessGroupIDs: Set<String> = []
+    @State private var expandedActivityGroupIDs: Set<String> = []
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var pendingTailScrollTask: Task<Void, Never>?
     @State private var tailScrollAttemptGeneration = 0
@@ -150,7 +150,7 @@ struct ConversationTimelineView: View {
                 isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
                 expandedActivityIDs.removeAll()
-                expandedProcessGroupIDs.removeAll()
+                expandedActivityGroupIDs.removeAll()
                 timelineItemCache.removeAll()
                 cancelPendingTailScrollAttempts()
                 if newID != nil {
@@ -166,6 +166,11 @@ struct ConversationTimelineView: View {
             }
             .onChange(of: messages.last?.id) { _, newID in
                 guard newID != nil else {
+                    return
+                }
+                // 首条活动会通过 timelineItemIDs 插入并触发尾部跟随；同一批次后续命令
+                // 只更新摘要，不再为每个底层消息重复发起滚动。
+                if !Self.shouldScheduleTailFollowForNewTailMessage(messages.last) {
                     return
                 }
                 if Self.shouldForceTailFollow(forNewTailMessage: messages.last) {
@@ -205,7 +210,11 @@ struct ConversationTimelineView: View {
                 )
             }
             .onChange(of: messages.last?.renderFingerprint) { _, _ in
-                // 流式增量会高频改写最后一条内容；请求会自动合并，同一更新周期只滚一次。
+                // 只有助手正文流式增长才需要持续贴底。命令 stdout/stderr 已保存在详情中，
+                // 折叠状态下不应驱动滚动请求，否则会形成“日志一条、列表一顿”的观感。
+                guard messages.last?.role == .assistant else {
+                    return
+                }
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
@@ -217,7 +226,7 @@ struct ConversationTimelineView: View {
                 )
             }
             .onChange(of: timelineItemIDs) { _, _ in
-                // 新探索组或独立进度行出现时，只有用户原本贴底才继续跟随。
+                // 新活动批次或独立进度行出现时，只有用户原本贴底才继续跟随。
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
@@ -276,17 +285,14 @@ struct ConversationTimelineView: View {
                 }
             )
                 .equatable()
-        case .exploration(let group):
-            ConversationExplorationRow(group: group, layout: layout)
-                .equatable()
-        case .processGroup(let group):
-            ConversationProcessGroupRow(
+        case .activityBatch(let group):
+            ConversationActivityBatchRow(
                 group: group,
                 layout: layout,
-                isExpanded: expandedProcessGroupIDs.contains(group.id),
+                isExpanded: expandedActivityGroupIDs.contains(group.id),
                 expandedActivityIDs: expandedActivityIDs,
                 toggleGroup: {
-                    toggleProcessGroup(groupID: group.id, proxy: proxy)
+                    toggleActivityGroup(groupID: group.id, proxy: proxy)
                 },
                 toggleActivity: { message in
                     toggleActivityDetails(
@@ -296,6 +302,25 @@ struct ConversationTimelineView: View {
                     )
                 }
             )
+                .equatable()
+        case .processGroup(let group):
+            ConversationProcessGroupRow(
+                group: group,
+                layout: layout,
+                isExpanded: expandedActivityGroupIDs.contains(group.id),
+                expandedActivityIDs: expandedActivityIDs,
+                toggleGroup: {
+                    toggleActivityGroup(groupID: group.id, proxy: proxy)
+                },
+                toggleActivity: { message in
+                    toggleActivityDetails(
+                        itemID: ConversationTimelineItem.activityID(for: message),
+                        scrollAnchorID: group.id,
+                        proxy: proxy
+                    )
+                }
+            )
+            .equatable()
         }
     }
 
@@ -326,13 +351,13 @@ struct ConversationTimelineView: View {
         }
     }
 
-    private func toggleProcessGroup(groupID: String, proxy: ScrollViewProxy) {
-        let isExpanding = !expandedProcessGroupIDs.contains(groupID)
+    private func toggleActivityGroup(groupID: String, proxy: ScrollViewProxy) {
+        let isExpanding = !expandedActivityGroupIDs.contains(groupID)
         let updateExpansion = {
             if isExpanding {
-                expandedProcessGroupIDs.insert(groupID)
+                expandedActivityGroupIDs.insert(groupID)
             } else {
-                expandedProcessGroupIDs.remove(groupID)
+                expandedActivityGroupIDs.remove(groupID)
             }
         }
         if accessibilityReduceMotion {
@@ -348,7 +373,7 @@ struct ConversationTimelineView: View {
         }
         Task { @MainActor in
             await Task.yield()
-            guard expandedProcessGroupIDs.contains(groupID) else {
+            guard expandedActivityGroupIDs.contains(groupID) else {
                 return
             }
             var transaction = Transaction()
@@ -400,6 +425,10 @@ struct ConversationTimelineView: View {
         return message.role == .user
             && message.kind == .message
             && message.clientMessageID != nil
+    }
+
+    static func shouldScheduleTailFollowForNewTailMessage(_ message: ConversationMessage?) -> Bool {
+        message?.role != .system
     }
 
     static func shouldAttemptTailScroll(

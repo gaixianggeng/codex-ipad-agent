@@ -379,7 +379,8 @@ struct CodexAppServerEventProjector {
             )
         case "item/started":
             rememberAgentMessageKind(from: params, metadata: metadata)
-            return itemContextEvent(params: params, metadata: metadata)
+            return startedCommandItemEvent(params: params, metadata: metadata)
+                ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
             return completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
@@ -399,7 +400,7 @@ struct CodexAppServerEventProjector {
              "turn/diff/updated":
             return fileChangeContextEvent(params: params, metadata: metadata)
         case "turn/completed":
-            return .turnCompleted(metadata)
+            return .turnCompleted(metadata.withTurnLifecycle(turnLifecycle(from: params)))
         case "serverRequest/resolved":
             return .approvalResolved(metadata)
         case "warning":
@@ -810,6 +811,43 @@ struct CodexAppServerEventProjector {
             )
         }
         return .processItemCompleted(message, context, metadata)
+    }
+
+    private func startedCommandItemEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard var item = params["item"]?.objectValue,
+              firstString(in: item, keys: ["type"]) == "commandExecution"
+        else {
+            return nil
+        }
+        // started 可能早于 status 字段到达。先投影一条可见的运行中消息，completed 再用
+        // 同一 stable message ID 原位覆盖，避免长命令期间页面看起来没有反馈。
+        if firstString(in: item, keys: ["status"]) == nil {
+            item["status"] = .string("inProgress")
+        }
+        var normalizedParams = params
+        normalizedParams["item"] = .object(item)
+        return completedProcessItemEvent(params: normalizedParams, metadata: metadata)
+    }
+
+    private func turnLifecycle(
+        from params: [String: CodexAppServerJSONValue]
+    ) -> ConversationTurnLifecycle {
+        let turn = params["turn"]?.objectValue
+        let raw = firstString(in: turn ?? params, keys: ["status"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch raw {
+        case "failed", "failure", "systemerror", "system_error":
+            return .failed
+        case "interrupted", "cancelled", "canceled", "aborted":
+            return .interrupted
+        default:
+            // 兼容旧 app-server 只携带 threadId/turnId 的完成通知。
+            return .completed
+        }
     }
 
     private func itemContextEvent(

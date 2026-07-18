@@ -1247,7 +1247,7 @@ extension CodexAppServerSessionRuntime {
             ?? value?.objectValue?["type"]?.stringValue
             ?? value?.objectValue?["status"]?.stringValue
         switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "completed", "complete", "succeeded", "success", "failed", "failure", "cancelled", "canceled":
+        case "completed", "complete", "succeeded", "success", "failed", "failure", "interrupted", "cancelled", "canceled", "aborted":
             return true
         default:
             return false

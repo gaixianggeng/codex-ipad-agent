@@ -8,7 +8,8 @@ enum ConversationProcessElement: Equatable {
 struct ConversationProcessGrouper {
     static func elements(
         from messages: [ConversationMessage],
-        turnCompleted: Bool
+        turnLifecycle: ConversationTurnLifecycle,
+        keepsRunningWhileTurnIsActive: Bool
     ) -> [ConversationProcessElement] {
         var result: [ConversationProcessElement] = []
         var groupAnchor: ConversationMessage?
@@ -32,23 +33,18 @@ struct ConversationProcessGrouper {
                 result.append(contentsOf: pendingActivities.map(ConversationProcessElement.activity))
                 return
             }
-            let allMessages = [header] + pendingActivities
-            let status: ConversationProcessGroupStatus
-            if allMessages.contains(where: { $0.activityPayload?.isFailure == true }) {
-                status = .failed
-            } else if turnCompleted {
-                // reasoning 增量本身可能一直保留 inProgress；turn 完成是更可靠的终态信号。
-                status = .completed
-            } else {
-                status = .running
-            }
             result.append(.group(ConversationProcessGroup(
                 // 标题会随最新 reasoning 更新，但 identity 锚定本批次首个 item，避免展开状态跳变。
                 id: "process:\(anchor.id.uuidString)",
                 turnID: turnID,
                 header: header,
                 activities: pendingActivities,
-                status: status
+                // 子命令失败不代表整个 turn 失败；恢复中的失败只作为组内弱提示。
+                status: .resolve(
+                    turnLifecycle: turnLifecycle,
+                    activities: pendingActivities,
+                    keepsRunningWhileTurnIsActive: keepsRunningWhileTurnIsActive
+                )
             )))
         }
 

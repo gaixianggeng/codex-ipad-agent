@@ -74,10 +74,11 @@ final class ConversationProcessGrouperTests: XCTestCase {
             return XCTFail("commentary 必须保持正文，不能作为阶段标题")
         }
         XCTAssertEqual(visibleCommentary.kind, .commentary)
-        guard case .activity(let visibleCommand) = items[1] else {
-            return XCTFail("没有 reasoning 标题时命令必须保持独立")
+        guard case .activityBatch(let visibleCommands) = items[1] else {
+            return XCTFail("没有 reasoning 标题时命令应进入稳定活动批次")
         }
-        XCTAssertEqual(visibleCommand.stableID, "command-commentary")
+        XCTAssertEqual(visibleCommands.messages.map(\.stableID), ["command-commentary"])
+        XCTAssertEqual(visibleCommands.status, .completed)
     }
 
     func testLatestReasoningUpdatesSingleGroupWithoutChangingIdentity() throws {
@@ -125,10 +126,10 @@ final class ConversationProcessGrouperTests: XCTestCase {
         let items = ConversationTimelineItemBuilder.items(from: [reasoning, otherTurnCommand])
 
         XCTAssertEqual(items.count, 1)
-        guard case .activity(let standaloneCommand) = items[0] else {
-            return XCTFail("跨 turn 命令不应并入上一阶段")
+        guard case .activityBatch(let standaloneCommand) = items[0] else {
+            return XCTFail("跨 turn 命令应进入自己的活动批次")
         }
-        XCTAssertEqual(standaloneCommand.stableID, "command-turn-b")
+        XCTAssertEqual(standaloneCommand.messages.map(\.stableID), ["command-turn-b"])
     }
 
     func testResolvedInteractionCanJoinGroupButPendingInteractionEndsIt() {
@@ -158,7 +159,8 @@ final class ConversationProcessGrouperTests: XCTestCase {
 
         let pendingElements = ConversationProcessGrouper.elements(
             from: [reasoning, command, pending],
-            turnCompleted: false
+            turnLifecycle: .inProgress,
+            keepsRunningWhileTurnIsActive: true
         )
         guard pendingElements.count == 2,
               case .group = pendingElements[0],
@@ -277,6 +279,53 @@ final class ConversationProcessGrouperTests: XCTestCase {
         }
         XCTAssertEqual(visibleFinal.stableID, "assistant-final-boundary")
         XCTAssertEqual(try processGroup(in: items, at: 2).activities.map(\.stableID), ["command-after-final"])
+    }
+
+    func testRecoverableChildFailureDoesNotFailWholeProcessGroup() throws {
+        let reasoning = makeReasoning(id: "reasoning-recovery", turnID: "turn-recovery", text: "继续尝试其他路径")
+        let failedCommand = makeActivity(
+            id: "command-recovery",
+            turnID: "turn-recovery",
+            kind: .commandSummary,
+            payload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行候选命令",
+                status: "failed",
+                exitCode: 127
+            )
+        )
+
+        let running = ConversationProcessGrouper.elements(
+            from: [reasoning, failedCommand],
+            turnLifecycle: .inProgress,
+            keepsRunningWhileTurnIsActive: true
+        )
+        guard case .group(let runningGroup) = running.first else {
+            return XCTFail("恢复中的失败命令应保留在过程组中")
+        }
+        XCTAssertEqual(runningGroup.status, .running)
+        XCTAssertEqual(runningGroup.failedCount, 1)
+
+        let completed = ConversationProcessGrouper.elements(
+            from: [reasoning, failedCommand],
+            turnLifecycle: .completed,
+            keepsRunningWhileTurnIsActive: false
+        )
+        guard case .group(let completedGroup) = completed.first else {
+            return XCTFail("成功恢复后仍应保留过程组")
+        }
+        XCTAssertEqual(completedGroup.status, .completed)
+        XCTAssertEqual(completedGroup.failedCount, 1)
+
+        let failed = ConversationProcessGrouper.elements(
+            from: [reasoning, failedCommand],
+            turnLifecycle: .failed,
+            keepsRunningWhileTurnIsActive: false
+        )
+        guard case .group(let failedGroup) = failed.first else {
+            return XCTFail("turn 失败后仍应保留过程组")
+        }
+        XCTAssertEqual(failedGroup.status, .failed)
     }
 
     func testReasoningSummaryDeltaCarriesThinkingPayload() throws {

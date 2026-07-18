@@ -1490,6 +1490,13 @@ enum ConversationActivityCategory: String, Codable, Hashable {
     case error
 }
 
+/// 命令在主时间线中的展示语义。协议能明确给出只读动作时展示为探索，
+/// 其余命令统一视为执行；不要再通过已经本地化的标题反推语义。
+enum ConversationCommandPresentationKind: String, Codable, Hashable {
+    case exploration
+    case execution
+}
+
 struct ConversationActivityPayload: Codable, Hashable {
     let category: ConversationActivityCategory
     let displayTitle: String
@@ -1503,6 +1510,7 @@ struct ConversationActivityPayload: Codable, Hashable {
     let outputPreview: String?
     let outputDigest: UInt64?
     let outputByteCount: Int?
+    let commandPresentationKind: ConversationCommandPresentationKind?
 
     enum CodingKeys: String, CodingKey {
         case category
@@ -1517,6 +1525,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         case outputPreview = "output_preview"
         case outputDigest = "output_digest"
         case outputByteCount = "output_byte_count"
+        case commandPresentationKind = "command_presentation_kind"
     }
 
     init(
@@ -1531,7 +1540,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         exitCode: Int? = nil,
         outputPreview: String? = nil,
         outputDigest: UInt64? = nil,
-        outputByteCount: Int? = nil
+        outputByteCount: Int? = nil,
+        commandPresentationKind: ConversationCommandPresentationKind? = nil
     ) {
         self.category = category
         self.displayTitle = displayTitle
@@ -1545,6 +1555,29 @@ struct ConversationActivityPayload: Codable, Hashable {
         self.outputPreview = outputPreview
         self.outputDigest = outputDigest
         self.outputByteCount = outputByteCount
+        self.commandPresentationKind = commandPresentationKind
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        category = try container.decode(ConversationActivityCategory.self, forKey: .category)
+        displayTitle = try container.decode(String.self, forKey: .displayTitle)
+        subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        command = try container.decodeIfPresent(String.self, forKey: .command)
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        filePaths = try container.decodeIfPresent([String].self, forKey: .filePaths) ?? []
+        exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
+        outputPreview = try container.decodeIfPresent(String.self, forKey: .outputPreview)
+        outputDigest = try container.decodeIfPresent(UInt64.self, forKey: .outputDigest)
+        outputByteCount = try container.decodeIfPresent(Int.self, forKey: .outputByteCount)
+        // 服务端未来增加枚举值时，旧客户端仍应能加载历史；未知值保守按执行类展示。
+        if let rawKind = try container.decodeIfPresent(String.self, forKey: .commandPresentationKind) {
+            commandPresentationKind = ConversationCommandPresentationKind(rawValue: rawKind) ?? .execution
+        } else {
+            commandPresentationKind = nil
+        }
     }
 
     init?(item: [String: CodexAppServerJSONValue]) {
@@ -1567,7 +1600,8 @@ struct ConversationActivityPayload: Codable, Hashable {
 
         case "commandExecution":
             let command = Self.firstString(in: item, keys: ["command", "processId"])?.trimmedNonEmpty ?? L10n.text("ui.command_execution")
-            let actionTitle = Self.commandActionTitle(from: item["commandActions"]?.arrayValue)
+            let commandActions = item["commandActions"]?.arrayValue
+            let actionTitle = Self.commandActionTitle(from: commandActions)
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty
             let cwd = Self.firstString(in: item, keys: ["cwd"])?.trimmedNonEmpty
             let output = Self.firstString(in: item, keys: ["aggregatedOutput"])?.trimmedNonEmpty
@@ -1583,7 +1617,8 @@ struct ConversationActivityPayload: Codable, Hashable {
                 exitCode: Self.firstInt(in: item, keys: ["exitCode"]),
                 outputPreview: output.map { Self.truncatedText($0, limit: Self.outputPreviewLimit) },
                 outputDigest: outputDigest,
-                outputByteCount: outputByteCount
+                outputByteCount: outputByteCount,
+                commandPresentationKind: Self.commandPresentationKind(from: commandActions)
             )
 
         case "fileChange":
@@ -1728,6 +1763,7 @@ struct ConversationActivityPayload: Codable, Hashable {
             && lhs.exitCode == rhs.exitCode
             && lhs.outputDigest == rhs.outputDigest
             && lhs.outputByteCount == rhs.outputByteCount
+            && lhs.commandPresentationKind == rhs.commandPresentationKind
     }
 
     func hash(into hasher: inout Hasher) {
@@ -1742,6 +1778,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         hasher.combine(exitCode)
         hasher.combine(outputDigest)
         hasher.combine(outputByteCount)
+        hasher.combine(commandPresentationKind)
     }
 
     private var commandSummaryText: String {
@@ -1805,13 +1842,36 @@ struct ConversationActivityPayload: Codable, Hashable {
 
     private static func commandActionTitle(from actions: [CodexAppServerJSONValue]?) -> String? {
         for action in actions?.compactMap(\.objectValue) ?? [] {
-            if let query = firstString(in: action, keys: ["query"])?.trimmedNonEmpty {
+            let discriminator = normalizedActionDiscriminator(
+                firstString(in: action, keys: ["type", "kind"])?.trimmedNonEmpty
+            )
+            let query = firstString(in: action, keys: ["query"])?.trimmedNonEmpty
+            let path = firstString(in: action, keys: ["path", "file", "filePath", "relativePath"])?.trimmedNonEmpty
+
+            // 官方 CommandAction 以 type 为判别字段；Read 的 name 可能是 sed/cat，
+            // 不能优先拿 name 判断，否则只读命令会被误标为执行命令。
+            if let discriminator {
+                switch discriminator {
+                case "read":
+                    return path.map { "\(L10n.text("ui.view")) \(shortPath($0))" } ?? L10n.text("ui.view")
+                case "listfiles":
+                    return path.map { "\(L10n.text("ui.list")) \(shortPath($0))" } ?? L10n.text("ui.list")
+                case "search":
+                    if let query {
+                        return L10n.format("ui.search_query", query)
+                    }
+                    return path.map { "\(L10n.text("ui.search")) \(shortPath($0))" } ?? L10n.text("ui.search")
+                default:
+                    // unknown 表示协议无法结构化解析，不直接泄漏给用户。
+                    return L10n.text("ui.run_command")
+                }
+            }
+
+            // 兼容旧 gateway 曾使用的 name/query/path 结构。
+            if let query {
                 return L10n.format("ui.search_query", query)
             }
-            let name = firstString(in: action, keys: ["name", "type", "kind"])?.trimmedNonEmpty
-            let path = firstString(in: action, keys: ["path", "file", "filePath", "relativePath"])?.trimmedNonEmpty
-            // app-server 会把无法结构化解析的 shell 命令标记为 Unknown。
-            // 该值只描述协议解析结果，不是面向用户的动作名称；详细命令仍由 command 字段展示。
+            let name = firstString(in: action, keys: ["name"])?.trimmedNonEmpty
             if name != nil, localizedActionVerb(name) == nil {
                 return L10n.text("ui.run_command")
             }
@@ -1826,17 +1886,52 @@ struct ConversationActivityPayload: Codable, Hashable {
         return nil
     }
 
+    private static func commandPresentationKind(
+        from actions: [CodexAppServerJSONValue]?
+    ) -> ConversationCommandPresentationKind {
+        let actionObjects = actions?.compactMap(\.objectValue) ?? []
+        guard !actionObjects.isEmpty else {
+            return .execution
+        }
+        let onlyExplorationActions = actionObjects.allSatisfy { action in
+            if let discriminator = normalizedActionDiscriminator(
+                firstString(in: action, keys: ["type", "kind"])?.trimmedNonEmpty
+            ) {
+                return discriminator == "read" || discriminator == "listfiles" || discriminator == "search"
+            }
+            if firstString(in: action, keys: ["query"])?.trimmedNonEmpty != nil {
+                return true
+            }
+            let name = firstString(in: action, keys: ["name"])?.trimmedNonEmpty
+            if localizedActionVerb(name) != nil {
+                return true
+            }
+            let path = firstString(in: action, keys: ["path", "file", "filePath", "relativePath"])?.trimmedNonEmpty
+            return name == nil && path != nil
+        }
+        return onlyExplorationActions ? .exploration : .execution
+    }
+
     private static func localizedActionVerb(_ value: String?) -> String? {
-        switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch normalizedActionDiscriminator(value) {
         case "read", "view", "open", "cat":
             return L10n.text("ui.view")
         case "search", "grep", "rg", "find":
             return L10n.text("ui.search")
-        case "list", "ls":
+        case "list", "listfiles", "ls":
             return L10n.text("ui.list")
         default:
             return nil
         }
+    }
+
+    private static func normalizedActionDiscriminator(_ value: String?) -> String? {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .trimmedNonEmpty
     }
 
     private static func toolTitle(from item: [String: CodexAppServerJSONValue], type: String) -> String {
