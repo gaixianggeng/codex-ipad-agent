@@ -30,6 +30,7 @@ pub use alleycat_bridge_core::pool::{
     DEFAULT_IDLE_TTL, DEFAULT_MAX_PROCESSES, PoolError, ThreadId,
 };
 use alleycat_bridge_core::{LocalLauncher, ProcessLauncher};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 pub use claude_protocol::*;
@@ -56,6 +57,9 @@ pub struct ClaudePool {
     claude_bin: PathBuf,
     policy: PoolPolicy,
     launcher: Arc<dyn ProcessLauncher>,
+    /// 同一时刻只允许一个新进程完成“检查 + 启动 + 入池”，避免两个首轮消息
+    /// 同时命中空池时为同一个 thread 重复启动 Claude。
+    spawn_lock: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for ClaudePool {
@@ -122,6 +126,7 @@ impl ClaudePool {
             claude_bin: claude_bin.into(),
             policy,
             launcher,
+            spawn_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -157,11 +162,10 @@ impl ClaudePool {
         Ok((thread_id, handle))
     }
 
-    /// Spawn a fresh claude process bound to `cwd` for an explicit
+    /// Get or spawn a claude process bound to `cwd` for an explicit
     /// `thread_id`, e.g. when resuming a thread that already exists in the
-    /// bridge index. Errors if the pool already tracks `thread_id` —
-    /// callers should `get` first and only fall back to acquire if the
-    /// existing process exited.
+    /// bridge index. Concurrent acquires for the same thread converge on the
+    /// first process that enters the pool.
     pub async fn acquire_for_resume(
         &self,
         thread_id: ThreadId,
@@ -170,6 +174,21 @@ impl ClaudePool {
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
         self.spawn_with_capacity_check(thread_id, cwd.as_ref(), true, model, append_system_prompt)
+            .await
+    }
+
+    /// Get or spawn the process needed by a lazily-created thread. `resume`
+    /// selects `--resume` for an existing transcript and `--session-id` for
+    /// a brand-new thread.
+    pub async fn acquire_for_thread(
+        &self,
+        thread_id: ThreadId,
+        cwd: impl AsRef<Path>,
+        resume: bool,
+        model: Option<String>,
+        append_system_prompt: Option<String>,
+    ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
+        self.spawn_with_capacity_check(thread_id, cwd.as_ref(), resume, model, append_system_prompt)
             .await
     }
 
@@ -259,6 +278,11 @@ impl ClaudePool {
         model: Option<String>,
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
+        let _spawn_guard = self.spawn_lock.lock().await;
+        if let Some(handle) = self.inner.get(&thread_id).await {
+            return Ok(handle);
+        }
+
         self.inner.ensure_capacity_for(&thread_id).await?;
 
         let config = ClaudeSpawnConfig {

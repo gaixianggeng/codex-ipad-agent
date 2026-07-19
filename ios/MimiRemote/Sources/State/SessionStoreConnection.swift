@@ -1216,6 +1216,7 @@ extension SessionStore {
         removeShowingAllSessionProjectID(project.id)
         sessionPageCursorByProjectID.removeValue(forKey: project.id)
         sessionHasMoreByProjectID.removeValue(forKey: project.id)
+        sessionProjectsWithAdditionalPages.remove(project.id)
         sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
         clearSessionReminders(forProjectID: project.id)
@@ -1484,6 +1485,7 @@ extension SessionStore {
         frozenSessionOrderByProjectID = [:]
         sessionPageCursorByProjectID = [:]
         sessionHasMoreByProjectID = [:]
+        sessionProjectsWithAdditionalPages = []
         sessionPageRequestTokenByProjectID = [:]
         sessionPageLoadingTokenByProjectID = [:]
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }

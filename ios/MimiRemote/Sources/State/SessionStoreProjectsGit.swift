@@ -473,6 +473,7 @@ extension SessionStore {
         removeShowingAllSessionProjectID(project.id)
         sessionPageCursorByProjectID.removeValue(forKey: project.id)
         sessionHasMoreByProjectID.removeValue(forKey: project.id)
+        sessionProjectsWithAdditionalPages.remove(project.id)
         sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
         clearSessionReminders(forProjectID: project.id)
@@ -769,6 +770,7 @@ extension SessionStore {
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))
             updateSessionPageState(projectID: projectID, page: page)
+            sessionProjectsWithAdditionalPages.insert(projectID)
             clearWorkspaceUnavailable(projectID)
             setErrorMessage(nil)
         } catch {

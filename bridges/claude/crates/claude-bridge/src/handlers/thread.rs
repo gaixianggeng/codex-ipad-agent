@@ -79,11 +79,16 @@ pub async fn handle_thread_start(
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
     let system_prompt = defaults.system_prompt.clone();
 
-    let (thread_id, _handle) = state
-        .claude_pool()
-        .acquire_for_new_thread(&cwd, model.clone(), system_prompt)
-        .await
-        .map_err(ThreadError::pool)?;
+    let thread_id = if should_defer_process_start(state, &model, &system_prompt) {
+        Uuid::now_v7().to_string()
+    } else {
+        let (thread_id, _handle) = state
+            .claude_pool()
+            .acquire_for_new_thread(&cwd, model.clone(), system_prompt.clone())
+            .await
+            .map_err(ThreadError::pool)?;
+        thread_id
+    };
 
     // Real claude does not emit `system/init` until the first user message
     // arrives on stdin (verified empirically and against the Anthropic SDK).
@@ -188,14 +193,13 @@ pub async fn handle_thread_resume(
     let model = normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
     let system_prompt = defaults.system_prompt.clone();
 
-    let _handle = match state.claude_pool().get(&params.thread_id).await {
-        Some(h) => h,
-        None => state
+    if !should_defer_process_start(state, &model, &system_prompt) {
+        let _handle = state
             .claude_pool()
             .acquire_for_resume(params.thread_id.clone(), &cwd, model.clone(), system_prompt)
             .await
-            .map_err(ThreadError::pool)?,
-    };
+            .map_err(ThreadError::pool)?;
+    }
     // Init is deferred to the first `turn/start` — see handle_thread_start
     // for the rationale (claude only emits init after the first user
     // envelope arrives on stdin).
@@ -746,7 +750,11 @@ fn resolve_cwd(requested: Option<&str>) -> Result<PathBuf, ThreadError> {
     }
 }
 
-fn resume_cwd_or_fallback(persisted: &str, thread_id: &str, trust_persisted_cwd: bool) -> PathBuf {
+pub(crate) fn resume_cwd_or_fallback(
+    persisted: &str,
+    thread_id: &str,
+    trust_persisted_cwd: bool,
+) -> PathBuf {
     let original = PathBuf::from(persisted);
     if trust_persisted_cwd || original.is_dir() {
         return original;
@@ -761,6 +769,16 @@ fn resume_cwd_or_fallback(persisted: &str, thread_id: &str, trust_persisted_cwd:
         "persisted thread cwd is missing; falling back to home dir"
     );
     fallback
+}
+
+/// 本地空会话只写入索引，首个 turn 再承担 Claude CLI 冷启动成本。
+/// 远程 launcher 和带线程级配置的调用仍保持预启动，避免改变既有参数语义。
+fn should_defer_process_start(
+    state: &ConnectionState,
+    model: &Option<String>,
+    system_prompt: &Option<String>,
+) -> bool {
+    !state.trust_persisted_cwd() && model.is_none() && system_prompt.is_none()
 }
 
 async fn transcript_turns(

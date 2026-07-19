@@ -141,7 +141,6 @@ struct ProjectSidebarView: View {
 
                     if showsSessions && snapshot.isExpanded {
                         ProjectSessionRows(
-                            project: project,
                             snapshot: snapshot,
                             selectedSessionID: selectedSessionID,
                             isLoading: sessionStore.isLoading,
@@ -942,7 +941,6 @@ private struct ProjectSessionRows: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
-    let project: AgentProject
     let snapshot: ProjectSessionListSnapshot
     let selectedSessionID: SessionID?
     let isLoading: Bool
@@ -1042,34 +1040,6 @@ private struct ProjectSessionRows: View {
                 .sidebarListRow()
         }
 
-        if snapshot.shouldShowActionRow {
-            HStack(spacing: 6) {
-                if snapshot.isLoadingMore {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(tokens.tertiaryText)
-                } else {
-                    Image(systemName: snapshot.isShowingAll && !snapshot.canLoadMore ? "chevron.up" : "ellipsis")
-                        .font(themeStore.uiFont(size: 12, weight: .semibold))
-                }
-                Text(snapshot.actionTitle)
-                    .lineLimit(1)
-            }
-            .font(themeStore.uiFont(size: 12, weight: .medium))
-            .foregroundStyle(tokens.tertiaryText)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard !snapshot.isLoadingMore else {
-                        return
-                    }
-                    Task {
-                        await sessionStore.toggleSessionListExpansion(projectID: project.id)
-                    }
-                }
-                .padding(.leading, 38)
-                .padding(.vertical, 4)
-                .sidebarListRow()
-        }
     }
 }
 

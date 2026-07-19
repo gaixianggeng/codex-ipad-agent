@@ -1,8 +1,8 @@
 //! `turn/*` and `review/*` request handlers + the per-turn event pump.
 //!
 //! Flow on `turn/start`:
-//! 1. Look up the claude process for `thread_id` (no auto-spawn — caller
-//!    must `thread/start`/`thread/resume` first).
+//! 1. Look up the claude process for `thread_id`; a locally-created empty
+//!    thread starts its process lazily on the first valid user input.
 //! 2. Translate `UserInput[]` → claude stream-json user envelope and write
 //!    it to stdin.
 //! 3. Mint a fresh codex `turn_id`, register it in [`ACTIVE_TURNS`], and
@@ -35,7 +35,8 @@ use uuid::Uuid;
 use alleycat_codex_proto as p;
 
 use crate::approval;
-use crate::handlers::model::normalize_claude_model_id;
+use crate::handlers::model::{normalize_claude_model, normalize_claude_model_id};
+use crate::handlers::thread::resume_cwd_or_fallback;
 use crate::pool::ClaudeProcessHandle;
 use crate::pool::claude_protocol::{ClaudeEvent, ClaudeOutbound, ControlRequestBody};
 use crate::pool::process::ClaudeProcessError;
@@ -150,14 +151,42 @@ pub async fn handle_turn_start(
     state: &Arc<ConnectionState>,
     params: p::TurnStartParams,
 ) -> Result<p::TurnStartResponse, TurnError> {
-    let handle = state
-        .claude_pool()
-        .get(&params.thread_id)
-        .await
-        .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
-
     let envelope = translate_user_input(&params.input)
         .map_err(|e| TurnError::InputTranslation(e.to_string()))?;
+
+    let handle = match state.claude_pool().get(&params.thread_id).await {
+        Some(handle) => handle,
+        None => {
+            let entry = state
+                .thread_index()
+                .lookup(&params.thread_id)
+                .await
+                .ok_or_else(|| TurnError::ThreadNotLoaded(params.thread_id.clone()))?;
+            let cwd =
+                resume_cwd_or_fallback(&entry.cwd, &params.thread_id, state.trust_persisted_cwd());
+            let defaults = state.defaults();
+            let model =
+                normalize_claude_model(params.model.clone().or_else(|| defaults.model.clone()));
+            // 本地可直接以 transcript 是否存在区分新线程和恢复线程。远程线程仍会在
+            // thread/start/resume 预启动；这里的 preview 判断只负责进程意外退出后的兜底。
+            let resume = if state.trust_persisted_cwd() {
+                !entry.preview.trim().is_empty() || !state.thread_log(&params.thread_id).is_empty()
+            } else {
+                entry.metadata.claude_session_path.is_file()
+            };
+            state
+                .claude_pool()
+                .acquire_for_thread(
+                    params.thread_id.clone(),
+                    &cwd,
+                    resume,
+                    model,
+                    defaults.system_prompt.clone(),
+                )
+                .await
+                .map_err(|err| TurnError::ClaudeRpc(format!("starting claude process: {err:#}")))?
+        }
+    };
 
     // Apply per-turn runtime overrides via in-band control_requests BEFORE
     // writing the user envelope. The handle diffs against its cached state so

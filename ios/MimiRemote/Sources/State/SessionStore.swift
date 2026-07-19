@@ -199,6 +199,8 @@ final class SessionStore: ObservableObject {
     var frozenSessionOrderByProjectID: [String: [SessionID]] = [:]
     var sessionPageCursorByProjectID: [String: String] = [:]
     var sessionHasMoreByProjectID: [String: Bool] = [:]
+    /// 工作区详情独立于侧栏展开状态记录已经加载过旧页的项目，供下拉刷新保留分页窗口。
+    var sessionProjectsWithAdditionalPages: Set<String> = []
     var sessionPageRequestTokenByProjectID: [String: Int] = [:]
     var sessionPageLoadingTokenByProjectID: [String: Int] = [:]
     var sessionListFirstPageInFlightByKey: [SessionListFirstPageRequestKey: SessionListFirstPageInFlight] = [:]
@@ -243,7 +245,8 @@ final class SessionStore: ObservableObject {
     let historyPolicyRetryFallbackNanoseconds: UInt64 = 15_000_000_000
     let historyPolicyRetryMaxNanoseconds: UInt64 = 20_000_000_000
     static let optimisticSessionSource = "local"
-    static let sessionPreviewLimit = 3
+    /// 项目侧栏只承担快速切换职责；每个项目固定展示最近 5 条，完整历史在工作区页分页查看。
+    static let sessionPreviewLimit = 5
     static let sessionExpansionStep = 5
     // Tailscale 在弱网下可能经 Peer Relay 或 DERP 转发 thread/list 的较大响应。
     // 首屏先拿较小窗口，避免为了预览历史会话而卡住整个工作台。

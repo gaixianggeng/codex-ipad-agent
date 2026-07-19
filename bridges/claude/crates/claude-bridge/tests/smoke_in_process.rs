@@ -27,7 +27,7 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::timeout;
 
-use support::{NoopThreadIndex, fake_claude_path};
+use support::fake_claude_path;
 
 /// Cap on each individual request/notification wait. Generous enough that a
 /// loaded CI box doesn't false-positive but small enough that a real
@@ -38,15 +38,17 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(8);
 async fn initialize_thread_start_turn_start_against_fake_claude() {
     let cwd = TempDir::new().expect("cwd tempdir");
 
-    // Build the bridge state. The pool spawns `fake-claude`; the index is
-    // a noop because this test doesn't exercise list/read paths.
+    // Build the bridge state. Lazy first-turn startup resolves the cwd from
+    // the index, so this smoke test uses the same temp-backed index as prod.
     let claude_pool = Arc::new(ClaudePool::new(fake_claude_path()));
-    let thread_index: Arc<dyn ThreadIndexHandle> = Arc::new(NoopThreadIndex);
 
     // codex_home for the bridge's lifecycle handler — irrelevant for the
     // happy path but the API needs a writable directory.
     let codex_home_dir = TempDir::new().expect("codex_home tempdir");
     let codex_home = codex_home_dir.path().to_path_buf();
+    let thread_index: Arc<dyn ThreadIndexHandle> = ThreadIndex::open_and_hydrate(&codex_home)
+        .await
+        .expect("open thread index");
 
     // Duplex pair: `client_*` is the test driver's view; the bridge owns
     // the other half.
@@ -54,11 +56,12 @@ async fn initialize_thread_start_turn_start_against_fake_claude() {
     let (bridge_reader, bridge_writer) = tokio::io::split(bridge_io);
 
     // Spawn the bridge connection driver in the background.
+    let pool_for_bridge = Arc::clone(&claude_pool);
     let bridge_task = tokio::spawn(async move {
         run_connection(
             bridge_reader,
             bridge_writer,
-            claude_pool,
+            pool_for_bridge,
             thread_index,
             codex_home,
         )
@@ -123,6 +126,10 @@ async fn initialize_thread_start_turn_start_against_fake_claude() {
         .expect("thread.id")
         .to_string();
     assert!(!thread_id.is_empty(), "thread/start must mint a thread id");
+    assert!(
+        claude_pool.is_empty().await,
+        "empty local thread/start must not spawn claude"
+    );
 
     // --- turn/start -------------------------------------------------------
     write_json_line(
@@ -167,6 +174,11 @@ async fn initialize_thread_start_turn_start_against_fake_claude() {
     assert!(
         saw_turn_completed,
         "expected a turn/completed notification before timing out"
+    );
+    assert_eq!(
+        claude_pool.len().await,
+        1,
+        "first turn must lazily start exactly one claude process"
     );
 
     // Drop the client end → bridge reader sees EOF → run_connection exits.
@@ -274,6 +286,7 @@ async fn turn_after_eviction_resumes_cleanly() {
     let thread_index: Arc<dyn ThreadIndexHandle> = ThreadIndex::open_and_hydrate(&codex_home)
         .await
         .expect("open thread index");
+    let thread_index_for_test = Arc::clone(&thread_index);
 
     let (client_io, bridge_io) = tokio::io::duplex(64 * 1024);
     let (bridge_reader, bridge_writer) = tokio::io::split(bridge_io);
@@ -316,6 +329,10 @@ async fn turn_after_eviction_resumes_cleanly() {
         .and_then(|v| v.as_str())
         .expect("thread.id")
         .to_string();
+    assert!(
+        claude_pool.is_empty().await,
+        "thread/start should only create the indexed thread"
+    );
 
     write_json_line(
         &mut client_writer,
@@ -327,6 +344,18 @@ async fn turn_after_eviction_resumes_cleanly() {
     .await
     .expect("turn/start #1");
     drain_until_completed(&mut client_reader, 3).await;
+    assert_eq!(claude_pool.len().await, 1);
+
+    // fake-claude does not persist JSONL itself. Create the empty transcript
+    // that real Claude leaves behind so the next lazy spawn selects --resume.
+    let entry = thread_index_for_test
+        .lookup(&thread_id)
+        .await
+        .expect("thread should remain indexed");
+    let transcript = &entry.metadata.claude_session_path;
+    std::fs::create_dir_all(transcript.parent().expect("transcript parent"))
+        .expect("create transcript parent");
+    std::fs::write(transcript, b"").expect("create transcript");
 
     // Wait past the test TTL + explicit reap. mark_idle happens
     // automatically when the event pump sees the terminal `result`.
@@ -341,10 +370,8 @@ async fn turn_after_eviction_resumes_cleanly() {
         "pool should be empty after reap"
     );
 
-    // After eviction the pool no longer has the thread, so the bridge's
-    // turn/start would 404. The spec'd flow is for the client to call
-    // thread/resume which spawns `claude --resume <id>` and reseeds the
-    // pool. Then a turn on that same id must complete normally.
+    // thread/resume hydrates metadata/history only. The next turn performs
+    // the cold --resume spawn so merely opening an old session stays fast.
     let pre = Instant::now();
     write_json_line(
         &mut client_writer,
@@ -356,6 +383,10 @@ async fn turn_after_eviction_resumes_cleanly() {
     .await
     .expect("thread/resume");
     let _ = await_response(&mut client_reader, 4).await;
+    assert!(
+        claude_pool.is_empty().await,
+        "thread/resume must not eagerly respawn local claude"
+    );
 
     write_json_line(
         &mut client_writer,
@@ -367,6 +398,7 @@ async fn turn_after_eviction_resumes_cleanly() {
     .await
     .expect("turn/start #2");
     drain_until_completed(&mut client_reader, 5).await;
+    assert_eq!(claude_pool.len().await, 1);
     assert!(
         Instant::now().duration_since(pre) < STEP_TIMEOUT,
         "second turn should resume + complete within step timeout"

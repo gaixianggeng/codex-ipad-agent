@@ -910,9 +910,9 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.isProjectExpanded(secondProject.id))
     }
 
-    func testSessionStoreOnlyShowsThreeProjectSessionsByDefault() async {
+    func testSessionStoreOnlyShowsFiveProjectSessionsByDefault() async {
         let project = makeProject(id: "proj_1")
-        let sessions = (0..<5).map { index in
+        let sessions = (0..<7).map { index in
             makeSession(
                 id: "codex_\(index)",
                 projectID: project.id,
@@ -934,35 +934,35 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
 
-        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2"])
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2", "codex_3", "codex_4"])
         XCTAssertEqual(store.hiddenSessionCount(forProjectID: project.id), 2)
         var snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertFalse(snapshot.isShowingAll)
-        XCTAssertEqual(snapshot.visibleSessions.map(\.id), ["codex_0", "codex_1", "codex_2"])
-        XCTAssertEqual(snapshot.allSessionCount, 5)
+        XCTAssertEqual(snapshot.visibleSessions.map(\.id), ["codex_0", "codex_1", "codex_2", "codex_3", "codex_4"])
+        XCTAssertEqual(snapshot.allSessionCount, 7)
         XCTAssertEqual(snapshot.hiddenCount, 2)
         XCTAssertTrue(snapshot.shouldShowActionRow)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_more"))
 
         await store.toggleSessionListExpansion(projectID: project.id)
-        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 5)
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 7)
         XCTAssertEqual(store.hiddenSessionCount(forProjectID: project.id), 0)
         snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertTrue(snapshot.isShowingAll)
-        XCTAssertEqual(snapshot.visibleSessions.count, 5)
+        XCTAssertEqual(snapshot.visibleSessions.count, 7)
         XCTAssertTrue(snapshot.shouldShowActionRow)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_less"))
 
         await store.toggleSessionListExpansion(projectID: project.id)
-        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2"])
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), ["codex_0", "codex_1", "codex_2", "codex_3", "codex_4"])
         snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertFalse(snapshot.isShowingAll)
-        XCTAssertEqual(snapshot.visibleSessions.map(\.id), ["codex_0", "codex_1", "codex_2"])
+        XCTAssertEqual(snapshot.visibleSessions.map(\.id), ["codex_0", "codex_1", "codex_2", "codex_3", "codex_4"])
     }
 
     func testCollapsedProjectPreviewNeverHidesActiveSessionBehindHistory() async {
         let project = makeProject(id: "proj_active_preview")
-        let history = (0..<4).map { index in
+        let history = (0..<6).map { index in
             makeSession(
                 id: "history_\(index)",
                 projectID: project.id,
@@ -993,7 +993,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(
             store.sessionListSnapshot(forProjectID: project.id).visibleSessions.map(\.id),
-            [active.id, history[0].id, history[1].id]
+            [active.id, history[0].id, history[1].id, history[2].id, history[3].id]
         )
         XCTAssertEqual(store.hiddenSessionCount(forProjectID: project.id), 2)
     }
@@ -1026,7 +1026,7 @@ extension ConversationDataFlowTests {
         await store.toggleSessionListExpansion(projectID: project.id)
         var snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertEqual(snapshot.visibleSessions.count, SessionStore.sessionPreviewLimit + SessionStore.sessionExpansionStep)
-        XCTAssertEqual(snapshot.hiddenCount, 4)
+        XCTAssertEqual(snapshot.hiddenCount, 2)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_more"))
 
         await store.toggleSessionListExpansion(projectID: project.id)
@@ -1097,7 +1097,7 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(snapshot.canLoadMore)
         XCTAssertEqual(snapshot.allSessionCount, 5)
         XCTAssertEqual(snapshot.visibleSessions.count, 5)
-        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertFalse(snapshot.shouldShowActionRow)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_less"))
     }
 
@@ -1140,7 +1140,6 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         await store.toggleSessionListExpansion(projectID: project.id)
-        await store.toggleSessionListExpansion(projectID: project.id)
 
         var snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertEqual(snapshot.visibleSessions.map(\.id), (firstPage + olderPage).map(\.id))
@@ -1153,6 +1152,55 @@ extension ConversationDataFlowTests {
         snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertEqual(snapshot.visibleSessions.map(\.id), (firstPage + olderPage).map(\.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (firstPage + olderPage).map(\.id))
+    }
+
+    func testWorkspaceRefreshPreservesPagesLoadedOutsideSidebarExpansion() async throws {
+        let project = makeProject(id: "proj_workspace_all_sessions")
+        let firstPage = (0..<8).map { index in
+            makeSession(
+                id: "workspace_recent_\(index)",
+                projectID: project.id,
+                title: "最近会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let olderPage = [
+            makeSession(
+                id: "workspace_older_0",
+                projectID: project.id,
+                title: "更早会话",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 10)
+            )
+        ]
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: firstPage, nextCursor: "workspace_cursor", hasMore: true),
+            cursorPages: ["workspace_cursor": SessionsPage(sessions: olderPage, hasMore: false)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.loadMoreSessions(projectID: project.id)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (firstPage + olderPage).map(\.id))
+        XCTAssertFalse(store.isShowingAllSessions(projectID: project.id), "工作区翻页不应改变侧栏 5 条预览状态")
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            (firstPage + olderPage).map(\.id),
+            "工作区下拉刷新首屏后必须保留已经加载的旧页"
+        )
     }
 
     func testSessionListSnapshotUpdatesWhenPaginationStateChangesWithoutSessionDiff() async {

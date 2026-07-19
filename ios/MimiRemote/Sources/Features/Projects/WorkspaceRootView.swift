@@ -100,6 +100,11 @@ struct WorkspaceRootView: View {
             await refreshCatalog()
             synchronizeSelection()
         }
+        .task {
+            // 两个新建入口先稳定渲染；Claude 通道能力独立在后台刷新，不能让网络往返
+            // 决定按钮何时才出现在布局里。
+            await sessionStore.refreshAppServerModelOptions()
+        }
         .task(id: selectedWorkspaceID) {
             guard let selectedWorkspaceID else { return }
             // 首次进入或切换工作区时，如果本地还没有数据就主动补齐会话首屏。
@@ -316,19 +321,20 @@ struct WorkspaceRootView: View {
     }
 
     private func workspaceDetail(project: AgentProject) -> some View {
-        WorkspaceDetailView(
-            // 冻结顺序用于防止运行时列表跳动，但“最近会话”窗口仍必须优先容纳全部运行态；
-            // 否则旧会话重新运行后可能已经加载，却被前 5 条历史挡在窗口外。
-            recentSessions: SessionStore.lifecycleVisibleSessions(
-                sessionStore.sessions(forProjectID: project.id),
-                limit: 5
-            ),
-            sessionLoadState: sessionLoadState(for: project.id),
+        let loadState = sessionLoadState(for: project.id)
+        return WorkspaceDetailView(
+            // 工作区详情承担完整历史浏览，展示所有已加载页；项目侧栏才保留 5 条预览窗口。
+            recentSessions: sessionStore.sessions(forProjectID: project.id),
+            sessionLoadState: loadState,
+            canLoadMoreSessions: sessionStore.canLoadMoreSessions(projectID: project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
             onRefreshSessions: {
                 Task {
                     await refreshWorkspaceSessions(projectID: project.id)
                 }
+            },
+            onLoadMoreSessions: {
+                await sessionStore.loadMoreSessions(projectID: project.id)
             },
             onStartSession: { runtimeChoice in
                 onStartSession(project, runtimeChoice)
@@ -579,11 +585,14 @@ private struct WorkspaceDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var actionButtonHeight: CGFloat = 68
+    @State private var isLoadingMoreSessions = false
 
     let recentSessions: [AgentSession]
     let sessionLoadState: WorkspaceSessionLoadState
+    let canLoadMoreSessions: Bool
     let claudeChannelAvailable: Bool
     let onRefreshSessions: () -> Void
+    let onLoadMoreSessions: () async -> Void
     let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
 
@@ -614,7 +623,7 @@ private struct WorkspaceDetailView: View {
 
             // 创建会话是工作区页的主任务；只保留能直接开始工作的入口。
             LazyVGrid(columns: actionColumns, spacing: 12) {
-                ForEach(WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: claudeChannelAvailable)) { choice in
+                ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                     actionButton(
                         title: choice.title,
                         subtitle: choice == .codex ? L10n.text("ui.start_using_the_default_runtime") : L10n.text("ui.get_started_with_the_claude_code_runtime"),
@@ -625,6 +634,9 @@ private struct WorkspaceDetailView: View {
                         // thread 创建时就绑定 runtime；这里必须把用户选择一路传到 SessionStore。
                         onStartSession(choice)
                     }
+                    // 未确认或未配置 Claude 通道时保留按钮位置但禁止误创建；能力返回后原位启用，
+                    // 页面不会再从单按钮突然跳成双按钮。
+                    .disabled(choice == .claude && !claudeChannelAvailable)
                 }
             }
         }
@@ -782,6 +794,37 @@ private struct WorkspaceDetailView: View {
                                 .overlay(tokens.border.opacity(0.62))
                                 .padding(.leading, 48)
                         }
+                    }
+
+                    if canLoadMoreSessions || isLoadingMoreSessions {
+                        Divider()
+                            .overlay(tokens.border.opacity(0.62))
+
+                        Button {
+                            guard !isLoadingMoreSessions else { return }
+                            isLoadingMoreSessions = true
+                            Task {
+                                await onLoadMoreSessions()
+                                isLoadingMoreSessions = false
+                            }
+                        } label: {
+                            HStack(spacing: 7) {
+                                if isLoadingMoreSessions {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "chevron.down")
+                                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                }
+                                Text(isLoadingMoreSessions ? L10n.text("ui.loading") : L10n.text("ui.show_more"))
+                            }
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .foregroundStyle(tokens.primaryAction)
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isLoadingMoreSessions)
                     }
                 }
                 .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))

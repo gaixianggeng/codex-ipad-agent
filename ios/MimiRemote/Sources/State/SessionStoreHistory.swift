@@ -1034,7 +1034,11 @@ extension SessionStore {
         return fresh + [selected]
     }
 
-    func pageSessionsPreservingLoadedWindow(_ fresh: [AgentSession], projectID: String) -> [AgentSession] {
+    func pageSessionsPreservingLoadedWindow(
+        _ fresh: [AgentSession],
+        projectID: String,
+        preserveAllLoaded: Bool = false
+    ) -> [AgentSession] {
         let freshIDs = Set(fresh.map(\.id))
         recordRunningSessionsMissingFromFreshPage(freshIDs: freshIDs, projectID: projectID)
         var result = pageSessionsPreservingSelection(fresh, projectID: projectID)
@@ -1052,7 +1056,7 @@ extension SessionStore {
         // thread/read 校准。读取也失败时最多保留 3 个刷新周期，不能形成永久幽灵运行态。
         result.append(contentsOf: knownRunningSessions)
 
-        guard isShowingAllSessions(projectID: projectID) else {
+        guard preserveAllLoaded || isShowingAllSessions(projectID: projectID) else {
             return result
         }
 

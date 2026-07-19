@@ -329,6 +329,7 @@ extension SessionStore {
             setShowingAllSessionProjectIDs(showingAllSessionProjectIDs.intersection(validProjectIDs))
             sessionPageCursorByProjectID = sessionPageCursorByProjectID.filter { validProjectIDs.contains($0.key) }
             sessionHasMoreByProjectID = sessionHasMoreByProjectID.filter { validProjectIDs.contains($0.key) }
+            sessionProjectsWithAdditionalPages.formIntersection(validProjectIDs)
             sessionPageRequestTokenByProjectID = sessionPageRequestTokenByProjectID.filter { validProjectIDs.contains($0.key) }
             sessionPageLoadingTokenByProjectID = sessionPageLoadingTokenByProjectID.filter { validProjectIDs.contains($0.key) }
             rebuildProjectSessionListSnapshots()
@@ -489,7 +490,12 @@ extension SessionStore {
 
             let pageSessions = sessions(page.sessions, in: workspace)
             replaceSessionsIfChanged(
-                with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: workspace.id),
+                // 工作区页下拉刷新首屏时，保留用户已经翻到的旧页，避免列表突然收缩回 20 条。
+                with: pageSessionsPreservingLoadedWindow(
+                    pageSessions,
+                    projectID: workspace.id,
+                    preserveAllLoaded: sessionProjectsWithAdditionalPages.contains(workspace.id)
+                ),
                 projectID: workspace.id
             )
             updateSessionPageState(projectID: workspace.id, page: page)
