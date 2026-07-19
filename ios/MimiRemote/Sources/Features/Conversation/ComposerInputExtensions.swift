@@ -5,6 +5,57 @@ import UIKit
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    var isPhoneComposer: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    var canCollapsePhoneComposer: Bool {
+        isPhoneComposer &&
+            composerState.attachments.isEmpty &&
+            !composerState.voiceDraftNeedsReview &&
+            !isVoicePressActive &&
+            !voiceInput.isPreparing &&
+            !voiceInput.isRecording &&
+            !isVoiceTranscribing &&
+            activeSkillQuery == nil
+    }
+
+    var usesCollapsedPhoneComposer: Bool {
+        isPhoneComposerCollapsed && canCollapsePhoneComposer
+    }
+
+    var collapsedPhoneComposerText: String {
+        let text = composerState.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? composerPlaceholderText : text
+    }
+
+    func expandPhoneComposer() {
+        guard isPhoneComposer else { return }
+        isPhoneComposerCollapsed = false
+        // 焦点请求只服务于这一次“点开输入框”；UITextView 消费后会清空 token，
+        // 后续因附件或语音状态重建完整输入框时不会再次误弹键盘。
+        composerTextFocusRequestID = UUID()
+    }
+
+    func collapsePhoneComposer() {
+        guard canCollapsePhoneComposer else { return }
+        // 先让输入法提交 marked text，再把最终文本同步回草稿；折叠只改变展示，不丢编辑状态。
+        composerTextSubmitBridge.resignFirstResponder()
+        synchronizeComposerTextBeforeDraftScopeChange()
+        composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
+        activeSkillQuery = nil
+        isPhoneComposerCollapsed = true
+    }
+
+    func collapsePhoneComposerAfterSubmit() {
+        guard isPhoneComposer else { return }
+        // takeDraftForSubmit 已清空稳定草稿；移除 UIKit 编辑器前也清空其文本，避免失焦回调把已发送内容写回来。
+        composerTextExternalRevision += 1
+        composerTextSubmitBridge.prepareForRemoval(text: composerState.draft)
+        activeSkillQuery = nil
+        isPhoneComposerCollapsed = true
+    }
+
     @ViewBuilder
     var attachmentStrip: some View {
         if !composerState.attachments.isEmpty {

@@ -1024,7 +1024,8 @@ extension SessionStore {
         guard let selectedSessionID,
               let selected = sessionsByID[selectedSessionID],
               selected.projectID == projectID,
-              !fresh.contains(where: { $0.id == selected.id })
+              !fresh.contains(where: { $0.id == selected.id }),
+              shouldRetainSessionMissingFromFreshPage(selected)
         else {
             return fresh
         }
@@ -1034,14 +1035,30 @@ extension SessionStore {
     }
 
     func pageSessionsPreservingLoadedWindow(_ fresh: [AgentSession], projectID: String) -> [AgentSession] {
+        let freshIDs = Set(fresh.map(\.id))
+        recordRunningSessionsMissingFromFreshPage(freshIDs: freshIDs, projectID: projectID)
         var result = pageSessionsPreservingSelection(fresh, projectID: projectID)
+        var knownIDs = Set(result.map(\.id))
+        let knownRunningSessions = sessions(forProjectID: projectID).filter { session in
+            guard session.isRunning,
+                  shouldRetainSessionMissingFromFreshPage(session),
+                  !knownIDs.contains(session.id) else {
+                return false
+            }
+            knownIDs.insert(session.id)
+            return true
+        }
+        // thread/list 的索引可能短暂落后于实时事件：先短暂保留，连续缺失后用
+        // thread/read 校准。读取也失败时最多保留 3 个刷新周期，不能形成永久幽灵运行态。
+        result.append(contentsOf: knownRunningSessions)
+
         guard isShowingAllSessions(projectID: projectID) else {
             return result
         }
 
-        var knownIDs = Set(result.map(\.id))
         let olderLoadedSessions = sessions(forProjectID: projectID).filter { session in
-            guard !knownIDs.contains(session.id) else {
+            guard shouldRetainSessionMissingFromFreshPage(session),
+                  !knownIDs.contains(session.id) else {
                 return false
             }
             knownIDs.insert(session.id)
@@ -1054,6 +1071,79 @@ extension SessionStore {
         // 不能把这些旧页踢掉，否则列表会在轮询后从“图二”回跳到“图一”。
         result.append(contentsOf: olderLoadedSessions)
         return result
+    }
+
+    func recordRunningSessionsMissingFromFreshPage(freshIDs: Set<SessionID>, projectID: String) {
+        let runningSessions = sessions(forProjectID: projectID).filter(\.isRunning)
+        let runningIDs = Set(runningSessions.map(\.id))
+
+        // 当前页重新出现、或实时事件已把它改成终态时，连续缺失计数立即失效。
+        let resolvedSessionIDs: [SessionID] = missingRunningSessionStateByID.compactMap { element in
+            let (sessionID, state) = element
+            guard state.projectID == projectID,
+                  freshIDs.contains(sessionID) || !runningIDs.contains(sessionID) else {
+                return nil
+            }
+            return sessionID
+        }
+        for sessionID in resolvedSessionIDs {
+            missingRunningSessionStateByID.removeValue(forKey: sessionID)
+        }
+
+        for session in runningSessions where !freshIDs.contains(session.id) {
+            let previous = missingRunningSessionStateByID[session.id]?.consecutiveRefreshMisses ?? 0
+            let nextMisses = previous + 1
+            missingRunningSessionStateByID[session.id] = MissingRunningSessionState(
+                projectID: projectID,
+                consecutiveRefreshMisses: nextMisses
+            )
+            if nextMisses >= Self.missingRunningSessionReadThreshold,
+               nextMisses <= Self.maximumUnverifiedRunningSessionMisses {
+                scheduleMissingRunningSessionReconciliation(session)
+            }
+        }
+    }
+
+    func shouldRetainSessionMissingFromFreshPage(_ session: AgentSession) -> Bool {
+        guard session.isRunning,
+              let state = missingRunningSessionStateByID[session.id] else {
+            return true
+        }
+        return state.consecutiveRefreshMisses <= Self.maximumUnverifiedRunningSessionMisses
+            || missingRunningSessionReconciliationTasksByID[session.id] != nil
+    }
+
+    func scheduleMissingRunningSessionReconciliation(_ session: AgentSession) {
+        guard missingRunningSessionReconciliationTasksByID[session.id] == nil else {
+            return
+        }
+        let sessionID = session.id
+        missingRunningSessionReconciliationTasksByID[sessionID] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.missingRunningSessionReconciliationTasksByID.removeValue(forKey: sessionID)
+            }
+            do {
+                let response = try await self.clientFactory().session(
+                    id: sessionID,
+                    afterSeq: self.logStore.lastSeq(for: sessionID)
+                )
+                try Task.checkCancellation()
+                let refreshed = self.session(response.session, in: self.workspaceForSession(session))
+                // thread/read 是这里的权威状态：无论仍在运行还是已经完成，都从新的事实重新计数。
+                self.missingRunningSessionStateByID.removeValue(forKey: sessionID)
+                self.upsert(refreshed)
+                if !refreshed.isRunning {
+                    self.clearForegroundActivity(sessionID: sessionID)
+                    self.clearRuntimeActivity(sessionID: sessionID)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                // 读取失败不猜测终态；后续刷新还会再校准一次，但未验证状态最多只保留 3 个周期。
+                return
+            }
+        }
     }
 
     func sessions(_ items: [AgentSession], in workspace: AgentWorkspace) -> [AgentSession] {
@@ -1792,6 +1882,9 @@ extension SessionStore {
         historyFirstPageCacheByKey = historyFirstPageCacheByKey.filter { validSessionIDs.contains($0.key.sessionID) }
         historySavingsNoticesBySessionID = historySavingsNoticesBySessionID.filter { validSessionIDs.contains($0.key) }
         initialHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
+        missingRunningSessionStateByID = missingRunningSessionStateByID.filter { sessionID, _ in
+            validSessionIDs.contains(sessionID) || missingRunningSessionReconciliationTasksByID[sessionID] != nil
+        }
 
         let loadingEarlierSessionIDs = loadingEarlierHistorySessionIDs.intersection(validSessionIDs)
         if loadingEarlierSessionIDs != loadingEarlierHistorySessionIDs {

@@ -1389,6 +1389,136 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [running.id, history.id])
     }
 
+    func testWorkspaceRecentWindowKeepsKnownRunningSessionWhenFirstPageIsStale() async throws {
+        let project = makeProject(id: "proj_workspace_running_window")
+        let running = makeSession(
+            id: "thread_running_outside_prefix",
+            projectID: project.id,
+            title: "旧会话重新运行",
+            status: "running",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let history = (0..<6).map { index in
+            makeSession(
+                id: "thread_recent_history_\(index)",
+                projectID: project.id,
+                title: "最近历史 \(index)",
+                status: "history",
+                source: "codex",
+                resumeID: "recent-history-\(index)",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 + index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: history + [running])
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        XCTAssertFalse(store.sessions(forProjectID: project.id).prefix(5).contains { $0.id == running.id })
+        XCTAssertTrue(
+            SessionStore.lifecycleVisibleSessions(store.sessions(forProjectID: project.id), limit: 5)
+                .contains { $0.id == running.id },
+            "工作区最近窗口必须像会话侧栏一样优先保留运行态"
+        )
+
+        client.page = SessionsPage(sessions: history)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertTrue(
+            store.sessions(forProjectID: project.id).contains { $0.id == running.id },
+            "索引短暂缺失不能删除本地已经确认的运行会话"
+        )
+    }
+
+    func testMissingRunningSessionUsesAuthoritativeReadAfterTwoRefreshes() async throws {
+        let project = makeProject(id: "proj_running_reconciliation")
+        let running = makeSession(
+            id: "thread_running_reconciliation",
+            projectID: project.id,
+            title: "错过完成事件",
+            status: "running",
+            source: "codex"
+        )
+        let completed = makeSession(
+            id: running.id,
+            projectID: project.id,
+            title: running.title,
+            status: "history",
+            source: running.source,
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            sessionResponses: [running.id: SessionResponse(session: completed)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.replaceSessionsIfChanged(with: [running], projectID: project.id)
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+        XCTAssertEqual(store.sessionsByID[running.id]?.status, "running")
+        XCTAssertTrue(client.requestedSessionIDs.isEmpty, "首次缺失只做短暂保留，避免额外请求")
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+        for _ in 0..<20 {
+            guard store.sessionsByID[running.id]?.isRunning == true else { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertEqual(store.sessionsByID[running.id]?.status, "history")
+        XCTAssertFalse(store.sessions.contains(where: \.isRunning), "thread/read 终态必须释放排序冻结")
+    }
+
+    func testUnverifiedMissingRunningSessionIsNotRetainedForever() async throws {
+        let project = makeProject(id: "proj_running_reconciliation_failure")
+        let running = makeSession(
+            id: "thread_unverified_running",
+            projectID: project.id,
+            title: "无法校准的旧运行态",
+            status: "running",
+            source: "codex"
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.replaceSessionsIfChanged(with: [running], projectID: project.id)
+
+        for _ in 0..<SessionStore.maximumUnverifiedRunningSessionMisses {
+            try await store.refreshWorkspaceSessions(projectID: project.id)
+            for _ in 0..<20 {
+                guard store.missingRunningSessionReconciliationTasksByID[running.id] != nil else { break }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        XCTAssertNotNil(store.sessionsByID[running.id], "宽限期内继续展示，等待 thread/read 校准")
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertNil(store.sessionsByID[running.id], "列表持续缺失且权威读取失败时不能永久保留幽灵运行态")
+        XCTAssertEqual(client.requestedSessionIDs, [running.id, running.id])
+    }
+
     func testLocalSendUpdatesSessionPreviewAfterRemoteMacPreview() async throws {
         let project = makeProject(id: "proj_projection_send")
         let remoteUpdatedAt = Date(timeIntervalSince1970: 20)

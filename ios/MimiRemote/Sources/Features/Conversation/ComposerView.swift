@@ -46,6 +46,8 @@ struct ComposerView: View {
     @State var measuredComposerTextHeight: CGFloat = 0
     @State var isComposerTextComposing = false
     @State var composerTextSubmitBridge = ComposerTextSubmitBridge()
+    @State var composerTextFocusRequestID: UUID?
+    @State var isPhoneComposerCollapsed: Bool
     @State var activeSkillQuery: ComposerSkillQuery?
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
@@ -61,6 +63,8 @@ struct ComposerView: View {
     init(availableWidth: CGFloat? = nil, initialGoalStatusExpanded: Bool = false) {
         self.availableWidth = availableWidth
         _isGoalStatusExpanded = State(initialValue: initialGoalStatusExpanded)
+        // iPhone 首屏优先让出回复阅读空间；iPad 继续保留完整输入画布。
+        _isPhoneComposerCollapsed = State(initialValue: UIDevice.current.userInterfaceIdiom == .phone)
     }
 
     static let minimumUsableVoiceDuration: TimeInterval = 0.35
@@ -221,6 +225,7 @@ struct ComposerView: View {
         guard let submitted = composerState.takeDraftForSubmit(isLoading: sessionStore.isLoading, turnOptionsOverride: options) else {
             return false
         }
+        collapsePhoneComposerAfterSubmit()
         sessionStore.removeComposerDraft(for: submittedDraftScope)
         let runningDelivery = runningTurnDeliveryForSubmit
         cancelVoiceInteraction(clearStatus: false)
@@ -256,6 +261,7 @@ struct ComposerView: View {
         ) else {
             return false
         }
+        collapsePhoneComposerAfterSubmit()
         sessionStore.removeComposerDraft(for: submittedDraftScope)
         let objective = submitted.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !objective.isEmpty else {
@@ -348,6 +354,9 @@ struct ComposerView: View {
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
         isComposerTextComposing = false
+        if isPhoneComposer {
+            isPhoneComposerCollapsed = true
+        }
     }
 
     func isOptimisticSessionHandoff(
@@ -776,8 +785,67 @@ struct ComposerView: View {
     }
 
     func composerInputRow(tokens: ThemeTokens) -> some View {
-        composerCard(tokens: tokens)
-            .layoutPriority(1)
+        Group {
+            if usesCollapsedPhoneComposer {
+                collapsedPhoneComposerCard(tokens: tokens)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+            } else {
+                composerCard(tokens: tokens)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+            }
+        }
+        .layoutPriority(1)
+        .animation(composerMotionAnimation, value: usesCollapsedPhoneComposer)
+    }
+
+    func collapsedPhoneComposerCard(tokens: ThemeTokens) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+
+        return HStack(spacing: 8) {
+            addContentButton
+
+            Button(action: expandPhoneComposer) {
+                HStack(spacing: 8) {
+                    Text(collapsedPhoneComposerText)
+                        .font(themeStore.uiFont(.body))
+                        .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Image(systemName: "chevron.up")
+                        .font(themeStore.uiFont(.caption2, weight: .bold))
+                        .foregroundStyle(tokens.tertiaryText)
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityLabel(L10n.text("ui.expand_input_box"))
+            .accessibilityValue(collapsedPhoneComposerText)
+
+            voiceMicControl
+            sendButton(showLabels: false)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity)
+        .background {
+            if reduceTransparency {
+                shape.fill(tokens.inputBackground)
+            } else {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        shape.fill(tokens.inputBackground.opacity(colorScheme == .light ? 0.72 : 0.58))
+                    }
+            }
+        }
+        .overlay {
+            shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+        }
+        .shadow(color: composerCardShadow(tokens), radius: 8, y: 3)
     }
 
     func composerCard(tokens: ThemeTokens) -> some View {
@@ -823,6 +891,7 @@ struct ComposerView: View {
                 textColor: UIColor(tokens.primaryText),
                 tintColor: UIColor(tokens.accent),
                 externalTextRevision: composerTextExternalRevision,
+                focusRequestID: $composerTextFocusRequestID,
                 minHeight: composerMinHeight,
                 maxHeight: composerMaxHeight,
                 onSubmit: { submitDraft() },
@@ -997,10 +1066,27 @@ struct ComposerView: View {
                 .scrollIndicators(.hidden)
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
+
+            if canCollapsePhoneComposer {
+                Spacer(minLength: 0)
+                collapsePhoneComposerButton
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // 快捷选项只在这一行内动画；模型、权限等值变更不触发整张输入卡重排动画。
         .animation(composerMotionAnimation, value: prefersExpandedShortcutBar)
+    }
+
+    var collapsePhoneComposerButton: some View {
+        Button(action: collapsePhoneComposer) {
+            composerToolbarControlLabel(
+                title: nil,
+                systemImage: "chevron.down",
+                accessibilityLabel: L10n.text("ui.collapse_input_box")
+            )
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.collapse_input_box"))
     }
 
     var primaryComposerToolbar: some View {

@@ -409,6 +409,30 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(range.length, 0)
     }
 
+    func testComposerFocusRequestIsConsumedOnceAndDoesNotClearNewerRequest() {
+        let first = UUID()
+        let second = UUID()
+
+        XCTAssertEqual(
+            ComposerFocusRequestPolicy.requestToConsume(pending: first, lastHandled: nil),
+            first
+        )
+        XCTAssertNil(
+            ComposerFocusRequestPolicy.requestToConsume(pending: first, lastHandled: first),
+            "同一个 UIView 生命周期内不能重复消费焦点请求"
+        )
+        XCTAssertNil(
+            ComposerFocusRequestPolicy.pendingRequest(afterConsuming: first, current: first),
+            "消费完成后必须清空父 View 的 token，避免新 UITextView 再次弹键盘"
+        )
+        XCTAssertEqual(
+            ComposerFocusRequestPolicy.pendingRequest(afterConsuming: first, current: second),
+            second,
+            "旧异步回调不能误清理刚产生的新焦点请求"
+        )
+        XCTAssertNil(ComposerFocusRequestPolicy.requestToConsume(pending: nil, lastHandled: nil))
+    }
+
     func testVoiceWaveformLevelMappingBoostsQuietSpeechWithoutAnimatingSilence() {
         XCTAssertEqual(VoiceWaveformLevelMapping.visualLevel(for: 0), 0, accuracy: 0.001)
         XCTAssertEqual(VoiceWaveformLevelMapping.visualLevel(for: 0.02), 0, accuracy: 0.001)

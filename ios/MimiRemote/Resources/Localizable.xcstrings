@@ -4099,6 +4099,23 @@
         }
       }
     },
+    "ui.collapse_input_box": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse input field"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起输入框"
+          }
+        }
+      }
+    },
     "ui.collapse_current_process_details": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -7923,6 +7940,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "展开当前过程详情"
+          }
+        }
+      }
+    },
+    "ui.expand_input_box": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand input field"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开输入框"
           }
         }
       }

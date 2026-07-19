@@ -46,6 +46,17 @@ final class ComposerTextSubmitBridge {
         )
     }
 
+    func resignFirstResponder() {
+        textView?.resignFirstResponder()
+    }
+
+    func prepareForRemoval(text: String) {
+        guard let textView else { return }
+        textView.text = text
+        textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        textView.resignFirstResponder()
+    }
+
     func replaceText(in range: NSRange, with replacement: String) -> String? {
         guard let textView,
               range.location >= 0,
@@ -60,6 +71,20 @@ final class ComposerTextSubmitBridge {
     }
 }
 
+enum ComposerFocusRequestPolicy {
+    static func requestToConsume(pending: UUID?, lastHandled: UUID?) -> UUID? {
+        guard let pending, pending != lastHandled else {
+            return nil
+        }
+        return pending
+    }
+
+    static func pendingRequest(afterConsuming consumed: UUID, current: UUID?) -> UUID? {
+        // becomeFirstResponder 异步执行期间可能来了一个更新的请求，旧回调不能把新 token 一起清掉。
+        current == consumed ? nil : current
+    }
+}
+
 struct ComposerTextView: UIViewRepresentable {
     @Binding var text: String
     let submitBridge: ComposerTextSubmitBridge
@@ -67,6 +92,7 @@ struct ComposerTextView: UIViewRepresentable {
     let textColor: UIColor
     let tintColor: UIColor
     let externalTextRevision: Int
+    @Binding var focusRequestID: UUID?
     let minHeight: CGFloat
     let maxHeight: CGFloat
     let onSubmit: () -> Bool
@@ -112,6 +138,7 @@ struct ComposerTextView: UIViewRepresentable {
         textView.spellCheckingType = .no
         textView.accessibilityLabel = L10n.text("ui.enter_tasks_or_follow_up_instructions")
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        consumeFocusRequestIfNeeded(for: textView, coordinator: context.coordinator)
         return textView
     }
 
@@ -127,6 +154,7 @@ struct ComposerTextView: UIViewRepresentable {
         uiView.onSkillAutocompleteMove = onSkillAutocompleteMove
         uiView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
         uiView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
+        consumeFocusRequestIfNeeded(for: uiView, coordinator: context.coordinator)
         context.coordinator.updateCompositionState(uiView.hasMarkedText)
         let shouldForceExternalTextSync = context.coordinator.lastAppliedExternalRevision != externalTextRevision
 
@@ -182,11 +210,35 @@ struct ComposerTextView: UIViewRepresentable {
         Coordinator(self)
     }
 
+    private func consumeFocusRequestIfNeeded(
+        for textView: CommandSubmitTextView,
+        coordinator: Coordinator
+    ) {
+        guard let requestID = ComposerFocusRequestPolicy.requestToConsume(
+            pending: focusRequestID,
+            lastHandled: coordinator.lastHandledFocusRequestID
+        ) else {
+            return
+        }
+        coordinator.lastHandledFocusRequestID = requestID
+        let requestBinding = _focusRequestID
+        DispatchQueue.main.async { [weak textView] in
+            textView?.becomeFirstResponder()
+            // token 属于父 View，是跨 UIView 重建的一次性事实；消费后立即清空。
+            // 即使当前 UITextView 已在转场中销毁，也不能把旧请求留给下一个实例。
+            requestBinding.wrappedValue = ComposerFocusRequestPolicy.pendingRequest(
+                afterConsuming: requestID,
+                current: requestBinding.wrappedValue
+            )
+        }
+    }
+
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerTextView
         var isApplyingExternalText = false
         var lastSyncedText = ""
         var lastAppliedExternalRevision = 0
+        var lastHandledFocusRequestID: UUID?
         private var lastReportedContentHeight: CGFloat = 0
         private var pendingContentHeight: CGFloat?
         private var isContentHeightReportScheduled = false

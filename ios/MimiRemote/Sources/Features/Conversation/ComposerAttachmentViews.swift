@@ -268,6 +268,7 @@ struct AddContentPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var page: AddContentPanelPage = .root
     @State private var searchText = ""
 
@@ -310,12 +311,22 @@ struct AddContentPanel: View {
             )
         }
         .padding(16)
-        .frame(minWidth: 320, idealWidth: 390, maxWidth: 420)
-        .background(tokens.surface)
+        .frame(minWidth: 320, idealWidth: 390, maxWidth: 420, maxHeight: .infinity, alignment: .top)
         .animation(
             reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 1),
             value: page
         )
+        // 整个 Sheet 只使用一层材质，避免内容区和底部留白分别落到不同的不透明背景上。
+        // “降低透明度”开启时改回主题实色，保证文字与控件对比度。
+        .presentationBackground {
+            if reduceTransparency {
+                tokens.surface
+            } else {
+                Rectangle()
+                    .fill(.thinMaterial)
+                    .overlay(tokens.surface.opacity(colorScheme == .light ? 0.28 : 0.20))
+            }
+        }
         // compact adaptation 默认会拉成大页；固定内容高度能消除“下半屏全空”的原始感。
         .presentationDetents([.height(page == .root ? 390 : 470)])
         .presentationDragIndicator(.visible)

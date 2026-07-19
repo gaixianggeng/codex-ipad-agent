@@ -449,12 +449,6 @@ struct UnifiedWorkbenchShell: View {
 
     private func workspaces(layout: WorkbenchLayout) -> some View {
         WorkspaceRootView(
-            onOpenInSessions: { project in
-                Task {
-                    await sessionStore.selectProject(project)
-                    open(.sessions, layout: layout)
-                }
-            },
             onStartSession: { project, runtimeChoice in
                 Task {
                     await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)

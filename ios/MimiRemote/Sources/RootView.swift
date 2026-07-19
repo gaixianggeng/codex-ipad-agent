@@ -180,12 +180,6 @@ struct RootView: View {
             mainLayout
         case .workspace:
             WorkspaceRootView(
-                onOpenInSessions: { project in
-                    Task {
-                        await sessionStore.selectProject(project)
-                        selectedAppTabRawValue = AppTab.sessions.rawValue
-                    }
-                },
                 onStartSession: { project, runtimeChoice in
                     Task {
                         // Workspace 新入口也必须保留 runtime 选择，否则 Claude 会话会静默落到 Codex gateway。

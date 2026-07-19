@@ -55,7 +55,6 @@ struct WorkspaceRootView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
-    let onOpenInSessions: (AgentProject) -> Void
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
     let embedsNavigationStack: Bool
@@ -66,12 +65,10 @@ struct WorkspaceRootView: View {
     @State private var isPresentingOpenWorkspace = false
 
     init(
-        onOpenInSessions: @escaping (AgentProject) -> Void,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
         embedsNavigationStack: Bool = true
     ) {
-        self.onOpenInSessions = onOpenInSessions
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
         self.embedsNavigationStack = embedsNavigationStack
@@ -320,20 +317,18 @@ struct WorkspaceRootView: View {
 
     private func workspaceDetail(project: AgentProject) -> some View {
         WorkspaceDetailView(
-            recentSessions: Array(sessionStore.sessions(forProjectID: project.id).prefix(5)),
+            // 冻结顺序用于防止运行时列表跳动，但“最近会话”窗口仍必须优先容纳全部运行态；
+            // 否则旧会话重新运行后可能已经加载，却被前 5 条历史挡在窗口外。
+            recentSessions: SessionStore.lifecycleVisibleSessions(
+                sessionStore.sessions(forProjectID: project.id),
+                limit: 5
+            ),
             sessionLoadState: sessionLoadState(for: project.id),
-            isShownInSessions: sessionStore.isWorkspaceShownInSessions(project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
             onRefreshSessions: {
                 Task {
                     await refreshWorkspaceSessions(projectID: project.id)
                 }
-            },
-            onToggleSessionVisibility: {
-                sessionStore.toggleWorkspaceInSessions(project)
-            },
-            onOpenInSessions: {
-                onOpenInSessions(project)
             },
             onStartSession: { runtimeChoice in
                 onStartSession(project, runtimeChoice)
@@ -454,7 +449,6 @@ private enum WorkspaceSessionLoadState: Equatable {
 private enum WorkspaceActionEmphasis: Equatable {
     case primary
     case accented
-    case secondary
 }
 
 private struct WorkspaceActionPressButtonStyle: ButtonStyle {
@@ -588,11 +582,8 @@ private struct WorkspaceDetailView: View {
 
     let recentSessions: [AgentSession]
     let sessionLoadState: WorkspaceSessionLoadState
-    let isShownInSessions: Bool
     let claudeChannelAvailable: Bool
     let onRefreshSessions: () -> Void
-    let onToggleSessionVisibility: () -> Void
-    let onOpenInSessions: () -> Void
     let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
 
@@ -621,7 +612,7 @@ private struct WorkspaceDetailView: View {
                 .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
 
-            // 创建会话是工作区页的主任务；固定为一行两列，避免 iPad 上出现“三加一”的孤立按钮。
+            // 创建会话是工作区页的主任务；只保留能直接开始工作的入口。
             LazyVGrid(columns: actionColumns, spacing: 12) {
                 ForEach(WorkspaceSessionRuntimeChoice.available(claudeChannelAvailable: claudeChannelAvailable)) { choice in
                     actionButton(
@@ -635,27 +626,6 @@ private struct WorkspaceDetailView: View {
                         onStartSession(choice)
                     }
                 }
-            }
-
-            // 导航和侧栏可见性属于辅助操作，降低视觉权重但保留完整 44pt 以上触控区域。
-            LazyVGrid(columns: actionColumns, spacing: 12) {
-                actionButton(
-                    title: L10n.text("ui.open_in_session"),
-                    subtitle: L10n.text("ui.view_all_sessions_for_this_workspace"),
-                    systemImage: "bubble.left.and.bubble.right",
-                    emphasis: .secondary,
-                    tokens: tokens,
-                    action: onOpenInSessions
-                )
-
-                actionButton(
-                    title: isShownInSessions ? L10n.text("ui.hide_from_conversation_sidebar") : L10n.text("ui.show_in_conversation_sidebar"),
-                    subtitle: isShownInSessions ? L10n.text("ui.currently_accessible_from_the_conversation_sidebar") : L10n.text("ui.convenient_for_quick_access_from_the_session_sidebar"),
-                    systemImage: isShownInSessions ? "eye.slash" : "eye",
-                    emphasis: .secondary,
-                    tokens: tokens,
-                    action: onToggleSessionVisibility
-                )
             }
         }
     }
@@ -735,8 +705,6 @@ private struct WorkspaceDetailView: View {
             return tokens.primaryAction
         case .accented:
             return tokens.surface
-        case .secondary:
-            return tokens.elevatedSurface.opacity(0.58)
         }
     }
 
@@ -746,8 +714,6 @@ private struct WorkspaceDetailView: View {
             return tokens.primaryActionForeground.opacity(0.15)
         case .accented:
             return tokens.accentSoft
-        case .secondary:
-            return tokens.surface.opacity(0.82)
         }
     }
 
@@ -757,8 +723,6 @@ private struct WorkspaceDetailView: View {
             return tokens.primaryAction.opacity(0.92)
         case .accented:
             return tokens.primaryAction.opacity(0.24)
-        case .secondary:
-            return tokens.border.opacity(0.58)
         }
     }
 

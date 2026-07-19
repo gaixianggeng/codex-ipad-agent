@@ -711,7 +711,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(store.filteredSessions.map(\.id), [existing.id])
         XCTAssertNil(store.errorMessage)
-        XCTAssertEqual(store.statusMessage, L10n.plural("ui.session_list_retry_seconds_count", count: 10))
+        XCTAssertEqual(store.statusMessage, L10n.plural("ui.session_list_retry_seconds_count", count: 15))
         XCTAssertFalse(store.statusMessage?.contains("itemsView") == true)
 
         // 冷却窗口内继续刷新必须复用旧页，不能再撞 gateway。
@@ -723,6 +723,53 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.sessionsPageCallCount, 3)
         XCTAssertEqual(store.filteredSessions.map(\.id), [refreshed.id])
         XCTAssertNil(store.errorMessage)
+    }
+
+    func testWorkspaceManualRefreshWaitsOutCooldownAndFetchesFreshPage() async throws {
+        let project = makeProject(id: "proj_workspace_manual_cooldown")
+        let existing = makeSession(id: "thread_workspace_existing", projectID: project.id, title: "旧列表", status: "history", source: "codex")
+        let refreshed = makeSession(id: "thread_workspace_refreshed", projectID: project.id, title: "运行中会话", status: "running", source: "codex")
+        let client = SequencedSessionListClient(
+            projects: [project],
+            results: [
+                .success(SessionsPage(sessions: [existing])),
+                .failure(sessionListPolicyError(retryAfterMs: 15_000)),
+                .success(SessionsPage(sessions: [refreshed]))
+            ]
+        )
+        let appStore = AppStore()
+        var now = Date(timeIntervalSince1970: 1_780_000_000)
+        var requestedSleeps: [UInt64] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            sessionListNow: { now },
+            sessionListSleep: { nanoseconds in
+                requestedSleeps.append(nanoseconds)
+                now = now.addingTimeInterval(Double(nanoseconds) / 1_000_000_000)
+            }
+        )
+        store.selectedProjectID = project.id
+
+        await store.refreshAll(autoAttach: false)
+        do {
+            try await store.refreshWorkspaceSessions(projectID: project.id)
+            XCTFail("第一次手动刷新应记录 gateway 冷却窗口")
+        } catch {
+            // 预期的 thread/list 短期限流；下一次手动刷新负责等待并真正重试。
+        }
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(requestedSleeps, [15_000_000_000])
+        XCTAssertEqual(client.sessionsPageCallCount, 3)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [refreshed.id])
     }
 
     func testSessionLibrarySkipsSelectedWorkspaceAlreadyLoadedByRefreshAll() async {

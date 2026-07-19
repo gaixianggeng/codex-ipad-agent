@@ -1278,14 +1278,17 @@ extension SessionStore {
         }
         if let policyFailure = sessionListPolicyFailure(from: error) {
             registerSessionListCooldown(policyFailure, for: workspace)
+            let message = L10n.plural(
+                "ui.session_list_retry_seconds_count",
+                count: policyFailure.retryAfterSeconds
+            )
             if sessions(forProjectID: workspace.id).isEmpty {
                 // 首屏还没有可展示数据时保留一个友好错误标记，让 bootstrap 按 cooldown 继续自愈。
-                let message = L10n.plural("ui.session_list_retry_seconds_count", count: policyFailure.retryAfterSeconds)
                 setStatusMessage(message)
                 setErrorMessage(message)
             } else {
-                // 已有列表时继续展示旧数据，限流只是后台同步延迟，不应升级成红色全局错误。
-                setStatusMessage(L10n.text("ui.the_session_list_refreshed_too_quickly_existing_sessions"))
+                // 已有列表时继续展示旧数据，同时给出准确等待时间；不能让旧缓存看起来像已刷新成功。
+                setStatusMessage(message)
                 setErrorMessage(nil)
             }
             return
@@ -1489,6 +1492,9 @@ extension SessionStore {
         sessionListCooldownUntilByBudgetKey = [:]
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
         sessionListReconciliationTasksByProjectID = [:]
+        missingRunningSessionReconciliationTasksByID.values.forEach { $0.cancel() }
+        missingRunningSessionReconciliationTasksByID = [:]
+        missingRunningSessionStateByID = [:]
         historyPreviousCursorBySessionID = [:]
         historyHasMoreBeforeBySessionID = [:]
         historySnapshotSeqBySessionID = [:]

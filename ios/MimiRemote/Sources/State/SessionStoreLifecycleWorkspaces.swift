@@ -467,6 +467,13 @@ extension SessionStore {
             throw WorkspaceSessionRefreshError.workspaceUnavailable
         }
 
+        if let cooldownDelay = sessionListCooldownDelayNanoseconds(for: workspace) {
+            // 用户已经明确点了刷新：尊重 gateway 的 retry-after，但窗口结束后必须真正请求一次。
+            // 旧逻辑直接返回缓存，会让按钮看似刷新成功，实际要等后台轮询才看到新运行会话。
+            await sessionListSleep(cooldownDelay)
+            try Task.checkCancellation()
+        }
+
         let requestToken = beginSessionPageRequest(projectID: workspace.id)
         defer { finishSessionPageRequest(projectID: workspace.id, token: requestToken) }
 
