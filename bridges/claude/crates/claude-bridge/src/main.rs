@@ -79,6 +79,6 @@ fn socket_arg() -> Option<PathBuf> {
 mod tests {
     #[test]
     fn package_is_the_compatibility_release() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.3");
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.4");
     }
 }

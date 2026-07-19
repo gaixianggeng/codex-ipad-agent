@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "alleycat-claude-bridge"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alleycat-bridge-core",
  "alleycat-codex-proto",
