@@ -47,8 +47,8 @@ def app_store_connect_token
 end
 
 class AscClient
-  def initialize(token)
-    @token = token
+  def initialize(&token_provider)
+    @token_provider = token_provider
   end
 
   def get(path, query = {})
@@ -72,7 +72,9 @@ class AscClient
       query: query.empty? ? nil : URI.encode_www_form(query)
     )
     request = Net::HTTP.const_get(method.capitalize).new(uri)
-    request["Authorization"] = "Bearer #{@token}"
+    # Apple 处理构建偶尔会超过 JWT 的 20 分钟有效期。每次请求重新签发短期
+    # token，避免长轮询在构建即将可用时因为 401 中断。
+    request["Authorization"] = "Bearer #{@token_provider.call}"
     if body
       request["Content-Type"] = "application/json"
       request.body = JSON.generate(body)
@@ -109,14 +111,24 @@ def ipa_metadata(ipa)
   end
 end
 
-ipa = ARGV.fetch(0) { abort_release("用法：distribute_internal_build.rb APP.ipa") }
 expected_bundle_id = required_env("IOS_BUNDLE_ID")
 group_id = required_env("TESTFLIGHT_BETA_GROUP_ID")
 whats_new = required_env("TESTFLIGHT_WHATS_NEW")
-metadata = ipa_metadata(ipa)
+ipa = ARGV.fetch(0) { abort_release("用法：distribute_internal_build.rb APP.ipa|--resume") }
+metadata = if ipa == "--resume"
+             # 上传成功后本地临时目录可能已被清理。恢复分发只需要精确定位 ASC
+             # 中的构建，不应为了读取 Info.plist 再次归档或重复上传。
+             {
+               bundle_id: expected_bundle_id,
+               version: required_env("TESTFLIGHT_RELEASE_VERSION"),
+               build: required_env("TESTFLIGHT_BUILD_NUMBER")
+             }
+           else
+             ipa_metadata(ipa)
+           end
 abort_release("Bundle ID 不匹配：#{metadata[:bundle_id]}") unless metadata[:bundle_id] == expected_bundle_id
 
-client = AscClient.new(app_store_connect_token)
+client = AscClient.new { app_store_connect_token }
 app = client.get("/v1/apps", { "filter[bundleId]" => expected_bundle_id, "limit" => "1" }).fetch("data").first
 abort_release("App Store Connect 中找不到 #{expected_bundle_id}") unless app
 
