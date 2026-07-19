@@ -10,6 +10,42 @@ enum GPT56ModelGridCatalog {
     static let modelOrder = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     static let efforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh]
 
+    static func effectiveModelID(
+        selectedModelID: String?,
+        options: [CodexAppServerModelOption]
+    ) -> String? {
+        if let selectedModelID = selectedModelID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !selectedModelID.isEmpty {
+            return selectedModelID
+        }
+
+        // model == nil 表示沿用服务端默认模型；展示层必须解析成真实模型，
+        // 否则默认 GPT-5.6 会被误判为普通模型，重复显示独立推理入口。
+        let visibleOptions = options.filter { !$0.hidden }
+        return (visibleOptions.first(where: \.isDefault) ?? visibleOptions.first)?.model
+    }
+
+    static func isGridModel(_ modelID: String?) -> Bool {
+        guard let modelID else { return false }
+        return modelOrder.contains(modelID.lowercased())
+    }
+
+    static func triggerTitle(
+        for modelID: String,
+        effort: CodexAppServerReasoningEffort
+    ) -> String? {
+        guard isGridModel(modelID) else { return nil }
+        return "5.6 \(shortTitle(for: modelID)) · \(effortTitle(effort))"
+    }
+
+    static func showsStandaloneReasoningControl(
+        runtimeProvider: String?,
+        modelID: String?
+    ) -> Bool {
+        runtimeProvider == "claude" || !isGridModel(modelID)
+    }
+
     static func rows(from options: [CodexAppServerModelOption]) -> [CodexAppServerModelOption] {
         let visible = options.filter { !$0.hidden }
         return modelOrder.compactMap { id in

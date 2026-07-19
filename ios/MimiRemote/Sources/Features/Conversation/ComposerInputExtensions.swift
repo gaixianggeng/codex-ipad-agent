@@ -3,6 +3,59 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
+struct ComposerToolbarControlLabel: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let title: String?
+    let systemImage: String
+    let trailingSystemImage: String?
+    let isSelected: Bool
+    let tint: Color?
+    let titleMaxWidth: CGFloat?
+    let accessibilityLabel: String
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.accent)
+
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 14, weight: .semibold))
+            if let title {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: titleMaxWidth, alignment: .leading)
+            }
+            if let trailingSystemImage {
+                Image(systemName: trailingSystemImage)
+                    .font(themeStore.uiFont(size: 13, weight: .bold))
+                    .accessibilityHidden(true)
+            }
+        }
+        .font(themeStore.uiFont(.caption, weight: .semibold))
+        .foregroundStyle(foreground)
+        .frame(height: 44)
+        .padding(.horizontal, title == nil ? 0 : 12)
+        .frame(minWidth: 44)
+        .background(
+            isSelected ? tokens.accent : tokens.elevatedSurface,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .modifier(
+            ComposerKeycapSurface(
+                tokens: tokens,
+                cornerRadius: 12,
+                usesAccentSurface: isSelected
+            )
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
     var isPhoneComposer: Bool {

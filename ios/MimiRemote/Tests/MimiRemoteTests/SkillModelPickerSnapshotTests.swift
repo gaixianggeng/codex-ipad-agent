@@ -6,6 +6,78 @@ import XCTest
 
 @MainActor
 final class SkillModelPickerSnapshotTests: XCTestCase {
+    func testEffectiveModelUsesExplicitSelectionBeforeServerDefault() {
+        let options = [
+            CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6 Sol", isDefault: true),
+            CodexAppServerModelOption(id: "gpt-5.6-terra", title: "GPT-5.6 Terra")
+        ]
+
+        XCTAssertEqual(
+            GPT56ModelGridCatalog.effectiveModelID(selectedModelID: "gpt-5.6-terra", options: options),
+            "gpt-5.6-terra"
+        )
+        XCTAssertTrue(GPT56ModelGridCatalog.isGridModel("gpt-5.6-terra"))
+        XCTAssertNotNil(GPT56ModelGridCatalog.triggerTitle(for: "gpt-5.6-terra", effort: .high))
+        XCTAssertFalse(
+            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
+                runtimeProvider: "codex",
+                modelID: "gpt-5.6-terra"
+            )
+        )
+    }
+
+    func testEffectiveModelResolvesDefaultGridModelWithoutExplicitSelection() {
+        let options = [
+            CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5"),
+            CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6 Sol", isDefault: true)
+        ]
+
+        let modelID = GPT56ModelGridCatalog.effectiveModelID(selectedModelID: nil, options: options)
+
+        XCTAssertEqual(modelID, "gpt-5.6-sol")
+        XCTAssertTrue(GPT56ModelGridCatalog.isGridModel(modelID))
+        XCTAssertEqual(
+            modelID.flatMap { GPT56ModelGridCatalog.triggerTitle(for: $0, effort: .xhigh) },
+            "5.6 Sol · \(GPT56ModelGridCatalog.effortTitle(.xhigh))"
+        )
+        XCTAssertFalse(
+            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
+                runtimeProvider: nil,
+                modelID: modelID
+            )
+        )
+    }
+
+    func testNonGridAndClaudeDefaultsKeepStandaloneReasoningPath() {
+        let nonGridOptions = [CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true)]
+        let claudeOptions = [
+            CodexAppServerModelOption(
+                id: "sonnet",
+                title: "Claude Sonnet 5",
+                runtimeProvider: "claude",
+                isDefault: true
+            )
+        ]
+
+        let nonGridModelID = GPT56ModelGridCatalog.effectiveModelID(selectedModelID: nil, options: nonGridOptions)
+        let claudeModelID = GPT56ModelGridCatalog.effectiveModelID(selectedModelID: nil, options: claudeOptions)
+
+        XCTAssertFalse(GPT56ModelGridCatalog.isGridModel(nonGridModelID))
+        XCTAssertFalse(GPT56ModelGridCatalog.isGridModel(claudeModelID))
+        XCTAssertTrue(
+            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
+                runtimeProvider: "codex",
+                modelID: nonGridModelID
+            )
+        )
+        XCTAssertTrue(
+            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
+                runtimeProvider: "claude",
+                modelID: "gpt-5.6-sol"
+            )
+        )
+    }
+
     func testSkillCardsAndModelGridDarkAppearance() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
         let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
@@ -117,6 +189,45 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
         assertSnapshot(
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 440, height: 360))
+        )
+    }
+
+    func testComposerModelTriggerFastIndicator() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
+        let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = .light
+
+        let view = HStack(spacing: 18) {
+            ComposerToolbarControlLabel(
+                title: "5.6 Sol · 极高",
+                systemImage: "cpu",
+                trailingSystemImage: nil,
+                isSelected: false,
+                tint: nil,
+                titleMaxWidth: 150,
+                accessibilityLabel: "切换模型与推理强度"
+            )
+
+            ComposerToolbarControlLabel(
+                title: "5.6 Sol · 极高",
+                systemImage: "cpu",
+                trailingSystemImage: "bolt.fill",
+                isSelected: false,
+                tint: nil,
+                titleMaxWidth: 150,
+                accessibilityLabel: "切换模型与推理强度，快速"
+            )
+        }
+        .padding(28)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .frame(width: 520, height: 120)
+        .background(themeStore.tokens(for: .light).background)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 520, height: 120))
         )
     }
 }

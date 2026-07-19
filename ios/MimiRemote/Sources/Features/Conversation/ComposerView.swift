@@ -1359,43 +1359,21 @@ struct ComposerView: View {
     func composerToolbarControlLabel(
         title: String?,
         systemImage: String,
+        trailingSystemImage: String? = nil,
         isSelected: Bool = false,
         tint: Color? = nil,
         titleMaxWidth: CGFloat? = nil,
         accessibilityLabel: String
     ) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.accent)
-
-        return HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 14, weight: .semibold))
-            if let title {
-                Text(title)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: titleMaxWidth, alignment: .leading)
-            }
-        }
-        .font(themeStore.uiFont(.caption, weight: .semibold))
-        .foregroundStyle(foreground)
-        .frame(height: 44)
-        .padding(.horizontal, title == nil ? 0 : 12)
-        .frame(minWidth: 44)
-        .background(
-            isSelected ? tokens.accent : tokens.elevatedSurface,
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        ComposerToolbarControlLabel(
+            title: title,
+            systemImage: systemImage,
+            trailingSystemImage: trailingSystemImage,
+            isSelected: isSelected,
+            tint: tint,
+            titleMaxWidth: titleMaxWidth,
+            accessibilityLabel: accessibilityLabel
         )
-        .modifier(
-            ComposerKeycapSurface(
-                tokens: tokens,
-                cornerRadius: 12,
-                usesAccentSurface: isSelected
-            )
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityLabel(accessibilityLabel)
     }
 
     @ViewBuilder
@@ -1523,6 +1501,7 @@ struct ComposerView: View {
                 composerToolbarControlLabel(
                     title: modelPickerTriggerTitle,
                     systemImage: "cpu",
+                    trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
                     titleMaxWidth: 150,
                     accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
                 )
@@ -1530,7 +1509,7 @@ struct ComposerView: View {
             }
             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
-            .accessibilityValue(modelPickerTriggerTitle)
+            .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
             .accessibilityHint(L10n.text("ui.opens_the_three_by_three_model_selector_swipeable"))
             .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
                 ModelReasoningGridPicker(
@@ -1538,7 +1517,7 @@ struct ComposerView: View {
                     selection: selectedModelGridSelection,
                     selectedModelID: composerState.turnOptions.model,
                     isRefreshing: sessionStore.isRefreshingAppServerModels,
-                    isFastMode: composerState.turnOptions.serviceTier == "priority",
+                    isFastMode: isFastModeSelected,
                     onSelect: { option, effort in
                         selectGridModel(option, effort: effort)
                     },
@@ -1567,20 +1546,37 @@ struct ComposerView: View {
             composerToolbarControlLabel(
                 title: selectedModelSummaryTitle,
                 systemImage: "cpu",
+                trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
                 titleMaxWidth: 140,
                 accessibilityLabel: L10n.text("ui.switch_model")
             )
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.switch_model"))
-        .accessibilityValue(selectedModelSummaryTitle)
+        .accessibilityValue(modelShortcutAccessibilityValue(for: selectedModelSummaryTitle))
         .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
+    }
+
+    var effectiveModelID: String? {
+        GPT56ModelGridCatalog.effectiveModelID(
+            selectedModelID: composerState.turnOptions.model,
+            options: modelOptionsForMenu
+        )
+    }
+
+    var isFastModeSelected: Bool {
+        composerState.turnOptions.serviceTier == "priority"
+    }
+
+    func modelShortcutAccessibilityValue(for title: String) -> String {
+        isFastModeSelected ? "\(title) · \(L10n.text("ui.fast"))" : title
     }
 
     var selectedModelGridSelection: GPT56ModelGridSelection {
         let rows = GPT56ModelGridCatalog.rows(from: modelOptionsForMenu)
-        let selectedID = composerState.turnOptions.model
-        let option = rows.first(where: { $0.model == selectedID })
+        let option = effectiveModelID.flatMap { effectiveModelID in
+            rows.first { $0.model.caseInsensitiveCompare(effectiveModelID) == .orderedSame }
+        }
             ?? rows.first(where: \.isDefault)
             ?? rows.first
         let effort = composerState.turnOptions.reasoningEffort.flatMap { selected in
@@ -1595,23 +1591,22 @@ struct ComposerView: View {
     }
 
     var modelPickerTriggerTitle: String {
-        guard let selectedModel = composerState.turnOptions.model,
-              GPT56ModelGridCatalog.modelOrder.contains(selectedModel.lowercased())
+        guard let selectedModel = effectiveModelID,
+              let title = GPT56ModelGridCatalog.triggerTitle(
+                  for: selectedModel,
+                  effort: composerState.turnOptions.reasoningEffort ?? selectedModelGridSelection.effort
+              )
         else {
             return selectedModelSummaryTitle
         }
-        let model = GPT56ModelGridCatalog.shortTitle(for: selectedModel)
-        let effort = composerState.turnOptions.reasoningEffort ?? selectedModelGridSelection.effort
-        return "5.6 \(model) · \(GPT56ModelGridCatalog.effortTitle(effort))"
+        return title
     }
 
     var showsStandaloneReasoningEffortControl: Bool {
-        guard selectedSessionRuntimeProviderForModelMenu != "claude",
-              let selectedModel = composerState.turnOptions.model
-        else {
-            return true
-        }
-        return !GPT56ModelGridCatalog.modelOrder.contains(selectedModel.lowercased())
+        GPT56ModelGridCatalog.showsStandaloneReasoningControl(
+            runtimeProvider: selectedSessionRuntimeProviderForModelMenu,
+            modelID: effectiveModelID
+        )
     }
 
     func selectGridModel(_ option: CodexAppServerModelOption, effort: CodexAppServerReasoningEffort) {
