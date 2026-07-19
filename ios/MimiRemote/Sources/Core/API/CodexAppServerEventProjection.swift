@@ -108,6 +108,13 @@ extension CodexAppServerSessionRuntime {
     func updateContext(from notification: CodexAppServerNotification) {
         let params = notification.params?.objectValue ?? [:]
         switch notification.method {
+        case "account/rateLimits/updated":
+            guard let summary = rateLimitSummary(fromPayload: notification.params) else {
+                return
+            }
+            // Claude headless 会在真实 API 响应后推送 utilization；立即合并账号快照，
+            // 避免设置页必须再次手动刷新才能看到剩余百分比。
+            applyAccountRateLimit(summary)
         case "thread/started":
             guard let thread = params["thread"]?.objectValue,
                   let session = try? agentSession(from: thread, projects: (try? projectsFromCache()) ?? [], fallbackProject: nil, forceRunning: true) else {

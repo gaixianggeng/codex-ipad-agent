@@ -2361,13 +2361,14 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_allowed_silent_non_allowed_warns() {
+    fn rate_limit_allowed_is_silent_and_non_allowed_warns() {
         let mut s = state();
         let allowed = ClaudeOutbound::RateLimitEvent(RateLimitEnvelope {
             rate_limit_info: crate::pool::claude_protocol::RateLimitInfo {
                 status: "allowed".into(),
+                utilization: Some(0.57),
                 resets_at: None,
-                rate_limit_type: None,
+                rate_limit_type: Some("five_hour".into()),
                 overage_status: None,
                 is_using_overage: None,
                 extra: Default::default(),
@@ -2380,8 +2381,9 @@ mod tests {
         let warning = ClaudeOutbound::RateLimitEvent(RateLimitEnvelope {
             rate_limit_info: crate::pool::claude_protocol::RateLimitInfo {
                 status: "warning".into(),
+                utilization: Some(0.91),
                 resets_at: Some(123),
-                rate_limit_type: None,
+                rate_limit_type: Some("five_hour".into()),
                 overage_status: None,
                 is_using_overage: None,
                 extra: Default::default(),

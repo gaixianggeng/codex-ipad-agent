@@ -3368,40 +3368,6 @@
         }
       }
     },
-    "ui.claude_code_headless_currently_does_not_provide_full": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Claude Code headless currently does not provide full usage percentage; after receiving the official rate-limit event, it will display the real window and reset time, and will not estimate or crawl web page data."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Claude Code headless 当前不提供完整使用百分比；收到官方 rate-limit 事件后会显示真实窗口与重置时间，不会估算或抓取网页数据。"
-          }
-        }
-      }
-    },
-    "ui.claude_dosage": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Claude usage"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Claude 用量"
-          }
-        }
-      }
-    },
     "ui.claude_headless_has_not_yet_returned_to_the": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -4078,23 +4044,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Codex 用量双环自适应"
-          }
-        }
-      }
-    },
-    "ui.codex_usage_ff1ef7d7": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Codex usage"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Codex 用量"
           }
         }
       }
@@ -10737,23 +10686,6 @@
         }
       }
     },
-    "ui.it_only_takes_effect_when_the_session_is": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "It only takes effect when the session is running or waiting for approval in the foreground."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "仅在前台选中会话运行或等待审批时生效。"
-          }
-        }
-      }
-    },
     "ui.it_will_be_confirmed_again_before_execution_and": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -11127,23 +11059,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "仅观察"
-          }
-        }
-      }
-    },
-    "ui.keep_the_screen_on_during_operation": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keep the screen on during operation"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "运行中保持屏幕常亮"
           }
         }
       }

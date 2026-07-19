@@ -555,6 +555,11 @@ pub struct RateLimitEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RateLimitInfo {
     pub status: String,
+    /// Claude Code reports utilization as a 0...1 ratio. Keep this typed
+    /// instead of leaving it in `extra`, otherwise the bridge cannot expose
+    /// the real account percentage through the Codex-compatible API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
     #[serde(default, rename = "resetsAt", skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
     #[serde(
@@ -811,6 +816,7 @@ mod tests {
             "type": "rate_limit_event",
             "rate_limit_info": {
                 "status": "allowed",
+                "utilization": 0.57,
                 "resetsAt": 1777345200_i64,
                 "rateLimitType": "five_hour",
                 "overageStatus": "rejected",
@@ -823,6 +829,7 @@ mod tests {
         match evt {
             ClaudeOutbound::RateLimitEvent(env) => {
                 assert_eq!(env.rate_limit_info.status, "allowed");
+                assert_eq!(env.rate_limit_info.utilization, Some(0.57));
                 assert_eq!(env.rate_limit_info.resets_at, Some(1777345200));
                 assert_eq!(env.rate_limit_info.is_using_overage, Some(false));
                 assert!(

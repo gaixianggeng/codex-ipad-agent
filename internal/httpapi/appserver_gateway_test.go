@@ -333,6 +333,15 @@ func TestClaudeGatewayPassesThroughObservedRateLimitResetWithoutPercent(t *testi
 	}
 }
 
+func TestClaudeGatewayPassesThroughObservedRateLimitUtilization(t *testing.T) {
+	policy := &appServerGatewayPolicy{runtimeID: "claude"}
+	payload := []byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"partial","primary":{"usedPercent":57,"resetsAt":1770000000,"windowDurationMins":300}}}}`)
+	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if policyErr != nil || !forward || !bytes.Equal(forwarded, payload) || !bytes.Contains(forwarded, []byte(`"usedPercent":57`)) {
+		t.Fatalf("Claude rate_limit_event 的真实 utilization 必须透明透传：forward=%t err=%+v payload=%s", forward, policyErr, forwarded)
+	}
+}
+
 func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
 	env := buildClaudeBridgeEnv(map[string]string{
 		"CLAUDE_BRIDGE_BYPASS_PERMISSIONS": "true",

@@ -656,16 +656,37 @@ extension ConversationDataFlowTests {
         transportResponse(
             claudeTransport,
             id: rateLimitRead.id,
-            result: #"{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"partial","unavailableReason":"usage_percentage_unavailable","rateLimitReachedType":"rejected","primary":{"resetsAt":1780494300,"windowDurationMins":300}}}"#
+            result: #"{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"partial","primary":{"usedPercent":57,"resetsAt":1780494300,"windowDurationMins":300}}}"#
         )
 
         let summary = try await refreshTask.value
         XCTAssertEqual(summary?.limitID, "claude")
         XCTAssertEqual(summary?.availability, "partial")
         XCTAssertEqual(summary?.primaryResetsAt, 1_780_494_300)
-        XCTAssertNil(summary?.primaryUsedPercent)
+        XCTAssertEqual(summary?.primaryUsedPercent, 57)
+        XCTAssertEqual(summary?.primaryWindowDurationMins, 300)
         let codexMessages = await codexTransport.sentMessages()
         XCTAssertTrue(codexMessages.isEmpty)
+    }
+
+    func testClaudeRateLimitNotificationAppliesObservedUtilization() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { FakeCodexAppServerTransport() },
+            configProvider: { makeDirectAppServerConfig(project: AgentProject(id: "proj", name: "Demo", path: "/tmp/demo")) }
+        )
+        let notification = try decodeAppServerNotification(
+            #"{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"claude","limitName":"Claude","availability":"partial","primary":{"usedPercent":57,"resetsAt":1780494300,"windowDurationMins":300}}}}"#
+        )
+
+        await runtime.handle(notification)
+        let summary = await runtime.accountRateLimit
+
+        XCTAssertEqual(summary?.limitID, "claude")
+        XCTAssertEqual(summary?.primaryUsedPercent, 57)
+        XCTAssertEqual(summary?.primaryResetsAt, 1_780_494_300)
     }
 
     func testMultiRuntimeCompositeCursorCarriesBuffersAndContinuesRuntimeCursors() async throws {

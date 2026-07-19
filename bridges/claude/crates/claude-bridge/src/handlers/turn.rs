@@ -478,13 +478,17 @@ async fn run_event_pump(mut args: EventPumpArgs) {
 
         let payload = event.payload;
         // Side-effect routes: refresh bridge caches and bridge HITL prompts.
+        let mut account_notifications = Vec::new();
         match &payload {
             ClaudeOutbound::System(crate::pool::claude_protocol::SystemEvent::Init(init)) => {
                 args.state.refresh_init_cache((**init).clone());
             }
             ClaudeOutbound::RateLimitEvent(env) => {
-                args.state
+                let infos = args
+                    .state
                     .refresh_rate_limit_cache(env.rate_limit_info.clone());
+                account_notifications
+                    .push(super::lifecycle::rate_limit_updated_notification(&infos));
             }
             ClaudeOutbound::ControlRequest(value) => {
                 // Spawn the HITL handler off the pump so the codex round-trip
@@ -546,7 +550,9 @@ async fn run_event_pump(mut args: EventPumpArgs) {
             }
         }
 
-        let notifications = translator.translate(payload);
+        let notifications = account_notifications
+            .into_iter()
+            .chain(translator.translate(payload));
         for notif in notifications {
             if !state_should_emit(&args.state, &notif) {
                 continue;

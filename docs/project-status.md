@@ -45,8 +45,8 @@ iPhone / iPad SwiftUI App
 | Git | status、diff、文件和 hunk 级 stage/unstage/revert、commit、push、草稿 PR 和 PR 状态 | GitHub Review API 级 inline comment 尚未接入 |
 | 输入输出 | 富 Markdown、图片输入、历史图片按需加载、语音转写、文件安全读取和 QuickLook；当前会话可导出 ANSI 清洗后的有界 UTF-8 日志，导出头部不读取连接凭据 | PDF/大型 artifact 的富预览和后台下载尚未实现；日志正文可能包含用户命令、代码和工具输出，分享前需自行检查 |
 | 能力发现 | Skills 和 MCP 配置只读浏览、allowlist actions | 不在 iPad 上启停 MCP、修改 Codex 配置或处理 OAuth |
-| 移动体验 | iPhone/iPad 自适应、深浅色、主题和字号、Codex 5h/7d 用量、提醒、运行态通知、通知点击回到当前 Mac 会话、前台保持常亮；通知未授权时提醒仍可保留为 App 内状态并明确告知，冷启动/回前台清理过期提醒；通知 payload 不含 Token 或明文 endpoint，错 Mac 只提示手动切换档案；凭据失效终止重试；NWPath 事件按递增序号交付并丢弃迟到旧状态，离线暂停、恢复单次重连和 jitter 退避，首次 unknown→在线只在已有网络错误或挂起会话时恢复一次；首次配对提交后最多等待 45 秒恢复项目/会话，已有档案修复或切换等待 10 秒，超时保留 Keychain 凭据且打开设置可直接重试；保存、重命名和删除多台 Mac 档案，每台独立 Keychain Token，验证后单活切换；重命名只更新非敏感显示名，不重建连接；忘记/删除凭据必须二次确认并在执行前重验目标档案 | 后台 push、离线通知、连接档案云同步和离线队列持久化尚未实现 |
-| Claude | 仓库内 `alleycat-claude-bridge >= 0.2.1` 实验通道，支持审批闭环、历史记录过滤和并列额度状态入口 | 默认关闭；每个 WebSocket 一个 bridge；不支持 goal、archive、fork；Claude Code 2.1.92 headless 不执行 statusline sink，通常没有 5h/7d 百分比，只能展示 `rate_limit_event` 实际提供的重置/阻断信息或明确暂无数据；CLI 凭证失效时需在 Mac 重新登录 |
+| 移动体验 | iPhone/iPad 自适应、深浅色、主题和字号、Codex 5h/7d 用量、提醒、运行态通知、通知点击回到当前 Mac 会话；通知未授权时提醒仍可保留为 App 内状态并明确告知，冷启动/回前台清理过期提醒；通知 payload 不含 Token 或明文 endpoint，错 Mac 只提示手动切换档案；凭据失效终止重试；NWPath 事件按递增序号交付并丢弃迟到旧状态，离线暂停、恢复单次重连和 jitter 退避，首次 unknown→在线只在已有网络错误或挂起会话时恢复一次；首次配对提交后最多等待 45 秒恢复项目/会话，已有档案修复或切换等待 10 秒，超时保留 Keychain 凭据且打开设置可直接重试；保存、重命名和删除多台 Mac 档案，每台独立 Keychain Token，验证后单活切换；重命名只更新非敏感显示名，不重建连接；忘记/删除凭据必须二次确认并在执行前重验目标档案 | 后台 push、离线通知、连接档案云同步和离线队列持久化尚未实现 |
+| Claude | 仓库内 `alleycat-claude-bridge >= 0.2.1` 实验通道，当前 `0.2.3` 支持审批闭环、历史记录过滤和额度百分比 | 默认关闭；每个 WebSocket 一个 bridge；不支持 goal、archive、fork；Claude Code 2.1.92 headless 不执行 statusline sink，仅展示官方 `rate_limit_event` 已观测窗口的真实百分比与重置时间，并按 5h/7d 类型合并缓存；尚无任意时刻主动读取双窗口快照的官方 headless API，未观测到时明确显示暂无数据；CLI 凭证失效时需在 Mac 重新登录 |
 
 完整能力矩阵见 [Codex Mac App 功能对照](codex-mac-feature-parity.md)。
 
@@ -69,7 +69,7 @@ iPhone / iPad SwiftUI App
 - 信息层级优先于功能平铺；常用动作直接可达，低频和危险动作收进菜单或 Inspector。
 - iPad 使用工作台侧栏；iPhone 进入会话详情后隐藏底部 TabBar，返回列表时恢复。
 - 组件圆角、按钮尺寸和选中态保持同一视觉语言；深色模式避免高饱和紫色和低对比文字。
-- Codex 与已启用 Claude 的额度状态在设置页并列；Codex 展示 5h/7d 双窗口，Claude 只展示 headless 协议真实可得的数据，缺失百分比不显示为 0%，且不抓取私有网页接口。额度耗尽复用阻断提示，不叠加重复警告。
+- Codex 与已启用 Claude 的额度状态收进设置页同一个“AI 用量”模块；Codex 展示 5h/7d 双窗口，Claude 只展示 headless 协议真实可得的数据，缺失百分比不显示为 0%，且不抓取私有网页接口。额度耗尽复用阻断提示，不叠加重复警告。
 - 用户打开过的目录才进入工作区列表；后端扫描候选只用于“打开目录”，不能自动污染工作区。
 
 ### 构建与验证

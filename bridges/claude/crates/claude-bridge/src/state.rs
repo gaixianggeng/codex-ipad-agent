@@ -92,7 +92,20 @@ pub struct ClaudeCaches {
     pub skills: Vec<String>,
     pub slash_commands: Vec<String>,
     pub agents: Vec<String>,
-    pub rate_limit_info: Option<RateLimitInfo>,
+    /// Claude 每次事件只携带一个窗口；按类型缓存，避免 5h/7d 连续到达时
+    /// 后一个把前一个覆盖掉。
+    pub rate_limit_infos: HashMap<String, RateLimitInfo>,
+}
+
+impl ClaudeCaches {
+    pub fn refresh_rate_limit(&mut self, info: RateLimitInfo) -> Vec<RateLimitInfo> {
+        let key = info
+            .rate_limit_type
+            .clone()
+            .unwrap_or_else(|| "unknown".into());
+        self.rate_limit_infos.insert(key, info);
+        self.rate_limit_infos.values().cloned().collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -280,9 +293,9 @@ impl ConnectionState {
         slot.last_init = Some(init);
     }
 
-    pub fn refresh_rate_limit_cache(&self, info: RateLimitInfo) {
+    pub fn refresh_rate_limit_cache(&self, info: RateLimitInfo) -> Vec<RateLimitInfo> {
         let mut slot = self.caches.lock().unwrap();
-        slot.rate_limit_info = Some(info);
+        slot.refresh_rate_limit(info)
     }
 
     pub fn record_turn_started(&self, thread_id: &str, turn_id: String, started_at: i64) {
