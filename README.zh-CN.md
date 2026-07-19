@@ -31,7 +31,7 @@
 </p>
 
 <p align="center">
-  <img src="artifacts/social-preview/mimi-remote-social-preview.png" alt="Mimi Remote 在 iPad 和 iPhone 上运行 Codex" width="100%" />
+  <img src="artifacts/social-preview/mimi-remote-social-preview-v2.png" alt="Mimi Remote 在相互分离的 iPad 和 iPhone 上运行 Codex" width="100%" />
 </p>
 
 Mimi Remote 通过 Tailscale 连接用户自己 Mac 上的 `agentd`，在明确授权的工作区内使用 Codex；Claude Code 通过仓库内的可选 Rust bridge 作为实验通道接入。代码、Codex / Claude 凭证和完整会话都留在用户自己的设备上，不经过项目维护者的服务器。

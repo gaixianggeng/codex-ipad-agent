@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <img src="artifacts/social-preview/mimi-remote-social-preview.png" alt="Mimi Remote running Codex on iPad and iPhone" width="100%" />
+  <img src="artifacts/social-preview/mimi-remote-social-preview-v2.png" alt="Mimi Remote running Codex on a separate iPad and iPhone" width="100%" />
 </p>
 
 Mimi Remote connects to your Mac through Tailscale and keeps source code, agent credentials, and full sessions on your own devices. Codex is the primary supported runtime; an optional Claude Code bridge is available as an experimental channel.
