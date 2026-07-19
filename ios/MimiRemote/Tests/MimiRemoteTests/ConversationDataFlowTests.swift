@@ -590,9 +590,13 @@ final class ConversationDataFlowTests: XCTestCase {
 
         host.view.frame = window.bounds
         host.view.layoutIfNeeded()
-        try await Task.sleep(nanoseconds: 700_000_000)
 
-        let firstScrollView = try XCTUnwrap(conversationTimelineScrollView(in: host.view))
+        // 全量套件下 List 快照提交可能明显晚于固定 sleep；轮询真实几何但不主动滚动，
+        // 仍严格要求业务逻辑自行收敛到尾部 4pt 内。
+        let firstScrollView = try await waitForConversationTimelineAtBottom(
+            in: host.view,
+            timeout: 8
+        )
         XCTAssertLessThanOrEqual(distanceFromBottom(firstScrollView), 4)
 
         // 先把会话 A 人工停在顶部，再切换会话；会话 B 必须丢弃旧 contentOffset 并默认展示最新消息。
@@ -601,10 +605,11 @@ final class ConversationDataFlowTests: XCTestCase {
             animated: false
         )
         sessionStore.selectedSessionID = secondSessionID
-        try await Task.sleep(nanoseconds: 900_000_000)
-        host.view.layoutIfNeeded()
 
-        let secondScrollView = try XCTUnwrap(conversationTimelineScrollView(in: host.view))
+        let secondScrollView = try await waitForConversationTimelineAtBottom(
+            in: host.view,
+            timeout: 8
+        )
         XCTAssertLessThanOrEqual(distanceFromBottom(secondScrollView), 4)
     }
 
@@ -673,7 +678,10 @@ final class ConversationDataFlowTests: XCTestCase {
         // 全量套件会同时制造较多 MainActor/UI 工作，固定等待 700ms 容易在 List
         // 尚未提交最终快照时提前断言。轮询只等待现有重锚逻辑收敛，不主动改滚动位置，
         // 因此仍然保留“最终必须贴底 4pt 以内”的真实验收标准。
-        let scrollView = try await waitForConversationTimelineAtBottom(in: host.view)
+        let scrollView = try await waitForConversationTimelineAtBottom(
+            in: host.view,
+            timeout: 8
+        )
         XCTAssertLessThanOrEqual(distanceFromBottom(scrollView), 4)
     }
 

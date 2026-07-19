@@ -45,6 +45,7 @@ struct UnifiedWorkbenchShell: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @Binding var showingInspector: Bool
+    @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var selection: AppDestination? = .sessions
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var compactSessionPath: [AppDestination] = []
@@ -98,15 +99,19 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeNavigation(for: layout)
             }
             .onChange(of: selection) { _, destination in
-                guard case .session(let sessionID) = destination,
-                      sessionID != sessionStore.selectedSessionID,
-                      let session = sessionStore.sessionLibrarySessions.first(where: { $0.id == sessionID })
-                else { return }
-                Task { await sessionStore.selectSession(session) }
+                handleSelectionChange(destination)
             }
             .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
-                guard let sessionID else { return }
+                guard let sessionID else {
+                    if restorationRoute.detailSessionID != nil {
+                        open(rootDestination(for: restorationRoute.rootPage), layout: layout)
+                    }
+                    return
+                }
                 open(.session(sessionID), layout: layout)
+            }
+            .onChange(of: restorationRoute) { _, _ in
+                synchronizeNavigation(for: layout)
             }
         }
         .background(tokens.background.ignoresSafeArea())
@@ -527,6 +532,17 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func open(_ destination: AppDestination, layout: WorkbenchLayout) {
+        let sourcePage = restorationRoute.rootPage
+        switch destination {
+        case .sessions:
+            restorationRoute = .sessions
+            sessionStore.returnToSessionList()
+        case .workspaces:
+            restorationRoute = .workspaces
+            sessionStore.returnToSessionList()
+        case .session(let sessionID):
+            restorationRoute = .session(id: sessionID, source: sourcePage)
+        }
         selection = destination
 
         guard layout.usesCompactNavigation else {
@@ -576,9 +592,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func synchronizeNavigation(for layout: WorkbenchLayout) {
-        let destination = selection
-            ?? sessionStore.selectedSessionID.map(AppDestination.session)
-            ?? .sessions
+        let destination = destination(for: restorationRoute)
         selection = destination
 
         guard layout.usesCompactNavigation else {
@@ -616,6 +630,7 @@ struct UnifiedWorkbenchShell: View {
 
         if isSessionDestination(oldPath.last), !isSessionDestination(newPath.last) {
             // 返回列表后停止当前会话订阅，沿用原紧凑导航的资源释放语义。
+            restorationRoute = .sessions
             sessionStore.returnToSessionList()
         }
     }
@@ -630,7 +645,48 @@ struct UnifiedWorkbenchShell: View {
 
         if isSessionDestination(oldPath.last), !isSessionDestination(newPath.last) {
             // 返回工作区后释放当前会话订阅，但保留工作区和卡片选择。
+            restorationRoute = .workspaces
             sessionStore.returnToSessionList()
+        }
+    }
+
+    private func handleSelectionChange(_ destination: AppDestination?) {
+        guard let destination else { return }
+        switch destination {
+        case .sessions:
+            restorationRoute = .sessions
+            sessionStore.returnToSessionList()
+        case .workspaces:
+            restorationRoute = .workspaces
+            sessionStore.returnToSessionList()
+        case .session(let sessionID):
+            if restorationRoute.detailSessionID != sessionID {
+                restorationRoute = .session(id: sessionID, source: restorationRoute.rootPage)
+            }
+            guard sessionID != sessionStore.selectedSessionID,
+                  let session = sessionStore.sessionLibrarySessions.first(where: { $0.id == sessionID })
+            else { return }
+            Task { await sessionStore.selectSession(session) }
+        }
+    }
+
+    private func destination(for route: WorkbenchRestorationRoute) -> AppDestination {
+        switch route {
+        case .sessions:
+            return .sessions
+        case .workspaces:
+            return .workspaces
+        case .session(let id, _):
+            return .session(id)
+        }
+    }
+
+    private func rootDestination(for page: WorkbenchRootPage) -> AppDestination {
+        switch page {
+        case .sessions:
+            return .sessions
+        case .workspaces:
+            return .workspaces
         }
     }
 

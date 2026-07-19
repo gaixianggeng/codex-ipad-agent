@@ -1007,6 +1007,15 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
 
     static let builtInClaudeFallback: [CodexAppServerModelOption] = [
         CodexAppServerModelOption(
+            id: "claude-fable-5",
+            title: "Claude Fable 5",
+            provider: "anthropic",
+            runtimeProvider: "claude",
+            description: "Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
+            supportedReasoningEfforts: ["minimal", "low", "medium", "high"],
+            defaultReasoningEffort: "high"
+        ),
+        CodexAppServerModelOption(
             id: "sonnet",
             title: "Claude Sonnet 5",
             provider: "anthropic",

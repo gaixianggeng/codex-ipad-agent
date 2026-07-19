@@ -12,6 +12,7 @@ struct RootView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @SceneStorage("root.selectedAppTab") private var selectedAppTabRawValue = AppTab.sessions.rawValue
     @SceneStorage("root.lastSessionSnapshot") private var lastSessionSnapshot = ""
+    @SceneStorage("root.workbenchRoute.v1") private var workbenchRouteStorage = WorkbenchRestorationRoute.defaultStorageValue
     @State private var notificationRouteAlertMessage: String?
     @State private var hasCompletedInitialBootstrap = false
 
@@ -32,7 +33,14 @@ struct RootView: View {
             // 可能已经拿 Tailscale 地址建好 runtime，导致本次启动无法真正切到 loopback。
             await appStore.preflightConnection()
 #endif
-            await sessionStore.bootstrap(restoring: decodedSessionRestoreSnapshot)
+            let requestedDetailSessionID = workbenchRoute.detailSessionID
+            let requestedSnapshot = decodedSessionRestoreSnapshot
+            let didRestoreRequestedSession = await sessionStore.bootstrap(restoring: requestedSnapshot)
+            if requestedDetailSessionID != nil,
+               (requestedSnapshot == nil || !didRestoreRequestedSession) {
+                // endpoint、工作区或会话快照失效时安全回到列表，不能保留一个空详情路由。
+                setWorkbenchRoute(.sessions)
+            }
             hasCompletedInitialBootstrap = true
         }
         .task {
@@ -71,11 +79,7 @@ struct RootView: View {
             }
         }
         .onChange(of: sessionStore.selectedSession) { _, session in
-            guard let session else { return }
-            let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: session)
-            if let data = try? JSONEncoder().encode(snapshot) {
-                lastSessionSnapshot = data.base64EncodedString()
-            }
+            persistSessionRestoreSnapshotIfNeeded(session)
         }
         .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
@@ -124,8 +128,45 @@ struct RootView: View {
     }
 
     private var decodedSessionRestoreSnapshot: SessionRestoreSnapshot? {
-        guard let data = Data(base64Encoded: lastSessionSnapshot) else { return nil }
-        return try? JSONDecoder().decode(SessionRestoreSnapshot.self, from: data)
+        workbenchRoute.restoreSnapshot(
+            from: lastSessionSnapshot,
+            currentEndpoint: appStore.endpoint
+        )
+    }
+
+    private var workbenchRoute: WorkbenchRestorationRoute {
+        WorkbenchRestorationRoute(storageValue: workbenchRouteStorage)
+    }
+
+    private var workbenchRouteBinding: Binding<WorkbenchRestorationRoute> {
+        Binding(
+            get: { workbenchRoute },
+            set: { setWorkbenchRoute($0) }
+        )
+    }
+
+    private func setWorkbenchRoute(_ route: WorkbenchRestorationRoute) {
+        workbenchRouteStorage = route.storageValue
+        if route.detailSessionID == nil {
+            // 用户已经真实离开详情页；旧快照继续存在会让下次冷启动再次进入会话。
+            lastSessionSnapshot = ""
+        } else {
+            // 通知和工作区入口可能先完成 selectSession、再切详情路由；这里补齐另一种事件顺序。
+            persistSessionRestoreSnapshotIfNeeded(sessionStore.selectedSession, route: route)
+        }
+    }
+
+    private func persistSessionRestoreSnapshotIfNeeded(
+        _ session: AgentSession?,
+        route: WorkbenchRestorationRoute? = nil
+    ) {
+        let route = route ?? workbenchRoute
+        guard let session,
+              route.detailSessionID == session.id else { return }
+        let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: session)
+        if let data = try? JSONEncoder().encode(snapshot) {
+            lastSessionSnapshot = data.base64EncodedString()
+        }
     }
 
     private var selectedAppTab: AppTab {
@@ -144,7 +185,10 @@ struct RootView: View {
     }
 
     private var appShell: some View {
-        UnifiedWorkbenchShell(showingInspector: $showingLogInspector)
+        UnifiedWorkbenchShell(
+            showingInspector: $showingLogInspector,
+            restorationRoute: workbenchRouteBinding
+        )
     }
 
     @ViewBuilder

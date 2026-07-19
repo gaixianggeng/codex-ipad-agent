@@ -57,7 +57,7 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
 
         XCTAssertFalse(codexLayout.contains(modelID: nonGridModelID))
         XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
-        XCTAssertEqual(claudeLayout.rows.map(\.model), ["sonnet", "opus", "haiku"])
+        XCTAssertEqual(claudeLayout.rows.map(\.model), ["claude-fable-5", "sonnet", "opus", "haiku"])
         XCTAssertEqual(claudeLayout.efforts, [.minimal, .low, .medium, .high])
         XCTAssertFalse(claudeLayout.showsFastMode)
     }

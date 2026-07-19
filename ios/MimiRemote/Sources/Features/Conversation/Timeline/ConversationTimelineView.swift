@@ -154,11 +154,17 @@ struct ConversationTimelineView: View {
                 timelineItemCache.removeAll()
                 cancelPendingTailScrollAttempts()
                 if newID != nil {
+                    // onChange 与新 body 的 task(id:) 在高负载下没有固定先后顺序；闭包捕获的
+                    // timelineItems 可能仍属于 oldID。必须按 newID 重新取值，否则旧尾 ID 会
+                    // 取消正确的新会话滚动任务，最终停在上一会话的 contentOffset。
+                    let newTimelineItems = ConversationTimelineItemBuilder.items(
+                        from: conversationStore.messages(for: newID)
+                    )
                     queueTailScrollAttempts(
-                        timelineItems: timelineItems,
+                        timelineItems: newTimelineItems,
                         proxy: proxy,
                         sessionID: newID,
-                        expectedTailItemID: timelineItems.last?.id,
+                        expectedTailItemID: newTimelineItems.last?.id,
                         animatedFirstAttempt: false,
                         force: true
                     )

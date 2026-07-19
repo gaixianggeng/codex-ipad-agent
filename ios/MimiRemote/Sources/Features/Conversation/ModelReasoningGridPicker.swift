@@ -36,7 +36,7 @@ struct ModelReasoningGridLayout: Equatable {
 enum ModelReasoningGridCatalog {
     static let codexModelOrder = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     static let codexEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh]
-    static let claudeFamilyOrder = ["sonnet", "opus", "haiku"]
+    static let claudeFamilyOrder = ["fable", "sonnet", "opus", "haiku"]
     static let claudeEfforts: [CodexAppServerReasoningEffort] = [.minimal, .low, .medium, .high]
 
     static func effectiveModelID(
@@ -117,6 +117,7 @@ enum ModelReasoningGridCatalog {
             }
         case .claude:
             switch claudeFamily(for: modelID) {
+            case "fable": return "Fable"
             case "sonnet": return "Sonnet"
             case "opus": return "Opus"
             case "haiku": return "Haiku"

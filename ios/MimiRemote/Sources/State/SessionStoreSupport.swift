@@ -813,10 +813,70 @@ struct SessionRestoreSnapshot: Codable, Equatable {
     let session: AgentSession
 }
 
+enum WorkbenchRootPage: String, Codable, Equatable {
+    case sessions
+    case workspaces
+}
+
+/// SceneStorage 只保存工作台的轻量导航意图；详情数据仍由 SessionRestoreSnapshot 提供。
+/// 这样运行中会话可以继续刷新和监控，但不会因为 selectedSessionID 的后台变化抢走页面。
+enum WorkbenchRestorationRoute: Codable, Equatable {
+    case sessions
+    case workspaces
+    case session(id: SessionID, source: WorkbenchRootPage)
+
+    static let defaultStorageValue = WorkbenchRestorationRoute.sessions.storageValue
+
+    init(storageValue: String) {
+        guard let data = Data(base64Encoded: storageValue),
+              let decoded = try? JSONDecoder().decode(Self.self, from: data)
+        else {
+            self = .sessions
+            return
+        }
+        self = decoded
+    }
+
+    var storageValue: String {
+        guard let data = try? JSONEncoder().encode(self) else {
+            return ""
+        }
+        return data.base64EncodedString()
+    }
+
+    var detailSessionID: SessionID? {
+        guard case .session(let id, _) = self else { return nil }
+        return id
+    }
+
+    var rootPage: WorkbenchRootPage {
+        switch self {
+        case .sessions:
+            return .sessions
+        case .workspaces:
+            return .workspaces
+        case .session(_, let source):
+            return source
+        }
+    }
+
+    func restoreSnapshot(from storageValue: String, currentEndpoint: String) -> SessionRestoreSnapshot? {
+        guard let detailSessionID,
+              !detailSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let data = Data(base64Encoded: storageValue),
+              let snapshot = try? JSONDecoder().decode(SessionRestoreSnapshot.self, from: data),
+              snapshot.session.id == detailSessionID,
+              AgentAPIClient.normalizedEndpoint(snapshot.endpoint) == AgentAPIClient.normalizedEndpoint(currentEndpoint)
+        else {
+            return nil
+        }
+        return snapshot
+    }
+}
+
 enum SessionNotificationOpenOutcome: Equatable {
     case opened
     case requiresProfileSwitch(displayName: String?)
     case unavailable(message: String)
     case ignored
 }
-

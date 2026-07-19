@@ -2,15 +2,16 @@ import Foundation
 
 // 启动恢复、项目选择与 Worktree 生命周期从稳定外观 API 中拆出。
 extension SessionStore {
-    func bootstrap(restoring snapshot: SessionRestoreSnapshot? = nil) async {
+    @discardableResult
+    func bootstrap(restoring snapshot: SessionRestoreSnapshot? = nil) async -> Bool {
 #if DEBUG
         if appStore.shouldSeedDebugWorkbenchUI {
             applyDebugWorkbenchUISeedIfNeeded()
-            return
+            return snapshot == nil
         }
 #endif
         guard appStore.isConfigured else {
-            return
+            return snapshot == nil
         }
         // 冷启动有两层“没就绪”：① VPN / Tailscale 隧道还没建好，首个 HTTP 请求就失败；
         // ② agentd 的 HTTP 端口先于 app-server gateway 上游就绪——projects 能立刻拿到，但首个
@@ -20,14 +21,17 @@ extension SessionStore {
         // 连不上”的半成品状态，只能靠用户杀进程重开才恢复。
         await refreshUntilLoaded(maxWait: 45, autoAttach: true)
         if let snapshot {
-            await restoreSessionIfPossible(snapshot)
+            return await restoreSessionIfPossible(snapshot)
         }
+        return true
     }
 
-    func restoreSessionIfPossible(_ snapshot: SessionRestoreSnapshot) async {
+    @discardableResult
+    func restoreSessionIfPossible(_ snapshot: SessionRestoreSnapshot) async -> Bool {
         guard AgentAPIClient.normalizedEndpoint(snapshot.endpoint) == AgentAPIClient.normalizedEndpoint(appStore.endpoint),
+              !snapshot.session.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let workspace = ensureWorkspaceForKnownProjectID(snapshot.session.projectID)
-        else { return }
+        else { return false }
 
         // 先让 runtime 从真实 thread/list 建立 session→provider 路由；旧会话不在首屏时再使用本地轻量快照。
         do {
@@ -39,9 +43,10 @@ extension SessionStore {
         }
 
         let restored = sessionsByID[snapshot.session.id] ?? session(snapshot.session, in: workspace)
-        guard restored.projectID == workspace.id else { return }
+        guard restored.projectID == workspace.id else { return false }
         mergeSessionPage([restored])
         await selectSession(restored)
+        return selectedSessionID == restored.id
     }
 
 #if DEBUG
@@ -383,14 +388,8 @@ extension SessionStore {
                 setSelectedSessionID(session.id)
                 revealProjectInSidebar(session.projectID)
                 await prepareSelectedSessionAfterRefresh(session, autoAttach: autoAttach)
-            } else if autoAttach, let runningSession = sessions(forProjectID: projectID).first(where: \.isRunning) {
-                // iPad 冷启动/回前台时，如果当前没有明确选中的会话，优先恢复正在运行的会话。
-                // 这会触发 direct app-server 的 thread/resume，让残留审批等运行态问题有机会自愈。
-                setSelectedProjectID(runningSession.projectID)
-                setSelectedSessionID(runningSession.id)
-                revealProjectInSidebar(runningSession.projectID)
-                await prepareSelectedSessionAfterRefresh(runningSession, autoAttach: true)
             } else {
+                // 刷新只更新索引与后台队列监控；没有显式详情选择时，运行中会话不能抢占导航。
                 setSelectedSessionID(nil)
             }
 

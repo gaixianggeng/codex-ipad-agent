@@ -679,7 +679,7 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(conversationStore.hasLoadedHistory(sessionID: selectedHistory.id))
     }
 
-    func testSessionStoreAutoAttachSelectsRunningSessionWhenNothingSelected() async throws {
+    func testSessionStoreAutoAttachRefreshesRunningSessionWithoutSelectingIt() async throws {
         let project = makeProject(id: "proj_auto_attach")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史会话", status: "history", source: "codex", resumeID: "history")
         let running = makeSession(id: "sess_auto_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
@@ -704,11 +704,145 @@ extension ConversationDataFlowTests {
 
         await store.refreshAll(autoAttach: true)
 
-        XCTAssertEqual(store.selectedSessionID, running.id)
+        XCTAssertNil(store.selectedSessionID)
         XCTAssertEqual(store.selectedProjectID, project.id)
-        XCTAssertTrue(store.isSelectedSessionObserving)
+        XCTAssertFalse(store.isSelectedSessionObserving)
         XCTAssertTrue(sockets.isEmpty)
         XCTAssertEqual(store.webSocketStatus, .disconnected)
+    }
+
+    func testForegroundResumeKeepsSessionListVisibleWhenRunningSessionExists() async {
+        let project = makeProject(id: "proj_foreground_list")
+        let running = makeSession(
+            id: "sess_foreground_list",
+            projectID: project.id,
+            title: "运行中",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: true)
+        store.suspendForBackground()
+        await store.resumeFromForeground()
+
+        XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertNil(store.selectedSessionID)
+        XCTAssertTrue(sockets.isEmpty)
+        XCTAssertEqual(store.webSocketStatus, .disconnected)
+    }
+
+    func testBootstrapRestoresOnlyExplicitRunningSessionAndCreatesOneSocket() async {
+        let project = makeProject(id: "proj_explicit_restore")
+        let requested = makeSession(
+            id: "sess_explicit_restore",
+            projectID: project.id,
+            title: "明确恢复的详情",
+            status: "running",
+            source: "codex"
+        )
+        let otherRunning = makeSession(
+            id: "sess_other_running",
+            projectID: project.id,
+            title: "不能抢导航",
+            status: "running",
+            source: "codex"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [otherRunning, requested],
+            messagesResult: []
+        )
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        store.takeOverSession(requested)
+        let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: requested)
+
+        let didRestore = await store.bootstrap(restoring: snapshot)
+
+        XCTAssertTrue(didRestore)
+        XCTAssertEqual(store.selectedSessionID, requested.id)
+        XCTAssertEqual(store.selectedProjectID, requested.projectID)
+        XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(sockets.first?.connectedSessionIDs, [requested.id])
+    }
+
+    func testWorkbenchRestorationRouteRoundTripsLocalSessionIDAndSourcePage() throws {
+        let route = WorkbenchRestorationRoute.session(
+            id: "local:claude:thread:123",
+            source: .workspaces
+        )
+
+        XCTAssertEqual(
+            WorkbenchRestorationRoute(storageValue: route.storageValue),
+            route
+        )
+    }
+
+    func testWorkbenchRestorationRouteRejectsMismatchedSessionSnapshot() throws {
+        let session = makeSession(
+            id: "session_snapshot",
+            projectID: "project_snapshot",
+            title: "恢复快照",
+            status: "history",
+            source: "codex",
+            resumeID: "resume_snapshot"
+        )
+        let snapshot = SessionRestoreSnapshot(endpoint: "http://127.0.0.1:8787", session: session)
+        let storage = try JSONEncoder().encode(snapshot).base64EncodedString()
+        let route = WorkbenchRestorationRoute.session(id: "another_session", source: .sessions)
+
+        XCTAssertNil(route.restoreSnapshot(from: storage, currentEndpoint: snapshot.endpoint))
+    }
+
+    func testWorkbenchRestorationRouteRejectsSnapshotFromDifferentEndpoint() throws {
+        let session = makeSession(
+            id: "session_endpoint",
+            projectID: "project_endpoint",
+            title: "旧 Mac 快照",
+            status: "history",
+            source: "codex",
+            resumeID: "resume_endpoint"
+        )
+        let snapshot = SessionRestoreSnapshot(endpoint: "http://100.64.0.10:8787", session: session)
+        let storage = try JSONEncoder().encode(snapshot).base64EncodedString()
+        let route = WorkbenchRestorationRoute.session(id: session.id, source: .sessions)
+
+        XCTAssertNil(route.restoreSnapshot(from: storage, currentEndpoint: "http://100.64.0.11:8787"))
     }
 
     func testSelectingRunningSessionRefreshesHistoryAndSuppressesBufferedMessageReplay() async throws {

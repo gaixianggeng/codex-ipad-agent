@@ -272,11 +272,13 @@ while IFS= read -r line; do :; done
 	}
 	raw := readGatewayRaw(t, conn)
 	if !bytes.Contains(raw, []byte(`"id":99`)) ||
+		!bytes.Contains(raw, []byte(`"model":"claude-fable-5"`)) ||
 		!bytes.Contains(raw, []byte(`"model":"sonnet"`)) ||
 		!bytes.Contains(raw, []byte(`"model":"opus"`)) ||
+		!bytes.Contains(raw, []byte(`"Claude Fable 5"`)) ||
 		!bytes.Contains(raw, []byte(`"Claude Opus 4.8"`)) ||
 		bytes.Contains(raw, []byte(`"models":[]`)) {
-		t.Fatalf("Claude model/list 应由 gateway 覆盖成 CLI alias 模型列表：%s", raw)
+		t.Fatalf("Claude model/list 应由 gateway 覆盖成当前模型目录：%s", raw)
 	}
 	received, err := os.ReadFile(receivedPath)
 	if err != nil {

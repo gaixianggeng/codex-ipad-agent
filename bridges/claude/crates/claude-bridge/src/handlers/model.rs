@@ -1,9 +1,10 @@
 //! `model/list`.
 //!
 //! Claude has no introspection API for available models, so the bridge ships
-//! a hand-curated list. Three concrete model ids (the latest opus/sonnet/haiku)
-//! plus the three short aliases (`opus`/`sonnet`/`haiku`) the `claude` CLI
-//! itself accepts via `--model`.
+//! a hand-curated list. Four concrete model ids (fable plus the latest
+//! opus/sonnet/haiku) and the three established short aliases
+//! (`opus`/`sonnet`/`haiku`) the `claude` CLI accepts via `--model`. Fable uses
+//! its full id so the list also works with older CLI builds that predate its alias.
 //!
 //! Default is sonnet — matches the CLI default and is the most common pick.
 
@@ -16,6 +17,7 @@ use crate::state::ConnectionState;
 
 pub const MODEL_PROVIDER: &str = "anthropic";
 
+pub const FABLE_MODEL: &str = "claude-fable-5";
 pub const OPUS_MODEL: &str = "claude-opus-4-7";
 pub const SONNET_MODEL: &str = "claude-sonnet-4-6";
 pub const HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -38,6 +40,13 @@ pub async fn handle_model_list(
 ) -> p::ModelListResponse {
     let data = vec![
         // Concrete model ids first.
+        build_model(
+            FABLE_MODEL,
+            "Claude Fable 5",
+            "Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
+            false,
+            p::ReasoningEffort::High,
+        ),
         build_model(
             OPUS_MODEL,
             "Claude Opus 4.7",
@@ -202,14 +211,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_three_concrete_models_plus_aliases_with_sonnet_default() {
+    async fn lists_four_concrete_models_plus_established_aliases_with_sonnet_default() {
         let state = dummy_state();
         let resp = handle_model_list(&state, p::ModelListParams::default()).await;
-        assert_eq!(resp.data.len(), 6);
+        assert_eq!(resp.data.len(), 7);
 
         let by_id: std::collections::HashMap<_, _> =
             resp.data.iter().map(|m| (m.model.as_str(), m)).collect();
 
+        assert!(by_id.contains_key(FABLE_MODEL));
         assert!(by_id.contains_key(OPUS_MODEL));
         assert!(by_id.contains_key(SONNET_MODEL));
         assert!(by_id.contains_key(HAIKU_MODEL));

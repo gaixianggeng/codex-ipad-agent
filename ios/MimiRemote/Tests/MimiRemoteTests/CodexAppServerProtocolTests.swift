@@ -611,6 +611,13 @@ final class CodexAppServerProtocolTests: XCTestCase {
     func testClaudeModelGridUsesConcreteFamiliesAndBridgeReasoningMetadata() {
         let efforts = ["minimal", "low", "medium", "high"]
         let options = [
+            CodexAppServerModelOption(id: "fable", runtimeProvider: "claude"),
+            CodexAppServerModelOption(
+                id: "claude-fable-5",
+                runtimeProvider: "claude",
+                supportedReasoningEfforts: efforts,
+                defaultReasoningEffort: "high"
+            ),
             CodexAppServerModelOption(id: "sonnet", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-sonnet-4-6",
@@ -639,11 +646,16 @@ final class CodexAppServerProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             layout.rows.map(\.model),
-            ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"]
+            ["claude-fable-5", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"]
         )
         XCTAssertEqual(layout.efforts, [.minimal, .low, .medium, .high])
+        XCTAssertTrue(layout.contains(modelID: "fable"), "Claude Fable alias 应映射到同一模型家族")
         XCTAssertTrue(layout.contains(modelID: "sonnet"), "Claude alias 应映射到同一模型家族")
         XCTAssertFalse(layout.showsFastMode)
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.triggerTitle(for: "fable", effort: .high, layout: layout),
+            "Fable · \(ModelReasoningGridCatalog.effortTitle(.high))"
+        )
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "sonnet", effort: .medium, layout: layout),
             "Sonnet · \(ModelReasoningGridCatalog.effortTitle(.medium))"

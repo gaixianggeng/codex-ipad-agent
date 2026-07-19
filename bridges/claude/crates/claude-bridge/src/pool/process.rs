@@ -76,8 +76,8 @@ pub struct ClaudeSpawnConfig {
     /// Path of the `claude` binary to spawn. Set from
     /// `CLAUDE_BRIDGE_CLAUDE_BIN` or `which claude`.
     pub claude_bin: PathBuf,
-    /// Optional model override (`--model <s>`). Accepts the alias forms
-    /// `opus` / `sonnet` / `haiku` claude understands directly.
+    /// Optional model override (`--model <s>`). Accepts full model ids and the
+    /// established `opus` / `sonnet` / `haiku` aliases claude understands directly.
     pub model: Option<String>,
     /// Optional `--append-system-prompt <s>`.
     pub append_system_prompt: Option<String>,
