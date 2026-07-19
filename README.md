@@ -1,23 +1,65 @@
-# Mimi Remote — Codex & Claude Code on iPhone and iPad
+<p align="center">
+  <img src="ios/MimiRemote/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-ios-marketing-1024x1024@1x.png" alt="Mimi Remote app icon" width="112" />
+</p>
 
-[中文文档](README.zh-CN.md) · [iOS build guide](ios/MimiRemote/README.md) · [Project status (Chinese)](docs/project-status.md)
+<h1 align="center">Mimi Remote</h1>
 
-[![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple)](ios/MimiRemote/README.md)
-[![SwiftUI](https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&logoColor=white)](ios/MimiRemote)
-[![Go CI](https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg)](https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml)
-[![GPLv3 + Store Exception](https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg)](LICENSE)
+<p align="center">
+  <strong>Codex on iPhone and iPad. Away from your desk.</strong>
+</p>
 
-**Mimi Remote is a native, local-first iPhone and iPad workbench for coding agents running on your own Mac.** It connects to your Mac through Tailscale, lets you work with Codex sessions on the go, and provides an experimental Claude Code bridge. Review diffs, approve actions, steer work, manage worktrees, and finish Git workflows without routing your source code or AI credentials through a Mimi Remote service.
+<p align="center">
+  A native, local-first mobile workbench for coding agents running on your own Mac.<br />
+  Review results, steer sessions, approve actions, manage Worktrees, and finish Git workflows from iPhone or iPad.
+</p>
+
+<p align="center">
+  <a href="README.zh-CN.md">中文文档</a>
+  &nbsp;·&nbsp;
+  <a href="ios/MimiRemote/README.md">iOS build guide</a>
+  &nbsp;·&nbsp;
+  <a href="docs/project-status.md">Project status (Chinese)</a>
+</p>
+
+<p align="center">
+  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple" alt="iOS and iPadOS 26 or later" /></a>
+  <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="Native SwiftUI app" /></a>
+  <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 with store distribution exception" /></a>
+</p>
+
+<p align="center">
+  <img src="artifacts/social-preview/mimi-remote-social-preview.png" alt="Mimi Remote running Codex on iPad and iPhone" width="100%" />
+</p>
+
+Mimi Remote connects to your Mac through Tailscale and keeps source code, agent credentials, and full sessions on your own devices. Codex is the primary supported runtime; an optional Claude Code bridge is available as an experimental channel.
 
 Mimi Remote is an independent third-party project. It is not affiliated with, endorsed by, or a product of OpenAI, Anthropic, or Tailscale.
 
 > There is no public App Store release at this time. Build the iOS app from source; any internal TestFlight distribution is not a public download channel.
 
-## Screenshots
+## See the work. Queue the next move.
 
-| English conversation | Queued follow-ups and Composer |
-| --- | --- |
-| ![English conversation running on a physical iPad mini](artifacts/app-screenshots/ipad-mini-devicehub-english-conversation.png) | ![English queued follow-ups and Composer on a physical iPad mini](artifacts/app-screenshots/ipad-mini-devicehub-english-queue.png) |
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <strong>Keep the conversation moving.</strong><br />
+      <sub>Review results, add context, choose the model and permission mode, or use voice input.</sub>
+    </td>
+    <td width="50%" align="center">
+      <strong>Line up what should happen next.</strong><br />
+      <sub>Queue follow-ups while the current turn runs, then recover interrupted work without losing context.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="artifacts/app-screenshots/ipad-mini-devicehub-english-conversation.png" alt="English Codex conversation and Composer on a physical iPad mini" />
+    </td>
+    <td width="50%" valign="top">
+      <img src="artifacts/app-screenshots/ipad-mini-devicehub-english-queue.png" alt="English queued follow-ups and Composer on a physical iPad mini" />
+    </td>
+  </tr>
+</table>
 
 These screenshots were captured from a physical iPad mini through Xcode DeviceHub with the app running in English. They use Debug seed data only, do not represent a live backend connection, and contain no real tokens, Tailnet addresses, or private project content. See the [screenshot manifest](artifacts/app-screenshots/manifest.md) for capture details.
 

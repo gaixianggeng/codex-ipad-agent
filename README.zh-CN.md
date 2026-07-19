@@ -1,27 +1,86 @@
-# Mimi Remote — Codex & Claude Code on iPhone and iPad
+<p align="center">
+  <img src="ios/MimiRemote/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-ios-marketing-1024x1024@1x.png" alt="Mimi Remote App 图标" width="112" />
+</p>
 
-[English README](README.md)
+<h1 align="center">Mimi Remote</h1>
 
-[![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple)](ios/MimiRemote/README.md)
-[![SwiftUI](https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&logoColor=white)](ios/MimiRemote)
-[![Go CI](https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg)](https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml)
-[![GPLv3 + Store Exception](https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg)](LICENSE)
+<p align="center">
+  <strong>把 Mac 上的 Codex，带到 iPhone 和 iPad。</strong>
+</p>
 
-**Open-source native iPhone and iPad client for OpenAI Codex CLI and Claude Code.** Control coding agents running on your own Mac, review diffs, approve actions, steer sessions, manage worktrees, and finish Git workflows without sending your source code or AI credentials through a Mimi Remote cloud service.
+<p align="center">
+  开源、原生、本地优先的移动端 AI 编程工作台。<br />
+  离开电脑后继续查看进度、补充上下文、处理审批、管理 Worktree，并完成 Git 收尾。
+</p>
 
-**Mimi Remote 是一个开源的原生 iPhone / iPad AI 编程远程工作台。** 它通过 Tailscale 连接用户自己 Mac 上的 `agentd`，在明确授权的工作区内使用 Codex；Claude Code 通过仓库内的可选 Rust bridge 作为实验通道接入。
+<p align="center">
+  <a href="README.md">English README</a>
+  &nbsp;·&nbsp;
+  <a href="#快速开始">快速开始</a>
+  &nbsp;·&nbsp;
+  <a href="#架构">工作原理</a>
+  &nbsp;·&nbsp;
+  <a href="#常见问题faq">常见问题</a>
+</p>
 
-项目坚持本地优先：代码、Codex / Claude 凭证和完整会话都留在用户自己的开发机上，不经过项目维护者的服务器。
+<p align="center">
+  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple" alt="要求 iOS 或 iPadOS 26 及以上版本" /></a>
+  <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="原生 SwiftUI App" /></a>
+  <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI 状态" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 与商店分发例外" /></a>
+</p>
 
-> Mimi Remote 是独立开发的第三方客户端，不隶属于 OpenAI、Anthropic 或 Tailscale，也不代表这些公司的官方产品。
+<p align="center">
+  <img src="artifacts/social-preview/mimi-remote-social-preview.png" alt="Mimi Remote 在 iPad 和 iPhone 上运行 Codex" width="100%" />
+</p>
 
-[快速开始](#快速开始) · [核心能力](#能做什么) · [工作原理](#架构) · [常见问题](#常见问题faq) · [参与项目](#参与项目)
+Mimi Remote 通过 Tailscale 连接用户自己 Mac 上的 `agentd`，在明确授权的工作区内使用 Codex；Claude Code 通过仓库内的可选 Rust bridge 作为实验通道接入。代码、Codex / Claude 凭证和完整会话都留在用户自己的设备上，不经过项目维护者的服务器。
 
-## 截图
+> Mimi Remote 是独立开发的第三方客户端，不隶属于 OpenAI、Anthropic 或 Tailscale，也不代表这些公司的官方产品。当前没有公开 App Store 版本，需要从源码构建；内部 TestFlight 不是公开下载渠道。
 
-| iPad 工作台 | iPhone 会话 |
-| --- | --- |
-| ![iPad 开源演示会话](artifacts/app-screenshots/ipad-landscape-open-source-demo.png) | ![iPhone 开源演示会话](artifacts/app-screenshots/iphone-conversation-open-source-demo.png) |
+## 产品界面
+
+<table>
+  <tr>
+    <td width="25%" align="center">
+      <strong>继续当前会话</strong><br />
+      <sub>查看结果、补充上下文，随时 steer 或 interrupt。</sub>
+    </td>
+    <td width="25%" align="center">
+      <strong>快速恢复任务</strong><br />
+      <sub>从最近会话回到进行中和已完成的工作。</sub>
+    </td>
+    <td width="25%" align="center">
+      <strong>管理项目与 Worktree</strong><br />
+      <sub>在受限工作区内切换项目并新建会话。</sub>
+    </td>
+    <td width="25%" align="center">
+      <strong>连接状态集中可见</strong><br />
+      <sub>查看 Mac 连接、Codex 用量、权限与诊断入口。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="25%" valign="top">
+      <img src="artifacts/app-screenshots/iphone-conversation-open-source-demo.png" alt="iPhone 上的 Codex 会话与 Composer" />
+    </td>
+    <td width="25%" valign="top">
+      <img src="artifacts/app-screenshots/iphone-sessions-list-debug-seeded.png" alt="iPhone 上的 Mimi Remote 会话列表" />
+    </td>
+    <td width="25%" valign="top">
+      <img src="artifacts/app-screenshots/iphone-workspace-projects-debug-seeded.png" alt="iPhone 上的项目和 Worktree 工作区" />
+    </td>
+    <td width="25%" valign="top">
+      <img src="artifacts/app-screenshots/iphone-settings-main-debug-seeded.png" alt="iPhone 上的连接、用量和设置页面" />
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <strong>在 iPad 上把导航、会话和 Inspector 放在同一个工作台。</strong><br />
+  <sub>宽屏布局保留上下文，不需要在多个页面之间来回切换。</sub>
+</p>
+
+![iPad 横屏三栏工作台，同时显示项目导航、会话与 Inspector](artifacts/app-screenshots/ipad-landscape-windowed-workbench-sidebar-inspector-debug-seeded.png)
 
 截图使用 Debug 种子数据生成，只用于展示界面，不代表真实后端连接，也不包含真实 Token、Tailscale 地址或用户项目内容。完整采集说明见 [截图清单](artifacts/app-screenshots/manifest.md)。
 
