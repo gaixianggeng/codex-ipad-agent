@@ -187,4 +187,17 @@ end
 
 verified = client.get("/v1/betaGroups/#{group_id}/builds", { "limit" => "200" }).fetch("data")
 abort_release("构建未成功关联内测组") unless verified.any? { |item| item.fetch("id") == build_id }
-puts "Mimi TestFlight 内测发布成功：#{metadata[:version]} (#{metadata[:build]}) group=#{group.dig('attributes', 'name')}"
+
+# 发布成功不能只看组关联。继续回读测试员和 What to Test，避免产生“组里没有人”
+# 或测试说明写入失败但脚本仍报成功的半完成状态。
+testers = client.get("/v1/betaGroups/#{group_id}/betaTesters", { "limit" => "200" })
+tester_count = testers.dig("meta", "paging", "total") || testers.fetch("data").length
+abort_release("目标内测组没有测试员") if tester_count.zero?
+
+localizations = client.get("/v1/builds/#{build_id}/betaBuildLocalizations", { "limit" => "20" }).fetch("data")
+localization = localizations.find { |item| item.dig("attributes", "locale") == "zh-Hans" } || localizations.first
+actual_whats_new = localization&.dig("attributes", "whatsNew").to_s
+abort_release("What to Test 回读不一致") unless actual_whats_new == whats_new
+
+puts "Mimi TestFlight 内测发布成功：#{metadata[:version]} (#{metadata[:build]}) " \
+     "build=#{build_id} group=#{group.dig('attributes', 'name')} testers=#{tester_count} whatsNew=verified"
