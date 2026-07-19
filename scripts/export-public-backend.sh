@@ -51,6 +51,7 @@ public_paths=(
   scripts/check-public-repo-safety.sh
   scripts/check-release-artifacts.sh
   scripts/check-release-prerequisites.sh
+  scripts/check-source-size.sh
   scripts/check-third-party-notices.sh
   scripts/history-sync-regression.sh
   scripts/install-linux.sh
