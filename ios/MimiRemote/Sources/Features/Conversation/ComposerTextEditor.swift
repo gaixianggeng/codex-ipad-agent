@@ -46,6 +46,26 @@ final class ComposerTextSubmitBridge {
         )
     }
 
+    func hasNonWhitespaceTextForSubmit() -> Bool {
+        guard let text = textView?.text else {
+            return false
+        }
+        return text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil
+    }
+
+    func finalSnapshotForSubmit() -> ComposerTextSubmitSnapshot? {
+        guard let textView else {
+            return nil
+        }
+        // 最终发送采用“单击即确认”的策略：先让输入法提交 marked text，再读取
+        // UITextView 的权威文本，避免 SwiftUI 草稿仍停留在上一次已确认内容。
+        commitMarkedTextIfNeeded(in: textView)
+        return ComposerTextSubmitSnapshot(
+            text: textView.text ?? "",
+            isComposing: textView.hasMarkedText
+        )
+    }
+
     func resignFirstResponder() {
         textView?.resignFirstResponder()
     }
@@ -58,8 +78,13 @@ final class ComposerTextSubmitBridge {
     }
 
     func replaceText(in range: NSRange, with replacement: String) -> String? {
-        guard let textView,
-              range.location >= 0,
+        guard let textView else {
+            return nil
+        }
+        // Skill 自动补全会直接改写 TextKit；先结束旧的组合态，防止替换后
+        // markedTextRange 残留，造成按钮状态与最终提交快照分叉。
+        commitMarkedTextIfNeeded(in: textView)
+        guard range.location >= 0,
               NSMaxRange(range) <= ((textView.text ?? "") as NSString).length
         else {
             return nil
@@ -68,6 +93,13 @@ final class ComposerTextSubmitBridge {
         textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
         textView.delegate?.textViewDidChange?(textView)
         return textView.text
+    }
+
+    private func commitMarkedTextIfNeeded(in textView: CommandSubmitTextView) {
+        guard textView.hasMarkedText else {
+            return
+        }
+        textView.unmarkText()
     }
 }
 

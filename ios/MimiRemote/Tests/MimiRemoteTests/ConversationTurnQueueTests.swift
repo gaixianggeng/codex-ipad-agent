@@ -1847,6 +1847,39 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.messages(for: sessionID).last?.content, "审批已解决：运行 curl")
     }
 
+    func testConversationStoreDeduplicatesPendingUserInputReplayByRequestID() {
+        let store = ConversationStore()
+        let sessionID = "sess_remote_user_input"
+        let waitingText = L10n.format("ui.waiting_for_additional_information_named", "修复策略")
+
+        func metadata(itemID: String) -> AgentEventMetadata {
+            AgentEventMetadata(
+                seq: nil,
+                sessionID: sessionID,
+                turnID: "turn_remote_user_input",
+                itemID: itemID,
+                messageID: "appserver:turn_remote_user_input:\(itemID)",
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )
+        }
+
+        // 旧版本写入的卡没有 itemID；实时重放时必须先升级为 request-1。
+        store.appendSystem(waitingText, sessionID: sessionID, kind: .userInput)
+        store.appendSystem(waitingText, sessionID: sessionID, kind: .userInput, metadata: metadata(itemID: "request-1"))
+        XCTAssertEqual(
+            store.messages(for: sessionID).first(where: { $0.kind == .userInput })?.itemID,
+            "request-1"
+        )
+        store.appendSystem(waitingText, sessionID: sessionID, kind: .userInput, metadata: metadata(itemID: "request-1"))
+        XCTAssertEqual(store.messages(for: sessionID).filter { $0.kind == .userInput }.count, 1)
+
+        // 标题相同但 request id 不同仍是两个独立交互，不能被文本去重误合并。
+        store.appendSystem(waitingText, sessionID: sessionID, kind: .userInput, metadata: metadata(itemID: "request-2"))
+        XCTAssertEqual(store.messages(for: sessionID).filter { $0.kind == .userInput }.count, 2)
+    }
+
     func testSessionStoreReplaysDirectAppServerEventStreamFixture() async throws {
         let sessionID = "thr_fixture_stream"
         let project = AgentProject(id: "proj_fixture_stream", name: "Fixture Stream", path: "/tmp/fixture-stream")

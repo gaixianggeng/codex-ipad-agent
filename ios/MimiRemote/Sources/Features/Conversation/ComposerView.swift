@@ -175,6 +175,10 @@ struct ComposerView: View {
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
         }
+        .onChange(of: modelOptionsForMenu) { _, _ in
+            // model/list 刷新后能力元数据可能变化；立即清理当前模型已不支持的推理强度。
+            clampModelSelectionToSelectedSessionRuntime()
+        }
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
             if !canGuide {
                 guidedFollowUpEnabled = false
@@ -294,23 +298,16 @@ struct ComposerView: View {
     }
 
     func synchronizeComposerTextBeforeSubmit() -> Bool {
-        guard let snapshot = composerTextSubmitBridge.snapshotForSubmit() else {
+        guard let snapshot = composerTextSubmitBridge.finalSnapshotForSubmit() else {
             return true
         }
-        guard !snapshot.isComposing else {
-            // 中文输入法合成中的文本还不是用户最终选择，提交时直接拒绝，避免发送旧 draft。
-            if !isComposerTextComposing {
-                isComposerTextComposing = true
-            }
-            return false
-        }
         if composerState.draft != snapshot.text {
-            // 只在提交前同步一次 UIKit 最终文本，避免 marked text 每次变化都触发全局状态重绘。
+            // 只在提交边界同步 UIKit 最终文本，输入过程中仍维持单向的低频状态回写。
             composerState.draft = snapshot.text
         }
-        if isComposerTextComposing {
-            isComposerTextComposing = false
-        }
+        isComposerTextComposing = false
+        activeSkillQuery = nil
+        selectedSkillSuggestionIndex = 0
         return true
     }
 
@@ -418,6 +415,11 @@ struct ComposerView: View {
 
     func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
         var options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
+        if let effort = options.reasoningEffort,
+           !supportsReasoningEffort(effort, modelID: options.model ?? effectiveModelID) {
+            // 提交边界再做一次兜底，避免模型列表刷新与点击发送之间的竞态把非法组合发给 runtime。
+            options.reasoningEffort = nil
+        }
         if composerState.isPlanModeSelected {
             options.collaborationMode = .plan
             options.planGuidanceEnabled = true
@@ -453,17 +455,28 @@ struct ComposerView: View {
     }
 
     var canSubmitDraft: Bool {
-        guard !isComposerTextComposing else {
-            return false
-        }
         if composerState.isGoalModeSelected {
             return canSubmitGoalDraft
         }
-        return sessionStore.canSendInSelectedSession && composerState.canSubmit(isLoading: sessionStore.isLoading)
+        return sessionStore.canSendInSelectedSession
+            && hasComposerContentForSubmit
+            && !sessionStore.isLoading
     }
 
     var canSubmitGoalDraft: Bool {
-        sessionStore.canSendInSelectedSession && composerState.hasNonWhitespaceDraft && !sessionStore.isLoading && !sessionStore.isUpdatingThreadGoal
+        sessionStore.canSendInSelectedSession
+            && hasNonWhitespaceComposerTextForSubmit
+            && !sessionStore.isLoading
+            && !sessionStore.isUpdatingThreadGoal
+    }
+
+    var hasNonWhitespaceComposerTextForSubmit: Bool {
+        composerState.hasNonWhitespaceDraft
+            || (isComposerTextComposing && composerTextSubmitBridge.hasNonWhitespaceTextForSubmit())
+    }
+
+    var hasComposerContentForSubmit: Bool {
+        hasNonWhitespaceComposerTextForSubmit || !composerState.attachments.isEmpty
     }
 
     var usesCompactComposerMetrics: Bool {
@@ -1492,99 +1505,94 @@ struct ComposerView: View {
 
     @ViewBuilder
     var modelPickerControl: some View {
-        if selectedSessionRuntimeProviderForModelMenu == "claude" {
-            modelOptionsMenu
-        } else {
-            Button {
-                showsModelGridPicker.toggle()
-            } label: {
-                composerToolbarControlLabel(
-                    title: modelPickerTriggerTitle,
-                    systemImage: "cpu",
-                    trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
-                    titleMaxWidth: 150,
-                    accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
-                )
-                .contentTransition(.opacity)
-            }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-            .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
-            .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
-            .accessibilityHint(L10n.text("ui.opens_the_three_by_three_model_selector_swipeable"))
-            .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
-                ModelReasoningGridPicker(
-                    options: modelOptionsForMenu,
-                    selection: selectedModelGridSelection,
-                    selectedModelID: composerState.turnOptions.model,
-                    isRefreshing: sessionStore.isRefreshingAppServerModels,
-                    isFastMode: isFastModeSelected,
-                    onSelect: { option, effort in
-                        selectGridModel(option, effort: effort)
-                    },
-                    onFastModeChange: { isEnabled in
-                        composerState.updateTurnOptions {
-                            $0.serviceTier = isEnabled ? "priority" : nil
-                        }
-                    },
-                    onSelectModelOnly: { option in
-                        selectModelOnly(option)
-                    },
-                    onRefresh: {
-                        Task { await sessionStore.refreshAppServerModelOptions(force: true) }
-                    }
-                )
-                .environmentObject(themeStore)
-                .presentationCompactAdaptation(.sheet)
-            }
-        }
-    }
-
-    var modelOptionsMenu: some View {
-        Menu {
-            modelOptionItems
+        Button {
+            showsModelGridPicker.toggle()
         } label: {
             composerToolbarControlLabel(
-                title: selectedModelSummaryTitle,
+                title: modelPickerTriggerTitle,
                 systemImage: "cpu",
                 trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
-                titleMaxWidth: 140,
-                accessibilityLabel: L10n.text("ui.switch_model")
+                titleMaxWidth: 150,
+                accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )
+            .contentTransition(.opacity)
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.switch_model"))
-        .accessibilityValue(modelShortcutAccessibilityValue(for: selectedModelSummaryTitle))
-        .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
+        .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
+        .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
+        .accessibilityHint(L10n.text("ui.double_click_to_select_you_can_also_drag"))
+        .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
+            ModelReasoningGridPicker(
+                options: modelOptionsForMenu,
+                layout: modelReasoningGridLayout,
+                selection: selectedModelGridSelection,
+                selectedModelID: composerState.turnOptions.model,
+                isRefreshing: sessionStore.isRefreshingAppServerModels,
+                isFastMode: isFastModeSelected,
+                onSelect: { option, effort in
+                    selectGridModel(option, effort: effort)
+                },
+                onFastModeChange: { isEnabled in
+                    composerState.updateTurnOptions {
+                        $0.serviceTier = isEnabled ? "priority" : nil
+                    }
+                },
+                onSelectModelOnly: { option in
+                    selectModelOnly(option)
+                },
+                onRefresh: {
+                    Task { await sessionStore.refreshAppServerModelOptions(force: true) }
+                }
+            )
+            .environmentObject(themeStore)
+            .presentationCompactAdaptation(.sheet)
+        }
     }
 
     var effectiveModelID: String? {
-        GPT56ModelGridCatalog.effectiveModelID(
+        ModelReasoningGridCatalog.effectiveModelID(
             selectedModelID: composerState.turnOptions.model,
             options: modelOptionsForMenu
         )
     }
 
+    var modelReasoningGridLayout: ModelReasoningGridLayout {
+        ModelReasoningGridCatalog.layout(
+            runtimeProvider: selectedSessionRuntimeProviderForModelMenu,
+            options: modelOptionsForMenu
+        )
+    }
+
     var isFastModeSelected: Bool {
-        composerState.turnOptions.serviceTier == "priority"
+        modelReasoningGridLayout.showsFastMode && composerState.turnOptions.serviceTier == "priority"
     }
 
     func modelShortcutAccessibilityValue(for title: String) -> String {
         isFastModeSelected ? "\(title) · \(L10n.text("ui.fast"))" : title
     }
 
-    var selectedModelGridSelection: GPT56ModelGridSelection {
-        let rows = GPT56ModelGridCatalog.rows(from: modelOptionsForMenu)
-        let option = effectiveModelID.flatMap { effectiveModelID in
-            rows.first { $0.model.caseInsensitiveCompare(effectiveModelID) == .orderedSame }
+    var selectedModelGridSelection: ModelReasoningGridSelection {
+        let layout = modelReasoningGridLayout
+        let selectedOption = effectiveModelID.flatMap { modelID in
+            modelOptionsForMenu.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
         }
-            ?? rows.first(where: \.isDefault)
-            ?? rows.first
+        let option = layout.row(matching: effectiveModelID)
+            ?? layout.rows.first(where: \.isDefault)
+            ?? layout.rows.first
+        let effortOption = selectedOption ?? option
         let effort = composerState.turnOptions.reasoningEffort.flatMap { selected in
-            GPT56ModelGridCatalog.efforts.contains(selected) ? selected : nil
-        } ?? option.flatMap { option in
-            option.defaultReasoningEffort.flatMap(CodexAppServerReasoningEffort.init(rawValue:))
-        } ?? .medium
-        return GPT56ModelGridSelection(
+            guard layout.efforts.contains(selected),
+                  effortOption.map({ ModelReasoningGridCatalog.supports(selected, option: $0) }) ?? true
+            else {
+                return nil
+            }
+            return selected
+        } ?? effortOption.flatMap { option in
+            option.defaultReasoningEffort
+                .flatMap(CodexAppServerReasoningEffort.init(rawValue:))
+                .flatMap { layout.efforts.contains($0) ? $0 : nil }
+        } ?? layout.efforts.first ?? .medium
+        return ModelReasoningGridSelection(
             modelID: option?.model ?? "gpt-5.6-sol",
             effort: effort
         )
@@ -1592,9 +1600,10 @@ struct ComposerView: View {
 
     var modelPickerTriggerTitle: String {
         guard let selectedModel = effectiveModelID,
-              let title = GPT56ModelGridCatalog.triggerTitle(
+              let title = ModelReasoningGridCatalog.triggerTitle(
                   for: selectedModel,
-                  effort: composerState.turnOptions.reasoningEffort ?? selectedModelGridSelection.effort
+                  effort: selectedModelGridSelection.effort,
+                  layout: modelReasoningGridLayout
               )
         else {
             return selectedModelSummaryTitle
@@ -1603,10 +1612,7 @@ struct ComposerView: View {
     }
 
     var showsStandaloneReasoningEffortControl: Bool {
-        GPT56ModelGridCatalog.showsStandaloneReasoningControl(
-            runtimeProvider: selectedSessionRuntimeProviderForModelMenu,
-            modelID: effectiveModelID
-        )
+        !modelReasoningGridLayout.contains(modelID: effectiveModelID)
     }
 
     func selectGridModel(_ option: CodexAppServerModelOption, effort: CodexAppServerReasoningEffort) {
@@ -1615,50 +1621,27 @@ struct ComposerView: View {
             options.model = option.model
             options.modelProvider = option.provider
             options.reasoningEffort = effort
+            if normalizedRuntimeProvider(option.runtimeProvider) == "claude" {
+                options.serviceTier = nil
+            }
         }
     }
 
     func selectModelOnly(_ option: CodexAppServerModelOption?) {
+        let layout = modelReasoningGridLayout
         composerState.updateTurnOptions { options in
             options.runtimeProvider = option?.runtimeProvider ?? payloadRuntimeProviderForSelectedSessionLock()
             options.model = option?.model
             options.modelProvider = option?.provider
-            if let defaultEffort = option?.defaultReasoningEffort.flatMap(CodexAppServerReasoningEffort.init(rawValue:)) {
-                options.reasoningEffort = defaultEffort
+            options.reasoningEffort = ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+                option: option,
+                current: options.reasoningEffort,
+                layout: layout
+            )
+            if normalizedRuntimeProvider(options.runtimeProvider) == "claude" {
+                options.serviceTier = nil
             }
         }
-    }
-
-    @ViewBuilder
-    var modelOptionItems: some View {
-        Button {
-            composerState.updateTurnOptions { options in
-                options.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
-                options.model = nil
-                options.modelProvider = nil
-            }
-        } label: {
-            Label(L10n.format("ui.default_value", defaultModelSummaryTitle), systemImage: composerState.turnOptions.model == nil ? "checkmark" : "cpu")
-        }
-        ForEach(modelOptionsForMenu) { option in
-            let isSelected = isSelectedModelOption(option)
-            Button {
-                composerState.updateTurnOptions { options in
-                    options.runtimeProvider = option.runtimeProvider
-                    options.model = option.model
-                    options.modelProvider = option.provider
-                }
-            } label: {
-                Label(option.menuTitle, systemImage: isSelected ? "checkmark" : "cpu")
-            }
-        }
-        Divider()
-        Button {
-            Task { await sessionStore.refreshAppServerModelOptions(force: true) }
-        } label: {
-            Label(sessionStore.isRefreshingAppServerModels ? L10n.text("ui.refreshing") : L10n.text("ui.refresh_model_list"), systemImage: "arrow.clockwise")
-        }
-        .disabled(sessionStore.isRefreshingAppServerModels)
     }
 
     var reasoningEffortMenu: some View {
@@ -1685,7 +1668,7 @@ struct ComposerView: View {
         } label: {
             Label(L10n.text("ui.default_option"), systemImage: composerState.turnOptions.reasoningEffort == nil ? "checkmark" : "brain.head.profile")
         }
-        ForEach(CodexAppServerReasoningEffort.allCases) { effort in
+        ForEach(standaloneReasoningEfforts) { effort in
             Button {
                 composerState.updateTurnOptions { $0.reasoningEffort = effort }
             } label: {
@@ -1695,6 +1678,16 @@ struct ComposerView: View {
                 )
             }
         }
+    }
+
+    var standaloneReasoningEfforts: [CodexAppServerReasoningEffort] {
+        let layout = modelReasoningGridLayout
+        let option = effectiveModelID.flatMap { modelID in
+            modelOptionsForMenu.first {
+                $0.model.caseInsensitiveCompare(modelID) == .orderedSame
+            } ?? layout.row(matching: modelID)
+        }
+        return ModelReasoningGridCatalog.supportedEfforts(for: option, layout: layout)
     }
 
     var reasoningEffortTitle: String {
@@ -1908,15 +1901,6 @@ struct ComposerView: View {
         return model
     }
 
-    func isSelectedModelOption(_ option: CodexAppServerModelOption) -> Bool {
-        guard let selectedModel = composerState.turnOptions.model else {
-            return false
-        }
-        return option.model == selectedModel &&
-            option.runtimeProvider == composerState.turnOptions.runtimeProvider &&
-            (composerState.turnOptions.modelProvider == nil || option.provider == composerState.turnOptions.modelProvider)
-    }
-
     var defaultModelSummaryTitle: String {
         guard let option = modelOptionsForMenu.first(where: \.isDefault) ?? modelOptionsForMenu.first else {
             return L10n.text("ui.default_model")
@@ -1938,14 +1922,46 @@ struct ComposerView: View {
         guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
             return
         }
-        guard normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider else {
+        let runtimeChanged = normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider
+        let unsupportedEffort = composerState.turnOptions.reasoningEffort.map { effort in
+            !supportsReasoningEffort(effort, modelID: effectiveModelID)
+        } ?? false
+        let unsupportedServiceTier = runtimeProvider == "claude"
+            && composerState.turnOptions.serviceTier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+
+        guard runtimeChanged || unsupportedEffort || unsupportedServiceTier else {
             return
         }
         composerState.updateTurnOptions { options in
-            options.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
-            options.model = nil
-            options.modelProvider = nil
+            if runtimeChanged {
+                options.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
+                options.model = nil
+                options.modelProvider = nil
+                options.reasoningEffort = nil
+            } else if unsupportedEffort {
+                options.reasoningEffort = nil
+            }
+            if runtimeProvider == "claude" {
+                options.serviceTier = nil
+            }
         }
+    }
+
+    func supportsReasoningEffort(
+        _ effort: CodexAppServerReasoningEffort,
+        modelID: String?
+    ) -> Bool {
+        let layout = modelReasoningGridLayout
+        let option = modelID.flatMap { resolvedModelID in
+            modelOptionsForMenu.first {
+                $0.model.caseInsensitiveCompare(resolvedModelID) == .orderedSame
+            } ?? layout.row(matching: resolvedModelID)
+        }
+        guard let option else {
+            // 未知/自定义模型继续走开发者模式原有能力，不能因本地目录不认识就擅自降级。
+            return true
+        }
+        return ModelReasoningGridCatalog.supports(effort, option: option, layout: layout)
     }
 
     func payloadRuntimeProviderForSelectedSessionLock() -> String? {

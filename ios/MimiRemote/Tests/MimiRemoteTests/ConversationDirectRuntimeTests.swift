@@ -1672,6 +1672,52 @@ extension ConversationDataFlowTests {
             return false
         })
 
+        transport.enqueue(#"{"id":102,"method":"item/tool/requestUserInput","params":{"threadId":"thr_resolved","turnId":"turn_resolved","itemId":"input_resolved","questions":[{"id":"scope","header":"范围","question":"修复哪里？","isOther":true,"isSecret":false,"options":[{"label":"客户端","description":"修复 iPad 端"}]}]}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .userInputRequest(let request, let metadata) = $0 {
+                return request.id == "input_resolved" && metadata.sessionID == "thr_resolved"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .userInputRequest(let request, let metadata) = $0 {
+                return request.id == "input_resolved" && metadata.sessionID == "thr_resolved"
+            }
+            return false
+        })
+
+        XCTAssertTrue(socket.sendUserInputResponse(requestID: "input_resolved", answers: ["scope": ["客户端"]]))
+        let userInputResponse = try await waitForFakeAppServerResponse(transport, id: .int(102))
+        XCTAssertEqual(userInputResponse.result?["answers"]?.objectValue?["scope"]?.objectValue?["answers"]?.arrayValue?.first?.stringValue, "客户端")
+
+        let eventCountBeforeUserInputResolved = events.count
+        // 带 threadId 才能覆盖旧故障：投影出的 approvalResolved 与 userInputResolved 属于同一 session，
+        // 旧实现会错误保留前者并过滤后者。
+        transport.enqueue(#"{"method":"serverRequest/resolved","params":{"threadId":"thr_resolved","requestId":102}}"#)
+        for _ in 0..<200 where !events.dropFirst(eventCountBeforeUserInputResolved).contains(where: {
+            if case .userInputResolved(let metadata, _) = $0 {
+                return metadata.sessionID == "thr_resolved"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let userInputResolvedEvents = Array(events.dropFirst(eventCountBeforeUserInputResolved))
+        XCTAssertTrue(userInputResolvedEvents.contains {
+            if case .userInputResolved(let metadata, _) = $0 {
+                return metadata.sessionID == "thr_resolved"
+            }
+            return false
+        })
+        XCTAssertFalse(userInputResolvedEvents.contains {
+            if case .approvalResolved(let metadata) = $0 {
+                return metadata.sessionID == "thr_resolved"
+            }
+            return false
+        }, "requestUserInput 完成后不能投影成 approvalResolved")
+
         socket.disconnect()
     }
 
@@ -1914,4 +1960,3 @@ extension ConversationDataFlowTests {
     }
 
 }
-

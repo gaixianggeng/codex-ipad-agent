@@ -1296,8 +1296,8 @@ struct ConversationMessage: Identifiable, Hashable {
     let id: UUID
     var stableID: MessageID?
     let clientMessageID: ClientMessageID?
-    let turnID: TurnID?
-    let itemID: AgentItemID?
+    var turnID: TurnID?
+    var itemID: AgentItemID?
     var role: Role
     var kind: MessageKind
     var content: String {

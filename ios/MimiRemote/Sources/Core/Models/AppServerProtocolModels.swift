@@ -457,7 +457,8 @@ struct CodexAppServerRequestBuilder {
             params["initialTurnsPage"] = .object([
                 "limit": .int(5),
                 "sortDirection": .string("desc"),
-                "itemsView": .string("full")
+                // resume 只负责恢复监听和最近 turn 状态；完整内容继续由分页历史按需读取。
+                "itemsView": .string("summary")
             ])
         }
         params["ephemeral"] = nil

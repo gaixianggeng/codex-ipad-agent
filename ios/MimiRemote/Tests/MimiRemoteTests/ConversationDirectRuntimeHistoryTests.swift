@@ -709,6 +709,126 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(secondRequests.filter { $0.method == "turn/start" }.count, 1)
     }
 
+    func testDirectRuntimeRecoversPendingUserInputAfterForegroundReconnectWithoutColdStart() async throws {
+        let project = AgentProject(id: "proj_pending_input_recovery", name: "Pending Input Recovery", path: "/tmp/pending-input-recovery")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/list", "thread/resume"]
+                )
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        // 回前台时 thread/list 能看到 waitingOnUserInput，但列表快照不包含
+        // server request 的 questions/options；这就是侧边栏“待输入”但详情无卡片的现场状态。
+        let listTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(
+            transport,
+            id: list.id,
+            result: #"{"data":[{"id":"thr_pending_input_recovery","sessionId":"thr_pending_input_recovery","preview":"等待补充信息","ephemeral":false,"modelProvider":"openai","createdAt":1780491200,"updatedAt":1780491201,"status":{"type":"active","activeFlags":["waitingOnUserInput"]},"path":null,"cwd":"/tmp/pending-input-recovery","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待补充信息","turns":[{"id":"turn_pending_input_recovery","status":"inProgress","items":[]}]}],"nextCursor":null,"backwardsCursor":null}"#
+        )
+        let page = try await listTask.value
+        XCTAssertEqual(page.sessions.first?.status, SessionStatus.waitingForInput.rawValue)
+        XCTAssertNil(page.sessions.first?.pendingUserInput)
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+
+        socket.connect(sessionID: "thr_pending_input_recovery", replayBufferedEvents: false)
+        let firstResume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
+        transportResponse(
+            transport,
+            id: firstResume.id,
+            result: #"{"thread":{"id":"thr_pending_input_recovery","sessionId":"thr_pending_input_recovery","preview":"等待补充信息","ephemeral":false,"modelProvider":"openai","createdAt":1780491200,"updatedAt":1780491202,"status":{"type":"active","activeFlags":["waitingOnUserInput"]},"path":null,"cwd":"/tmp/pending-input-recovery","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待补充信息","turns":[{"id":"turn_pending_input_recovery","status":"inProgress","items":[]}]}}"#
+        )
+        for _ in 0..<200 where statuses.filter({ $0 == .connected }).count < 1 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(statuses.filter { $0 == .connected }.count, 1)
+
+        // 模拟 App 进后台后页面订阅被取消，底层 runtime/gateway 连接仍在。
+        // 此时重连必须再发 thread/resume，不能被“已 resume”的本地标记短路。
+        socket.disconnect()
+        let beforeRecoveryConnect = await transport.sentMessages().count
+        socket.connect(sessionID: "thr_pending_input_recovery", replayBufferedEvents: false)
+        let recoveryResume = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/resume",
+            after: beforeRecoveryConnect
+        )
+        transportResponse(
+            transport,
+            id: recoveryResume.id,
+            result: #"{"thread":{"id":"thr_pending_input_recovery","sessionId":"thr_pending_input_recovery","preview":"等待补充信息","ephemeral":false,"modelProvider":"openai","createdAt":1780491200,"updatedAt":1780491203,"status":{"type":"active","activeFlags":["waitingOnUserInput"]},"path":null,"cwd":"/tmp/pending-input-recovery","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"等待补充信息","turns":[{"id":"turn_pending_input_recovery","status":"inProgress","items":[]}]}}"#
+        )
+        transport.enqueue(#"{"id":701,"method":"item/tool/requestUserInput","params":{"threadId":"thr_pending_input_recovery","turnId":"turn_pending_input_recovery","itemId":"input_pending_recovery","questions":[{"id":"strategy","header":"策略","question":"期望怎么处理？","isOther":true,"isSecret":false,"options":[{"label":"确认并发送","description":"保留当前文本"}]}]}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .userInputRequest(let request, _) = $0 {
+                return request.id == "input_pending_recovery"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains { event in
+            if case .userInputRequest(let request, let metadata) = event {
+                return request.id == "input_pending_recovery"
+                    && metadata.sessionID == "thr_pending_input_recovery"
+            }
+            return false
+        })
+
+        // 再次切换会话时，runtime 已保有未处理请求；新页面应直接补放该请求，
+        // 无需冷启动，也无需第三次 thread/resume。
+        let userInputEventCount = events.filter {
+            if case .userInputRequest(let request, _) = $0 {
+                return request.id == "input_pending_recovery"
+            }
+            return false
+        }.count
+        socket.disconnect()
+        let beforeKnownRequestReconnect = await transport.sentMessages().count
+        socket.connect(sessionID: "thr_pending_input_recovery", replayBufferedEvents: false)
+        for _ in 0..<200 where events.filter({
+            if case .userInputRequest(let request, _) = $0 {
+                return request.id == "input_pending_recovery"
+            }
+            return false
+        }).count <= userInputEventCount {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(
+            events.filter {
+                if case .userInputRequest(let request, _) = $0 {
+                    return request.id == "input_pending_recovery"
+                }
+                return false
+            }.count,
+            userInputEventCount
+        )
+        let messagesAfterKnownRequestReconnect = await transport.sentMessages()
+        let reconnectRequests = messagesAfterKnownRequestReconnect
+            .dropFirst(beforeKnownRequestReconnect)
+            .compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertFalse(reconnectRequests.contains { $0.method == "thread/resume" })
+
+        socket.disconnect()
+    }
+
     func testCodexAppServerSessionWebSocketReportsDisconnectedAfterTransportReceiveFailure() async throws {
         let project = AgentProject(id: "proj_stream_disconnect", name: "Stream Disconnect", path: "/tmp/stream-disconnect")
         let transport = FakeCodexAppServerTransport()
@@ -1180,6 +1300,10 @@ extension ConversationDataFlowTests {
         let subscriptionResume = try decodeAppServerRequest(subscriptionResumeMessages[4])
         XCTAssertEqual(subscriptionResume.method, "thread/resume")
         XCTAssertEqual(subscriptionResume.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
+        XCTAssertEqual(
+            subscriptionResume.params?.objectValue?["initialTurnsPage"]?.objectValue?["itemsView"]?.stringValue,
+            "summary"
+        )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: subscriptionResume.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
 
         // 订阅建立后会异步刷新 thread 目标；回空结果即可。
@@ -1200,10 +1324,21 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(resumeRequest.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertNil(resumeRequest.params?.objectValue?["model"]?.stringValue)
         XCTAssertNil(resumeRequest.params?.objectValue?["modelProvider"])
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"继续排查","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
+        XCTAssertEqual(
+            resumeRequest.params?.objectValue?["initialTurnsPage"]?.objectValue?["itemsView"]?.stringValue,
+            "summary"
+        )
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"error":{"code":-32080,"message":"thread/resume history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取","data":{"reason":"history_response_too_large","method":"thread/resume","itemsView":"summary"}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 9)
-        let turnStart = try decodeAppServerRequest(turnMessages[8])
+        let fallbackResumeMessages = try await waitForFakeAppServerMessages(transport, count: 9)
+        let fallbackResume = try decodeAppServerRequest(fallbackResumeMessages[8])
+        XCTAssertEqual(fallbackResume.method, "thread/resume")
+        XCTAssertEqual(fallbackResume.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
+        XCTAssertNil(fallbackResume.params?.objectValue?["initialTurnsPage"])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: fallbackResume.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"继续排查","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
+
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 10)
+        let turnStart = try decodeAppServerRequest(turnMessages[9])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertEqual(turnStart.params?.objectValue?["clientUserMessageId"]?.stringValue?.isEmpty, false)
@@ -1222,6 +1357,8 @@ extension ConversationDataFlowTests {
             "恢复提示是本地生命周期反馈，不能混入服务端 transcript"
         )
         XCTAssertEqual(store.statusMessage, L10n.text("ui.this_historical_conversation_has_been_continued"))
+        let allRequests = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(allRequests.filter { $0.method == "turn/start" }.count, 1)
     }
 
     func testStartTurnResumesThreadOnConnectionBeforeFirstTurnStart() async throws {

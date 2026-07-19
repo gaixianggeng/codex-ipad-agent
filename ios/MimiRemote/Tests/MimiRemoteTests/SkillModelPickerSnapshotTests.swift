@@ -11,17 +11,18 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
             CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6 Sol", isDefault: true),
             CodexAppServerModelOption(id: "gpt-5.6-terra", title: "GPT-5.6 Terra")
         ]
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
 
         XCTAssertEqual(
-            GPT56ModelGridCatalog.effectiveModelID(selectedModelID: "gpt-5.6-terra", options: options),
+            ModelReasoningGridCatalog.effectiveModelID(selectedModelID: "gpt-5.6-terra", options: options),
             "gpt-5.6-terra"
         )
-        XCTAssertTrue(GPT56ModelGridCatalog.isGridModel("gpt-5.6-terra"))
-        XCTAssertNotNil(GPT56ModelGridCatalog.triggerTitle(for: "gpt-5.6-terra", effort: .high))
-        XCTAssertFalse(
-            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
-                runtimeProvider: "codex",
-                modelID: "gpt-5.6-terra"
+        XCTAssertTrue(layout.contains(modelID: "gpt-5.6-terra"))
+        XCTAssertNotNil(
+            ModelReasoningGridCatalog.triggerTitle(
+                for: "gpt-5.6-terra",
+                effort: .high,
+                layout: layout
             )
         )
     }
@@ -32,50 +33,33 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
             CodexAppServerModelOption(id: "gpt-5.6-sol", title: "GPT-5.6 Sol", isDefault: true)
         ]
 
-        let modelID = GPT56ModelGridCatalog.effectiveModelID(selectedModelID: nil, options: options)
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
+        let modelID = ModelReasoningGridCatalog.effectiveModelID(selectedModelID: nil, options: options)
 
         XCTAssertEqual(modelID, "gpt-5.6-sol")
-        XCTAssertTrue(GPT56ModelGridCatalog.isGridModel(modelID))
+        XCTAssertTrue(layout.contains(modelID: modelID))
         XCTAssertEqual(
-            modelID.flatMap { GPT56ModelGridCatalog.triggerTitle(for: $0, effort: .xhigh) },
-            "5.6 Sol · \(GPT56ModelGridCatalog.effortTitle(.xhigh))"
-        )
-        XCTAssertFalse(
-            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
-                runtimeProvider: nil,
-                modelID: modelID
-            )
+            modelID.flatMap {
+                ModelReasoningGridCatalog.triggerTitle(for: $0, effort: .xhigh, layout: layout)
+            },
+            "5.6 Sol · \(ModelReasoningGridCatalog.effortTitle(.xhigh))"
         )
     }
 
-    func testNonGridAndClaudeDefaultsKeepStandaloneReasoningPath() {
+    func testClaudeUsesSharedGridWithRuntimeSpecificRowsAndEfforts() {
         let nonGridOptions = [CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true)]
-        let claudeOptions = [
-            CodexAppServerModelOption(
-                id: "sonnet",
-                title: "Claude Sonnet 5",
-                runtimeProvider: "claude",
-                isDefault: true
-            )
-        ]
+        let claudeOptions = CodexAppServerModelOption.builtInClaudeFallback
 
-        let nonGridModelID = GPT56ModelGridCatalog.effectiveModelID(selectedModelID: nil, options: nonGridOptions)
-        let claudeModelID = GPT56ModelGridCatalog.effectiveModelID(selectedModelID: nil, options: claudeOptions)
+        let codexLayout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: nonGridOptions)
+        let claudeLayout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: claudeOptions)
+        let nonGridModelID = ModelReasoningGridCatalog.effectiveModelID(selectedModelID: nil, options: nonGridOptions)
+        let claudeModelID = ModelReasoningGridCatalog.effectiveModelID(selectedModelID: nil, options: claudeOptions)
 
-        XCTAssertFalse(GPT56ModelGridCatalog.isGridModel(nonGridModelID))
-        XCTAssertFalse(GPT56ModelGridCatalog.isGridModel(claudeModelID))
-        XCTAssertTrue(
-            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
-                runtimeProvider: "codex",
-                modelID: nonGridModelID
-            )
-        )
-        XCTAssertTrue(
-            GPT56ModelGridCatalog.showsStandaloneReasoningControl(
-                runtimeProvider: "claude",
-                modelID: "gpt-5.6-sol"
-            )
-        )
+        XCTAssertFalse(codexLayout.contains(modelID: nonGridModelID))
+        XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
+        XCTAssertEqual(claudeLayout.rows.map(\.model), ["sonnet", "opus", "haiku"])
+        XCTAssertEqual(claudeLayout.efforts, [.minimal, .low, .medium, .high])
+        XCTAssertFalse(claudeLayout.showsFastMode)
     }
 
     func testSkillCardsAndModelGridDarkAppearance() throws {
@@ -141,7 +125,11 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
 
             ModelReasoningGridPicker(
                 options: CodexAppServerModelOption.builtInFallback,
-                selection: GPT56ModelGridSelection(modelID: "gpt-5.6-terra", effort: .high),
+                layout: ModelReasoningGridCatalog.layout(
+                    runtimeProvider: "codex",
+                    options: CodexAppServerModelOption.builtInFallback
+                ),
+                selection: ModelReasoningGridSelection(modelID: "gpt-5.6-terra", effort: .high),
                 selectedModelID: "gpt-5.6-terra",
                 isRefreshing: false,
                 isFastMode: true,
@@ -171,7 +159,11 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
 
         let view = ModelReasoningGridPicker(
             options: CodexAppServerModelOption.builtInFallback,
-            selection: GPT56ModelGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
+            layout: ModelReasoningGridCatalog.layout(
+                runtimeProvider: "codex",
+                options: CodexAppServerModelOption.builtInFallback
+            ),
+            selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
             selectedModelID: "gpt-5.6-sol",
             isRefreshing: false,
             isFastMode: false,

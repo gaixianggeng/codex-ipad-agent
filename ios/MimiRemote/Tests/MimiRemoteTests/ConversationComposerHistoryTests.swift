@@ -409,6 +409,72 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(range.length, 0)
     }
 
+    func testComposerTextSubmitBridgeKeepsOrdinaryCompositionSnapshotNonDestructive() throws {
+        let textView = CommandSubmitTextView()
+        textView.text = "继续"
+        textView.selectedRange = NSRange(location: (textView.text as NSString).length, length: 0)
+        textView.setMarkedText("修复", selectedRange: NSRange(location: 2, length: 0))
+        let bridge = ComposerTextSubmitBridge()
+        bridge.attach(textView)
+
+        let snapshot = try XCTUnwrap(bridge.snapshotForSubmit())
+
+        XCTAssertEqual(snapshot.text, "继续修复")
+        XCTAssertTrue(snapshot.isComposing)
+        XCTAssertTrue(textView.hasMarkedText, "普通草稿快照不能提前提交输入法组合态")
+    }
+
+    func testComposerTextSubmitBridgeFinalSnapshotCommitsChineseMarkedText() throws {
+        let textView = CommandSubmitTextView()
+        textView.text = "继续"
+        textView.selectedRange = NSRange(location: (textView.text as NSString).length, length: 0)
+        textView.setMarkedText("修复", selectedRange: NSRange(location: 2, length: 0))
+        let bridge = ComposerTextSubmitBridge()
+        bridge.attach(textView)
+
+        let snapshot = try XCTUnwrap(bridge.finalSnapshotForSubmit())
+
+        XCTAssertEqual(snapshot.text, "继续修复")
+        XCTAssertFalse(snapshot.isComposing)
+        XCTAssertFalse(textView.hasMarkedText)
+    }
+
+    func testComposerTextSubmitBridgeTreatsActiveChineseCompositionAsSubmittableText() {
+        let textView = CommandSubmitTextView()
+        textView.setMarkedText("继续修复", selectedRange: NSRange(location: 4, length: 0))
+        let bridge = ComposerTextSubmitBridge()
+        bridge.attach(textView)
+
+        XCTAssertTrue(textView.hasMarkedText)
+        XCTAssertTrue(bridge.hasNonWhitespaceTextForSubmit())
+    }
+
+    func testSkillAutocompleteThenChineseSubmitBuildsTextAndSkillPayload() throws {
+        let skillToken = "$review"
+        let textView = CommandSubmitTextView()
+        textView.text = skillToken
+        textView.selectedRange = NSRange(location: (skillToken as NSString).length, length: 0)
+        let bridge = ComposerTextSubmitBridge()
+        bridge.attach(textView)
+        let query = try XCTUnwrap(ComposerSkillQuery.match(
+            text: skillToken,
+            selectedRange: textView.selectedRange
+        ))
+
+        XCTAssertEqual(bridge.replaceText(in: query.replacementRange, with: ""), "")
+        textView.setMarkedText("帮我继续修复", selectedRange: NSRange(location: 6, length: 0))
+        let finalSnapshot = try XCTUnwrap(bridge.finalSnapshotForSubmit())
+
+        var composerState = ComposerState()
+        composerState.draft = finalSnapshot.text
+        composerState.addAttachment(.skill(name: "review", path: "/tmp/review/SKILL.md"))
+        let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(isLoading: false))
+
+        XCTAssertEqual(submitted.payload.textPrompt, "帮我继续修复")
+        XCTAssertTrue(payloadContainsSkill(submitted.payload, name: "review"))
+        XCTAssertEqual(submitted.payload.input.count, 2)
+    }
+
     func testComposerFocusRequestIsConsumedOnceAndDoesNotClearNewerRequest() {
         let first = UUID()
         let second = UUID()

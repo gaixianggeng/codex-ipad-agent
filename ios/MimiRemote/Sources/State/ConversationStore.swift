@@ -313,6 +313,11 @@ final class ConversationStore: ObservableObject {
         if kind == .approval, text.hasPrefix(L10n.text("ui.awaiting_approval")), upsertPendingApprovalMessage(text, sessionID: sessionID) {
             return
         }
+        if kind == .userInput,
+           isPendingUserInputText(text),
+           upsertPendingUserInputMessage(text, sessionID: sessionID, metadata: metadata) {
+            return
+        }
         // runtime 过程消息需要保留 turnID/itemID，UI 才能在 turn 完成后准确折叠到“已处理”组里。
         append(ConversationMessage(
             turnID: metadata?.turnID,
@@ -449,6 +454,54 @@ final class ConversationStore: ObservableObject {
         return false
     }
 
+    private func upsertPendingUserInputMessage(
+        _ text: String,
+        sessionID: String,
+        metadata: AgentEventMetadata?
+    ) -> Bool {
+        guard var list = messagesBySessionID[sessionID] else {
+            return false
+        }
+        let requestID = metadata?.itemID
+        let title = pendingUserInputTitle(from: text)
+        guard let index = list.lastIndex(where: { message in
+            guard message.kind == .userInput, isPendingUserInputText(message.content) else {
+                return false
+            }
+            if let requestID, let existingRequestID = message.itemID {
+                return existingRequestID == requestID
+            }
+            // 旧历史可能没有 itemID；仅在标题一致时把它升级为当前仍挂起的同一交互。
+            return message.content == text || pendingUserInputTitle(from: message.content) == title
+        }) else {
+            return false
+        }
+        var didChange = false
+        // 旧历史卡没有 request id 时，在首次实时重放时补齐身份。否则后续同标题的新请求
+        // 仍会被误认为同一张卡，造成新的补充信息交互不可见。
+        if list[index].itemID == nil, let requestID {
+            list[index].itemID = requestID
+            didChange = true
+        }
+        if list[index].turnID == nil, let turnID = metadata?.turnID {
+            list[index].turnID = turnID
+            didChange = true
+        }
+        if list[index].stableID == nil, let messageID = metadata?.messageID {
+            list[index].stableID = messageID
+            didChange = true
+        }
+        if list[index].content != text {
+            list[index].content = text
+            didChange = true
+        }
+        if didChange {
+            // stableID 可能在旧卡升级时首次出现，必须同步重建索引，避免数组与按稳定 ID 查找不一致。
+            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: true)
+        }
+        return true
+    }
+
     private func pendingApprovalTitle(from text: String) -> String {
         let prefix = L10n.text("ui.awaiting_approval")
         guard text.hasPrefix(prefix) else {
@@ -466,6 +519,11 @@ final class ConversationStore: ObservableObject {
             return String(text.dropFirst(prefix.count))
         }
         return text
+    }
+
+    private func isPendingUserInputText(_ text: String) -> Bool {
+        text.hasPrefix(L10n.text("ui.waiting_for_additional_information_3a146c9c"))
+            || text.hasPrefix(L10n.text("ui.waiting_for_boot_input"))
     }
 
     func resetLiveTranscript(sessionID: String) {

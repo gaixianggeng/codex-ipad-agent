@@ -128,6 +128,7 @@
 		E2B435E4A55B08128E8D8341 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = A70AE1D612D581C90BAE9B54 /* LICENSE */; };
 		E4A6ECBFD5B621FB6A30299A /* LocalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AA53A2531C62C2974077C88 /* LocalizationTests.swift */; };
 		E4C5AB826686611C3468FAB8 /* ComposerAttachmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF511A69E274B12E5E2AE265 /* ComposerAttachmentViews.swift */; };
+		E52FF51E6A66678EBAEF7F9E /* testComposerModelTriggerFastIndicator.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 608F5B2621676207DEE92BA8 /* testComposerModelTriggerFastIndicator.1.png */; };
 		E790247242197F065BB1F1DE /* ConversationDirectRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025CFFED953120CE5B667800 /* ConversationDirectRuntimeTests.swift */; };
 		E7EE1A6D1A2A19F69E8F6513 /* testConversationBubbleAlignment.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 0FC920B8D7FE7F76E2C18FD7 /* testConversationBubbleAlignment.1.png */; };
 		E811D57414AC2415D22ADDF0 /* APIResponses.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266B02E274C8B9B137FF4ACB /* APIResponses.swift */; };
@@ -219,6 +220,7 @@
 		5591601BA7CA64C8C0CF7931 /* direct_app_server_approval_stream.jsonl */ = {isa = PBXFileReference; path = direct_app_server_approval_stream.jsonl; sourceTree = "<group>"; };
 		5C87937DA9D34D00853E635B /* DataURLImageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataURLImageDecoder.swift; sourceTree = "<group>"; };
 		5C9DB99DDCE7CA778B616657 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		608F5B2621676207DEE92BA8 /* testComposerModelTriggerFastIndicator.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerModelTriggerFastIndicator.1.png; sourceTree = "<group>"; };
 		640F92290AC3DAED201E1CD0 /* ProjectSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSidebarView.swift; sourceTree = "<group>"; };
 		64E9EA7D6A93EB6697C0B874 /* ComposerTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerTextEditor.swift; sourceTree = "<group>"; };
 		66A8566747A2D84035A3CC6D /* LogPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogPanelView.swift; sourceTree = "<group>"; };
@@ -443,6 +445,7 @@
 			isa = PBXGroup;
 			children = (
 				C4E6AEA3E96B661F7473D460 /* testCompactModelGridLightFastModeOff.1.png */,
+				608F5B2621676207DEE92BA8 /* testComposerModelTriggerFastIndicator.1.png */,
 				DCC3691375017B35F7E29234 /* testSkillCardsAndModelGridDarkAppearance.1.png */,
 			);
 			path = SkillModelPickerSnapshotTests;
@@ -790,6 +793,7 @@
 				439355570F5ED69354673D07 /* testAppearancePreview.1.png in Resources */,
 				CD0CC06D483B428F053D1EAF /* testCommentaryAndTrailingProcessRendering.1.png in Resources */,
 				9F4EA8644B1E67A1F3CC863C /* testCompactModelGridLightFastModeOff.1.png in Resources */,
+				E52FF51E6A66678EBAEF7F9E /* testComposerModelTriggerFastIndicator.1.png in Resources */,
 				26F460F34C7BA2C10839F2CA /* testComposerStatusTrayCrowdedCompactWidth.1.png in Resources */,
 				55D43B731CFE9C5246B02D1C /* testComposerStatusTrayCrowdedState.1.png in Resources */,
 				6CDCE158780313AFAA5C93D5 /* testComposerStatusTrayExpandedCrowdedState.1.png in Resources */,
@@ -967,7 +971,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100036;
+				CURRENT_PROJECT_VERSION = 100044;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
@@ -1077,7 +1081,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100036;
+				CURRENT_PROJECT_VERSION = 100044;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;

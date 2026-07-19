@@ -266,7 +266,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["excludeTurns"]?.boolValue, true)
         XCTAssertEqual(page["limit"]?.intValue, 5)
         XCTAssertEqual(page["sortDirection"]?.stringValue, "desc")
-        XCTAssertEqual(page["itemsView"]?.stringValue, "full")
+        XCTAssertEqual(page["itemsView"]?.stringValue, "summary")
     }
 
     func testTurnStartBuilderSendsExplicitCollaborationMode() throws {
@@ -602,7 +602,94 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(option.supportedReasoningEfforts, ["medium", "high", "xhigh"])
         XCTAssertEqual(option.defaultReasoningEffort, "low")
         XCTAssertFalse(option.hidden)
-        XCTAssertEqual(GPT56ModelGridCatalog.rows(from: parsed).map(\.model), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: parsed).rows.map(\.model),
+            ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        )
+    }
+
+    func testClaudeModelGridUsesConcreteFamiliesAndBridgeReasoningMetadata() {
+        let efforts = ["minimal", "low", "medium", "high"]
+        let options = [
+            CodexAppServerModelOption(id: "sonnet", runtimeProvider: "claude"),
+            CodexAppServerModelOption(
+                id: "claude-sonnet-4-6",
+                runtimeProvider: "claude",
+                isDefault: true,
+                supportedReasoningEfforts: efforts,
+                defaultReasoningEffort: "medium"
+            ),
+            CodexAppServerModelOption(id: "opus", runtimeProvider: "claude"),
+            CodexAppServerModelOption(
+                id: "claude-opus-4-7",
+                runtimeProvider: "claude",
+                supportedReasoningEfforts: efforts,
+                defaultReasoningEffort: "high"
+            ),
+            CodexAppServerModelOption(id: "haiku", runtimeProvider: "claude"),
+            CodexAppServerModelOption(
+                id: "claude-haiku-4-5-20251001",
+                runtimeProvider: "claude",
+                supportedReasoningEfforts: efforts,
+                defaultReasoningEffort: "minimal"
+            )
+        ]
+
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: options)
+
+        XCTAssertEqual(
+            layout.rows.map(\.model),
+            ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"]
+        )
+        XCTAssertEqual(layout.efforts, [.minimal, .low, .medium, .high])
+        XCTAssertTrue(layout.contains(modelID: "sonnet"), "Claude alias 应映射到同一模型家族")
+        XCTAssertFalse(layout.showsFastMode)
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.triggerTitle(for: "sonnet", effort: .medium, layout: layout),
+            "Sonnet · \(ModelReasoningGridCatalog.effortTitle(.medium))"
+        )
+    }
+
+    func testModelGridValidatesReasoningEffortAgainstSelectedRow() {
+        let sonnet = CodexAppServerModelOption(
+            id: "claude-sonnet-4-6",
+            runtimeProvider: "claude",
+            supportedReasoningEfforts: ["low", "medium"]
+        )
+        let opus = CodexAppServerModelOption(
+            id: "claude-opus-4-7",
+            runtimeProvider: "claude",
+            supportedReasoningEfforts: ["high"],
+            defaultReasoningEffort: "high"
+        )
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: [sonnet, opus])
+
+        XCTAssertEqual(layout.efforts, [.low, .medium, .high])
+        XCTAssertFalse(ModelReasoningGridCatalog.supports(.high, option: sonnet, layout: layout))
+        XCTAssertTrue(ModelReasoningGridCatalog.supports(.high, option: opus, layout: layout))
+        XCTAssertNil(
+            ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+                option: sonnet,
+                current: .high,
+                layout: layout
+            )
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+                option: opus,
+                current: .low,
+                layout: layout
+            ),
+            .high
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.supportedEfforts(for: sonnet, layout: layout),
+            [.low, .medium]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.supportedEfforts(for: opus, layout: layout),
+            [.high]
+        )
     }
 
     func testComposerSkillQueryOnlyMatchesWhitespaceDelimitedTokenAtCursor() throws {

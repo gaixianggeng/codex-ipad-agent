@@ -526,7 +526,24 @@ actor CodexAppServerSessionRuntime {
                 : try builder.threadResume(threadID: payload.resumeID, projectID: payload.projectID, options: threadOptions)
         }
 
-        let result = try await sendRecoveringFromStaleInitialization(spec)
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(spec)
+        } catch {
+            guard !payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  shouldFallbackFromInitialTurnsPage(error) else {
+                throw error
+            }
+            // idle 历史会话的发送会通过 createSession(resume:) 进入这里；它和事件订阅一样
+            // 必须允许 initialTurnsPage 因响应过大或版本不兼容而降级，否则 turn/start 永远不会发出。
+            let fallback = try builder.threadResume(
+                threadID: payload.resumeID,
+                cwd: project.path,
+                options: threadOptions,
+                includeInitialTurnsPage: false
+            )
+            result = try await sendRecoveringFromStaleInitialization(fallback)
+        }
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
         }
@@ -1179,10 +1196,24 @@ actor CodexAppServerSessionRuntime {
             eventContinuationsBySessionID[sessionID, default: [:]][token] = continuation
             // backlog 只能被第一个订阅者消费一次；之后同 thread 的可见页面与后台队列
             // 都从实时扇出接收事件，避免两个 SessionWebSocketClient 互相顶掉 continuation。
+            var replayedInteractionIDs: Set<String> = []
             if isFirstSubscriber {
                 for event in bufferedEvents(sessionID: sessionID, replayPolicy: replayPolicy) {
+                    if let interactionID = pendingInteractionReplayID(for: event) {
+                        replayedInteractionIDs.insert(interactionID)
+                    }
                     continuation.yield(event)
                 }
+            }
+            // server request 本身不在 thread/list/read 里，页面切换或进后台时又可能已经从
+            // runtime 收到、但还没投影到新页面。新订阅者必须直接补放 runtime 内存里仍挂起的
+            // 审批/补充信息请求，否则侧边栏只会显示“待输入”，详情却没有可操作卡片。
+            for event in pendingInteractionEvents(sessionID: sessionID) {
+                guard let interactionID = pendingInteractionReplayID(for: event),
+                      replayedInteractionIDs.insert(interactionID).inserted else {
+                    continue
+                }
+                continuation.yield(event)
             }
             continuation.onTermination = { [weak self] _ in
                 Task {
@@ -1241,6 +1272,37 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
+    func pendingInteractionEvents(sessionID: SessionID) -> [AgentEvent] {
+        var seenApprovalRequestIDs: Set<CodexAppServerRequestID> = []
+        let approvalEvents = pendingApprovalRequestsByID.values.compactMap { request -> AgentEvent? in
+            guard approvalSessionID(for: request) == sessionID,
+                  seenApprovalRequestIDs.insert(request.id).inserted else {
+                return nil
+            }
+            return projector.project(request)
+        }
+        var seenUserInputRequestIDs: Set<CodexAppServerRequestID> = []
+        let userInputEvents = pendingUserInputRequestsByID.values.compactMap { request -> AgentEvent? in
+            guard approvalSessionID(for: request) == sessionID,
+                  seenUserInputRequestIDs.insert(request.id).inserted else {
+                return nil
+            }
+            return projector.project(request)
+        }
+        return approvalEvents + userInputEvents
+    }
+
+    nonisolated func pendingInteractionReplayID(for event: AgentEvent) -> String? {
+        switch event {
+        case .approvalRequest(let request, _):
+            return "approval:\(request.id)"
+        case .userInputRequest(let request, _):
+            return "user-input:\(request.id)"
+        default:
+            return nil
+        }
+    }
+
     func connectForEvents(sessionID: SessionID) async throws {
         if contextsBySessionID[sessionID] == nil {
             _ = try await session(id: sessionID, afterSeq: nil)
@@ -1250,6 +1312,13 @@ actor CodexAppServerSessionRuntime {
         }
         let connection = try await ensureConnection()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
+        if needsPendingInteractionRecovery(for: context.session) {
+            // App 进后台时只取消页面事件泵，底层 gateway 连接可能仍存活，所以这个
+            // thread 仍被记为已 resume。若列表已是等待态、runtime 却没有对应 server request，
+            // 说明请求落在了 iOS 挂起/切会话窗口；清掉本地绑定标记，强制 thread/resume 让
+            // app-server 重放未处理请求。
+            threadsResumedOnConnection.remove(sessionID)
+        }
         // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
         // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件
         // 可能不会回流到 iPad。
@@ -1258,6 +1327,21 @@ actor CodexAppServerSessionRuntime {
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
         Task {
             await refreshThreadGoalIfAvailable(sessionID: sessionID, builder: builder, connection: connection)
+        }
+    }
+
+    func needsPendingInteractionRecovery(for session: AgentSession) -> Bool {
+        switch session.status {
+        case SessionStatus.waitingForApproval.rawValue:
+            return !pendingApprovalRequestsByID.values.contains {
+                approvalSessionID(for: $0) == session.id
+            }
+        case SessionStatus.waitingForInput.rawValue:
+            return !pendingUserInputRequestsByID.values.contains {
+                approvalSessionID(for: $0) == session.id
+            }
+        default:
+            return false
         }
     }
 
