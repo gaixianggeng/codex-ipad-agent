@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var appStore: AppStore
@@ -13,7 +12,6 @@ struct RootView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @SceneStorage("root.selectedAppTab") private var selectedAppTabRawValue = AppTab.sessions.rawValue
     @SceneStorage("root.lastSessionSnapshot") private var lastSessionSnapshot = ""
-    @AppStorage("runtime.keepAwakeWhileRunning") private var keepAwakeWhileRunning = false
     @State private var notificationRouteAlertMessage: String?
     @State private var hasCompletedInitialBootstrap = false
 
@@ -60,12 +58,7 @@ struct RootView: View {
             }
             await sessionStore.pollSelectedProjectSessionsWhileVisible()
         }
-        .onAppear(perform: applyIdleTimerPolicy)
-        .onDisappear {
-            UIApplication.shared.isIdleTimerDisabled = false
-        }
         .onChange(of: scenePhase) { _, phase in
-            applyIdleTimerPolicy()
             if phase == .background {
                 sessionStore.suspendForBackground()
                 return
@@ -77,24 +70,12 @@ struct RootView: View {
                 await sessionStore.resumeFromForeground()
             }
         }
-        .onChange(of: keepAwakeWhileRunning) { _, _ in
-            applyIdleTimerPolicy()
-        }
-        .onChange(of: sessionStore.selectedSessionID) { _, _ in
-            applyIdleTimerPolicy()
-        }
         .onChange(of: sessionStore.selectedSession) { _, session in
             guard let session else { return }
             let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: session)
             if let data = try? JSONEncoder().encode(snapshot) {
                 lastSessionSnapshot = data.base64EncodedString()
             }
-        }
-        .onChange(of: sessionStore.selectedSession?.status) { _, _ in
-            applyIdleTimerPolicy()
-        }
-        .onChange(of: sessionStore.webSocketStatus) { _, _ in
-            applyIdleTimerPolicy()
         }
         .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
@@ -140,13 +121,6 @@ struct RootView: View {
         case .ignored:
             break
         }
-    }
-
-    private func applyIdleTimerPolicy() {
-        // 只在前台且用户明确开启时保持常亮；离开运行会话后立即恢复系统默认，避免静默耗电。
-        UIApplication.shared.isIdleTimerDisabled = keepAwakeWhileRunning
-            && scenePhase == .active
-            && sessionStore.selectedSession?.isRunning == true
     }
 
     private var decodedSessionRestoreSnapshot: SessionRestoreSnapshot? {

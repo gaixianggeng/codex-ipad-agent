@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -15,7 +14,6 @@ struct SettingsView: View {
     var embedsNavigationStack = true
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
-    @AppStorage("runtime.keepAwakeWhileRunning") private var keepAwakeWhileRunning = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
 
     var body: some View {
@@ -114,19 +112,10 @@ struct SettingsView: View {
                 }
             }
 
-            Section {
+            Section(L10n.text("ui.ai_usage")) {
                 RuntimeUsageSettingsCard(runtimeProvider: "codex", display: codexUsage)
-            } header: {
-                Text(L10n.text("ui.codex_usage_ff1ef7d7"))
-            }
-
-            if sessionStore.hasClaudeRuntimeChannel {
-                Section {
+                if sessionStore.hasClaudeRuntimeChannel {
                     RuntimeUsageSettingsCard(runtimeProvider: "claude", display: claudeUsage)
-                } header: {
-                    Text(L10n.text("ui.claude_dosage"))
-                } footer: {
-                    Text(L10n.text("ui.claude_code_headless_currently_does_not_provide_full"))
                 }
             }
 
@@ -151,11 +140,8 @@ struct SettingsView: View {
                 } label: {
                     Label(L10n.text("ui.default_permissions"), systemImage: "lock.shield")
                 }
-                Toggle(L10n.text("ui.keep_the_screen_on_during_operation"), isOn: $keepAwakeWhileRunning)
             } header: {
                 Text(L10n.text("ui.preference"))
-            } footer: {
-                Text(L10n.text("ui.it_only_takes_effect_when_the_session_is"))
             }
 
             Section {
