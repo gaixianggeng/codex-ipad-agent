@@ -35,4 +35,21 @@ final class LocalizationTests: XCTestCase {
             "Second: two; first: one"
         )
     }
+
+    func testExplicitLanguageLookupSwitchesCatalogWithoutRestart() {
+        XCTAssertEqual(L10n.text("ui.settings", language: .english), "settings")
+        XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
+    }
+
+    func testStoredLanguageFallsBackToSystemForUnknownValue() {
+        let suiteName = "LocalizationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(AppLanguage.stored(in: defaults), .system)
+        defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
+        XCTAssertEqual(AppLanguage.stored(in: defaults), .english)
+        defaults.set("unsupported", forKey: AppLanguage.preferenceKey)
+        XCTAssertEqual(AppLanguage.stored(in: defaults), .system)
+    }
 }

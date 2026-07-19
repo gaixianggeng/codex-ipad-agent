@@ -16,6 +16,7 @@ struct SettingsView: View {
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage("runtime.keepAwakeWhileRunning") private var keepAwakeWhileRunning = false
+    @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -130,6 +131,16 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker(selection: appLanguageSelection) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language.displayName)
+                            .tag(language)
+                    }
+                } label: {
+                    Label(L10n.text("ui.language"), systemImage: "globe")
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.language")
                 NavigationLink {
                     AppearanceView()
                 } label: {
@@ -218,6 +229,13 @@ struct SettingsView: View {
             return tokens.warning
         }
         return appStore.lastConnectionTestDurationMillis == nil ? tokens.secondaryText : tokens.success
+    }
+
+    private var appLanguageSelection: Binding<AppLanguage> {
+        Binding(
+            get: { AppLanguage(rawValue: appLanguageRawValue) ?? .system },
+            set: { appLanguageRawValue = $0.rawValue }
+        )
     }
 }
 

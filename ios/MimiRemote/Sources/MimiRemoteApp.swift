@@ -112,6 +112,7 @@ final class SessionNotificationResponseAdapter: NSObject, ObservableObject, UNUs
 
 @main
 struct MimiRemoteApp: App {
+    @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
     @StateObject private var appStore: AppStore
     @StateObject private var conversationStore: ConversationStore
     @StateObject private var logStore: LogStore
@@ -146,6 +147,8 @@ struct MimiRemoteApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                // locale 变化会让整个 SwiftUI 视图树重新求值，现有 L10n 调用即可即时换语言。
+                .environment(\.locale, selectedAppLanguage.locale)
                 .environmentObject(appStore)
                 .environmentObject(sessionStore)
                 .environmentObject(conversationStore)
@@ -169,5 +172,9 @@ struct MimiRemoteApp: App {
                     }
                 }
         }
+    }
+
+    private var selectedAppLanguage: AppLanguage {
+        AppLanguage(rawValue: appLanguageRawValue) ?? .system
     }
 }
