@@ -1368,31 +1368,33 @@ extension SessionStore {
         return isApprovalDecisionPending(approval, sessionID: sessionID)
     }
 
-    func respondToUserInput(_ request: AgentUserInputRequest, answers: [String: [String]]) {
+    @discardableResult
+    func respondToUserInput(_ request: AgentUserInputRequest, answers: [String: [String]]) -> Bool {
         guard let session = selectedSession, session.isRunning else {
             setErrorMessage(L10n.text("ui.supplemental_information_sending_failed_websocket_not_connected"))
-            return
+            return false
         }
         guard canControlSession(session) else {
             setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_aacfc6a6"))
-            return
+            return false
         }
         guard let socket = readyWebSocket(for: session) else {
             setErrorMessage(L10n.text("ui.supplemental_information_sending_failed_websocket_not_connected"))
-            return
+            return false
         }
         guard !isUserInputResponsePending(request, sessionID: session.id) else {
             setStatusMessage(L10n.text("ui.additional_information_is_being_sent"))
-            return
+            return false
         }
         markUserInputResponsePending(request, sessionID: session.id)
         guard socket.sendUserInputResponse(requestID: request.id, answers: answers) else {
             clearPendingUserInputResponse(sessionID: session.id, requestID: request.id)
             setErrorMessage(L10n.text("ui.supplemental_information_sending_failed_websocket_not_connected"))
-            return
+            return false
         }
         acceptUserInputResponseLocally(request, sessionID: session.id)
         setStatusMessage(L10n.text("ui.supplementary_information_has_been_sent_waiting_for_codex"))
+        return true
     }
 
     func isUserInputResponsePending(_ request: AgentUserInputRequest) -> Bool {

@@ -261,14 +261,69 @@ extension ComposerView {
     @ViewBuilder
     var pendingUserInputAction: some View {
         if !sessionStore.isSelectedSessionObserving, let request = sessionStore.selectedSession?.pendingUserInput {
-            PendingUserInputActionCard(
-                request: request,
-                isSubmitting: sessionStore.isUserInputResponsePending(request),
-                onSubmit: { answers in
-                    sessionStore.respondToUserInput(request, answers: answers)
-                }
-            )
+            if isPhoneComposer {
+                PendingUserInputResumeButton(
+                    request: request,
+                    isSubmitting: sessionStore.isUserInputResponsePending(request),
+                    action: { presentPendingUserInputSheet(request) }
+                )
+            } else {
+                PendingUserInputActionCard(
+                    request: request,
+                    isSubmitting: sessionStore.isUserInputResponsePending(request),
+                    draft: $pendingUserInputFormState.draft,
+                    onSubmit: { answers in
+                        sessionStore.respondToUserInput(request, answers: answers)
+                    }
+                )
+                .id(PendingUserInputPresentation(request: request).id)
+            }
         }
+    }
+
+    var pendingUserInputSelectionIdentity: PendingUserInputSelectionIdentity {
+        let requestPresentationID = sessionStore.selectedSession?.pendingUserInput.map {
+            PendingUserInputPresentation(request: $0).id
+        }
+        return PendingUserInputSelectionIdentity(
+            sessionID: sessionStore.selectedSessionID,
+            requestPresentationID: requestPresentationID
+        )
+    }
+
+    func synchronizePendingUserInputPresentation(
+        previous: PendingUserInputSelectionIdentity?,
+        current: PendingUserInputSelectionIdentity
+    ) {
+        if previous?.sessionID != current.sessionID {
+            // 会话切换意味着表单语境已经变化，旧选择不能带入另一条 thread。
+            pendingUserInputFormState.resetForSessionChange()
+            presentedPendingUserInput = nil
+        }
+
+        guard !sessionStore.isSelectedSessionObserving,
+              let request = sessionStore.selectedSession?.pendingUserInput
+        else {
+            // 乐观提交会暂时移除请求。保留 draft 和 identity，异步失败恢复同一请求时
+            // 可以自动重开并继续填写；真正的新请求会在下面按新 identity 重置。
+            presentedPendingUserInput = nil
+            return
+        }
+
+        let presentation = PendingUserInputPresentation(request: request)
+        guard presentation.id == current.requestPresentationID else {
+            return
+        }
+        pendingUserInputFormState.activate(presentation.id)
+        if isPhoneComposer {
+            presentedPendingUserInput = presentation
+        }
+    }
+
+    func presentPendingUserInputSheet(_ request: AgentUserInputRequest) {
+        let presentation = PendingUserInputPresentation(request: request)
+        pendingUserInputFormState.activate(presentation.id)
+        presentedPendingUserInput = presentation
     }
 
     func sendButton(showLabels: Bool) -> some View {

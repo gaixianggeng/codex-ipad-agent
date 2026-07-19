@@ -998,6 +998,54 @@ final class ConversationSnapshotTests: XCTestCase {
     }
 }
 
+@MainActor
+final class PendingUserInputSheetSnapshotTests: XCTestCase {
+    func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() {
+        let options = (1...6).map { index in
+            AgentUserInputOption(
+                label: "选项 \(index)",
+                description: "这是用于验证小屏长表单滚动与文字换行的说明。"
+            )
+        }
+        let questions = (1...5).map { index in
+            AgentUserInputQuestion(
+                id: "question-\(index)",
+                header: "问题 \(index)",
+                question: "请选择这一组里所有需要继续执行的优化项。",
+                isOther: index == 5,
+                isSecret: false,
+                options: options,
+                multiSelect: true
+            )
+        }
+        let request = AgentUserInputRequest(
+            id: "snapshot-request",
+            threadID: "snapshot-thread",
+            turnID: "snapshot-turn",
+            itemID: "snapshot-item",
+            questions: questions
+        )
+        let suiteName = "PendingUserInputSheetSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let themeStore = ThemeStore(defaults: defaults)
+        let view = PendingUserInputSheet(
+            presentation: PendingUserInputPresentation(request: request),
+            isSubmitting: false,
+            draft: .constant(PendingUserInputDraft()),
+            onSubmit: { _ in true }
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .frame(width: 390, height: 844)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
+        )
+    }
+}
+
 private enum SnapshotAPIError: Error {
     case unimplemented
 }

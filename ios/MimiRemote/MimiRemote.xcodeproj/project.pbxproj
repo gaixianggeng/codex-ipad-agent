@@ -71,6 +71,7 @@
 		74C33F1F00402E08A331ABBF /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 11B71BA07C5D393BC0EA9FD4 /* PrivacyInfo.xcprivacy */; };
 		759158BB4175D405D74CD30A /* ConversationDirectRuntimeHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D416A89FB3388B3E36769E5 /* ConversationDirectRuntimeHistoryTests.swift */; };
 		76DD6A7B8D4D93D4385A615D /* AssistantTextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02BA631A94730FC521FE15F6 /* AssistantTextNormalizer.swift */; };
+		77E8FB23786675B2947013E9 /* ConversationComposerSubmissionAndPendingInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18F186EFB2A8BEC6E258B00D /* ConversationComposerSubmissionAndPendingInputTests.swift */; };
 		7813EDBB1DC23A88A94CAF56 /* ConversationRuntimeFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033E0CF93AA4A06CC89D7AD1 /* ConversationRuntimeFlowTests.swift */; };
 		78BE6068CC6C12DA79A00B6D /* LogPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66A8566747A2D84035A3CC6D /* LogPanelView.swift */; };
 		7917AE82BBAC2F36217D9BC0 /* ConversationWorkspaceHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F803BE24EB9F6963792C11C /* ConversationWorkspaceHistoryTests.swift */; };
@@ -89,6 +90,7 @@
 		980F0CA2DAD75C9AE4857810 /* GitQuickPublishView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62624C0B89AA0B04BE5643F /* GitQuickPublishView.swift */; };
 		9BB164C3CFDE5A1120D2A096 /* ProfileRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302CD30CD51E926987FAD6C3 /* ProfileRootView.swift */; };
 		9CDA4F02261EE4460043EC2B /* testRichMarkdownConversationRendering.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 2ACC589478ECDD4A4FB9BEB0 /* testRichMarkdownConversationRendering.1.png */; };
+		9DB7FDC4C6AB0FBB1DE2DC8D /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 5F6590638B16083675339655 /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png */; };
 		9F4EA8644B1E67A1F3CC863C /* testCompactModelGridLightFastModeOff.1.png in Resources */ = {isa = PBXBuildFile; fileRef = C4E6AEA3E96B661F7473D460 /* testCompactModelGridLightFastModeOff.1.png */; };
 		9FCCC7A13E2113887C18513F /* AgentEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5330D382730C4473E4D9EC92 /* AgentEvent.swift */; };
 		A3D2577AA6E9A37E62C67FDC /* SessionContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B923E4207A9FD4C35766E4CA /* SessionContextStore.swift */; };
@@ -172,6 +174,7 @@
 		11B71BA07C5D393BC0EA9FD4 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		121E340DD237BE03706546CA /* ConversationSessionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSessionStoreTests.swift; sourceTree = "<group>"; };
 		163EC3A1080DFD2A3BB8F098 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
+		18F186EFB2A8BEC6E258B00D /* ConversationComposerSubmissionAndPendingInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerSubmissionAndPendingInputTests.swift; sourceTree = "<group>"; };
 		190DA6E3F95C3577B94AB67C /* testAppearancePreview.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testAppearancePreview.1.png; sourceTree = "<group>"; };
 		1A305FDD191E4C8576AEF05B /* ConversationTimelineItemBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineItemBuilder.swift; sourceTree = "<group>"; };
 		1C6FA730D92E0B37BC0393F0 /* ConversationActivityRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityRows.swift; sourceTree = "<group>"; };
@@ -220,6 +223,7 @@
 		5591601BA7CA64C8C0CF7931 /* direct_app_server_approval_stream.jsonl */ = {isa = PBXFileReference; path = direct_app_server_approval_stream.jsonl; sourceTree = "<group>"; };
 		5C87937DA9D34D00853E635B /* DataURLImageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataURLImageDecoder.swift; sourceTree = "<group>"; };
 		5C9DB99DDCE7CA778B616657 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		5F6590638B16083675339655 /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png; sourceTree = "<group>"; };
 		608F5B2621676207DEE92BA8 /* testComposerModelTriggerFastIndicator.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerModelTriggerFastIndicator.1.png; sourceTree = "<group>"; };
 		640F92290AC3DAED201E1CD0 /* ProjectSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSidebarView.swift; sourceTree = "<group>"; };
 		64E9EA7D6A93EB6697C0B874 /* ComposerTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerTextEditor.swift; sourceTree = "<group>"; };
@@ -400,6 +404,7 @@
 			children = (
 				FA34FDB7E26D6307E81C07CC /* CodexAppServerProtocolTests.swift */,
 				86B6C2FC1CE749D7A8268F85 /* ConversationComposerHistoryTests.swift */,
+				18F186EFB2A8BEC6E258B00D /* ConversationComposerSubmissionAndPendingInputTests.swift */,
 				81BCB17BD7BC9E4109AC1F8A /* ConversationConnectionRecoveryTests.swift */,
 				315746F97ABB8E16D93F98A4 /* ConversationDataFlowTests.swift */,
 				078AEE7E4BDAC1751244A05A /* ConversationDataFlowTestSupport.swift */,
@@ -478,6 +483,7 @@
 				8E5FA820000C5AD8FB8E1300 /* testDefaultDarkConversationPalette.1.png */,
 				38004512B302AB5F8AD23644 /* testEmptyConversationState.1.png */,
 				4B840A5598C49D381F9BF4D5 /* testExpandedProcessGroupRendering.1.png */,
+				5F6590638B16083675339655 /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png */,
 				2328266C2B65106940564667 /* testMixedActivityAndImageConversationRendering.1.png */,
 				2E4A0A29797384D5BD5002D1 /* testProjectSessionDashboard.1.png */,
 				2ACC589478ECDD4A4FB9BEB0 /* testRichMarkdownConversationRendering.1.png */,
@@ -804,6 +810,7 @@
 				7CD5F621C651FF6A32ACAE47 /* testDefaultDarkConversationPalette.1.png in Resources */,
 				648665FD8A9D6AC67326D404 /* testEmptyConversationState.1.png in Resources */,
 				F0583EC1FE088E3BB8A76710 /* testExpandedProcessGroupRendering.1.png in Resources */,
+				9DB7FDC4C6AB0FBB1DE2DC8D /* testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone.1.png in Resources */,
 				0F2BC7AA12BEC9037307837A /* testMixedActivityAndImageConversationRendering.1.png in Resources */,
 				B2628282609AF897C62B6178 /* testProjectSessionDashboard.1.png in Resources */,
 				9CDA4F02261EE4460043EC2B /* testRichMarkdownConversationRendering.1.png in Resources */,
@@ -836,6 +843,7 @@
 			files = (
 				523D4FE3642B0D171DB1647E /* CodexAppServerProtocolTests.swift in Sources */,
 				042B8AE52871708DD3606659 /* ConversationComposerHistoryTests.swift in Sources */,
+				77E8FB23786675B2947013E9 /* ConversationComposerSubmissionAndPendingInputTests.swift in Sources */,
 				AD2BA4EB75791D6DA68D6A46 /* ConversationConnectionRecoveryTests.swift in Sources */,
 				467ED9D49A463D5F5AF02A3C /* ConversationDataFlowTestSupport.swift in Sources */,
 				10BF43237408412ED651F5B4 /* ConversationDataFlowTests.swift in Sources */,
@@ -971,7 +979,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100044;
+				CURRENT_PROJECT_VERSION = 100045;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
@@ -1081,7 +1089,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100044;
+				CURRENT_PROJECT_VERSION = 100045;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;

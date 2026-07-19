@@ -35,6 +35,8 @@ struct ComposerView: View {
     @State var showsAdvancedOptionsSheet = false
     @State var previewingAttachment: CodexAppServerUserInput?
     @State var goalEditor: ThreadGoalEditorDraft?
+    @State var presentedPendingUserInput: PendingUserInputPresentation?
+    @State var pendingUserInputFormState = PendingUserInputFormState()
     @State var isGoalStatusExpanded = false
     @State var hiddenCompletedGoalIDs: Set<SessionID> = []
     @State var attachmentErrorMessage: String?
@@ -117,6 +119,17 @@ struct ComposerView: View {
                 .environmentObject(sessionStore)
                 .environmentObject(themeStore)
         }
+        .sheet(item: $presentedPendingUserInput) { presentation in
+            PendingUserInputSheet(
+                presentation: presentation,
+                isSubmitting: sessionStore.isUserInputResponsePending(presentation.request),
+                draft: $pendingUserInputFormState.draft,
+                onSubmit: { answers in
+                    sessionStore.respondToUserInput(presentation.request, answers: answers)
+                }
+            )
+            .environmentObject(themeStore)
+        }
         .sheet(item: $editingQueuedTurn) { draft in
             QueuedTurnEditorSheet(draft: draft) { payload in
                 _ = sessionStore.updateQueuedTurn(
@@ -167,6 +180,9 @@ struct ComposerView: View {
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
         }
+        .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
+            synchronizePendingUserInputPresentation(previous: previous, current: current)
+        }
         .onChange(of: composerState.draftSnapshot()) { _, snapshot in
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
@@ -197,6 +213,7 @@ struct ComposerView: View {
         }
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
         }
@@ -242,7 +259,8 @@ struct ComposerView: View {
                 }
             } else {
                 await MainActor.run {
-                    sessionStore.removeComposerDraft(for: submittedDraftScope)
+                    // 提交时已经同步清过对应 cache。这里不能再次删除，否则发送期间
+                    // 输入的下一条草稿会被成功回调误删。
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -288,7 +306,7 @@ struct ComposerView: View {
                 }
             } else {
                 await MainActor.run {
-                    sessionStore.removeComposerDraft(for: submittedDraftScope)
+                    // 与普通发送保持一致：成功回调不二次触碰草稿 cache。
                     guidedFollowUpEnabled = false
                     resetComposerSendModeAfterSubmit()
                 }
@@ -397,6 +415,9 @@ struct ComposerView: View {
     func restoreSubmittedDraft(_ submitted: SubmittedComposerDraft, originalScope: ComposerDraftScopeKey) {
         let restoreScope = submittedDraftRestoreScope(originalScope: originalScope)
         if restoreScope == activeComposerDraftScope {
+            guard composerState.canRestore(submitted) else {
+                return
+            }
             composerState.restore(submitted)
         } else {
             sessionStore.saveComposerDraft(ComposerDraftSnapshot(submitted: submitted), for: restoreScope)

@@ -32,12 +32,19 @@ struct ComposerTextSubmitSnapshot {
 final class ComposerTextSubmitBridge {
     private weak var textView: CommandSubmitTextView?
 
+    private var activeTextView: CommandSubmitTextView? {
+        guard let textView, !textView.isRetiredFromComposer else {
+            return nil
+        }
+        return textView
+    }
+
     func attach(_ textView: CommandSubmitTextView) {
         self.textView = textView
     }
 
     func snapshotForSubmit() -> ComposerTextSubmitSnapshot? {
-        guard let textView else {
+        guard let textView = activeTextView else {
             return nil
         }
         return ComposerTextSubmitSnapshot(
@@ -47,14 +54,14 @@ final class ComposerTextSubmitBridge {
     }
 
     func hasNonWhitespaceTextForSubmit() -> Bool {
-        guard let text = textView?.text else {
+        guard let text = activeTextView?.text else {
             return false
         }
         return text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted) != nil
     }
 
     func finalSnapshotForSubmit() -> ComposerTextSubmitSnapshot? {
-        guard let textView else {
+        guard let textView = activeTextView else {
             return nil
         }
         // 最终发送采用“单击即确认”的策略：先让输入法提交 marked text，再读取
@@ -67,18 +74,21 @@ final class ComposerTextSubmitBridge {
     }
 
     func resignFirstResponder() {
-        textView?.resignFirstResponder()
+        activeTextView?.resignFirstResponder()
     }
 
     func prepareForRemoval(text: String) {
-        guard let textView else { return }
+        guard let textView = activeTextView else { return }
+        // 先退休旧编辑器，再清空/失焦。iPhone 发送后会立即替换整个输入卡片，
+        // 输入法和 TextKit 仍可能补发 delegate 回调；这些回调不得把已发送文本写回草稿。
+        textView.retireFromComposer()
         textView.text = text
         textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
         textView.resignFirstResponder()
     }
 
     func replaceText(in range: NSRange, with replacement: String) -> String? {
-        guard let textView else {
+        guard let textView = activeTextView else {
             return nil
         }
         // Skill 自动补全会直接改写 TextKit；先结束旧的组合态，防止替换后
@@ -140,6 +150,9 @@ struct ComposerTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> CommandSubmitTextView {
         let textView = CommandSubmitTextView()
         textView.delegate = context.coordinator
+        textView.onRetireFromComposer = { [weak coordinator = context.coordinator] in
+            coordinator?.retireFromComposer()
+        }
         textView.text = text
         context.coordinator.lastSyncedText = text
         context.coordinator.lastAppliedExternalRevision = externalTextRevision
@@ -176,6 +189,9 @@ struct ComposerTextView: UIViewRepresentable {
 
     func updateUIView(_ uiView: CommandSubmitTextView, context: Context) {
         context.coordinator.parent = self
+        uiView.onRetireFromComposer = { [weak coordinator = context.coordinator] in
+            coordinator?.retireFromComposer()
+        }
         submitBridge.attach(uiView)
         uiView.onCommandSubmit = onSubmit
         uiView.onContentLayoutChanged = { textView in
@@ -278,13 +294,17 @@ struct ComposerTextView: UIViewRepresentable {
         private var pendingCompositionState: Bool?
         private var isCompositionStateReportScheduled = false
         private var lastSkillQuery: ComposerSkillQuery?
+        private var isRetiredFromComposer = false
 
         init(_ parent: ComposerTextView) {
             self.parent = parent
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            guard !isApplyingExternalText else {
+            guard !isRetiredFromComposer,
+                  !isApplyingExternalText,
+                  (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
+            else {
                 return
             }
             let currentText = textView.text ?? ""
@@ -298,7 +318,10 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            guard !isApplyingExternalText else {
+            guard !isRetiredFromComposer,
+                  !isApplyingExternalText,
+                  (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
+            else {
                 return
             }
             let hasMarkedText = textView.hasMarkedText
@@ -311,7 +334,10 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
-            guard !isApplyingExternalText else {
+            guard !isRetiredFromComposer,
+                  !isApplyingExternalText,
+                  (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
+            else {
                 return
             }
             updateCompositionState(false)
@@ -321,6 +347,9 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func updateCompositionState(_ isComposing: Bool) {
+            guard !isRetiredFromComposer else {
+                return
+            }
             guard isComposingText != isComposing else {
                 return
             }
@@ -336,6 +365,9 @@ struct ComposerTextView: UIViewRepresentable {
                     return
                 }
                 self.isCompositionStateReportScheduled = false
+                guard !self.isRetiredFromComposer else {
+                    return
+                }
                 guard let isComposing = self.pendingCompositionState else {
                     return
                 }
@@ -345,6 +377,11 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func reportContentHeight(for textView: UITextView) {
+            guard !isRetiredFromComposer,
+                  (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
+            else {
+                return
+            }
             let height = visibleContentHeight(for: textView)
             guard abs(lastReportedContentHeight - height) > 0.5 else {
                 return
@@ -361,6 +398,9 @@ struct ComposerTextView: UIViewRepresentable {
                     return
                 }
                 self.isContentHeightReportScheduled = false
+                guard !self.isRetiredFromComposer else {
+                    return
+                }
                 guard let height = self.pendingContentHeight else {
                     return
                 }
@@ -391,11 +431,22 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         private func publishSkillQuery(_ query: ComposerSkillQuery?) {
+            guard !isRetiredFromComposer else { return }
             guard query != lastSkillQuery else { return }
             lastSkillQuery = query
             DispatchQueue.main.async { [weak self] in
-                self?.parent.onSkillQueryChange(query)
+                guard let self, !self.isRetiredFromComposer else {
+                    return
+                }
+                self.parent.onSkillQueryChange(query)
             }
+        }
+
+        func retireFromComposer() {
+            isRetiredFromComposer = true
+            pendingContentHeight = nil
+            pendingCompositionState = nil
+            lastSkillQuery = nil
         }
 
         private func visibleContentHeight(for textView: UITextView) -> CGFloat {
@@ -427,9 +478,17 @@ final class CommandSubmitTextView: UITextView {
     var onSkillAutocompleteMove: ((Int) -> Void)?
     var onSkillAutocompleteCommit: (() -> Void)?
     var onSkillAutocompleteDismiss: (() -> Void)?
+    var onRetireFromComposer: (() -> Void)?
     var isSkillAutocompleteActive = false
+    private(set) var isRetiredFromComposer = false
     private var isVoiceShortcutPressed = false
     private var lastReportedLayoutWidth: CGFloat = 0
+
+    func retireFromComposer() {
+        guard !isRetiredFromComposer else { return }
+        isRetiredFromComposer = true
+        onRetireFromComposer?()
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()

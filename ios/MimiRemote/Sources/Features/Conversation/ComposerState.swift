@@ -5,6 +5,9 @@ struct SubmittedComposerDraft {
     let attachments: [CodexAppServerUserInput]
     let payload: CodexAppServerTurnPayload
     let voiceDraftNeedsReview: Bool
+    // 发送清空后的内容版本。异步失败返回时，只有版本未变化才允许恢复，
+    // 避免覆盖用户在等待期间输入的下一条消息。
+    let clearedContentRevision: UInt64
 }
 
 enum ComposerDraftScopeKey: Hashable {
@@ -269,13 +272,23 @@ struct ComposerState {
             if !hasNonWhitespaceDraft {
                 voiceDraftNeedsReview = false
             }
+            if draft != oldValue {
+                contentRevision &+= 1
+            }
         }
     }
-    var attachments: [CodexAppServerUserInput] = []
+    var attachments: [CodexAppServerUserInput] = [] {
+        didSet {
+            if attachments != oldValue {
+                contentRevision &+= 1
+            }
+        }
+    }
     var turnOptions: CodexAppServerTurnOptions = .default
     var sendMode: ComposerSendMode = .standard
     private(set) var hasNonWhitespaceDraft = false
     private(set) var voiceDraftNeedsReview = false
+    private(set) var contentRevision: UInt64 = 0
     private var voiceDraftBase: String?
     private var voiceLastRenderedDraft: String?
 
@@ -374,8 +387,15 @@ struct ComposerState {
             text: text,
             attachments: sentAttachments,
             payload: payload,
-            voiceDraftNeedsReview: submittedVoiceDraftNeedsReview
+            voiceDraftNeedsReview: submittedVoiceDraftNeedsReview,
+            clearedContentRevision: contentRevision
         )
+    }
+
+    func canRestore(_ submitted: SubmittedComposerDraft) -> Bool {
+        // 清空后只要正文或附件发生过变化，就说明用户已经开始下一次编辑。
+        // 此时失败消息由时间线重试入口处理，不能把旧内容自动灌回输入框。
+        isEmpty && contentRevision == submitted.clearedContentRevision
     }
 
     mutating func restore(_ text: String) {
