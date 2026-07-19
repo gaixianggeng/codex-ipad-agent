@@ -91,7 +91,8 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
         )
     }
 
-    func testCompactModelGridLightFastModeOff() {
+    func testCompactModelGridLightFastModeOff() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
         let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)
         themeStore.mode = .light

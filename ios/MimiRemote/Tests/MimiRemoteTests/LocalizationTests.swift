@@ -2,10 +2,10 @@ import XCTest
 @testable import MimiRemote
 
 final class LocalizationTests: XCTestCase {
-    func testRuntimeCatalogUsesEnglishWhenTestLanguageIsEnglish() {
-        XCTAssertTrue(
+    func testRuntimeCatalogUsesEnglishWhenTestLanguageIsEnglish() throws {
+        try XCTSkipUnless(
             Locale.preferredLanguages.first?.lowercased().hasPrefix("en") == true,
-            "Run this English smoke with xcodebuild -testLanguage en."
+            "需使用 xcodebuild -testLanguage en 运行英文目录冒烟测试"
         )
 
         XCTAssertEqual(L10n.text("ui.settings"), "settings")

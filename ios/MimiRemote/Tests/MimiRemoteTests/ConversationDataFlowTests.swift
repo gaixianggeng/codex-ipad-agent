@@ -2049,23 +2049,24 @@ final class ConversationDataFlowTests: XCTestCase {
     }
 
     func testLargeDiffPanelItemsDeduplicateAndCollapseTail() throws {
+        let fileChangePrefix = L10n.text("ui.file_changes_766e4292")
         let old = ConversationMessage(
             role: .system,
             kind: .fileChangeSummary,
-            content: "文件变更：Sources/App.swift modified\n旧 diff",
+            content: "\(fileChangePrefix)Sources/App.swift modified\n旧 diff",
             createdAt: Date(timeIntervalSince1970: 10)
         )
         let longBody = String(repeating: "+ changed line\n", count: 180) + "tail-marker"
         let latest = ConversationMessage(
             role: .system,
             kind: .fileChangeSummary,
-            content: "文件变更：Sources/App.swift modified\n\(longBody)",
+            content: "\(fileChangePrefix)Sources/App.swift modified\n\(longBody)",
             createdAt: Date(timeIntervalSince1970: 20)
         )
         let other = ConversationMessage(
             role: .system,
             kind: .fileChangeSummary,
-            content: "文件变更：Sources/Other.swift added\nsmall diff",
+            content: "\(fileChangePrefix)Sources/Other.swift added\nsmall diff",
             createdAt: Date(timeIntervalSince1970: 15)
         )
 
@@ -2074,11 +2075,15 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(items.count, 2)
         XCTAssertEqual(appItem.count, 2)
-        XCTAssertEqual(appItem.title, "文件变更 x2")
+        XCTAssertEqual(appItem.title, L10n.plural("ui.files_changed_count", count: 2))
         XCTAssertTrue(appItem.wasCollapsed)
         XCTAssertLessThanOrEqual(appItem.latestContent.count, 1_200)
         XCTAssertTrue(appItem.latestContent.hasSuffix("tail-marker"))
-        XCTAssertTrue(appItem.displaySubtitle.contains("已折叠长 diff"))
+        XCTAssertTrue(
+            appItem.displaySubtitle.contains(
+                L10n.text("ui.long_diffs_have_been_collapsed_showing_only_the")
+            )
+        )
     }
 
     func testComposerStateRapidTypingDoesNotPublishGlobalStores() {

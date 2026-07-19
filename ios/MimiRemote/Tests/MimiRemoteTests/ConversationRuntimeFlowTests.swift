@@ -1240,7 +1240,10 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.appServerModelOptions.isEmpty)
         XCTAssertEqual(client.requestedRateLimitProviders, ["claude"])
         XCTAssertEqual(store.accountClaudeUsageWindowsDisplay.displayName, "Claude")
-        XCTAssertEqual(store.accountClaudeUsageWindowsDisplay.creditText, "Headless 暂无额度百分比")
+        XCTAssertEqual(
+            store.accountClaudeUsageWindowsDisplay.creditText,
+            L10n.text("ui.headless_no_quota_percentage_yet")
+        )
         XCTAssertEqual(store.accountCodexUsageWindowsDisplay.displayName, "Codex")
         XCTAssertFalse(store.accountCodexUsageWindowsDisplay.hasLiveData)
     }

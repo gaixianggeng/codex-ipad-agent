@@ -450,10 +450,16 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(deleted, "checkout 已删除时 registry 收尾失败仍应返回成功")
         XCTAssertTrue(store.managedWorktrees.isEmpty, "陈旧的 response.worktrees 不能把已删除 checkout 放回 UI")
-        XCTAssertEqual(store.statusMessage, "已删除 Git Worktree deleted-checkout，但管理登记仍需清理")
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.format("ui.git_worktree_value_has_been_deleted_but_the", workspace.name)
+        )
         XCTAssertEqual(
             store.worktreeErrorMessage,
-            "Git Worktree 已删除，但清理管理登记失败：registry 文件只读。可稍后使用“清理丢失登记”重试。"
+            L10n.format(
+                "ui.git_worktree_was_deleted_but_cleanup_management_registration",
+                "registry 文件只读"
+            )
         )
     }
 
@@ -552,10 +558,74 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(prunedCount, 1, "返回值只统计已经成功 prune 的路径")
         XCTAssertEqual(store.managedWorktrees.map(\.workspace.id), [failedWorkspace.id])
-        XCTAssertEqual(store.statusMessage, "已清理 1 条 Worktree 登记，另有项目失败")
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.format(
+                "ui.git_worktree_cleanup_partial_success",
+                L10n.plural("ui.worktree_registrations_cleaned_count", count: 1)
+            )
+        )
         XCTAssertEqual(
             store.worktreeErrorMessage,
-            "已清理 1 条丢失的 Worktree 登记，但另有 1 条失败：\(failedWorkspace.path)：registry 文件只读"
+            L10n.format(
+                "ui.value_missing_worktree_entries_cleaned_up_but_value",
+                L10n.plural("ui.worktree_registrations_cleaned_count", count: 1),
+                L10n.plural("ui.worktree_cleanup_failures_count", count: 1),
+                L10n.format("ui.labeled_value", failedWorkspace.path, "registry 文件只读")
+            )
+        )
+    }
+
+    func testSessionStoreReportsIncompleteCleanupWhenNoRegistryCanBePruned() async {
+        let project = makeProject(id: "proj_prune_failed")
+        let failedWorkspace = makeChildWorkspace(id: "ws_prune_failed", name: "missing-failed", root: project)
+        let failedItem = WorktreeListItem(
+            workspace: failedWorkspace,
+            worktree: WorktreeDescriptor(
+                path: failedWorkspace.path,
+                repositoryPath: project.path,
+                base: "main",
+                branch: "mimi/missing-failed",
+                rootProjectID: project.id,
+                rootProjectName: project.name,
+                rootProjectPath: project.path
+            )
+        )
+        let failureDetail = "registry 文件只读"
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            worktreeListResult: .success([failedItem]),
+            worktreePruneResult: .success(WorktreePruneResponse(
+                prunedPaths: [],
+                worktrees: [failedItem],
+                failedPaths: [failedWorkspace.path: failureDetail]
+            ))
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshManagedWorktrees()
+        let prunedCount = await store.pruneMissingManagedWorktrees()
+
+        XCTAssertEqual(prunedCount, 0)
+        XCTAssertEqual(store.managedWorktrees.map(\.workspace.id), [failedWorkspace.id])
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.text("ui.worktree_registration_cleanup_not_completed")
+        )
+        XCTAssertEqual(
+            store.worktreeErrorMessage,
+            L10n.format(
+                "ui.value_missing_worktree_entries_cleaned_up_but_value",
+                L10n.plural("ui.worktree_registrations_cleaned_count", count: 0),
+                L10n.plural("ui.worktree_cleanup_failures_count", count: 1),
+                L10n.format("ui.labeled_value", failedWorkspace.path, failureDetail)
+            )
         )
     }
 
@@ -608,7 +678,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedWorktreeCleanupPlanIDs, ["wtc_test_plan"])
         XCTAssertEqual(response.deletedPaths, [eligible.worktree.path])
         XCTAssertEqual(client.worktreeListCallCount, 1, "执行后应刷新 managed Worktree 列表")
-        XCTAssertEqual(store.statusMessage, "已清理 1 个 Git Worktree")
+        XCTAssertEqual(store.statusMessage, L10n.plural("ui.git_worktrees_cleaned_count", count: 1))
         XCTAssertNil(store.worktreeErrorMessage)
     }
 
@@ -685,7 +755,13 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(response.hasPartialFailure)
         XCTAssertEqual(client.requestedWorktreeCleanupPaths, [[first.worktree.path, second.worktree.path].sorted()])
         XCTAssertEqual(client.worktreeListCallCount, 1, "部分成功也必须刷新 managed Worktree 列表")
-        XCTAssertEqual(store.statusMessage, "已清理 1 个 Git Worktree，另有项目清理失败")
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.format(
+                "ui.git_worktree_cleanup_partial_success",
+                L10n.plural("ui.git_worktrees_cleaned_count", count: 1)
+            )
+        )
         XCTAssertEqual(store.worktreeErrorMessage, response.partialFailureMessage)
     }
 
@@ -1485,6 +1561,91 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(store.sessions.contains(where: \.isRunning), "thread/read 终态必须释放排序冻结")
     }
 
+    func testRunningSessionReappearingInFreshPageResetsMissingCounter() {
+        let project = makeProject(id: "proj_running_reappears")
+        let running = makeSession(
+            id: "thread_running_reappears",
+            projectID: project.id,
+            title: "短暂漏出首屏",
+            status: "running",
+            source: "codex"
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: []) }
+        )
+        store.projects = [project]
+        store.replaceSessionsIfChanged(with: [running], projectID: project.id)
+
+        store.recordRunningSessionsMissingFromFreshPage(freshIDs: [], projectID: project.id)
+        XCTAssertEqual(
+            store.missingRunningSessionStateByID[running.id]?.consecutiveRefreshMisses,
+            1
+        )
+
+        store.recordRunningSessionsMissingFromFreshPage(
+            freshIDs: [running.id],
+            projectID: project.id
+        )
+        XCTAssertNil(store.missingRunningSessionStateByID[running.id])
+
+        store.recordRunningSessionsMissingFromFreshPage(freshIDs: [], projectID: project.id)
+        XCTAssertEqual(
+            store.missingRunningSessionStateByID[running.id]?.consecutiveRefreshMisses,
+            1,
+            "会话重新出现后，下一次缺失必须从首轮宽限重新计数"
+        )
+    }
+
+    func testAuthoritativeRunningSessionReadRestartsMissingGracePeriod() async throws {
+        let project = makeProject(id: "proj_running_authoritative")
+        let running = makeSession(
+            id: "thread_running_authoritative",
+            projectID: project.id,
+            title: "仍在其他客户端运行",
+            status: "running",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            sessionResponses: [running.id: SessionResponse(session: running)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.replaceSessionsIfChanged(with: [running], projectID: project.id)
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+        for _ in 0..<20 {
+            if client.requestedSessionIDs == [running.id],
+               store.missingRunningSessionReconciliationTasksByID[running.id] == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertEqual(client.requestedSessionIDs, [running.id])
+        XCTAssertTrue(store.sessionsByID[running.id]?.isRunning == true)
+        XCTAssertNil(store.missingRunningSessionStateByID[running.id])
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(client.requestedSessionIDs, [running.id], "权威读取确认仍在运行后，不应下一轮立即重复读取")
+        XCTAssertEqual(
+            store.missingRunningSessionStateByID[running.id]?.consecutiveRefreshMisses,
+            1
+        )
+    }
+
     func testUnverifiedMissingRunningSessionIsNotRetainedForever() async throws {
         let project = makeProject(id: "proj_running_reconciliation_failure")
         let running = makeSession(
@@ -1766,7 +1927,10 @@ extension ConversationDataFlowTests {
         let didSend = await store.sendPrompt("不应该发送")
         XCTAssertFalse(didSend)
         XCTAssertTrue(sockets.isEmpty)
-        XCTAssertEqual(store.errorMessage, "这个会话正在其他客户端运行。请先接管到 iPad，再继续发送。")
+        XCTAssertEqual(
+            store.errorMessage,
+            L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac")
+        )
     }
 
     func testTakenOverRunningSessionAllowsSendTurn() async throws {

@@ -749,7 +749,10 @@ extension SessionStore {
                 )
                 setStatusMessage(count == 0
                     ? L10n.text("ui.worktree_registration_cleanup_not_completed")
-                    : L10n.plural("ui.worktree_registrations_cleaned_count", count: count))
+                    : L10n.format(
+                        "ui.git_worktree_cleanup_partial_success",
+                        L10n.plural("ui.worktree_registrations_cleaned_count", count: count)
+                    ))
             } else {
                 worktreeErrorMessage = nil
                 setStatusMessage(count == 0 ? L10n.text("ui.there_are_no_worktree_registrations_to_clean_up") : L10n.plural("ui.worktree_registrations_cleaned_count", count: count))
