@@ -17,10 +17,28 @@ extension SessionStore {
         await refreshUsage(runtimeProvider: runtimeProvider)
     }
 
+    func isRefreshingUsage(runtimeProvider: String) -> Bool {
+        refreshingUsageRuntimeProviders.contains(Self.normalizedRuntimeProvider(runtimeProvider))
+    }
+
     func refreshUsage(runtimeProvider: String) async {
+        let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard !refreshingUsageRuntimeProviders.contains(normalizedProvider) else {
+            return
+        }
+        refreshingUsageRuntimeProviders.insert(normalizedProvider)
+        defer { refreshingUsageRuntimeProviders.remove(normalizedProvider) }
+
+        // 设置页 `.task` 随页面关闭取消时，不再继续占用 gateway，也不把取消
+        // 当成全局错误展示；显式按钮任务仍由 Store 安全持有刷新状态。
+        guard !Task.isCancelled else {
+            return
+        }
         do {
-            let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
             let summary = try await clientFactory().refreshRateLimit(runtimeProvider: normalizedProvider)
+            guard !Task.isCancelled else {
+                return
+            }
             guard let summary else {
                 return
             }
@@ -37,6 +55,8 @@ extension SessionStore {
                CodexQuotaNotice.isRateLimitError(errorMessage) {
                 setErrorMessage(nil)
             }
+        } catch is CancellationError {
+            return
         } catch {
             setErrorMessage(error.localizedDescription)
         }

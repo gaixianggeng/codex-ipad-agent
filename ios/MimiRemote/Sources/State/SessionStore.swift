@@ -71,6 +71,10 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
+    // 使用量刷新跨设置页、个人页和侧栏共享，由 Store 按 runtime 去重。
+    // 视图只观察自己的 provider，避免 Claude loading 禁用其他按钮，也避免
+    // 页面关闭后由未结构化 Task 回写已销毁的局部 @State。
+    @Published var refreshingUsageRuntimeProviders: Set<String> = []
     @Published var isRefreshingAppServerModels = false
     @Published var capabilityList: CapabilityListResponse?
     @Published var isRefreshingCapabilities = false

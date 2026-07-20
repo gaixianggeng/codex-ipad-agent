@@ -501,7 +501,6 @@ private struct RuntimeUsageSettingsCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var isRefreshing = false
 
     let runtimeProvider: String
     let display: CodexUsageWindowsDisplay
@@ -518,7 +517,7 @@ private struct RuntimeUsageSettingsCard: View {
                 compactUsageRows(tokens: tokens)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
         .accessibilityElement(children: .contain)
     }
 
@@ -531,11 +530,11 @@ private struct RuntimeUsageSettingsCard: View {
             usageRings
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(display.displayName)
+                Text(providerDisplayName)
                     .font(themeStore.uiFont(.headline, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                 Text(display.creditText)
-                    .font(themeStore.uiFont(.caption))
+                    .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.secondaryText)
             }
             .lineLimit(1)
@@ -554,16 +553,16 @@ private struct RuntimeUsageSettingsCard: View {
     }
 
     private func compactUsageRows(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 usageRings
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(display.displayName)
+                    Text(providerDisplayName)
                         .font(themeStore.uiFont(.headline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
                     Text(display.creditText)
-                        .font(themeStore.uiFont(.caption))
+                        .font(themeStore.uiFont(.footnote))
                         .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -603,52 +602,63 @@ private struct RuntimeUsageSettingsCard: View {
                 }
             }
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
                     if index > 0 {
                         Divider()
                     }
                     CodexCompactUsageWindow(window: window)
+                        .padding(.vertical, 9)
                 }
             }
         }
     }
 
     private func refreshButton(tokens: ThemeTokens) -> some View {
-        Button {
-            Task { await refreshUsage() }
+        let isRefreshing = sessionStore.isRefreshingUsage(runtimeProvider: runtimeProvider)
+
+        return Button {
+            // 刷新状态由长生命周期 SessionStore 按 provider 隔离；视图消失后
+            // 不再有局部 @State 的迟到回写，Codex 和其他设置操作也不会被连带禁用。
+            Task { await sessionStore.refreshUsage(runtimeProvider: runtimeProvider) }
         } label: {
             Group {
                 if isRefreshing {
                     ProgressView()
                         .controlSize(.small)
+                        .tint(tokens.secondaryText)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
                 }
             }
-            // 图形保持轻量，触控区遵循 iOS 最低 44pt，避免紧凑布局牺牲可操作性。
+            .frame(width: 34, height: 34)
+            .background(tokens.secondaryText.opacity(0.08), in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+            }
+            // 可见控件保持克制，外层触控区仍遵循 iOS 最低 44pt。
             .frame(width: 44, height: 44)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(tokens.accent)
+        .foregroundStyle(tokens.secondaryText)
         .disabled(isRefreshing)
         .accessibilityLabel(isRefreshing ? L10n.format("ui.refreshing_value_usage", display.displayName) : L10n.format("ui.refresh_value_usage", display.displayName))
         .accessibilityIdentifier("settings.\(runtimeProvider)Usage.refresh")
     }
 
-    @MainActor
-    private func refreshUsage() async {
-        guard !isRefreshing else {
-            return
-        }
-        isRefreshing = true
-        defer { isRefreshing = false }
-        if runtimeProvider == "claude" {
-            await sessionStore.refreshClaudeUsage()
-        } else {
-            await sessionStore.refreshCodexUsage()
+    /// 服务端名称可能是全小写；已知产品名在界面层统一品牌大小写，不改协议原值。
+    private var providerDisplayName: String {
+        switch runtimeProvider.lowercased() {
+        case "codex":
+            return "Codex"
+        case "claude":
+            return "Claude"
+        default:
+            return display.displayName
         }
     }
 
@@ -671,7 +681,47 @@ private struct CodexCompactUsageWindow: View {
         let tint = usageTint
 
         ViewThatFits(in: .horizontal) {
-            VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Circle()
+                            .fill(tint)
+                            .frame(width: 7, height: 7)
+                            .alignmentGuide(.firstTextBaseline) { dimensions in
+                                dimensions[VerticalAlignment.center]
+                            }
+                        Text(window.label)
+                            .font(themeStore.uiFont(.callout, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(tokens.primaryText)
+                        Text(window.title)
+                            .font(themeStore.uiFont(.caption))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(1)
+                    }
+
+                    Text(window.resetText)
+                        .font(themeStore.uiFont(.caption2))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(window.remainingPercentText ?? "—")
+                        .font(themeStore.uiFont(.title3, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
+                        .lineLimit(1)
+                    Text(L10n.text("ui.remaining_quota"))
+                        .font(themeStore.uiFont(.caption2, weight: .medium))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Circle()
                         .fill(tint)
@@ -680,41 +730,24 @@ private struct CodexCompactUsageWindow: View {
                             dimensions[VerticalAlignment.center]
                         }
                     Text(window.label)
-                        .font(themeStore.uiFont(.caption, weight: .medium))
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(tokens.primaryText)
-                    Spacer(minLength: 4)
+                    Text(window.title)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(window.remainingText)
                         .font(themeStore.uiFont(.callout, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
-                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(window.resetText)
+                        .font(themeStore.uiFont(.caption2))
+                        .foregroundStyle(tokens.secondaryText)
                 }
-                Text(window.resetText)
-                    .font(themeStore.uiFont(.caption2))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 7, height: 7)
-                    Text("\(window.label) \(window.title)")
-                        .font(themeStore.uiFont(.caption, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(tokens.primaryText)
-                }
-                Text(window.remainingText)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
-                Text(window.resetText)
-                    .font(themeStore.uiFont(.caption2))
-                    .foregroundStyle(tokens.secondaryText)
             }
         }
         .accessibilityElement(children: .combine)

@@ -418,6 +418,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let modelOptionsError: Error?
     let runtimeChannelAvailability: [String: Bool]
     let rateLimitsByRuntime: [String: RateLimitSummary]
+    let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
@@ -510,6 +511,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         modelOptionsError: Error? = nil,
         runtimeChannelAvailability: [String: Bool] = [:],
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
+        rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil
     ) {
         self.projectsResult = projects
@@ -557,6 +559,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.modelOptionsError = modelOptionsError
         self.runtimeChannelAvailability = runtimeChannelAvailability
         self.rateLimitsByRuntime = rateLimitsByRuntime
+        self.rateLimitHandler = rateLimitHandler
         self.threadSearchHandler = threadSearchHandler
     }
 
@@ -578,6 +581,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         requestedRateLimitProviders.append(runtimeProvider)
+        if let rateLimitHandler {
+            return try await rateLimitHandler(runtimeProvider)
+        }
         return rateLimitsByRuntime[runtimeProvider]
     }
 
@@ -1700,5 +1706,4 @@ func waitForSelectedThreadGoalStatus(_ expected: ThreadGoalStatus, store: Sessio
 @MainActor
 extension ConversationDataFlowTests {
 }
-
 

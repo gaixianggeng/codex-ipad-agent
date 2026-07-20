@@ -35,6 +35,11 @@ command -v alleycat-claude-bridge
 alleycat-claude-bridge --version
 ```
 
+macOS 上主动读取 Claude 用量时，bridge 会复用 Claude Code 的 Keychain 凭据。
+短期 access token 过期后，bridge 通过系统自带的 `/usr/bin/script` 创建 PTY，执行一次
+Claude CLI `/status` 认证路径并重新读取 Keychain；PTY 固定在无业务文件的专用缓存目录，
+不会误信任 launchd 的 `/` 工作目录，也不会自行消费或覆盖 refresh token。
+
 ## 来源与协议
 
 代码来源、导入 commit 和本地修改见 [UPSTREAM.md](UPSTREAM.md)。本目录保留上游 [GNU GPLv3-only](LICENSE)，不适用仓库根目录为自有 iOS / Go 代码提供的 App Store / Google Play 分发例外。

@@ -669,6 +669,31 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(codexMessages.isEmpty)
     }
 
+    func testClaudeRateLimitTimeoutAllowsDelegatedCredentialRefresh() async {
+        let config = makeDirectAppServerConfig(
+            project: AgentProject(id: "proj", name: "Demo", path: "/tmp/demo")
+        )
+        let claudeRuntime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            requestTimeout: 20,
+            configProvider: { config }
+        )
+        let codexRuntime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "codex",
+            requestTimeout: 20,
+            configProvider: { config }
+        )
+
+        let claudeTimeout = await claudeRuntime.rateLimitRequestTimeout
+        let codexTimeout = await codexRuntime.rateLimitRequestTimeout
+        XCTAssertEqual(claudeTimeout, 15)
+        XCTAssertEqual(codexTimeout, 5)
+    }
+
     func testClaudeRateLimitNotificationAppliesObservedUtilization() async throws {
         let runtime = CodexAppServerSessionRuntime(
             endpoint: "http://127.0.0.1:8787",

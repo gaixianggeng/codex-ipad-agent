@@ -95,7 +95,8 @@ pub async fn handle_account_rate_limits_read(
         };
     }
     if state.begin_oauth_rate_limit_refresh(now, OAUTH_RETRY_SECS) {
-        match crate::oauth_usage::fetch_rate_limit_snapshot().await {
+        match crate::oauth_usage::fetch_rate_limit_snapshot(state.claude_pool().claude_bin()).await
+        {
             Ok(snapshot) => {
                 state.store_oauth_rate_limit(snapshot.clone(), now);
                 return p::GetAccountRateLimitsResponse {

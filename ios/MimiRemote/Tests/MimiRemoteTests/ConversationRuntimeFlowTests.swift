@@ -5,6 +5,43 @@ import SwiftUI
 import UIKit
 @testable import MimiRemote
 
+private actor UsageRefreshGate {
+    private var requestedProviders: [String] = []
+    private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var claudeContinuation: CheckedContinuation<RateLimitSummary?, Never>?
+
+    func response(for provider: String) async -> RateLimitSummary? {
+        requestedProviders.append(provider)
+        requestWaiters.removeValue(forKey: provider)?.forEach { $0.resume() }
+        if provider == "claude" {
+            return await withCheckedContinuation { continuation in
+                claudeContinuation = continuation
+            }
+        }
+        return RateLimitSummary(limitID: provider, primaryUsedPercent: 20)
+    }
+
+    func waitForRequest(provider: String) async {
+        if requestedProviders.contains(provider) {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            requestWaiters[provider, default: []].append(continuation)
+        }
+    }
+
+    func requestCount(provider: String) -> Int {
+        requestedProviders.filter { $0 == provider }.count
+    }
+
+    func finishClaude() {
+        claudeContinuation?.resume(
+            returning: RateLimitSummary(limitID: "claude", limitName: "Claude", primaryUsedPercent: 30)
+        )
+        claudeContinuation = nil
+    }
+}
+
 @MainActor
 extension ConversationDataFlowTests {
     func testSessionInspectorSectionsCollapseDetailsLogsAndDiagnostics() {
@@ -1246,6 +1283,45 @@ extension ConversationDataFlowTests {
         )
         XCTAssertEqual(store.accountCodexUsageWindowsDisplay.displayName, "Codex")
         XCTAssertFalse(store.accountCodexUsageWindowsDisplay.hasLiveData)
+    }
+
+    func testClaudeUsageRefreshIsProviderScopedAndCoalescesDuplicateTaps() async {
+        let gate = UsageRefreshGate()
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            rateLimitHandler: { provider in
+                await gate.response(for: provider)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let claudeRefresh = Task { await store.refreshClaudeUsage() }
+        await gate.waitForRequest(provider: "claude")
+        XCTAssertTrue(store.isRefreshingUsage(runtimeProvider: "claude"))
+        XCTAssertFalse(store.isRefreshingUsage(runtimeProvider: "codex"))
+
+        let duplicateClaudeRefresh = Task { await store.refreshClaudeUsage() }
+        let codexRefresh = Task { await store.refreshCodexUsage() }
+        await codexRefresh.value
+        await duplicateClaudeRefresh.value
+
+        let claudeRequestCount = await gate.requestCount(provider: "claude")
+        let codexRequestCount = await gate.requestCount(provider: "codex")
+        XCTAssertEqual(claudeRequestCount, 1)
+        XCTAssertEqual(codexRequestCount, 1)
+        XCTAssertTrue(store.isRefreshingUsage(runtimeProvider: "claude"))
+        XCTAssertFalse(store.isRefreshingUsage(runtimeProvider: "codex"))
+
+        await gate.finishClaude()
+        await claudeRefresh.value
+        XCTAssertFalse(store.isRefreshingUsage(runtimeProvider: "claude"))
+        XCTAssertEqual(store.accountRateLimitsByRuntime["claude"]?.primaryUsedPercent, 30)
     }
 
     func testHealthyUsageRefreshClearsStaleQuotaError() async {
