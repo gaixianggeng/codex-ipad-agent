@@ -507,6 +507,29 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(ConversationTimelineView.shouldScheduleTailFollowForNewTailMessage(commentary))
     }
 
+    func testConversationTimelineSuspendsProjectionOnlyForUserDrivenScrollPhases() {
+        XCTAssertTrue(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .tracking))
+        XCTAssertTrue(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .interacting))
+        XCTAssertTrue(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .decelerating))
+        XCTAssertFalse(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .animating))
+        XCTAssertFalse(ConversationTimelineView.shouldSuspendTimelineUpdates(for: .idle))
+    }
+
+    func testConversationTimelineCacheCatchesUpAfterUserScrollingStops() {
+        let first = ConversationMessage(role: .user, content: "第一条")
+        let second = ConversationMessage(role: .assistant, content: "第二条")
+        let cache = ConversationTimelineItemCache()
+
+        let initial = cache.snapshot(from: [first])
+        let suspended = cache.snapshot(from: [first, second], suspendingUpdates: true)
+        let refreshed = cache.snapshot(from: [first, second])
+
+        XCTAssertEqual(initial.itemIDs, suspended.itemIDs)
+        XCTAssertEqual(suspended.items.count, 1)
+        XCTAssertEqual(refreshed.items.count, 2)
+        XCTAssertNotEqual(refreshed.itemIDs, suspended.itemIDs)
+    }
+
     func testConversationTimelineAllowsInitialTailRetryButRespectsUserScrollAway() {
         XCTAssertTrue(ConversationTimelineView.shouldAttemptTailScroll(
             force: false,

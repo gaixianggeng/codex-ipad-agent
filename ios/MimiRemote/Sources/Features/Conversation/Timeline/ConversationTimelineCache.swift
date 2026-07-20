@@ -1,23 +1,42 @@
 import Foundation
 
+struct ConversationTimelineSnapshot {
+    let items: [ConversationTimelineItem]
+    let itemIDs: [String]
+
+    static let empty = ConversationTimelineSnapshot(items: [], itemIDs: [])
+}
+
 final class ConversationTimelineItemCache {
     private var keys: [ConversationTimelineCacheKey] = []
-    private var cachedItems: [ConversationTimelineItem] = []
+    private var cachedSnapshot = ConversationTimelineSnapshot.empty
 
-    func items(from messages: [ConversationMessage]) -> [ConversationTimelineItem] {
+    func snapshot(
+        from messages: [ConversationMessage],
+        suspendingUpdates: Bool = false
+    ) -> ConversationTimelineSnapshot {
+        // 用户正在拖动/减速时保留同一份 List 快照。流式输出仍进入 Store，
+        // 但不在每个 delta 上重建整条长时间线；滚动结束后一次性追上最新状态。
+        if suspendingUpdates, !cachedSnapshot.items.isEmpty {
+            return cachedSnapshot
+        }
+
         let nextKeys = messages.map { ConversationTimelineCacheKey(message: $0) }
         guard nextKeys != keys else {
-            return cachedItems
+            return cachedSnapshot
         }
         let nextItems = ConversationTimelineItemBuilder.items(from: messages)
         keys = nextKeys
-        cachedItems = nextItems
-        return nextItems
+        cachedSnapshot = ConversationTimelineSnapshot(
+            items: nextItems,
+            itemIDs: nextItems.map(\.id)
+        )
+        return cachedSnapshot
     }
 
     func removeAll() {
         keys.removeAll()
-        cachedItems.removeAll()
+        cachedSnapshot = .empty
     }
 }
 
