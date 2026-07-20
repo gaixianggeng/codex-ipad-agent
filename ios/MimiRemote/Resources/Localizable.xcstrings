@@ -11114,6 +11114,125 @@
         }
       }
     },
+    "ui.legal_and_support": {
+      "comment": "Section title for privacy, terms, and support links.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legal & Support"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "法律与支持"
+          }
+        }
+      }
+    },
+    "ui.legal_document_could_not_be_loaded": {
+      "comment": "Fallback shown when a bundled legal or support document cannot be read.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document could not be loaded. Please use View Online or contact support."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法载入此文档。请使用“在线查看”或联系支持。"
+          }
+        }
+      }
+    },
+    "ui.legal_documents_are_included_in_the_app": {
+      "comment": "Footer explaining that legal and support documents work offline and also have public copies.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These documents are included in the app for offline access and are also available online."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些文档随 App 提供，可离线查看，也可访问公开在线版本。"
+          }
+        }
+      }
+    },
+    "ui.privacy_policy": {
+      "comment": "Link title for the public privacy policy.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy Policy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私政策"
+          }
+        }
+      }
+    },
+    "ui.support_and_contact": {
+      "comment": "Link title for public support and contact information.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Support & Contact"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持与联系"
+          }
+        }
+      }
+    },
+    "ui.terms_of_use": {
+      "comment": "Link title for the public terms of use.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terms of Use"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用条款"
+          }
+        }
+      }
+    },
+    "ui.view_online": {
+      "comment": "Button that opens the public online copy of a bundled legal document.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Online"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在线查看"
+          }
+        }
+      }
+    },
     "ui.last_send_interrupted_before_confirmation": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

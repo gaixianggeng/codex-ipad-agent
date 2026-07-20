@@ -45,7 +45,10 @@ public_paths=(
   packaging/systemd
   docs/codex-protocol-support.md
   docs/install-upgrade-rollback.md
+  docs/privacy-policy.md
+  docs/support.md
   docs/tailscale-peer-relay-ops.md
+  docs/terms-of-use.md
   scripts/check-codex-protocol.sh
   scripts/check-packaging.sh
   scripts/check-public-repo-safety.sh

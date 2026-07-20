@@ -166,6 +166,33 @@ struct SettingsView: View {
             } footer: {
                 Text(developerModeEnabled ? L10n.text("ui.historical_diagnostics_may_display_the_local_machine_path") : L10n.text("ui.turn_on_to_use_advanced_operating_options_and"))
             }
+
+            Section {
+                NavigationLink {
+                    LegalDocumentView(document: .privacyPolicy)
+                } label: {
+                    Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
+                }
+                .accessibilityIdentifier("settings.privacyPolicy")
+
+                NavigationLink {
+                    LegalDocumentView(document: .termsOfUse)
+                } label: {
+                    Label(L10n.text("ui.terms_of_use"), systemImage: "doc.text")
+                }
+                .accessibilityIdentifier("settings.termsOfUse")
+
+                NavigationLink {
+                    LegalDocumentView(document: .support)
+                } label: {
+                    Label(L10n.text("ui.support_and_contact"), systemImage: "questionmark.circle")
+                }
+                .accessibilityIdentifier("settings.support")
+            } header: {
+                Text(L10n.text("ui.legal_and_support"))
+            } footer: {
+                Text(L10n.text("ui.legal_documents_are_included_in_the_app"))
+            }
         }
         .themedSettingsForm(tokens: tokens)
         .task {

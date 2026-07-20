@@ -207,7 +207,7 @@ For the complete, code-oriented capability matrix and risk list, see [project st
 
 Mimi Remote has no ads, analytics SDK, or maintainer-operated telemetry service. Project content, conversations, logs, code, and Codex/Claude credentials remain on your devices unless you explicitly use a third-party service such as Codex, Claude Code, GitHub, voice transcription, or MCP.
 
-The app rejects public HTTP endpoints at the application layer and is designed for Tailscale/private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the [privacy policy (Chinese)](docs/privacy-policy.md) for the current detailed policy.
+The app rejects public HTTP endpoints at the application layer and is designed for Tailscale/private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the bilingual [privacy policy](docs/privacy-policy.md), [terms of use](docs/terms-of-use.md), and [support page](docs/support.md).
 
 ## Development checks
 

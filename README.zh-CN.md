@@ -344,6 +344,8 @@ bridges/claude/          Rust Claude Code 协议 bridge
 - [Claude bridge 架构](docs/claude-bridge-architecture.md)
 - [与 Litter 的能力对照](docs/litter-comparison.md)
 - [隐私政策](docs/privacy-policy.md)
+- [使用条款](docs/terms-of-use.md)
+- [支持说明](docs/support.md)
 - [安全政策](SECURITY.md)
 
 ## 隐私与安全

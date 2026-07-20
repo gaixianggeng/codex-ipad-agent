@@ -9,7 +9,12 @@ on:
       - "scripts/check-ios-localization.sh"
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
+      - "scripts/check-app-store-metadata.sh"
       - "scripts/check-source-size.sh"
+      - "docs/app-store/**"
+      - "docs/privacy-policy.md"
+      - "docs/support.md"
+      - "docs/terms-of-use.md"
       - ".github/workflows/ios-ci.yml"
   push:
     branches:
@@ -21,7 +26,12 @@ on:
       - "scripts/check-ios-localization.sh"
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
+      - "scripts/check-app-store-metadata.sh"
       - "scripts/check-source-size.sh"
+      - "docs/app-store/**"
+      - "docs/privacy-policy.md"
+      - "docs/support.md"
+      - "docs/terms-of-use.md"
       - ".github/workflows/ios-ci.yml"
   workflow_dispatch:
 
@@ -61,6 +71,9 @@ jobs:
 
       - name: Check iOS localization
         run: bash ./scripts/check-ios-localization.sh
+
+      - name: Check App Store metadata
+        run: bash ./scripts/check-app-store-metadata.sh
 
       - name: Check source size
         run: bash ./scripts/check-source-size.sh

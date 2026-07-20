@@ -1,0 +1,5 @@
+- Added an in-app language selector with complete English and Simplified Chinese interfaces.
+- Improved session restoration, queued input, and structured question forms.
+- Refined iPhone and iPad workbench navigation.
+- Added direct access to Privacy Policy, Terms of Use, and Support.
+- Improved optional Claude Code bridge compatibility and usage status reporting.
