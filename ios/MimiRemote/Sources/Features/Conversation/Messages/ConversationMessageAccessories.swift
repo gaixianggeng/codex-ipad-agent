@@ -65,10 +65,7 @@ struct SystemNotice: View {
     var body: some View {
         noticeSurface
             .contentShape(Capsule())
-            .messageContextMenu(for: message) {
-                noticeSurface
-                    .frame(maxWidth: layout.systemMaxWidth)
-            }
+            .messageContextMenu(for: message)
             .frame(maxWidth: layout.systemMaxWidth)
     }
 
@@ -99,10 +96,7 @@ struct RuntimeSummaryCard: View {
     var body: some View {
         cardSurface
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .messageContextMenu(for: message) {
-                cardSurface
-                    .frame(maxWidth: cardMaxWidth, alignment: .leading)
-            }
+            .messageContextMenu(for: message)
             .frame(maxWidth: cardMaxWidth, alignment: .leading)
     }
 
@@ -387,35 +381,97 @@ struct RuntimeSummaryCard: View {
     }
 }
 
+struct MessageContextMenuPreview: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let message: ConversationMessage
+
+    static let maximumCharacterCount = 600
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+
+        Text(Self.displayText(for: message.content))
+            .font(themeStore.uiFont(.body))
+            .foregroundStyle(foreground)
+            .lineLimit(8)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            // 预览只重建轻量纯文本，避免复杂 Markdown 和图片在 iPadOS 的
+            // context menu 转场中被重复渲染，同时让系统按内容宽度摆放菜单。
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(background, in: shape)
+            .overlay {
+                shape.strokeBorder(tokens.border.opacity(0.42), lineWidth: 1)
+            }
+            .contentShape(.contextMenuPreview, shape)
+    }
+
+    static func displayText(for content: String) -> String {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return L10n.text("ui.content")
+        }
+
+        let candidate = trimmed.prefix(maximumCharacterCount + 1)
+        guard candidate.count > maximumCharacterCount else {
+            return trimmed
+        }
+        return String(candidate.prefix(maximumCharacterCount)) + "…"
+    }
+
+    private var foreground: Color {
+        message.role == .user ? tokens.userBubbleForeground : tokens.primaryText
+    }
+
+    private var background: Color {
+        switch message.role {
+        case .user:
+            return tokens.userBubble
+        case .assistant:
+            return tokens.assistantBubble
+        case .system:
+            return tokens.systemBubble
+        }
+    }
+
+    private var tokens: ThemeTokens {
+        themeStore.tokens(for: colorScheme)
+    }
+}
+
 extension View {
-    func messageContextMenu<Preview: View>(
+    func messageContextMenu(
         for message: ConversationMessage,
         retry: (() -> Void)? = nil,
-        stop: (() -> Void)? = nil,
-        @ViewBuilder preview: @escaping () -> Preview
+        stop: (() -> Void)? = nil
     ) -> some View {
-        _ = preview
-        // iPadOS 对 contextMenu 自定义预览会重新构建复杂 Markdown/图片气泡，长按时容易触发 SwiftUI 内部崩溃；
-        // 这里保留复制/重试/停止动作，禁用预览来换取稳定性。
-        return contextMenu {
-            Button {
-                UIPasteboard.general.string = message.content
-            } label: {
-                Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
-            }
-
-            if message.role == .user && message.sendStatus == .failed, let retry {
-                Button(action: retry) {
-                    Label(L10n.text("ui.try_again"), systemImage: "arrow.clockwise")
+        // interaction 形状由各消息表面自行定义；这里单独约束系统抬起动画的预览形状，
+        // 避免 List 的全宽宿主行参与 context menu 转场。
+        contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contextMenu {
+                Button {
+                    UIPasteboard.general.string = message.content
+                } label: {
+                    Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
                 }
-            }
 
-            if message.role == .assistant && message.sendStatus == .sending, let stop {
-                Button(role: .destructive, action: stop) {
-                    Label(L10n.text("ui.stop"), systemImage: "stop.circle")
+                if message.role == .user && message.sendStatus == .failed, let retry {
+                    Button(action: retry) {
+                        Label(L10n.text("ui.try_again"), systemImage: "arrow.clockwise")
+                    }
                 }
+
+                if message.role == .assistant && message.sendStatus == .sending, let stop {
+                    Button(role: .destructive, action: stop) {
+                        Label(L10n.text("ui.stop"), systemImage: "stop.circle")
+                    }
+                }
+            } preview: {
+                MessageContextMenuPreview(message: message)
             }
-        }
     }
 }
 

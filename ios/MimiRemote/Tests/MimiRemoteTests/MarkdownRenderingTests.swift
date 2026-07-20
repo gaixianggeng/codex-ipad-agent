@@ -3,6 +3,19 @@ import XCTest
 
 @MainActor
 final class MarkdownRenderingTests: XCTestCase {
+    func testMessageContextMenuPreviewTextIsTrimmedAndBounded() {
+        XCTAssertEqual(
+            MessageContextMenuPreview.displayText(for: "  可复制内容\n"),
+            "可复制内容"
+        )
+
+        let longContent = String(repeating: "测", count: MessageContextMenuPreview.maximumCharacterCount + 1)
+        let preview = MessageContextMenuPreview.displayText(for: longContent)
+
+        XCTAssertEqual(preview.count, MessageContextMenuPreview.maximumCharacterCount + 1)
+        XCTAssertTrue(preview.hasSuffix("…"))
+    }
+
     func testMarkdownParserBuildsGFMBlocks() {
         let result = MarkdownParser.shared.parse("""
         # 标题
