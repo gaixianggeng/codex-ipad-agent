@@ -15,12 +15,7 @@ struct ConversationCommentaryRow: View {
             .messageContextMenu(
                 for: message,
                 retry: {},
-                stop: { sessionStore.sendCtrlC() },
-                preview: {
-                    commentaryBody
-                        .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
-                        .padding(16)
-                }
+                stop: { sessionStore.sendCtrlC() }
             )
             .accessibilityElement(children: .contain)
     }

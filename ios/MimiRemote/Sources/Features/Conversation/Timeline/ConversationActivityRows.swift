@@ -162,9 +162,7 @@ struct ConversationActivityRow: View, Equatable {
     var body: some View {
         HStack(spacing: 0) {
             rowSurface
-                .messageContextMenu(for: message) {
-                    rowSurface.frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
-                }
+                .messageContextMenu(for: message)
                 .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
 
             Spacer(minLength: layout.messageSideSpacer)

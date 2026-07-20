@@ -41,10 +41,6 @@ struct MessageBubble: View {
                 },
                 stop: {
                     sessionStore.sendCtrlC()
-                },
-                preview: {
-                    userImageContent(style: style)
-                        .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
                 }
             )
     }
@@ -60,10 +56,6 @@ struct MessageBubble: View {
                 },
                 stop: {
                     sessionStore.sendCtrlC()
-                },
-                preview: {
-                    bubbleChrome
-                        .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
                 }
             )
     }
