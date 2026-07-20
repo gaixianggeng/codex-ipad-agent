@@ -46,7 +46,7 @@ iPhone / iPad SwiftUI App
 | 输入输出 | 富 Markdown、图片输入、历史图片按需加载、语音转写、文件安全读取和 QuickLook；当前会话可导出 ANSI 清洗后的有界 UTF-8 日志，导出头部不读取连接凭据 | PDF/大型 artifact 的富预览和后台下载尚未实现；日志正文可能包含用户命令、代码和工具输出，分享前需自行检查 |
 | 能力发现 | Skills 和 MCP 配置只读浏览、allowlist actions | 不在 iPad 上启停 MCP、修改 Codex 配置或处理 OAuth |
 | 移动体验 | iPhone/iPad 自适应、深浅色、主题和字号、Codex 5h/7d 用量、提醒、运行态通知、通知点击回到当前 Mac 会话；通知未授权时提醒仍可保留为 App 内状态并明确告知，冷启动/回前台清理过期提醒；通知 payload 不含 Token 或明文 endpoint，错 Mac 只提示手动切换档案；凭据失效终止重试；NWPath 事件按递增序号交付并丢弃迟到旧状态，离线暂停、恢复单次重连和 jitter 退避，首次 unknown→在线只在已有网络错误或挂起会话时恢复一次；首次配对提交后最多等待 45 秒恢复项目/会话，已有档案修复或切换等待 10 秒，超时保留 Keychain 凭据且打开设置可直接重试；保存、重命名和删除多台 Mac 档案，每台独立 Keychain Token，验证后单活切换；重命名只更新非敏感显示名，不重建连接；忘记/删除凭据必须二次确认并在执行前重验目标档案 | 后台 push、离线通知、连接档案云同步和离线队列持久化尚未实现 |
-| Claude | 仓库内 `alleycat-claude-bridge >= 0.2.1` 实验通道，当前 `0.2.4` 支持审批闭环、历史记录过滤、额度百分比和 Fable 5 模型目录 | 默认关闭；每个 WebSocket 一个 bridge；不支持 goal、archive、fork；Claude Code 2.1.92 headless 不执行 statusline sink，仅展示官方 `rate_limit_event` 已观测窗口的真实百分比与重置时间，并按 5h/7d 类型合并缓存；尚无任意时刻主动读取双窗口快照的官方 headless API，未观测到时明确显示暂无数据；CLI 凭证失效时需在 Mac 重新登录 |
+| Claude | 仓库内 `alleycat-claude-bridge >= 0.2.1` 实验通道，当前 `0.2.5` 支持审批闭环、历史记录过滤、OAuth 额度查询、事件降级和 Fable 5 模型目录 | 默认关闭；每个 WebSocket 一个 bridge；不支持 goal、archive、fork；优先复用 Claude Code Keychain/凭据文件只读查询 Anthropic OAuth usage beta endpoint，返回 5h/7d 百分比与重置时间并短缓存；内部 beta endpoint 变化、凭据缺少 `user:profile`、过期或查询失败时降级到官方 `rate_limit_event`，两者均不可用才显示暂无数据；CLI 凭证失效时需在 Mac 重新登录 |
 
 完整能力矩阵见 [Codex Mac App 功能对照](codex-mac-feature-parity.md)。
 
