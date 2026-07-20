@@ -4,6 +4,7 @@ pub mod approval;
 pub mod bridge;
 pub mod handlers;
 pub mod index;
+mod oauth_usage;
 pub mod pool;
 pub mod server;
 pub mod state;

@@ -16,8 +16,8 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 use alleycat_codex_proto::{
-    ApprovalsReviewer, AskForApproval, InitializeCapabilities, JsonRpcMessage, ReasoningEffort,
-    RequestId, SandboxMode, ThreadItem, Turn, TurnError, TurnStatus,
+    ApprovalsReviewer, AskForApproval, InitializeCapabilities, JsonRpcMessage, RateLimitSnapshot,
+    ReasoningEffort, RequestId, SandboxMode, ThreadItem, Turn, TurnError, TurnStatus,
 };
 
 use crate::index::ClaudeSessionRef;
@@ -54,6 +54,7 @@ pub struct ConnectionState {
     /// SSH launcher, need the cwd to be validated by that remote process.
     trust_persisted_cwd: bool,
     caches: Mutex<ClaudeCaches>,
+    oauth_rate_limit_refresh: tokio::sync::Mutex<()>,
     thread_logs: Mutex<HashMap<String, Vec<RecordedTurn>>>,
 }
 
@@ -95,6 +96,16 @@ pub struct ClaudeCaches {
     /// Claude 每次事件只携带一个窗口；按类型缓存，避免 5h/7d 连续到达时
     /// 后一个把前一个覆盖掉。
     pub rate_limit_infos: HashMap<String, RateLimitInfo>,
+    /// OAuth usage 主动查询的短缓存。只保存百分比与重置时间，不保存凭据。
+    pub oauth_rate_limit: Option<CachedOAuthRateLimit>,
+    /// 失败也短暂退避，避免设置页并发刷新连续访问 Keychain/OAuth endpoint。
+    pub oauth_last_attempt_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedOAuthRateLimit {
+    pub snapshot: RateLimitSnapshot,
+    pub fetched_at: i64,
 }
 
 impl ClaudeCaches {
@@ -105,6 +116,34 @@ impl ClaudeCaches {
             .unwrap_or_else(|| "unknown".into());
         self.rate_limit_infos.insert(key, info);
         self.rate_limit_infos.values().cloned().collect()
+    }
+
+    pub fn cached_oauth_rate_limit(
+        &self,
+        now: i64,
+        max_age_secs: i64,
+    ) -> Option<RateLimitSnapshot> {
+        self.oauth_rate_limit.as_ref().and_then(|cached| {
+            (now.saturating_sub(cached.fetched_at) <= max_age_secs).then(|| cached.snapshot.clone())
+        })
+    }
+
+    pub fn begin_oauth_rate_limit_refresh(&mut self, now: i64, min_interval_secs: i64) -> bool {
+        if self
+            .oauth_last_attempt_at
+            .is_some_and(|last| now.saturating_sub(last) < min_interval_secs)
+        {
+            return false;
+        }
+        self.oauth_last_attempt_at = Some(now);
+        true
+    }
+
+    pub fn store_oauth_rate_limit(&mut self, snapshot: RateLimitSnapshot, fetched_at: i64) {
+        self.oauth_rate_limit = Some(CachedOAuthRateLimit {
+            snapshot,
+            fetched_at,
+        });
     }
 }
 
@@ -156,6 +195,7 @@ impl ConnectionState {
             launcher,
             trust_persisted_cwd,
             caches: Mutex::new(ClaudeCaches::default()),
+            oauth_rate_limit_refresh: tokio::sync::Mutex::new(()),
             thread_logs: Mutex::new(HashMap::new()),
         }
     }
@@ -296,6 +336,35 @@ impl ConnectionState {
     pub fn refresh_rate_limit_cache(&self, info: RateLimitInfo) -> Vec<RateLimitInfo> {
         let mut slot = self.caches.lock().unwrap();
         slot.refresh_rate_limit(info)
+    }
+
+    pub fn cached_oauth_rate_limit(
+        &self,
+        now: i64,
+        max_age_secs: i64,
+    ) -> Option<RateLimitSnapshot> {
+        self.caches
+            .lock()
+            .unwrap()
+            .cached_oauth_rate_limit(now, max_age_secs)
+    }
+
+    pub async fn lock_oauth_rate_limit_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.oauth_rate_limit_refresh.lock().await
+    }
+
+    pub fn begin_oauth_rate_limit_refresh(&self, now: i64, min_interval_secs: i64) -> bool {
+        self.caches
+            .lock()
+            .unwrap()
+            .begin_oauth_rate_limit_refresh(now, min_interval_secs)
+    }
+
+    pub fn store_oauth_rate_limit(&self, snapshot: RateLimitSnapshot, fetched_at: i64) {
+        self.caches
+            .lock()
+            .unwrap()
+            .store_oauth_rate_limit(snapshot, fetched_at);
     }
 
     pub fn record_turn_started(&self, thread_id: &str, turn_id: String, started_at: i64) {

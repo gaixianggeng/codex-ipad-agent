@@ -70,12 +70,47 @@ pub fn handle_account_read(
     }
 }
 
-/// Surface whatever `rate_limit_event` the claude event pump last saw. Until
-/// any process emits one, the response is the empty default — codex clients
-/// treat that as "no rate-limit metadata yet".
-pub fn handle_account_rate_limits_read(
+/// 优先从 Claude OAuth usage endpoint 主动读取账号窗口；不可用时退回当前连接
+/// 已观测到的 `rate_limit_event`。两条链路都失败才明确返回 unavailable。
+pub async fn handle_account_rate_limits_read(
     state: &Arc<ConnectionState>,
 ) -> p::GetAccountRateLimitsResponse {
+    const OAUTH_CACHE_SECS: i64 = 60;
+    const OAUTH_RETRY_SECS: i64 = 15;
+    let now = chrono::Utc::now().timestamp();
+    if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
+        return p::GetAccountRateLimitsResponse {
+            rate_limits: snapshot,
+            rate_limits_by_limit_id: None,
+        };
+    }
+    // 设置页可能同时触发多次刷新。串行化首次 Keychain/API 查询，让后续请求
+    // 等待并复用缓存，避免后到的 unavailable 覆盖先到的成功结果。
+    let _refresh_guard = state.lock_oauth_rate_limit_refresh().await;
+    let now = chrono::Utc::now().timestamp();
+    if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
+        return p::GetAccountRateLimitsResponse {
+            rate_limits: snapshot,
+            rate_limits_by_limit_id: None,
+        };
+    }
+    if state.begin_oauth_rate_limit_refresh(now, OAUTH_RETRY_SECS) {
+        match crate::oauth_usage::fetch_rate_limit_snapshot().await {
+            Ok(snapshot) => {
+                state.store_oauth_rate_limit(snapshot.clone(), now);
+                return p::GetAccountRateLimitsResponse {
+                    rate_limits: snapshot,
+                    rate_limits_by_limit_id: None,
+                };
+            }
+            Err(err) => {
+                // OAuth 是展示增强能力；凭据缺失、过期或临时网络失败都必须安全
+                // 降级到官方事件缓存，不能影响 Claude 会话与发送链路。
+                tracing::debug!(error = %err, "Claude OAuth usage unavailable; falling back to observed events");
+            }
+        }
+    }
+
     let infos: Vec<_> = state.caches().rate_limit_infos.into_values().collect();
     if infos.is_empty() {
         return p::GetAccountRateLimitsResponse {

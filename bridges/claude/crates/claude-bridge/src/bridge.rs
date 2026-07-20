@@ -352,7 +352,7 @@ async fn dispatch_request(
             to_value(handlers::lifecycle::handle_account_read(state, typed))
         }
         "account/rateLimits/read" => {
-            to_value(handlers::lifecycle::handle_account_rate_limits_read(state))
+            to_value(handlers::lifecycle::handle_account_rate_limits_read(state).await)
         }
         "account/login/start" => {
             let typed: p::LoginAccountParams = decode(params)?;
