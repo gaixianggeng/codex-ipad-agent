@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import UIKit
 @testable import MimiRemote
 
 @MainActor
@@ -14,6 +16,23 @@ final class MarkdownRenderingTests: XCTestCase {
 
         XCTAssertEqual(preview.count, MessageContextMenuPreview.maximumCharacterCount + 1)
         XCTAssertTrue(preview.hasSuffix("…"))
+    }
+
+    func testMessageContextMenuPreviewRendersWithoutThemeEnvironmentObject() {
+        let message = ConversationMessage(role: .assistant, content: "独立预览")
+        let preview = MessageContextMenuPreview(
+            message: message,
+            style: MessageContextMenuPreviewStyle(
+                font: .body,
+                foreground: .primary,
+                background: .white,
+                border: .gray
+            )
+        )
+        let host = UIHostingController(rootView: preview)
+        let fittingSize = host.sizeThatFits(in: CGSize(width: 320, height: 160))
+
+        XCTAssertGreaterThan(fittingSize.height, 0)
     }
 
     func testMarkdownParserBuildsGFMBlocks() {

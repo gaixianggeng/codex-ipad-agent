@@ -23,6 +23,7 @@ struct ConversationTimelineView: View {
     @State private var pendingTailScrollTask: Task<Void, Never>?
     @State private var tailScrollAttemptGeneration = 0
     @State private var userScrollAwayGeneration = 0
+    @State private var isUserScrollingTimeline = false
 
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
@@ -30,8 +31,12 @@ struct ConversationTimelineView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
-        let timelineItems = timelineItemCache.items(from: messages)
-        let timelineItemIDs = timelineItems.map(\.id)
+        let timelineSnapshot = timelineItemCache.snapshot(
+            from: messages,
+            suspendingUpdates: isUserScrollingTimeline
+        )
+        let timelineItems = timelineSnapshot.items
+        let timelineItemIDs = timelineSnapshot.itemIDs
         let tailFollowTaskKey = Self.tailFollowTaskKey(
             sessionID: sessionStore.selectedSessionID,
             tailItemID: timelineItems.last?.id
@@ -113,6 +118,22 @@ struct ConversationTimelineView: View {
                         shouldFollowMessageTail = false
                     }
                 }
+                .onScrollPhaseChange { _, newPhase in
+                    let shouldSuspend = Self.shouldSuspendTimelineUpdates(for: newPhase)
+                    guard shouldSuspend != isUserScrollingTimeline else {
+                        return
+                    }
+                    isUserScrollingTimeline = shouldSuspend
+                    guard shouldSuspend else {
+                        return
+                    }
+                    // 手指驱动滚动时优先保证交互帧率：停止旧的尾部重锚任务，
+                    // 流式消息在 Store 中继续累计，滚动结束后再一次性刷新 List。
+                    isTailFollowLocked = false
+                    shouldFollowMessageTail = false
+                    userScrollAwayGeneration += 1
+                    cancelPendingTailScrollAttempts()
+                }
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
                     Button {
@@ -149,6 +170,7 @@ struct ConversationTimelineView: View {
                 hasUnseenTailMessage = false
                 isTimelineNearBottom = true
                 isPreservingHistoryScroll = false
+                isUserScrollingTimeline = false
                 expandedActivityIDs.removeAll()
                 expandedActivityGroupIDs.removeAll()
                 timelineItemCache.removeAll()
@@ -172,6 +194,10 @@ struct ConversationTimelineView: View {
             }
             .onChange(of: messages.last?.id) { _, newID in
                 guard newID != nil else {
+                    return
+                }
+                guard !isUserScrollingTimeline else {
+                    hasUnseenTailMessage = true
                     return
                 }
                 // 首条活动会通过 timelineItemIDs 插入并触发尾部跟随；同一批次后续命令
@@ -219,6 +245,10 @@ struct ConversationTimelineView: View {
                 // 只有助手正文流式增长才需要持续贴底。命令 stdout/stderr 已保存在详情中，
                 // 折叠状态下不应驱动滚动请求，否则会形成“日志一条、列表一顿”的观感。
                 guard messages.last?.role == .assistant else {
+                    return
+                }
+                guard !isUserScrollingTimeline else {
+                    hasUnseenTailMessage = true
                     return
                 }
                 queueTailScrollAttempts(
@@ -435,6 +465,15 @@ struct ConversationTimelineView: View {
 
     static func shouldScheduleTailFollowForNewTailMessage(_ message: ConversationMessage?) -> Bool {
         message?.role != .system
+    }
+
+    static func shouldSuspendTimelineUpdates(for phase: ScrollPhase) -> Bool {
+        switch phase {
+        case .tracking, .interacting, .decelerating:
+            return true
+        case .idle, .animating:
+            return false
+        }
     }
 
     static func shouldAttemptTailScroll(

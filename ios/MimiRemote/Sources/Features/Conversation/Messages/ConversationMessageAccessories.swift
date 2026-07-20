@@ -382,10 +382,8 @@ struct RuntimeSummaryCard: View {
 }
 
 struct MessageContextMenuPreview: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
     let message: ConversationMessage
+    let style: MessageContextMenuPreviewStyle
 
     static let maximumCharacterCount = 600
 
@@ -393,8 +391,8 @@ struct MessageContextMenuPreview: View {
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
 
         Text(Self.displayText(for: message.content))
-            .font(themeStore.uiFont(.body))
-            .foregroundStyle(foreground)
+            .font(style.font)
+            .foregroundStyle(style.foreground)
             .lineLimit(8)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 14)
@@ -402,9 +400,9 @@ struct MessageContextMenuPreview: View {
             // 预览只重建轻量纯文本，避免复杂 Markdown 和图片在 iPadOS 的
             // context menu 转场中被重复渲染，同时让系统按内容宽度摆放菜单。
             .frame(maxWidth: 520, alignment: .leading)
-            .background(background, in: shape)
+            .background(style.background, in: shape)
             .overlay {
-                shape.strokeBorder(tokens.border.opacity(0.42), lineWidth: 1)
+                shape.strokeBorder(style.border.opacity(0.42), lineWidth: 1)
             }
             .contentShape(.contextMenuPreview, shape)
     }
@@ -422,35 +420,38 @@ struct MessageContextMenuPreview: View {
         return String(candidate.prefix(maximumCharacterCount)) + "…"
     }
 
-    private var foreground: Color {
-        message.role == .user ? tokens.userBubbleForeground : tokens.primaryText
-    }
-
-    private var background: Color {
-        switch message.role {
-        case .user:
-            return tokens.userBubble
-        case .assistant:
-            return tokens.assistantBubble
-        case .system:
-            return tokens.systemBubble
-        }
-    }
-
-    private var tokens: ThemeTokens {
-        themeStore.tokens(for: colorScheme)
-    }
 }
 
-extension View {
-    func messageContextMenu(
-        for message: ConversationMessage,
-        retry: (() -> Void)? = nil,
-        stop: (() -> Void)? = nil
-    ) -> some View {
+struct MessageContextMenuPreviewStyle {
+    let font: Font
+    let foreground: Color
+    let background: Color
+    let border: Color
+}
+
+private struct MessageContextMenuModifier: ViewModifier {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let message: ConversationMessage
+    let retry: (() -> Void)?
+    let stop: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        // context menu 的 preview 会被系统放进独立宿主，不能依赖原消息树继续提供
+        // EnvironmentObject。这里先把主题解析成普通值，预览闭包只捕获稳定样式。
+        let previewStyle = MessageContextMenuPreviewStyle(
+            font: themeStore.uiFont(.body),
+            foreground: message.role == .user ? tokens.userBubbleForeground : tokens.primaryText,
+            background: previewBackground(tokens: tokens),
+            border: tokens.border
+        )
+
         // interaction 形状由各消息表面自行定义；这里单独约束系统抬起动画的预览形状，
         // 避免 List 的全宽宿主行参与 context menu 转场。
-        contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18, style: .continuous))
+        content
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contextMenu {
                 Button {
                     UIPasteboard.general.string = message.content
@@ -470,8 +471,29 @@ extension View {
                     }
                 }
             } preview: {
-                MessageContextMenuPreview(message: message)
+                MessageContextMenuPreview(message: message, style: previewStyle)
             }
+    }
+
+    private func previewBackground(tokens: ThemeTokens) -> Color {
+        switch message.role {
+        case .user:
+            return tokens.userBubble
+        case .assistant:
+            return tokens.assistantBubble
+        case .system:
+            return tokens.systemBubble
+        }
+    }
+}
+
+extension View {
+    func messageContextMenu(
+        for message: ConversationMessage,
+        retry: (() -> Void)? = nil,
+        stop: (() -> Void)? = nil
+    ) -> some View {
+        modifier(MessageContextMenuModifier(message: message, retry: retry, stop: stop))
     }
 }
 
