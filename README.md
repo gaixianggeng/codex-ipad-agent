@@ -121,6 +121,8 @@ agentd restart
 agentd stop
 ```
 
+On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
+
 For Linux installation and recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
 
 ### 2. Build the iOS app from source
