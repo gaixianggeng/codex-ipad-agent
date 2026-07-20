@@ -471,6 +471,7 @@ private struct ConnectionSpeedMetricRow: View {
 private struct RuntimeUsageSettingsCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var isRefreshing = false
@@ -481,12 +482,54 @@ private struct RuntimeUsageSettingsCard: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 12) {
+        Group {
+            // 常规 iPad 宽度把身份、窗口和操作收进同一基线，消除旧布局第二行产生的大块留白。
+            // 无障碍大字号主动回退到上下结构，避免用缩放字体换取表面的“一行”。
+            if usesRegularUsageLayout {
+                regularUsageRow(tokens: tokens)
+            } else {
+                compactUsageRows(tokens: tokens)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var usesRegularUsageLayout: Bool {
+        horizontalSizeClass == .regular && !dynamicTypeSize.isAccessibilitySize
+    }
+
+    private func regularUsageRow(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            usageRings
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(display.displayName)
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(display.creditText)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .frame(width: 152, alignment: .leading)
+
+            Divider()
+                .frame(height: 30)
+
+            usageWindows(tokens: tokens)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            refreshButton(tokens: tokens)
+        }
+        .frame(minHeight: 44)
+    }
+
+    private func compactUsageRows(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                CodexUsageRingsGraphic(
-                    display: display,
-                    metrics: CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
-                )
+                usageRings
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(display.displayName)
@@ -500,58 +543,72 @@ private struct RuntimeUsageSettingsCard: View {
                 }
 
                 Spacer(minLength: 8)
-
-                Button {
-                    Task { await refreshUsage() }
-                } label: {
-                    Group {
-                        if isRefreshing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                    }
-                    .frame(width: 30, height: 30)
-                    .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tokens.accent)
-                .disabled(isRefreshing)
-                .accessibilityLabel(isRefreshing ? L10n.format("ui.refreshing_value_usage", display.displayName) : L10n.format("ui.refresh_value_usage", display.displayName))
-                .accessibilityIdentifier("settings.\(runtimeProvider)Usage.refresh")
+                refreshButton(tokens: tokens)
             }
 
-            if display.windows.isEmpty {
-                Text(emptyStateText)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
-                            if index > 0 {
-                                Divider()
-                            }
-                            CodexCompactUsageWindow(window: window)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
+            usageWindows(tokens: tokens)
+        }
+    }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
-                            if index > 0 {
-                                Divider()
-                            }
-                            CodexCompactUsageWindow(window: window)
-                        }
+    private var usageRings: some View {
+        CodexUsageRingsGraphic(
+            display: display,
+            metrics: CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
+        )
+    }
+
+    @ViewBuilder
+    private func usageWindows(tokens: ThemeTokens) -> some View {
+        if display.windows.isEmpty {
+            Text(emptyStateText)
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(2)
+        } else if usesRegularUsageLayout {
+            HStack(alignment: .center, spacing: 12) {
+                ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
+                    if index > 0 {
+                        Divider()
+                            .frame(height: 28)
                     }
+                    CodexCompactUsageWindow(window: window)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
+                    if index > 0 {
+                        Divider()
+                    }
+                    CodexCompactUsageWindow(window: window)
                 }
             }
         }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .contain)
+    }
+
+    private func refreshButton(tokens: ThemeTokens) -> some View {
+        Button {
+            Task { await refreshUsage() }
+        } label: {
+            Group {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+            }
+            // 图形保持轻量，触控区遵循 iOS 最低 44pt，避免紧凑布局牺牲可操作性。
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.accent)
+        .disabled(isRefreshing)
+        .accessibilityLabel(isRefreshing ? L10n.format("ui.refreshing_value_usage", display.displayName) : L10n.format("ui.refresh_value_usage", display.displayName))
+        .accessibilityIdentifier("settings.\(runtimeProvider)Usage.refresh")
     }
 
     @MainActor
@@ -586,28 +643,52 @@ private struct CodexCompactUsageWindow: View {
         let tokens = themeStore.tokens(for: colorScheme)
         let tint = usageTint
 
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 7, height: 7)
-                Text("\(window.label) \(window.title)")
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(tokens.primaryText)
+        ViewThatFits(in: .horizontal) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Circle()
+                        .fill(tint)
+                        .frame(width: 7, height: 7)
+                        .alignmentGuide(.firstTextBaseline) { dimensions in
+                            dimensions[VerticalAlignment.center]
+                        }
+                    Text(window.label)
+                        .font(themeStore.uiFont(.caption, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(tokens.primaryText)
+                    Spacer(minLength: 4)
+                    Text(window.remainingText)
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
+                        .lineLimit(1)
+                }
+                Text(window.resetText)
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            Text(window.remainingText)
-                .font(themeStore.uiFont(.callout, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
-                .lineLimit(1)
-
-            Text(window.resetText)
-                .font(themeStore.uiFont(.caption2))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.76)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(tint)
+                        .frame(width: 7, height: 7)
+                    Text("\(window.label) \(window.title)")
+                        .font(themeStore.uiFont(.caption, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(tokens.primaryText)
+                }
+                Text(window.remainingText)
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
+                Text(window.resetText)
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(tokens.secondaryText)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(L10n.format("ui.value_remaining_usage", window.accessibilityName))
