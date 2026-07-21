@@ -25,7 +25,11 @@ for required_file in \
   scripts/install-linux.sh \
   scripts/test-install-linux.sh \
   scripts/check-release-prerequisites.sh \
+  scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
+  scripts/sign-agentd-dev-macos.sh \
+  scripts/restart-agentd-dev-macos.sh \
+  scripts/restart-agentd-dev-handoff-macos.sh \
   scripts/verify-release.sh \
   docs/install-upgrade-rollback.md; do
   [[ -f "$required_file" ]] || fail "缺少 ${required_file}。"
@@ -33,11 +37,17 @@ done
 
 bash -n \
   scripts/check-release-prerequisites.sh \
+  scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
+  scripts/sign-agentd-dev-macos.sh \
+  scripts/restart-agentd-dev-macos.sh \
+  scripts/restart-agentd-dev-handoff-macos.sh \
   scripts/install-linux.sh \
   scripts/test-install-linux.sh \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
+bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
+bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null
 bash ./scripts/test-install-linux.sh >/dev/null
@@ -78,6 +88,12 @@ grep -Fqx '  replace_existing_artifacts: true' .goreleaser.yml \
   || fail "GoReleaser 必须允许 tap 失败后重跑同 tag 附件。"
 grep -Fq 'scripts/install-linux.sh' .goreleaser.yml \
   || fail "GoReleaser 归档没有包含 Linux 安装脚本。"
+grep -Fq 'envOrDefault "MIMI_MACOS_SIGNING" "disabled"' .goreleaser.yml \
+  || fail "GoReleaser 没有为正式 tag 启用 macOS 签名开关。"
+grep -Fq 'MACOS_SIGN_P12' .goreleaser.yml \
+  || fail "GoReleaser 没有接入 Developer ID 证书。"
+grep -Fq 'MACOS_NOTARY_KEY' .goreleaser.yml \
+  || fail "GoReleaser 没有接入 Apple notarization。"
 
 for workflow_file in .github/workflows/go-ci.yml .github/workflows/release.yml; do
   grep -Fq 'version: "v2.15.3"' "$workflow_file" \
@@ -87,6 +103,10 @@ grep -Fq 'GORELEASER_VERSION="2.15.3"' scripts/verify-release.sh \
   || fail "本地发布脚本的 GoReleaser 版本未固定为 v2.15.3。"
 grep -Fq 'bash ./scripts/check-release-prerequisites.sh' .github/workflows/release.yml \
   || fail "Release workflow 没有调用公开发布前置门禁。"
+grep -Fq 'bash ./scripts/check-macos-release-signing.sh' .github/workflows/release.yml \
+  || fail "Release workflow 没有在发布前校验 macOS 签名凭据。"
+grep -Fq 'MIMI_REQUIRE_MACOS_SIGNATURE: "1"' .github/workflows/release.yml \
+  || fail "Release workflow 没有对已发布 Darwin 归档执行签名门禁。"
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

@@ -161,10 +161,12 @@ agentd pair
 agentd doctor --fix
 agentd logs -n 200
 agentd restart
+agentd restart --no-pair
 agentd stop
 ```
 
 `agentd restart` 在 macOS 上使用 launchd 原子重启，允许从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
+自动化或远程日志场景使用 `--no-pair`，避免把二维码和长期访问码写入任务输出。
 
 Linux 使用 Release 归档中的 user-systemd 安装脚本，完整步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 
@@ -234,11 +236,29 @@ go run ./scripts/ipad-ws-probe.go \
 ```bash
 go test ./...
 go vet ./...
-go build -trimpath -o bin/agentd ./cmd/agentd
 
+# 前台调试，不替换 Homebrew 服务
+go build -trimpath -o bin/agentd ./cmd/agentd
 ./bin/agentd setup --scan-root "$HOME/code" --browse-root "$HOME"
 ./bin/agentd serve
 ```
+
+已经通过 Homebrew 运行 `agentd` 时，不要把未签名的 `go build` 产物直接覆盖到 Cellar。macOS 会把 Go 的 ad-hoc 签名绑定到本次构建的 `cdhash`，下一次编译后可能重新请求“文件与文件夹”或“完全磁盘访问”授权。使用仓库内的完整开发重启入口：
+
+```bash
+# 本机终端：等待新服务通过 readyz
+bash ./scripts/restart-agentd-dev-macos.sh
+
+# 从 iPad/Codex 远程发起：先交给独立 launchd job，再让旧连接退出
+bash ./scripts/restart-agentd-dev-macos.sh --no-wait
+
+# 重连后查看结果；失败会自动恢复旧二进制
+bash ./scripts/restart-agentd-dev-macos.sh --status
+```
+
+脚本使用本机 `Apple Development` 证书和固定 identifier 签名，原子替换 Homebrew 二进制，通过独立 launchd job 执行 kickstart、`readyz` 验证和失败回滚。新进程会在启动最前面异步预检项目、`scan_roots`、`browse_roots`；当 `browse_roots` 覆盖当前 Home 时，还会主动探测 Desktop、Documents、Downloads，尽早触发 macOS 的“文件与文件夹”提示。预检不会递归读取文件，也不会因等待人工点击而阻塞远程服务恢复；结果显示在 `agentd status --json` / Doctor 和服务日志中。
+
+macOS 没有可由后台服务自动申请的“整个当前用户目录”单一授权：Desktop、Documents、Downloads 是分开的保护位置，其他 App 数据等还需要“完全磁盘访问”。第一次从旧 ad-hoc 版本切换到稳定签名时仍可能要求最后一次人工确认；真正需要无人值守访问整个 Home 时，请在“系统设置 → 隐私与安全性 → 完全磁盘访问”中一次性添加 `/opt/homebrew/opt/mimi-remote/bin/agentd`。同一证书和 identifier 下的后续本地构建可以复用授权。详细设计和排障见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 
 ### iOS
 
@@ -285,11 +305,12 @@ bash ./scripts/check-codex-protocol.sh
 bash ./scripts/check-public-repo-safety.sh
 bash ./scripts/check-third-party-notices.sh
 bash ./scripts/check-ios-privacy-manifest.sh
+bash ./scripts/restart-agentd-dev-macos.sh --self-test
 bash ./scripts/verify-release.sh
 cargo test --locked -p alleycat-claude-bridge
 ```
 
-发布链路另外包含打包、Linux 安装、Git 历史凭据扫描、Action SHA 固定和协议漂移门禁，详见 [P0 / P1 发布清单](docs/p0-p1-roadmap.md)。
+正式 macOS Release 必须通过 Developer ID 签名和 Apple notarization；发布链路另外包含签名凭据预检、Darwin 归档身份校验、打包、Linux 安装、Git 历史凭据扫描、Action SHA 固定和协议漂移门禁，详见 [P0 / P1 发布清单](docs/p0-p1-roadmap.md)。
 
 ## 仓库说明
 

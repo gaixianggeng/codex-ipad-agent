@@ -29,6 +29,25 @@ func TestVersionDoesNotRequireConfig(t *testing.T) {
 	}
 }
 
+func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
+	fixture := prepareMainLegacyConfigFixture(t)
+	prepareBrewSideEffectProbe(t)
+	stdout, stderr, err := captureMainCommandOutput(t, func() error {
+		return run([]string{"agentd", "restart", "--wait", "0", "--no-pair"})
+	})
+	if err != nil {
+		t.Fatalf("restart --no-pair 失败：%v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "正在重启 Mimi Mac 助手") {
+		t.Fatalf("安全重启仍应输出进度：%q", stdout)
+	}
+	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
+		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+			t.Fatalf("restart --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
+		}
+	}
+}
+
 func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -782,6 +801,41 @@ func TestWaitForServiceReadyUsesBearerAndReadyz(t *testing.T) {
 	}
 	if requests.Load() < 2 {
 		t.Fatalf("503 时应继续等待 readyz，requests=%d", requests.Load())
+	}
+}
+
+func TestFetchServiceDoctorResultsUsesBearerAndReturnsStartupPreflight(t *testing.T) {
+	const token = "doctor-service-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/api/doctor" {
+			t.Errorf("服务端 Doctor 路径错误：%s", req.URL.Path)
+		}
+		if req.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(doctor.Results{
+			OK:      true,
+			Version: "1.2.3",
+			Checks: []doctor.Check{{
+				Name:    "file-access-preflight",
+				OK:      true,
+				Level:   "ok",
+				Message: "启动预检完成",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	results, err := fetchServiceDoctorResults(context.Background(), server.URL, token, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results.Checks) != 1 || results.Checks[0].Name != "file-access-preflight" {
+		t.Fatalf("status 必须保留服务启动期权限预检：%+v", results)
+	}
+	if _, err := fetchServiceDoctorResults(context.Background(), server.URL, "wrong-token", time.Second); err == nil {
+		t.Fatal("服务端 Doctor 必须使用外侧 Bearer Token")
 	}
 }
 

@@ -260,6 +260,7 @@ func runRestart(args []string) error {
 	fs := flag.NewFlagSet("restart", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	noPair := fs.Bool("no-pair", false, "重启成功后不输出二维码和长期访问码，适合远程自动化")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -289,7 +290,9 @@ func runRestart(args []string) error {
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已重新连接")
 	}
-	printServeConnection(os.Stdout, result)
+	if !*noPair {
+		printServeConnection(os.Stdout, result)
+	}
 	return nil
 }
 
@@ -334,6 +337,13 @@ func runStatus(args []string) error {
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
 	serviceStatus := probeAgentServiceStatus(context.Background(), result.Endpoint, result.Token, version, time.Second)
 	doctorResults := checker.Run(context.Background(), false)
+	if serviceStatus.Ready() {
+		// 服务端 Checker 持有本次启动的异步权限预检结果；CLI 临时创建的 Checker 没有。
+		// readyz 已通过时优先展示服务端状态，使 status 能准确反映重启后的权限预检。
+		if remoteResults, remoteErr := fetchServiceDoctorResults(context.Background(), result.Endpoint, result.Token, time.Second); remoteErr == nil {
+			doctorResults = remoteResults
+		}
+	}
 	status := serviceStatusFields(serviceStatus, result.Token)
 	status["version"] = version
 	status["endpoint"] = result.Endpoint
@@ -723,6 +733,9 @@ func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, err
 }
 
 func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker) error {
+	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
+	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
+	checker.StartFileAccessPreflight()
 	var appServerWSProcess *appserver.ManagedWebSocketProcess
 	if cfg.AppServer.Transport != "ws" {
 		return fmt.Errorf("当前 iPad 链路只支持 app_server.transport=ws")
@@ -1453,6 +1466,47 @@ func waitForServiceReady(ctx context.Context, endpoint string, token string, exp
 	return waitForServiceCheck(ctx, readyURL, strings.TrimSpace(token), "readyz", timeout, func(body io.Reader) error {
 		return validateReadyServiceVersion(body, expectedVersion)
 	})
+}
+
+func fetchServiceDoctorResults(ctx context.Context, endpoint string, token string, timeout time.Duration) (doctor.Results, error) {
+	if timeout <= 0 {
+		return doctor.Results{}, fmt.Errorf("doctor 请求超时必须大于 0")
+	}
+	doctorURL, err := serviceCheckURL(endpoint, "/api/doctor")
+	if err != nil {
+		return doctor.Results{}, err
+	}
+	requestContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestContext, http.MethodGet, doctorURL, nil)
+	if err != nil {
+		return doctor.Results{}, err
+	}
+	if value := strings.TrimSpace(token); value != "" {
+		req.Header.Set("Authorization", "Bearer "+value)
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return doctor.Results{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return doctor.Results{}, fmt.Errorf("doctor HTTP %d", resp.StatusCode)
+	}
+	var results doctor.Results
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 256*1024))
+	if err := decoder.Decode(&results); err != nil {
+		return doctor.Results{}, fmt.Errorf("doctor 响应不是有效 JSON：%w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return doctor.Results{}, fmt.Errorf("doctor 响应包含多个 JSON 值")
+		}
+		return doctor.Results{}, fmt.Errorf("doctor 响应包含畸形尾部数据：%w", err)
+	}
+	return results, nil
 }
 
 func waitForServiceCheck(ctx context.Context, checkURL string, token string, label string, timeout time.Duration, validate func(body io.Reader) error) error {

@@ -79,6 +79,12 @@ iPhone / iPad SwiftUI App
 go test ./...
 go build -o bin/agentd ./cmd/agentd
 
+# macOS Homebrew 服务的签名构建、独立重启和失败回滚
+bash ./scripts/restart-agentd-dev-macos.sh
+
+# 重启后 file-access-preflight 会优先探测配置目录；无人值守访问整个 Home 需一次性授予完全磁盘访问
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
 # Claude bridge
 cargo test --locked \
   -p alleycat-codex-proto \

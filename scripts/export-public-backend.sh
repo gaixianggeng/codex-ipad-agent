@@ -50,6 +50,7 @@ public_paths=(
   docs/tailscale-peer-relay-ops.md
   docs/terms-of-use.md
   scripts/check-codex-protocol.sh
+  scripts/check-macos-release-signing.sh
   scripts/check-packaging.sh
   scripts/check-public-repo-safety.sh
   scripts/check-release-artifacts.sh
@@ -61,6 +62,9 @@ public_paths=(
   scripts/ipad-ws-probe.go
   scripts/ipad_ws_probe_test.go
   scripts/test-install-linux.sh
+  scripts/sign-agentd-dev-macos.sh
+  scripts/restart-agentd-dev-macos.sh
+  scripts/restart-agentd-dev-handoff-macos.sh
   scripts/verify-release.sh
 )
 

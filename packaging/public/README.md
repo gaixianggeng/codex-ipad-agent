@@ -71,6 +71,16 @@ go build -trimpath -o bin/agentd ./cmd/agentd
 ./bin/agentd serve
 ```
 
+上面的命令用于前台调试。反复替换 macOS Homebrew 服务时，应使用稳定签名和可回滚的交接流水线，避免每次编译改变 `cdhash` 后丢失系统文件授权：
+
+```bash
+bash ./scripts/restart-agentd-dev-macos.sh
+
+# 从当前 agentd 托管的远程任务发起
+bash ./scripts/restart-agentd-dev-macos.sh --no-wait
+bash ./scripts/restart-agentd-dev-macos.sh --status
+```
+
 常用命令：
 
 ```bash
@@ -80,10 +90,16 @@ agentd pair --qr-only
 agentd doctor --fix
 agentd logs -n 200
 agentd restart
+agentd restart --no-pair
 agentd stop
 ```
 
 macOS 上的 `agentd restart` 使用 launchd 单次原子重启，可以从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
+`--no-pair` 用于自动化，避免在日志中输出长期访问码。
+
+每次服务启动时，`agentd` 都会优先异步预检 projects、`scan_roots`、`browse_roots`；当浏览根覆盖当前 Home 时，还会探测 Desktop、Documents、Downloads，尽早触发 macOS“文件与文件夹”提示。预检不递归读取内容，也不会因弹窗未处理而阻塞服务上线，结果可在 `agentd status --json`、Doctor 和日志中查看。
+
+授权 Home 顶层不等于授权 Home 内所有受保护位置。macOS 分别管理 Desktop、Documents、Downloads，“完全磁盘访问”还覆盖其他 App 数据、备份等。需要无人值守访问整个 Home 时，在“系统设置 → 隐私与安全性 → 完全磁盘访问”中一次性添加 `/opt/homebrew/opt/mimi-remote/bin/agentd`。
 
 ### Claude Code 可选通道
 

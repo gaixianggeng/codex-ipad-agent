@@ -21,6 +21,7 @@
 | Mac 一键启动 | 本轮完成本地闭环 | Homebrew 安装后运行 `agentd up`，自动生成配置和双 Token、启动服务、等待就绪并输出短期配对二维码。短期票据保留亚秒精度且在当前进程内只能成功兑换一次，并发重放会被拒绝；旧默认目录会无损迁移，自定义配置不会被后台服务误读。 |
 | 服务存活与就绪分离 | 本轮完成 | `/healthz` 只表示进程存活；`/api/readyz` 除 Doctor 静态检查外，还会使用独立 upstream Token 对 loopback Codex app-server 完成真实 WebSocket 握手，失败返回 503。探测使用 750ms 硬超时、成功/失败短缓存和并发 single-flight，避免 `up` 高频轮询反复建连；`up/start/restart` 通过前不展示二维码。`agentd status --json` 的 `process_ok` 对应存活，兼容字段 `service_ok` 改为真正就绪，Linux 安装/升级不会再把“端口活着但 Codex 不可用”误判为成功。 |
 | 安装、升级与回滚 | 本轮完成 | setup 的 config/upstream Token 双文件写入失败原子；正式版本 readyz 必须与当前 CLI 版本一致；macOS 使用 Homebrew，Linux Release 内置 user-systemd 安装脚本，升级失败会自动恢复旧二进制和 unit；安全卸载会先停止/禁用服务，只移除安装文件并保留整个配置与 Token 目录，从 Release 脚本重复确认时幂等。`agentd up/start/restart/stop/status/logs` 已按平台薄适配为 brew services 或 systemctl/journalctl，Linux 用户无需记忆另一套日常命令，也不新增 PID 或自建 daemon。Release 已创建但 tap 失败时可在不移动 tag 的前提下重跑同一 workflow。 |
+| macOS 稳定代码身份与文件授权 | 本轮完成代码闭环 | Doctor 会把 cdhash-only ad-hoc 二进制标记为 warning；开发脚本使用固定 identifier + Apple Development 签名，并通过独立 launchd job 完成替换、kickstart、readyz 验证和失败回滚。每次 serve 启动最前面异步预检 projects/scan/browse roots，Home 浏览根额外触发 Desktop、Documents、Downloads 探测，结果进入 Doctor 与日志但不阻塞远程控制面。无人值守访问整个 Home 仍需人工一次性授予完全磁盘访问。正式 GoReleaser 链路强制 Developer ID + Apple notarization，发布后重新解包两个 Darwin 归档校验 Authority、TeamIdentifier 和 designated requirement。 |
 | 敏感文件权限 | 本轮完成 | Doctor 检查配置和 app-server token 必须是当前用户私有 regular file；对已有文件只收紧到 `0600`，不会轮换；旧配置缺少独立 upstream Token 时才原子生成并只补 `ws_token_file`。 |
 | APP 凭据与弱网 | 本轮完成代码闭环 | Keychain/连接切换失败保留旧连接；清除配对先完成 Keychain 删除再提交 UserDefaults/内存状态，删除失败不会形成“默认地址 + 旧 Token”。忘记当前 Mac 和删除其它档案都先展示目标与重新配对影响，二次确认时重验 profile ID，避免旧弹窗误删后来切换的新当前档案。扫码相机权限拒绝/受限时提供系统设置和手动连接两个恢复动作，相机不可用或配置失败时也能选择回到原连接页并展开已有手动区域；权限与相机回调延后交回 SwiftUI，不增加后台相机能力。首次扫码、URL Scheme 和手动配对在凭据提交后统一复用冷启动恢复，最多等待 45 秒；修复或切换已有档案等待 10 秒。超时保留已提交凭据并展示无需重新扫码的可重试错误，不再误报“已连接”。REST/WS 401/鉴权 403 进入重新配对终态并停止重试；离线暂停轮询/WS，恢复只重连一次，瞬时失败使用 jitter + 30 秒上限。进入后台会主动退役旧 WebSocket 并保留会话、消息、排队 turn 与审批，回到前台后按网络状态只恢复一次。会话提醒在系统通知未授权时明确标记为仅 App 内保存，冷启动和回前台会清理已到期状态，不增加常驻 timer。提醒与运行态通知只携带版本/profile/project/session 路由，不含 Token 或明文 endpoint；点击后等待 bootstrap 完成，只打开当前 Mac 的会话，其他 Mac 仅提示手动切换档案。 |
 | HTTP 请求资源边界 | 本轮完成 | 全部 JSON handler 统一拒绝未知字段、第二个 JSON 值和超限尾部；未鉴权配对为 16 KiB、普通控制面为 256 KiB、12 MiB 原始语音对应的 JSON envelope 为 17 MiB。`Content-Length`、chunked 和伪造长度都返回通用 413，不回显请求内容。 |
@@ -28,7 +29,7 @@
 | iPad 诊断体验 | 本轮完成 | Doctor 页面结构化展示总状态、逐项检查和修复建议；保留可复制原始 JSON；非 2xx、超时和畸形响应进入明确错误态并可重试。当前会话日志可导出 ANSI 清洗后的有界 UTF-8 `.log`；头部只含生成时间、App 版本、会话 ID/标题和 Mac 显示名，不读取连接凭据。 |
 | Gateway 协议边界 | 已完成 | 当前只放行 23 个移动端需要的方法；`thread/search` 请求严格按 schema 重建，响应按 project、`browse_roots` 和 managed Worktree 的 cwd scope 逐条裁剪；反向 Server Request fail-closed；Review 仅允许 inline；Codex `0.144.2` 协议漂移由快照检查阻断。 |
 | PR 质量门禁 | 本轮完成配置 | Go/iOS/协议回归外，新增当前工作树 + Git 历史凭据扫描、Action SHA 固定、第三方许可证正文/版本门禁、隐私清单门禁。推送后仍需以 GitHub Actions 真实运行结果作为最终证据。 |
-| 公开二进制发布 | 本地链路已验证，外部准备未完成 | GoReleaser snapshot 已生成并校验 darwin/linux、amd64/arm64 四套归档、checksums 和 Homebrew Formula。正式发布前必须先完成下方外部仓库准备。 |
+| 公开二进制发布 | 本地 snapshot 链路已验证，Apple 凭据待配置 | GoReleaser snapshot 已生成并校验 darwin/linux、amd64/arm64 四套归档、checksums 和 Homebrew Formula；正式 tag 额外强制 Developer ID 签名与 notarization，缺少任何 Apple Secret 会在发布前置门禁失败。 |
 | 真机网络与 ATS | 已完成 iOS 27 模拟器 Tailscale 裸 IP 回归定位，真机完整验收待执行 | 2026-07-14 确认只保留 `NSAllowsLocalNetworking` 会导致 Tailscale 裸 IP HTTP 在发请求前被 ATS 以 `-1022` 拦截。系统层恢复 `NSAllowsArbitraryLoads`，设置提交、REST 和 WebSocket 仍由应用层统一拒绝公网 HTTP，CI 检查两层配置不再互相冲突。发布前仍需在真机上完成 Token 鉴权、前后台切换和 Wi-Fi/蜂窝弱网验收，并决定是否切换 MagicDNS HTTPS。 |
 
 ### P1：高频远程开发闭环
@@ -54,9 +55,10 @@
 2. `gaixianggeng/codex-ipad-agent` 为 **Public**，承载完整 iOS / Go 源码、测试和开发文档；
 3. `gaixianggeng/homebrew-tap` 为 **Public**，保证 Homebrew 用户不需 GitHub 认证；
 4. 主仓库 `TAP_DEPLOY_KEY` 只对应 Tap 的可写 Deploy Key，不复用维护者 PAT；
-5. Go CI、公开安全门禁和 Codex Protocol Drift 在公开仓库真实通过后，再创建 `v*` tag。
+5. 主仓库配置 Developer ID PKCS#12 和 App Store Connect Notary API 五项 Secrets；
+6. Go CI、公开安全门禁和 Codex Protocol Drift 在公开仓库真实通过后，再创建 `v*` tag。
 
-Release workflow 已加入前置闸门：它通过 GitHub API JSON 验证目标仓库名、主仓库与 Tap 均为 PUBLIC，再使用 Deploy Key 对 Tap `main` 执行 dry-run push 验证写权限；任一条件未准备好时，会在创建半成品 Release 前停止。本地可运行 `bash ./scripts/check-release-prerequisites.sh --self-test` 验证 JSON 判定逻辑，不访问 GitHub。
+Release workflow 已加入前置闸门：它通过 GitHub API JSON 验证目标仓库名、主仓库与 Tap 均为 PUBLIC，再使用 Deploy Key 对 Tap `main` 执行 dry-run push 验证写权限；随后验证 Developer ID PKCS#12 和 Notary API 凭据结构。任一条件未准备好时，会在创建半成品 Release 前停止。本地可运行 `bash ./scripts/check-release-prerequisites.sh --self-test` 和 `bash ./scripts/check-macos-release-signing.sh --self-test` 验证判定逻辑，不访问 GitHub 或 Apple。
 
 2026-07-14 已完成 Public 后端仓库、Public Tap 和 Tap 可写 Deploy Key；2026-07-17 决定把完整源码仓库一并公开。公开前必须完成当前工作树、全部 Git refs、提交身份、签名产物和截图审计。剩余发布门禁是公开仓库 Actions 全绿和首个 tag 发布验证；真机网络与交互验收由维护者后续手动执行。
 
@@ -73,6 +75,7 @@ bash ./scripts/check-ios-privacy-manifest.sh
 
 bash ./scripts/check-packaging.sh
 bash ./scripts/install-linux.sh --self-test
+bash ./scripts/restart-agentd-dev-macos.sh --self-test
 bash ./scripts/verify-release.sh
 ```
 

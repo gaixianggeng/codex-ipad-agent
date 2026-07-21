@@ -118,10 +118,12 @@ agentd pair
 agentd doctor --fix
 agentd logs -n 200
 agentd restart
+agentd restart --no-pair
 agentd stop
 ```
 
 On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
+Use `--no-pair` from automation so the restart output does not include a pairing QR code or the long-lived access token.
 
 For Linux installation and recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
 
@@ -158,11 +160,26 @@ xcodebuild \
 ```bash
 go test ./...
 go vet ./...
-go build -trimpath -o bin/agentd ./cmd/agentd
 
+# Foreground development; does not replace the Homebrew service.
+go build -trimpath -o bin/agentd ./cmd/agentd
 ./bin/agentd setup --scan-root "$HOME/code" --browse-root "$HOME"
 ./bin/agentd serve
 ```
+
+For repeated macOS testing against the installed Homebrew service, use the signed handoff pipeline instead of copying an ad-hoc Go binary into the Cellar:
+
+```bash
+bash ./scripts/restart-agentd-dev-macos.sh
+
+# When triggered from a remote Mimi task:
+bash ./scripts/restart-agentd-dev-macos.sh --no-wait
+bash ./scripts/restart-agentd-dev-macos.sh --status
+```
+
+It signs each development build with a stable Apple Development identity, hands the replacement to an independent launchd job, verifies readiness, and rolls back automatically. At the beginning of every service start, agentd asynchronously probes configured project, scan, and browse roots; a browse root covering the current Home also probes Desktop, Documents, and Downloads so macOS Files & Folders prompts appear before the first real task. The probe never recursively reads files and never blocks the remote control plane while waiting for a click.
+
+macOS does not provide one background-requestable permission for the entire user Home: Desktop, Documents, and Downloads are separate protected locations, while unattended access to other apps' data requires Full Disk Access. For that use case, add `/opt/homebrew/opt/mimi-remote/bin/agentd` once under System Settings → Privacy & Security → Full Disk Access. The first migration from an old ad-hoc build can still require one final approval.
 
 ## Claude Code bridge (experimental)
 
@@ -221,6 +238,7 @@ bash ./scripts/check-ios-localization.sh
 bash ./scripts/check-public-repo-safety.sh
 bash ./scripts/check-third-party-notices.sh
 bash ./scripts/check-ios-privacy-manifest.sh
+bash ./scripts/restart-agentd-dev-macos.sh --self-test
 bash ./scripts/verify-release.sh
 ```
 
