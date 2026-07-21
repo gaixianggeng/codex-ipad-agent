@@ -22,7 +22,6 @@ struct ComposerView: View {
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
@@ -82,8 +81,8 @@ struct ComposerView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        // 外层保持透明，由输入卡片承担唯一主表面；这样和首页“暖色底 + 白色浮层”的
-        // 层级一致，也避免状态提示、输入框和底部 dock 形成三层嵌套。
+        // 外层保持透明，由底部输入面板承担唯一主表面；面板内部依靠实色和间距分组，
+        // 不再叠加玻璃材质、键帽高光或投影。
         VStack(alignment: .leading, spacing: 10) {
             queuedTurnTray
             composerStatusTray
@@ -853,7 +852,14 @@ struct ComposerView: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity, minHeight: 44)
-                .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .modifier(
+                    ComposerFlatControlSurface(
+                        tokens: tokens,
+                        cornerRadius: 12,
+                        isEmphasized: false
+                    )
+                )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
@@ -865,21 +871,10 @@ struct ComposerView: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity)
-        .background {
-            if reduceTransparency {
-                shape.fill(tokens.inputBackground)
-            } else {
-                shape
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        shape.fill(tokens.inputBackground.opacity(colorScheme == .light ? 0.72 : 0.58))
-                    }
-            }
-        }
+        .background(tokens.elevatedSurface, in: shape)
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
-        .shadow(color: composerCardShadow(tokens), radius: 8, y: 3)
     }
 
     func composerCard(tokens: ThemeTokens) -> some View {
@@ -893,27 +888,11 @@ struct ComposerView: View {
         }
         .padding(composerCardPadding)
         .frame(maxWidth: .infinity)
-        .background {
-            if reduceTransparency {
-                shape.fill(tokens.inputBackground)
-            } else {
-                shape
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        shape.fill(tokens.inputBackground.opacity(colorScheme == .light ? 0.72 : 0.58))
-                    }
-            }
-        }
+        .background(tokens.elevatedSurface, in: shape)
         .tint(tokens.accent)
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
-        .shadow(color: composerCardShadow(tokens), radius: 8, y: 3)
-    }
-
-    func composerCardShadow(_ tokens: ThemeTokens) -> Color {
-        // 浅色只做很轻的悬浮感；深色适当提高阴影不透明度，避免输入卡融进暖黑背景。
-        Color.black.opacity(tokens.resolvedScheme == .light ? 0.07 : 0.24)
     }
 
     func composerTextArea(tokens: ThemeTokens) -> some View {
@@ -1448,14 +1427,14 @@ struct ComposerView: View {
                 .padding(.horizontal, usesCompactComposerMetrics ? 0 : 11)
                 .frame(minWidth: usesCompactComposerMetrics ? 44 : 76)
                 .background(
-                    isGuidedSelected ? tokens.accent.opacity(0.12) : tokens.elevatedSurface,
+                    isGuidedSelected ? tokens.accent.opacity(0.12) : tokens.surface,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
                 .modifier(
-                    ComposerKeycapSurface(
+                    ComposerFlatControlSurface(
                         tokens: tokens,
                         cornerRadius: 12,
-                        usesAccentSurface: isGuidedSelected
+                        isEmphasized: isGuidedSelected
                     )
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1847,7 +1826,6 @@ struct ComposerView: View {
         .overlay {
             Capsule().strokeBorder(tint.opacity(emphasized ? 0.4 : 0.32))
         }
-        .shadow(color: emphasized ? tint.opacity(0.12) : .clear, radius: 8, y: 2)
         .fixedSize(horizontal: true, vertical: false)
         .transition(.scale(scale: 0.9).combined(with: .opacity))
     }

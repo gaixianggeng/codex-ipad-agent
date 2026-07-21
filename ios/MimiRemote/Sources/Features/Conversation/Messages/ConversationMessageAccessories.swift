@@ -64,7 +64,8 @@ struct SystemNotice: View {
 
     var body: some View {
         noticeSurface
-            .contentShape(Capsule())
+            .contentShape(.interaction, Capsule())
+            .contentShape(.contextMenuPreview, Capsule())
             .messageContextMenu(for: message)
             .frame(maxWidth: layout.systemMaxWidth)
     }
@@ -95,7 +96,8 @@ struct RuntimeSummaryCard: View {
 
     var body: some View {
         cardSurface
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(.interaction, RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 8, style: .continuous))
             .messageContextMenu(for: message)
             .frame(maxWidth: cardMaxWidth, alignment: .leading)
     }
@@ -381,77 +383,16 @@ struct RuntimeSummaryCard: View {
     }
 }
 
-struct MessageContextMenuPreview: View {
-    let message: ConversationMessage
-    let style: MessageContextMenuPreviewStyle
-
-    static let maximumCharacterCount = 600
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-
-        Text(Self.displayText(for: message.content))
-            .font(style.font)
-            .foregroundStyle(style.foreground)
-            .lineLimit(8)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            // 预览只重建轻量纯文本，避免复杂 Markdown 和图片在 iPadOS 的
-            // context menu 转场中被重复渲染，同时让系统按内容宽度摆放菜单。
-            .frame(maxWidth: 520, alignment: .leading)
-            .background(style.background, in: shape)
-            .overlay {
-                shape.strokeBorder(style.border.opacity(0.42), lineWidth: 1)
-            }
-            .contentShape(.contextMenuPreview, shape)
-    }
-
-    static func displayText(for content: String) -> String {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return L10n.text("ui.content")
-        }
-
-        let candidate = trimmed.prefix(maximumCharacterCount + 1)
-        guard candidate.count > maximumCharacterCount else {
-            return trimmed
-        }
-        return String(candidate.prefix(maximumCharacterCount)) + "…"
-    }
-
-}
-
-struct MessageContextMenuPreviewStyle {
-    let font: Font
-    let foreground: Color
-    let background: Color
-    let border: Color
-}
-
 private struct MessageContextMenuModifier: ViewModifier {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-
     let message: ConversationMessage
     let retry: (() -> Void)?
     let stop: (() -> Void)?
 
     func body(content: Content) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        // context menu 的 preview 会被系统放进独立宿主，不能依赖原消息树继续提供
-        // EnvironmentObject。这里先把主题解析成普通值，预览闭包只捕获稳定样式。
-        let previewStyle = MessageContextMenuPreviewStyle(
-            font: themeStore.uiFont(.body),
-            foreground: message.role == .user ? tokens.userBubbleForeground : tokens.primaryText,
-            background: previewBackground(tokens: tokens),
-            border: tokens.border
-        )
-
-        // interaction 形状由各消息表面自行定义；这里单独约束系统抬起动画的预览形状，
-        // 避免 List 的全宽宿主行参与 context menu 转场。
+        // 菜单只提供动作，预览由系统直接从调用处的真实消息表面生成。
+        // 各表面通过 .contentShape(.contextMenuPreview, ...) 声明自己的边界，
+        // 避免维护第二套会与 Markdown、图片和流式高度脱节的“假气泡”。
         content
-            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18, style: .continuous))
             .contextMenu {
                 Button {
                     UIPasteboard.general.string = message.content
@@ -470,20 +411,7 @@ private struct MessageContextMenuModifier: ViewModifier {
                         Label(L10n.text("ui.stop"), systemImage: "stop.circle")
                     }
                 }
-            } preview: {
-                MessageContextMenuPreview(message: message, style: previewStyle)
             }
-    }
-
-    private func previewBackground(tokens: ThemeTokens) -> Color {
-        switch message.role {
-        case .user:
-            return tokens.userBubble
-        case .assistant:
-            return tokens.assistantBubble
-        case .system:
-            return tokens.systemBubble
-        }
     }
 }
 

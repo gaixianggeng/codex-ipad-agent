@@ -49,7 +49,7 @@ struct MessageRow: View, Equatable {
         HStack(spacing: 0) {
             Spacer(minLength: layout.messageSideSpacer)
             VStack(alignment: .trailing, spacing: 3) {
-                MessageBubble(
+                ConversationMessageContent(
                     message: message,
                     layout: layout,
                     skills: skills,
@@ -67,7 +67,7 @@ struct MessageRow: View, Equatable {
             if message.kind == .commentary {
                 ConversationCommentaryRow(message: message, layout: layout, stop: stop)
             } else {
-                MessageBubble(
+                ConversationMessageContent(
                     message: message,
                     layout: layout,
                     skills: skills,

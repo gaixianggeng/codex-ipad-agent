@@ -39,7 +39,7 @@ echo "==> iOS conversation regressions"
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
 # - ConversationDataFlowTests：Composer、SessionStore、direct app-server、断线/重试/滚动状态。
 # - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
-# - ConversationSnapshotTests：过程组折叠与 commentary 邻接的关键视觉回归。
+# - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和过程组的关键视觉回归。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 对应的 HTTP/HTTPS 传输策略。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
@@ -52,6 +52,10 @@ xcodebuild test -quiet \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests \
   -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testConversationBubbleAlignment \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testDefaultDarkConversationPalette \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testRichMarkdownConversationRendering \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testMixedActivityAndImageConversationRendering \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingProcessRendering \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testExpandedProcessGroupRendering \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \

@@ -1,7 +1,7 @@
 import QuickLook
 import SwiftUI
 
-struct MessageBubble: View {
+struct ConversationMessageContent: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
@@ -18,11 +18,13 @@ struct MessageBubble: View {
         Group {
             if shouldRenderUserImages {
                 userImageBubbleSurface
+            } else if isAssistantDocument {
+                assistantDocumentSurface
             } else {
                 bubbleSurface
             }
         }
-            .frame(maxWidth: maxBubbleWidth, alignment: bubbleAlignment)
+            .frame(maxWidth: maxContentWidth, alignment: contentAlignment)
             .opacity(message.sendStatus == .sending ? 0.72 : 1)
             .quickLookPreview($previewURL)
     }
@@ -36,7 +38,8 @@ struct MessageBubble: View {
             tokens: tokens
         )
         return userImageContent(style: style)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(.interaction, RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 12, style: .continuous))
             .messageContextMenu(
                 for: message,
                 retry: {
@@ -47,9 +50,11 @@ struct MessageBubble: View {
     }
 
     private var bubbleSurface: some View {
-        bubbleChrome
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        return bubbleChrome
             // 长按菜单必须锚定在实际气泡上，不能挂到外层全宽行，否则 iPad 上菜单预览会撑满整行。
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(.interaction, shape)
+            .contentShape(.contextMenuPreview, shape)
             .messageContextMenu(
                 for: message,
                 retry: {
@@ -57,6 +62,33 @@ struct MessageBubble: View {
                 },
                 stop: stop
             )
+    }
+
+    private var assistantDocumentSurface: some View {
+        let shape = Rectangle()
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            // 助手回复是持续生长的 Markdown 文档，不再额外包一层气泡。
+            // 内容仍走原有 MessageRenderPlanCache，流式增量解析和稳定块复用保持不变。
+            renderContent
+
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                MessageTimestampCaption(
+                    text: message.timestampCaptionText,
+                    isFallback: message.isTimestampFallback
+                )
+            }
+        }
+        .foregroundStyle(tokens.primaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.interaction, shape)
+        .contentShape(.contextMenuPreview, shape)
+        .messageContextMenu(
+            for: message,
+            stop: stop
+        )
     }
 
     private var bubbleChrome: some View {
@@ -93,7 +125,7 @@ struct MessageBubble: View {
             userImageContent(style: style)
         } else if shouldRenderStructuredUserPayload {
             structuredUserContent(style: style)
-        } else if shouldRenderMarkdown {
+        } else if isAssistantDocument {
             let plan = MessageRenderPlanCache.shared.plan(for: message)
             let references = fileReferences
             if references.isEmpty {
@@ -201,7 +233,7 @@ struct MessageBubble: View {
         }
     }
 
-    private var shouldRenderMarkdown: Bool {
+    private var isAssistantDocument: Bool {
         message.role == .assistant && message.kind == .message
     }
 
@@ -370,7 +402,7 @@ struct MessageBubble: View {
     }
 
     private var fileReferences: [ConversationFileReference] {
-        guard shouldRenderMarkdown, message.sendStatus != .sending else {
+        guard isAssistantDocument, message.sendStatus != .sending else {
             return []
         }
         return ConversationFileReferenceDetector.references(in: message.content)
@@ -404,11 +436,11 @@ struct MessageBubble: View {
         return error.localizedDescription
     }
 
-    private var bubbleAlignment: Alignment {
+    private var contentAlignment: Alignment {
         message.role == .user ? .trailing : .leading
     }
 
-    private var maxBubbleWidth: CGFloat {
+    private var maxContentWidth: CGFloat {
         message.role == .user ? layout.userBubbleMaxWidth : layout.assistantBubbleMaxWidth
     }
 

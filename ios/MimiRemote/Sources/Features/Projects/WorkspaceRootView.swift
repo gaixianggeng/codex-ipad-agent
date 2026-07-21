@@ -24,12 +24,12 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var systemImage: String {
+    var brandAssetName: String {
         switch self {
         case .codex:
-            return "plus.circle"
+            return "OpenAI"
         case .claude:
-            return "sparkles"
+            return "Claude"
         }
     }
 
@@ -625,9 +625,8 @@ private struct WorkspaceDetailView: View {
             LazyVGrid(columns: actionColumns, spacing: 12) {
                 ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                     actionButton(
-                        title: choice.title,
+                        choice: choice,
                         subtitle: choice == .codex ? L10n.text("ui.start_using_the_default_runtime") : L10n.text("ui.get_started_with_the_claude_code_runtime"),
-                        systemImage: choice.systemImage,
                         emphasis: choice == .codex ? .primary : .accented,
                         tokens: tokens
                     ) {
@@ -653,9 +652,8 @@ private struct WorkspaceDetailView: View {
     }
 
     private func actionButton(
-        title: String,
+        choice: WorkspaceSessionRuntimeChoice,
         subtitle: String? = nil,
-        systemImage: String,
         emphasis: WorkspaceActionEmphasis,
         tokens: ThemeTokens,
         action: @escaping () -> Void
@@ -667,15 +665,18 @@ private struct WorkspaceDetailView: View {
 
         return Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(themeStore.uiFont(size: 17, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(foreground)
+                // 品牌图形保持原始单色/品牌色，不跟随主题 tint，避免再次退化成通用 SF Symbol。
+                Image(choice.brandAssetName)
+                    .resizable()
+                    .renderingMode(.original)
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
                     .frame(width: 38, height: 38)
-                    .background(actionIconBackground(emphasis: emphasis, tokens: tokens), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .background(actionIconBackground(choice: choice, emphasis: emphasis), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
+                    Text(choice.title)
                         .font(themeStore.uiFont(.callout, weight: .semibold))
                         .foregroundStyle(foreground)
                         .lineLimit(1)
@@ -720,12 +721,17 @@ private struct WorkspaceDetailView: View {
         }
     }
 
-    private func actionIconBackground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
-        switch emphasis {
-        case .primary:
-            return tokens.primaryActionForeground.opacity(0.15)
-        case .accented:
-            return tokens.accentSoft
+    private func actionIconBackground(
+        choice: WorkspaceSessionRuntimeChoice,
+        emphasis: WorkspaceActionEmphasis
+    ) -> Color {
+        switch choice {
+        case .codex:
+            // OpenAI Blossom 是黑色单色标识，需要稳定的浅色承载面才能跨主题保持原形与对比度。
+            return Color.white.opacity(emphasis == .primary ? 0.94 : 0.88)
+        case .claude:
+            // Claude 标识使用官方陶土色；暖白底只承担可读性，不把品牌色铺满整个操作按钮。
+            return Color(red: 0.973, green: 0.949, blue: 0.914)
         }
     }
 

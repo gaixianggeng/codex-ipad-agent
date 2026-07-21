@@ -40,14 +40,14 @@ struct ComposerToolbarControlLabel: View {
         .padding(.horizontal, title == nil ? 0 : 12)
         .frame(minWidth: 44)
         .background(
-            isSelected ? tokens.accent : tokens.elevatedSurface,
+            isSelected ? tokens.accent : tokens.surface,
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .modifier(
-            ComposerKeycapSurface(
+            ComposerFlatControlSurface(
                 tokens: tokens,
                 cornerRadius: 12,
-                usesAccentSurface: isSelected
+                isEmphasized: isSelected
             )
         )
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -359,14 +359,14 @@ extension ComposerView {
             .padding(.horizontal, showLabels ? 18 : 0)
             .frame(minWidth: 44)
             .background(
-                enabled ? tokens.primaryAction : tokens.elevatedSurface,
+                enabled ? tokens.primaryAction : tokens.surface,
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
             .modifier(
-                ComposerKeycapSurface(
+                ComposerFlatControlSurface(
                     tokens: tokens,
                     cornerRadius: 12,
-                    usesAccentSurface: enabled
+                    isEmphasized: enabled
                 )
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

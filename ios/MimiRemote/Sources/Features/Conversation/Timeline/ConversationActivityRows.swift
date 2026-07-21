@@ -162,6 +162,8 @@ struct ConversationActivityRow: View, Equatable {
     var body: some View {
         HStack(spacing: 0) {
             rowSurface
+                .contentShape(.interaction, Rectangle())
+                .contentShape(.contextMenuPreview, Rectangle())
                 .messageContextMenu(for: message)
                 .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
 

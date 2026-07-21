@@ -107,7 +107,8 @@ enum ThemePreset: String, CaseIterable, Identifiable {
         case .github:
             return Color(red: 0.03, green: 0.41, blue: 0.85)
         case .xcode:
-            return Color(red: 0.00, green: 0.48, blue: 1.00)
+            // Xcode Default (Dark) 的 keyword 粉色配合编辑器底色，比通用系统蓝更容易识别这个预设。
+            return Color(red: 0.988394, green: 0.37355, blue: 0.638329)
         case .gruvbox:
             return Color(red: 0.84, green: 0.55, blue: 0.22)
         }
@@ -120,7 +121,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
         case .github:
             return Color(red: 0.96, green: 0.97, blue: 0.98)
         case .xcode:
-            return Color(red: 0.95, green: 0.97, blue: 0.99)
+            return Color(red: 0.120543, green: 0.122844, blue: 0.141312)
         case .gruvbox:
             return Color(red: 0.20, green: 0.19, blue: 0.16)
         }
@@ -619,64 +620,66 @@ final class ThemeStore: ObservableObject {
     }
 
     private var xcodeLightTokens: ThemeTokens {
-        // Xcode 预设按编辑器体验处理：浅色代码区保持明亮，蓝色负责选中/焦点/语音态，橙绿负责状态点缀。
+        // 直接对齐 Xcode Default (Light) 的编辑器、当前行、选区、注释和 markup 色；
+        // UI 层只补一档中性导航器灰，避免整套主题退化成“灰底 + 系统蓝”。
         ThemeTokens(
             preset: .xcode,
             resolvedScheme: .light,
-            background: Color(red: 0.96, green: 0.97, blue: 0.98),
+            background: Color(red: 0.96, green: 0.96, blue: 0.96),
             surface: Color(red: 1.00, green: 1.00, blue: 1.00),
-            elevatedSurface: Color(red: 0.92, green: 0.94, blue: 0.96),
-            userBubble: Color(red: 0.00, green: 0.48, blue: 1.00).opacity(0.15),
+            elevatedSurface: Color(red: 0.925, green: 0.929, blue: 0.937),
+            userBubble: Color(red: 0.909804, green: 0.94902, blue: 1.00),
             assistantBubble: Color(red: 1.00, green: 1.00, blue: 1.00),
-            systemBubble: Color(red: 0.94, green: 0.96, blue: 0.98),
-            codeBlock: Color(red: 0.98, green: 0.99, blue: 1.00),
-            codeText: Color(red: 0.07, green: 0.09, blue: 0.13),
-            primaryText: Color(red: 0.10, green: 0.11, blue: 0.13),
-            secondaryText: Color(red: 0.35, green: 0.38, blue: 0.43),
-            tertiaryText: Color(red: 0.51, green: 0.55, blue: 0.61),
+            systemBubble: Color(red: 0.96, green: 0.96, blue: 0.96),
+            codeBlock: Color(red: 1.00, green: 1.00, blue: 1.00),
+            codeText: Color.black.opacity(0.85),
+            primaryText: Color.black.opacity(0.85),
+            secondaryText: Color(red: 0.36526, green: 0.421879, blue: 0.475154),
+            tertiaryText: Color(red: 0.50, green: 0.53, blue: 0.57),
             accent: Color(red: 0.00, green: 0.48, blue: 1.00),
-            warning: Color(red: 1.00, green: 0.58, blue: 0.00),
-            success: Color(red: 0.12, green: 0.72, blue: 0.30),
-            goalActive: Color(red: 0.00, green: 0.44, blue: 0.86),
-            voiceRecording: Color(red: 0.00, green: 0.46, blue: 0.92),
+            warning: Color(red: 0.937255, green: 0.717647, blue: 0.34902),
+            success: Color(red: 0.152941, green: 0.494118, blue: 0.117647),
+            goalActive: Color(red: 0.607592, green: 0.137526, blue: 0.576284),
+            voiceRecording: Color(red: 0.0588235, green: 0.407843, blue: 0.627451),
             voiceWaveformGradient: [
-                Color(red: 0.28, green: 0.68, blue: 1.00),
-                Color(red: 0.00, green: 0.48, blue: 1.00),
-                Color(red: 0.00, green: 0.34, blue: 0.78)
+                Color(red: 0.194184, green: 0.429349, blue: 0.454553),
+                Color(red: 0.0588235, green: 0.407843, blue: 0.627451),
+                Color(red: 0.607592, green: 0.137526, blue: 0.576284)
             ],
-            border: Color(red: 0.80, green: 0.83, blue: 0.87),
-            selectionFill: Color(red: 0.00, green: 0.48, blue: 1.00).opacity(0.13)
+            border: Color(red: 0.8832, green: 0.8832, blue: 0.8832),
+            selectionFill: Color(red: 0.909804, green: 0.94902, blue: 1.00)
         )
     }
 
     private var xcodeDarkTokens: ThemeTokens {
-        // 深色 Xcode 更接近原生编辑器的中性石墨色，避免整套界面被蓝色背景吞掉。
+        // Xcode Default (Dark) 的编辑器背景并非纯黑，而是带极轻蓝相的 #1F1F24；
+        // markup 面板、边框、选区和语法色继续使用同一套官方色值，建立真实的编辑器层级。
         ThemeTokens(
             preset: .xcode,
             resolvedScheme: .dark,
-            background: Color(red: 0.11, green: 0.12, blue: 0.13),
-            surface: Color(red: 0.14, green: 0.15, blue: 0.16),
-            elevatedSurface: Color(red: 0.18, green: 0.19, blue: 0.21),
-            userBubble: Color(red: 0.04, green: 0.52, blue: 1.00).opacity(0.30),
-            assistantBubble: Color(red: 0.13, green: 0.14, blue: 0.15),
-            systemBubble: Color(red: 0.17, green: 0.18, blue: 0.20),
-            codeBlock: Color(red: 0.10, green: 0.10, blue: 0.11),
-            codeText: Color(red: 0.94, green: 0.95, blue: 0.97),
-            primaryText: Color(red: 0.94, green: 0.95, blue: 0.96),
-            secondaryText: Color(red: 0.70, green: 0.72, blue: 0.76),
-            tertiaryText: Color(red: 0.50, green: 0.53, blue: 0.58),
-            accent: Color(red: 0.04, green: 0.52, blue: 1.00),
-            warning: Color(red: 1.00, green: 0.62, blue: 0.04),
-            success: Color(red: 0.19, green: 0.82, blue: 0.35),
-            goalActive: Color(red: 0.35, green: 0.68, blue: 1.00),
-            voiceRecording: Color(red: 0.42, green: 0.70, blue: 1.00),
+            background: Color(red: 0.120543, green: 0.122844, blue: 0.141312),
+            surface: Color(red: 0.138526, green: 0.146864, blue: 0.169283),
+            elevatedSurface: Color(red: 0.18856, green: 0.195, blue: 0.22444),
+            userBubble: Color(red: 0.317647, green: 0.356862, blue: 0.439215),
+            assistantBubble: Color(red: 0.138526, green: 0.146864, blue: 0.169283),
+            systemBubble: Color(red: 0.18856, green: 0.195, blue: 0.22444),
+            codeBlock: Color(red: 0.120543, green: 0.122844, blue: 0.141312),
+            codeText: Color.white.opacity(0.85),
+            primaryText: Color.white.opacity(0.94),
+            secondaryText: Color(red: 0.423943, green: 0.474618, blue: 0.525183),
+            tertiaryText: Color(red: 0.258298, green: 0.300954, blue: 0.355207),
+            accent: Color(red: 0.330191, green: 0.511266, blue: 0.998589),
+            warning: Color(red: 0.937255, green: 0.717647, blue: 0.34902),
+            success: Color(red: 0.309804, green: 0.788235, blue: 0.254902),
+            goalActive: Color(red: 0.988394, green: 0.37355, blue: 0.638329),
+            voiceRecording: Color(red: 0.362946, green: 0.846428, blue: 0.998966),
             voiceWaveformGradient: [
-                Color(red: 0.62, green: 0.84, blue: 1.00),
-                Color(red: 0.04, green: 0.52, blue: 1.00),
-                Color(red: 0.18, green: 0.46, blue: 0.88)
+                Color(red: 0.362946, green: 0.846428, blue: 0.998966),
+                Color(red: 0.631373, green: 0.403922, blue: 0.901961),
+                Color(red: 0.988394, green: 0.37355, blue: 0.638329)
             ],
-            border: Color(red: 0.25, green: 0.26, blue: 0.29),
-            selectionFill: Color(red: 0.04, green: 0.52, blue: 1.00).opacity(0.21)
+            border: Color(red: 0.253475, green: 0.2594, blue: 0.286485),
+            selectionFill: Color(red: 0.317647, green: 0.356862, blue: 0.439215)
         )
     }
 

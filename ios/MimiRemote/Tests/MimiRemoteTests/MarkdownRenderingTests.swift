@@ -1,40 +1,8 @@
 import XCTest
-import SwiftUI
-import UIKit
 @testable import MimiRemote
 
 @MainActor
 final class MarkdownRenderingTests: XCTestCase {
-    func testMessageContextMenuPreviewTextIsTrimmedAndBounded() {
-        XCTAssertEqual(
-            MessageContextMenuPreview.displayText(for: "  可复制内容\n"),
-            "可复制内容"
-        )
-
-        let longContent = String(repeating: "测", count: MessageContextMenuPreview.maximumCharacterCount + 1)
-        let preview = MessageContextMenuPreview.displayText(for: longContent)
-
-        XCTAssertEqual(preview.count, MessageContextMenuPreview.maximumCharacterCount + 1)
-        XCTAssertTrue(preview.hasSuffix("…"))
-    }
-
-    func testMessageContextMenuPreviewRendersWithoutThemeEnvironmentObject() {
-        let message = ConversationMessage(role: .assistant, content: "独立预览")
-        let preview = MessageContextMenuPreview(
-            message: message,
-            style: MessageContextMenuPreviewStyle(
-                font: .body,
-                foreground: .primary,
-                background: .white,
-                border: .gray
-            )
-        )
-        let host = UIHostingController(rootView: preview)
-        let fittingSize = host.sizeThatFits(in: CGSize(width: 320, height: 160))
-
-        XCTAssertGreaterThan(fittingSize.height, 0)
-    }
-
     func testMarkdownParserBuildsGFMBlocks() {
         let result = MarkdownParser.shared.parse("""
         # 标题

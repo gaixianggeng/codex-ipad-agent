@@ -240,30 +240,46 @@ final class ThemeStoreTests: XCTestCase {
 
         let lightTokens = store.tokens(for: .light)
         let darkTokens = store.tokens(for: .dark)
+        let lightBackground = rgba(lightTokens.background)
+        let lightUserBubble = rgba(lightTokens.userBubble)
         let lightCodeBlock = rgba(lightTokens.codeBlock)
         let lightCodeText = rgba(lightTokens.codeText)
         let darkBackground = rgba(darkTokens.background)
+        let darkElevatedSurface = rgba(darkTokens.elevatedSurface)
+        let darkUserBubble = rgba(darkTokens.userBubble)
         let darkCodeBlock = rgba(darkTokens.codeBlock)
+        let darkBorder = rgba(darkTokens.border)
         let accent = rgba(lightTokens.accent)
         let warning = rgba(lightTokens.warning)
         let success = rgba(darkTokens.success)
+        let swatchBackground = rgba(ThemePreset.xcode.swatchBackground)
+        let swatchForeground = rgba(ThemePreset.xcode.swatchForeground)
 
-        XCTAssertGreaterThan(lightCodeBlock.red, 0.95)
-        XCTAssertGreaterThan(lightCodeBlock.green, 0.96)
-        XCTAssertGreaterThan(lightCodeBlock.blue, 0.98)
+        // Xcode 浅色编辑器是纯白代码区，外层 markup 区为 #F5F5F5，当前行使用 #E8F2FF。
+        assertRGB(lightBackground, red: 245, green: 245, blue: 245)
+        assertRGB(lightCodeBlock, red: 255, green: 255, blue: 255)
+        assertRGB(lightUserBubble, red: 232, green: 242, blue: 255)
         XCTAssertLessThan(lightCodeText.red, 0.15)
         XCTAssertLessThan(lightCodeText.green, 0.15)
         XCTAssertLessThan(lightCodeText.blue, 0.18)
 
-        XCTAssertLessThan(abs(darkBackground.red - darkBackground.blue), 0.04)
-        XCTAssertLessThan(abs(darkCodeBlock.red - darkCodeBlock.blue), 0.03)
+        // 深色层级来自 Xcode Default (Dark)：编辑器 #1F1F24、markup #303239、选区 #515B70。
+        assertRGB(darkBackground, red: 31, green: 31, blue: 36)
+        assertRGB(darkCodeBlock, red: 31, green: 31, blue: 36)
+        assertRGB(darkElevatedSurface, red: 48, green: 50, blue: 57)
+        assertRGB(darkUserBubble, red: 81, green: 91, blue: 112)
+        assertRGB(darkBorder, red: 65, green: 66, blue: 73)
 
         XCTAssertGreaterThan(accent.blue, 0.95)
         XCTAssertGreaterThan(accent.green, 0.45)
-        XCTAssertGreaterThan(warning.red, 0.95)
-        XCTAssertLessThan(warning.blue, 0.10)
+        XCTAssertGreaterThan(warning.red, 0.90)
+        XCTAssertGreaterThan(warning.green, 0.65)
         XCTAssertGreaterThan(success.green, success.red)
         XCTAssertGreaterThan(success.green, success.blue)
+
+        // 色卡用 Xcode 深色编辑器 + keyword 粉色，避免看起来像普通蓝色主题。
+        assertRGB(swatchBackground, red: 31, green: 31, blue: 36)
+        assertRGB(swatchForeground, red: 252, green: 95, blue: 163)
     }
 
     func testGitHubPresetProvidesLightAndDarkTokens() {

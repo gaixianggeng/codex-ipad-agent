@@ -11,7 +11,8 @@ struct ConversationCommentaryRow: View {
     var body: some View {
         commentaryBody
             .frame(maxWidth: layout.assistantBubbleMaxWidth, alignment: .leading)
-            .contentShape(Rectangle())
+            .contentShape(.interaction, Rectangle())
+            .contentShape(.contextMenuPreview, Rectangle())
             .messageContextMenu(
                 for: message,
                 retry: {},
