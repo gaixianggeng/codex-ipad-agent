@@ -26,6 +26,7 @@
 		1D2A6A134E0E732CBE28ED65 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 8CAEACFD2E2425D3DAFDF904 /* THIRD_PARTY_NOTICES.md */; };
 		2097CA31FCDA705B4E41DFB2 /* ComposerState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 207244025842AC17EBFA9009 /* ComposerState.swift */; };
 		217C4D1F6988BDFF59701290 /* ConversationTimelineCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9780397FF2CE07EEB329D676 /* ConversationTimelineCache.swift */; };
+		2189CFD030284E19F7D529A5 /* AppleSpeechTranscription.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54B6ABD26B1F0BF1FE75C0C4 /* AppleSpeechTranscription.swift */; };
 		23AA3B5B65DB2FF5D2EFFD87 /* DataURLImageDecoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECFE36A2B8257E443C9824FD /* DataURLImageDecoderTests.swift */; };
 		25ED4420B6E48AB3E087E472 /* MarkdownBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B8AB5E7FA65B685CDFF988 /* MarkdownBlockView.swift */; };
 		26187C1CD9C32B84B41153D0 /* WorkbenchChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 934C51BEAFE68A6631D0331F /* WorkbenchChrome.swift */; };
@@ -109,6 +110,7 @@
 		B30C71B98AEF44473D80C926 /* ConversationTimelineModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F22DB51885C0903C5E9212F9 /* ConversationTimelineModels.swift */; };
 		B3E17563D5323481613A696A /* ComposerStatusViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 224DF99AA12F1A2C7C14E2BF /* ComposerStatusViews.swift */; };
 		B5A6D5A8CAFAD90567772AED /* ImageAttachmentEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E86C009EEF7D400DE35ADBD1 /* ImageAttachmentEncoder.swift */; };
+		B5BAC2CFD69E8F6E30996369 /* VoiceInputPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */; };
 		B5BB3BBE3B50E66A5C6A081F /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 135E8C33C50F8EF2A9F9D9F1 /* Markdown */; };
 		B7F45B51F9933CD5BED26A48 /* testComposerStatusTrayIPadMiniLandscapeDetailWidth.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 495CF4F9BDB35ED685F879F7 /* testComposerStatusTrayIPadMiniLandscapeDetailWidth.1.png */; };
 		B7FA427B42C52F695B6DDD28 /* CodexAppServerEventProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0764989DE2B4FAEF1543FF5 /* CodexAppServerEventProjection.swift */; };
@@ -187,6 +189,7 @@
 		1C6FA730D92E0B37BC0393F0 /* ConversationActivityRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityRows.swift; sourceTree = "<group>"; };
 		1F63FE197E70AD192F429877 /* ThemeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStore.swift; sourceTree = "<group>"; };
 		1F803BE24EB9F6963792C11C /* ConversationWorkspaceHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWorkspaceHistoryTests.swift; sourceTree = "<group>"; };
+		1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputPreferences.swift; sourceTree = "<group>"; };
 		207244025842AC17EBFA9009 /* ComposerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerState.swift; sourceTree = "<group>"; };
 		20A922D9A3D4C72236D9CFBA /* ConversationTimelineReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineReducer.swift; sourceTree = "<group>"; };
 		217673AA52B0B8FABD51F67F /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
@@ -229,6 +232,7 @@
 		53A4A2B3A4B718F54CB4F8AE /* ModelReasoningGridPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelReasoningGridPicker.swift; sourceTree = "<group>"; };
 		542EA92F5AE167370704AB59 /* MimiRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MimiRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		546D87E0EF8B0482759115F4 /* testComposerStatusTrayExpandedWideState.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayExpandedWideState.1.png; sourceTree = "<group>"; };
+		54B6ABD26B1F0BF1FE75C0C4 /* AppleSpeechTranscription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechTranscription.swift; sourceTree = "<group>"; };
 		554F31B0074B97074AE97B31 /* AppExternalLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppExternalLinksTests.swift; sourceTree = "<group>"; };
 		5591601BA7CA64C8C0CF7931 /* direct_app_server_approval_stream.jsonl */ = {isa = PBXFileReference; path = direct_app_server_approval_stream.jsonl; sourceTree = "<group>"; };
 		5C87937DA9D34D00853E635B /* DataURLImageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataURLImageDecoder.swift; sourceTree = "<group>"; };
@@ -522,6 +526,7 @@
 		6BBBB6868268A19A816F6DFB /* Conversation */ = {
 			isa = PBXGroup;
 			children = (
+				54B6ABD26B1F0BF1FE75C0C4 /* AppleSpeechTranscription.swift */,
 				AF511A69E274B12E5E2AE265 /* ComposerAttachmentViews.swift */,
 				FDBE622C5ED274C1DA9803DB /* ComposerInputExtensions.swift */,
 				41787BD804E7C9AD16448E38 /* ComposerRequestCards.swift */,
@@ -719,6 +724,7 @@
 				3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */,
 				A38A8CE5A8F1D7EE3889F078 /* SessionStoreTurns.swift */,
 				1F63FE197E70AD192F429877 /* ThemeStore.swift */,
+				1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */,
 			);
 			path = State;
 			sourceTree = "<group>";
@@ -903,6 +909,7 @@
 				DDCFB91D621190F7BA26678D /* AppExternalLinks.swift in Sources */,
 				8721BBEBBD69DB0B07FACFF8 /* AppServerProtocolModels.swift in Sources */,
 				A44C4B01562D78D25968ABFF /* AppStore.swift in Sources */,
+				2189CFD030284E19F7D529A5 /* AppleSpeechTranscription.swift in Sources */,
 				CDA816193B812C35A0C9C2DA /* ApprovalCardView.swift in Sources */,
 				76DD6A7B8D4D93D4385A615D /* AssistantTextNormalizer.swift in Sources */,
 				B7FA427B42C52F695B6DDD28 /* CodexAppServerEventProjection.swift in Sources */,
@@ -978,6 +985,7 @@
 				0C41E339A7DC4147C8EA51B1 /* ThirdPartyNoticesView.swift in Sources */,
 				958AE82A3087284FEE63DBB8 /* TokenStore.swift in Sources */,
 				A88F2FBBEE8A6F5F5C0283F5 /* UnifiedWorkbenchShell.swift in Sources */,
+				B5BAC2CFD69E8F6E30996369 /* VoiceInputPreferences.swift in Sources */,
 				26187C1CD9C32B84B41153D0 /* WorkbenchChrome.swift in Sources */,
 				8C027A403C453281A5BD7812 /* WorkspaceRootView.swift in Sources */,
 				0E20F441A1A1B56E39868A44 /* WorkspaceView.swift in Sources */,
@@ -1003,7 +1011,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100052;
+				CURRENT_PROJECT_VERSION = 100053;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
@@ -1114,7 +1122,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100052;
+				CURRENT_PROJECT_VERSION = 100053;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;

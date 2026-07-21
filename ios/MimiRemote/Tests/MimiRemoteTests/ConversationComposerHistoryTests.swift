@@ -322,6 +322,39 @@ extension ConversationDataFlowTests {
         composerState.endVoiceInput()
     }
 
+    func testRealtimeVoiceTranscriptReplacesVolatileTextAndKeepsManualSuffix() {
+        var composerState = ComposerState()
+        composerState.draft = "已有上下文"
+        composerState.beginVoiceInput()
+
+        composerState.applyRealtimeVoiceTranscript("检查项目")
+        XCTAssertEqual(composerState.draft, "已有上下文\n检查项目")
+
+        composerState.draft += "\n手动补充"
+        composerState.applyRealtimeVoiceTranscript("检查项目并补测试")
+
+        XCTAssertEqual(composerState.draft, "已有上下文\n检查项目并补测试\n手动补充")
+        XCTAssertTrue(composerState.voiceDraftNeedsReview)
+        composerState.endVoiceInput()
+    }
+
+    func testAppleSpeechTranscriptAccumulatorReplacesVolatileAndAppendsFinalSegments() {
+        var accumulator = AppleSpeechTranscriptAccumulator()
+
+        accumulator.apply("检查", isFinal: false)
+        XCTAssertEqual(accumulator.text, "检查")
+        accumulator.apply("检查项目", isFinal: false)
+        XCTAssertEqual(accumulator.text, "检查项目")
+        accumulator.apply("检查项目", isFinal: true)
+        accumulator.apply("并补测试", isFinal: false)
+        XCTAssertEqual(accumulator.text, "检查项目并补测试")
+        accumulator.apply("并补测试", isFinal: true)
+        XCTAssertEqual(accumulator.text, "检查项目并补测试")
+        accumulator.apply("误识别", isFinal: false)
+        accumulator.apply("", isFinal: true)
+        XCTAssertEqual(accumulator.text, "检查项目并补测试")
+    }
+
     func testComposerStateVoiceDraftRequiresReviewUntilSubmitted() throws {
         var composerState = ComposerState()
         XCTAssertFalse(composerState.voiceDraftNeedsReview)

@@ -735,18 +735,7 @@ private struct WorkspaceDetailView: View {
 
         return Button(action: action) {
             HStack(spacing: 12) {
-                // 品牌图形保持原始单色/品牌色，不跟随主题 tint，避免再次退化成通用 SF Symbol。
-                Image(choice.brandAssetName)
-                    .resizable()
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(
-                        width: choice == .codex ? 30 : 20,
-                        height: choice == .codex ? 30 : 20
-                    )
-                    .frame(width: 38, height: 38)
-                    .background(actionIconBackground(choice: choice, emphasis: emphasis), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .accessibilityHidden(true)
+                actionIcon(choice: choice)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(choice.title)
@@ -777,6 +766,27 @@ private struct WorkspaceDetailView: View {
         .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
     }
 
+    @ViewBuilder
+    private func actionIcon(choice: WorkspaceSessionRuntimeChoice) -> some View {
+        // Codex 使用 ChatGPT/Codex 官方资源包的明暗图标；Claude 保留自己的品牌图形。
+        Image(choice.brandAssetName)
+            .resizable()
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(
+                width: choice == .codex ? 34 : 20,
+                height: choice == .codex ? 34 : 20
+            )
+            .frame(width: 38, height: 38)
+            .background(
+                choice == .codex
+                    ? Color.clear
+                    : Color(red: 0.973, green: 0.949, blue: 0.914),
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            )
+            .accessibilityHidden(true)
+    }
+
     private func actionForeground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
         emphasis == .primary ? tokens.primaryActionForeground : tokens.primaryText
     }
@@ -791,20 +801,6 @@ private struct WorkspaceDetailView: View {
             return tokens.primaryAction
         case .accented:
             return tokens.surface
-        }
-    }
-
-    private func actionIconBackground(
-        choice: WorkspaceSessionRuntimeChoice,
-        emphasis: WorkspaceActionEmphasis
-    ) -> Color {
-        switch choice {
-        case .codex:
-            // Codex App 图标自带浅色圆角底和阴影，外层承载面只负责在强调按钮上稳定对比度。
-            return Color.white.opacity(emphasis == .primary ? 0.94 : 0.88)
-        case .claude:
-            // Claude 标识使用官方陶土色；暖白底只承担可读性，不把品牌色铺满整个操作按钮。
-            return Color(red: 0.973, green: 0.949, blue: 0.914)
         }
     }
 

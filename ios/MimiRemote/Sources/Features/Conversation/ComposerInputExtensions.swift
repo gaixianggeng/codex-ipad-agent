@@ -58,6 +58,10 @@ struct ComposerToolbarControlLabel: View {
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    var selectedVoiceInputProvider: VoiceInputProvider {
+        VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex
+    }
+
     var isPhoneComposer: Bool {
         UIDevice.current.userInterfaceIdiom == .phone
     }
@@ -214,6 +218,18 @@ extension ComposerView {
                     .disabled(isVoiceTranscribing)
                     .accessibilityLabel(L10n.text("ui.retry_speech_transcription"))
                     .help(L10n.text("ui.resubmit_the_recording_you_just_made"))
+                }
+                if selectedVoiceInputProvider == .apple, retryableVoiceTranscription == nil {
+                    Button {
+                        voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+                        clearVoiceTransientStatus()
+                    } label: {
+                        Label(L10n.text("ui.use_codex_voice_input"), systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .accessibilityIdentifier("composer.voice.useCodex")
                 }
                 Button {
                     clearVoiceTransientStatus()
@@ -464,6 +480,24 @@ extension ComposerView {
         composerState.beginVoiceInput()
         let context = VoiceTranscriptionContext(sessionID: sessionStore.selectedSessionID)
         activeVoiceTranscriptionContext = context
+        if selectedVoiceInputProvider == .apple {
+            voiceInput.startAppleTranscription(
+                locale: .autoupdatingCurrent,
+                onTranscript: { transcript in
+                    guard isVoiceTranscriptionContextCurrent(context) else { return }
+                    composerState.applyRealtimeVoiceTranscript(transcript)
+                },
+                onFinish: {
+                    isVoicePressActive = false
+                    isVoiceTranscribing = false
+                    if activeVoiceTranscriptionContext == context {
+                        activeVoiceTranscriptionContext = nil
+                    }
+                    composerState.endVoiceInput()
+                }
+            )
+            return
+        }
         voiceInput.start { recording in
             isVoicePressActive = false
             guard let recording else {
@@ -497,6 +531,10 @@ extension ComposerView {
             composerState.endVoiceInput()
             return
         }
+        if selectedVoiceInputProvider == .apple {
+            // Apple 在录音过程中已持续写入草稿；停止后只等待最后一个稳定结果。
+            isVoiceTranscribing = true
+        }
         voiceInput.stop()
     }
 
@@ -528,7 +566,7 @@ extension ComposerView {
         voiceTranscriptionTask?.cancel()
         voiceTranscriptionTask = nil
         activeVoiceTranscriptionContext = nil
-        if isVoicePressActive || voiceInput.isPreparing || voiceInput.isRecording {
+        if isVoicePressActive || voiceInput.isPreparing || voiceInput.isRecording || isVoiceTranscribing {
             voiceInput.cancel()
         }
         isVoicePressActive = false

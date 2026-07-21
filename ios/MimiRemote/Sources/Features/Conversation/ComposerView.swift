@@ -53,6 +53,7 @@ struct ComposerView: View {
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     // 快捷行默认收起：展开与否是用户的全局偏好，不再被宽度变化反向改写。
     @AppStorage("composer.shortcuts.expanded") var prefersExpandedShortcutBar = false
     @State var guidedFollowUpEnabled = false
@@ -175,6 +176,10 @@ struct ComposerView: View {
         }
         .onChange(of: defaultPermissionModeID) { _, _ in
             applyDefaultPermissionMode()
+        }
+        .onChange(of: voiceInputProviderRawValue) { _, _ in
+            // 提供方变化是语音会话边界；旧引擎的迟到结果不能写入新选择下的草稿。
+            cancelVoiceInteraction(clearStatus: true)
         }
         .onChange(of: currentComposerDraftScope) { _, newScope in
             switchComposerDraftScope(to: newScope)
@@ -1170,6 +1175,7 @@ struct ComposerView: View {
             isPreparing: voiceInput.isPreparing || (isVoicePressActive && !voiceInput.isRecording),
             isRecording: voiceInput.isRecording,
             isTranscribing: isVoiceTranscribing,
+            usesRealtimeTranscription: selectedVoiceInputProvider == .apple,
             onTap: {
                 toggleVoiceInput()
             }
@@ -1784,7 +1790,7 @@ struct ComposerView: View {
                     .controlSize(.small)
                     .tint(tokens.accent)
                 if !usesCompactComposerMetrics {
-                    Text(L10n.text("ui.model_transcribing"))
+                    Text(selectedVoiceInputProvider == .apple ? L10n.text("ui.finalizing_apple_voice_input") : L10n.text("ui.model_transcribing"))
                         .lineLimit(1)
                 }
             }
@@ -1793,7 +1799,7 @@ struct ComposerView: View {
                 VoiceWaveformView(meter: voiceInput.levelMeter, isActive: true, colors: tokens.voiceWaveformGradient)
                     .frame(width: usesCompactComposerMetrics ? 124 : 190, height: usesCompactComposerMetrics ? 32 : 34)
                 if !usesCompactComposerMetrics {
-                    Text(L10n.text("ui.listening_now_let_go_and_transcribe"))
+                    Text(selectedVoiceInputProvider == .apple ? L10n.text("ui.listening_and_transcribing_in_real_time") : L10n.text("ui.listening_now_let_go_and_transcribe"))
                         .lineLimit(1)
                 }
             }

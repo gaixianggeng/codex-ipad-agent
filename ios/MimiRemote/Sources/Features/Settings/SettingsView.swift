@@ -15,6 +15,9 @@ struct SettingsView: View {
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @AppStorage(VoiceInputProvider.appleTipAcknowledgedStorageKey) private var appleVoiceTipAcknowledged = false
+    @State private var showsAppleVoiceInputTip = false
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -145,6 +148,21 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker(L10n.text("ui.voice_input"), selection: voiceInputProviderSelection) {
+                    ForEach(VoiceInputProvider.allCases) { provider in
+                        Text(provider.title)
+                            .tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.voiceInputProvider")
+            } header: {
+                Text(L10n.text("ui.voice_input"))
+            } footer: {
+                Text(L10n.text("ui.voice_input_provider_comparison"))
+            }
+
+            Section {
                 Toggle(L10n.text("ui.developer_mode"), isOn: $developerModeEnabled)
                 NavigationLink {
                     DoctorView(showsHistoryDiagnostics: developerModeEnabled)
@@ -195,6 +213,15 @@ struct SettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .alert(L10n.text("ui.switch_to_apple_voice_input"), isPresented: $showsAppleVoiceInputTip) {
+            Button(L10n.text("ui.use_apple_voice_input")) {
+                voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
+                appleVoiceTipAcknowledged = true
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {}
+        } message: {
+            Text(L10n.text("ui.apple_voice_input_accuracy_tip"))
+        }
         .task {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
@@ -248,6 +275,23 @@ struct SettingsView: View {
         Binding(
             get: { AppLanguage(rawValue: appLanguageRawValue) ?? .system },
             set: { appLanguageRawValue = $0.rawValue }
+        )
+    }
+
+    private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
+        Binding(
+            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
+            set: { provider in
+                guard provider.rawValue != voiceInputProviderRawValue else {
+                    return
+                }
+                guard provider == .apple, !appleVoiceTipAcknowledged else {
+                    voiceInputProviderRawValue = provider.rawValue
+                    return
+                }
+                // Picker 的 selection 在确认前不落盘，取消弹窗即可保持原提供方。
+                showsAppleVoiceInputTip = true
+            }
         )
     }
 }

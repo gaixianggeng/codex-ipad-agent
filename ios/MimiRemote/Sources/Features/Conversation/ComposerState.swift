@@ -318,6 +318,7 @@ struct ComposerState {
     private(set) var contentRevision: UInt64 = 0
     private var voiceDraftBase: String?
     private var voiceLastRenderedDraft: String?
+    private var voiceRealtimeManualSuffix = ""
 
     init(defaultPermissionMode: ComposerPermissionMode = .defaultMode) {
         defaultPermissionMode.apply(to: &turnOptions)
@@ -410,6 +411,7 @@ struct ComposerState {
         voiceDraftNeedsReview = false
         voiceDraftBase = nil
         voiceLastRenderedDraft = nil
+        voiceRealtimeManualSuffix = ""
         return SubmittedComposerDraft(
             text: text,
             attachments: sentAttachments,
@@ -428,12 +430,16 @@ struct ComposerState {
     mutating func restore(_ text: String) {
         draft = text
         voiceDraftNeedsReview = false
+        endVoiceInput()
     }
 
     mutating func restore(_ submitted: SubmittedComposerDraft) {
         draft = submitted.text
         attachments = submitted.attachments
         voiceDraftNeedsReview = submitted.voiceDraftNeedsReview
+        voiceDraftBase = nil
+        voiceLastRenderedDraft = nil
+        voiceRealtimeManualSuffix = ""
     }
 
     func draftSnapshot() -> ComposerDraftSnapshot {
@@ -450,6 +456,7 @@ struct ComposerState {
         voiceDraftNeedsReview = snapshot.voiceDraftNeedsReview && hasNonWhitespaceDraft
         voiceDraftBase = nil
         voiceLastRenderedDraft = nil
+        voiceRealtimeManualSuffix = ""
     }
 
     mutating func addAttachment(_ input: CodexAppServerUserInput) {
@@ -494,6 +501,7 @@ struct ComposerState {
     mutating func beginVoiceInput() {
         voiceDraftBase = draft
         voiceLastRenderedDraft = draft
+        voiceRealtimeManualSuffix = ""
     }
 
     mutating func applyVoiceTranscript(_ transcript: String) {
@@ -517,9 +525,39 @@ struct ComposerState {
         voiceLastRenderedDraft = draft
     }
 
+    mutating func applyRealtimeVoiceTranscript(_ transcript: String) {
+        let normalized = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return
+        }
+
+        if let lastRendered = voiceLastRenderedDraft, draft != lastRendered {
+            if draft.hasPrefix(lastRendered) {
+                // 实时听写时最常见的并行编辑是继续在尾部输入；把新增尾段单独保留，
+                // 下一次 volatile 结果替换语音部分时不会重复已经显示过的文字。
+                voiceRealtimeManualSuffix += String(draft.dropFirst(lastRendered.count))
+            } else {
+                // 用户修改了语音区域或前文时无法安全推断编辑意图；以当前草稿为新基底，
+                // 保证不丢用户文字，代价是后续识别内容从新段落继续追加。
+                voiceDraftBase = draft
+                voiceRealtimeManualSuffix = ""
+            }
+        }
+
+        let base = voiceDraftBase ?? draft
+        draft = Self.renderVoiceTranscript(normalized, on: base) + voiceRealtimeManualSuffix
+        voiceDraftNeedsReview = true
+        voiceLastRenderedDraft = draft
+    }
+
     mutating func endVoiceInput() {
         voiceDraftBase = nil
         voiceLastRenderedDraft = nil
+        voiceRealtimeManualSuffix = ""
+    }
+
+    private static func renderVoiceTranscript(_ transcript: String, on base: String) -> String {
+        containsNonWhitespace(base) ? base + "\n" + transcript : transcript
     }
 
     private static func containsNonWhitespace(_ text: String) -> Bool {

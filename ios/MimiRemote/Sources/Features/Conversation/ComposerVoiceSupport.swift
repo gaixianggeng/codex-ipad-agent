@@ -11,6 +11,7 @@ struct VoiceMicButton: View {
     let isPreparing: Bool
     let isRecording: Bool
     let isTranscribing: Bool
+    let usesRealtimeTranscription: Bool
     let onTap: () -> Void
 
     var body: some View {
@@ -40,7 +41,7 @@ struct VoiceMicButton: View {
         .disabled(isPreparing || isTranscribing)
         .accessibilityLabel(accessibilityTitle)
         .accessibilityValue(accessibilityValue)
-        .accessibilityHint(isRecording ? L10n.text("ui.tap_to_stop_recording_and_start_transcribing") : L10n.text("ui.click_to_start_recording"))
+        .accessibilityHint(accessibilityHint)
     }
 
     private var accessibilityTitle: String {
@@ -61,6 +62,17 @@ struct VoiceMicButton: View {
             return L10n.text("ui.preparing")
         }
         return isTranscribing ? L10n.text("ui.transcribing") : L10n.text("ui.not_started")
+    }
+
+    private var accessibilityHint: String {
+        if isRecording {
+            return usesRealtimeTranscription
+                ? L10n.text("ui.tap_to_stop_apple_voice_input")
+                : L10n.text("ui.tap_to_stop_recording_and_start_transcribing")
+        }
+        return usesRealtimeTranscription
+            ? L10n.text("ui.tap_to_start_apple_realtime_voice_input")
+            : L10n.text("ui.click_to_start_recording")
     }
 }
 
@@ -443,12 +455,17 @@ final class VoiceInputController: NSObject, ObservableObject {
     private var startRequestID: UUID?
     private var pressStartedAt: Date?
     private var recordingStartedAt: Date?
+    private var activeProvider: VoiceInputProvider?
+    private var appleSession: AppleSpeechTranscriptionSession?
+    private var appleLifecycleTask: Task<Void, Never>?
+    private var appleFinishHandler: (() -> Void)?
 
     func start(onFinish: @escaping (VoiceRecordingResult?) -> Void) {
-        guard !isRecording, finishHandler == nil else {
+        guard activeProvider == nil, !isRecording, finishHandler == nil else {
             return
         }
         let requestID = UUID()
+        activeProvider = .codex
         startRequestID = requestID
         finishHandler = onFinish
         pressStartedAt = Date()
@@ -509,7 +526,88 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
     }
 
+    func startAppleTranscription(
+        locale: Locale,
+        onTranscript: @escaping @MainActor (String) -> Void,
+        onFinish: @escaping () -> Void
+    ) {
+        guard activeProvider == nil, !isRecording, appleFinishHandler == nil else {
+            return
+        }
+        let requestID = UUID()
+        activeProvider = .apple
+        startRequestID = requestID
+        appleFinishHandler = onFinish
+        errorMessage = nil
+        noticeMessage = nil
+
+        isPreparing = true
+        VoiceHaptics.prepareRecordingStarted()
+        let session = AppleSpeechTranscriptionSession()
+        appleSession = session
+        appleLifecycleTask = Task { [weak self, weak session] in
+            guard let self, let session else { return }
+            do {
+                guard await requestRecordPermission() else {
+                    guard startRequestID == requestID else { return }
+                    errorMessage = L10n.text("ui.microphone_permission_is_not_enabled_please_allow_it")
+                    await session.cancel()
+                    completeAppleInteraction(notifyFinish: true)
+                    return
+                }
+                guard startRequestID == requestID else {
+                    await session.cancel()
+                    return
+                }
+                try await session.start(
+                    locale: locale,
+                    onTranscript: { [weak self] transcript in
+                        guard self?.activeProvider == .apple else { return }
+                        onTranscript(transcript)
+                    },
+                    onLevel: { [weak self] level in
+                        self?.levelMeter.push(level)
+                    },
+                    onFailure: { [weak self, weak session] error in
+                        guard let self, let session, activeProvider == .apple else { return }
+                        errorMessage = userFacingAppleSpeechError(error)
+                        isPreparing = false
+                        isRecording = false
+                        levelMeter.reset()
+                        appleLifecycleTask = Task { [weak self, weak session] in
+                            await session?.cancel()
+                            self?.completeAppleInteraction(notifyFinish: true)
+                        }
+                    }
+                )
+                guard startRequestID == requestID else {
+                    await session.cancel()
+                    return
+                }
+                appleLifecycleTask = nil
+                isPreparing = false
+                isRecording = true
+                levelMeter.prepareForRecording()
+                VoiceHaptics.recordingStarted()
+            } catch is CancellationError {
+                await session.cancel()
+                if startRequestID == requestID {
+                    completeAppleInteraction(notifyFinish: true)
+                }
+            } catch {
+                await session.cancel()
+                guard startRequestID == requestID else { return }
+                errorMessage = userFacingAppleSpeechError(error)
+                completeAppleInteraction(notifyFinish: true)
+            }
+        }
+    }
+
     func stop() {
+        if activeProvider == .apple {
+            finishAppleTranscription()
+            return
+        }
         let shouldFinishImmediately = !isRecording && recorder == nil
         startRequestID = nil
         if shouldFinishImmediately {
@@ -520,6 +618,10 @@ final class VoiceInputController: NSObject, ObservableObject {
     }
 
     func cancel() {
+        if activeProvider == .apple {
+            cancelAppleTranscription(notifyFinish: false)
+            return
+        }
         let fileURL = recordingURL
         startRequestID = nil
         finishHandler = nil
@@ -527,6 +629,67 @@ final class VoiceInputController: NSObject, ObservableObject {
         if let fileURL {
             try? FileManager.default.removeItem(at: fileURL)
         }
+    }
+
+    private func finishAppleTranscription() {
+        guard activeProvider == .apple else { return }
+        guard let session = appleSession else {
+            completeAppleInteraction(notifyFinish: true)
+            return
+        }
+        isPreparing = false
+        isRecording = false
+        levelMeter.reset()
+        appleLifecycleTask?.cancel()
+        appleLifecycleTask = Task { [weak self, weak session] in
+            guard let self, let session else { return }
+            do {
+                try await session.finish()
+            } catch is CancellationError {
+                await session.cancel()
+            } catch {
+                errorMessage = userFacingAppleSpeechError(error)
+                await session.cancel()
+            }
+            completeAppleInteraction(notifyFinish: true)
+        }
+    }
+
+    private func cancelAppleTranscription(notifyFinish: Bool) {
+        let session = appleSession
+        appleLifecycleTask?.cancel()
+        appleLifecycleTask = nil
+        completeAppleInteraction(notifyFinish: notifyFinish)
+        Task {
+            await session?.cancel()
+        }
+    }
+
+    private func completeAppleInteraction(notifyFinish: Bool) {
+        let handler = appleFinishHandler
+        appleFinishHandler = nil
+        appleSession = nil
+        appleLifecycleTask = nil
+        activeProvider = nil
+        startRequestID = nil
+        isPreparing = false
+        isRecording = false
+        levelMeter.reset()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if notifyFinish {
+            handler?()
+        }
+    }
+
+    private func userFacingAppleSpeechError(_ error: Error) -> String {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else {
+            return L10n.text("ui.apple_voice_input_is_currently_unavailable")
+        }
+        if error is AppleSpeechTranscriptionError {
+            return message
+        }
+        return L10n.format("ui.apple_voice_input_failed", message)
     }
 
     func setErrorMessage(_ message: String?) {
@@ -664,6 +827,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         recordingStartedAt = nil
         isPreparing = false
         isRecording = false
+        activeProvider = nil
         levelMeter.reset()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         if let fileURL {

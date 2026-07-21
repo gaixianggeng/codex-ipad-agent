@@ -52,4 +52,16 @@ final class LocalizationTests: XCTestCase {
         defaults.set("unsupported", forKey: AppLanguage.preferenceKey)
         XCTAssertEqual(AppLanguage.stored(in: defaults), .system)
     }
+
+    func testVoiceInputProviderDefaultsToCodexAndRejectsUnknownValues() {
+        let suiteName = "VoiceInputProviderTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
+        defaults.set(VoiceInputProvider.apple.rawValue, forKey: VoiceInputProvider.storageKey)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .apple)
+        defaults.set("future-provider", forKey: VoiceInputProvider.storageKey)
+        XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
+    }
 }
