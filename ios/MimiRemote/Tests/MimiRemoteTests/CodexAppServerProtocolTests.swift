@@ -614,6 +614,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
             CodexAppServerModelOption(id: "fable", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-fable-5",
+                title: "Claude Fable 5",
                 runtimeProvider: "claude",
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "high"
@@ -621,6 +622,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
             CodexAppServerModelOption(id: "sonnet", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-sonnet-4-6",
+                title: "Claude Sonnet 4.6",
                 runtimeProvider: "claude",
                 isDefault: true,
                 supportedReasoningEfforts: efforts,
@@ -629,6 +631,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
             CodexAppServerModelOption(id: "opus", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-opus-4-7",
+                title: "Claude Opus 4.7",
                 runtimeProvider: "claude",
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "high"
@@ -636,6 +639,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
             CodexAppServerModelOption(id: "haiku", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-haiku-4-5-20251001",
+                title: "Claude Haiku 4.5",
                 runtimeProvider: "claude",
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "minimal"
@@ -646,7 +650,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             layout.rows.map(\.model),
-            ["claude-fable-5", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"]
+            ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-7", "claude-fable-5"]
+        )
+        XCTAssertEqual(
+            layout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
+            ["Haiku 4.5", "Sonnet 4.6", "Opus 4.7", "Fable 5"]
         )
         XCTAssertEqual(layout.efforts, [.minimal, .low, .medium, .high])
         XCTAssertTrue(layout.contains(modelID: "fable"), "Claude Fable alias 应映射到同一模型家族")
@@ -654,11 +662,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertFalse(layout.showsFastMode)
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "fable", effort: .high, layout: layout),
-            "Fable · \(ModelReasoningGridCatalog.effortTitle(.high))"
+            "Fable 5 · \(ModelReasoningGridCatalog.effortTitle(.high))"
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "sonnet", effort: .medium, layout: layout),
-            "Sonnet · \(ModelReasoningGridCatalog.effortTitle(.medium))"
+            "Sonnet 4.6 · \(ModelReasoningGridCatalog.effortTitle(.medium))"
         )
     }
 

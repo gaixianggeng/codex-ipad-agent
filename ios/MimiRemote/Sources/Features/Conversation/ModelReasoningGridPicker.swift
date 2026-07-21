@@ -36,7 +36,7 @@ struct ModelReasoningGridLayout: Equatable {
 enum ModelReasoningGridCatalog {
     static let codexModelOrder = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     static let codexEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh]
-    static let claudeFamilyOrder = ["fable", "sonnet", "opus", "haiku"]
+    static let claudeFamilyOrder = ["haiku", "sonnet", "opus", "fable"]
     static let claudeEfforts: [CodexAppServerReasoningEffort] = [.minimal, .low, .medium, .high]
 
     static func effectiveModelID(
@@ -95,15 +95,40 @@ enum ModelReasoningGridCatalog {
         effort: CodexAppServerReasoningEffort,
         layout: ModelReasoningGridLayout
     ) -> String? {
-        guard layout.contains(modelID: modelID) else { return nil }
+        guard let option = layout.row(matching: modelID) else { return nil }
         let modelTitle: String
         switch layout.kind {
         case .codex:
-            modelTitle = "5.6 \(shortTitle(for: modelID, kind: .codex))"
+            modelTitle = "5.6 \(shortTitle(for: option, kind: .codex))"
         case .claude:
-            modelTitle = shortTitle(for: modelID, kind: .claude)
+            modelTitle = shortTitle(for: option, kind: .claude)
         }
         return "\(modelTitle) · \(effortTitle(effort))"
+    }
+
+    static func shortTitle(
+        for option: CodexAppServerModelOption,
+        kind: ModelReasoningGridKind
+    ) -> String {
+        guard kind == .claude else {
+            return shortTitle(for: option.model, kind: kind)
+        }
+
+        let title = option.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty,
+              title.caseInsensitiveCompare(option.model) != .orderedSame
+        else {
+            return shortTitle(for: option.model, kind: kind)
+        }
+
+        // Claude alias 会随 CLI 升级指向新版本，版本号必须来自服务端模型目录，
+        // 不能按 family 写死，否则旧 bridge 的具体模型会被展示成尚未使用的新版本。
+        if let prefix = title.range(of: "Claude ", options: [.anchored, .caseInsensitive]) {
+            let stripped = String(title[prefix.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stripped.isEmpty ? shortTitle(for: option.model, kind: kind) : stripped
+        }
+        return title
     }
 
     static func shortTitle(for modelID: String, kind: ModelReasoningGridKind) -> String {
@@ -233,8 +258,11 @@ struct ModelReasoningGridPicker: View {
 
     // 每行保持 54pt；渠道只提供行列数据，手势、动效和可访问性统一由组件负责。
     private let pickerWidth: CGFloat = 352
-    private let rowLabelWidth: CGFloat = 52
     private let dragCancellationMargin: CGFloat = 12
+
+    private var rowLabelWidth: CGFloat {
+        layout.kind == .claude ? 68 : 52
+    }
 
     private var gridHeight: CGFloat {
         CGFloat(max(layout.rows.count, 1)) * 54
@@ -365,7 +393,7 @@ struct ModelReasoningGridPicker: View {
     private func rowLabels(tokens: ThemeTokens) -> some View {
         VStack(spacing: 0) {
             ForEach(layout.rows) { option in
-                Text(ModelReasoningGridCatalog.shortTitle(for: option.model, kind: layout.kind))
+                Text(ModelReasoningGridCatalog.shortTitle(for: option, kind: layout.kind))
                     .font(themeStore.uiFont(.subheadline, weight: .semibold))
                     .foregroundStyle(activeSelection.modelID == option.model ? tokens.accent : tokens.primaryText)
                     .lineLimit(1)
@@ -455,7 +483,7 @@ struct ModelReasoningGridPicker: View {
         .disabled(!supported)
         .accessibilityLabel(L10n.format(
             "ui.value_reasoning_strength_value",
-            ModelReasoningGridCatalog.shortTitle(for: option.model, kind: layout.kind),
+            ModelReasoningGridCatalog.shortTitle(for: option, kind: layout.kind),
             ModelReasoningGridCatalog.effortTitle(effort)
         ))
         .accessibilityValue(selected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))

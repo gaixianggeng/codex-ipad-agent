@@ -27,7 +27,7 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     var brandAssetName: String {
         switch self {
         case .codex:
-            return "OpenAI"
+            return "Codex"
         case .claude:
             return "Claude"
         }
@@ -63,6 +63,7 @@ struct WorkspaceRootView: View {
     @State private var catalogState: CatalogState = .idle
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var isPresentingOpenWorkspace = false
+    @State private var pendingWorkspaceRemoval: AgentProject?
 
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
@@ -127,6 +128,29 @@ struct WorkspaceRootView: View {
                 // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
                 selectedWorkspaceID = workspaceID
             }
+        }
+        .confirmationDialog(
+            L10n.text("ui.remove_directory"),
+            isPresented: Binding(
+                get: { pendingWorkspaceRemoval != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingWorkspaceRemoval = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let project = pendingWorkspaceRemoval {
+                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
+                    removeWorkspace(project)
+                }
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                pendingWorkspaceRemoval = nil
+            }
+        } message: {
+            Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
     }
@@ -269,8 +293,10 @@ struct WorkspaceRootView: View {
                                     worktreeCount: 0,
                                     isUnavailable: false,
                                     isSelected: false,
-                                    tokens: tokens
-                                ) {}
+                                    tokens: tokens,
+                                    action: {},
+                                    onRemove: {}
+                                )
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .redacted(reason: .placeholder)
                             }
@@ -286,6 +312,10 @@ struct WorkspaceRootView: View {
                                 ) {
                                     // 工作区页面只更新本地浏览选择，避免切换卡片时意外改变当前会话上下文。
                                     selectedWorkspaceID = project.id
+                                } onRemove: {
+                                    // 当前浏览中的卡片不允许移除；用户需先切到正确工作区，再处理误开的目录。
+                                    guard selectedWorkspaceID != project.id else { return }
+                                    pendingWorkspaceRemoval = project
                                 }
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .id(project.id)
@@ -380,6 +410,13 @@ struct WorkspaceRootView: View {
         selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
         } ?? projects.first?.id
+    }
+
+    private func removeWorkspace(_ project: AgentProject) {
+        pendingWorkspaceRemoval = nil
+        guard selectedWorkspaceID != project.id else { return }
+        sessionLoadStates.removeValue(forKey: project.id)
+        sessionStore.forgetWorkspace(project)
     }
 
     private func refreshCatalog() async {
@@ -483,74 +520,107 @@ private struct WorkspaceLibraryCard: View {
     let isSelected: Bool
     let tokens: ThemeTokens
     let action: () -> Void
+    let onRemove: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: isUnavailable ? "folder.badge.questionmark" : "folder.fill")
-                        .font(themeStore.uiFont(size: 22, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(isUnavailable ? tokens.warning : tokens.primaryAction)
-                        .frame(width: 44, height: 44)
-                        .background((isUnavailable ? tokens.warning : tokens.primaryAction).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(project.name)
-                            .font(themeStore.uiFont(.headline, weight: .semibold))
-                            .foregroundStyle(tokens.primaryText)
-                            .lineLimit(1)
-                        Text(project.path)
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    VStack(alignment: .trailing, spacing: 8) {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "chevron.down")
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .foregroundStyle(isSelected ? tokens.primaryAction : tokens.tertiaryText)
-
-                        Label(
-                            isUnavailable ? L10n.text("ui.need_to_retry_915015f1") : L10n.text("ui.accessible"),
-                            systemImage: isUnavailable ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-                        )
-                        .font(themeStore.uiFont(.caption2, weight: .semibold))
-                        .foregroundStyle(isUnavailable ? tokens.warning : tokens.success)
-                        .fixedSize()
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    metric("\(sessionCount)", title: L10n.text("ui.session"), systemImage: "bubble.left.and.bubble.right")
-                    metric("\(worktreeCount)", title: "Worktree", systemImage: "arrow.triangle.branch")
-                }
+        ZStack(alignment: .topTrailing) {
+            Button(action: action) {
+                cardContent
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
-            .background(isSelected ? tokens.selectionFill : tokens.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(
-                        isSelected ? tokens.primaryAction : tokens.border.opacity(0.72),
-                        lineWidth: isSelected ? 2 : 1
-                    )
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                L10n.format(
+                    "ui.workspace_summary",
+                    project.name,
+                    L10n.plural("ui.sessions_count", count: sessionCount),
+                    L10n.plural("ui.worktrees_count", count: worktreeCount),
+                    isUnavailable ? L10n.text("ui.need_to_retry") : L10n.text("ui.accessible"),
+                    isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
+                )
+            )
+
+            if !isSelected {
+                Menu {
+                    Button(role: .destructive, action: onRemove) {
+                        Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .accessibilityLabel(L10n.text("ui.remove_directory"))
+                .padding(.top, 10)
+                .padding(.trailing, 8)
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            L10n.format(
-                "ui.workspace_summary",
-                project.name,
-                L10n.plural("ui.sessions_count", count: sessionCount),
-                L10n.plural("ui.worktrees_count", count: worktreeCount),
-                isUnavailable ? L10n.text("ui.need_to_retry") : L10n.text("ui.accessible"),
-                isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
-            )
-        )
+    }
+
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: isUnavailable ? "folder.badge.questionmark" : "folder.fill")
+                    .font(themeStore.uiFont(size: 22, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isUnavailable ? tokens.warning : tokens.primaryAction)
+                    .frame(width: 44, height: 44)
+                    .background((isUnavailable ? tokens.warning : tokens.primaryAction).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(project.name)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                    Text(project.path)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 8) {
+                    Group {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                        } else {
+                            // 右上角的菜单覆盖在同一位置；这里保留布局空间，避免状态文案左右跳动。
+                            Color.clear
+                        }
+                    }
+                    .frame(width: 32, height: 20)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.primaryAction)
+
+                    Label(
+                        isUnavailable ? L10n.text("ui.need_to_retry_915015f1") : L10n.text("ui.accessible"),
+                        systemImage: isUnavailable ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                    )
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .foregroundStyle(isUnavailable ? tokens.warning : tokens.success)
+                    .fixedSize()
+                }
+            }
+
+            HStack(spacing: 8) {
+                metric("\(sessionCount)", title: L10n.text("ui.session"), systemImage: "bubble.left.and.bubble.right")
+                metric("\(worktreeCount)", title: "Worktree", systemImage: "arrow.triangle.branch")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+        .background(isSelected ? tokens.selectionFill : tokens.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    isSelected ? tokens.primaryAction : tokens.border.opacity(0.72),
+                    lineWidth: isSelected ? 2 : 1
+                )
+        }
     }
 
     private func metric(_ value: String, title: String, systemImage: String) -> some View {
@@ -670,7 +740,10 @@ private struct WorkspaceDetailView: View {
                     .resizable()
                     .renderingMode(.original)
                     .scaledToFit()
-                    .frame(width: 20, height: 20)
+                    .frame(
+                        width: choice == .codex ? 30 : 20,
+                        height: choice == .codex ? 30 : 20
+                    )
                     .frame(width: 38, height: 38)
                     .background(actionIconBackground(choice: choice, emphasis: emphasis), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                     .accessibilityHidden(true)
@@ -727,7 +800,7 @@ private struct WorkspaceDetailView: View {
     ) -> Color {
         switch choice {
         case .codex:
-            // OpenAI Blossom 是黑色单色标识，需要稳定的浅色承载面才能跨主题保持原形与对比度。
+            // Codex App 图标自带浅色圆角底和阴影，外层承载面只负责在强调按钮上稳定对比度。
             return Color.white.opacity(emphasis == .primary ? 0.94 : 0.88)
         case .claude:
             // Claude 标识使用官方陶土色；暖白底只承担可读性，不把品牌色铺满整个操作按钮。

@@ -18566,6 +18566,40 @@
         }
       }
     },
+    "ui.remove_directory" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove directory"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除目录"
+          }
+        }
+      }
+    },
+    "ui.remove_directory_value" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除“%@”"
+          }
+        }
+      }
+    },
     "ui.remove_from_conversation_page" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -18613,6 +18647,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "移除 Skill %@"
+          }
+        }
+      }
+    },
+    "ui.removing_a_directory_only_removes_it_from_the_workspace" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This only removes the directory from the workspace list. Files on your Mac will not be deleted, and you can reopen the directory later."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这只会从工作区列表移除该目录，不会删除 Mac 上的文件；之后仍可重新打开。"
           }
         }
       }
