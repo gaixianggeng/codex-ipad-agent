@@ -157,12 +157,12 @@ final class ConversationSnapshotTests: XCTestCase {
         // 生产视图仍通过 `.task(id:)` 异步解码；快照先填充同一缓存，确保捕获的是稳定完成态。
         _ = await DataURLImageDecoder.image(
             from: landscapeImage,
-            cacheKey: ConversationImageSource.dataURL(landscapeImage).id,
+            cacheKey: ConversationImageSource.markdown(landscapeImage).id,
             maxPixelSize: 1_600
         )
         _ = await DataURLImageDecoder.image(
             from: portraitImage,
-            cacheKey: ConversationImageSource.dataURL(portraitImage).id,
+            cacheKey: ConversationImageSource.markdown(portraitImage).id,
             maxPixelSize: 1_600
         )
         let history = [

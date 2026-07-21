@@ -3,6 +3,7 @@ import Foundation
 struct ConversationTimelineItemBuilder {
     static func items(from messages: [ConversationMessage]) -> [ConversationTimelineItem] {
         let turnLifecycles = effectiveTurnLifecycles(in: messages)
+        let continuationIndexes = continuationIndexes(in: messages)
         var items: [ConversationTimelineItem] = []
         var index = messages.startIndex
 
@@ -26,7 +27,7 @@ struct ConversationTimelineItemBuilder {
             let keepsRunningWhileTurnIsActive = isLatestActivitySequence(
                 for: message,
                 nextIndex: index,
-                messages: messages
+                continuationIndexes: continuationIndexes
             )
             // 时间线只折叠相邻过程项，不跨 commentary、plan 或 final 搬运内容。
             // 输入顺序由上游 canonical timeline 决定，视图投影不能再次改写语义顺序。
@@ -85,36 +86,56 @@ struct ConversationTimelineItemBuilder {
     private static func effectiveTurnLifecycles(
         in messages: [ConversationMessage]
     ) -> [TurnID: ConversationTurnLifecycle] {
-        let messagesByTurnID = Dictionary(grouping: messages.compactMap { message -> (TurnID, ConversationMessage)? in
-            guard let turnID = message.turnID, !turnID.isEmpty else { return nil }
-            return (turnID, message)
-        }, by: { $0.0 })
+        struct LifecycleFacts {
+            var hasFailed = false
+            var hasInterrupted = false
+            var hasCompleted = false
+            var hasInProgress = false
+            var hasCompletedAssistant = false
+            var onlyUnknownOrMissingLifecycle = true
+        }
+
+        var factsByTurnID: [TurnID: LifecycleFacts] = [:]
+        for message in messages {
+            guard let turnID = message.turnID, !turnID.isEmpty else {
+                continue
+            }
+            var facts = factsByTurnID[turnID] ?? LifecycleFacts()
+            facts.hasFailed = facts.hasFailed
+                || message.turnLifecycle == .failed
+                || (message.role == .assistant && message.sendStatus == .failed)
+            facts.hasInterrupted = facts.hasInterrupted || message.turnLifecycle == .interrupted
+            facts.hasCompleted = facts.hasCompleted || message.turnLifecycle == .completed
+            facts.hasInProgress = facts.hasInProgress
+                || message.turnLifecycle == .inProgress
+                || message.activityPayload?.isInProgress == true
+            facts.hasCompletedAssistant = facts.hasCompletedAssistant || isCompletedAssistantMessage(message)
+            if let lifecycle = message.turnLifecycle, lifecycle != .unknown {
+                facts.onlyUnknownOrMissingLifecycle = false
+            }
+            factsByTurnID[turnID] = facts
+        }
+
         var result: [TurnID: ConversationTurnLifecycle] = [:]
-        for (turnID, entries) in messagesByTurnID {
-            let turnMessages = entries.map(\.1)
-            let lifecycles = turnMessages.compactMap(\.turnLifecycle)
-            if lifecycles.contains(.failed) || turnMessages.contains(where: { $0.role == .assistant && $0.sendStatus == .failed }) {
+        for (turnID, facts) in factsByTurnID {
+            if facts.hasFailed {
                 result[turnID] = .failed
                 continue
             }
-            if lifecycles.contains(.interrupted) {
+            if facts.hasInterrupted {
                 result[turnID] = .interrupted
                 continue
             }
-            if lifecycles.contains(.completed) {
+            if facts.hasCompleted {
                 result[turnID] = .completed
                 continue
             }
             // 旧 gateway 没有可靠 lifecycle 时才回退到 final；显式 inProgress 不能被提前收口。
-            if turnMessages.allSatisfy({ $0.turnLifecycle == nil || $0.turnLifecycle == .unknown }),
-               turnMessages.contains(where: isCompletedAssistantMessage) {
+            if facts.onlyUnknownOrMissingLifecycle, facts.hasCompletedAssistant {
                 result[turnID] = .completed
                 continue
             }
-            result[turnID] = lifecycles.contains(.inProgress) ||
-                turnMessages.contains(where: { $0.activityPayload?.isInProgress == true })
-                ? .inProgress
-                : .unknown
+            result[turnID] = facts.hasInProgress ? .inProgress : .unknown
         }
         return result
     }
@@ -135,26 +156,46 @@ struct ConversationTimelineItemBuilder {
         return isCompletedAssistantMessage(next) ? .completed : .unknown
     }
 
+    private struct ContinuationIndexes {
+        let lastActivityIndex: Int?
+        let lastIndexByTurnID: [TurnID: Int]
+    }
+
+    private static func continuationIndexes(in messages: [ConversationMessage]) -> ContinuationIndexes {
+        var lastActivityIndex: Int?
+        var lastIndexByTurnID: [TurnID: Int] = [:]
+
+        for index in messages.indices {
+            let message = messages[index]
+            let isActivity = isActivityMessage(message)
+            if isActivity {
+                lastActivityIndex = index
+            }
+            guard let turnID = message.turnID, !turnID.isEmpty else {
+                continue
+            }
+            // 与旧的向后扫描保持同一语义，但只在构建前线性计算一次。
+            if isActivity || message.kind != .message || message.role != .assistant {
+                lastIndexByTurnID[turnID] = index
+            }
+        }
+        return ContinuationIndexes(
+            lastActivityIndex: lastActivityIndex,
+            lastIndexByTurnID: lastIndexByTurnID
+        )
+    }
+
     private static func isLatestActivitySequence(
         for firstMessage: ConversationMessage,
         nextIndex: [ConversationMessage].Index,
-        messages: [ConversationMessage]
+        continuationIndexes: ContinuationIndexes
     ) -> Bool {
-        let remaining = messages[nextIndex...]
         guard let turnID = firstMessage.turnID else {
-            return !remaining.contains(where: isActivityMessage)
+            return continuationIndexes.lastActivityIndex.map { $0 < nextIndex } ?? true
         }
-        return !remaining.contains { message in
-            guard message.turnID == turnID else {
-                return false
-            }
-            if isActivityMessage(message) {
-                return true
-            }
-            // commentary/plan/交互卡已经开始展示下一阶段时，上一批命令必须收口；
-            // final 的显式 inProgress 仍可能只是尚未完成的流式正文，保持原有兼容语义。
-            return message.kind != .message || message.role != .assistant
-        }
+        // commentary/plan/交互卡已经开始展示下一阶段时，上一批命令必须收口；
+        // final 的显式 inProgress 仍可能只是尚未完成的流式正文，保持原有兼容语义。
+        return continuationIndexes.lastIndexByTurnID[turnID].map { $0 < nextIndex } ?? true
     }
 
     private static func sharedTurnID(in messages: [ConversationMessage]) -> TurnID? {

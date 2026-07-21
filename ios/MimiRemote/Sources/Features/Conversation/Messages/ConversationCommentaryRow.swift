@@ -1,12 +1,12 @@
 import SwiftUI
 
 struct ConversationCommentaryRow: View {
-    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
     let message: ConversationMessage
     let layout: ConversationLayout
+    let stop: () -> Void
 
     var body: some View {
         commentaryBody
@@ -15,7 +15,7 @@ struct ConversationCommentaryRow: View {
             .messageContextMenu(
                 for: message,
                 retry: {},
-                stop: { sessionStore.sendCtrlC() }
+                stop: stop
             )
             .accessibilityElement(children: .contain)
     }

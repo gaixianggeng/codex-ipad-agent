@@ -57,25 +57,15 @@ extension SessionStore {
         }
         let terminalStreamStore = terminalStreamStore
         socket.onEvent = { [weak self, terminalStreamStore] event in
-            Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
-                    return
-                }
-                if let metadata = self?.metadata(for: event) {
-                    self?.recordEventWatermark(metadata, fallbackSessionID: session.id)
-                }
-                let shouldFlushImmediately = await terminalStreamStore.append(event, sessionID: session.id)
-                if shouldFlushImmediately {
-                    if self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true {
-                        await self?.flushRuntimeEvents(sessionID: session.id)
-                    }
-                } else {
-                    guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
-                        return
-                    }
-                    self?.scheduleRuntimeEventFlush(sessionID: session.id)
-                }
+            guard let self,
+                  self.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) else {
+                return
             }
+            if let metadata = self.metadata(for: event) {
+                self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+            }
+            let shouldFlushImmediately = terminalStreamStore.append(event, sessionID: session.id)
+            self.scheduleRuntimeEventFlush(sessionID: session.id, immediately: shouldFlushImmediately)
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
             Task { @MainActor in
@@ -478,16 +468,20 @@ extension SessionStore {
         }
     }
 
-    func scheduleRuntimeEventFlush(sessionID: SessionID) {
+    func scheduleRuntimeEventFlush(sessionID: SessionID, immediately: Bool = false) {
+        // 一个 session 同时只保留一个消费任务。即使 80ms 窗口内越过批量阈值，
+        // 也不为后续每个事件反复取消并新建 Task；最长只多等待当前合并窗口。
         guard runtimeEventFlushTasks[sessionID] == nil else {
             return
         }
-        let delay = runtimeEventFlushDelayNanoseconds
+        let delay = immediately ? 0 : runtimeEventFlushDelayNanoseconds
         runtimeEventFlushTasks[sessionID] = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: delay)
-            } catch {
-                return
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
             }
             await self?.flushRuntimeEvents(sessionID: sessionID)
         }
@@ -496,7 +490,7 @@ extension SessionStore {
     func flushRuntimeEvents(sessionID: SessionID) async {
         runtimeEventFlushTasks[sessionID]?.cancel()
         runtimeEventFlushTasks[sessionID] = nil
-        let events = await terminalStreamStore.drain(sessionID: sessionID)
+        let events = terminalStreamStore.drain(sessionID: sessionID)
         guard !events.isEmpty else {
             return
         }

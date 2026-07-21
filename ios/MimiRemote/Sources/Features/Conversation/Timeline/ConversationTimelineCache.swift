@@ -3,8 +3,9 @@ import Foundation
 struct ConversationTimelineSnapshot {
     let items: [ConversationTimelineItem]
     let itemIDs: [String]
+    let tailItemID: String?
 
-    static let empty = ConversationTimelineSnapshot(items: [], itemIDs: [])
+    static let empty = ConversationTimelineSnapshot(items: [], itemIDs: [], tailItemID: nil)
 }
 
 final class ConversationTimelineItemCache {
@@ -29,7 +30,8 @@ final class ConversationTimelineItemCache {
         keys = nextKeys
         cachedSnapshot = ConversationTimelineSnapshot(
             items: nextItems,
-            itemIDs: nextItems.map(\.id)
+            itemIDs: nextItems.map(\.id),
+            tailItemID: nextItems.last?.id
         )
         return cachedSnapshot
     }
@@ -37,6 +39,10 @@ final class ConversationTimelineItemCache {
     func removeAll() {
         keys.removeAll()
         cachedSnapshot = .empty
+    }
+
+    var tailItemID: String? {
+        cachedSnapshot.tailItemID
     }
 }
 

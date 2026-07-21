@@ -455,6 +455,18 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertGreaterThan(message.contentByteCount, initial.contentByteCount)
     }
 
+    func testConversationMessageIncrementalAppendMatchesFullFingerprint() {
+        var streaming = ConversationMessage(role: .assistant, content: "开头", sendStatus: .sending)
+        streaming.appendContent("-中间")
+        streaming.appendContent("-结尾🙂")
+        let completed = ConversationMessage(role: .assistant, content: "开头-中间-结尾🙂", sendStatus: .confirmed)
+
+        XCTAssertEqual(streaming.content, completed.content)
+        XCTAssertEqual(streaming.contentDigest, completed.contentDigest)
+        XCTAssertEqual(streaming.contentByteCount, completed.contentByteCount)
+        XCTAssertEqual(streaming.contentRevision, 2)
+    }
+
     func testConversationTimelineForcesTailFollowOnlyForLocalUserSubmissions() {
         let localSubmission = ConversationMessage(
             clientMessageID: "client-tail",
@@ -2365,6 +2377,77 @@ final class ConversationDataFlowTests: XCTestCase {
 
         cache.save(.empty, for: sessionScope)
         XCTAssertEqual(cache.snapshot(for: sessionScope), .empty)
+    }
+
+    func testComposerDraftCacheEvictsOldImageDraftsByByteBudget() {
+        var cache = ComposerDraftCache()
+        let largeDataURL = "data:image/jpeg;base64," + String(repeating: "A", count: 8 * 1_024 * 1_024)
+
+        for index in 0..<5 {
+            cache.save(
+                ComposerDraftSnapshot(
+                    text: "草稿 \(index)",
+                    attachments: [.image(url: largeDataURL, detail: .auto)],
+                    voiceDraftNeedsReview: false
+                ),
+                for: .session("large-draft-\(index)")
+            )
+        }
+
+        XCTAssertEqual(cache.snapshot(for: .session("large-draft-0")), .empty)
+        XCTAssertFalse(cache.snapshot(for: .session("large-draft-4")).isEmpty)
+    }
+
+    func testConversationStoreEvictsOldSessionsByRetainedByteBudget() {
+        let store = ConversationStore()
+        let largeDataURL = "data:image/jpeg;base64," + String(repeating: "A", count: 18 * 1_024 * 1_024)
+        let payload = CodexAppServerTurnPayload(input: [.image(url: largeDataURL, detail: .auto)])
+
+        for index in 0..<4 {
+            store.appendLocalUser(
+                "图片 \(index)",
+                sessionID: "large-session-\(index)",
+                clientMessageID: "large-client-\(index)",
+                turnPayload: payload
+            )
+        }
+
+        XCTAssertTrue(store.messages(for: "large-session-0").isEmpty)
+        XCTAssertFalse(store.messages(for: "large-session-3").isEmpty)
+        XCTAssertLessThanOrEqual(store.messagesBySessionID.count, 3)
+    }
+
+    func testStreamingAssistantDeltaUpdatesRetainedBytesWithoutRescanningConversation() {
+        let store = ConversationStore()
+        let metadata = AgentEventMetadata(
+            seq: nil,
+            sessionID: "stream-byte-session",
+            turnID: "stream-byte-turn",
+            itemID: "stream-byte-item",
+            messageID: "stream-byte-message",
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date()
+        )
+
+        store.applyAssistantDelta(
+            AgentDelta(text: "第一段", role: .assistant, kind: .message),
+            metadata: metadata,
+            fallbackSessionID: "stream-byte-session"
+        )
+        store.applyAssistantDelta(
+            AgentDelta(text: "第二段", role: .assistant, kind: .message),
+            metadata: metadata,
+            fallbackSessionID: "stream-byte-session"
+        )
+        store.resetLiveTranscript(sessionID: "stream-byte-session")
+
+        XCTAssertEqual(store.messages(for: "stream-byte-session").last?.content, "第一段第二段")
+        XCTAssertEqual(
+            store.retainedByteFullRecalculationCountForTesting,
+            0,
+            "流式追加只应按消息字节增量更新预算，不能反复扫描整段会话和历史附件"
+        )
     }
 
     func testSessionStoreRetainsComposerDraftAcrossComposerRecreation() {

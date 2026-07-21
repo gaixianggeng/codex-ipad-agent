@@ -53,6 +53,24 @@ final class DataURLImageDecoderTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    func testFileImageDecoderDownsamplesPreviewAndReusesSharedCache() async throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 400)).image { context in
+            UIColor.systemIndigo.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 800, height: 400))
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-image-decoder-\(UUID().uuidString).png")
+        try XCTUnwrap(image.pngData()).write(to: url, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let first = await DataURLImageDecoder.image(fromFileURL: url, cacheKey: "file-preview", maxPixelSize: 100)
+        let second = await DataURLImageDecoder.image(fromFileURL: url, cacheKey: "file-preview", maxPixelSize: 100)
+        let decoded = try XCTUnwrap(first)
+
+        XCTAssertLessThanOrEqual(max(decoded.size.width, decoded.size.height), 100)
+        XCTAssertTrue(decoded === second)
+    }
+
     func testDataURLImageDecoderRapidSourceSwitchDiscardsCancelledResult() async throws {
         let firstURL = try makeDataURL(size: CGSize(width: 1_024, height: 768), color: .systemRed)
         let secondURL = try makeDataURL(size: CGSize(width: 160, height: 90), color: .systemTeal)

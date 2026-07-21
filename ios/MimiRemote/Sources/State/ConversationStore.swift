@@ -16,15 +16,19 @@ final class ConversationStore: ObservableObject {
     private var assistantDeltaFlushTasks: [String: Task<Void, Never>] = [:]
     private var turnLifecycleBySessionID: [SessionID: [TurnID: ConversationTurnLifecycle]] = [:]
     private var sessionAccessTickBySessionID: [String: UInt64] = [:]
+    private var retainedByteCountBySessionID: [String: Int] = [:]
+    private var totalRetainedByteCount = 0
     private var sessionAccessCounter: UInt64 = 0
     private let timelineReducer = ConversationTimelineReducer()
 
 #if DEBUG
     private(set) var historyMergeInvocationCountForTesting = 0
+    private(set) var retainedByteFullRecalculationCountForTesting = 0
 #endif
 
     private let assistantDeltaFlushDelay: UInt64 = 80_000_000
     static let retainedSessionLimit = 32
+    static let retainedSessionByteLimit = 64 * 1_024 * 1_024
 
     private struct PendingAssistantDelta {
         let stableID: MessageID
@@ -946,14 +950,21 @@ final class ConversationStore: ObservableObject {
 
         var list = messagesBySessionID[sessionID] ?? []
         if let index = messageIndex(stableID: pending.stableID, sessionID: sessionID) ?? messageIndex(uuid: pending.uuid, sessionID: sessionID) {
-            list[index].content += pending.text
+            let previousRetainedByteCount = estimatedRetainedByteCount(of: list[index])
+            list[index].appendContent(pending.text)
             list[index].kind = pending.kind
             list[index].sendStatus = .sending
             list[index].revision = pending.revision ?? list[index].revision
             // 流式 delta 没有 completed 事件时，右下角时间也要表达“最近收到内容”的时间；
             // 只更新 updatedAt，保留 createdAt 作为消息开始时间和排序锚点。
             list[index].updatedAt = latestDate(list[index].updatedAt, pending.updatedAt)
-            replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+            let retainedByteDelta = estimatedRetainedByteCount(of: list[index]) - previousRetainedByteCount
+            replaceMessagesWithoutEquivalenceCheck(
+                list,
+                sessionID: sessionID,
+                rebuildIndexes: false,
+                retainedByteDelta: retainedByteDelta
+            )
             return
         }
 
@@ -977,6 +988,8 @@ final class ConversationStore: ObservableObject {
     }
 
     private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
+        // 新消息只增加自身成本；不要为了更新缓存预算重新扫描整段会话和历史大附件。
+        let retainedByteDelta = estimatedRetainedByteCount(of: message)
         // 实时事件通常直接追加。只有旧 Turn 的迟到 completed 需要插回所属 Turn；此处只决定新槽位，
         // 从不移动已有 Item。若上游给出可靠原始时间，可将它插到同 Turn 的估算历史项之前。
         if let turnID = message.turnID,
@@ -985,10 +998,20 @@ final class ConversationStore: ObservableObject {
            let insertionIndex = liveInsertionIndex(for: message, in: list[..<appendedIndex], turnID: turnID) {
             var reordered = Array(list.dropLast())
             reordered.insert(message, at: insertionIndex)
-            replaceMessagesWithoutEquivalenceCheck(reordered, sessionID: sessionID, rebuildIndexes: true)
+            replaceMessagesWithoutEquivalenceCheck(
+                reordered,
+                sessionID: sessionID,
+                rebuildIndexes: true,
+                retainedByteDelta: retainedByteDelta
+            )
             return
         }
-        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+        replaceMessagesWithoutEquivalenceCheck(
+            list,
+            sessionID: sessionID,
+            rebuildIndexes: false,
+            retainedByteDelta: retainedByteDelta
+        )
         indexMessage(message, at: list.count - 1, sessionID: sessionID)
     }
 
@@ -1014,9 +1037,16 @@ final class ConversationStore: ObservableObject {
     @discardableResult
     private func setMessages(_ list: [ConversationMessage], sessionID: String, rebuildIndexes: Bool = true) -> Bool {
         let current = messagesBySessionID[sessionID]
+        let messagesChanged = !areMessagesEquivalent(current, list)
         touchConversationSession(sessionID)
-        let evictedSessionIDs = trimConversationSessionCacheCandidates()
-        guard !areMessagesEquivalent(current, list) || !evictedSessionIDs.isEmpty else {
+        if messagesChanged || retainedByteCountBySessionID[sessionID] == nil {
+            updateRetainedByteCount(
+                estimatedRetainedByteCount(of: list),
+                sessionID: sessionID
+            )
+        }
+        let evictedSessionIDs = trimConversationSessionCacheCandidates(protecting: sessionID)
+        guard messagesChanged || !evictedSessionIDs.isEmpty else {
             return false
         }
 
@@ -1038,10 +1068,24 @@ final class ConversationStore: ObservableObject {
     private func replaceMessagesWithoutEquivalenceCheck(
         _ list: [ConversationMessage],
         sessionID: String,
-        rebuildIndexes: Bool = true
+        rebuildIndexes: Bool = true,
+        retainedByteDelta: Int? = nil
     ) {
         touchConversationSession(sessionID)
-        let evictedSessionIDs = trimConversationSessionCacheCandidates()
+        if let retainedByteDelta,
+           retainedByteCountBySessionID[sessionID] != nil || messagesBySessionID[sessionID] == nil {
+            let current = retainedByteCountBySessionID[sessionID] ?? 0
+            updateRetainedByteCount(
+                max(0, current + retainedByteDelta),
+                sessionID: sessionID
+            )
+        } else {
+            updateRetainedByteCount(
+                estimatedRetainedByteCount(of: list),
+                sessionID: sessionID
+            )
+        }
+        let evictedSessionIDs = trimConversationSessionCacheCandidates(protecting: sessionID)
         var nextMessagesBySessionID = messagesBySessionID
         nextMessagesBySessionID[sessionID] = list
         for evictedSessionID in evictedSessionIDs {
@@ -1103,11 +1147,16 @@ final class ConversationStore: ObservableObject {
         sessionAccessTickBySessionID[sessionID] = sessionAccessCounter
     }
 
-    private func trimConversationSessionCacheCandidates() -> [String] {
+    private func trimConversationSessionCacheCandidates(protecting protectedSessionID: String) -> [String] {
         var evicted: [String] = []
-        while sessionAccessTickBySessionID.count > Self.retainedSessionLimit,
-              let oldest = sessionAccessTickBySessionID.min(by: { $0.value < $1.value }) {
+        while sessionAccessTickBySessionID.count > 1,
+              (sessionAccessTickBySessionID.count > Self.retainedSessionLimit
+                  || totalRetainedByteCount > Self.retainedSessionByteLimit),
+              let oldest = sessionAccessTickBySessionID
+                .filter({ $0.key != protectedSessionID })
+                .min(by: { $0.value < $1.value }) {
             sessionAccessTickBySessionID.removeValue(forKey: oldest.key)
+            removeRetainedByteCount(sessionID: oldest.key)
             evicted.append(oldest.key)
         }
         return evicted
@@ -1125,9 +1174,53 @@ final class ConversationStore: ObservableObject {
         assistantDeltaFlushTasks.removeValue(forKey: sessionID)
         turnLifecycleBySessionID.removeValue(forKey: sessionID)
         sessionAccessTickBySessionID.removeValue(forKey: sessionID)
+        removeRetainedByteCount(sessionID: sessionID)
 
         messageUUIDByStableMessageID = messageUUIDByStableMessageID.filter { $0.key.sessionID != sessionID }
         revisionByStableMessageID = revisionByStableMessageID.filter { $0.key.sessionID != sessionID }
+    }
+
+    private func estimatedRetainedByteCount(of messages: [ConversationMessage]) -> Int {
+#if DEBUG
+        retainedByteFullRecalculationCountForTesting += 1
+#endif
+        return messages.reduce(into: 0) { result, message in
+            result += estimatedRetainedByteCount(of: message)
+        }
+    }
+
+    private func estimatedRetainedByteCount(of message: ConversationMessage) -> Int {
+        var result = message.contentByteCount + 256
+        guard let payload = message.turnPayload else {
+            return result
+        }
+        result += payload.input.reduce(into: 0) { payloadBytes, item in
+            switch item {
+            case .text(let text, let elements):
+                payloadBytes += text.utf8.count + elements.count * 64
+            case .image(let url, _):
+                payloadBytes += url.utf8.count
+            case .localImage(let path, _):
+                payloadBytes += path.utf8.count
+            case .skill(let name, let path), .mention(let name, let path):
+                payloadBytes += name.utf8.count + path.utf8.count
+            }
+        }
+        return result
+    }
+
+    private func updateRetainedByteCount(_ value: Int, sessionID: String) {
+        let previous = retainedByteCountBySessionID[sessionID] ?? 0
+        let normalized = max(0, value)
+        retainedByteCountBySessionID[sessionID] = normalized
+        totalRetainedByteCount = max(0, totalRetainedByteCount + normalized - previous)
+    }
+
+    private func removeRetainedByteCount(sessionID: String) {
+        guard let removed = retainedByteCountBySessionID.removeValue(forKey: sessionID) else {
+            return
+        }
+        totalRetainedByteCount = max(0, totalRetainedByteCount - removed)
     }
 
     private func recordTurnLifecycles(from messages: [ConversationMessage], sessionID: SessionID) {

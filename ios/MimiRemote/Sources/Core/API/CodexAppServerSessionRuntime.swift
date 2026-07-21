@@ -73,8 +73,8 @@ actor CodexAppServerSessionRuntime {
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
     var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
-    var eventContinuationsBySessionID: [
-        SessionID: [UUID: AsyncStream<AgentEvent>.Continuation]
+    var eventMailboxesBySessionID: [
+        SessionID: [UUID: CodexAppServerEventMailbox]
     ] = [:]
     var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
@@ -1185,45 +1185,40 @@ actor CodexAppServerSessionRuntime {
     func attachEvents(
         sessionID: SessionID,
         replayPolicy: CodexAppServerBufferedEventReplayPolicy = .all
-    ) -> AsyncStream<AgentEvent> {
-        var continuation: AsyncStream<AgentEvent>.Continuation?
+    ) -> CodexAppServerEventStream {
         // 这里承接的是已经投影好的 thread 事件；正常连接完整保序交付，切回会话的 backlog
-        // 可降级为状态级回放，避免历史输出在消息区重新直播一遍。
-        let stream = AsyncStream<AgentEvent>(bufferingPolicy: .unbounded) {
-            continuation = $0
-        }
-        if let continuation {
-            let token = UUID()
-            let isFirstSubscriber = eventContinuationsBySessionID[sessionID]?.isEmpty != false
-            eventContinuationsBySessionID[sessionID, default: [:]][token] = continuation
-            // backlog 只能被第一个订阅者消费一次；之后同 thread 的可见页面与后台队列
-            // 都从实时扇出接收事件，避免两个 SessionWebSocketClient 互相顶掉 continuation。
-            var replayedInteractionIDs: Set<String> = []
-            if isFirstSubscriber {
-                for event in bufferedEvents(sessionID: sessionID, replayPolicy: replayPolicy) {
-                    if let interactionID = pendingInteractionReplayID(for: event) {
-                        replayedInteractionIDs.insert(interactionID)
-                    }
-                    continuation.yield(event)
-                }
-            }
-            // server request 本身不在 thread/list/read 里，页面切换或进后台时又可能已经从
-            // runtime 收到、但还没投影到新页面。新订阅者必须直接补放 runtime 内存里仍挂起的
-            // 审批/补充信息请求，否则侧边栏只会显示“待输入”，详情却没有可操作卡片。
-            for event in pendingInteractionEvents(sessionID: sessionID) {
-                guard let interactionID = pendingInteractionReplayID(for: event),
-                      replayedInteractionIDs.insert(interactionID).inserted else {
-                    continue
-                }
-                continuation.yield(event)
-            }
-            continuation.onTermination = { [weak self] _ in
-                Task {
-                    await self?.detachEvents(sessionID: sessionID, token: token)
-                }
+        // 可降级为状态级回放，避免历史输出在消息区重新直播一遍。每个订阅者使用独立合并邮箱：
+        // 主线程渲染变慢时连续 delta 会收敛为少量完整 chunk，控制事件仍严格无损有序。
+        let token = UUID()
+        let mailbox = CodexAppServerEventMailbox { [weak self] in
+            Task {
+                await self?.detachEvents(sessionID: sessionID, token: token)
             }
         }
-        return stream
+        let isFirstSubscriber = eventMailboxesBySessionID[sessionID]?.isEmpty != false
+        eventMailboxesBySessionID[sessionID, default: [:]][token] = mailbox
+        // backlog 只能被第一个订阅者消费一次；之后同 thread 的可见页面与后台队列
+        // 都从实时扇出接收事件，避免两个 SessionWebSocketClient 互相顶掉订阅者。
+        var replayedInteractionIDs: Set<String> = []
+        if isFirstSubscriber {
+            for event in bufferedEvents(sessionID: sessionID, replayPolicy: replayPolicy) {
+                if let interactionID = pendingInteractionReplayID(for: event) {
+                    replayedInteractionIDs.insert(interactionID)
+                }
+                mailbox.send(event)
+            }
+        }
+        // server request 本身不在 thread/list/read 里，页面切换或进后台时又可能已经从
+        // runtime 收到、但还没投影到新页面。新订阅者必须直接补放 runtime 内存里仍挂起的
+        // 审批/补充信息请求，否则侧边栏只会显示“待输入”，详情却没有可操作卡片。
+        for event in pendingInteractionEvents(sessionID: sessionID) {
+            guard let interactionID = pendingInteractionReplayID(for: event),
+                  replayedInteractionIDs.insert(interactionID).inserted else {
+                continue
+            }
+            mailbox.send(event)
+        }
+        return CodexAppServerEventStream(mailbox: mailbox)
     }
 
     func bufferedEvents(
@@ -1685,9 +1680,9 @@ actor CodexAppServerSessionRuntime {
     }
 
     func detachEvents(sessionID: SessionID, token: UUID) {
-        eventContinuationsBySessionID[sessionID]?.removeValue(forKey: token)
-        if eventContinuationsBySessionID[sessionID]?.isEmpty == true {
-            eventContinuationsBySessionID.removeValue(forKey: sessionID)
+        eventMailboxesBySessionID[sessionID]?.removeValue(forKey: token)
+        if eventMailboxesBySessionID[sessionID]?.isEmpty == true {
+            eventMailboxesBySessionID.removeValue(forKey: sessionID)
         }
     }
 
@@ -1814,10 +1809,10 @@ actor CodexAppServerSessionRuntime {
     }
 
     func finishAttachedEventStreams() {
-        let continuations = eventContinuationsBySessionID.values.flatMap { $0.values }
-        eventContinuationsBySessionID.removeAll(keepingCapacity: true)
-        for continuation in continuations {
-            continuation.finish()
+        let mailboxes = eventMailboxesBySessionID.values.flatMap { $0.values }
+        eventMailboxesBySessionID.removeAll(keepingCapacity: true)
+        for mailbox in mailboxes {
+            mailbox.finishFromProducer()
         }
     }
 

@@ -1,13 +1,16 @@
 import SwiftUI
 
 struct MessageRow: View, Equatable {
-    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
     let themeVersion: Int
     let layout: ConversationLayout
     let showsActiveDeliveryStatus: Bool
+    let skills: [SkillCapability]
+    let retry: (ConversationMessage) -> Void
+    let stop: () -> Void
+    let previewFile: (String) async throws -> URL
 
     // 只有内容 fingerprint / 状态变化时才重绘；长消息内容本身不参与这里的逐行比较。
     static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
@@ -25,6 +28,7 @@ struct MessageRow: View, Equatable {
             && lhs.themeVersion == rhs.themeVersion
             && lhs.layout == rhs.layout
             && lhs.showsActiveDeliveryStatus == rhs.showsActiveDeliveryStatus
+            && lhs.skills == rhs.skills
     }
 
     var body: some View {
@@ -45,7 +49,14 @@ struct MessageRow: View, Equatable {
         HStack(spacing: 0) {
             Spacer(minLength: layout.messageSideSpacer)
             VStack(alignment: .trailing, spacing: 3) {
-                MessageBubble(message: message, layout: layout)
+                MessageBubble(
+                    message: message,
+                    layout: layout,
+                    skills: skills,
+                    retry: retry,
+                    stop: stop,
+                    previewFile: previewFile
+                )
                 statusCaption
             }
         }
@@ -54,9 +65,16 @@ struct MessageRow: View, Equatable {
     private var assistantRow: some View {
         HStack(spacing: 0) {
             if message.kind == .commentary {
-                ConversationCommentaryRow(message: message, layout: layout)
+                ConversationCommentaryRow(message: message, layout: layout, stop: stop)
             } else {
-                MessageBubble(message: message, layout: layout)
+                MessageBubble(
+                    message: message,
+                    layout: layout,
+                    skills: skills,
+                    retry: retry,
+                    stop: stop,
+                    previewFile: previewFile
+                )
             }
             Spacer(minLength: layout.messageSideSpacer)
         }

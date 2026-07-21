@@ -66,6 +66,52 @@ enum DataURLImageDecoder {
         }
     }
 
+    static func image(
+        fromFileURL url: URL,
+        cacheKey: String,
+        maxPixelSize: Int
+    ) async -> UIImage? {
+        guard !Task.isCancelled else {
+            return nil
+        }
+        let boundedPixelSize = max(1, maxPixelSize)
+        let resolvedCacheKey = "file:\(cacheKey):\(boundedPixelSize)" as NSString
+        if let cached = cache.object(forKey: resolvedCacheKey) {
+            return cached
+        }
+
+        let decodeTask = Task<UIImage?, Never>.detached(priority: .userInitiated) {
+            guard !Task.isCancelled,
+                  let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+            else {
+                return nil
+            }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: boundedPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            guard !Task.isCancelled,
+                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            else {
+                return nil
+            }
+            let image = UIImage(cgImage: cgImage)
+            cache.setObject(
+                image,
+                forKey: resolvedCacheKey,
+                cost: cgImage.bytesPerRow * cgImage.height
+            )
+            return image
+        }
+        return await withTaskCancellationHandler {
+            await decodeTask.value
+        } onCancel: {
+            decodeTask.cancel()
+        }
+    }
+
     /// 只读取已解码缓存，不在 SwiftUI 初始化或 `body` 路径执行 Base64/ImageIO 工作。
     static func cachedImage(cacheKey: String, maxPixelSize: Int) -> UIImage? {
         let boundedPixelSize = max(1, maxPixelSize)

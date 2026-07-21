@@ -464,13 +464,19 @@ func loadDirectAppServerEventStreamFixture(
     file: StaticString = #filePath,
     line: UInt = #line
 ) throws -> [AgentEvent] {
-    // 测试 target 目前没有 Copy Bundle Resources；这里用源码文件路径定位 fixture，
-    // 保持本次改动只触碰测试代码和测试数据，不要求主线程立即重新生成 Xcode 工程。
+    // 实体机无法访问 Mac 的源码绝对路径，因此优先读取测试 Bundle；
+    // 源码路径仅作为本地旧工程的兼容回退，避免设备回归产生假失败。
+    let fixturePath = URL(fileURLWithPath: fixtureName)
+    let bundledFixtureURL = Bundle(for: ConversationDataFlowTests.self).url(
+        forResource: fixturePath.deletingPathExtension().lastPathComponent,
+        withExtension: fixturePath.pathExtension
+    )
     let testFileURL = URL(fileURLWithPath: String(describing: file))
-    let fixtureURL = testFileURL
+    let sourceFixtureURL = testFileURL
         .deletingLastPathComponent()
         .appendingPathComponent("Fixtures")
         .appendingPathComponent(fixtureName)
+    let fixtureURL = bundledFixtureURL ?? sourceFixtureURL
     let content = try String(contentsOf: fixtureURL, encoding: .utf8)
     var projector = CodexAppServerEventProjector()
     var events: [AgentEvent] = []
@@ -876,4 +882,3 @@ func waitForConversationTimelineAtBottom(
 
     return try XCTUnwrap(latestScrollView)
 }
-

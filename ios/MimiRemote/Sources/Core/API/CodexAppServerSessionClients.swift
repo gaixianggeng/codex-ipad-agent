@@ -570,7 +570,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
 typealias CodexAppServerRuntimeRoutingSessionAPIClient = MultiRuntimeSessionAPIClient
 
 final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
-    var onEvent: ((AgentEvent) -> Void)?
+    var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
@@ -670,7 +670,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
 }
 
 final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
-    var onEvent: ((AgentEvent) -> Void)?
+    var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
@@ -699,6 +699,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let replayPolicy: CodexAppServerBufferedEventReplayPolicy = replayBufferedEvents ? .all : .stateOnly
         eventPumpTask = Task { [runtime] in
             let events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
+            defer {
+                // Task 可能在等待 MainActor 时被取消；显式释放订阅，避免 runtime 长期保留邮箱。
+                events.cancel()
+            }
             do {
                 try await runtime.connectForEvents(sessionID: threadID)
                 guard !Task.isCancelled else {

@@ -62,7 +62,10 @@ struct ComposerDraftSnapshot: Equatable {
 struct ComposerDraftCache {
     private var snapshotsByScope: [ComposerDraftScopeKey: ComposerDraftSnapshot] = [:]
     private var recentlyUsedScopes: [ComposerDraftScopeKey] = []
+    private var byteCountByScope: [ComposerDraftScopeKey: Int] = [:]
+    private var retainedByteCount = 0
     static let retainedDraftLimit = 24
+    static let retainedDraftByteLimit = 32 * 1_024 * 1_024
 
     mutating func save(_ snapshot: ComposerDraftSnapshot, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -72,24 +75,33 @@ struct ComposerDraftCache {
         if snapshot.isEmpty {
             remove(scope: scope)
         } else {
+            retainedByteCount -= byteCountByScope[scope] ?? 0
             snapshotsByScope[scope] = snapshot
+            let byteCount = Self.estimatedByteCount(of: snapshot)
+            byteCountByScope[scope] = byteCount
+            retainedByteCount += byteCount
             touch(scope)
-            // 图片已经是 base64 内联数据；限制保留的会话数，避免长期切换会话后草稿无限占用内存。
-            while recentlyUsedScopes.count > Self.retainedDraftLimit {
+            // 图片是 base64 内联数据，必须同时限制会话数和总字节数；单张超限草稿仍保留当前作用域。
+            while recentlyUsedScopes.count > 1,
+                  (recentlyUsedScopes.count > Self.retainedDraftLimit || retainedByteCount > Self.retainedDraftByteLimit) {
                 let evictedScope = recentlyUsedScopes.removeFirst()
                 snapshotsByScope.removeValue(forKey: evictedScope)
+                retainedByteCount -= byteCountByScope.removeValue(forKey: evictedScope) ?? 0
             }
         }
     }
 
     mutating func remove(scope: ComposerDraftScopeKey) {
         snapshotsByScope.removeValue(forKey: scope)
+        retainedByteCount -= byteCountByScope.removeValue(forKey: scope) ?? 0
         recentlyUsedScopes.removeAll { $0 == scope }
     }
 
     mutating func removeAll() {
         snapshotsByScope.removeAll(keepingCapacity: false)
+        byteCountByScope.removeAll(keepingCapacity: false)
         recentlyUsedScopes.removeAll(keepingCapacity: false)
+        retainedByteCount = 0
     }
 
     func snapshot(for scope: ComposerDraftScopeKey) -> ComposerDraftSnapshot {
@@ -99,6 +111,21 @@ struct ComposerDraftCache {
     private mutating func touch(_ scope: ComposerDraftScopeKey) {
         recentlyUsedScopes.removeAll { $0 == scope }
         recentlyUsedScopes.append(scope)
+    }
+
+    private static func estimatedByteCount(of snapshot: ComposerDraftSnapshot) -> Int {
+        snapshot.text.utf8.count + snapshot.attachments.reduce(into: 0) { result, item in
+            switch item {
+            case .text(let text, let elements):
+                result += text.utf8.count + elements.count * 64
+            case .image(let url, _):
+                result += url.utf8.count
+            case .localImage(let path, _):
+                result += path.utf8.count
+            case .skill(let name, let path), .mention(let name, let path):
+                result += name.utf8.count + path.utf8.count
+            }
+        }
     }
 }
 

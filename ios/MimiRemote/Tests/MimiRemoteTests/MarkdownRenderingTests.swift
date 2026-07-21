@@ -257,6 +257,67 @@ final class MarkdownRenderingTests: XCTestCase {
         })
     }
 
+    func testRenderPlanCacheEvictsByContentByteBudget() {
+        let cache = MessageRenderPlanCache(limit: 8, byteLimit: 12)
+        _ = cache.plan(messageKey: "first", content: "12345678", contentDigest: 1, contentByteCount: 8)
+        _ = cache.plan(messageKey: "second", content: "abcdefgh", contentDigest: 2, contentByteCount: 8)
+
+        XCTAssertEqual(cache.cachedPlanCountForTesting, 1)
+        XCTAssertLessThanOrEqual(cache.cachedContentByteCountForTesting, 12)
+    }
+
+    func testLongPlainStreamingMessageDefersRepeatedMarkdownParsingUntilCompletion() {
+        let cache = MessageRenderPlanCache(limit: 8, streamingPlainTextThreshold: 4 * 1_024)
+        var message = ConversationMessage(
+            stableID: "assistant:long-plain-stream",
+            role: .assistant,
+            content: String(repeating: "a", count: 4 * 1_024),
+            sendStatus: .sending
+        )
+
+        _ = cache.plan(for: message)
+        XCTAssertEqual(cache.markdownParseInvocationCountForTesting, 1)
+
+        var streamingPlan = cache.plan(for: message)
+        for _ in 0..<32 {
+            message.appendContent(String(repeating: "b", count: 128))
+            streamingPlan = cache.plan(for: message)
+        }
+
+        XCTAssertEqual(cache.markdownParseInvocationCountForTesting, 1)
+        XCTAssertTrue(streamingPlan.isProvisionalPlainStreaming)
+        XCTAssertEqual(streamingPlan.blocks.first?.plainTextForTesting, message.content)
+
+        message.sendStatus = .confirmed
+        let completedPlan = cache.plan(for: message)
+        let independentlyParsed = MessageRenderPlanCache(limit: 2).plan(for: message)
+
+        XCTAssertEqual(cache.markdownParseInvocationCountForTesting, 2)
+        XCTAssertFalse(completedPlan.isProvisionalPlainStreaming)
+        XCTAssertEqual(completedPlan.blocks, independentlyParsed.blocks)
+    }
+
+    func testLongPlainStreamingMessageReturnsToMarkdownWhenSyntaxAppears() {
+        let cache = MessageRenderPlanCache(limit: 8, streamingPlainTextThreshold: 256)
+        var message = ConversationMessage(
+            stableID: "assistant:plain-to-markdown-stream",
+            role: .assistant,
+            content: String(repeating: "正文", count: 128),
+            sendStatus: .sending
+        )
+
+        _ = cache.plan(for: message)
+        message.appendContent(String(repeating: "继续", count: 64))
+        XCTAssertTrue(cache.plan(for: message).isProvisionalPlainStreaming)
+
+        message.appendContent("\n\n**加粗内容**")
+        let syntaxPlan = cache.plan(for: message)
+        let independentlyParsed = MessageRenderPlanCache(limit: 2).plan(for: message)
+
+        XCTAssertFalse(syntaxPlan.isProvisionalPlainStreaming)
+        XCTAssertEqual(syntaxPlan.blocks, independentlyParsed.blocks)
+    }
+
     func testCompleteProposedPlanWrapperRendersInnerMarkdownOnly() throws {
         let result = MarkdownParser.shared.parse("""
         <proposed_plan>

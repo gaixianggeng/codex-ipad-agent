@@ -254,7 +254,7 @@ struct MarkdownBlockView: View {
 }
 
 enum ConversationImageSource: Hashable, Identifiable {
-    case dataURL(String)
+    case dataURL(value: String, digest: String)
     case remoteURL(URL)
     case localPath(String)
     case historyMedia(id: String)
@@ -262,8 +262,8 @@ enum ConversationImageSource: Hashable, Identifiable {
 
     var id: String {
         switch self {
-        case .dataURL(let value):
-            return "data:\(Self.stableDigest(value))"
+        case .dataURL(_, let digest):
+            return "data:\(digest)"
         case .remoteURL(let url):
             return "remote:\(url.absoluteString)"
         case .localPath(let path):
@@ -292,7 +292,7 @@ enum ConversationImageSource: Hashable, Identifiable {
             return .unsupported(source)
         }
         if trimmed.range(of: "data:image/", options: [.anchored, .caseInsensitive]) != nil {
-            return .dataURL(trimmed)
+            return .dataURL(value: trimmed, digest: stableDigest(trimmed))
         }
         if let id = historyMediaID(from: trimmed) {
             return .historyMedia(id: id)
@@ -436,7 +436,7 @@ struct ConversationImagePreview: View {
     private func loadSourceIfNeeded() async {
         let expectedSourceID = source.id
         switch source {
-        case .dataURL(let value):
+        case .dataURL(let value, _):
             loadError = nil
             if let cached = DataURLImageDecoder.cachedImage(
                 cacheKey: expectedSourceID,
@@ -595,7 +595,11 @@ struct ConversationImagePreview: View {
             guard !Task.isCancelled else {
                 return
             }
-            guard let image = UIImage(contentsOfFile: url.path) else {
+            guard let image = await DataURLImageDecoder.image(
+                fromFileURL: url,
+                cacheKey: "local:\(targetPath)",
+                maxPixelSize: 1_600
+            ) else {
                 loadError = L10n.text("ui.the_file_was_read_but_could_not_be")
                 return
             }
@@ -626,7 +630,11 @@ struct ConversationImagePreview: View {
             guard !Task.isCancelled else {
                 return
             }
-            guard let image = UIImage(contentsOfFile: url.path) else {
+            guard let image = await DataURLImageDecoder.image(
+                fromFileURL: url,
+                cacheKey: "historyMedia:\(targetID)",
+                maxPixelSize: 1_600
+            ) else {
                 loadError = L10n.text("ui.historical_pictures_were_read_but_could_not_be")
                 return
             }

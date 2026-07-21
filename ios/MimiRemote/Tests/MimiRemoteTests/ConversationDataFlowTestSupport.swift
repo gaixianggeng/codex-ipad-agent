@@ -47,7 +47,7 @@ actor ReconnectDelayRecorder {
 }
 
 final class MockWebSocketClient: SessionWebSocketClient {
-    var onEvent: ((AgentEvent) -> Void)?
+    var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
@@ -119,6 +119,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
         onStatus?(status)
     }
 
+    @MainActor
     func emitEvent(_ event: AgentEvent) {
         onEvent?(event)
     }
@@ -1706,4 +1707,3 @@ func waitForSelectedThreadGoalStatus(_ expected: ThreadGoalStatus, store: Sessio
 @MainActor
 extension ConversationDataFlowTests {
 }
-

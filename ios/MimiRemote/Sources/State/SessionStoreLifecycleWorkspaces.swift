@@ -156,6 +156,30 @@ extension SessionStore {
         disconnectWebSocket()
         seedDebugConversationMessages(sessionID: selectedSessionID, now: now)
         seedDebugConversationMessages(sessionID: runningSessionID, now: now.addingTimeInterval(-60 * 10))
+        if appStore.shouldSeedDebugQueuedTurnsUI {
+            // 队列演示必须同时呈现一个真实的 streaming 气泡。只把 session 标成 running
+            // 会让已完成的上一轮看起来仍在生成，进而误导发送/排队状态的真机验收。
+            let metadata = AgentEventMetadata(
+                seq: nil,
+                sessionID: runningSessionID,
+                turnID: "debug-turn-running",
+                itemID: "debug-item-running",
+                messageID: "debug-assistant-running",
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: now.addingTimeInterval(-20)
+            )
+            conversationStore.updateTurnLifecycle(.inProgress, metadata: metadata, fallbackSessionID: runningSessionID)
+            conversationStore.applyAssistantDelta(
+                AgentDelta(
+                    text: L10n.text("ui.verifying_disconnection_recovery_approval_and_queued_message_status"),
+                    role: .assistant,
+                    kind: .message
+                ),
+                metadata: metadata,
+                fallbackSessionID: runningSessionID
+            )
+        }
         // 调试样例保留两种关键队列态，便于在模拟器直接验收托盘、编辑和歧义重试 UI；
         // 只写内存，不污染真实连接档案的持久化队列。
         queuedRunningTurnsBySessionID[runningSessionID] = [

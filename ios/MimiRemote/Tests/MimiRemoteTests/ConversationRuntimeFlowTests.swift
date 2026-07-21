@@ -313,15 +313,44 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )
 
-        let firstShouldFlush = await store.append(.turnStarted(metadata), sessionID: "sess_batch")
-        let secondShouldFlush = await store.append(.assistantDelta(AgentDelta(text: "hi", role: .assistant, kind: .message), metadata), sessionID: "sess_batch")
+        let firstShouldFlush = store.append(.turnStarted(metadata), sessionID: "sess_batch")
+        let secondShouldFlush = store.append(.assistantDelta(AgentDelta(text: "hi", role: .assistant, kind: .message), metadata), sessionID: "sess_batch")
 
         XCTAssertFalse(firstShouldFlush)
         XCTAssertTrue(secondShouldFlush)
-        let drained = await store.drain(sessionID: "sess_batch")
-        let drainedAgain = await store.drain(sessionID: "sess_batch")
+        let drained = store.drain(sessionID: "sess_batch")
+        let drainedAgain = store.drain(sessionID: "sess_batch")
         XCTAssertEqual(drained.count, 2)
         XCTAssertTrue(drainedAgain.isEmpty)
+    }
+
+    func testTerminalStreamStoreCompactsContiguousAssistantDeltasWithoutCrossingBoundaries() {
+        let store = TerminalStreamStore(maxBatchSize: 64)
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: "sess_compact",
+            turnID: "turn_compact",
+            itemID: "item_compact",
+            messageID: "message_compact",
+            clientMessageID: nil,
+            revision: 1,
+            createdAt: nil
+        )
+
+        _ = store.append(.assistantDelta(AgentDelta(text: "你", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
+        _ = store.append(.assistantDelta(AgentDelta(text: "好", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
+
+        let compacted = store.drain(sessionID: "sess_compact")
+        XCTAssertEqual(compacted.count, 1)
+        guard case .assistantDelta(let delta, _) = compacted.first else {
+            return XCTFail("连续正文增量应合并为一个事件")
+        }
+        XCTAssertEqual(delta.text, "你好")
+
+        _ = store.append(.assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
+        _ = store.append(.turnStarted(metadata), sessionID: "sess_compact")
+        _ = store.append(.assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
+        XCTAssertEqual(store.drain(sessionID: "sess_compact").count, 3, "控制事件边界不能被合并穿透")
     }
 
     func testDisconnectFlushesBufferedRuntimeEventsBeforeSwitchingSession() async throws {

@@ -97,7 +97,7 @@ struct AttachmentPreviewSheet: View {
     private func loadEmbeddedImageIfNeeded() async {
         embeddedImage = nil
         isLoadingEmbeddedImage = false
-        guard case .dataURL(let value) = previewImageSource else {
+        guard case .dataURL(let value, _) = previewImageSource else {
             return
         }
         let expectedSourceID = previewImageSource?.id

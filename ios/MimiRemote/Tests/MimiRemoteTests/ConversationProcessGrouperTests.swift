@@ -132,6 +132,23 @@ final class ConversationProcessGrouperTests: XCTestCase {
         XCTAssertEqual(standaloneCommand.messages.map(\.stableID), ["command-turn-b"])
     }
 
+    func testBuilderKeepsLargeAlternatingTimelineSemanticsAndCachesTailID() {
+        var messages: [ConversationMessage] = []
+        for index in 0..<500 {
+            let turnID = "turn-linear-\(index)"
+            messages.append(makeReasoning(id: "reasoning-linear-\(index)", turnID: turnID, text: "检查 \(index)"))
+            messages.append(makeAssistant(id: "assistant-linear-\(index)", turnID: turnID))
+        }
+
+        let cache = ConversationTimelineItemCache()
+        let snapshot = cache.snapshot(from: messages)
+
+        // reasoning 没有真实子活动时只是内部阶段标题，不会单独占据主时间线。
+        XCTAssertEqual(snapshot.items.count, 500)
+        XCTAssertEqual(snapshot.tailItemID, snapshot.items.last?.id)
+        XCTAssertEqual(cache.tailItemID, snapshot.tailItemID)
+    }
+
     func testResolvedInteractionCanJoinGroupButPendingInteractionEndsIt() {
         let reasoning = makeReasoning(id: "reasoning-input", turnID: "turn-input", text: "等待确认后继续")
         let command = makeActivity(
@@ -342,6 +359,29 @@ final class ConversationProcessGrouperTests: XCTestCase {
         XCTAssertEqual(message.activityPayload?.category, .thinking)
         XCTAssertEqual(message.activityPayload?.subtitle, "正在检查实现")
         XCTAssertTrue(message.activityPayload?.isInProgress == true)
+    }
+
+    func testReasoningBufferClearsWhenTurnCompletes() throws {
+        let first = try AgentAPIClient.decoder.decode(
+            CodexAppServerNotification.self,
+            from: Data(#"{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thread-clear","turnId":"turn-clear","itemId":"reason-clear","summaryIndex":0,"delta":"旧内容"}}"#.utf8)
+        )
+        let completed = try AgentAPIClient.decoder.decode(
+            CodexAppServerNotification.self,
+            from: Data(#"{"method":"turn/completed","params":{"threadId":"thread-clear","turnId":"turn-clear"}}"#.utf8)
+        )
+        let next = try AgentAPIClient.decoder.decode(
+            CodexAppServerNotification.self,
+            from: Data(#"{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thread-clear","turnId":"turn-clear","itemId":"reason-clear","summaryIndex":0,"delta":"新内容"}}"#.utf8)
+        )
+        var projector = CodexAppServerEventProjector()
+
+        _ = projector.project(first)
+        _ = projector.project(completed)
+        guard case .messageCompleted(let message, _) = try XCTUnwrap(projector.project(next)) else {
+            return XCTFail("完成后下一段 reasoning 仍应正常投影")
+        }
+        XCTAssertEqual(message.content, "新内容")
     }
 
     func testLiveAgentMessageKeepsCommentaryKindFromItemStarted() throws {

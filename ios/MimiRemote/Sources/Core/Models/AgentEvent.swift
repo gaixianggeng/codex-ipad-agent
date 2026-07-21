@@ -23,6 +23,257 @@ enum AgentEvent {
     case unknown(String)
 }
 
+extension AgentEvent {
+    var contiguousPayloadByteCount: Int? {
+        switch self {
+        case .assistantDelta(let delta, _):
+            return delta.text.utf8.count
+        case .logDelta(let delta, _):
+            return delta.text.utf8.count
+        default:
+            return nil
+        }
+    }
+
+    /// 只合并相邻且属于同一 item 的高频事件，保留控制事件边界和最终文本语义。
+    func mergingContiguous(with next: AgentEvent) -> AgentEvent? {
+        switch (self, next) {
+        case let (.assistantDelta(previousDelta, previousMetadata), .assistantDelta(nextDelta, nextMetadata))
+            where Self.sameItem(previousMetadata, nextMetadata)
+                && previousDelta.role == nextDelta.role
+                && previousDelta.kind == nextDelta.kind:
+            var text = previousDelta.text
+            text.append(contentsOf: nextDelta.text)
+            return .assistantDelta(
+                AgentDelta(text: text, role: nextDelta.role, kind: nextDelta.kind),
+                nextMetadata
+            )
+        case let (.logDelta(previousDelta, previousMetadata), .logDelta(nextDelta, nextMetadata))
+            where Self.sameItem(previousMetadata, nextMetadata)
+                && previousDelta.stream == nextDelta.stream:
+            var text = previousDelta.text
+            text.append(contentsOf: nextDelta.text)
+            return .logDelta(LogDelta(text: text, stream: nextDelta.stream), nextMetadata)
+        case let (.messageCompleted(previousMessage, previousMetadata), .messageCompleted(nextMessage, nextMetadata))
+            where previousMessage.role == .system
+                && nextMessage.role == .system
+                && previousMessage.kind == nextMessage.kind
+                && (nextMessage.kind == .plan || nextMessage.kind == .reasoningSummary)
+                && Self.sameItem(previousMetadata, nextMetadata):
+            return .messageCompleted(nextMessage, nextMetadata)
+        default:
+            return nil
+        }
+    }
+
+    private static func sameItem(_ lhs: AgentEventMetadata, _ rhs: AgentEventMetadata) -> Bool {
+        lhs.sessionID == rhs.sessionID
+            && lhs.turnID == rhs.turnID
+            && lhs.itemID == rhs.itemID
+            && lhs.messageID == rhs.messageID
+    }
+}
+
+/// 面向单个会话订阅者的事件邮箱。消费者被 MainActor 阻塞时，只合并语义上连续的文本事件；
+/// 审批、完成、错误等控制事件会成为硬边界并按原顺序保留。
+final class CodexAppServerEventMailbox: @unchecked Sendable {
+    private let lock = NSLock()
+    private let onCancellation: @Sendable () -> Void
+    private var pendingEvents: [AgentEvent] = []
+    private var pendingHead = 0
+    private var waiter: CheckedContinuation<AgentEvent?, Never>?
+    private var producerFinished = false
+    private var subscriberCancelled = false
+    private var didNotifyCancellation = false
+
+    init(onCancellation: @escaping @Sendable () -> Void) {
+        self.onCancellation = onCancellation
+    }
+
+    func send(_ event: AgentEvent) {
+        var waitingConsumer: CheckedContinuation<AgentEvent?, Never>?
+        lock.lock()
+        if !producerFinished, !subscriberCancelled {
+            if let waiter {
+                self.waiter = nil
+                waitingConsumer = waiter
+            } else {
+                appendOrMerge(event)
+            }
+        }
+        lock.unlock()
+        waitingConsumer?.resume(returning: event)
+    }
+
+    func next() async -> AgentEvent? {
+        if Task.isCancelled {
+            cancel()
+            return nil
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                var immediateEvent: AgentEvent?
+                var shouldResumeImmediately = false
+
+                lock.lock()
+                if let event = popFirstPendingEvent() {
+                    immediateEvent = event
+                    shouldResumeImmediately = true
+                } else if producerFinished || subscriberCancelled {
+                    shouldResumeImmediately = true
+                } else {
+                    // 每个 stream 只允许一个 iterator；重复等待时优先结束旧等待，避免悬挂 continuation。
+                    if let previousWaiter = waiter {
+                        previousWaiter.resume(returning: nil)
+                    }
+                    waiter = continuation
+                }
+                lock.unlock()
+
+                if shouldResumeImmediately {
+                    continuation.resume(returning: immediateEvent)
+                }
+            }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    /// 上游结束后先排空已接收事件，再结束 for-await，行为与 AsyncStream.finish() 一致。
+    func finishFromProducer() {
+        var waitingConsumer: CheckedContinuation<AgentEvent?, Never>?
+        lock.lock()
+        guard !producerFinished else {
+            lock.unlock()
+            return
+        }
+        producerFinished = true
+        if pendingHead >= pendingEvents.count {
+            waitingConsumer = waiter
+            waiter = nil
+        }
+        lock.unlock()
+        waitingConsumer?.resume(returning: nil)
+    }
+
+    func cancel() {
+        var waitingConsumer: CheckedContinuation<AgentEvent?, Never>?
+        var shouldNotify = false
+        lock.lock()
+        if !subscriberCancelled {
+            subscriberCancelled = true
+            producerFinished = true
+            pendingEvents.removeAll(keepingCapacity: false)
+            pendingHead = 0
+            waitingConsumer = waiter
+            waiter = nil
+        }
+        if !didNotifyCancellation {
+            didNotifyCancellation = true
+            shouldNotify = true
+        }
+        lock.unlock()
+
+        waitingConsumer?.resume(returning: nil)
+        if shouldNotify {
+            onCancellation()
+        }
+    }
+
+    private func appendOrMerge(_ event: AgentEvent) {
+        if event.contiguousPayloadByteCount == nil, pendingHead < pendingEvents.count {
+            let lastIndex = pendingEvents.index(before: pendingEvents.endIndex)
+            if let merged = pendingEvents[lastIndex].mergingContiguous(with: event) {
+                // reasoning/plan 是累计快照，保留最新完整内容即可。
+                pendingEvents[lastIndex] = merged
+                return
+            }
+        }
+        pendingEvents.append(event)
+        compactTrailingTextChunks()
+    }
+
+    /// 用近似二进制分层合并保持 O(log n) 个文本 chunk，避免每个 token 都复制完整前缀形成 O(n²)。
+    private func compactTrailingTextChunks() {
+        while pendingEvents.count - pendingHead >= 2 {
+            let previousIndex = pendingEvents.index(pendingEvents.endIndex, offsetBy: -2)
+            let nextIndex = pendingEvents.index(before: pendingEvents.endIndex)
+            let previous = pendingEvents[previousIndex]
+            let next = pendingEvents[nextIndex]
+            guard let previousBytes = previous.contiguousPayloadByteCount,
+                  let nextBytes = next.contiguousPayloadByteCount,
+                  previousBytes <= max(1, nextBytes) * 2,
+                  let merged = previous.mergingContiguous(with: next)
+            else {
+                return
+            }
+            pendingEvents.removeLast(2)
+            pendingEvents.append(merged)
+        }
+    }
+
+    private func popFirstPendingEvent() -> AgentEvent? {
+        guard pendingHead < pendingEvents.count else {
+            return nil
+        }
+        var event = pendingEvents[pendingHead]
+        pendingHead += 1
+        // 分层 chunk 在交付前再做一次从大到小的线性归并，调用方仍只看到一个完整连续事件。
+        while pendingHead < pendingEvents.count,
+              let merged = event.mergingContiguous(with: pendingEvents[pendingHead]) {
+            event = merged
+            pendingHead += 1
+        }
+        if pendingHead == pendingEvents.count {
+            pendingEvents.removeAll(keepingCapacity: true)
+            pendingHead = 0
+        } else if pendingHead >= 64, pendingHead * 2 >= pendingEvents.count {
+            pendingEvents.removeFirst(pendingHead)
+            pendingHead = 0
+        }
+        return event
+    }
+}
+
+private final class CodexAppServerEventStreamLease: @unchecked Sendable {
+    let mailbox: CodexAppServerEventMailbox
+
+    init(mailbox: CodexAppServerEventMailbox) {
+        self.mailbox = mailbox
+    }
+
+    deinit {
+        mailbox.cancel()
+    }
+}
+
+/// 保持调用方原有 `for await` 用法，同时把排队策略从无界 AsyncStream 收敛到可合并邮箱。
+struct CodexAppServerEventStream: AsyncSequence, Sendable {
+    typealias Element = AgentEvent
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        fileprivate let lease: CodexAppServerEventStreamLease
+
+        mutating func next() async -> AgentEvent? {
+            await lease.mailbox.next()
+        }
+    }
+
+    private let lease: CodexAppServerEventStreamLease
+
+    init(mailbox: CodexAppServerEventMailbox) {
+        lease = CodexAppServerEventStreamLease(mailbox: mailbox)
+    }
+
+    func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(lease: lease)
+    }
+
+    func cancel() {
+        lease.mailbox.cancel()
+    }
+}
+
 extension AgentEvent: Decodable {
     enum CodingKeys: String, CodingKey {
         case type
@@ -298,8 +549,15 @@ extension AgentEventMetadata {
 }
 
 struct CodexAppServerEventProjector {
+    private struct StreamedTextKey: Hashable {
+        let sessionID: SessionID?
+        let turnID: TurnID?
+        let itemID: AgentItemID?
+        let suffix: String
+    }
+
     private var nextSeqBySessionID: [SessionID: EventSequence] = [:]
-    private var streamedTextByKey: [String: String] = [:]
+    private var streamedTextByKey: [StreamedTextKey: String] = [:]
     private var agentMessageKindByItemID: [AgentItemID: MessageKind] = [:]
 
     mutating func project(_ notification: CodexAppServerNotification) -> AgentEvent? {
@@ -325,7 +583,9 @@ struct CodexAppServerEventProjector {
                 metadata
             )
         case "turn/plan/updated":
-            return completedPlanEvent(params: params, metadata: metadata)
+            let event = completedPlanEvent(params: params, metadata: metadata)
+            clearStreamedText(sessionID: metadata.sessionID, turnID: metadata.turnID, suffix: "plan")
+            return event
         case "item/plan/delta":
             return streamedSystemMessageEvent(
                 params: params,
@@ -382,10 +642,18 @@ struct CodexAppServerEventProjector {
             return startedCommandItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
-            return completedAgentMessageEvent(params: params, metadata: metadata)
+            let event = completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
                 ?? completedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
+            if let itemID = metadata.itemID {
+                clearStreamedText(
+                    sessionID: metadata.sessionID,
+                    turnID: metadata.turnID,
+                    itemID: itemID
+                )
+            }
+            return event
         case "item/commandExecution/outputDelta",
              "command/exec/outputDelta",
              "commandExecution/outputDelta",
@@ -400,12 +668,14 @@ struct CodexAppServerEventProjector {
              "turn/diff/updated":
             return fileChangeContextEvent(params: params, metadata: metadata)
         case "turn/completed":
+            clearStreamedText(sessionID: metadata.sessionID, turnID: metadata.turnID)
             return .turnCompleted(metadata.withTurnLifecycle(turnLifecycle(from: params)))
         case "serverRequest/resolved":
             return .approvalResolved(metadata)
         case "warning":
             return .warning(errorPayload(from: params, fallback: "app-server warning"), metadata)
         case "error":
+            clearStreamedText(sessionID: metadata.sessionID, turnID: metadata.turnID)
             return .error(errorPayload(from: params, fallback: "app-server error"), metadata)
         default:
             return nil
@@ -620,11 +890,16 @@ struct CodexAppServerEventProjector {
         guard let delta = firstString(in: params, keys: deltaKeys), !delta.isEmpty else {
             return nil
         }
-        let key = [metadata.sessionID, metadata.turnID, metadata.itemID, bufferSuffix]
-            .compactMap { $0 }
-            .joined(separator: "#")
-        let next = (streamedTextByKey[key] ?? "") + delta
-        streamedTextByKey[key] = next
+        let key = StreamedTextKey(
+            sessionID: metadata.sessionID,
+            turnID: metadata.turnID,
+            itemID: metadata.itemID,
+            suffix: bufferSuffix
+        )
+        streamedTextByKey[key, default: ""].append(contentsOf: delta)
+        guard let next = streamedTextByKey[key] else {
+            return nil
+        }
         let payload = activityCategory.map { category in
             ConversationActivityPayload(
                 category: category,
@@ -642,6 +917,26 @@ struct CodexAppServerEventProjector {
             metadata: metadata,
             activityPayload: payload
         )
+    }
+
+    private mutating func clearStreamedText(
+        sessionID: SessionID?,
+        turnID: TurnID?,
+        itemID: AgentItemID? = nil,
+        suffix: String? = nil
+    ) {
+        streamedTextByKey = streamedTextByKey.filter { key, _ in
+            guard key.sessionID == sessionID, key.turnID == turnID else {
+                return true
+            }
+            if let itemID, key.itemID != itemID {
+                return true
+            }
+            if let suffix, key.suffix != suffix {
+                return true
+            }
+            return false
+        }
     }
 
     private func systemNoticeEvent(

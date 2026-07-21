@@ -813,6 +813,131 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkbenchNavigationDeduplicatesRepeatedSessionOpen() {
+        var state = WorkbenchNavigationState(route: .workspaces)
+        let event = WorkbenchNavigationEvent.open(.session("session-1"), source: .workspaces)
+
+        let firstEffect = state.reduce(
+            event,
+            usesCompactNavigation: true,
+            selectedSessionID: nil
+        )
+        let stateAfterFirstOpen = state
+        let routeAfterFirstOpen = state.route
+        let routeFeedbackEffect = state.reduce(
+            .synchronize(routeAfterFirstOpen),
+            usesCompactNavigation: true,
+            selectedSessionID: nil
+        )
+        let repeatedEffect = state.reduce(
+            event,
+            usesCompactNavigation: true,
+            selectedSessionID: nil
+        )
+
+        XCTAssertEqual(firstEffect, .selectSession("session-1"))
+        XCTAssertNil(routeFeedbackEffect)
+        XCTAssertNil(repeatedEffect)
+        XCTAssertEqual(state, stateAfterFirstOpen)
+        XCTAssertEqual(state.route, .session(id: "session-1", source: .workspaces))
+        XCTAssertEqual(state.compactWorkspacePath, [.session("session-1")])
+    }
+
+    func testWorkbenchNavigationCreatedSessionCallbackDoesNotOpenTwice() {
+        var state = WorkbenchNavigationState(route: .workspaces)
+
+        let selectionEffect = state.reduce(
+            .selectedSessionChanged("local:new-session"),
+            usesCompactNavigation: true,
+            selectedSessionID: "local:new-session"
+        )
+        let stateAfterSelection = state
+        let callbackEffect = state.reduce(
+            .open(.session("local:new-session"), source: nil),
+            usesCompactNavigation: true,
+            selectedSessionID: "local:new-session"
+        )
+
+        XCTAssertNil(selectionEffect)
+        XCTAssertNil(callbackEffect)
+        XCTAssertEqual(state, stateAfterSelection)
+        XCTAssertEqual(state.compactWorkspacePath, [.session("local:new-session")])
+    }
+
+    func testWorkbenchNavigationSplitSelectionPreservesWorkspaceSource() {
+        var state = WorkbenchNavigationState(route: .workspaces)
+
+        let effect = state.reduce(
+            .selectedSessionChanged("workspace-session"),
+            usesCompactNavigation: false,
+            selectedSessionID: "workspace-session"
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertEqual(
+            state.route,
+            .session(id: "workspace-session", source: .workspaces)
+        )
+        XCTAssertEqual(state.selection, .session("workspace-session"))
+    }
+
+    func testWorkbenchNavigationCompactWorkspacePopReturnsToWorkspace() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "session-workspace", source: .workspaces)
+        )
+
+        let effect = state.reduce(
+            .compactPathChanged(tab: .workspaces, path: []),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-workspace"
+        )
+
+        XCTAssertEqual(effect, .returnToSessionList)
+        XCTAssertEqual(state.route, .workspaces)
+        XCTAssertEqual(state.selection, .workspaces)
+        XCTAssertEqual(state.compactSelectedTab, .workspaces)
+        XCTAssertTrue(state.compactWorkspacePath.isEmpty)
+    }
+
+    func testWorkbenchNavigationRestoresSessionIntoItsSourceStack() {
+        var state = WorkbenchNavigationState()
+        let route = WorkbenchRestorationRoute.session(
+            id: "restored-session",
+            source: .workspaces
+        )
+
+        let effect = state.reduce(
+            .synchronize(route),
+            usesCompactNavigation: true,
+            selectedSessionID: "restored-session"
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertEqual(state.route, route)
+        XCTAssertEqual(state.selection, .session("restored-session"))
+        XCTAssertEqual(state.compactSelectedTab, .workspaces)
+        XCTAssertEqual(state.compactWorkspacePath, [.session("restored-session")])
+        XCTAssertTrue(state.compactSessionPath.isEmpty)
+    }
+
+    func testWorkbenchNavigationReplacesOptimisticSessionWithoutAddingStackLevel() {
+        var state = WorkbenchNavigationState(route: .sessions)
+
+        _ = state.reduce(
+            .selectedSessionChanged("local:optimistic"),
+            usesCompactNavigation: true,
+            selectedSessionID: "local:optimistic"
+        )
+        _ = state.reduce(
+            .selectedSessionChanged("server-session"),
+            usesCompactNavigation: true,
+            selectedSessionID: "server-session"
+        )
+
+        XCTAssertEqual(state.route, .session(id: "server-session", source: .sessions))
+        XCTAssertEqual(state.compactSessionPath, [.session("server-session")])
+    }
+
     func testWorkbenchRestorationRouteRejectsMismatchedSessionSnapshot() throws {
         let session = makeSession(
             id: "session_snapshot",

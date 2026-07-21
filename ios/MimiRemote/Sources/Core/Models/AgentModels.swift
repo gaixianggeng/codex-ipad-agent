@@ -952,6 +952,7 @@ struct MessageRenderPlan: Hashable {
     let contentByteCount: Int
     let blocks: [MarkdownBlock]
     let openTailByteOffset: Int
+    let isProvisionalPlainStreaming: Bool
 
     var isSinglePlainParagraph: Bool {
         guard blocks.count == 1, case let .paragraph(inline) = blocks[0].kind else {
@@ -966,15 +967,27 @@ final class MessageRenderPlanCache {
     static let shared = MessageRenderPlanCache()
 
     private let limit: Int
+    private let byteLimit: Int
+    private let streamingPlainTextThreshold: Int
     private var plansByMessageKey: [String: MessageRenderPlan] = [:]
     private var accessOrder: [String] = []
+    private var cachedContentByteCount = 0
 
 #if DEBUG
     private(set) var incrementalReuseCountForTesting = 0
+    private(set) var markdownParseInvocationCountForTesting = 0
+    var cachedContentByteCountForTesting: Int { cachedContentByteCount }
+    var cachedPlanCountForTesting: Int { plansByMessageKey.count }
 #endif
 
-    init(limit: Int = 256) {
+    init(
+        limit: Int = 256,
+        byteLimit: Int = 16 * 1_024 * 1_024,
+        streamingPlainTextThreshold: Int = 4 * 1_024
+    ) {
         self.limit = max(1, limit)
+        self.byteLimit = max(1, byteLimit)
+        self.streamingPlainTextThreshold = max(256, streamingPlainTextThreshold)
     }
 
     func plan(for message: ConversationMessage) -> MessageRenderPlan {
@@ -983,22 +996,49 @@ final class MessageRenderPlanCache {
             messageKey: messageKey,
             content: message.content,
             contentDigest: message.contentDigest,
-            contentByteCount: message.contentByteCount
+            contentByteCount: message.contentByteCount,
+            isStreaming: message.role == .assistant && message.sendStatus == .sending
         )
     }
 
-    func plan(messageKey: String, content: String, contentDigest: UInt64, contentByteCount: Int) -> MessageRenderPlan {
+    func plan(
+        messageKey: String,
+        content: String,
+        contentDigest: UInt64,
+        contentByteCount: Int,
+        isStreaming: Bool = false
+    ) -> MessageRenderPlan {
         if let cached = plansByMessageKey[messageKey],
            cached.contentDigest == contentDigest,
-           cached.contentByteCount == contentByteCount {
+           cached.contentByteCount == contentByteCount,
+           isStreaming || !cached.isProvisionalPlainStreaming {
             touch(messageKey)
             return cached
         }
 
         let plan: MessageRenderPlan
         if let cached = plansByMessageKey[messageKey],
+           cached.isProvisionalPlainStreaming,
+           !isStreaming {
+            // streaming 结束必须完整解析一次，不能把临时纯文本计划当成最终 Markdown。
+            plan = parse(messageKey: messageKey, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
+        } else if let cached = plansByMessageKey[messageKey],
+                  isStreaming,
+                  contentByteCount >= streamingPlainTextThreshold,
+                  cached.isSinglePlainParagraph,
+                  content.hasPrefix(cached.content),
+                  isPlainStreamingSuffix(content.utf8.dropFirst(cached.contentByteCount)) {
+            // 超长单段回复在流式阶段最容易让开放尾块每帧全量重解析。此时纯文本视觉语义
+            // 与原段落一致；完成事件到达后再执行最终 Markdown 解析。
+            plan = provisionalPlainStreamingPlan(
+                messageKey: messageKey,
+                content: content,
+                contentDigest: contentDigest,
+                contentByteCount: contentByteCount
+            )
+        } else if let cached = plansByMessageKey[messageKey],
            content.hasPrefix(cached.content),
-           content.count >= cached.content.count {
+           contentByteCount >= cached.contentByteCount {
             plan = extend(cached, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
 #if DEBUG
             incrementalReuseCountForTesting += 1
@@ -1007,7 +1047,11 @@ final class MessageRenderPlanCache {
             plan = parse(messageKey: messageKey, content: content, contentDigest: contentDigest, contentByteCount: contentByteCount)
         }
 
+        if let replaced = plansByMessageKey[messageKey] {
+            cachedContentByteCount -= replaced.contentByteCount
+        }
         plansByMessageKey[messageKey] = plan
+        cachedContentByteCount += plan.contentByteCount
         touch(messageKey)
         trimIfNeeded()
         return plan
@@ -1026,7 +1070,8 @@ final class MessageRenderPlanCache {
                 contentDigest: contentDigest,
                 contentByteCount: contentByteCount,
                 blocks: cached.blocks,
-                openTailByteOffset: cached.openTailByteOffset
+                openTailByteOffset: cached.openTailByteOffset,
+                isProvisionalPlainStreaming: false
             )
         }
 
@@ -1049,11 +1094,15 @@ final class MessageRenderPlanCache {
             contentDigest: contentDigest,
             contentByteCount: contentByteCount,
             blocks: mergedBlocks,
-            openTailByteOffset: parsedTail.openTailByteOffset
+            openTailByteOffset: parsedTail.openTailByteOffset,
+            isProvisionalPlainStreaming: false
         )
     }
 
     private func parse(messageKey: String, content: String, contentDigest: UInt64, contentByteCount: Int) -> MessageRenderPlan {
+#if DEBUG
+        markdownParseInvocationCountForTesting += 1
+#endif
         let parsed = MarkdownParser.shared.parse(content)
         return MessageRenderPlan(
             messageKey: messageKey,
@@ -1061,8 +1110,56 @@ final class MessageRenderPlanCache {
             contentDigest: contentDigest,
             contentByteCount: contentByteCount,
             blocks: parsed.blocks,
-            openTailByteOffset: parsed.openTailByteOffset
+            openTailByteOffset: parsed.openTailByteOffset,
+            isProvisionalPlainStreaming: false
         )
+    }
+
+    private func provisionalPlainStreamingPlan(
+        messageKey: String,
+        content: String,
+        contentDigest: UInt64,
+        contentByteCount: Int
+    ) -> MessageRenderPlan {
+        let inline = MarkdownInlineText(
+            attributed: AttributedString(content),
+            plain: content,
+            hasFormatting: false
+        )
+        return MessageRenderPlan(
+            messageKey: messageKey,
+            content: content,
+            contentDigest: contentDigest,
+            contentByteCount: contentByteCount,
+            blocks: [MarkdownBlock(id: 0, sourceByteRange: 0..<contentByteCount, kind: .paragraph(inline))],
+            // 0 表示完成时不能复用这个临时块，必须从头解析最终 Markdown。
+            openTailByteOffset: 0,
+            isProvisionalPlainStreaming: true
+        )
+    }
+
+    private func isPlainStreamingSuffix(_ bytes: String.UTF8View.SubSequence) -> Bool {
+        // 只对确定没有 Markdown 结构的增量走临时纯文本快路径；一旦出现换行或语法标记，
+        // 立即回到增量 Markdown 解析，保证代码块、列表、链接等流式展示行为不变。
+        return !bytes.contains { byte in
+            switch byte {
+            case 0x0A, // 换行
+                 0x23, // #
+                 0x2A, // *
+                 0x2B, // +
+                 0x2D, // -
+                 0x3E, // >
+                 0x5B, // [
+                 0x5D, // ]
+                 0x5F, // _
+                 0x60, // `
+                 0x7C, // |
+                 0x7E: // ~
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     private func renumber(_ blocks: [MarkdownBlock]) -> [MarkdownBlock] {
@@ -1077,9 +1174,12 @@ final class MessageRenderPlanCache {
     }
 
     private func trimIfNeeded() {
-        while accessOrder.count > limit, let oldest = accessOrder.first {
+        while (accessOrder.count > limit || cachedContentByteCount > byteLimit),
+              let oldest = accessOrder.first {
             accessOrder.removeFirst()
-            plansByMessageKey.removeValue(forKey: oldest)
+            if let removed = plansByMessageKey.removeValue(forKey: oldest) {
+                cachedContentByteCount -= removed.contentByteCount
+            }
         }
     }
 }
@@ -1302,7 +1402,11 @@ struct ConversationMessage: Identifiable, Hashable {
     var kind: MessageKind
     var content: String {
         didSet {
-            updateRenderFingerprint()
+            if let appendedContentForFingerprint {
+                updateRenderFingerprint(appending: appendedContentForFingerprint)
+            } else {
+                updateRenderFingerprint()
+            }
         }
     }
     var createdAt: Date
@@ -1318,6 +1422,7 @@ struct ConversationMessage: Identifiable, Hashable {
     private(set) var contentRevision: UInt64
     private(set) var contentDigest: UInt64
     private(set) var contentByteCount: Int
+    private var appendedContentForFingerprint: String?
 
     var renderFingerprint: ConversationMessageRenderFingerprint {
         ConversationMessageRenderFingerprint(
@@ -1365,6 +1470,7 @@ struct ConversationMessage: Identifiable, Hashable {
         self.turnLifecycle = turnLifecycle
         self.userDelivery = userDelivery
         self.isTimestampFallback = isTimestampFallback
+        self.appendedContentForFingerprint = nil
         let fingerprint = Self.makeRenderFingerprint(for: content)
         self.contentRevision = 0
         self.contentDigest = fingerprint.digest
@@ -1420,6 +1526,29 @@ struct ConversationMessage: Identifiable, Hashable {
         contentRevision &+= 1
         contentDigest = fingerprint.digest
         contentByteCount = fingerprint.byteCount
+    }
+
+    mutating func appendContent(_ delta: String) {
+        guard !delta.isEmpty else {
+            return
+        }
+        // 流式正文只散列新增字节，避免每次 delta 都重新扫描整条长回复。
+        appendedContentForFingerprint = delta
+        content.append(contentsOf: delta)
+        appendedContentForFingerprint = nil
+    }
+
+    private mutating func updateRenderFingerprint(appending delta: String) {
+        var hash = contentDigest
+        var appendedByteCount = 0
+        for byte in delta.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+            appendedByteCount += 1
+        }
+        contentRevision &+= 1
+        contentDigest = hash
+        contentByteCount += appendedByteCount
     }
 
     private static func makeRenderFingerprint(for content: String) -> (digest: UInt64, byteCount: Int) {

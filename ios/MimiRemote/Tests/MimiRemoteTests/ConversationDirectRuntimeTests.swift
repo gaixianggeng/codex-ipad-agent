@@ -7,6 +7,198 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testDirectRuntimeCompactsUnobservedDeltaBacklogWithoutLosingText() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "buffer-test",
+            transportFactory: { FakeCodexAppServerTransport() },
+            configProvider: { throw MockError.unimplemented }
+        )
+        let sessionID = "thread-buffer-compaction"
+
+        for index in 0..<1_000 {
+            let metadata = AgentEventMetadata(
+                seq: EventSequence(index + 1),
+                sessionID: sessionID,
+                turnID: "turn-buffer-compaction",
+                itemID: "item-buffer-compaction",
+                messageID: "message-buffer-compaction",
+                clientMessageID: nil,
+                revision: ModelRevision(index + 1),
+                createdAt: nil
+            )
+            await runtime.emit(.assistantDelta(
+                AgentDelta(text: "x", role: .assistant, kind: .message),
+                metadata
+            ))
+        }
+
+        let buffered = await runtime.bufferedEvents(sessionID: sessionID, replayPolicy: .all)
+        let text = buffered.compactMap { event -> String? in
+            guard case .assistantDelta(let delta, _) = event else { return nil }
+            return delta.text
+        }.joined()
+
+        XCTAssertEqual(text, String(repeating: "x", count: 1_000))
+        XCTAssertLessThan(buffered.count, 32)
+    }
+
+    func testDirectRuntimeCoalescesVisibleDeltasWhileConsumerIsSlow() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "visible-mailbox-test",
+            transportFactory: { FakeCodexAppServerTransport() },
+            configProvider: { throw MockError.unimplemented }
+        )
+        let sessionID = "thread-visible-mailbox"
+        let turnID = "turn-visible-mailbox"
+        let stream = await runtime.attachEvents(sessionID: sessionID)
+        defer { stream.cancel() }
+
+        // 先让生产者远快于消费者；同一 item 的 5,000 个增量应以对数级 chunk 暂存并一次完整交付。
+        for index in 0..<5_000 {
+            let metadata = AgentEventMetadata(
+                seq: EventSequence(index + 1),
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "assistant-item",
+                messageID: "assistant-message",
+                clientMessageID: nil,
+                revision: ModelRevision(index + 1),
+                createdAt: nil
+            )
+            await runtime.emit(.assistantDelta(
+                AgentDelta(text: "x", role: .assistant, kind: .message),
+                metadata
+            ))
+        }
+
+        // reasoning/plan 上游给的是累计快照，慢消费者只需要最新完整快照，不能把快照彼此拼接。
+        for index in 1...1_000 {
+            let metadata = AgentEventMetadata(
+                seq: EventSequence(5_000 + index),
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "reasoning-item",
+                messageID: "reasoning-message",
+                clientMessageID: nil,
+                revision: ModelRevision(5_000 + index),
+                createdAt: nil
+            )
+            let message = AgentMessage(
+                id: "reasoning-message",
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "reasoning-item",
+                role: .system,
+                kind: .reasoningSummary,
+                content: String(repeating: "r", count: index),
+                seq: metadata.seq,
+                revision: metadata.revision ?? 0
+            )
+            await runtime.emit(.messageCompleted(message, metadata))
+        }
+
+        let completedMetadata = AgentEventMetadata(
+            seq: 6_001,
+            sessionID: sessionID,
+            turnID: turnID,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: 6_001,
+            createdAt: nil
+        )
+        await runtime.emit(.turnCompleted(completedMetadata))
+
+        var iterator = stream.makeAsyncIterator()
+        guard case .assistantDelta(let assistantDelta, _)? = await iterator.next() else {
+            return XCTFail("第一项应为合并后的 assistant delta")
+        }
+        XCTAssertEqual(assistantDelta.text, String(repeating: "x", count: 5_000))
+
+        guard case .messageCompleted(let reasoning, _)? = await iterator.next() else {
+            return XCTFail("第二项应为最新 reasoning 快照")
+        }
+        XCTAssertEqual(reasoning.content, String(repeating: "r", count: 1_000))
+
+        guard case .turnCompleted(let metadata)? = await iterator.next() else {
+            return XCTFail("控制事件必须保留在文本事件之后")
+        }
+        XCTAssertEqual(metadata.seq, completedMetadata.seq)
+    }
+
+    func testDirectRuntimeMailboxPreservesControlEventBoundariesAndOrder() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "mailbox-order-test",
+            transportFactory: { FakeCodexAppServerTransport() },
+            configProvider: { throw MockError.unimplemented }
+        )
+        let sessionID = "thread-mailbox-order"
+        let turnID = "turn-mailbox-order"
+        let stream = await runtime.attachEvents(sessionID: sessionID)
+        defer { stream.cancel() }
+        let metadata: (Int, String?) -> AgentEventMetadata = { seq, itemID in
+            AgentEventMetadata(
+                seq: EventSequence(seq),
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: itemID,
+                messageID: itemID.map { "message-\($0)" },
+                clientMessageID: nil,
+                revision: ModelRevision(seq),
+                createdAt: nil
+            )
+        }
+
+        await runtime.emit(.turnStarted(metadata(1, nil)))
+        await runtime.emit(.assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata(2, "assistant")))
+        await runtime.emit(.assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata(3, "assistant")))
+        await runtime.emit(.approvalRequest(
+            AgentApprovalRequest(
+                id: "approval",
+                title: "需要确认",
+                body: nil,
+                kind: "command",
+                risk: "high"
+            ),
+            metadata(4, "approval")
+        ))
+        await runtime.emit(.logDelta(LogDelta(text: "X", stream: "stdout"), metadata(5, "process")))
+        await runtime.emit(.logDelta(LogDelta(text: "Y", stream: "stdout"), metadata(6, "process")))
+        await runtime.emit(.error(
+            AgentErrorPayload(message: "failed", code: "test", retryable: false),
+            metadata(7, nil)
+        ))
+        await runtime.emit(.assistantDelta(AgentDelta(text: "C", role: .assistant, kind: .message), metadata(8, "assistant")))
+        await runtime.emit(.assistantDelta(AgentDelta(text: "D", role: .assistant, kind: .message), metadata(9, "assistant")))
+        await runtime.emit(.turnCompleted(metadata(10, nil)))
+
+        var iterator = stream.makeAsyncIterator()
+        var events: [AgentEvent] = []
+        for _ in 0..<7 {
+            guard let event = await iterator.next() else {
+                return XCTFail("控制事件或其边界被意外丢失")
+            }
+            events.append(event)
+        }
+
+        guard case .turnStarted = events[0],
+              case .assistantDelta(let firstDelta, _) = events[1],
+              case .approvalRequest = events[2],
+              case .logDelta(let logDelta, _) = events[3],
+              case .error = events[4],
+              case .assistantDelta(let secondDelta, _) = events[5],
+              case .turnCompleted = events[6]
+        else {
+            return XCTFail("邮箱改变了控制事件顺序")
+        }
+        XCTAssertEqual(firstDelta.text, "AB")
+        XCTAssertEqual(logDelta.text, "XY")
+        XCTAssertEqual(secondDelta.text, "CD")
+    }
+
     func testDirectRuntimeThreadSearchParsesSnippetAndCursors() async throws {
         let project = AgentProject(id: "proj_search_runtime", name: "Search Runtime", path: "/tmp/search-runtime")
         let transport = FakeCodexAppServerTransport()

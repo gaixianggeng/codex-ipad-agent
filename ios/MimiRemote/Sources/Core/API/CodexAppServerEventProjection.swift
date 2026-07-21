@@ -65,12 +65,42 @@ extension CodexAppServerSessionRuntime {
         guard let sessionID else {
             return
         }
-        if let continuations = eventContinuationsBySessionID[sessionID], !continuations.isEmpty {
-            for continuation in continuations.values {
-                continuation.yield(event)
+        if let mailboxes = eventMailboxesBySessionID[sessionID], !mailboxes.isEmpty {
+            for mailbox in mailboxes.values {
+                mailbox.send(event)
             }
         } else {
-            bufferedEventsBySessionID[sessionID, default: []].append(event)
+            var events = bufferedEventsBySessionID[sessionID] ?? []
+            if let previous = events.last,
+               event.contiguousPayloadByteCount == nil,
+               let merged = previous.mergingContiguous(with: event) {
+                // reasoning/plan 是累计快照，后台只需要保留最新内容。
+                events[events.index(before: events.endIndex)] = merged
+            } else {
+                events.append(event)
+                compactTrailingBufferedDeltas(&events)
+            }
+            // 页面不订阅时用分层 chunk 压缩 delta，既避免 token 事件无限增长，
+            // 也避免每个 token 都复制此前整段字符串形成新的 O(n²) 热点。
+            bufferedEventsBySessionID[sessionID] = events
+        }
+    }
+
+    private func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {
+        while events.count >= 2 {
+            let previousIndex = events.index(events.endIndex, offsetBy: -2)
+            let nextIndex = events.index(before: events.endIndex)
+            let previous = events[previousIndex]
+            let next = events[nextIndex]
+            guard let previousBytes = previous.contiguousPayloadByteCount,
+                  let nextBytes = next.contiguousPayloadByteCount,
+                  previousBytes <= max(1, nextBytes) * 2,
+                  let merged = previous.mergingContiguous(with: next)
+            else {
+                return
+            }
+            events.removeLast(2)
+            events.append(merged)
         }
     }
 

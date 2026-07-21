@@ -2,11 +2,14 @@ import QuickLook
 import SwiftUI
 
 struct MessageBubble: View {
-    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let message: ConversationMessage
     let layout: ConversationLayout
+    let skills: [SkillCapability]
+    let retry: (ConversationMessage) -> Void
+    let stop: () -> Void
+    let previewFile: (String) async throws -> URL
     @State private var previewURL: URL?
     @State private var previewingPath: String?
     @State private var previewError: String?
@@ -37,11 +40,9 @@ struct MessageBubble: View {
             .messageContextMenu(
                 for: message,
                 retry: {
-                    Task { await sessionStore.retryFailedUserMessage(message) }
+                    retry(message)
                 },
-                stop: {
-                    sessionStore.sendCtrlC()
-                }
+                stop: stop
             )
     }
 
@@ -52,11 +53,9 @@ struct MessageBubble: View {
             .messageContextMenu(
                 for: message,
                 retry: {
-                    Task { await sessionStore.retryFailedUserMessage(message) }
+                    retry(message)
                 },
-                stop: {
-                    sessionStore.sendCtrlC()
-                }
+                stop: stop
             )
     }
 
@@ -247,7 +246,7 @@ struct MessageBubble: View {
     private func userPayloadAccessories(style: MarkdownStyle) -> some View {
         ForEach(payloadSkillItems) { item in
             if case .skill(let name, let path) = item {
-                let capability = sessionStore.capabilityList?.skills.first { $0.path == path || $0.name == name }
+                let capability = skills.first { $0.path == path || $0.name == name }
                 SkillInvocationCard(
                     metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
                     sendStatus: message.sendStatus,
@@ -386,7 +385,7 @@ struct MessageBubble: View {
             }
         }
         do {
-            previewURL = try await sessionStore.previewFile(path: reference.path)
+            previewURL = try await previewFile(reference.path)
         } catch {
             previewError = userFacingPreviewError(error)
         }

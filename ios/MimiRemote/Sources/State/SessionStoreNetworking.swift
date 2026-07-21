@@ -363,7 +363,8 @@ extension SessionStoreAPIClient {
 
 }
 
-actor TerminalStreamStore {
+@MainActor
+final class TerminalStreamStore {
     let maxBatchSize: Int
     var eventsBySessionID: [SessionID: [AgentEvent]] = [:]
 
@@ -372,8 +373,15 @@ actor TerminalStreamStore {
     }
 
     func append(_ event: AgentEvent, sessionID: SessionID) -> Bool {
-        eventsBySessionID[sessionID, default: []].append(event)
-        return eventsBySessionID[sessionID, default: []].count >= maxBatchSize
+        var events = eventsBySessionID[sessionID] ?? []
+        if let previous = events.last,
+           let merged = previous.mergingContiguous(with: event) {
+            events[events.index(before: events.endIndex)] = merged
+        } else {
+            events.append(event)
+        }
+        eventsBySessionID[sessionID] = events
+        return events.count >= maxBatchSize
     }
 
     func drain(sessionID: SessionID) -> [AgentEvent] {
@@ -385,5 +393,5 @@ actor TerminalStreamStore {
     func removeAll(sessionID: SessionID) {
         eventsBySessionID.removeValue(forKey: sessionID)
     }
-}
 
+}
