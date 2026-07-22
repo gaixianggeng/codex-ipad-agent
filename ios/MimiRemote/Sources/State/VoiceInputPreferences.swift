@@ -19,6 +19,25 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 每个选项直接说明主要取舍，避免用户还要把底部整段说明映射回具体提供方。
+    var subtitle: String {
+        switch self {
+        case .codex:
+            return L10n.text("ui.codex_voice_input_description")
+        case .apple:
+            return L10n.text("ui.apple_voice_input_description")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .codex:
+            return "waveform"
+        case .apple:
+            return "apple.logo"
+        }
+    }
+
     static func stored(in defaults: UserDefaults = .standard) -> VoiceInputProvider {
         guard let rawValue = defaults.string(forKey: storageKey) else {
             return .codex

@@ -27,7 +27,7 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     var brandAssetName: String {
         switch self {
         case .codex:
-            return "Codex"
+            return "ChatGPT"
         case .claude:
             return "Claude"
         }
@@ -768,19 +768,19 @@ private struct WorkspaceDetailView: View {
 
     @ViewBuilder
     private func actionIcon(choice: WorkspaceSessionRuntimeChoice) -> some View {
-        // Codex 使用 ChatGPT/Codex 官方资源包的明暗图标；Claude 保留自己的品牌图形。
+        // 两个入口都使用完整的 38pt 承载面，避免 ChatGPT 图片自带留白后视觉上小一圈。
         Image(choice.brandAssetName)
             .resizable()
             .renderingMode(.original)
             .scaledToFit()
             .frame(
-                width: choice == .codex ? 34 : 20,
-                height: choice == .codex ? 34 : 20
+                width: choice == .codex ? 38 : 20,
+                height: choice == .codex ? 38 : 20
             )
             .frame(width: 38, height: 38)
             .background(
                 choice == .codex
-                    ? Color.clear
+                    ? Color.white
                     : Color(red: 0.973, green: 0.949, blue: 0.914),
                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )

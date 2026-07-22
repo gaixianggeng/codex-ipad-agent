@@ -300,6 +300,10 @@ struct AgentAPIClient {
         try await request(path: "/api/diagnostics/relay", method: "GET", body: Optional<Data>.none)
     }
 
+    func tailscaleNetworkPath() async throws -> TailscaleNetworkPathResponse {
+        try await request(path: "/api/diagnostics/tailscale-path", method: "GET", body: Optional<Data>.none)
+    }
+
     func capabilities(path: String?) async throws -> CapabilityListResponse {
         let body = try JSONEncoder().encode(CapabilityListRequest(path: path))
         return try await request(path: "/api/capabilities/list", method: "POST", body: body)

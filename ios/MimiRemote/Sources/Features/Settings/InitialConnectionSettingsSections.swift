@@ -206,6 +206,11 @@ struct InitialConnectionSettingsSections: View {
                                     .foregroundStyle(statusColor)
                             }
                             if let report = appStore.lastConnectionTestReport {
+                                if let networkPath = report.tailscaleNetworkPath {
+                                    LabeledContent(L10n.text("ui.tailscale_network_path")) {
+                                        Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
+                                    }
+                                }
                                 if let failedStage = report.failedStage {
                                     connectionStageSummaryRow(title: L10n.text("ui.failure_link"), stage: failedStage, color: .red)
                                 } else if let slowestStage = report.slowestStage {

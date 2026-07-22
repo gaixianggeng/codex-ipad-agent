@@ -101,6 +101,7 @@ struct ConnectionTestReport: Equatable {
     let startedAt: Date
     let totalMillis: Int
     let stages: [ConnectionTestStageTiming]
+    let tailscaleNetworkPath: TailscaleNetworkPathResponse?
     let gatewayDiagnostics: ConnectionTestGatewayDiagnostics?
     let gatewayDiagnosticsError: String?
 
@@ -108,12 +109,14 @@ struct ConnectionTestReport: Equatable {
         startedAt: Date,
         totalMillis: Int,
         stages: [ConnectionTestStageTiming],
+        tailscaleNetworkPath: TailscaleNetworkPathResponse? = nil,
         gatewayDiagnostics: ConnectionTestGatewayDiagnostics? = nil,
         gatewayDiagnosticsError: String? = nil
     ) {
         self.startedAt = startedAt
         self.totalMillis = totalMillis
         self.stages = stages
+        self.tailscaleNetworkPath = tailscaleNetworkPath
         self.gatewayDiagnostics = gatewayDiagnostics
         self.gatewayDiagnosticsError = gatewayDiagnosticsError
     }
@@ -846,6 +849,7 @@ final class AppStore: ObservableObject {
         var gatewayDiagnosticsBaseline: RelayDiagnosticsResponse?
         var gatewayDiagnostics: ConnectionTestGatewayDiagnostics?
         var gatewayDiagnosticsError: String?
+        var tailscaleNetworkPath: TailscaleNetworkPathResponse?
         connectionStatus = .testing
         lastError = nil
         lastConnectionTestDurationMillis = nil
@@ -866,6 +870,7 @@ final class AppStore: ObservableObject {
                 startedAt: startedAt,
                 totalMillis: totalMillis,
                 stages: stages,
+                tailscaleNetworkPath: tailscaleNetworkPath,
                 gatewayDiagnostics: gatewayDiagnostics,
                 gatewayDiagnosticsError: gatewayDiagnosticsError
             )
@@ -887,6 +892,11 @@ final class AppStore: ObservableObject {
                 gatewayDiagnostics = nil
                 gatewayDiagnosticsError = error.localizedDescription
             }
+        }
+
+        func captureTailscaleNetworkPath(client: AgentAPIClient) async {
+            // Tailscale 路径是可选现场证据。旧 agentd、局域网或 CLI 不可用时不能影响主链路测速。
+            tailscaleNetworkPath = try? await client.tailscaleNetworkPath()
         }
 
         let normalized = try Self.validatedEndpoint(endpoint)
@@ -934,13 +944,15 @@ final class AppStore: ObservableObject {
         } catch {
             appendStage(.appServerGateway, since: gatewayStartedAt, status: .failed(error.localizedDescription))
             await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
+            await captureTailscaleNetworkPath(client: client)
             publishReport()
             throw error
         }
 
         await captureGatewayDiagnostics(client: client, gatewayStartedAt: gatewayStartedAt)
+        await captureTailscaleNetworkPath(client: client)
         publishReport()
-        connectionStatus = .connected("\(version.version) · direct")
+        connectionStatus = .connected(version.version)
         return normalized
     }
 

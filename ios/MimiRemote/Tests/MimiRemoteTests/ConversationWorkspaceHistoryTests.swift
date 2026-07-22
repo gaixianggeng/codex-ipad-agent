@@ -1377,7 +1377,7 @@ extension ConversationDataFlowTests {
         )
         XCTAssertNil(WorkspaceSessionRuntimeChoice.codex.runtimeProvider)
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandAssetName, "Codex")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandAssetName, "ChatGPT")
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandAssetName, "Claude")
     }
 

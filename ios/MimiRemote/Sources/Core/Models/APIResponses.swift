@@ -172,6 +172,36 @@ struct RelayDiagnosticsResponse: Decodable, Equatable {
     }
 }
 
+struct TailscaleNetworkPathResponse: Decodable, Equatable {
+    enum Kind: String, Equatable {
+        case direct
+        case peerRelay = "peer_relay"
+        case derp
+        case notTailscale = "not_tailscale"
+        case unknown
+        case unavailable
+    }
+
+    let kind: Kind
+    let observedAt: Date
+    let relayRegion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case observedAt = "observed_at"
+        case relayRegion = "relay_region"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawKind = try container.decode(String.self, forKey: .kind)
+        // 后端未来增加新链路类型时，旧 App 应降级为“无法判断”，不能让整份测速报告解码失败。
+        kind = Kind(rawValue: rawKind) ?? .unknown
+        observedAt = try container.decode(Date.self, forKey: .observedAt)
+        relayRegion = try container.decodeIfPresent(String.self, forKey: .relayRegion)
+    }
+}
+
 struct RelayGatewayStats: Decodable, Equatable {
     let totalConnections: Int
     let activeConnections: Int

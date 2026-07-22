@@ -3050,6 +3050,23 @@
         }
       }
     },
+    "ui.apple_voice_input_description" : {
+      "comment" : "Short settings-row description of Apple voice input's main benefit.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Faster response · Live on-device transcription"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "响应更快 · 设备端实时转写"
+          }
+        }
+      }
+    },
     "ui.apple_voice_input_accuracy_tip" : {
       "comment" : "Explains the speed and accuracy tradeoff before first enabling Apple voice input.",
       "localizations" : {
@@ -4221,6 +4238,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codex"
+          }
+        }
+      }
+    },
+    "ui.codex_voice_input_description" : {
+      "comment" : "Short settings-row description of Codex voice input's main benefit.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Higher accuracy · Transcribes after recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确性更高 · 录音结束后转写"
           }
         }
       }
@@ -23065,6 +23099,125 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tailscale 地址"
+          }
+        }
+      }
+    },
+    "ui.tailscale_network_path" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tailscale network path"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tailscale 网络路径"
+          }
+        }
+      }
+    },
+    "ui.tailscale_path_derp" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "DERP relay"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "DERP 中转"
+          }
+        }
+      }
+    },
+    "ui.tailscale_path_direct" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Direct (UDP hole punching)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直连（UDP 打洞）"
+          }
+        }
+      }
+    },
+    "ui.tailscale_path_not_tailscale" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not using Tailscale"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未使用 Tailscale"
+          }
+        }
+      }
+    },
+    "ui.tailscale_path_peer_relay" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peer Relay"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peer Relay 中转"
+          }
+        }
+      }
+    },
+    "ui.tailscale_path_unavailable" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Status unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态不可用"
+          }
+        }
+      }
+    },
+    "ui.tailscale_path_unknown" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to determine"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法判断"
           }
         }
       }

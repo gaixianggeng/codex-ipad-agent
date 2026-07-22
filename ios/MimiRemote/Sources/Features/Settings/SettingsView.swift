@@ -148,18 +148,17 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker(L10n.text("ui.voice_input"), selection: voiceInputProviderSelection) {
-                    ForEach(VoiceInputProvider.allCases) { provider in
-                        Text(provider.title)
-                            .tag(provider)
+                ForEach(VoiceInputProvider.allCases) { provider in
+                    VoiceInputProviderRow(
+                        provider: provider,
+                        isSelected: voiceInputProviderSelection.wrappedValue == provider,
+                        tokens: tokens
+                    ) {
+                        voiceInputProviderSelection.wrappedValue = provider
                     }
                 }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("settings.voiceInputProvider")
             } header: {
                 Text(L10n.text("ui.voice_input"))
-            } footer: {
-                Text(L10n.text("ui.voice_input_provider_comparison"))
             }
 
             Section {
@@ -296,6 +295,58 @@ struct SettingsView: View {
     }
 }
 
+private struct VoiceInputProviderRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let provider: VoiceInputProvider
+    let isSelected: Bool
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
+                    Image(systemName: provider.systemImage)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(provider.title)
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    Text(provider.subtitle)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(isSelected ? tokens.accent : tokens.tertiaryText)
+                    .animation(
+                        reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
+                        value: isSelected
+                    )
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(provider.title)
+        .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
+        .accessibilityHint(provider.subtitle)
+        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue)")
+    }
+}
+
 private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -391,6 +442,12 @@ private struct ConnectionSpeedTestView: View {
                             .foregroundStyle(resultTone(tokens: tokens))
                     }
                     LabeledContent(L10n.text("ui.test_time"), value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
+                    if let networkPath = report.tailscaleNetworkPath {
+                        LabeledContent(L10n.text("ui.tailscale_network_path")) {
+                            Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
+                                .foregroundStyle(tailscaleNetworkPathTone(networkPath.kind, tokens: tokens))
+                        }
+                    }
                     if let failedStage = report.failedStage {
                         LabeledContent(L10n.text("ui.failure_link"), value: failedStage.kind.title)
                             .foregroundStyle(tokens.warning)
@@ -488,6 +545,62 @@ private struct ConnectionSpeedTestView: View {
             return tokens.warning
         }
         return appStore.lastConnectionTestReport == nil ? tokens.secondaryText : tokens.success
+    }
+
+    private func tailscaleNetworkPathTone(
+        _ kind: TailscaleNetworkPathResponse.Kind,
+        tokens: ThemeTokens
+    ) -> Color {
+        switch kind {
+        case .direct:
+            return tokens.success
+        case .peerRelay, .derp:
+            return tokens.warning
+        case .notTailscale, .unknown, .unavailable:
+            return tokens.secondaryText
+        }
+    }
+}
+
+extension TailscaleNetworkPathResponse {
+    var localizedSummary: String {
+        switch kind {
+        case .direct:
+            return L10n.text("ui.tailscale_path_direct")
+        case .peerRelay:
+            return L10n.text("ui.tailscale_path_peer_relay")
+        case .derp:
+            let title = L10n.text("ui.tailscale_path_derp")
+            guard let relayRegion,
+                  !relayRegion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return title
+            }
+            return "\(title) · \(relayRegion.uppercased())"
+        case .notTailscale:
+            return L10n.text("ui.tailscale_path_not_tailscale")
+        case .unknown:
+            return L10n.text("ui.tailscale_path_unknown")
+        case .unavailable:
+            return L10n.text("ui.tailscale_path_unavailable")
+        }
+    }
+}
+
+extension TailscaleNetworkPathResponse.Kind {
+    var settingsSystemImage: String {
+        switch self {
+        case .direct:
+            return "bolt.horizontal.circle.fill"
+        case .peerRelay:
+            return "arrow.left.arrow.right.circle"
+        case .derp:
+            return "network"
+        case .notTailscale:
+            return "wifi"
+        case .unknown, .unavailable:
+            return "questionmark.circle"
+        }
     }
 }
 

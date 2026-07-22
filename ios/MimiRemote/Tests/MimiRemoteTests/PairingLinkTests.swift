@@ -1168,6 +1168,35 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(report.failedStage?.kind, .version)
     }
 
+    func testTailscaleNetworkPathDecodesKnownAndFutureKinds() throws {
+        let derpJSON = """
+        {
+          "kind": "derp",
+          "observed_at": "2026-07-22T12:00:00Z",
+          "relay_region": "hkg"
+        }
+        """
+        let derp = try AgentAPIClient.decoder.decode(
+            TailscaleNetworkPathResponse.self,
+            from: Data(derpJSON.utf8)
+        )
+        XCTAssertEqual(derp.kind, .derp)
+        XCTAssertEqual(derp.relayRegion, "hkg")
+
+        let futureJSON = """
+        {
+          "kind": "future_transport",
+          "observed_at": "2026-07-22T12:00:00Z"
+        }
+        """
+        let future = try AgentAPIClient.decoder.decode(
+            TailscaleNetworkPathResponse.self,
+            from: Data(futureJSON.utf8)
+        )
+        XCTAssertEqual(future.kind, .unknown)
+        XCTAssertNil(future.relayRegion)
+    }
+
     func testConnectionTestStabilitySummarizesRecentReports() throws {
         let reports = [
             ConnectionTestReport(
