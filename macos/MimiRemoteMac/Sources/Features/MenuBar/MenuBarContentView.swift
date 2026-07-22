@@ -36,7 +36,7 @@ struct MenuBarContentView: View {
 
             if needsPrimaryAction {
                 Button {
-                    openWindow(id: AppWindow.dashboard.rawValue)
+                    presentWindow(.dashboard)
                 } label: {
                     Label(primaryActionTitle, systemImage: primaryActionSymbol)
                         .fontWeight(.semibold)
@@ -53,7 +53,7 @@ struct MenuBarContentView: View {
                     systemImage: "qrcode",
                     isEnabled: store.status != nil
                 ) {
-                    openWindow(id: AppWindow.pairing.rawValue)
+                    presentWindow(.pairing)
                     Task { await store.refreshPairing() }
                 }
 
@@ -65,7 +65,7 @@ struct MenuBarContentView: View {
                     title: "运行诊断…",
                     systemImage: "stethoscope"
                 ) {
-                    openWindow(id: AppWindow.diagnostics.rawValue)
+                    presentWindow(.diagnostics)
                 }
             }
             .padding(.top, 6)
@@ -73,6 +73,7 @@ struct MenuBarContentView: View {
             HStack(spacing: 16) {
                 Button {
                     openSettings()
+                    activateApplication()
                 } label: {
                     Label("设置", systemImage: "gearshape")
                 }
@@ -134,6 +135,19 @@ struct MenuBarContentView: View {
         Task {
             await store.refresh()
             isRefreshing = false
+        }
+    }
+
+    private func presentWindow(_ window: AppWindow) {
+        openWindow(id: window.rawValue)
+        activateApplication()
+    }
+
+    private func activateApplication() {
+        // 菜单栏 App 是 LSUIElement，SwiftUI 只创建窗口时不会自动把进程切到前台。
+        // 等本轮菜单跟踪结束后再激活，避免系统仍把焦点留在刚关闭的 MenuBarExtra 上。
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
     }
 
