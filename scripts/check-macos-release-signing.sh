@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+WORK_DIR=""
+
+cleanup() {
+  # Bash 3.2 在 main 返回后会销毁 local 变量，因此清理路径必须保存在全局作用域。
+  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+    rm -rf -- "$WORK_DIR"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 用法：
@@ -66,24 +75,27 @@ main() {
     command -v "$command_name" >/dev/null 2>&1 || fail "缺少命令 ${command_name}"
   done
 
-  local work_dir
   local p12_path
   local certificate_path
   local certificate_subject
   local key_path
-  work_dir="$(mktemp -d -t mimi-macos-signing-check)"
-  p12_path="${work_dir}/developer-id.p12"
-  certificate_path="${work_dir}/developer-id.pem"
-  key_path="${work_dir}/notary-key.p8"
-  trap 'rm -rf -- "$work_dir"' EXIT
+  WORK_DIR="$(mktemp -d -t mimi-macos-signing-check)"
+  p12_path="${WORK_DIR}/developer-id.p12"
+  certificate_path="${WORK_DIR}/developer-id.pem"
+  key_path="${WORK_DIR}/notary-key.p8"
+  trap cleanup EXIT
 
   decode_base64 "$MACOS_SIGN_P12" "$p12_path" || fail "MACOS_SIGN_P12 不是有效 base64"
   decode_base64 "$MACOS_NOTARY_KEY" "$key_path" || fail "MACOS_NOTARY_KEY 不是有效 base64"
   chmod 600 "$p12_path" "$key_path"
 
-  openssl pkcs12 -in "$p12_path" -passin env:MACOS_SIGN_PASSWORD -clcerts -nokeys \
-    -out "$certificate_path" >/dev/null 2>&1 \
-    || fail "MACOS_SIGN_P12 无法用 MACOS_SIGN_PASSWORD 解密"
+  if ! openssl pkcs12 -in "$p12_path" -passin env:MACOS_SIGN_PASSWORD -clcerts -nokeys \
+    -out "$certificate_path" >/dev/null 2>&1; then
+    # OpenSSL 3 默认不会加载 RC2/3DES；Apple Keychain 兼容的 P12 需要 legacy provider。
+    openssl pkcs12 -legacy -in "$p12_path" -passin env:MACOS_SIGN_PASSWORD -clcerts -nokeys \
+      -out "$certificate_path" >/dev/null 2>&1 \
+      || fail "MACOS_SIGN_P12 无法用 MACOS_SIGN_PASSWORD 解密"
+  fi
   certificate_subject="$(openssl x509 -in "$certificate_path" -noout -subject 2>/dev/null)"
   grep -Fq 'Developer ID Application:' <<<"$certificate_subject" \
     || fail "PKCS#12 不是 Developer ID Application 证书"

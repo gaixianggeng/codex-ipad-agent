@@ -101,6 +101,61 @@ decode_base64() {
   printf '%s' "$value" | base64 -D > "$output" 2>/dev/null
 }
 
+submit_and_wait_for_notarization() {
+  local dmg_path="$1"
+  local submission_json
+  local submission_id
+  local info_json
+  local status
+  local deadline
+
+  submission_json="$(xcrun notarytool submit "$dmg_path" \
+    --key "$NOTARY_KEY_PATH" \
+    --key-id "$MACOS_NOTARY_KEY_ID" \
+    --issuer "$MACOS_NOTARY_ISSUER_ID" \
+    --output-format json)"
+  submission_id="$(printf '%s' "$submission_json" | plutil -extract id raw -o - -)"
+  if [[ ! "$submission_id" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    echo "Mac 安装包构建失败：Apple Notary Service 没有返回有效提交 ID。" >&2
+    exit 1
+  fi
+
+  echo "Apple Notary submission: $submission_id"
+  deadline=$((SECONDS + 1200))
+  while (( SECONDS < deadline )); do
+    info_json="$(xcrun notarytool info "$submission_id" \
+      --key "$NOTARY_KEY_PATH" \
+      --key-id "$MACOS_NOTARY_KEY_ID" \
+      --issuer "$MACOS_NOTARY_ISSUER_ID" \
+      --output-format json)"
+    status="$(printf '%s' "$info_json" | plutil -extract status raw -o - -)"
+    echo "Apple Notary status: $status"
+    case "$status" in
+      Accepted)
+        return
+        ;;
+      "In Progress")
+        sleep 10
+        ;;
+      Invalid|Rejected)
+        xcrun notarytool log "$submission_id" \
+          --key "$NOTARY_KEY_PATH" \
+          --key-id "$MACOS_NOTARY_KEY_ID" \
+          --issuer "$MACOS_NOTARY_ISSUER_ID" || true
+        echo "Mac 安装包构建失败：Apple Notary Service 返回 ${status}。" >&2
+        exit 1
+        ;;
+      *)
+        echo "Mac 安装包构建失败：未知 Apple Notary 状态 ${status}。" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  echo "Mac 安装包构建失败：Apple 公证等待超过 20 分钟。" >&2
+  exit 1
+}
+
 DERIVED_DATA="$WORK_DIR/DerivedData"
 echo "==> 构建 universal Mimi Remote Mac ${VERSION} (${BUILD_NUMBER})"
 xcodebuild \
@@ -231,12 +286,8 @@ if [[ "$SNAPSHOT" != "1" ]]; then
     --keychain "$KEYCHAIN_PATH" \
     --timestamp \
     "$DMG_PATH"
-  xcrun notarytool submit "$DMG_PATH" \
-    --key "$NOTARY_KEY_PATH" \
-    --key-id "$MACOS_NOTARY_KEY_ID" \
-    --issuer "$MACOS_NOTARY_ISSUER_ID" \
-    --wait \
-    --timeout 20m
+  # 主动轮询状态，避免 Xcode beta 的 notarytool --wait 在收到提交 ID 后提前退出。
+  submit_and_wait_for_notarization "$DMG_PATH"
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
   spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"

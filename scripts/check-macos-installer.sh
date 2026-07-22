@@ -93,8 +93,11 @@ for binary_path in "$APP_PATH/Contents/MacOS/Mimi Remote Mac" "$AGENT_PATH"; do
   done
 done
 
-app_identifier="$(codesign -d --verbose=4 "$APP_PATH" 2>&1 | awk -F= '$1 == "Identifier" { print $2; exit }')"
-agent_identifier="$(codesign -d --verbose=4 "$AGENT_PATH" 2>&1 | awk -F= '$1 == "Identifier" { print $2; exit }')"
+app_signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
+agent_signing_details="$(codesign -d --verbose=4 "$AGENT_PATH" 2>&1)"
+# 先完整读取 codesign 输出，避免 pipefail 将 awk 提前退出造成的 SIGPIPE 误判为签名失败。
+app_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$app_signing_details")"
+agent_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$agent_signing_details")"
 if [[ "$app_identifier" != "com.gaixianggeng.mimi.mac" \
   || "$agent_identifier" != "com.gaixianggeng.mimi.mac.agentd" ]]; then
   echo "Mac 安装包校验失败：App 或 agentd 签名 identifier 不稳定。" >&2
@@ -103,9 +106,8 @@ fi
 
 if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
   codesign --verify --strict --verbose=2 "$DMG_PATH"
-  signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
-  if ! grep -Fq 'Authority=Developer ID Application:' <<<"$signing_details" \
-    || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$signing_details"; then
+  if ! grep -Fq 'Authority=Developer ID Application:' <<<"$app_signing_details" \
+    || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+' <<<"$app_signing_details"; then
     echo "Mac 安装包校验失败：App 不是有效的 Developer ID Application 签名。" >&2
     exit 1
   fi
