@@ -14,6 +14,7 @@ config.json
 # Go build output
 bin/
 /dist/
+/dist-macos/
 
 # Rust / Claude bridge build output
 /target/
