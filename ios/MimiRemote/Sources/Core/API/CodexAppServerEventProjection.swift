@@ -486,6 +486,7 @@ extension CodexAppServerSessionRuntime {
             resumeID: id,
             createdAt: date(from: thread["createdAt"]),
             updatedAt: date(from: thread["updatedAt"]),
+            recencyAt: date(from: thread["recencyAt"]),
             preview: preview,
             activeTurnID: activeTurnID,
             lastSeq: nil,

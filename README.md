@@ -117,13 +117,14 @@ agentd status
 agentd pair
 agentd doctor --fix
 agentd logs -n 200
+agentd up --no-pair
 agentd restart
 agentd restart --no-pair
 agentd stop
 ```
 
 On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
-Use `--no-pair` from automation so the restart output does not include a pairing QR code or the long-lived access token.
+From an agent, automation, or retained remote log, use `agentd up --no-pair` / `agentd restart --no-pair` so the output contains no pairing QR code, endpoint, or long-lived access token. `agentd up --no-pair --json` returns only the version, readiness state, and safe warnings rather than the complete setup result. When pairing is needed, have the user run `agentd pair --qr-only` in a local terminal.
 
 For Linux installation and recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
 

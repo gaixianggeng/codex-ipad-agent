@@ -31,6 +31,15 @@ agentd status
 
 `agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json` 和独立的 app-server Token 文件，以 `0600` 保存，然后启动 Homebrew 后台服务。重复运行会复用现有配置，不会覆盖已经配对的移动端 Token。
 
+Agent 或自动化首次安装必须使用安全模式，初始化与启动逻辑不变，但不输出二维码、Endpoint 或长期访问码：
+
+```bash
+agentd up --no-pair
+agentd up --no-pair --json
+```
+
+JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning，不包含带 Token 的完整 setup `result`。需要配对时由用户在不会进入远程任务日志的本机终端执行 `agentd pair --qr-only`。
+
 ### macOS 升级
 
 先做本地备份。备份目录含 Token，不能上传到 Issue、PR 或网盘公开链接。

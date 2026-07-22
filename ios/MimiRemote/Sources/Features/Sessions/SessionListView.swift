@@ -163,7 +163,7 @@ struct SessionListView: View {
                     accessibilityLabel: L10n.text("ui.refresh_session_library"),
                     tokens: tokens
                 ) {
-                    Task { await sessionStore.refreshSessionLibraryIndex() }
+                    Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
                 }
 
                 sessionListToolbarButton(
@@ -470,7 +470,7 @@ struct SessionIndexRow: View {
     }
 
     private var timestampText: String {
-        guard let date = session.updatedAt ?? session.createdAt else { return "" }
+        guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
         if Calendar.current.isDateInToday(date) {
             return Self.timeFormatter.string(from: date)
         }

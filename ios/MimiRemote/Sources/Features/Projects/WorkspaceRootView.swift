@@ -997,7 +997,7 @@ private struct WorkspaceDetailView: View {
     }
 
     private func sessionTimeText(for session: AgentSession) -> String {
-        guard let date = session.updatedAt ?? session.createdAt else { return "" }
+        guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
         if Calendar.current.isDateInToday(date) {
             return Self.sessionTimeFormatter.string(from: date)
         }

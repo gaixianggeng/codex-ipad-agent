@@ -65,6 +65,9 @@ extension SessionStore {
                 conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
                 setSessionListProjection(sessionID: optimisticSessionID, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
                 setForegroundActivity(.waitingForAssistant, sessionID: optimisticSessionID)
+            } else if resume == nil {
+                // 新建空会话同样属于用户最近操作；没有消息投影时单独建立排序保护。
+                setSessionRecentActivityProjection(sessionID: optimisticSessionID, clientMessageID: nil)
             }
         }
 
@@ -93,8 +96,17 @@ extension SessionStore {
                     moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
                     migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
                     migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
+                } else {
+                    moveSessionRecentActivityProjection(
+                        from: optimisticSessionID,
+                        to: responseSession.id,
+                        clientMessageID: nil
+                    )
                 }
                 if resume == nil {
+                    // 先让真实 ID 入库，再删临时 ID。否则 sessions 的 didSet 裁剪会把刚迁移到
+                    // 真实 ID 的预览/最近活动投影当成孤儿清掉，造成新会话瞬间回跳或消失。
+                    upsert(responseSession)
                     removeSession(optimisticSessionID)
                 }
             }
@@ -159,6 +171,7 @@ extension SessionStore {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: optimisticSessionID, status: .failed)
                     clearSessionListProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
                 }
+                clearSessionRecentActivityProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
                 updateSession(optimisticSessionID) { item in
                     item.status = "failed"
                 }
@@ -786,7 +799,10 @@ extension SessionStore {
         showLoading: Bool = true,
         clearErrorOnSuccess: Bool = true,
         updateStatusMessage: Bool = true,
-        reportErrorOnFailure: Bool = true
+        reportErrorOnFailure: Bool = true,
+        reuseRecent: Bool? = nil,
+        consistency: SessionListConsistency = .fastIndexed,
+        activatesProject: Bool = true
     ) async {
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
@@ -794,7 +810,7 @@ extension SessionStore {
             return
         }
         projectID = workspace.id
-        if selectedProjectID != projectID {
+        if activatesProject, selectedProjectID != projectID {
             setSelectedProjectID(projectID)
         }
         if showLoading {
@@ -812,12 +828,13 @@ extension SessionStore {
             let page = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
-                reuseRecent: !showLoading
+                reuseRecent: reuseRecent ?? !showLoading,
+                consistency: consistency
             )
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
-            guard selectedProjectID == projectID else {
+            guard !activatesProject || selectedProjectID == projectID else {
                 return
             }
             // 只替换当前项目的会话，避免一次项目点击误删其他项目已经加载好的列表。
@@ -843,13 +860,15 @@ extension SessionStore {
     }
 
     func sessionLibraryPage(
-        workspace: AgentWorkspace
+        workspace: AgentWorkspace,
+        consistency: SessionListConsistency = .fastIndexed
     ) async -> (workspace: AgentWorkspace, page: SessionsPage?) {
         do {
             let page = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
-                reuseRecent: true
+                reuseRecent: consistency == .fastIndexed,
+                consistency: consistency
             )
             return (workspace, page)
         } catch {
@@ -874,30 +893,38 @@ extension SessionStore {
     func sessionListFirstPage(
         workspace: AgentWorkspace,
         limit: Int,
-        reuseRecent: Bool
+        reuseRecent: Bool,
+        consistency: SessionListConsistency = .fastIndexed
     ) async throws -> SessionsPage {
         let key = SessionListFirstPageRequestKey(
             connectionGeneration: appStore.connectionGeneration,
             workspaceID: workspace.id,
             workspacePath: workspace.path,
-            limit: limit
+            limit: limit,
+            consistency: consistency
         )
         // 手动刷新可以绕过短缓存，但同一时刻仍必须等待已存在的共享请求。
         if let inFlight = sessionListFirstPageInFlightByKey[key] {
             return try await inFlight.task.value
         }
         // 会话库只需要 8 条时，可以复用同工作区正在执行的 20 条请求；反向复用会缩短主列表，不能做。
+        // 后台快速刷新也可以等待更强的权威请求；权威刷新不能复用快速索引结果，否则会重新引入漏会话问题。
         if let largerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
             entry.key.connectionGeneration == key.connectionGeneration
                 && entry.key.workspaceID == key.workspaceID
                 && entry.key.workspacePath == key.workspacePath
+                && (
+                    entry.key.consistency == key.consistency
+                        || (key.consistency == .fastIndexed && entry.key.consistency == .authoritative)
+                )
                 && entry.key.limit >= key.limit
         })?.value {
             return try await largerInFlight.task.value
         }
         let now = sessionListNow()
         if reuseRecent,
-           let cached = sessionListFirstPageCacheByKey[key],
+           let cached = sessionListFirstPageCacheByKey[key]
+                ?? cachedSessionListEntry(workspace: workspace, minimumLimit: limit),
            now.timeIntervalSince(cached.loadedAt) < sessionListFirstPageCacheTTL {
             return cached.page
         }
@@ -913,7 +940,12 @@ extension SessionStore {
 
         let client = try clientFactory()
         let task = Task {
-            try await client.sessionsPage(workspace: workspace, cursor: nil, limit: limit)
+            try await client.sessionsPage(
+                workspace: workspace,
+                cursor: nil,
+                limit: limit,
+                consistency: consistency
+            )
         }
         sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(task: task)
         do {
@@ -932,6 +964,13 @@ extension SessionStore {
     }
 
     func cachedSessionListPage(workspace: AgentWorkspace, minimumLimit: Int) -> SessionsPage? {
+        cachedSessionListEntry(workspace: workspace, minimumLimit: minimumLimit)?.page
+    }
+
+    func cachedSessionListEntry(
+        workspace: AgentWorkspace,
+        minimumLimit: Int
+    ) -> SessionListFirstPageCacheEntry? {
         sessionListFirstPageCacheByKey
             .filter { entry in
                 entry.key.connectionGeneration == appStore.connectionGeneration
@@ -940,7 +979,7 @@ extension SessionStore {
                     && entry.key.limit >= minimumLimit
             }
             .max { $0.value.loadedAt < $1.value.loadedAt }?
-            .value.page
+            .value
     }
 
     func sessionListBudgetKey(for workspace: AgentWorkspace) -> SessionListBudgetKey {
@@ -1039,10 +1078,22 @@ extension SessionStore {
         projectID: String,
         preserveAllLoaded: Bool = false
     ) -> [AgentSession] {
+        acknowledgeRecentActivityProjections(in: fresh)
         let freshIDs = Set(fresh.map(\.id))
         recordRunningSessionsMissingFromFreshPage(freshIDs: freshIDs, projectID: projectID)
         var result = pageSessionsPreservingSelection(fresh, projectID: projectID)
         var knownIDs = Set(result.map(\.id))
+        let projectedSessions = sessions(forProjectID: projectID).filter { session in
+            guard recentActivityProjectionBySessionID[session.id] != nil,
+                  shouldRetainSessionMissingFromFreshPage(session),
+                  !knownIDs.contains(session.id) else {
+                return false
+            }
+            knownIDs.insert(session.id)
+            return true
+        }
+        // 新建/发送后的列表请求可能命中旧缓存或旧的 single-flight 响应；服务端列表确认前不能删掉本地最近项。
+        result.append(contentsOf: projectedSessions)
         let knownRunningSessions = sessions(forProjectID: projectID).filter { session in
             guard session.isRunning,
                   shouldRetainSessionMissingFromFreshPage(session),
@@ -1170,6 +1221,7 @@ extension SessionStore {
             resumeID: item.resumeID,
             createdAt: item.createdAt,
             updatedAt: item.updatedAt,
+            recencyAt: item.recencyAt,
             preview: item.preview,
             activeTurnID: item.activeTurnID,
             lastSeq: item.lastSeq,
@@ -1298,6 +1350,9 @@ extension SessionStore {
             item.preview = projection.preview
             item.updatedAt = projection.updatedAt
         }
+        if source == .localUser {
+            setSessionRecentActivityProjection(sessionID: sessionID, clientMessageID: clientMessageID)
+        }
     }
 
     func clearSessionListProjection(sessionID: SessionID, clientMessageID: ClientMessageID?) {
@@ -1337,40 +1392,11 @@ extension SessionStore {
             source: projection.source,
             clientMessageID: projection.clientMessageID
         )
-    }
-
-    func sessionPreparedForStorage(_ incoming: AgentSession) -> AgentSession {
-        sessionApplyingListProjection(
-            sessionPreservingLocalCompletedGoal(
-                sessionPreservingLocalCompletedStatus(
-                    sessionPreservingActiveApproval(incoming)
-                )
-            )
+        moveSessionRecentActivityProjection(
+            from: sourceSessionID,
+            to: targetSessionID,
+            clientMessageID: clientMessageID
         )
-    }
-
-    func sessionApplyingListProjection(_ incoming: AgentSession) -> AgentSession {
-        guard let projection = listProjectionBySessionID[incoming.id] else {
-            return incoming
-        }
-        if shouldClearListProjection(projection, remoteUpdatedAt: incoming.updatedAt) {
-            listProjectionBySessionID.removeValue(forKey: incoming.id)
-            return incoming
-        }
-        var projected = incoming
-        projected.preview = projection.preview
-        projected.updatedAt = projection.updatedAt
-        return projected
-    }
-
-    func shouldClearListProjection(_ projection: SessionListProjection, remoteUpdatedAt: Date?) -> Bool {
-        guard let remoteUpdatedAt else {
-            return false
-        }
-        guard let baseRemoteUpdatedAt = projection.baseRemoteUpdatedAt else {
-            return true
-        }
-        return remoteUpdatedAt > baseRemoteUpdatedAt
     }
 
     func optimisticSessionID(
@@ -1408,19 +1434,6 @@ extension SessionStore {
         )
     }
 
-    static func promptTitle(_ prompt: String) -> String {
-        let collapsed = prompt
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        guard !collapsed.isEmpty else {
-            return L10n.text("ui.new_session")
-        }
-        if collapsed.count <= 42 {
-            return collapsed
-        }
-        return String(collapsed.prefix(42)) + "..."
-    }
-
     func removeSession(_ id: SessionID) {
         guard let index = sessionIndexByID[id] else {
             return
@@ -1428,6 +1441,8 @@ extension SessionStore {
         var next = sessions
         next.remove(at: index)
         sessions = next
+        listProjectionBySessionID.removeValue(forKey: id)
+        recentActivityProjectionBySessionID.removeValue(forKey: id)
         clearRuntimeActivity(sessionID: id)
     }
 
@@ -1885,6 +1900,8 @@ extension SessionStore {
         }
         historyFirstPageCacheByKey = historyFirstPageCacheByKey.filter { validSessionIDs.contains($0.key.sessionID) }
         historySavingsNoticesBySessionID = historySavingsNoticesBySessionID.filter { validSessionIDs.contains($0.key) }
+        listProjectionBySessionID = listProjectionBySessionID.filter { validSessionIDs.contains($0.key) }
+        recentActivityProjectionBySessionID = recentActivityProjectionBySessionID.filter { validSessionIDs.contains($0.key) }
         initialHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
         missingRunningSessionStateByID = missingRunningSessionStateByID.filter { sessionID, _ in
             validSessionIDs.contains(sessionID) || missingRunningSessionReconciliationTasksByID[sessionID] != nil

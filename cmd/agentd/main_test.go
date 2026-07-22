@@ -48,6 +48,92 @@ func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	}
 }
 
+func TestUpNoPairDoesNotPrintConnectionCredentials(t *testing.T) {
+	fixture := prepareMainLegacyConfigFixture(t)
+	prepareBrewSideEffectProbe(t)
+	stdout, stderr, err := captureMainCommandOutput(t, func() error {
+		return run([]string{"agentd", "up", "--wait", "0", "--no-pair"})
+	})
+	if err != nil {
+		t.Fatalf("up --no-pair 失败：%v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "正在准备 Mimi Mac 助手") || !strings.Contains(stdout, "常用命令") {
+		t.Fatalf("安全启动仍应输出进度和后续命令：%q", stdout)
+	}
+	for _, forbidden := range []string{
+		fixture.token,
+		"127.0.0.1:8787",
+		"Token：",
+		"访问码：",
+		"mimiremote://",
+		"用 iPad 扫这个二维码",
+	} {
+		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+			t.Fatalf("up --no-pair 泄漏连接信息 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
+		}
+	}
+}
+
+func TestUpNoPairJSONOmitsSetupResult(t *testing.T) {
+	fixture := prepareMainLegacyConfigFixture(t)
+	prepareBrewSideEffectProbe(t)
+	stdout, stderr, err := captureMainCommandOutput(t, func() error {
+		return run([]string{"agentd", "up", "--wait", "0", "--no-pair", "--json"})
+	})
+	if err != nil {
+		t.Fatalf("up --no-pair --json 失败：%v stderr=%s", err, stderr)
+	}
+
+	var output map[string]any
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("安全启动 JSON 无法解析：%v output=%q", err, stdout)
+	}
+	if output["service_ok"] != true || output["version"] != version {
+		t.Fatalf("安全启动 JSON 缺少非敏感状态：%+v", output)
+	}
+	for _, forbiddenKey := range []string{"result", "token", "endpoint", "connect_url", "pair_url", "config_path"} {
+		if _, exists := output[forbiddenKey]; exists {
+			t.Fatalf("安全启动 JSON 不应包含 %q：%+v", forbiddenKey, output)
+		}
+	}
+	for _, forbiddenValue := range []string{fixture.token, "127.0.0.1:8787", "mimiremote://"} {
+		if strings.Contains(stdout, forbiddenValue) || strings.Contains(stderr, forbiddenValue) {
+			t.Fatalf("安全启动 JSON 泄漏连接信息 %q：stdout=%q stderr=%q", forbiddenValue, stdout, stderr)
+		}
+	}
+}
+
+func TestUpNoPairJSONRedactsConnectionDetailsFromServiceError(t *testing.T) {
+	result := agentsetup.Result{
+		Endpoint:   "http://100.64.0.8:8787",
+		Token:      "long-lived-token",
+		ConnectURL: "mimiremote://connect?endpoint=http%3A%2F%2F100.64.0.8%3A8787&token=long-lived-token",
+		PairURL:    "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.8%3A8787&pair_sig=short-ticket",
+	}
+	result.Warnings = []string{"连接警告：" + result.Endpoint + " " + result.Token}
+	serviceError := strings.Join([]string{
+		result.Endpoint,
+		result.Token,
+		result.ConnectURL,
+		result.PairURL,
+	}, " ")
+
+	output := upJSONOutput(result, false, serviceError, true)
+	raw, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{result.Endpoint, result.Token, result.ConnectURL, result.PairURL, "100.64.0.8"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("安全启动错误泄漏连接信息 %q：%s", forbidden, raw)
+		}
+	}
+	redactedError, _ := output["service_error"].(string)
+	if !strings.Contains(redactedError, "<redacted>") {
+		t.Fatalf("安全启动错误应明确标记去敏内容：%s", raw)
+	}
+}
+
 func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -29,13 +29,17 @@ struct SessionIndexStore {
 
     static func sortedSessions(_ items: [AgentSession]) -> [AgentSession] {
         items.sorted { lhs, rhs in
-            let left = lhs.updatedAt ?? lhs.createdAt ?? .distantPast
-            let right = rhs.updatedAt ?? rhs.createdAt ?? .distantPast
+            let left = orderingDate(for: lhs)
+            let right = orderingDate(for: rhs)
             if left == right {
-                // 后端 cursor 使用 updated_at + id 做 keyset，全端都保持同一个全序。
+                // Codex 的 recency_at cursor 仍以 id 打破同秒并列；全端保持同一个稳定全序。
                 return lhs.id > rhs.id
             }
             return left > right
         }
+    }
+
+    static func orderingDate(for session: AgentSession) -> Date {
+        session.recencyAt ?? session.updatedAt ?? session.createdAt ?? .distantPast
     }
 }

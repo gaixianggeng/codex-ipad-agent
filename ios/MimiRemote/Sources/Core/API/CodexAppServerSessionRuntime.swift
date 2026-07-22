@@ -97,6 +97,7 @@ actor CodexAppServerSessionRuntime {
     var threadTurnsListUnavailable = false
     var stateDBOnlyListUnavailable = false
     var stateDBOnlyScanRequiredCWDs: Set<String> = []
+    var recencySortUnavailable = false
     var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
     // thread/list 在 Tailscale Peer Relay/DERP 弱链路上可能要扫本机 Codex 历史并传回较大的 JSON。
     // 只给列表请求放宽超时，避免影响 turn/start 等交互命令的失败反馈速度。
@@ -218,7 +219,12 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+    func sessionsPage(
+        projectID: String?,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency = .fastIndexed
+    ) async throws -> SessionsPage {
         let projects = try await projects()
         guard let projectID else {
             throw CodexAppServerSessionRuntimeError.projectRequired
@@ -233,7 +239,8 @@ actor CodexAppServerSessionRuntime {
             limit: limit,
             builder: builder,
             projects: projects,
-            fallbackProject: project
+            fallbackProject: project,
+            consistency: consistency
         )
         for session in page.sessions {
             contextsBySessionID[session.id] = CodexAppServerSessionContext(
@@ -246,7 +253,12 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
-    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency = .fastIndexed
+    ) async throws -> SessionsPage {
         let baseProjects = try await projects()
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
         let workspaceProject = workspace.project
@@ -258,7 +270,8 @@ actor CodexAppServerSessionRuntime {
             limit: limit,
             builder: builder,
             projects: projects,
-            fallbackProject: workspaceProject
+            fallbackProject: workspaceProject,
+            consistency: consistency
         )
         for session in page.sessions {
             contextsBySessionID[session.id] = CodexAppServerSessionContext(
@@ -968,14 +981,23 @@ actor CodexAppServerSessionRuntime {
         limit: Int?,
         builder: CodexAppServerRequestBuilder,
         projects: [AgentProject],
-        fallbackProject: AgentProject
+        fallbackProject: AgentProject,
+        consistency: SessionListConsistency
     ) async throws -> SessionsPage {
-        let canUseIndexedList = cursor == nil
+        let canUseIndexedList = consistency == .fastIndexed
+            && cursor == nil
             && !stateDBOnlyListUnavailable
             && !stateDBOnlyScanRequiredCWDs.contains(cwd)
+        let sortKey = preferredThreadListSortKey
         do {
             let result = try await sendRecoveringFromStaleInitialization(
-                try builder.threadList(cwd: cwd, limit: limit, cursor: cursor, useStateDBOnly: canUseIndexedList),
+                try builder.threadList(
+                    cwd: cwd,
+                    limit: limit,
+                    cursor: cursor,
+                    useStateDBOnly: canUseIndexedList,
+                    sortKey: sortKey
+                ),
                 timeout: threadListRequestTimeout
             )
             let page = threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
@@ -993,6 +1015,19 @@ actor CodexAppServerSessionRuntime {
                 fallbackProject: fallbackProject
             )
         } catch {
+            if sortKey == "recency_at", shouldFallbackFromRecencySort(error) {
+                // 旧 agentd/Codex 不认识 recency_at 时，本连接只探测一次，之后稳定退回 updated_at。
+                recencySortUnavailable = true
+                return try await threadListPageWithIndexedFallback(
+                    cwd: cwd,
+                    cursor: cursor,
+                    limit: limit,
+                    builder: builder,
+                    projects: projects,
+                    fallbackProject: fallbackProject,
+                    consistency: consistency
+                )
+            }
             guard canUseIndexedList, shouldFallbackFromStateDBOnlyList(error) else {
                 throw error
             }
@@ -1017,20 +1052,54 @@ actor CodexAppServerSessionRuntime {
         fallbackProject: AgentProject
     ) async throws -> SessionsPage {
         let result = try await sendRecoveringFromStaleInitialization(
-            try builder.threadList(cwd: cwd, limit: limit, cursor: cursor, useStateDBOnly: false),
+            try builder.threadList(
+                cwd: cwd,
+                limit: limit,
+                cursor: cursor,
+                useStateDBOnly: false,
+                sortKey: preferredThreadListSortKey
+            ),
             timeout: threadListRequestTimeout
         )
         return threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
     }
 
     func indexedThreadListNeedsRepair(_ page: SessionsPage, cwd: String) -> Bool {
-        let knownIDs = Set(contextsBySessionID.values.compactMap { context in
-            context.cwd == cwd ? context.session.id : nil
-        })
-        guard !knownIDs.isEmpty, !page.hasMore else {
+        let knownSessions = contextsBySessionID.values.compactMap { context in
+            context.cwd == cwd ? context.session : nil
+        }
+        guard !knownSessions.isEmpty else {
             return false
         }
-        return !knownIDs.isSubset(of: Set(page.sessions.map(\.id)))
+        let pageIDs = Set(page.sessions.map(\.id))
+        let missing = knownSessions.filter { !pageIDs.contains($0.id) }
+        guard !missing.isEmpty else {
+            return false
+        }
+        guard page.hasMore, let tail = page.sessions.last else {
+            return true
+        }
+        let tailDate = SessionIndexStore.orderingDate(for: tail)
+        // 满页时只修复“按最近活动本应位于本页”的缺口；更老的已知会话留在后续分页，避免无谓扫描。
+        return missing.contains { known in
+            let knownDate = SessionIndexStore.orderingDate(for: known)
+            return knownDate > tailDate || (knownDate == tailDate && known.id > tail.id)
+        }
+    }
+
+    var preferredThreadListSortKey: String {
+        runtimeProvider == "codex" && !recencySortUnavailable ? "recency_at" : "updated_at"
+    }
+
+    func shouldFallbackFromRecencySort(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else {
+            return false
+        }
+        let message = appError.message.lowercased()
+        return appError.code == -32601
+            || message.contains("recency_at")
+            || message.contains("sortkey") && (message.contains("unsupported") || message.contains("not supported"))
+            || message.contains("sortkey") && message.contains("不支持")
     }
 
     func shouldFallbackFromStateDBOnlyList(_ error: Error) -> Bool {

@@ -49,6 +49,8 @@ agentd status
 
 `agentd up` 会生成用户私有配置和独立 Token、启动 Homebrew 后台服务、等待 Codex app-server 真正就绪，然后输出短期配对二维码。重复执行会复用现有配置，不会覆盖已经配对的长期 Token。
 
+Agent 或自动化安装使用 `agentd up --no-pair`；它执行相同初始化与就绪检查，但不输出二维码、Endpoint 和长期访问码。`agentd up --no-pair --json` 只返回版本、就绪状态和安全警告。需要配对时再由用户在本机终端执行 `agentd pair --qr-only`。
+
 ### Linux
 
 Linux Release 归档包含 user-systemd unit 和安装脚本。下载目标版本和 `checksums.txt`，校验后执行：
@@ -85,6 +87,7 @@ bash ./scripts/restart-agentd-dev-macos.sh --status
 
 ```bash
 agentd up
+agentd up --no-pair
 agentd status
 agentd pair --qr-only
 agentd doctor --fix
@@ -95,7 +98,7 @@ agentd stop
 ```
 
 macOS 上的 `agentd restart` 使用 launchd 单次原子重启，可以从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
-`--no-pair` 用于自动化，避免在日志中输出长期访问码。
+`up --no-pair` 和 `restart --no-pair` 用于自动化，避免在日志中输出二维码、Endpoint 和长期访问码。
 
 每次服务启动时，`agentd` 都会优先异步预检 projects、`scan_roots`、`browse_roots`；当浏览根覆盖当前 Home 时，还会探测 Desktop、Documents、Downloads，尽早触发 macOS“文件与文件夹”提示。预检不递归读取内容，也不会因弹窗未处理而阻塞服务上线，结果可在 `agentd status --json`、Doctor 和日志中查看。
 

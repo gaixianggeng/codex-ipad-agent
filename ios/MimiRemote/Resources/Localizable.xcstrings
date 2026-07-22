@@ -1859,6 +1859,153 @@
         }
       }
     },
+    "ui.apple_voice_input" : {
+      "comment" : "User-facing UI text for the Apple on-device voice input provider.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_accuracy_tip" : {
+      "comment" : "Explains the speed and accuracy tradeoff before first enabling Apple voice input.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input transcribes on device in real time and responds faster, but it may be less accurate than Codex for technical terms and complex instructions."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 语音输入会在设备端实时转写，响应更快，但对技术术语和复杂指令的识别准确性可能不如 Codex。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_audio_conversion_failed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input could not convert microphone audio."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 语音输入无法转换麦克风音频。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_audio_format_is_unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input has no compatible audio format on this device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前设备没有 Apple 语音输入可用的音频格式。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_could_not_start_recording" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input could not start recording."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 语音输入无法启动录音。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_description" : {
+      "comment" : "Short settings-row description of Apple voice input's main benefit.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Faster response · Live on-device transcription"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "响应更快 · 设备端实时转写"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_does_not_support_the_current_language" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input does not support the current system language."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 语音输入暂不支持当前系统语言。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_failed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input failed: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 语音输入失败：%@"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_is_currently_unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple voice input is currently unavailable."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 语音输入当前不可用。"
+          }
+        }
+      }
+    },
     "ui.application" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -3033,123 +3180,6 @@
         }
       }
     },
-    "ui.apple_voice_input" : {
-      "comment" : "User-facing UI text for the Apple on-device voice input provider.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apple"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apple"
-          }
-        }
-      }
-    },
-    "ui.apple_voice_input_description" : {
-      "comment" : "Short settings-row description of Apple voice input's main benefit.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Faster response · Live on-device transcription"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "响应更快 · 设备端实时转写"
-          }
-        }
-      }
-    },
-    "ui.apple_voice_input_accuracy_tip" : {
-      "comment" : "Explains the speed and accuracy tradeoff before first enabling Apple voice input.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apple voice input transcribes on device in real time and responds faster, but it may be less accurate than Codex for technical terms and complex instructions."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apple 语音输入会在设备端实时转写，响应更快，但对技术术语和复杂指令的识别准确性可能不如 Codex。"
-          }
-        }
-      }
-    },
-    "ui.apple_voice_input_audio_conversion_failed" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple voice input could not convert microphone audio." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音输入无法转换麦克风音频。" } }
-      }
-    },
-    "ui.apple_voice_input_audio_format_is_unavailable" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple voice input has no compatible audio format on this device." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当前设备没有 Apple 语音输入可用的音频格式。" } }
-      }
-    },
-    "ui.apple_voice_input_could_not_start_recording" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple voice input could not start recording." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音输入无法启动录音。" } }
-      }
-    },
-    "ui.apple_voice_input_does_not_support_the_current_language" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple voice input does not support the current system language." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音输入暂不支持当前系统语言。" } }
-      }
-    },
-    "ui.apple_voice_input_failed" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple voice input failed: %@" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音输入失败：%@" } }
-      }
-    },
-    "ui.apple_voice_input_is_currently_unavailable" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple voice input is currently unavailable." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音输入当前不可用。" } }
-      }
-    },
-    "ui.finalizing_apple_voice_input" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Finalizing Apple transcription" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在完成 Apple 转写" } }
-      }
-    },
-    "ui.listening_and_transcribing_in_real_time" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Listening and transcribing in real time" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在聆听并实时转写" } }
-      }
-    },
-    "ui.tap_to_start_apple_realtime_voice_input" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap to start Apple real-time voice input" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻点开始 Apple 实时语音输入" } }
-      }
-    },
-    "ui.tap_to_stop_apple_voice_input" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap to stop and finalize Apple voice input" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻点停止并完成 Apple 语音输入" } }
-      }
-    },
-    "ui.use_codex_voice_input" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Use Codex" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "改用 Codex" } }
-      }
-    },
     "ui.cancel" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -4225,40 +4255,6 @@
         }
       }
     },
-    "ui.codex_voice_input" : {
-      "comment" : "User-facing UI text for the Codex voice transcription provider.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codex"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codex"
-          }
-        }
-      }
-    },
-    "ui.codex_voice_input_description" : {
-      "comment" : "Short settings-row description of Codex voice input's main benefit.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Higher accuracy · Transcribes after recording"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "准确性更高 · 录音结束后转写"
-          }
-        }
-      }
-    },
     "ui.codex_currently_returns_value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -4341,6 +4337,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codex 用量双环自适应"
+          }
+        }
+      }
+    },
+    "ui.codex_voice_input" : {
+      "comment" : "User-facing UI text for the Codex voice transcription provider.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex"
+          }
+        }
+      }
+    },
+    "ui.codex_voice_input_description" : {
+      "comment" : "Short settings-row description of Codex voice input's main benefit.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Higher accuracy · Transcribes after recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确性更高 · 录音结束后转写"
           }
         }
       }
@@ -9294,6 +9324,22 @@
         }
       }
     },
+    "ui.finalizing_apple_voice_input" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Finalizing Apple transcription"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在完成 Apple 转写"
+          }
+        }
+      }
+    },
     "ui.find_page_content" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -12003,6 +12049,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "监听地址"
+          }
+        }
+      }
+    },
+    "ui.listening_and_transcribing_in_real_time" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listening and transcribing in real time"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在聆听并实时转写"
           }
         }
       }
@@ -22898,23 +22960,6 @@
         }
       }
     },
-    "ui.switch_to_apple_voice_input" : {
-      "comment" : "Title of the first-use confirmation for Apple voice input.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Switch to Apple Voice Input?"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "切换到 Apple 语音输入？"
-          }
-        }
-      }
-    },
     "ui.switch" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -22997,6 +23042,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "切换目标模式"
+          }
+        }
+      }
+    },
+    "ui.switch_to_apple_voice_input" : {
+      "comment" : "Title of the first-use confirmation for Apple voice input.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch to Apple Voice Input?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到 Apple 语音输入？"
           }
         }
       }
@@ -23269,6 +23331,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已在此设备上接管"
+          }
+        }
+      }
+    },
+    "ui.tap_to_start_apple_realtime_voice_input" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to start Apple real-time voice input"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点开始 Apple 实时语音输入"
+          }
+        }
+      }
+    },
+    "ui.tap_to_stop_apple_voice_input" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to stop and finalize Apple voice input"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点停止并完成 Apple 语音输入"
           }
         }
       }
@@ -27990,6 +28084,22 @@
         }
       }
     },
+    "ui.use_codex_voice_input" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Codex"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改用 Codex"
+          }
+        }
+      }
+    },
     "ui.use_manual_connection_instead" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -29466,6 +29576,23 @@
         }
       }
     },
+    "ui.voice_draft_to_be_confirmed" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice draft to be confirmed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音草稿待确认"
+          }
+        }
+      }
+    },
     "ui.voice_input" : {
       "comment" : "Settings section title for selecting a voice input provider.",
       "localizations" : {
@@ -29485,6 +29612,7 @@
     },
     "ui.voice_input_provider_comparison" : {
       "comment" : "Persistent settings footer comparing Codex and Apple voice input.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -29496,23 +29624,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codex 准确性更高，会在录音结束后转写；Apple 在设备端实时转写，响应更快，但准确性可能较低。"
-          }
-        }
-      }
-    },
-    "ui.voice_draft_to_be_confirmed" : {
-      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Voice draft to be confirmed"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "语音草稿待确认"
           }
         }
       }

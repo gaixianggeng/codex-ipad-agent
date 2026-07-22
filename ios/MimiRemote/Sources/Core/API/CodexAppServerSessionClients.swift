@@ -137,6 +137,14 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit)
     }
 
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
+        try await runtime.sessionsPage(projectID: projectID, cursor: cursor, limit: limit, consistency: consistency)
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
+        try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit, consistency: consistency)
+    }
+
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
         try await runtime.searchSessions(query: query, cursor: cursor, limit: limit)
     }
@@ -385,21 +393,29 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     }
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit, consistency: .fastIndexed)
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
         let decoded = MultiRuntimeSessionsCursor.decode(cursor)
-        let codexPage = try await page(runtime: bundle.codex, projectID: projectID, cursor: decoded.codex, limit: limit, buffer: decoded.codexBuffer)
+        let codexPage = try await page(runtime: bundle.codex, projectID: projectID, cursor: decoded.codex, limit: limit, buffer: decoded.codexBuffer, consistency: consistency)
         let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
         let claudePage = claudeAvailable
-            ? try await page(runtime: bundle.claude, projectID: projectID, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer)
+            ? try await page(runtime: bundle.claude, projectID: projectID, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
             : preservedPage(cursor: decoded.claude, buffer: decoded.claudeBuffer)
         return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
     }
 
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await sessionsPage(workspace: workspace, cursor: cursor, limit: limit, consistency: .fastIndexed)
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
         let decoded = MultiRuntimeSessionsCursor.decode(cursor)
-        let codexPage = try await page(runtime: bundle.codex, workspace: workspace, cursor: decoded.codex, limit: limit, buffer: decoded.codexBuffer)
+        let codexPage = try await page(runtime: bundle.codex, workspace: workspace, cursor: decoded.codex, limit: limit, buffer: decoded.codexBuffer, consistency: consistency)
         let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
         let claudePage = claudeAvailable
-            ? try await page(runtime: bundle.claude, workspace: workspace, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer)
+            ? try await page(runtime: bundle.claude, workspace: workspace, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
             : preservedPage(cursor: decoded.claude, buffer: decoded.claudeBuffer)
         return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
     }
@@ -515,19 +531,19 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         var nextCursor: String?
     }
 
-    private func page(runtime: CodexAppServerSessionRuntime, projectID: String?, cursor: String?, limit: Int?, buffer: [AgentSession]) async throws -> RuntimePage {
+    private func page(runtime: CodexAppServerSessionRuntime, projectID: String?, cursor: String?, limit: Int?, buffer: [AgentSession], consistency: SessionListConsistency) async throws -> RuntimePage {
         if !buffer.isEmpty {
             return RuntimePage(sessions: buffer, nextCursor: cursor)
         }
-        let page = try await runtime.sessionsPage(projectID: projectID, cursor: cursor, limit: limit)
+        let page = try await runtime.sessionsPage(projectID: projectID, cursor: cursor, limit: limit, consistency: consistency)
         return RuntimePage(sessions: page.sessions, nextCursor: page.hasMore ? page.nextCursor : nil)
     }
 
-    private func page(runtime: CodexAppServerSessionRuntime, workspace: AgentWorkspace, cursor: String?, limit: Int?, buffer: [AgentSession]) async throws -> RuntimePage {
+    private func page(runtime: CodexAppServerSessionRuntime, workspace: AgentWorkspace, cursor: String?, limit: Int?, buffer: [AgentSession], consistency: SessionListConsistency) async throws -> RuntimePage {
         if !buffer.isEmpty {
             return RuntimePage(sessions: buffer, nextCursor: cursor)
         }
-        let page = try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit)
+        let page = try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit, consistency: consistency)
         return RuntimePage(sessions: page.sessions, nextCursor: page.hasMore ? page.nextCursor : nil)
     }
 
@@ -538,18 +554,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     private func mergedPage(codex: RuntimePage, claude: RuntimePage, limit: Int?) -> SessionsPage {
         var sessions = codex.sessions + claude.sessions
         bundle.routes.remember(sessions)
-        sessions.sort { lhs, rhs in
-            switch (lhs.updatedAt, rhs.updatedAt) {
-            case let (l?, r?):
-                return l > r
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            case (nil, nil):
-                return lhs.id < rhs.id
-            }
-        }
+        sessions = SessionIndexStore.sortedSessions(sessions)
         let bounded: [AgentSession]
         if let limit, limit > 0, sessions.count > limit {
             bounded = Array(sessions.prefix(limit))

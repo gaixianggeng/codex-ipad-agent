@@ -7,6 +7,105 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testIndexedThreadListRepairsKnownRecentSessionMissingFromFullPage() async throws {
+        let project = AgentProject(id: "proj_state_db_boundary", name: "State DB Boundary", path: "/tmp/state-db-boundary")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(project: project, allowedMethods: ["initialize", "initialized", "thread/list"])
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        func threadRow(id: String, recencyAt: Int) -> String {
+            #"{"id":"\#(id)","sessionId":"\#(id)","preview":"\#(id)","ephemeral":false,"modelProvider":"openai","createdAt":100,"updatedAt":\#(recencyAt),"recencyAt":\#(recencyAt),"status":{"type":"idle"},"path":null,"cwd":"/tmp/state-db-boundary","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"\#(id)","turns":[]}"#
+        }
+
+        let firstTask = Task { try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let firstList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(firstList.params?.objectValue?["sortKey"]?.stringValue, "recency_at")
+        XCTAssertEqual(firstList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        transportResponse(
+            transport,
+            id: firstList.id,
+            result: #"{"data":[\#(threadRow(id: "known-recent", recencyAt: 300))],"nextCursor":null}"#
+        )
+        _ = try await firstTask.value
+
+        let sentBeforeIndexedPage = await transport.sentMessages().count
+        let repairedTask = Task { try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+        let indexedList = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/list",
+            after: sentBeforeIndexedPage
+        )
+        XCTAssertEqual(indexedList.params?.objectValue?["useStateDbOnly"]?.boolValue, true)
+        let indexedRows = (0..<20).map { threadRow(id: "indexed-\($0)", recencyAt: 200 - $0) }.joined(separator: ",")
+        let sentBeforeRepair = await transport.sentMessages().count
+        transportResponse(
+            transport,
+            id: indexedList.id,
+            result: #"{"data":[\#(indexedRows)],"nextCursor":"older"}"#
+        )
+
+        let repairList = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/list",
+            after: sentBeforeRepair
+        )
+        XCTAssertEqual(repairList.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
+        transportResponse(
+            transport,
+            id: repairList.id,
+            result: #"{"data":[\#(threadRow(id: "known-recent", recencyAt: 300)),\#(threadRow(id: "indexed-0", recencyAt: 200))],"nextCursor":null}"#
+        )
+
+        let repaired = try await repairedTask.value
+        XCTAssertEqual(repaired.sessions.map(\.id), ["known-recent", "indexed-0"])
+    }
+
+    func testDirectRuntimeFallsBackOnceWhenRecencySortIsUnsupported() async throws {
+        let project = AgentProject(id: "proj_recency_fallback", name: "Recency Fallback", path: "/tmp/recency-fallback")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(project: project, allowedMethods: ["initialize", "initialized", "thread/list"])
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+        let pageTask = Task { try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20) }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let recencyList = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        XCTAssertEqual(recencyList.params?.objectValue?["sortKey"]?.stringValue, "recency_at")
+        let sentBeforeFallback = await transport.sentMessages().count
+        transportErrorResponse(transport, id: recencyList.id, code: -32602, message: "sortKey recency_at unsupported")
+
+        let fallbackList = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/list",
+            after: sentBeforeFallback
+        )
+        XCTAssertEqual(fallbackList.params?.objectValue?["sortKey"]?.stringValue, "updated_at")
+        transportResponse(
+            transport,
+            id: fallbackList.id,
+            result: #"{"data":[{"id":"legacy-thread","sessionId":"legacy-thread","preview":"legacy","ephemeral":false,"modelProvider":"openai","createdAt":100,"updatedAt":200,"status":{"type":"idle"},"path":null,"cwd":"/tmp/recency-fallback","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"legacy","turns":[]}],"nextCursor":null}"#
+        )
+
+        let page = try await pageTask.value
+        XCTAssertEqual(page.sessions.map(\.id), ["legacy-thread"])
+    }
+
     func testDirectRuntimeUsesPagedThreadTurnsListWhenGatewayAllowsIt() async throws {
         let project = AgentProject(id: "proj_turn_pages", name: "Turn Pages", path: "/tmp/turn-pages")
         let transport = FakeCodexAppServerTransport()

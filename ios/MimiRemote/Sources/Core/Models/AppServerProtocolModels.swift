@@ -340,15 +340,16 @@ struct CodexAppServerRequestBuilder {
         cwd: String,
         limit: Int? = 20,
         cursor: String? = nil,
-        useStateDBOnly: Bool = true
+        useStateDBOnly: Bool = true,
+        sortKey: String = "recency_at"
     ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
             "cwd": .string(path),
             "limit": limit.map { .int(Int64($0)) },
             "cursor": cursor.map { .string($0) },
-            // 列表分页 cursor 必须和本地侧栏排序保持同一基准，避免加载更多后漏掉最新会话。
-            "sortKey": .string("updated_at"),
+            // recency_at 只随用户活动推进，避免 Agent 输出持续改写 updated_at 时侧栏来回跳。
+            "sortKey": .string(sortKey),
             "sortDirection": .string("desc"),
             "archived": .bool(false),
             "useStateDbOnly": .bool(useStateDBOnly)

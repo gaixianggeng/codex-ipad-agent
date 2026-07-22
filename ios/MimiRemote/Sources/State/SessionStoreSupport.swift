@@ -19,6 +19,7 @@ struct SessionListFirstPageRequestKey: Hashable {
     let workspaceID: String
     let workspacePath: String
     let limit: Int
+    let consistency: SessionListConsistency
 }
 
 struct SessionListBudgetKey: Hashable {
@@ -575,6 +576,13 @@ struct SessionListProjection: Equatable {
     let clientMessageID: ClientMessageID?
 }
 
+struct SessionRecentActivityProjection: Equatable {
+    let recencyAt: Date
+    let baseRemoteOrderingAt: Date?
+    let baseDisplayedRecencyAt: Date?
+    let clientMessageID: ClientMessageID?
+}
+
 enum RunningTurnDelivery {
     case queued
     case guided
@@ -879,4 +887,144 @@ enum SessionNotificationOpenOutcome: Equatable {
     case requiresProfileSwitch(displayName: String?)
     case unavailable(message: String)
     case ignored
+}
+
+// 列表预览与最近活动投影属于本地状态保护：服务端确认前保留用户刚刚创建或更新的会话，
+// 避免旧缓存、single-flight 响应或秒级时间戳让列表短暂回跳。
+extension SessionStore {
+    static func promptTitle(_ prompt: String) -> String {
+        let collapsed = prompt
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else {
+            return L10n.text("ui.new_session")
+        }
+        if collapsed.count <= 42 {
+            return collapsed
+        }
+        return String(collapsed.prefix(42)) + "..."
+    }
+
+    func setSessionRecentActivityProjection(sessionID: SessionID, clientMessageID: ClientMessageID?) {
+        let existingProjection = recentActivityProjectionBySessionID[sessionID]
+        let existingSession = sessionsByID[sessionID]
+        let now = sessionListNow()
+        let projectedAt = max(existingProjection?.recencyAt ?? .distantPast, now)
+        let isOptimisticPlaceholder = existingSession?.source == Self.optimisticSessionSource
+        let existingRemoteOrderingAt = existingSession.flatMap { session in
+            session.recencyAt ?? session.updatedAt ?? session.createdAt
+        }
+        let projection = SessionRecentActivityProjection(
+            recencyAt: projectedAt,
+            baseRemoteOrderingAt: existingProjection?.baseRemoteOrderingAt
+                ?? (isOptimisticPlaceholder ? nil : existingRemoteOrderingAt),
+            baseDisplayedRecencyAt: existingProjection?.baseDisplayedRecencyAt
+                ?? (isOptimisticPlaceholder ? nil : existingSession?.recencyAt),
+            clientMessageID: clientMessageID
+        )
+        recentActivityProjectionBySessionID[sessionID] = projection
+        updateSession(sessionID) { item in
+            item.recencyAt = max(item.recencyAt ?? .distantPast, projection.recencyAt)
+        }
+    }
+
+    func clearSessionRecentActivityProjection(sessionID: SessionID, clientMessageID: ClientMessageID?) {
+        guard let projection = recentActivityProjectionBySessionID[sessionID] else {
+            return
+        }
+        if let clientMessageID,
+           let projectionClientID = projection.clientMessageID,
+           projectionClientID != clientMessageID {
+            return
+        }
+        recentActivityProjectionBySessionID.removeValue(forKey: sessionID)
+        updateSession(sessionID) { item in
+            item.recencyAt = projection.baseDisplayedRecencyAt
+        }
+    }
+
+    func moveSessionRecentActivityProjection(
+        from sourceSessionID: SessionID,
+        to targetSessionID: SessionID,
+        clientMessageID: ClientMessageID?
+    ) {
+        guard sourceSessionID != targetSessionID,
+              let projection = recentActivityProjectionBySessionID[sourceSessionID] else {
+            return
+        }
+        if let clientMessageID,
+           let projectionClientID = projection.clientMessageID,
+           projectionClientID != clientMessageID {
+            return
+        }
+        recentActivityProjectionBySessionID.removeValue(forKey: sourceSessionID)
+        recentActivityProjectionBySessionID[targetSessionID] = projection
+    }
+
+    func acknowledgeRecentActivityProjections(in remoteSessions: [AgentSession]) {
+        for remote in remoteSessions {
+            guard let projection = recentActivityProjectionBySessionID[remote.id],
+                  let remoteOrderingAt = remote.recencyAt ?? remote.updatedAt else {
+                continue
+            }
+            if projection.baseRemoteOrderingAt == nil
+                || remoteOrderingAt > (projection.baseRemoteOrderingAt ?? .distantPast) {
+                recentActivityProjectionBySessionID.removeValue(forKey: remote.id)
+            }
+        }
+    }
+
+    func sessionPreparedForStorage(_ incoming: AgentSession) -> AgentSession {
+        let preserved = sessionPreservingLocalCompletedGoal(
+            sessionPreservingLocalCompletedStatus(sessionPreservingActiveApproval(incoming))
+        )
+        let previewProjected = sessionApplyingListProjection(preserved)
+        let monotonicRecency = sessionPreservingRecencyFloor(previewProjected)
+        return sessionApplyingRecentActivityProjection(monotonicRecency)
+    }
+
+    func sessionPreservingRecencyFloor(_ incoming: AgentSession) -> AgentSession {
+        guard let existing = sessionsByID[incoming.id],
+              let existingRecency = existing.recencyAt,
+              existingRecency > (incoming.recencyAt ?? .distantPast) else {
+            return incoming
+        }
+        var result = incoming
+        // 最近用户活动在单次 App 生命周期内只前进不后退，避免服务端秒级时间或设备时钟差造成回跳。
+        result.recencyAt = existingRecency
+        return result
+    }
+
+    func sessionApplyingRecentActivityProjection(_ incoming: AgentSession) -> AgentSession {
+        guard let projection = recentActivityProjectionBySessionID[incoming.id] else {
+            return incoming
+        }
+        var projected = incoming
+        projected.recencyAt = max(incoming.recencyAt ?? .distantPast, projection.recencyAt)
+        return projected
+    }
+
+    func sessionApplyingListProjection(_ incoming: AgentSession) -> AgentSession {
+        guard let projection = listProjectionBySessionID[incoming.id] else {
+            return incoming
+        }
+        if shouldClearListProjection(projection, remoteUpdatedAt: incoming.updatedAt) {
+            listProjectionBySessionID.removeValue(forKey: incoming.id)
+            return incoming
+        }
+        var projected = incoming
+        projected.preview = projection.preview
+        projected.updatedAt = projection.updatedAt
+        return projected
+    }
+
+    func shouldClearListProjection(_ projection: SessionListProjection, remoteUpdatedAt: Date?) -> Bool {
+        guard let remoteUpdatedAt else {
+            return false
+        }
+        guard let baseRemoteUpdatedAt = projection.baseRemoteUpdatedAt else {
+            return true
+        }
+        return remoteUpdatedAt > baseRemoteUpdatedAt
+    }
 }

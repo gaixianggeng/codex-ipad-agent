@@ -617,7 +617,9 @@ extension SessionStore {
                 showLoading: false,
                 clearErrorOnSuccess: false,
                 updateStatusMessage: false,
-                reportErrorOnFailure: false
+                reportErrorOnFailure: false,
+                reuseRecent: false,
+                activatesProject: false
             )
             self.sessionListReconciliationTasksByProjectID.removeValue(forKey: projectID)
         }
@@ -1510,6 +1512,7 @@ extension SessionStore {
         loadingEarlierHistorySessionIDs = []
         lastSeenEventSeqBySessionID = [:]
         listProjectionBySessionID = [:]
+        recentActivityProjectionBySessionID = [:]
         reloadSessionControlStates()
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]

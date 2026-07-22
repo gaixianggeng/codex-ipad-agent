@@ -177,6 +177,7 @@ final class SessionStore: ObservableObject {
     var locallyCompletedSessionIDs: Set<SessionID> = []
     var locallyCompletedGoalThreadIDs: Set<SessionID> = []
     var listProjectionBySessionID: [SessionID: SessionListProjection] = [:]
+    var recentActivityProjectionBySessionID: [SessionID: SessionRecentActivityProjection] = [:]
     // 队列订阅不依赖当前页面；用户切到其他会话后，原 thread 仍能在完成时继续 FIFO 派发。
     var queuedSessionSockets: [SessionID: any SessionWebSocketClient] = [:]
     var queuedSessionSocketGenerationByID: [SessionID: Int] = [:]

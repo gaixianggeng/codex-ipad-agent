@@ -160,13 +160,14 @@ agentd status
 agentd pair
 agentd doctor --fix
 agentd logs -n 200
+agentd up --no-pair
 agentd restart
 agentd restart --no-pair
 agentd stop
 ```
 
 `agentd restart` 在 macOS 上使用 launchd 原子重启，允许从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
-自动化或远程日志场景使用 `--no-pair`，避免把二维码和长期访问码写入任务输出。
+Agent、自动化或远程日志场景使用 `agentd up --no-pair` / `agentd restart --no-pair`，避免把二维码、Endpoint 和长期访问码写入任务输出。`agentd up --no-pair --json` 只返回版本、就绪状态和安全警告，不包含完整 setup 结果；需要配对时再由用户在本机终端运行 `agentd pair --qr-only`。
 
 Linux 使用 Release 归档中的 user-systemd 安装脚本，完整步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 

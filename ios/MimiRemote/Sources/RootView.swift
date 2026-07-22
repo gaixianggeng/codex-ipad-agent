@@ -1416,7 +1416,7 @@ private struct WorkspaceDetailView: View {
 
     private func lastActivityText(for project: AgentProject) -> String {
         let sessions = sessionStore.sessions(forProjectID: project.id)
-        guard let date = sessions.compactMap({ $0.updatedAt ?? $0.createdAt }).max() else {
+        guard let date = sessions.compactMap({ $0.recencyAt ?? $0.updatedAt ?? $0.createdAt }).max() else {
             return L10n.text("ui.none")
         }
         return Self.minuteTimeFormatter.string(from: date)

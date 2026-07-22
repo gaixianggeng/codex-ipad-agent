@@ -393,7 +393,8 @@ extension SessionStore {
             let page = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
-                reuseRecent: false
+                reuseRecent: false,
+                consistency: autoAttach ? .fastIndexed : .authoritative
             )
             guard connectionGeneration == appStore.connectionGeneration else {
                 return

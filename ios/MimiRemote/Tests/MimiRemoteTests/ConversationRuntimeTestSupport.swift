@@ -812,7 +812,8 @@ func makeSession(
 	resumeID: String? = nil,
     preview: String? = nil,
     activeTurnID: TurnID? = nil,
-    updatedAt: Date = Date(timeIntervalSince1970: 2)
+    updatedAt: Date = Date(timeIntervalSince1970: 2),
+    recencyAt: Date? = nil
 ) -> AgentSession {
     AgentSession(
         id: id,
@@ -826,6 +827,7 @@ func makeSession(
 	resumeID: resumeID,
         createdAt: Date(timeIntervalSince1970: 1),
         updatedAt: updatedAt,
+        recencyAt: recencyAt,
         preview: preview,
         activeTurnID: activeTurnID
     )

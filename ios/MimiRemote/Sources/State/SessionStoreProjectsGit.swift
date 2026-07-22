@@ -507,6 +507,8 @@ extension SessionStore {
         } else {
             archivedSessionIDs.insert(session.id)
             pinnedSessionIDs.remove(session.id)
+            listProjectionBySessionID.removeValue(forKey: session.id)
+            recentActivityProjectionBySessionID.removeValue(forKey: session.id)
             setStatusMessage(L10n.format("ui.archived_value", session.title))
         }
         saveSessionListPreferences()
@@ -785,11 +787,15 @@ extension SessionStore {
         guard let selectedProjectID else {
             return
         }
-        await refreshSessions(forProjectID: selectedProjectID, showLoading: showLoading)
+        await refreshSessions(
+            forProjectID: selectedProjectID,
+            showLoading: showLoading,
+            consistency: showLoading ? .authoritative : .fastIndexed
+        )
     }
 
     /// 为单一全局侧栏加载跨工作区轻量索引。只取 thread/list 首屏，不读取任何消息历史。
-    func refreshSessionLibraryIndex() async {
+    func refreshSessionLibraryIndex(authoritative: Bool = false) async {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
@@ -797,12 +803,16 @@ extension SessionStore {
         // 全局“最近历史”最终只展示 8 条，但“进行中”不能沿用这个数量限制。
         // 每个工作区读取标准 20 条轻量索引，不加载消息正文，在可见性和弱网成本间取 MVP 平衡。
         let workspaces = recentWorkspaces.filter { workspace in
+            if authoritative {
+                return true
+            }
             // 当前工作区已经由 refreshAll/轮询维护完整首屏时，会话库直接复用本地投影。
             // 再发一次相同 thread/list 只会重复占用 gateway 预算。
-            !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
+            return !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
         }
         guard !workspaces.isEmpty else { return }
         let generation = appStore.connectionGeneration
+        let consistency: SessionListConsistency = authoritative ? .authoritative : .fastIndexed
 
         // 两个一组并发，兼顾首屏速度和本机 app-server 压力；底层继续复用 single-flight/短缓存。
         for start in stride(from: 0, to: workspaces.count, by: 2) {
@@ -810,12 +820,12 @@ extension SessionStore {
             let first = workspaces[start]
             if start + 1 < workspaces.count {
                 let second = workspaces[start + 1]
-                async let firstResult = sessionLibraryPage(workspace: first)
-                async let secondResult = sessionLibraryPage(workspace: second)
+                async let firstResult = sessionLibraryPage(workspace: first, consistency: consistency)
+                async let secondResult = sessionLibraryPage(workspace: second, consistency: consistency)
                 let results = await [firstResult, secondResult]
                 mergeSessionLibraryPages(results, generation: generation)
             } else {
-                let result = await sessionLibraryPage(workspace: first)
+                let result = await sessionLibraryPage(workspace: first, consistency: consistency)
                 mergeSessionLibraryPages([result], generation: generation)
             }
         }

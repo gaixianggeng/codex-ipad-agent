@@ -232,7 +232,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["cwd"]?.stringValue, project.path)
         XCTAssertEqual(params["limit"]?.intValue, 20)
         XCTAssertEqual(params["cursor"]?.stringValue, "older")
-        XCTAssertEqual(params["sortKey"]?.stringValue, "updated_at")
+        XCTAssertEqual(params["sortKey"]?.stringValue, "recency_at")
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(params["archived"]?.boolValue, false)
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)

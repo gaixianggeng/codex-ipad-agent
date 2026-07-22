@@ -799,6 +799,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
     let resumeID: String?
     let createdAt: Date?
     let updatedAt: Date?
+    let recencyAt: Date?
     let preview: String?
     let activeTurnID: TurnID?
     let lastSeq: EventSequence?
@@ -820,6 +821,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
         case resumeID = "resume_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case recencyAt = "recency_at"
         case preview
         case activeTurnID = "active_turn_id"
         case lastSeq = "last_seq"
@@ -843,6 +845,7 @@ struct DataFlowSessionRow: Identifiable, Codable, Hashable {
         self.resumeID = try container.decodeIfPresent(String.self, forKey: .resumeID)
         self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
+        self.recencyAt = try container.decodeIfPresent(Date.self, forKey: .recencyAt)
         self.preview = try container.decodeIfPresent(String.self, forKey: .preview)
         self.activeTurnID = try container.decodeIfPresent(TurnID.self, forKey: .activeTurnID)
         self.lastSeq = try container.decodeIfPresent(EventSequence.self, forKey: .lastSeq)

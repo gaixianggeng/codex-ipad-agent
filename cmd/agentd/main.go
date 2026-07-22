@@ -131,6 +131,7 @@ func runUp(args []string) error {
 	listen := fs.String("listen", "", "agentd 监听地址，默认优先绑定 Tailscale IP")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -180,37 +181,76 @@ func runUp(args []string) error {
 	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
 		serviceOK = false
 		serviceError = err.Error()
-		if *asJSON {
-			return printJSON(map[string]any{
-				"result":        result,
-				"service_ok":    serviceOK,
-				"service_error": serviceError,
-			})
+		if *noPair {
+			serviceError = safeUpServiceError(serviceError, result)
 		}
-		return fmt.Errorf("Mimi Mac 助手还没有启动成功，暂时不要扫码。\n\n原因：%v\n下一步：\n  agentd doctor --fix\n  agentd logs", err)
+		if *asJSON {
+			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
+		}
+		return fmt.Errorf("Mimi Mac 助手还没有启动成功，暂时不要扫码。\n\n原因：%s\n下一步：\n  agentd doctor --fix\n  agentd logs", serviceError)
 	} else if *waitTimeout > 0 {
 		if *asJSON {
-			return printJSON(map[string]any{
-				"result":     result,
-				"service_ok": serviceOK,
-			})
+			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
 		}
 		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已准备好")
 	}
 	if *asJSON {
-		return printJSON(map[string]any{
-			"result":     result,
-			"service_ok": serviceOK,
-		})
+		return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
 	}
 
-	printServeConnection(os.Stdout, result)
+	if *noPair {
+		// Agent/自动化日志可以保留安装进度和安全警告，但不能留存任何连接凭据。
+		printWarnings(os.Stdout, safeUpWarnings(result))
+	} else {
+		printServeConnection(os.Stdout, result)
+	}
 	fmt.Fprintln(os.Stdout, "常用命令：")
 	fmt.Fprintln(os.Stdout, "  agentd status       查看当前连接状态")
 	fmt.Fprintln(os.Stdout, "  agentd pair         刷新配对二维码")
 	fmt.Fprintln(os.Stdout, "  agentd stop         停止当前平台后台服务")
 	fmt.Fprintln(os.Stdout, "  agentd doctor --fix 自动检查并修复常见问题")
 	return nil
+}
+
+func upJSONOutput(result agentsetup.Result, serviceOK bool, serviceError string, noPair bool) map[string]any {
+	output := map[string]any{
+		"service_ok": serviceOK,
+	}
+	if !noPair {
+		// 保持既有 JSON 输出兼容；调用方只有显式启用安全模式时才收窄字段。
+		output["result"] = result
+	} else {
+		output["version"] = version
+		if len(result.Warnings) > 0 {
+			output["warnings"] = safeUpWarnings(result)
+		}
+	}
+	if serviceError != "" {
+		if noPair {
+			serviceError = safeUpServiceError(serviceError, result)
+		}
+		output["service_error"] = serviceError
+	}
+	return output
+}
+
+func safeUpServiceError(serviceError string, result agentsetup.Result) string {
+	// 先替换包含其他凭据的长 URL，再替换 Token 和 Endpoint，避免部分替换后无法命中完整值。
+	return publicStatusError(
+		errors.New(serviceError),
+		result.ConnectURL,
+		result.PairURL,
+		result.Token,
+		result.Endpoint,
+	)
+}
+
+func safeUpWarnings(result agentsetup.Result) []string {
+	warnings := make([]string, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, safeUpServiceError(warning, result))
+	}
+	return warnings
 }
 
 func runStart(args []string) error {

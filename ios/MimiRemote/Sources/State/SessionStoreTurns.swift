@@ -805,6 +805,8 @@ extension SessionStore {
                 }) else {
                     return false
                 }
+                // 已经可靠落盘的队列消息就是一次用户活动；无需等待稍后的 WebSocket 派发才更新最近顺序。
+                setSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 setStatusMessage(session.activeTurnID == nil ? L10n.text("ui.saved_to_this_machine_and_preparing_to_send") : L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
                 ensureQueuedSessionMonitoring(sessionID: session.id)
                 dispatchNextQueuedRunningTurnIfIdle(sessionID: session.id)
@@ -827,6 +829,7 @@ extension SessionStore {
             guard let activeTurnID = session.activeTurnID else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
+                clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage(L10n.text("ui.failed_to_guide_conversation_there_is_no_active"))
                 return false
@@ -835,6 +838,7 @@ extension SessionStore {
             guard didAcceptLocally else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
+                clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage(L10n.text("ui.sending_failed_websocket_not_connected"))
                 return false
@@ -1457,6 +1461,7 @@ extension SessionStore {
             guard socket.sendTurn(resolvedPayload, clientMessageID: clientMessageID) else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
+                clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: clientMessageID)
                 clearForegroundActivity(sessionID: session.id)
                 setErrorMessage(L10n.text("ui.retry_failed_websocket_not_connected"))
                 return false

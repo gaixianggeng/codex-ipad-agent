@@ -126,6 +126,8 @@ protocol SessionStoreAPIClient {
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession]
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
     func threadGoal(threadID: String) async throws -> ThreadGoal?
@@ -341,6 +343,14 @@ extension SessionStoreAPIClient {
 
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
         try await sessionsPage(projectID: workspace.rootProjectID ?? workspace.id, cursor: cursor, limit: limit)
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
+        try await sessionsPage(projectID: projectID, cursor: cursor, limit: limit)
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
+        try await sessionsPage(workspace: workspace, cursor: cursor, limit: limit)
     }
 
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {

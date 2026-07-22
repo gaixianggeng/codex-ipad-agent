@@ -42,6 +42,13 @@ struct SessionsPage: Equatable {
     }
 }
 
+enum SessionListConsistency: Hashable {
+    /// 默认使用 State DB 索引；发现应位于当前页的已知会话缺失时由 runtime 自动回退扫描。
+    case fastIndexed
+    /// 用户主动刷新时直接扫描历史，作为索引暂时落后的权威恢复路径。
+    case authoritative
+}
+
 struct ThreadSearchResult: Equatable {
     let session: AgentSession
     let snippet: String

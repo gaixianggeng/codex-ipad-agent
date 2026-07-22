@@ -7,6 +7,135 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testRecentSessionSortUsesUserRecencyInsteadOfAgentUpdatedAt() {
+        let project = makeProject(id: "proj_recency_sort")
+        let first = makeSession(
+            id: "session_first",
+            projectID: project.id,
+            title: "用户刚操作",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 20),
+            recencyAt: Date(timeIntervalSince1970: 200)
+        )
+        var noisy = makeSession(
+            id: "session_noisy",
+            projectID: project.id,
+            title: "后台持续输出",
+            status: "running",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 300),
+            recencyAt: Date(timeIntervalSince1970: 100)
+        )
+
+        XCTAssertEqual(SessionIndexStore.sortedSessions([noisy, first]).map(\.id), [first.id, noisy.id])
+
+        noisy.updatedAt = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(
+            SessionIndexStore.sortedSessions([noisy, first]).map(\.id),
+            [first.id, noisy.id],
+            "Agent 输出只能推进 updatedAt，不能改变最近用户活动顺序"
+        )
+    }
+
+    func testRecentActivityProjectionSurvivesTemporaryIDAndStaleListPage() throws {
+        let project = makeProject(id: "proj_recent_projection")
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: []) }
+        )
+        let temporaryID = "local:\(project.id):message-1"
+        let realID = "thread-real"
+        store.sessions = [makeSession(
+            id: temporaryID,
+            projectID: project.id,
+            title: "刚创建",
+            status: "running",
+            source: SessionStore.optimisticSessionSource
+        )]
+
+        store.setSessionRecentActivityProjection(sessionID: temporaryID, clientMessageID: "message-1")
+        let localRecency = try XCTUnwrap(store.sessionsByID[temporaryID]?.recencyAt)
+        store.moveSessionRecentActivityProjection(from: temporaryID, to: realID, clientMessageID: "message-1")
+        store.upsert(makeSession(
+            id: realID,
+            projectID: project.id,
+            title: "刚创建",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 10),
+            recencyAt: Date(timeIntervalSince1970: 10)
+        ))
+        store.removeSession(temporaryID)
+
+        XCTAssertEqual(store.sessions.map(\.id), [realID])
+        XCTAssertEqual(store.sessionsByID[realID]?.recencyAt, localRecency)
+        XCTAssertNotNil(store.recentActivityProjectionBySessionID[realID])
+
+        let stalePage = store.pageSessionsPreservingLoadedWindow([], projectID: project.id)
+        XCTAssertEqual(stalePage.map(\.id), [realID], "旧缓存或旧 single-flight 响应不能删除刚创建的会话")
+
+        let acknowledged = makeSession(
+            id: realID,
+            projectID: project.id,
+            title: "刚创建",
+            status: "history",
+            source: "codex",
+            updatedAt: localRecency.addingTimeInterval(1),
+            recencyAt: localRecency.addingTimeInterval(1)
+        )
+        let confirmedPage = store.pageSessionsPreservingLoadedWindow([acknowledged], projectID: project.id)
+        store.replaceSessionsIfChanged(with: confirmedPage, projectID: project.id)
+
+        XCTAssertNil(store.recentActivityProjectionBySessionID[realID])
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(store.sessionsByID[realID]?.recencyAt), localRecency)
+    }
+
+    func testAssistantPreviewProjectionDoesNotChangeUserRecency() throws {
+        let project = makeProject(id: "proj_assistant_projection")
+        let session = makeSession(
+            id: "thread-projection",
+            projectID: project.id,
+            title: "会话",
+            status: "running",
+            source: "codex",
+            recencyAt: Date(timeIntervalSince1970: 100)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [session]) }
+        )
+        store.sessions = [session]
+        store.setSessionListProjection(
+            sessionID: session.id,
+            preview: "用户输入",
+            source: .localUser,
+            clientMessageID: "message-user"
+        )
+        let userRecency = try XCTUnwrap(store.sessionsByID[session.id]?.recencyAt)
+
+        store.setSessionListProjection(
+            sessionID: session.id,
+            preview: "Agent 后台完成",
+            source: .localAssistant,
+            clientMessageID: nil
+        )
+
+        XCTAssertEqual(store.sessionsByID[session.id]?.recencyAt, userRecency)
+        XCTAssertEqual(store.recentActivityProjectionBySessionID[session.id]?.clientMessageID, "message-user")
+
+        store.clearSessionRecentActivityProjection(sessionID: session.id, clientMessageID: "message-user")
+        XCTAssertEqual(
+            store.sessionsByID[session.id]?.recencyAt,
+            Date(timeIntervalSince1970: 100),
+            "明确发送失败时应恢复用户操作前的最近顺序"
+        )
+    }
+
     func testWorktreeDescriptorKeepsUnknownGitStateFailClosedForLegacyServer() throws {
         let current = try JSONDecoder().decode(
             WorktreeDescriptor.self,
@@ -2266,6 +2395,85 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(finishedBeforeListRelease)
         XCTAssertEqual(client.sessionsPageCallCount, 1, "刚完成 refreshAll 时，历史刷新校准应复用首屏短缓存")
         XCTAssertEqual(client.requestedMessageCursors, [nil, nil])
+    }
+
+    func testCompletionReconciliationBypassesRecentSessionListCache() async {
+        let project = makeProject(id: "proj_reconciliation_cache")
+        let history = makeSession(
+            id: "thread_reconciliation_cache",
+            projectID: project.id,
+            title: "待对账",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [history])
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+
+        let reconciliation = Task { @MainActor in
+            await store.refreshSessions(
+                forProjectID: project.id,
+                showLoading: false,
+                clearErrorOnSuccess: false,
+                updateStatusMessage: false,
+                reportErrorOnFailure: false,
+                reuseRecent: false
+            )
+        }
+        await client.waitForBlockedSessionListRefresh()
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2, "完成后的对账不能复用完成前的两秒短缓存")
+        client.releaseBlockedSessionListRefresh()
+        await reconciliation.value
+    }
+
+    func testBackgroundReconciliationDoesNotChangeSelectedProject() async {
+        let firstProject = makeProject(id: "proj_background_first")
+        let selectedProject = makeProject(id: "proj_background_selected")
+        let refreshed = makeSession(
+            id: "thread_background_refresh",
+            projectID: firstProject.id,
+            title: "后台刷新",
+            status: "history",
+            source: "codex"
+        )
+        let client = MockSessionStoreClient(
+            projects: [firstProject, selectedProject],
+            sessions: [],
+            projectSessions: [firstProject.id: [refreshed]]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [firstProject, selectedProject]
+        store.recentWorkspaces = [AgentWorkspace(project: firstProject), AgentWorkspace(project: selectedProject)]
+        store.sidebarProjects = [firstProject, selectedProject]
+        store.selectedProjectID = selectedProject.id
+
+        await store.refreshSessions(
+            forProjectID: firstProject.id,
+            showLoading: false,
+            clearErrorOnSuccess: false,
+            updateStatusMessage: false,
+            reportErrorOnFailure: false,
+            reuseRecent: false,
+            activatesProject: false
+        )
+
+        XCTAssertEqual(store.selectedProjectID, selectedProject.id)
+        XCTAssertEqual(store.sessions(forProjectID: firstProject.id).map(\.id), [refreshed.id])
     }
 
     func testSelectingHistoryWhileInitialPageLoadingDoesNotDuplicateRequest() async {

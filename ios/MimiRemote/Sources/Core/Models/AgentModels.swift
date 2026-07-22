@@ -92,6 +92,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let resumeID: String?
     let createdAt: Date?
     var updatedAt: Date?
+    var recencyAt: Date?
     var preview: String?
     var activeTurnID: TurnID?
     let lastSeq: EventSequence?
@@ -127,6 +128,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         resumeID: String?,
         createdAt: Date?,
         updatedAt: Date?,
+        recencyAt: Date? = nil,
         preview: String? = nil,
         activeTurnID: TurnID? = nil,
         lastSeq: EventSequence? = nil,
@@ -150,6 +152,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.resumeID = resumeID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.recencyAt = recencyAt
         self.preview = preview
         self.activeTurnID = activeTurnID
         self.lastSeq = lastSeq
@@ -178,6 +181,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
             resumeID: row.resumeID,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
+            recencyAt: row.recencyAt,
             preview: row.preview,
             activeTurnID: row.activeTurnID,
             lastSeq: row.lastSeq,
@@ -203,6 +207,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case resumeID = "resume_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case recencyAt = "recency_at"
         case preview
         case activeTurnID = "active_turn_id"
         case lastSeq = "last_seq"
