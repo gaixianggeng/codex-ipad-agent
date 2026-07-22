@@ -80,17 +80,17 @@ func run(args []string) error {
 	case "doctor":
 		return runDoctor(args)
 	case "serve":
-		cfg, registry, checker, err := loadRuntimeConfig(args, false)
-		if err != nil {
-			return err
-		}
-		return serve(cfg, registry, checker)
+		return runServe(args)
 	default:
 		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、serve、doctor、version", cmd)
 	}
 }
 
 func runSetup(args []string) error {
+	return runSetupWithWriters(args, os.Stdout, os.Stderr)
+}
+
+func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
@@ -99,10 +99,11 @@ func runSetup(args []string) error {
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
+	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
 	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
@@ -117,10 +118,35 @@ func runSetup(args []string) error {
 		return err
 	}
 	if *asJSON {
-		return printJSON(result)
+		if *qrOnly {
+			return printJSONTo(stdout, qrOnlyPairResult(result))
+		}
+		return printJSONTo(stdout, result)
 	}
-	printSetupResult(os.Stdout, result)
+	if *qrOnly {
+		printQROnlyPairResult(stdout, result)
+		return nil
+	}
+	printSetupResult(stdout, result)
 	return nil
+}
+
+func runServe(args []string) error {
+	logFile := ""
+	cfg, registry, checker, err := loadRuntimeConfig(args, false, func(fs *flag.FlagSet) {
+		fs.StringVar(&logFile, "log-file", "", "同时把服务日志写入指定文件")
+	})
+	if err != nil {
+		return err
+	}
+	closeLog, err := configureServeFileLogging(logFile)
+	if err != nil {
+		return err
+	}
+	if closeLog != nil {
+		defer closeLog()
+	}
+	return serve(cfg, registry, checker)
 }
 
 func runUp(args []string) error {

@@ -201,6 +201,59 @@ func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 	}
 }
 
+func TestRunSetupQROnlyNeverReturnsLongLivedCredentials(t *testing.T) {
+	clearAgentdEnvForMainTest(t)
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.json")
+	workspace := filepath.Join(root, "code")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	err := runSetupWithWriters([]string{
+		"setup",
+		"--config", configPath,
+		"--scan-root", workspace,
+		"--browse-root", workspace,
+		"--listen", "127.0.0.1:8787",
+		"--json",
+		"--qr-only",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("setup --qr-only 失败：%v stderr=%s", err, stderr.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout.String()), &payload); err != nil {
+		t.Fatalf("setup 安全 JSON 无法解析：%v output=%s", err, stdout.String())
+	}
+	for _, key := range []string{"endpoint", "pair_url", "pair_expires_at"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("setup 安全 JSON 缺少 %s：%v", key, payload)
+		}
+	}
+	for _, forbiddenKey := range []string{"token", "connect_url", "app_server_token_file"} {
+		if _, ok := payload[forbiddenKey]; ok {
+			t.Fatalf("setup 安全 JSON 不应包含 %s：%v", forbiddenKey, payload)
+		}
+	}
+	rawConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored config.Config
+	if err := json.Unmarshal(rawConfig, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Auth.Token == "" {
+		t.Fatal("setup 必须仍在私有配置中生成长期 Token")
+	}
+	if strings.Contains(stdout.String(), stored.Auth.Token) {
+		t.Fatal("setup 安全输出泄漏了长期 Token")
+	}
+}
+
 func TestBrewServiceConfigGuardAllowsPlatformDefault(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	customPath := filepath.Join(t.TempDir(), "custom-config.json")
