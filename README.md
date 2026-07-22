@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <img src="artifacts/social-preview/mimi-remote-social-preview-v2.png" alt="Mimi Remote running Codex on a separate iPad and iPhone" width="100%" />
+  <img src="artifacts/social-preview/mimi-remote-social-preview-v3.png" alt="Mimi Remote continuing a Codex session across a real iPad and iPhone interface" width="100%" />
 </p>
 
 Mimi Remote connects to your Mac through Tailscale and keeps source code, agent credentials, and full sessions on your own devices. Codex is the primary supported runtime; an optional Claude Code bridge is available as an experimental channel.
@@ -38,30 +38,48 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
 
 > There is no public App Store release at this time. Build the iOS app from source; any internal TestFlight distribution is not a public download channel.
 
-## See the work. Queue the next move.
+## One workbench, every screen.
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>Keep the conversation moving.</strong><br />
-      <sub>Review results, add context, choose the model and permission mode, or use voice input.</sub>
+      <strong>Light when you want clarity.</strong><br />
+      <sub>Jump into a project, start a Codex or Claude Code session, and return to recent work.</sub>
     </td>
     <td width="50%" align="center">
-      <strong>Line up what should happen next.</strong><br />
-      <sub>Queue follow-ups while the current turn runs, then recover interrupted work without losing context.</sub>
+      <strong>Dark when you want focus.</strong><br />
+      <sub>The same native hierarchy adapts to the system appearance without changing your workflow.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="artifacts/app-screenshots/iphone-workspace-light-real.png" alt="Mimi Remote workspace on an iPhone in light appearance" width="78%" />
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="artifacts/app-screenshots/iphone-workspace-dark-real.png" alt="Mimi Remote workspace on an iPhone in dark appearance" width="78%" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <strong>Keep controls in context.</strong><br />
+      <sub>Choose the model, reasoning level, skill, speed, and permission mode without leaving the conversation.</sub>
+    </td>
+    <td width="50%" align="center">
+      <strong>Use the full iPad canvas.</strong><br />
+      <sub>Keep projects, recent sessions, and quick actions visible in one spacious native workspace.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="artifacts/app-screenshots/ipad-mini-devicehub-english-conversation.png" alt="English Codex conversation and Composer on a physical iPad mini" />
+      <img src="artifacts/app-screenshots/ipad-conversation-model-picker-dark-real.png" alt="Mimi Remote conversation and model reasoning picker on an iPad in dark appearance" />
     </td>
     <td width="50%" valign="top">
-      <img src="artifacts/app-screenshots/ipad-mini-devicehub-english-queue.png" alt="English queued follow-ups and Composer on a physical iPad mini" />
+      <img src="artifacts/app-screenshots/ipad-workspace-light-real.png" alt="Mimi Remote project workspace on an iPad in light appearance" />
     </td>
   </tr>
 </table>
 
-These screenshots were captured from a physical iPad mini through Xcode DeviceHub with the app running in English. They use Debug seed data only, do not represent a live backend connection, and contain no real tokens, Tailnet addresses, or private project content. See the [screenshot manifest](artifacts/app-screenshots/manifest.md) for capture details.
+These screenshots were provided by the maintainer from an actual TestFlight build in daily use; the interface language follows the capture device. Personal filesystem paths were replaced with `/Users/demo/...` before publication. No access tokens or Tailnet addresses are shown. See the [screenshot manifest](artifacts/app-screenshots/manifest.md) for details.
 
 ## What it does
 

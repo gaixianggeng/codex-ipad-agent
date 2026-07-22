@@ -2,12 +2,23 @@
 
 ## 采集结论
 
-- 正式 PNG 共 **27 张**。2026-07-18 新增 2 张实体 iPad mini 英文 DeviceHub 演示图；2026-07-17 新增 2 张 README 开源演示图；此前采集包含 iPhone 竖屏 11 张、iPhone 横屏 3 张、iPad 竖屏 6 张、iPad 横屏 3 张。
+- 正式 PNG 共 **31 张**。2026-07-23 新增 4 张维护者提供的 TestFlight 实际使用截图；2026-07-18 新增 2 张实体 iPad mini 英文 DeviceHub 演示图；2026-07-17 新增 2 张 README 开源演示图；此前采集包含 iPhone 竖屏 11 张、iPhone 横屏 3 张、iPad 竖屏 6 张、iPad 横屏 3 张。
 - 运行时为 iOS 27.0；历史采集使用 iPhone 17 Pro（`D691649B-B7D0-4CE6-AAC6-F6E094EDE959`）和 iPad Pro 11-inch (M5)（`27BC11EC-0E5B-40B1-B3CD-CEF37BFF7687`）。2026-07-17 README 重拍复用同一 iPhone 和现有 iPad Pro 13-inch (M5)（`1F503ECD-EDB7-4387-A8F9-77B0BA3246F9`）；全程只启动一台设备，未创建新模拟器。
-- 运行、构建和每个方向切换后的即时截图均调用 Build iOS Apps 插件的 XcodeBuildMCP；交互使用已启动模拟器的 serve-sim / in-app browser 坐标 fallback；正式 PNG 使用同一真实模拟器 framebuffer 的原始分辨率导出，并用 `sips`/`file` 复核。
+- 历史模拟器图的运行、构建和每个方向切换后的即时截图均调用 Build iOS Apps 插件的 XcodeBuildMCP；交互使用已启动模拟器的 serve-sim / in-app browser 坐标 fallback；PNG 使用同一真实模拟器 framebuffer 的原始分辨率导出，并用 `sips`/`file` 复核。
 - iPadOS 27 的右下角窗口缩放把手是真实 windowed UI，不是浏览器叠加层；相关文件使用 `windowed` 命名并在下表注明。正式图不含浏览器工具栏、鼠标提示或系统桌面。
 - 文件名含 `debug-seeded` 的图片均由现有 `--debug-skip-pairing --debug-seed-ui` 入口到达，只证明本地 UI 状态，不代表真实后端已连接。连接页中的“Debug 进入工作台”是 Debug 构建本身的可见入口，已如实标注，未冒充生产连接页。
 - 历史 23 张采集未修改业务代码；2026-07-17 重拍只把 Debug 种子数据改为中性的开源演示文案，不改变 Release 行为、工程配置或依赖。
+
+## 2026-07-23 TestFlight 实际使用图
+
+| 设备 | 文件名 | 尺寸 | 说明 |
+| --- | --- | --- | --- |
+| iPhone 竖屏 | `iphone-workspace-light-real.png` | 1206×2622 | 浅色模式工作区、快捷操作与最近会话。 |
+| iPhone 竖屏 | `iphone-workspace-dark-real.png` | 1206×2622 | 同一工作区的深色模式，用于展示外观适配。 |
+| iPad 横屏 | `ipad-conversation-model-picker-dark-real.png` | 2266×1488 | 深色模式会话、Composer 与模型/推理强度选择器。 |
+| iPad 横屏 | `ipad-workspace-light-real.png` | 2266×1488 | 浅色模式项目工作区与最近会话。 |
+
+4 张图均由维护者从 TestFlight 实际使用环境提供，展示内容已确认可公开。发布处理只做 PNG 优化，并把 iPhone 与工作区图中的个人文件路径替换为 `/Users/demo/...`；没有重绘其他 App 内容。包含真实 Tailnet 地址与额度数据的设置截图未进入公开资源。
 
 ## 2026-07-18 实体 iPad mini 英文 DeviceHub 图
 
@@ -119,7 +130,7 @@
 
 ## 最终验证
 
-- PNG 总数：27；所有剩余文件均存在，`file` 与 `sips` 均验证为 PNG 和上述尺寸。
-- 竖屏尺寸：iPhone 1206×2622；iPad 1668×2420。横屏尺寸：iPhone 2622×1206；iPad 2420×1668。
+- PNG 总数：31；所有剩余文件均存在，`file` 与 `sips` 均验证为 PNG 和上述尺寸。
+- 历史模拟器图尺寸：iPhone 竖屏 1206×2622、横屏 2622×1206；iPad 竖屏 1668×2420、横屏 2420×1668。本次实际使用图尺寸：iPhone 1206×2622，iPad 2266×1488。
 - 已删除：`_probe-iphone-raw.png`、首轮 368×800/551×800 优化图、`ipad-portrait-connection-clean-simctl.png`、旧的未精确命名连接图、与手动连接图完全重复的 `iphone-connection-qr-camera-starting.png`，以及误截其他 App 的 `iphone-open-workspace-sheet-error-debug-seeded.png`。
-- 已逐张复核新增 iPad/iPhone 横屏画面及已有 iPhone 竖屏画面；未发现系统桌面、浏览器面板、鼠标提示或全黑帧。iPad 右下角 windowed 把手为真实系统 UI，已保留并标注。
+- 已逐张复核本次 4 张实际使用图、历史 iPad/iPhone 横屏画面及已有 iPhone 竖屏画面；未发现系统桌面、浏览器面板、鼠标提示或全黑帧。iPad 右下角 windowed 把手为真实系统 UI，已保留并标注。
