@@ -4,7 +4,7 @@
 
 把原本隐藏在终端和 Homebrew service 后面的 Mac 端能力，收敛为一个轻量菜单栏 App。App 负责状态、设置、配对、诊断与系统服务生命周期；Go `agentd` 继续负责协议、安全边界和 Codex / Claude Runtime，不重复实现后端。
 
-当前是本地可用 Beta：需要 macOS 26、Xcode 27、XcodeGen 和 Go 1.25，暂不包含 Developer ID 分发、Notarization 或自动更新。
+源码开发需要 macOS 26、Xcode 27、XcodeGen 和 Go 1.25。正式 Release 通过 GitHub Actions 生成 universal DMG，对 App、内嵌 `agentd` 和磁盘镜像使用 Developer ID 签名，并完成 Apple Notarization；自动更新暂不进入首个安装包闭环。
 
 ## 方案
 
@@ -55,6 +55,20 @@ open "$HOME/Applications/Mimi Remote Mac.app"
 bash macos/MimiRemoteMac/Scripts/install-local.sh "/Applications/Mimi Remote Mac.app"
 ```
 
+### 正式安装包
+
+正式 tag 的 Release workflow 会生成 `Mimi-Remote-Mac.dmg` 和 SHA-256 文件。维护者可在没有发布凭据时先验证完整的 universal 构建链路：
+
+```bash
+bash scripts/build-macos-installer.sh \
+  --snapshot \
+  --version 0.2.0 \
+  --output-dir dist-macos
+bash scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
+```
+
+正式构建必须提供 Developer ID PKCS#12 和 App Store Connect Notary API 凭据；脚本拒绝把 ad-hoc 快照作为正式包生成。
+
 ### 首次启动
 
 1. 如果没有配置，选择允许访问的代码根目录，App 调用安全的 `agentd setup --qr-only` 完成设置。
@@ -74,4 +88,4 @@ bash macos/MimiRemoteMac/Scripts/install-local.sh "/Applications/Mimi Remote Mac
 - macOS 文件权限与签名身份绑定。开发版保持固定 Team 和 helper identifier，但首次从 Homebrew 二进制迁移仍可能需要重新确认文件访问权限。
 - `SMAppService` 的 `.requiresApproval` 不能由 App 绕过；界面会引导用户打开“系统设置 → 通用 → 登录项与扩展”。
 - App 被移走或删除前，应先在 App 内恢复 Homebrew 或停止服务，避免系统仍保留指向旧 bundle 的注册记录。
-- 正式外发前还需要 Developer ID 签名、Notarization、升级策略和独立的 Release 验证；这些不进入本地 Beta 的最小闭环。
+- 首个 DMG 不带自动更新；升级时下载新 DMG 覆盖 App，`agentd` 配置和配对数据保存在用户 Application Support 中，不随 App 覆盖。

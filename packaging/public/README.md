@@ -4,7 +4,7 @@
 
 Mimi Remote Agent 是运行在用户自己 Mac 或 Linux 开发机上的 Go 服务。它通过受控的 HTTP/WebSocket 接口，把移动端请求转发到本机 Codex app-server，同时负责鉴权、目录授权、协议白名单、服务诊断和资源边界。
 
-这个公开发布镜像只包含后端、安装脚本和发布配置。Mimi Remote 的 iPhone / iPad 客户端源码位于完整开源仓库 [gaixianggeng/codex-ipad-agent](https://github.com/gaixianggeng/codex-ipad-agent)。
+这个公开发布镜像包含后端、Mac 菜单栏宿主、安装脚本和发布配置。Mimi Remote 的 iPhone / iPad 客户端源码位于完整开源仓库 [gaixianggeng/codex-ipad-agent](https://github.com/gaixianggeng/codex-ipad-agent)。
 
 本项目是独立开发的第三方工具，不隶属于 OpenAI，也不代表 OpenAI 官方产品。
 
@@ -29,7 +29,13 @@ iPhone / iPad App
 
 ## 实现
 
-### macOS
+### macOS App（推荐）
+
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg`，打开后把 **Mimi Remote Mac** 拖到 Applications。安装包同时支持 Apple Silicon 和 Intel，App 内已经包含 `agentd`，不要求用户安装 Go 或 Xcode。
+
+首次打开 App 后，在菜单栏完成设置或接管已有 Homebrew 服务；现有配置、Token 和配对关系会保留。安装包使用 Developer ID 签名并经过 Apple Notarization，仍建议下载后核对同一 Release 中的 `Mimi-Remote-Mac.dmg.sha256`。
+
+### Homebrew 后端
 
 前置条件：
 

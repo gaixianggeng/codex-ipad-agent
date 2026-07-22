@@ -21,7 +21,11 @@ for required_file in \
   .github/workflows/release.yml \
   .goreleaser.yml \
   README.md \
+  macos/MimiRemoteMac/MimiRemoteMac.xcodeproj/project.pbxproj \
+  macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist \
   packaging/systemd/mimi-remote.service \
+  scripts/build-macos-installer.sh \
+  scripts/check-macos-installer.sh \
   scripts/install-linux.sh \
   scripts/test-install-linux.sh \
   scripts/check-release-prerequisites.sh \
@@ -36,6 +40,8 @@ for required_file in \
 done
 
 bash -n \
+  scripts/build-macos-installer.sh \
+  scripts/check-macos-installer.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
@@ -107,6 +113,14 @@ grep -Fq 'bash ./scripts/check-macos-release-signing.sh' .github/workflows/relea
   || fail "Release workflow 没有在发布前校验 macOS 签名凭据。"
 grep -Fq 'MIMI_REQUIRE_MACOS_SIGNATURE: "1"' .github/workflows/release.yml \
   || fail "Release workflow 没有对已发布 Darwin 归档执行签名门禁。"
+grep -Fq 'runs-on: macos-26' .github/workflows/release.yml \
+  || fail "Release workflow 没有使用支持当前 Mac deployment target 的 macos-26 runner。"
+grep -Fq 'scripts/build-macos-installer.sh' .github/workflows/release.yml \
+  || fail "Release workflow 没有构建 Mac DMG。"
+grep -Fq 'scripts/check-macos-installer.sh --require-notarization' .github/workflows/release.yml \
+  || fail "Release workflow 没有校验 Developer ID 与 notarization。"
+grep -Fq 'gh release upload "$GITHUB_REF_NAME"' .github/workflows/release.yml \
+  || fail "Release workflow 没有上传 Mac DMG 到 GitHub Release。"
 
 release_docs=(README.md docs/install-upgrade-rollback.md)
 [[ -f docs/p0-p1-roadmap.md ]] && release_docs+=(docs/p0-p1-roadmap.md)

@@ -42,6 +42,13 @@ public_paths=(
   go.sum
   cmd
   internal
+  macos/MimiRemoteMac/MimiRemoteMac.xcodeproj
+  macos/MimiRemoteMac/README.md
+  macos/MimiRemoteMac/Resources
+  macos/MimiRemoteMac/Scripts
+  macos/MimiRemoteMac/Sources
+  macos/MimiRemoteMac/Tests
+  macos/MimiRemoteMac/project.yml
   packaging/systemd
   docs/codex-protocol-support.md
   docs/install-upgrade-rollback.md
@@ -51,6 +58,7 @@ public_paths=(
   docs/terms-of-use.md
   scripts/check-codex-protocol.sh
   scripts/check-macos-release-signing.sh
+  scripts/check-macos-installer.sh
   scripts/check-packaging.sh
   scripts/check-public-repo-safety.sh
   scripts/check-release-artifacts.sh
@@ -58,6 +66,7 @@ public_paths=(
   scripts/check-source-size.sh
   scripts/check-third-party-notices.sh
   scripts/history-sync-regression.sh
+  scripts/build-macos-installer.sh
   scripts/install-linux.sh
   scripts/ipad-ws-probe.go
   scripts/ipad_ws_probe_test.go
@@ -102,7 +111,8 @@ awk '
   }
 ' "$ROOT_DIR/THIRD_PARTY_NOTICES.md" > "$stage/THIRD_PARTY_NOTICES.md"
 
-# 核心逻辑：目标仓库只保留后端发布白名单快照和自身 .git，避免 iOS 与本机发布配置进入后端镜像。
+# 核心逻辑：目标仓库只保留后端与 Mac 宿主发布白名单快照和自身 .git，
+# 避免 iOS、TestFlight 和完整开发仓库的其他内容进入发布镜像。
 rsync -a --delete --exclude='.git/' "$stage/" "$TARGET_DIR/"
 
 if [[ -e "$TARGET_DIR/ios" ]] || find "$TARGET_DIR/.github/workflows" -type f -print | grep -Eq 'ios|testflight'; then
