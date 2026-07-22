@@ -134,6 +134,8 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 
 ## 快速开始
 
+> 新的菜单栏宿主 App 正在本地 Beta 阶段：它把 `agentd`、配对、状态、Doctor 和 Homebrew 迁移集中到一个原生界面，开发构建说明见 [Mimi Remote Mac](macos/MimiRemoteMac/README.md)。公开安装仍以本节的 Homebrew 方式为准。
+
 ### 1. Mac 安装
 
 要求：
