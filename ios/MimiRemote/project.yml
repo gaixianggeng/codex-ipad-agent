@@ -73,7 +73,7 @@ targets:
         "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": "YES"
         # UI 文案统一由显式 L10n key 管理，关闭编译器自动提取，避免 Xcode 把技术字符串写回目录。
         SWIFT_EMIT_LOC_STRINGS: "NO"
-        CURRENT_PROJECT_VERSION: "100053"
+        CURRENT_PROJECT_VERSION: "100059"
         MARKETING_VERSION: "1.0"
   MimiRemoteTests:
     type: bundle.unit-test

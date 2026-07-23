@@ -775,6 +775,9 @@ struct UnifiedWorkbenchShell: View {
                     Task { await sessionStore.refreshCurrentContext() }
                 }
             }
+            // iOS 26 会让相邻 toolbar item 共用一块 Liquid Glass 背景；
+            // 固定间距把刷新与详情面板拆成两个独立动作，降低误触。
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 workbenchToolbarIconButton(
                     systemImage: "sidebar.right",

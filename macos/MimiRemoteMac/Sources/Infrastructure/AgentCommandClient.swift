@@ -17,7 +17,8 @@ extension AgentCommandClient {
         bundle: Bundle = .main
     ) -> AgentCommandClient {
         let embeddedBinary = bundle.url(forResource: "agentd", withExtension: nil)
-        let configURL = FileManager.default.homeDirectoryForCurrentUser
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        let configURL = homeDirectory
             .appending(path: "Library/Application Support/mimi-remote/config.json")
         let environment = ProcessEnvironment.userTooling
 
@@ -62,11 +63,13 @@ extension AgentCommandClient {
             },
             setup: { workspaceRoot in
                 let binary = try requireEmbeddedBinary()
-                let result = try await execute(binary: binary, arguments: [
-                    "setup", "--json", "--qr-only",
-                    "--scan-root", workspaceRoot.path,
-                    "--browse-root", workspaceRoot.path,
-                ])
+                let result = try await execute(
+                    binary: binary,
+                    arguments: setupArguments(
+                        workspaceRoot: workspaceRoot,
+                        browseRoot: homeDirectory
+                    )
+                )
                 return try decode(PairingInfo.self, from: result)
             },
             status: {
@@ -131,6 +134,15 @@ extension AgentCommandClient {
         )
     }
 
+    static func setupArguments(workspaceRoot: URL, browseRoot: URL) -> [String] {
+        [
+            "setup", "--json", "--qr-only",
+            // 项目发现只扫描用户选择的代码目录，避免遍历整个 Home。
+            "--scan-root", workspaceRoot.path,
+            // 文件预览和会话产物可能位于 ~/.codex 等目录，浏览权限默认覆盖当前用户 Home。
+            "--browse-root", browseRoot.path,
+        ]
+    }
 }
 
 enum AgentClientError: LocalizedError {

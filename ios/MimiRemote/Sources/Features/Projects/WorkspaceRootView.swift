@@ -491,11 +491,6 @@ private enum WorkspaceSessionLoadState: Equatable {
     }
 }
 
-private enum WorkspaceActionEmphasis: Equatable {
-    case primary
-    case accented
-}
-
 private struct WorkspaceActionPressButtonStyle: ButtonStyle {
     let reduceMotion: Bool
 
@@ -699,7 +694,6 @@ private struct WorkspaceDetailView: View {
                     actionButton(
                         choice: choice,
                         subtitle: choice == .codex ? L10n.text("ui.start_using_the_default_runtime") : L10n.text("ui.get_started_with_the_claude_code_runtime"),
-                        emphasis: choice == .codex ? .primary : .accented,
                         tokens: tokens
                     ) {
                         // thread 创建时就绑定 runtime；这里必须把用户选择一路传到 SessionStore。
@@ -726,13 +720,9 @@ private struct WorkspaceDetailView: View {
     private func actionButton(
         choice: WorkspaceSessionRuntimeChoice,
         subtitle: String? = nil,
-        emphasis: WorkspaceActionEmphasis,
         tokens: ThemeTokens,
         action: @escaping () -> Void
     ) -> some View {
-        let foreground = actionForeground(emphasis: emphasis, tokens: tokens)
-        let background = actionBackground(emphasis: emphasis, tokens: tokens)
-        let border = actionBorder(emphasis: emphasis, tokens: tokens)
         let cornerRadius: CGFloat = 15
 
         return Button(action: action) {
@@ -742,13 +732,13 @@ private struct WorkspaceDetailView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(choice.title)
                         .font(themeStore.uiFont(.callout, weight: .semibold))
-                        .foregroundStyle(foreground)
+                        .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
 
                     if let subtitle {
                         Text(subtitle)
                             .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(actionSecondaryForeground(emphasis: emphasis, tokens: tokens))
+                            .foregroundStyle(tokens.secondaryText)
                             .lineLimit(1)
                     }
                 }
@@ -758,10 +748,11 @@ private struct WorkspaceDetailView: View {
             .padding(.horizontal, 14)
             // 所有快捷入口共用同一个随 Dynamic Type 缩放的高度，视觉和触控面积保持一致。
             .frame(maxWidth: .infinity, minHeight: actionButtonHeight, maxHeight: actionButtonHeight, alignment: .leading)
-            .background(background, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            // 快捷入口是立即执行的动作，不是持久选择项；默认统一使用中性背景。
+            .background(tokens.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(border, lineWidth: emphasis == .accented ? 1.2 : 1)
+                    .stroke(tokens.primaryAction.opacity(0.24), lineWidth: 1.2)
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
@@ -786,32 +777,6 @@ private struct WorkspaceDetailView: View {
                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )
             .accessibilityHidden(true)
-    }
-
-    private func actionForeground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
-        emphasis == .primary ? tokens.primaryActionForeground : tokens.primaryText
-    }
-
-    private func actionSecondaryForeground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
-        emphasis == .primary ? tokens.primaryActionForeground.opacity(0.78) : tokens.secondaryText
-    }
-
-    private func actionBackground(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
-        switch emphasis {
-        case .primary:
-            return tokens.primaryAction
-        case .accented:
-            return tokens.surface
-        }
-    }
-
-    private func actionBorder(emphasis: WorkspaceActionEmphasis, tokens: ThemeTokens) -> Color {
-        switch emphasis {
-        case .primary:
-            return tokens.primaryAction.opacity(0.92)
-        case .accented:
-            return tokens.primaryAction.opacity(0.24)
-        }
     }
 
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {
