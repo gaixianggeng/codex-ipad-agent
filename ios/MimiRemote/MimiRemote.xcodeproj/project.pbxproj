@@ -82,6 +82,7 @@
 		7B04F2F94C74AC2288CE77DE /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = F87C66ED6837B95BDFC0B764 /* InfoPlist.strings */; };
 		7CD5F621C651FF6A32ACAE47 /* testDefaultDarkConversationPalette.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 8E5FA820000C5AD8FB8E1300 /* testDefaultDarkConversationPalette.1.png */; };
 		7EC0BC9D0E04B06658CC2EFC /* privacy-policy.md in Resources */ = {isa = PBXBuildFile; fileRef = 2210B237FCEF112D24D2B687 /* privacy-policy.md */; };
+		84F5B773E0438B85B671B2F3 /* AgentAPIClientRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */; };
 		8579BB85C852E3DD247FF7EE /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = A3BB200E07DB4CD95503B8F7 /* InfoPlist.strings */; };
 		8721BBEBBD69DB0B07FACFF8 /* AppServerProtocolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67866EABC0460FF9A4867E87 /* AppServerProtocolModels.swift */; };
 		879CC5740352620BC5E9CA37 /* DataURLImageDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C87937DA9D34D00853E635B /* DataURLImageDecoder.swift */; };
@@ -189,6 +190,7 @@
 		1C6FA730D92E0B37BC0393F0 /* ConversationActivityRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityRows.swift; sourceTree = "<group>"; };
 		1F63FE197E70AD192F429877 /* ThemeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStore.swift; sourceTree = "<group>"; };
 		1F803BE24EB9F6963792C11C /* ConversationWorkspaceHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWorkspaceHistoryTests.swift; sourceTree = "<group>"; };
+		1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIClientRequestTests.swift; sourceTree = "<group>"; };
 		1FDECF2F05F082FDD81B3AB4 /* VoiceInputPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputPreferences.swift; sourceTree = "<group>"; };
 		207244025842AC17EBFA9009 /* ComposerState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerState.swift; sourceTree = "<group>"; };
 		20A922D9A3D4C72236D9CFBA /* ConversationTimelineReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineReducer.swift; sourceTree = "<group>"; };
@@ -421,6 +423,7 @@
 		43F4D9DB96DC2682A38AC5E8 /* MimiRemoteTests */ = {
 			isa = PBXGroup;
 			children = (
+				1FC88F25CEBA6C13050A2B4F /* AgentAPIClientRequestTests.swift */,
 				554F31B0074B97074AE97B31 /* AppExternalLinksTests.swift */,
 				FA34FDB7E26D6307E81C07CC /* CodexAppServerProtocolTests.swift */,
 				86B6C2FC1CE749D7A8268F85 /* ConversationComposerHistoryTests.swift */,
@@ -868,6 +871,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				84F5B773E0438B85B671B2F3 /* AgentAPIClientRequestTests.swift in Sources */,
 				FA451031EB72AE10C3552C3F /* AppExternalLinksTests.swift in Sources */,
 				523D4FE3642B0D171DB1647E /* CodexAppServerProtocolTests.swift in Sources */,
 				042B8AE52871708DD3606659 /* ConversationComposerHistoryTests.swift in Sources */,

@@ -535,7 +535,9 @@ struct AgentAPIClient {
         guard let pathComponents = URLComponents(string: normalizedPath) else {
             return nil
         }
-        components.path = pathComponents.path
+        // history-media 的 ID 可能包含 `/`；调用点已将其编码为单个 path component，
+        // 这里必须保留 percent-encoding，不能通过 `path` 解码后再让 URLComponents 把它拆成目录层级。
+        components.percentEncodedPath = pathComponents.percentEncodedPath
         components.queryItems = pathComponents.queryItems
         return components.url
     }

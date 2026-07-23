@@ -712,6 +712,47 @@ func TestHealthzDoesNotRequireAuth(t *testing.T) {
 	}
 }
 
+func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t *testing.T) {
+	server := newTestServer(t)
+
+	for _, endpoint := range []string{"/api/version", "/api/doctor"} {
+		t.Run(endpoint+" rejects missing bearer", func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, endpoint, nil))
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s 必须拒绝未认证请求，got=%d body=%s", endpoint, rec.Code, rec.Body.String())
+			}
+			if rec.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Fatalf("%s 的 401 必须声明 Bearer challenge，got=%q", endpoint, rec.Header().Get("WWW-Authenticate"))
+			}
+		})
+	}
+
+	version := httptest.NewRecorder()
+	server.handler.ServeHTTP(version, authedRequest(t, http.MethodGet, "/api/version", nil))
+	if version.Code != http.StatusOK {
+		t.Fatalf("version 应返回 200，got=%d body=%s", version.Code, version.Body.String())
+	}
+	versionBody := decodeJSON(t, version)
+	if versionBody["name"] != "agentd" || versionBody["version"] != "test" {
+		t.Fatalf("version 响应必须保留移动端所需字段：%v", versionBody)
+	}
+
+	doctor := httptest.NewRecorder()
+	server.handler.ServeHTTP(doctor, authedRequest(t, http.MethodGet, "/api/doctor", nil))
+	if doctor.Code != http.StatusOK {
+		t.Fatalf("doctor 应返回 200，got=%d body=%s", doctor.Code, doctor.Body.String())
+	}
+	doctorBody := decodeJSON(t, doctor)
+	if doctorBody["version"] != "test" || doctorBody["listen"] == "" {
+		t.Fatalf("doctor 响应必须保留版本和监听地址：%v", doctorBody)
+	}
+	checks, ok := doctorBody["checks"].([]any)
+	if !ok || len(checks) == 0 {
+		t.Fatalf("doctor 响应必须包含结构化 checks：%v", doctorBody)
+	}
+}
+
 func TestReadyzRequiresBearerAndReturns503WhenDoctorFails(t *testing.T) {
 	server := newTestServer(t)
 

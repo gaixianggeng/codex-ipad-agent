@@ -36,6 +36,7 @@ fi
 
 echo "==> iOS conversation regressions"
 # 这些测试组覆盖 Mimi Remote 对话请求链路和发布安全边界：
+# - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
 # - ConversationDataFlowTests：Composer、SessionStore、direct app-server、断线/重试/滚动状态。
 # - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
@@ -49,6 +50,7 @@ xcodebuild test -quiet \
   -destination "$resolved_destination" \
   -testLanguage zh-Hans \
   -testRegion CN \
+  -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests \
   -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
