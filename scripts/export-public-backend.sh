@@ -49,6 +49,7 @@ public_paths=(
   macos/MimiRemoteMac/Sources
   macos/MimiRemoteMac/Tests
   macos/MimiRemoteMac/project.yml
+  packaging/skill/install-mimi-remote
   packaging/systemd
   docs/codex-protocol-support.md
   docs/install-upgrade-rollback.md
@@ -70,6 +71,7 @@ public_paths=(
   scripts/install-linux.sh
   scripts/ipad-ws-probe.go
   scripts/ipad_ws_probe_test.go
+  scripts/package-skill.sh
   scripts/test-install-linux.sh
   scripts/sign-agentd-dev-macos.sh
   scripts/restart-agentd-dev-macos.sh

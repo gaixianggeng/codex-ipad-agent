@@ -77,12 +77,14 @@ func run(args []string) error {
 		return runLogs(args)
 	case "pair":
 		return runPair(args)
+	case "network":
+		return runNetwork(args)
 	case "doctor":
 		return runDoctor(args)
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、serve、doctor、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、network、serve、doctor、version", cmd)
 	}
 }
 
@@ -528,6 +530,7 @@ func runPair(args []string) error {
 func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
+	networkName := fs.String("network", string(agentsetup.PairingNetworkAuto), "二维码网络：auto、tailscale 或 lan")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息和二维码，不输出长期 Token")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -536,7 +539,11 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	result, err := agentsetup.Pair(context.Background(), *configPath)
+	network, err := agentsetup.ParsePairingNetwork(*networkName)
+	if err != nil {
+		return err
+	}
+	result, err := agentsetup.PairForNetwork(context.Background(), *configPath, network)
 	if err != nil {
 		return err
 	}
@@ -551,6 +558,49 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 		return nil
 	}
 	printPairResult(stdout, result)
+	return nil
+}
+
+func runNetwork(args []string) error {
+	fs := flag.NewFlagSet("network", flag.ExitOnError)
+	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
+	lanEnabled := fs.Bool("lan-enabled", false, "是否允许局域网访问")
+	asJSON := fs.Bool("json", false, "输出 JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	lanFlagProvided := false
+	fs.Visit(func(item *flag.Flag) {
+		if item.Name == "lan-enabled" {
+			lanFlagProvided = true
+		}
+	})
+	if !lanFlagProvided {
+		return fmt.Errorf("必须显式传入 --lan-enabled=true 或 --lan-enabled=false")
+	}
+	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+		return err
+	}
+	changed, err := agentsetup.SetLANAccess(*configPath, *lanEnabled)
+	if err != nil {
+		return err
+	}
+	result := map[string]any{
+		"lan_enabled":      *lanEnabled,
+		"changed":          changed,
+		"restart_required": changed,
+	}
+	if *asJSON {
+		return printJSON(result)
+	}
+	state := "关闭"
+	if *lanEnabled {
+		state = "开启"
+	}
+	fmt.Fprintf(os.Stdout, "局域网访问：%s\n", state)
+	if changed {
+		fmt.Fprintln(os.Stdout, "配置已更新，需要重启 agentd 后生效。")
+	}
 	return nil
 }
 
@@ -832,7 +882,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listenAddresses := agentDListenAddresses(cfg.Listen)
+	listenAddresses := agentDListenAddresses(cfg.Listen, cfg.Network.AllowLAN)
 	listeners := make([]net.Listener, 0, len(listenAddresses))
 	for _, address := range listenAddresses {
 		listener, err := net.Listen("tcp", address)
@@ -874,7 +924,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	})
 }
 
-func agentDListenAddresses(configured string) []string {
+func agentDListenAddresses(configured string, allowLAN bool) []string {
 	address := strings.TrimSpace(configured)
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port == "" {
@@ -883,6 +933,10 @@ func agentDListenAddresses(configured string) []string {
 
 	normalizedHost := strings.Trim(strings.TrimSpace(host), "[]")
 	ip := net.ParseIP(normalizedHost)
+	if allowLAN {
+		// 只有显式开启局域网后才扩大到 IPv4 通配监听；它同时覆盖 LAN、Tailscale 和 loopback。
+		return []string{net.JoinHostPort("0.0.0.0", port)}
+	}
 	// loopback 和通配地址本身已经覆盖 127.0.0.1；只在绑定具体的 Tailscale/局域网地址时
 	// 增加同端口 loopback，避免为了 Catalyst 本机直连而把服务扩大暴露到所有网卡。
 	if normalizedHost == "" || strings.EqualFold(normalizedHost, "localhost") ||

@@ -146,6 +146,14 @@ From an agent, automation, or retained remote log, use `agentd up --no-pair` / `
 
 For Linux installation and recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
 
+To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
+
+```text
+https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
+```
+
+Ask `$skill-installer` to install that GitHub path. Each GitHub Release also includes `install-mimi-remote.zip` and its SHA-256 file for an auditable, versioned copy.
+
 ### 2. Build the iOS app from source
 
 Mimi Remote requires iOS/iPadOS 26 or later. Install XcodeGen before generating the Xcode project:

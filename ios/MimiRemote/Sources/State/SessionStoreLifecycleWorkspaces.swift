@@ -506,7 +506,9 @@ extension SessionStore {
             let page = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
-                reuseRecent: false
+                reuseRecent: false,
+                // 用户明确点刷新时绕过可能滞后的 State DB 索引；后台轮询仍保留快速路径。
+                consistency: .authoritative
             )
             guard isCurrentSessionPageRequest(projectID: workspace.id, token: requestToken) else {
                 return

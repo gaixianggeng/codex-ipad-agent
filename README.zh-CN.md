@@ -170,6 +170,14 @@ Agent、自动化或远程日志场景使用 `agentd up --no-pair` / `agentd res
 
 Linux 使用 Release 归档中的 user-systemd 安装脚本，完整步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 
+如果希望由 Codex 按同一套权限最小化、可恢复流程完成安装、升级和诊断，可以让 `$skill-installer` 安装下面的 GitHub Skill 路径：
+
+```text
+https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
+```
+
+每个 GitHub Release 也会附带 `install-mimi-remote.zip` 和对应 SHA-256 文件，便于固定版本下载与审计。
+
 ### 2. 安装 iOS App
 
 公开 App Store 版本尚未发布。目前可以从源码构建：

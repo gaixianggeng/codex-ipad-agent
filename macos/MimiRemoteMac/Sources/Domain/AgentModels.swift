@@ -1,5 +1,12 @@
 import Foundation
 
+enum PairingNetwork: String, CaseIterable, Identifiable, Sendable {
+    case tailscale
+    case localNetwork = "lan"
+
+    var id: String { rawValue }
+}
+
 struct PairingInfo: Codable, Equatable, Sendable {
     let endpoint: String
     let pairURL: String
@@ -27,6 +34,18 @@ struct PairingInfo: Codable, Equatable, Sendable {
         expiresAt = try container.decode(String.self, forKey: .expiresAt)
         // agentd 会在没有警告时省略 warnings；客户端统一成空数组，简化视图状态。
         warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+    }
+}
+
+struct NetworkConfigurationResult: Codable, Equatable, Sendable {
+    let lanEnabled: Bool
+    let changed: Bool
+    let restartRequired: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case lanEnabled = "lan_enabled"
+        case changed
+        case restartRequired = "restart_required"
     }
 }
 

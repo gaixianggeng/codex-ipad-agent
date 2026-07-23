@@ -1332,6 +1332,29 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceManualRefreshUsesAuthoritativeSessionList() async throws {
+        let project = makeProject(id: "proj_workspace_authoritative_refresh")
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [])
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            client.requestedSessionListConsistencies,
+            [.authoritative],
+            "用户主动刷新工作区时必须绕过可能滞后的 State DB 快速索引"
+        )
+    }
+
     func testSessionListSnapshotUpdatesWhenPaginationStateChangesWithoutSessionDiff() async {
         let project = makeProject(id: "proj_1")
         let firstPage = (0..<3).map { index in

@@ -10,6 +10,7 @@ final class HostStore {
     private(set) var status: AgentStatus?
     private(set) var doctor: AgentDoctorResults?
     private(set) var pairing: PairingInfo?
+    private(set) var pairingNetwork: PairingNetwork = .tailscale
     private(set) var recentLogs: [String] = []
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
@@ -92,6 +93,7 @@ final class HostStore {
         defer { isBusy = false }
         do {
             pairing = try await agent.setup(workspaceRoot)
+            pairingNetwork = .tailscale
             await enableLoginLaunchBestEffort()
             try services.registerAgent()
             owner = .macApp
@@ -134,7 +136,8 @@ final class HostStore {
 
         // 配对票据不是服务迁移的成功条件；刷新失败时保留已经可用的新服务。
         do {
-            pairing = try await agent.pair()
+            pairing = try await agent.pair(.tailscale)
+            pairingNetwork = .tailscale
         } catch {
             lastError = "服务接管成功，但刷新配对码失败：\(error.localizedDescription)"
         }
@@ -183,10 +186,43 @@ final class HostStore {
         }
     }
 
-    func refreshPairing() async {
+    func refreshPairing(network: PairingNetwork? = nil) async {
         guard !isBusy else { return }
+        let targetNetwork = network ?? pairingNetwork
+        lastError = nil
         do {
-            pairing = try await agent.pair()
+            var restartedForLAN = false
+            if targetNetwork == .localNetwork {
+                guard owner == .macApp else {
+                    throw AgentClientError.commandFailed("请先将 Homebrew 服务迁移到 Mimi Remote Mac，再启用局域网访问。")
+                }
+                let configuration = try await agent.setLANAccess(true)
+                if configuration.restartRequired {
+                    // LAN 是显式扩大监听范围；只在配置首次变化时重启一次，之后两种网络可同时使用。
+                    await restartService()
+                    guard lifecycle == .ready else { return }
+                    restartedForLAN = true
+                }
+            }
+
+            var nextPairing = try await agent.pair(targetNetwork)
+            if targetNetwork == .localNetwork,
+               !(await health.checkDirect(nextPairing.endpoint))
+            {
+                // 配置可能已开启，但当前进程还没加载新配置；直接探测 LAN 地址，避免展示不可达二维码。
+                if !restartedForLAN {
+                    await restartService()
+                    guard lifecycle == .ready else { return }
+                    nextPairing = try await agent.pair(targetNetwork)
+                }
+                guard await health.checkDirect(nextPairing.endpoint) else {
+                    throw AgentClientError.commandFailed("局域网地址暂时不可访问，请检查 macOS 本地网络权限或防火墙设置。")
+                }
+            }
+
+            pairing = nextPairing
+            pairingNetwork = targetNetwork
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
@@ -513,7 +549,22 @@ final class HostStore {
             status: { status },
             statusAt: { _ in status },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
-            pair: { PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: "10 分钟后", warnings: []) },
+            setLANAccess: { enabled in
+                NetworkConfigurationResult(
+                    lanEnabled: enabled,
+                    changed: false,
+                    restartRequired: false
+                )
+            },
+            pair: { network in
+                let endpoint = network == .localNetwork ? "http://192.168.31.20:8787" : status.endpoint
+                return PairingInfo(
+                    endpoint: endpoint,
+                    pairURL: "mimiremote://pair?pair_sig=preview-\(network.rawValue)",
+                    expiresAt: "10 分钟后",
+                    warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
+                )
+            },
             version: { status.version }
         )
         let services = ServiceManagementClient(
@@ -529,7 +580,7 @@ final class HostStore {
             agent: agent,
             services: services,
             homebrew: homebrew,
-            health: HealthClient(check: { _ in true }),
+            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
             logs: AgentLogClient(recentLines: { _ in [] }, reveal: {}, fileURL: URL(filePath: "/tmp/agentd.log"))
         )
         store.lifecycle = lifecycle

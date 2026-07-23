@@ -35,6 +35,16 @@ iPhone / iPad App
 
 首次打开 App 后，在菜单栏完成设置或接管已有 Homebrew 服务；现有配置、Token 和配对关系会保留。安装包使用 Developer ID 签名并经过 Apple Notarization，仍建议下载后核对同一 Release 中的 `Mimi-Remote-Mac.dmg.sha256`。
 
+### Codex Skill
+
+让 `$skill-installer` 安装以下 GitHub 路径，即可由 Codex 按仓库维护的安全流程执行安装、升级、诊断和回滚：
+
+```text
+https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
+```
+
+每个 Release 同时提供 `install-mimi-remote.zip` 与对应 SHA-256 文件，作为可固定版本、可校验的独立发布包。Skill 只包含操作指引，不包含应用二进制、Token 或用户配置。
+
 ### Homebrew 后端
 
 前置条件：

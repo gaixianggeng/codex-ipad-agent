@@ -1023,6 +1023,7 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     var historyPages: [SessionID: HistoryMessagesPage]
     var historyCursorPages: [String: HistoryMessagesPage]
     var requestedMessageCursors: [String?] = []
+    var requestedSessionListConsistencies: [SessionListConsistency] = []
 
     init(
         projects: [AgentProject],
@@ -1059,6 +1060,20 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
             return page
         }
         return page
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        requestedSessionListConsistencies.append(consistency)
+        return try await sessionsPage(
+            projectID: workspace.rootProjectID ?? workspace.id,
+            cursor: cursor,
+            limit: limit
+        )
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {

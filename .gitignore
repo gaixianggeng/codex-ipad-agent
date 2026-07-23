@@ -15,6 +15,7 @@ config.json
 bin/
 /dist/
 /dist-macos/
+/dist-skill/
 
 # Rust / Claude bridge build output
 /target/

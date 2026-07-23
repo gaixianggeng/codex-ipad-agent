@@ -6,7 +6,8 @@ struct AgentCommandClient: Sendable {
     var status: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
-    var pair: @Sendable () async throws -> PairingInfo
+    var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
+    var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var version: @Sendable () async throws -> String
 }
 
@@ -99,11 +100,27 @@ extension AgentCommandClient {
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
             },
-            pair: {
+            setLANAccess: { enabled in
+                let binary = try requireEmbeddedBinary()
+                return try decode(NetworkConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: [
+                        "network",
+                        "--lan-enabled=\(enabled)",
+                        "--json",
+                    ]
+                ))
+            },
+            pair: { network in
                 let binary = try requireEmbeddedBinary()
                 return try decode(PairingInfo.self, from: try await execute(
                     binary: binary,
-                    arguments: ["pair", "--json", "--qr-only"]
+                    arguments: [
+                        "pair",
+                        "--network", network.rawValue,
+                        "--json",
+                        "--qr-only",
+                    ]
                 ))
             },
             version: {

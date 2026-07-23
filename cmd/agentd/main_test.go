@@ -138,6 +138,7 @@ func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 	tests := []struct {
 		name       string
 		configured string
+		allowLAN   bool
 		want       []string
 	}{
 		{name: "Tailscale IPv4", configured: "100.127.16.9:8787", want: []string{"100.127.16.9:8787", "127.0.0.1:8787"}},
@@ -147,11 +148,17 @@ func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 		{name: "IPv4 wildcard", configured: "0.0.0.0:8787", want: []string{"0.0.0.0:8787"}},
 		{name: "IPv6 wildcard", configured: "[::]:8787", want: []string{"[::]:8787"}},
 		{name: "invalid keeps original", configured: "bad-address", want: []string{"bad-address"}},
+		{
+			name:       "explicit LAN access uses IPv4 wildcard",
+			configured: "100.127.16.9:8787",
+			allowLAN:   true,
+			want:       []string{"0.0.0.0:8787"},
+		},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := agentDListenAddresses(testCase.configured); !reflect.DeepEqual(got, testCase.want) {
+			if got := agentDListenAddresses(testCase.configured, testCase.allowLAN); !reflect.DeepEqual(got, testCase.want) {
 				t.Fatalf("监听地址不符合预期：got=%v want=%v", got, testCase.want)
 			}
 		})

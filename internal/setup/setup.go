@@ -173,6 +173,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 }
 
 func Pair(ctx context.Context, configPath string) (Result, error) {
+	return PairForNetwork(ctx, configPath, PairingNetworkAuto)
+}
+
+func PairForNetwork(ctx context.Context, configPath string, network PairingNetwork) (Result, error) {
 	cfgPath, err := resolveConfigPath(configPath)
 	if err != nil {
 		return Result{}, err
@@ -181,11 +185,24 @@ func Pair(ctx context.Context, configPath string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return ResultFromConfig(ctx, cfgPath, cfg), nil
+	return ResultFromConfigForNetwork(ctx, cfgPath, cfg, network)
 }
 
 func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
-	endpoint, warnings := endpointForListen(ctx, cfg.Listen)
+	result, _ := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
+	return result
+}
+
+func ResultFromConfigForNetwork(
+	ctx context.Context,
+	configPath string,
+	cfg config.Config,
+	network PairingNetwork,
+) (Result, error) {
+	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, defaultPairingNetworkLookups())
+	if err != nil {
+		return Result{}, err
+	}
 	token := strings.TrimSpace(cfg.Auth.Token)
 	if token == "" {
 		warnings = append(warnings, "配置中没有 auth.token，iPad 无法完成鉴权；请重新执行 agentd setup --force")
@@ -213,7 +230,7 @@ func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config)
 		AppServerListen:    cfg.AppServer.Listen,
 		AppServerTokenFile: cfg.AppServer.WSTokenFile,
 		Warnings:           warnings,
-	}
+	}, nil
 }
 
 func ConnectURL(endpoint, token string) string {
