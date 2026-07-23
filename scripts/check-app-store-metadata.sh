@@ -101,12 +101,12 @@ build_match = re.search(r'CURRENT_PROJECT_VERSION:\s*"(\d+)"', project_spec)
 if not build_match or int(build_match.group(1)) < 100048:
     errors.append("CURRENT_PROJECT_VERSION must be numeric and at least 100048")
 
-for removed_asset_catalog in (
-    Path("ios/MimiRemote/Resources/Assets.xcassets/ChatGPT.imageset/Contents.json"),
-    Path("ios/MimiRemote/Resources/Assets.xcassets/Claude.imageset/Contents.json"),
+for removed_brand_asset in (
+    Path("ios/MimiRemote/Resources/Assets.xcassets/ChatGPT.imageset"),
+    Path("ios/MimiRemote/Resources/Assets.xcassets/Claude.imageset"),
 ):
-    if removed_asset_catalog.exists():
-        errors.append(f"Third-party brand asset catalog must not be bundled: {removed_asset_catalog}")
+    if removed_brand_asset.exists():
+        errors.append(f"Third-party brand asset directory must be removed: {removed_brand_asset}")
 
 voice_preferences = Path(
     "ios/MimiRemote/Sources/State/VoiceInputPreferences.swift"
