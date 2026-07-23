@@ -1266,7 +1266,7 @@ struct ComposerView: View {
                     UISelectionFeedbackGenerator().selectionChanged()
                 },
                 onRefreshCapabilities: {
-                    Task { await sessionStore.refreshCapabilities() }
+                    Task { await sessionStore.refreshCapabilities(forceReload: true) }
                 },
                 onShortcut: { shortcut in
                     composerState.insertShortcut(shortcut)
@@ -1304,7 +1304,7 @@ struct ComposerView: View {
                     toggleSkillAttachment(skill)
                 },
                 onRefresh: {
-                    Task { await sessionStore.refreshCapabilities() }
+                    Task { await sessionStore.refreshCapabilities(forceReload: true) }
                 },
                 onManualAdd: {
                     showsSkillPicker = false

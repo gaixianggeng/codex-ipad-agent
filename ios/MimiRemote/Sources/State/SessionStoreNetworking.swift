@@ -98,7 +98,7 @@ protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
-    func capabilities(path: String?) async throws -> CapabilityListResponse
+    func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
     func worktreeBranches(path: String) async throws -> WorktreeBranchListResponse
@@ -169,8 +169,12 @@ extension SessionStoreAPIClient {
         []
     }
 
-    func capabilities(path: String?) async throws -> CapabilityListResponse {
+    func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
         throw AgentAPIError.invalidResponse
+    }
+
+    func capabilities(path: String?) async throws -> CapabilityListResponse {
+        try await capabilities(path: path, forceReload: false)
     }
 
     func session(id: String) async throws -> SessionResponse {

@@ -436,6 +436,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
     private var requestedThreadSearchCursorsStorage: [String?] = []
     var requestedCapabilityPaths: [String?] = []
+    var requestedCapabilityForceReloads: [Bool] = []
     var requestedResolvePaths: [String] = []
     var requestedWorktreeCreates: [RequestedWorktreeCreate] = []
     var requestedWorktreeBranchPaths: [String] = []
@@ -588,8 +589,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         return rateLimitsByRuntime[runtimeProvider]
     }
 
-    func capabilities(path: String?) async throws -> CapabilityListResponse {
+    func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
         requestedCapabilityPaths.append(path)
+        requestedCapabilityForceReloads.append(forceReload)
         let key = path ?? ""
         switch capabilityResults[key] {
         case .success(let response):

@@ -233,7 +233,7 @@ extension SessionStore {
         normalizedRuntimeProvider == "codex" ? nil : normalizedRuntimeProvider
     }
 
-    func refreshCapabilities() async {
+    func refreshCapabilities(forceReload: Bool = false) async {
         if isRefreshingCapabilities {
             return
         }
@@ -242,7 +242,10 @@ extension SessionStore {
         isRefreshingCapabilities = true
         defer { isRefreshingCapabilities = false }
         do {
-            let response = try await clientFactory().capabilities(path: path?.isEmpty == true ? nil : path)
+            let response = try await clientFactory().capabilities(
+                path: path?.isEmpty == true ? nil : path,
+                forceReload: forceReload
+            )
             capabilityList = response
             capabilityErrorMessage = nil
         } catch {

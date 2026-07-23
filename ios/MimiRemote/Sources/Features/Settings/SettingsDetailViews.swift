@@ -146,7 +146,7 @@ struct CapabilitiesView: View {
                     CapabilityValueRow(title: L10n.text("ui.workspace"), value: sessionStore.selectedCommandActionPath ?? L10n.text("ui.user_level_configuration_only"))
                 }
                 Button {
-                    Task { await sessionStore.refreshCapabilities() }
+                    Task { await sessionStore.refreshCapabilities(forceReload: true) }
                 } label: {
                     if sessionStore.isRefreshingCapabilities {
                         Label(L10n.text("ui.refreshing_21eaf737"), systemImage: "arrow.clockwise")

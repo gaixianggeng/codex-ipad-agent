@@ -799,6 +799,44 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.filteredSessions.map(\.id), [session.id])
     }
 
+    func testSessionLibrarySerializesBackgroundWorkspaceRequests() async throws {
+        let firstProject = makeProject(id: "proj_library_serial_first")
+        let secondProject = makeProject(id: "proj_library_serial_second")
+        let client = BlockingSessionListRefreshClient(
+            projects: [firstProject, secondProject],
+            page: SessionsPage(sessions: []),
+            blockOnCall: 1
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [
+                    AgentWorkspace(project: firstProject),
+                    AgentWorkspace(project: secondProject)
+                ],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.reloadRecentWorkspaces()
+
+        let refreshTask = Task { await store.refreshSessionLibraryIndex() }
+        await client.waitForBlockedSessionListRefresh()
+        try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(client.sessionsPageCallCount, 1, "第一条后台 thread/list 未完成前不应启动第二条")
+
+        client.releaseBlockedSessionListRefresh()
+        for _ in 0..<100 where client.sessionsPageCallCount < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        client.releaseBlockedSessionListRefresh()
+        await refreshTask.value
+    }
+
     func testRecentSessionsUsesLatestActivityAcrossEveryWorkspace() async {
         let projects = (0..<9).map { makeProject(id: "proj_recent_\($0)") }
         let workspaces = projects.enumerated().map { index, project in

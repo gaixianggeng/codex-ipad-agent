@@ -1743,13 +1743,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "app-server request timeout: %@#%@"
+            "value" : "Request confirmation timed out (%@#%@). The service may still be processing it; the connection remains active."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "app-server 请求超时：%@#%@"
+            "value" : "请求确认超时（%@#%@），服务可能仍在处理；连接保持可用。"
           }
         }
       }

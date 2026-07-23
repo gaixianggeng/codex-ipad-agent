@@ -781,16 +781,17 @@ func TestReadyzRequiresBearerAndReturns503WhenDoctorFails(t *testing.T) {
 }
 
 func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
-	binDir := t.TempDir()
-	codexPath := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf '%s\\n' '--listen --ws-auth --ws-token-file'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	const upstreamToken = "readyz-independent-upstream-token"
 	upstreamURL, _, connections := fakeAppServerUpstreamWithAuth(t, upstreamToken, nil)
 	tokenFile := testAppServerTokenFile(t, upstreamToken)
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
-		cfg.Codex.Bin = codexPath
+		// readiness 只证明当前已启动的服务可承接请求；缺失的 CLI/Claude bridge
+		// 由完整 doctor 报告，不得让高频 readyz 执行外部进程或制造假离线。
+		cfg.Codex.Bin = filepath.Join(t.TempDir(), "missing-codex")
+		cfg.Claude = config.ClaudeConfig{
+			Enabled:   true,
+			BridgeBin: filepath.Join(t.TempDir(), "missing-claude-bridge"),
+		}
 		cfg.Runtime.Type = "codex_app_server"
 		cfg.AppServer = config.AppServerConfig{
 			Transport:   "ws",

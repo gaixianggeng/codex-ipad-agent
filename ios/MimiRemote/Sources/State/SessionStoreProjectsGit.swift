@@ -814,20 +814,12 @@ extension SessionStore {
         let generation = appStore.connectionGeneration
         let consistency: SessionListConsistency = authoritative ? .authoritative : .fastIndexed
 
-        // 两个一组并发，兼顾首屏速度和本机 app-server 压力；底层继续复用 single-flight/短缓存。
-        for start in stride(from: 0, to: workspaces.count, by: 2) {
+        // 全局会话库属于后台发现流量，按工作区串行读取。高负载时宁可逐步补齐侧栏，
+        // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
+        for workspace in workspaces {
             guard generation == appStore.connectionGeneration, !Task.isCancelled else { return }
-            let first = workspaces[start]
-            if start + 1 < workspaces.count {
-                let second = workspaces[start + 1]
-                async let firstResult = sessionLibraryPage(workspace: first, consistency: consistency)
-                async let secondResult = sessionLibraryPage(workspace: second, consistency: consistency)
-                let results = await [firstResult, secondResult]
-                mergeSessionLibraryPages(results, generation: generation)
-            } else {
-                let result = await sessionLibraryPage(workspace: first, consistency: consistency)
-                mergeSessionLibraryPages([result], generation: generation)
-            }
+            let result = await sessionLibraryPage(workspace: workspace, consistency: consistency)
+            mergeSessionLibraryPages([result], generation: generation)
         }
     }
 

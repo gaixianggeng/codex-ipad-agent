@@ -296,6 +296,39 @@ extension ConversationDataFlowTests {
         await connection.disconnect()
     }
 
+    func testCodexAppServerCapabilitiesOnlyForceReloadsForExplicitRefresh() async throws {
+        let project = AgentProject(id: "proj_capability_reload", name: "Capabilities", path: "/tmp/capability-reload")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+
+        let automaticTask = Task {
+            try await runtime.capabilities(path: project.path)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let automaticSkills = try await waitForFakeAppServerRequest(transport, method: "skills/list", after: 1)
+        XCTAssertEqual(automaticSkills.params?["forceReload"]?.boolValue, false)
+        transportResponse(transport, id: automaticSkills.id, result: #"{"data":[]}"#)
+        let automaticPlugins = try await waitForFakeAppServerRequest(transport, method: "plugin/installed", after: 3)
+        transportResponse(transport, id: automaticPlugins.id, result: #"{"plugins":[]}"#)
+        _ = try await automaticTask.value
+
+        let manualTask = Task {
+            try await runtime.capabilities(path: project.path, forceReload: true)
+        }
+        let manualSkills = try await waitForFakeAppServerRequest(transport, method: "skills/list", after: 4)
+        XCTAssertEqual(manualSkills.params?["forceReload"]?.boolValue, true)
+        transportResponse(transport, id: manualSkills.id, result: #"{"data":[]}"#)
+        let manualPlugins = try await waitForFakeAppServerRequest(transport, method: "plugin/installed", after: 5)
+        transportResponse(transport, id: manualPlugins.id, result: #"{"plugins":[]}"#)
+        _ = try await manualTask.value
+    }
+
     func testCodexAppServerConnectionRoutesNotificationsAndServerRequests() async throws {
         let connection = CodexAppServerConnection(transport: FakeCodexAppServerTransport(), requestTimeout: 2)
         let notificationStream = await connection.notifications()

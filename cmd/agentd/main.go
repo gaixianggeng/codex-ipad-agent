@@ -398,19 +398,36 @@ func runStatus(args []string) error {
 		return err
 	}
 
-	cfg, registry, checker, err := loadRuntimeConfigFromPath(*configPath, true)
+	cfg, registry, _, err := loadRuntimeConfigFromPath(*configPath, true)
 	if err != nil {
 		return err
 	}
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
-	serviceStatus := probeAgentServiceStatus(context.Background(), result.Endpoint, result.Token, version, time.Second)
-	doctorResults := checker.Run(context.Background(), false)
-	if serviceStatus.Ready() {
-		// 服务端 Checker 持有本次启动的异步权限预检结果；CLI 临时创建的 Checker 没有。
-		// readyz 已通过时优先展示服务端状态，使 status 能准确反映重启后的权限预检。
-		if remoteResults, remoteErr := fetchServiceDoctorResults(context.Background(), result.Endpoint, result.Token, time.Second); remoteErr == nil {
-			doctorResults = remoteResults
-		}
+	serviceStatus := probeAgentServiceStatus(context.Background(), result.Endpoint, result.Token, version, 2*time.Second)
+	doctorResults := doctor.Results{
+		OK:      false,
+		Version: version,
+		Checks: []doctor.Check{{
+			Name:    "service-readiness",
+			OK:      false,
+			Level:   "error",
+			Message: "agentd readyz 暂不可用或版本不匹配",
+			Fix:     "运行 agentd logs 查看服务与 Codex app-server 状态",
+		}},
+	}
+	if serviceStatus.ReadinessResults != nil {
+		doctorResults = *serviceStatus.ReadinessResults
+	}
+	if !serviceStatus.Ready() && doctorResults.OK {
+		// 失败 HTTP 理论上会携带 ok=false；若旧服务返回了矛盾结构，仍以探测结果为准。
+		doctorResults.OK = false
+		doctorResults.Checks = append(doctorResults.Checks, doctor.Check{
+			Name:    "service-readiness",
+			OK:      false,
+			Level:   "error",
+			Message: "agentd readyz 暂不可用或版本不匹配",
+			Fix:     "运行 agentd logs 查看服务与 Codex app-server 状态",
+		})
 	}
 	status := serviceStatusFields(serviceStatus, result.Token)
 	status["version"] = version
@@ -460,8 +477,9 @@ func serviceStatusFields(serviceStatus agentServiceStatus, token string) map[str
 }
 
 type agentServiceStatus struct {
-	ProcessErr error
-	ReadyErr   error
+	ProcessErr       error
+	ReadyErr         error
+	ReadinessResults *doctor.Results
 }
 
 func (s agentServiceStatus) ProcessOK() bool {
@@ -474,10 +492,31 @@ func (s agentServiceStatus) Ready() bool {
 
 func probeAgentServiceStatus(ctx context.Context, endpoint string, token string, expectedVersion string, timeout time.Duration) agentServiceStatus {
 	// 两个探测必须独立执行：healthz 只回答进程是否存活，readyz 才回答鉴权、版本和
-	// Codex upstream 是否已经可以承接移动端请求。
+	// Codex upstream 是否已经可以承接移动端请求。并行执行让 status 总耗时受单个 2 秒窗口约束。
+	type readinessProbeResult struct {
+		results doctor.Results
+		err     error
+	}
+	healthResult := make(chan error, 1)
+	readinessResult := make(chan readinessProbeResult, 1)
+	go func() {
+		healthResult <- waitForServiceHealth(ctx, endpoint, timeout)
+	}()
+	go func() {
+		results, err := waitForServiceReadyResults(ctx, endpoint, token, expectedVersion, timeout)
+		readinessResult <- readinessProbeResult{results: results, err: err}
+	}()
+
+	processErr := <-healthResult
+	readiness := <-readinessResult
+	var readinessResultsPointer *doctor.Results
+	if len(readiness.results.Checks) > 0 || strings.TrimSpace(readiness.results.Version) != "" {
+		readinessResultsPointer = &readiness.results
+	}
 	return agentServiceStatus{
-		ProcessErr: waitForServiceHealth(ctx, endpoint, timeout),
-		ReadyErr:   waitForServiceReady(ctx, endpoint, token, expectedVersion, timeout),
+		ProcessErr:       processErr,
+		ReadyErr:         readiness.err,
+		ReadinessResults: readinessResultsPointer,
 	}
 }
 
@@ -1575,58 +1614,61 @@ func waitForServiceHealth(ctx context.Context, endpoint string, timeout time.Dur
 }
 
 func waitForServiceReady(ctx context.Context, endpoint string, token string, expectedVersion string, timeout time.Duration) error {
+	_, err := waitForServiceReadyResults(ctx, endpoint, token, expectedVersion, timeout)
+	return err
+}
+
+func waitForServiceReadyResults(
+	ctx context.Context,
+	endpoint string,
+	token string,
+	expectedVersion string,
+	timeout time.Duration,
+) (doctor.Results, error) {
 	if timeout <= 0 {
-		return nil
+		return doctor.Results{}, nil
 	}
 	readyURL, err := readyCheckURL(endpoint)
 	if err != nil {
-		return err
-	}
-	// readiness 必须走和移动端相同的 Bearer 鉴权链路，并确认响应来自当前版本的 agentd。
-	return waitForServiceCheck(ctx, readyURL, strings.TrimSpace(token), "readyz", timeout, func(body io.Reader) error {
-		return validateReadyServiceVersion(body, expectedVersion)
-	})
-}
-
-func fetchServiceDoctorResults(ctx context.Context, endpoint string, token string, timeout time.Duration) (doctor.Results, error) {
-	if timeout <= 0 {
-		return doctor.Results{}, fmt.Errorf("doctor 请求超时必须大于 0")
-	}
-	doctorURL, err := serviceCheckURL(endpoint, "/api/doctor")
-	if err != nil {
 		return doctor.Results{}, err
 	}
-	requestContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(requestContext, http.MethodGet, doctorURL, nil)
-	if err != nil {
-		return doctor.Results{}, err
-	}
-	if value := strings.TrimSpace(token); value != "" {
-		req.Header.Set("Authorization", "Bearer "+value)
-	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
-	if err != nil {
-		return doctor.Results{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return doctor.Results{}, fmt.Errorf("doctor HTTP %d", resp.StatusCode)
-	}
-	var results doctor.Results
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, 256*1024))
-	if err := decoder.Decode(&results); err != nil {
-		return doctor.Results{}, fmt.Errorf("doctor 响应不是有效 JSON：%w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return doctor.Results{}, fmt.Errorf("doctor 响应包含多个 JSON 值")
+	deadline := time.Now().Add(timeout)
+	client := http.Client{Timeout: time.Second}
+	var latest doctor.Results
+	for {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, readyURL, nil)
+		if requestErr != nil {
+			return latest, requestErr
 		}
-		return doctor.Results{}, fmt.Errorf("doctor 响应包含畸形尾部数据：%w", err)
+		if value := strings.TrimSpace(token); value != "" {
+			req.Header.Set("Authorization", "Bearer "+value)
+		}
+		resp, requestErr := client.Do(req)
+		if requestErr == nil {
+			decoded, decodeErr := decodeReadyServiceResults(resp.Body, expectedVersion)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if decodeErr == nil {
+				latest = decoded
+			}
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				if decodeErr == nil {
+					return latest, nil
+				}
+				requestErr = decodeErr
+			} else {
+				requestErr = fmt.Errorf("readyz HTTP %d", resp.StatusCode)
+			}
+		}
+		if time.Now().After(deadline) {
+			return latest, requestErr
+		}
+		select {
+		case <-ctx.Done():
+			return latest, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
-	return results, nil
 }
 
 func waitForServiceCheck(ctx context.Context, checkURL string, token string, label string, timeout time.Duration, validate func(body io.Reader) error) error {
@@ -1672,29 +1714,32 @@ func waitForServiceCheck(ctx context.Context, checkURL string, token string, lab
 }
 
 func validateReadyServiceVersion(body io.Reader, expectedVersion string) error {
-	var payload struct {
-		Version string `json:"version"`
-	}
+	_, err := decodeReadyServiceResults(body, expectedVersion)
+	return err
+}
+
+func decodeReadyServiceResults(body io.Reader, expectedVersion string) (doctor.Results, error) {
+	var payload doctor.Results
 	decoder := json.NewDecoder(io.LimitReader(body, 256*1024))
 	if err := decoder.Decode(&payload); err != nil {
-		return readyVersionCheckError(fmt.Sprintf("readyz 响应不是有效 JSON：%v", err))
+		return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("readyz 响应不是有效 JSON：%v", err))
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return readyVersionCheckError("readyz 响应包含多个 JSON 值")
+			return doctor.Results{}, readyVersionCheckError("readyz 响应包含多个 JSON 值")
 		}
-		return readyVersionCheckError(fmt.Sprintf("readyz 响应包含畸形尾部数据：%v", err))
+		return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("readyz 响应包含畸形尾部数据：%v", err))
 	}
 	runningVersion := strings.TrimSpace(payload.Version)
 	if runningVersion == "" {
-		return readyVersionCheckError("readyz 响应缺少 server version")
+		return doctor.Results{}, readyVersionCheckError("readyz 响应缺少 server version")
 	}
 	expectedVersion = strings.TrimSpace(expectedVersion)
 	if isDevelopmentAgentVersion(expectedVersion) || runningVersion == expectedVersion {
-		return nil
+		return payload, nil
 	}
-	return readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
+	return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
 }
 
 func isDevelopmentAgentVersion(value string) bool {

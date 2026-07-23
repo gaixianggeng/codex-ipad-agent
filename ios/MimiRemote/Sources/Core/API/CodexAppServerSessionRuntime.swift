@@ -51,6 +51,12 @@ struct CodexAppServerResolvedServerRequests {
     var userInputSessionIDs: [SessionID] = []
 }
 
+struct CodexAppServerThreadResumeTask {
+    let connection: CodexAppServerConnection
+    let token: UUID
+    let task: Task<Void, Error>
+}
+
 enum CodexAppServerBufferedEventReplayPolicy {
     case all
     case stateOnly
@@ -72,6 +78,9 @@ actor CodexAppServerSessionRuntime {
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
     var threadsResumedOnConnection: Set<SessionID> = []
+    // actor 会在 await thread/resume 时重入；同一连接、同一 thread 的并发监听和发送必须等待同一任务，
+    // 否则 gateway 会拒绝重复历史请求，进一步放大上游高负载。
+    var threadResumeTasksBySessionID: [SessionID: CodexAppServerThreadResumeTask] = [:]
     var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
@@ -99,10 +108,8 @@ actor CodexAppServerSessionRuntime {
     var stateDBOnlyScanRequiredCWDs: Set<String> = []
     var recencySortUnavailable = false
     var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
-    // thread/list 在 Tailscale Peer Relay/DERP 弱链路上可能要扫本机 Codex 历史并传回较大的 JSON。
-    // 只给列表请求放宽超时，避免影响 turn/start 等交互命令的失败反馈速度。
-    let threadListRequestTimeout: TimeInterval = 60
     let requestTimeout: TimeInterval
+    let longRunningRequestTimeout: TimeInterval
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
         // 该请求仍在独立 actor/transport 上等待，不阻塞主线程。Codex 保持原 5 秒上限。
@@ -119,6 +126,7 @@ actor CodexAppServerSessionRuntime {
         runtimeProvider: String = "codex",
         transportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() },
         requestTimeout: TimeInterval = 20,
+        longRunningRequestTimeout: TimeInterval = 60,
         configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
         let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
@@ -127,6 +135,7 @@ actor CodexAppServerSessionRuntime {
         self.runtimeProvider = Self.normalizedRuntimeProvider(runtimeProvider)
         self.transportFactory = transportFactory
         self.requestTimeout = requestTimeout
+        self.longRunningRequestTimeout = longRunningRequestTimeout
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
         }
@@ -137,6 +146,7 @@ actor CodexAppServerSessionRuntime {
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
         rateLimitRefreshTask?.cancel()
+        threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
     }
 
     func projects() async throws -> [AgentProject] {
@@ -152,7 +162,7 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    func capabilities(path: String?) async throws -> CapabilityListResponse {
+    func capabilities(path: String?, forceReload: Bool = false) async throws -> CapabilityListResponse {
         let legacyClient = AgentAPIClient(endpoint: endpoint, token: token)
         guard let cwd = path?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty else {
             return try await legacyClient.capabilities(path: path)
@@ -163,7 +173,8 @@ actor CodexAppServerSessionRuntime {
         do {
             let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
             let skillResult = try await sendRecoveringFromStaleInitialization(
-                builder.skillsList(cwd: cwd, forceReload: true)
+                builder.skillsList(cwd: cwd, forceReload: forceReload),
+                timeout: forceReload ? longRunningRequestTimeout : requestTimeout
             )
             let pluginResult = try? await sendRecoveringFromStaleInitialization(
                 builder.installedPluginList(cwd: cwd)
@@ -300,7 +311,7 @@ actor CodexAppServerSessionRuntime {
                 limit: limit,
                 cursor: cursor
             ),
-            timeout: threadListRequestTimeout
+            timeout: longRunningRequestTimeout
         )
         let page = try threadSearchPage(from: result, projects: projects)
         for session in page.sessions {
@@ -436,7 +447,8 @@ actor CodexAppServerSessionRuntime {
 
     func session(id: SessionID, afterSeq: EventSequence?) async throws -> SessionResponse {
         let result = try await sendRecoveringFromStaleInitialization(
-            CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: id, includeTurns: false)
+            CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).threadRead(threadID: id, includeTurns: false),
+            timeout: longRunningRequestTimeout
         )
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(id)
@@ -543,7 +555,7 @@ actor CodexAppServerSessionRuntime {
 
         let result: CodexAppServerJSONValue?
         do {
-            result = try await sendRecoveringFromStaleInitialization(spec)
+            result = try await sendRecoveringFromStaleInitialization(spec, timeout: longRunningRequestTimeout)
         } catch {
             guard !payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   shouldFallbackFromInitialTurnsPage(error) else {
@@ -557,7 +569,7 @@ actor CodexAppServerSessionRuntime {
                 options: threadOptions,
                 includeInitialTurnsPage: false
             )
-            result = try await sendRecoveringFromStaleInitialization(fallback)
+            result = try await sendRecoveringFromStaleInitialization(fallback, timeout: longRunningRequestTimeout)
         }
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
@@ -644,6 +656,7 @@ actor CodexAppServerSessionRuntime {
 
     @discardableResult
     func unsubscribeThread(threadID: SessionID) async throws -> CodexAppServerThreadUnsubscribeStatus? {
+        cancelThreadResumeTask(sessionID: threadID)
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         let result = try await sendRecoveringFromStaleInitialization(builder.threadUnsubscribe(threadID: threadID))
         threadsResumedOnConnection.remove(threadID)
@@ -685,7 +698,8 @@ actor CodexAppServerSessionRuntime {
                 threadID: threadID,
                 cwd: workspace.path,
                 options: options
-            )
+            ),
+            timeout: longRunningRequestTimeout
         )
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
@@ -700,9 +714,6 @@ actor CodexAppServerSessionRuntime {
         return session
     }
 
-    // thread/read 是整段历史的批量拉取，慢链路（Tailscale）下比交互式请求耗时得多；给它一个更宽的
-    // 超时，避免大会话首屏因为 20s 的默认请求超时而直接报错。
-    static let bulkReadTimeout: TimeInterval = 60
     static let threadTurnsCursorPrefix = "turns:"
     static let economyHistoryNotice = L10n.text("ui.this_session_contains_large_images_or_tool_output")
 
@@ -756,7 +767,7 @@ actor CodexAppServerSessionRuntime {
         }
         let result = try await sendRecoveringFromStaleInitialization(
             CodexAppServerRequestBuilder(allowlistedProjects: projects).threadRead(threadID: sessionID, includeTurns: true),
-            timeout: Self.bulkReadTimeout
+            timeout: longRunningRequestTimeout
         )
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -809,7 +820,7 @@ actor CodexAppServerSessionRuntime {
                 sortDirection: "desc",
                 itemsView: Self.threadTurnItemsView(loadMode: loadMode)
             ),
-            timeout: requestTimeout
+            timeout: longRunningRequestTimeout
         )
         let object = result?.objectValue ?? [:]
         let turns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
@@ -906,7 +917,7 @@ actor CodexAppServerSessionRuntime {
         }
         let result = try await sendRecoveringFromStaleInitialization(
             builder.threadRead(threadID: sessionID, includeTurns: false),
-            timeout: requestTimeout
+            timeout: longRunningRequestTimeout
         )
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -998,7 +1009,7 @@ actor CodexAppServerSessionRuntime {
                     useStateDBOnly: canUseIndexedList,
                     sortKey: sortKey
                 ),
-                timeout: threadListRequestTimeout
+                timeout: longRunningRequestTimeout
             )
             let page = threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
             guard canUseIndexedList, indexedThreadListNeedsRepair(page, cwd: cwd) else {
@@ -1059,7 +1070,7 @@ actor CodexAppServerSessionRuntime {
                 useStateDBOnly: false,
                 sortKey: preferredThreadListSortKey
             ),
-            timeout: threadListRequestTimeout
+            timeout: longRunningRequestTimeout
         )
         return threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
     }
@@ -1468,7 +1479,7 @@ actor CodexAppServerSessionRuntime {
                     cwd: context.cwd,
                     payload: payload,
                     clientMessageID: clientMessageID
-                ))
+                ), timeout: longRunningRequestTimeout)
                 break
             } catch {
                 if !didRetryAfterStaleInitialization,
@@ -1519,7 +1530,7 @@ actor CodexAppServerSessionRuntime {
                     payload: payload,
                     clientMessageID: clientMessageID,
                     expectedTurnID: expectedTurnID
-                ))
+                ), timeout: longRunningRequestTimeout)
                 return
             } catch {
                 if !didRetryAfterStaleInitialization,
@@ -1563,9 +1574,54 @@ actor CodexAppServerSessionRuntime {
         guard !threadsResumedOnConnection.contains(sessionID) else {
             return
         }
+        if let existing = threadResumeTasksBySessionID[sessionID] {
+            if existing.connection === connection {
+                return try await existing.task.value
+            }
+            // 理论上连接替换路径会统一清理；这里再做代次防线，避免旧任务迟到后把新连接误标为已 resume。
+            existing.task.cancel()
+            threadResumeTasksBySessionID.removeValue(forKey: sessionID)
+        }
+
+        let token = UUID()
+        let task = Task { [self] in
+            try await performThreadResume(
+                sessionID: sessionID,
+                cwd: cwd,
+                builder: builder,
+                connection: connection
+            )
+        }
+        threadResumeTasksBySessionID[sessionID] = CodexAppServerThreadResumeTask(
+            connection: connection,
+            token: token,
+            task: task
+        )
+        do {
+            try await task.value
+            clearThreadResumeTask(sessionID: sessionID, connection: connection, token: token)
+        } catch {
+            clearThreadResumeTask(sessionID: sessionID, connection: connection, token: token)
+            throw error
+        }
+    }
+
+    func performThreadResume(
+        sessionID: SessionID,
+        cwd: String,
+        builder: CodexAppServerRequestBuilder,
+        connection: CodexAppServerConnection
+    ) async throws {
         let result: CodexAppServerJSONValue?
         do {
-            result = try await connection.send(try builder.threadResume(threadID: sessionID, cwd: cwd, options: runtimeScopedThreadOptions(.default)))
+            result = try await connection.send(
+                try builder.threadResume(
+                    threadID: sessionID,
+                    cwd: cwd,
+                    options: runtimeScopedThreadOptions(.default)
+                ),
+                timeout: longRunningRequestTimeout
+            )
         } catch {
             if shouldFallbackFromInitialTurnsPage(error) {
                 result = try await connection.send(try builder.threadResume(
@@ -1573,12 +1629,13 @@ actor CodexAppServerSessionRuntime {
                     cwd: cwd,
                     options: runtimeScopedThreadOptions(.default),
                     includeInitialTurnsPage: false
-                ))
+                ), timeout: longRunningRequestTimeout)
             } else if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
                 // -32600 "no rollout found"。这类线程已经在本连接上被 thread/start 绑定，resume 只是冗余；
                 // 标记为已 resume 并放行，等首个 turn/start 落盘 rollout 后事件自然回流。否则空会话开屏即
                 // 因 connectForEvents 抛错进入“WebSocket 断开，正在自动重连”的死循环。
+                try Task.checkCancellation()
                 threadsResumedOnConnection.insert(sessionID)
                 return
             } else {
@@ -1603,7 +1660,37 @@ actor CodexAppServerSessionRuntime {
                 ))
             }
         }
+        try Task.checkCancellation()
         threadsResumedOnConnection.insert(sessionID)
+    }
+
+    func clearThreadResumeTask(
+        sessionID: SessionID,
+        connection: CodexAppServerConnection,
+        token: UUID
+    ) {
+        guard let current = threadResumeTasksBySessionID[sessionID],
+              current.connection === connection,
+              current.token == token else {
+            return
+        }
+        threadResumeTasksBySessionID.removeValue(forKey: sessionID)
+    }
+
+    func cancelThreadResumeTask(sessionID: SessionID) {
+        guard let current = threadResumeTasksBySessionID.removeValue(forKey: sessionID) else {
+            return
+        }
+        current.task.cancel()
+    }
+
+    func cancelThreadResumeTasks(for connection: CodexAppServerConnection) {
+        let sessionIDs = threadResumeTasksBySessionID.compactMap { entry in
+            entry.value.connection === connection ? entry.key : nil
+        }
+        for sessionID in sessionIDs {
+            cancelThreadResumeTask(sessionID: sessionID)
+        }
     }
 
     func storeAuthoritativeTurnsSnapshot(
@@ -1835,6 +1922,8 @@ actor CodexAppServerSessionRuntime {
     func installConnection(_ prepared: CodexAppServerPreparedConnection) {
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
+        threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
+        threadResumeTasksBySessionID.removeAll(keepingCapacity: true)
         // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
@@ -1864,6 +1953,7 @@ actor CodexAppServerSessionRuntime {
         notificationPumpTask = nil
         serverRequestPumpTask?.cancel()
         serverRequestPumpTask = nil
+        cancelThreadResumeTasks(for: endedConnection)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
@@ -1933,6 +2023,7 @@ actor CodexAppServerSessionRuntime {
         notificationPumpTask = nil
         serverRequestPumpTask?.cancel()
         serverRequestPumpTask = nil
+        cancelThreadResumeTasks(for: stale)
         connection = nil
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         let affected = clearAllPendingServerRequests()
@@ -1954,7 +2045,8 @@ actor CodexAppServerSessionRuntime {
               current === stale else {
             return
         }
-        // turn/start 失败后不要继续复用半断连接；重连会重新 thread/resume 并补拉历史。
+        // 只有连接级错误才淘汰共享连接；单个 RPC 超时可能只是 app-server 高负载，
+        // 此时保留通知流和其他 pending 请求，避免一个慢请求拖断所有会话。
         await retireConnection(stale)
     }
 
@@ -1963,11 +2055,11 @@ actor CodexAppServerSessionRuntime {
             return false
         }
         switch error {
-        case .disconnected, .notInitialized, .timeout, .transport:
+        case .disconnected, .notInitialized, .transport:
             return true
         case .appServer(let appServerError):
             return isStaleInitializationAppServerError(appServerError)
-        case .duplicateRequestID, .decoding:
+        case .timeout, .duplicateRequestID, .decoding:
             return false
         }
     }

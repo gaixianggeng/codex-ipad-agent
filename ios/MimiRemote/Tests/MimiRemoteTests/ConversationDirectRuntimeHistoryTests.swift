@@ -1076,7 +1076,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(recoveredMetadata?.turnLifecycle, .interrupted)
     }
 
-    func testCodexAppServerSessionRuntimeRetiresConnectionAfterTurnStartTimeout() async throws {
+    func testCodexAppServerSessionRuntimeKeepsConnectionAndEventsAfterTurnStartTimeout() async throws {
         let project = AgentProject(id: "proj_turn_timeout", name: "Turn Timeout", path: "/tmp/turn-timeout")
         let pool = FakeCodexAppServerTransportPool()
         let runtime = CodexAppServerSessionRuntime(
@@ -1084,6 +1084,7 @@ extension ConversationDataFlowTests {
             token: "outer-token",
             transportFactory: { pool.make() },
             requestTimeout: 0.05,
+            longRunningRequestTimeout: 0.05,
             configProvider: { makeDirectAppServerConfig(project: project) }
         )
 
@@ -1100,6 +1101,19 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(listRequest.method, "thread/list")
         transportResponse(firstTransport, id: listRequest.id, result: #"{"data":[{"id":"thr_turn_timeout","sessionId":"thr_turn_timeout","preview":"超时会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490701,"status":{"type":"idle"},"path":null,"cwd":"/tmp/turn-timeout","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"超时会话","turns":[]}],"nextCursor":null,"backwardsCursor":null}"#)
         _ = try await pageTask.value
+
+        let events = await runtime.attachEvents(sessionID: "thr_turn_timeout")
+        let receivedLateTurn = expectation(description: "超时后仍收到 turn/started")
+        let eventTask = Task { @MainActor in
+            for await event in events {
+                guard case .turnStarted(let metadata) = event,
+                      metadata.turnID == "turn_late_after_timeout" else {
+                    continue
+                }
+                receivedLateTurn.fulfill()
+                return
+            }
+        }
 
         let timeoutTask = Task {
             try await runtime.startTurn(sessionID: "thr_turn_timeout", prompt: "这次会超时", clientMessageID: "client_timeout")
@@ -1122,28 +1136,54 @@ extension ConversationDataFlowTests {
             XCTFail("Unexpected timeout error: \(error)")
         }
 
-        let retryTask = Task {
-            try await runtime.startTurn(sessionID: "thr_turn_timeout", prompt: "新连接继续", clientMessageID: "client_after_timeout")
+        // 已超时响应会被忽略，但同一连接上的通知仍必须继续投影到上层事件流。
+        transportResponse(firstTransport, id: firstTurnStart.id, result: #"{"turn":{"id":"turn_late_after_timeout","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490704,"completedAt":null,"durationMs":null}}"#)
+        firstTransport.enqueue(#"{"method":"turn/started","params":{"threadId":"thr_turn_timeout","turn":{"id":"turn_late_after_timeout"}}}"#)
+        await fulfillment(of: [receivedLateTurn], timeout: 1)
+        eventTask.cancel()
+
+        // 后续轻量请求复用原连接；如果 timeout 被错误升级为连接故障，这里会创建第二个 transport。
+        let modelTask = Task { try await runtime.modelOptions() }
+        let modelList = try await waitForFakeAppServerRequest(firstTransport, method: "model/list", after: 5)
+        transportResponse(firstTransport, id: modelList.id, result: #"{"models":[{"id":"gpt-timeout-recovered","title":"Recovered","provider":"openai","isDefault":true}]}"#)
+        let models = try await modelTask.value
+
+        XCTAssertEqual(models.map(\.model), ["gpt-timeout-recovered"])
+        XCTAssertNil(pool.transport(at: 1), "单个 RPC timeout 不应创建第二条共享连接")
+    }
+
+    func testCodexAppServerSessionRuntimeCoalescesConcurrentThreadResumeOnSameConnection() async throws {
+        let project = AgentProject(id: "proj_resume_singleflight", name: "Resume Single Flight", path: "/tmp/resume-singleflight")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
         }
-        let secondTransport = try await waitForFakeAppServerTransport(in: pool, index: 1)
-        let secondInitializeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 1)
-        let secondInitialize = try decodeAppServerRequest(secondInitializeMessages[0])
-        transportResponse(secondTransport, id: secondInitialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let listRequest = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(transport, id: listRequest.id, result: #"{"data":[{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490801,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}],"nextCursor":null,"backwardsCursor":null}"#)
+        _ = try await pageTask.value
 
-        let secondResumeMessages = try await waitForFakeAppServerMessages(secondTransport, count: 3)
-        let secondResume = try decodeAppServerRequest(secondResumeMessages[2])
-        XCTAssertEqual(secondResume.method, "thread/resume")
-        XCTAssertEqual(secondResume.params?["threadId"]?.stringValue, "thr_turn_timeout")
-        transportResponse(secondTransport, id: secondResume.id, result: #"{"thread":{"id":"thr_turn_timeout","sessionId":"thr_turn_timeout","preview":"超时会话","ephemeral":false,"modelProvider":"openai","createdAt":1780490700,"updatedAt":1780490703,"status":{"type":"idle"},"path":null,"cwd":"/tmp/turn-timeout","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"超时会话","turns":[]}}"#)
+        async let first: Void = runtime.connectForEvents(sessionID: "thr_resume_singleflight")
+        async let second: Void = runtime.connectForEvents(sessionID: "thr_resume_singleflight")
+        let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
 
-        let secondTurnMessages = try await waitForFakeAppServerMessages(secondTransport, count: 4)
-        let secondTurnStart = try decodeAppServerRequest(secondTurnMessages[3])
-        XCTAssertEqual(secondTurnStart.method, "turn/start")
-        XCTAssertEqual(secondTurnStart.params?["clientUserMessageId"]?.stringValue, "client_after_timeout")
-        transportResponse(secondTransport, id: secondTurnStart.id, result: #"{"turn":{"id":"turn_after_timeout","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490704,"completedAt":null,"durationMs":null}}"#)
+        try await Task.sleep(nanoseconds: 80_000_000)
+        let resumeCount = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+            .filter { $0.method == "thread/resume" }
+            .count
+        XCTAssertEqual(resumeCount, 1)
 
-        let retryTurnID = try await retryTask.value
-        XCTAssertEqual(retryTurnID, "turn_after_timeout")
+        transportResponse(transport, id: resume.id, result: #"{"thread":{"id":"thr_resume_singleflight","sessionId":"thr_resume_singleflight","preview":"并发恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490800,"updatedAt":1780490802,"status":{"type":"idle"},"path":null,"cwd":"/tmp/resume-singleflight","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发恢复","turns":[]}}"#)
+        try await first
+        try await second
     }
 
     func testCodexAppServerSessionRuntimeRefreshesUnavailableGatewayConfigBeforeConnecting() async throws {

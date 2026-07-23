@@ -20,8 +20,8 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
-    func capabilities(path: String?) async throws -> CapabilityListResponse {
-        try await runtime.capabilities(path: path)
+    func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
+        try await runtime.capabilities(path: path, forceReload: forceReload)
     }
 
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
@@ -337,7 +337,9 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     }
 
     func projects() async throws -> [AgentProject] { try await codexClient.projects() }
-    func capabilities(path: String?) async throws -> CapabilityListResponse { try await codexClient.capabilities(path: path) }
+    func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {
+        try await codexClient.capabilities(path: path, forceReload: forceReload)
+    }
     func resolveWorkspace(path: String) async throws -> AgentWorkspace { try await codexClient.resolveWorkspace(path: path) }
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse { try await codexClient.createWorktree(path: path, name: name, base: base, branch: branch) }
     func worktreeBranches(path: String) async throws -> WorktreeBranchListResponse { try await codexClient.worktreeBranches(path: path) }

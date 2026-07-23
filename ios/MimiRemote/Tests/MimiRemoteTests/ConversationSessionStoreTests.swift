@@ -2618,8 +2618,10 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         await store.selectSession(session)
         await store.refreshCapabilities()
+        await store.refreshCapabilities(forceReload: true)
 
-        XCTAssertEqual(client.requestedCapabilityPaths, [session.dir])
+        XCTAssertEqual(client.requestedCapabilityPaths, [session.dir, session.dir])
+        XCTAssertEqual(client.requestedCapabilityForceReloads, [false, true])
         XCTAssertEqual(store.capabilityList, response)
         XCTAssertNil(store.capabilityErrorMessage)
     }

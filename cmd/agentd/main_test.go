@@ -950,11 +950,17 @@ func TestWaitForServiceReadyUsesBearerAndReadyz(t *testing.T) {
 	}
 }
 
-func TestFetchServiceDoctorResultsUsesBearerAndReturnsStartupPreflight(t *testing.T) {
-	const token = "doctor-service-token"
+func TestWaitForServiceReadyResultsUsesBearerAndDoesNotRequestDoctor(t *testing.T) {
+	const token = "ready-service-token"
+	var doctorRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/api/doctor" {
-			t.Errorf("服务端 Doctor 路径错误：%s", req.URL.Path)
+		if req.URL.Path == "/api/doctor" {
+			doctorRequests.Add(1)
+			http.Error(w, "status 不应请求完整 doctor", http.StatusInternalServerError)
+			return
+		}
+		if req.URL.Path != "/api/readyz" {
+			t.Errorf("服务端 readiness 路径错误：%s", req.URL.Path)
 		}
 		if req.Header.Get("Authorization") != "Bearer "+token {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -964,24 +970,27 @@ func TestFetchServiceDoctorResultsUsesBearerAndReturnsStartupPreflight(t *testin
 			OK:      true,
 			Version: "1.2.3",
 			Checks: []doctor.Check{{
-				Name:    "file-access-preflight",
+				Name:    "app-server-upstream",
 				OK:      true,
 				Level:   "ok",
-				Message: "启动预检完成",
+				Message: "upstream 可用",
 			}},
 		})
 	}))
 	defer server.Close()
 
-	results, err := fetchServiceDoctorResults(context.Background(), server.URL, token, time.Second)
+	results, err := waitForServiceReadyResults(context.Background(), server.URL, token, "1.2.3", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results.Checks) != 1 || results.Checks[0].Name != "file-access-preflight" {
-		t.Fatalf("status 必须保留服务启动期权限预检：%+v", results)
+	if len(results.Checks) != 1 || results.Checks[0].Name != "app-server-upstream" {
+		t.Fatalf("status 必须直接复用 readyz 结果：%+v", results)
 	}
-	if _, err := fetchServiceDoctorResults(context.Background(), server.URL, "wrong-token", time.Second); err == nil {
-		t.Fatal("服务端 Doctor 必须使用外侧 Bearer Token")
+	if doctorRequests.Load() != 0 {
+		t.Fatalf("status 不应触发完整 doctor：requests=%d", doctorRequests.Load())
+	}
+	if _, err := waitForServiceReadyResults(context.Background(), server.URL, "wrong-token", "1.2.3", time.Nanosecond); err == nil {
+		t.Fatal("服务端 readiness 必须使用外侧 Bearer Token")
 	}
 }
 
