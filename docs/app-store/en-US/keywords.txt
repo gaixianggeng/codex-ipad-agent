@@ -1,1 +1,1 @@
-codex,developer,git,worktree,code review,remote,mac,coding,projects
+developer,git,worktree,code review,remote,coding,projects,self hosted

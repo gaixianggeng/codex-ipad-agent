@@ -53,7 +53,7 @@ struct ComposerView: View {
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
     // 快捷行默认收起：展开与否是用户的全局偏好，不再被宽度变化反向改写。
     @AppStorage("composer.shortcuts.expanded") var prefersExpandedShortcutBar = false
     @State var guidedFollowUpEnabled = false

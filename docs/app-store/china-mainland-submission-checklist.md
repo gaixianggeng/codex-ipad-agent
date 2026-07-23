@@ -1,0 +1,69 @@
+# 咪咪 Console / Mimi Remote 中国大陆提交清单
+
+## 目标
+
+在不隐藏真实功能、不冒充第三方官方产品的前提下，把咪咪 Console / Mimi Remote 作为“连接用户自有计算机的自托管开发工作台”提交到中国大陆 App Store。
+
+KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自有开发运行时”这一产品形态存在审核先例；但不同账号主体、二进制、元数据和审核批次不能互相替代，本清单仍以 Mimi Remote 的历史拒绝信息和当前实现为准。
+
+## 方案
+
+### 1. 产品与品牌
+
+- [x] App 名称使用独立品牌：简体中文 `咪咪 Console`，英文 `Mimi Remote`。
+- [x] 副标题不使用 Mac、iPhone、iPad、ChatGPT、OpenAI 或其他第三方产品名。
+- [x] 公开推广文本、描述和关键词不使用 ChatGPT/OpenAI 名称。
+- [x] App 运行时入口使用中性的系统符号，不打包 ChatGPT 或其他第三方品牌图标。
+- [x] 语音输入只开放设备端转写，不把录音发送到模型提供方端点。
+- [x] 已用当前中国大陆提交代码重拍 iPhone、iPad mini 和 13 英寸 iPad 截图；旧截图中的 ChatGPT 图标、`openai` 路径和旧 `agentd` 界面不复用。
+
+README 当前四张实机图仅保留为研发记录，不进入中国大陆商店素材：
+
+- `iphone-workspace-light-real.png`、`iphone-workspace-dark-real.png`：含第三方品牌图标或产品名称。
+- `ipad-workspace-light-real.png`：含旧品牌图标、Codex/Claude Code 入口和旧显示名称。
+- `ipad-conversation-model-picker-dark-real.png`：画面相对中性，但仍是旧显示名称与非 13 英寸提交尺寸，需由新构建重拍。
+
+### 2. App Store Connect
+
+- [ ] 核对 App Store Connect 名称为简体中文 `咪咪 Console`、英文 `Mimi Remote`，与本地元数据和本地化显示名称一致。
+- [ ] 粘贴 `zh-Hans/` 与 `en-US/` 中的新元数据。
+- [ ] 技术支持 URL 更新为 `https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md`。
+- [ ] 隐私政策 URL 更新为 `https://github.com/gaixianggeng/mimi-remote/blob/main/docs/privacy-policy.md`。
+- [ ] 首个中国大陆版本不填写 Marketing URL。
+- [ ] 上传 `artifacts/app-store/china-mainland-screenshots/upload-ready/` 中的 3 张 iPhone 与 3 张 13 英寸 iPad 截图；当前推荐顺序为工作区、会话、会话列表。
+- [ ] 选择包含本次品牌与语音修改的新构建，构建号必须为 `100055` 或更高。
+- [ ] 把审核专用 HTTPS Endpoint、Token、有效时间和联系人填入审核信息。
+- [ ] 上传新的 2–3 分钟审核视频，展示手动连接、样例工作区、会话、Diff/确认和隐私入口。
+- [ ] 保持“手动发布”，通过审核后再决定上线时间。
+- [ ] 回答 2026 年新增的社交媒体年龄分级问题；Mimi Remote 不提供用户间社交、公开内容流或匿名聊天。
+- [ ] 核对出口合规、内容权利和 App 隐私；当前目标值为“不使用受限加密文档”“开发者不收集数据”。
+
+### 3. 中国大陆合规
+
+- [ ] 在“商务 → 协议 → 合规 → 中国大陆”确认个人开发者身份和联系信息。
+- [ ] 在 App 信息中检查是否出现 ICP/App 备案字段。
+- [ ] 如 Apple 或接入服务商要求备案，准备与简体中文元数据一致的 App 中文名称、Bundle ID、负责人证件、联系方式、服务说明和域名/接入信息。
+- [ ] 取得并填写有效的 App/ICP 备案号后，再勾选中国大陆销售范围。
+- [ ] 不把 KittyLitter 的在售状态当成备案或审核豁免证明。
+
+### 4. 其他账户阻塞项
+
+- [ ] 若继续覆盖欧盟，完成 DSA 交易商状态；当前 App Store Connect 显示尚未完成。
+- [ ] 当前免费 App 协议有效期到 2026-09-16，提交前再次确认协议仍有效。
+- [ ] 付费 App 协议目前未生效；本版本保持免费且不包含内购，因此不把付费协议作为本次阻塞项。
+
+## 实现
+
+审核备注必须明确：
+
+1. iOS App 不下载或执行代码，命令只在用户配置的主机运行。
+2. App 不提供第三方账号、模型、订阅、API Key、云端执行、VPN、项目托管或开发者中转。
+3. 审核环境仅访问一次性样例仓库，网关限制目录并使用允许列表协议，不提供通用远程 Shell。
+4. 语音录音只在设备端转写。
+5. 拒绝相机、麦克风或语音权限后，仍可通过手动连接和键盘输入完成核心流程。
+
+## 风险与优化
+
+- Apple 上一轮已明确要求中国大陆版本处理 ChatGPT/OpenAI 关联；本轮即使采用中性元数据，仍可能因审核口径要求关闭相关兼容运行时。若再次收到同类拒绝，应先在 Resolution Center 解释“用户自有主机、无模型服务、无开发者中转”的边界，并附本构建变更点；不要连续无改动重提。
+- ICP/App 备案属于监管合规，不是文案技巧可以替代的步骤。若账号页面要求备案而当前没有号码，应先完成备案，再打开中国大陆销售范围。
+- 正式提交前应使用 Apple 当前明确支持正式 App Store 上传的稳定版 Xcode 归档，避免用测试版工具链制造新的非业务阻塞。

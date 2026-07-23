@@ -55,11 +55,11 @@
 		</dict>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Allow Mimi Remote to find and connect to Mimi Mac Assistant (agentd) on your local network or through Tailscale.</string>
+	<string>Allow Mimi Remote to find and connect to a development environment you configure.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Allow Mimi Remote to scan the pairing QR code shown by Mimi Mac Assistant (agentd).</string>
+	<string>Allow Mimi Remote to scan a pairing QR code.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Allow Mimi Remote to turn your speech into a Codex prompt in the message composer.</string>
+	<string>Allow Mimi Remote to turn your speech into text in the message composer.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Allow Mimi Remote to recognize speech and insert it into the message composer.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

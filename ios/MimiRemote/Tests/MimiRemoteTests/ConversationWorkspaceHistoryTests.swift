@@ -1529,8 +1529,8 @@ extension ConversationDataFlowTests {
         )
         XCTAssertNil(WorkspaceSessionRuntimeChoice.codex.runtimeProvider)
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandAssetName, "ChatGPT")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandAssetName, "Claude")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.systemImageName, "terminal.fill")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.systemImageName, "sparkles")
     }
 
     func testWorkspaceStripUsesViewportWidthToCenterSmallCardGroups() {

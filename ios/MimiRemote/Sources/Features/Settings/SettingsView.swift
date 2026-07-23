@@ -15,9 +15,7 @@ struct SettingsView: View {
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
-    @AppStorage(VoiceInputProvider.appleTipAcknowledgedStorageKey) private var appleVoiceTipAcknowledged = false
-    @State private var showsAppleVoiceInputTip = false
+    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -148,7 +146,7 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(VoiceInputProvider.allCases) { provider in
+                ForEach(VoiceInputProvider.storeAvailableCases) { provider in
                     VoiceInputProviderRow(
                         provider: provider,
                         isSelected: voiceInputProviderSelection.wrappedValue == provider,
@@ -212,16 +210,9 @@ struct SettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
-        .alert(L10n.text("ui.switch_to_apple_voice_input"), isPresented: $showsAppleVoiceInputTip) {
-            Button(L10n.text("ui.use_apple_voice_input")) {
-                voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
-                appleVoiceTipAcknowledged = true
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {}
-        } message: {
-            Text(L10n.text("ui.apple_voice_input_accuracy_tip"))
-        }
         .task {
+            // 升级用户可能仍保留旧的远端转写偏好；进入设置时明确迁移到设备端。
+            voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
                 return
@@ -279,17 +270,9 @@ struct SettingsView: View {
 
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
-            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
+            get: { .apple },
             set: { provider in
-                guard provider.rawValue != voiceInputProviderRawValue else {
-                    return
-                }
-                guard provider == .apple, !appleVoiceTipAcknowledged else {
-                    voiceInputProviderRawValue = provider.rawValue
-                    return
-                }
-                // Picker 的 selection 在确认前不落盘，取消弹窗即可保持原提供方。
-                showsAppleVoiceInputTip = true
+                voiceInputProviderRawValue = provider.rawValue
             }
         )
     }
@@ -365,6 +348,7 @@ private struct ConnectionManagementView: View {
 
 private struct ConnectionSpeedTestView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -436,27 +420,12 @@ private struct ConnectionSpeedTestView: View {
 
             if let report = appStore.lastConnectionTestReport {
                 Section(L10n.text("ui.speed_test_results")) {
-                    LabeledContent(L10n.text("ui.total_time_spent")) {
-                        Text(AppStore.connectionTestDurationText(milliseconds: report.totalMillis))
-                            .monospacedDigit()
-                            .foregroundStyle(resultTone(tokens: tokens))
-                    }
-                    LabeledContent(L10n.text("ui.test_time"), value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
-                    if let networkPath = report.tailscaleNetworkPath {
-                        LabeledContent(L10n.text("ui.tailscale_network_path")) {
-                            Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
-                                .foregroundStyle(tailscaleNetworkPathTone(networkPath.kind, tokens: tokens))
-                        }
-                    }
-                    if let failedStage = report.failedStage {
-                        LabeledContent(L10n.text("ui.failure_link"), value: failedStage.kind.title)
-                            .foregroundStyle(tokens.warning)
-                    } else if let slowestStage = report.slowestStage {
-                        LabeledContent(L10n.text("ui.slowest_link")) {
-                            Text("\(slowestStage.kind.title) · \(AppStore.connectionTestDurationText(milliseconds: slowestStage.durationMillis))")
-                                .monospacedDigit()
-                        }
-                    }
+                    connectionSpeedResultSummary(report: report, tokens: tokens)
+                        // 把结果概览作为一个内容自适应的 Form 行，避免系统 LabeledContent
+                        // 在部分 iOS 26/27 布局中把最后一行拉伸到整屏高度。
+                        .fixedSize(horizontal: false, vertical: true)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
                 }
 
                 Section(L10n.text("ui.segmentation_takes_time")) {
@@ -495,6 +464,154 @@ private struct ConnectionSpeedTestView: View {
         .background(tokens.background.ignoresSafeArea())
         .navigationTitle(L10n.text("ui.connection_speed_test"))
         .tint(tokens.accent)
+    }
+
+    private func connectionSpeedResultSummary(
+        report: ConnectionTestReport,
+        tokens: ThemeTokens
+    ) -> some View {
+        VStack(spacing: 0) {
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 14) {
+                        connectionSpeedTotalMetric(report: report, tokens: tokens)
+                        Divider()
+                            .overlay(tokens.border.opacity(0.72))
+                        connectionSpeedBottleneckMetric(report: report, tokens: tokens)
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        connectionSpeedTotalMetric(report: report, tokens: tokens)
+
+                        Divider()
+                            .overlay(tokens.border.opacity(0.72))
+                            .frame(height: 68)
+
+                        connectionSpeedBottleneckMetric(report: report, tokens: tokens)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 15)
+
+            Divider()
+                .overlay(tokens.border.opacity(0.72))
+
+            connectionSpeedResultDetailRow(
+                title: L10n.text("ui.test_time"),
+                tokens: tokens
+            ) {
+                Text(report.startedAt.formatted(date: .abbreviated, time: .shortened))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+
+            if let networkPath = report.tailscaleNetworkPath {
+                Divider()
+                    .overlay(tokens.border.opacity(0.72))
+                    .padding(.leading, 16)
+
+                connectionSpeedResultDetailRow(
+                    title: L10n.text("ui.tailscale_network_path"),
+                    tokens: tokens
+                ) {
+                    Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
+                        .foregroundStyle(tailscaleNetworkPathTone(networkPath.kind, tokens: tokens))
+                }
+            }
+        }
+        .background(tokens.surface)
+    }
+
+    private func connectionSpeedTotalMetric(
+        report: ConnectionTestReport,
+        tokens: ThemeTokens
+    ) -> some View {
+        connectionSpeedHighlightMetric(
+            title: L10n.text("ui.total_time_spent"),
+            systemImage: "timer",
+            value: AppStore.connectionTestDurationText(milliseconds: report.totalMillis),
+            detail: nil,
+            tone: resultTone(tokens: tokens),
+            tokens: tokens
+        )
+    }
+
+    @ViewBuilder
+    private func connectionSpeedBottleneckMetric(
+        report: ConnectionTestReport,
+        tokens: ThemeTokens
+    ) -> some View {
+        if let failedStage = report.failedStage {
+            connectionSpeedHighlightMetric(
+                title: L10n.text("ui.failure_link"),
+                systemImage: "exclamationmark.triangle.fill",
+                value: failedStage.kind.title,
+                detail: AppStore.connectionTestDurationText(milliseconds: failedStage.durationMillis),
+                tone: tokens.warning,
+                tokens: tokens
+            )
+        } else if let slowestStage = report.slowestStage {
+            connectionSpeedHighlightMetric(
+                title: L10n.text("ui.slowest_link"),
+                systemImage: "gauge.with.dots.needle.67percent",
+                value: AppStore.connectionTestDurationText(milliseconds: slowestStage.durationMillis),
+                detail: slowestStage.kind.title,
+                tone: tokens.warning,
+                tokens: tokens
+            )
+        }
+    }
+
+    private func connectionSpeedHighlightMetric(
+        title: String,
+        systemImage: String,
+        value: String,
+        detail: String?,
+        tone: Color,
+        tokens: ThemeTokens
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(title, systemImage: systemImage)
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
+
+            Text(value)
+                .font(themeStore.uiFont(.title3, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(tone)
+                .lineLimit(1)
+
+            if let detail {
+                Text(detail)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func connectionSpeedResultDetailRow<Value: View>(
+        title: String,
+        tokens: ThemeTokens,
+        @ViewBuilder value: () -> Value
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(themeStore.uiFont(.callout))
+                .foregroundStyle(tokens.primaryText)
+
+            Spacer(minLength: 12)
+
+            value()
+                .font(themeStore.uiFont(.callout))
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
     }
 
     private var isTesting: Bool {

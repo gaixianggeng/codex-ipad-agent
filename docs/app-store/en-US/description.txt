@@ -1,23 +1,21 @@
-Mimi Remote is a native iPhone and iPad client for Codex running through a Mac you own or are authorized to use.
+Mimi Remote is a native mobile developer console for a computer you own or are authorized to use.
 
-Connect to your Mac, start or resume coding sessions, review changes, approve requested actions, and keep development moving while code execution remains on the Mac.
+Connect to your development environment, start or resume coding sessions, review changes, and confirm restricted actions while all commands continue to run on the computer you control.
 
 Features:
-- Browse, search, create, and resume Codex sessions
+- Browse, search, create, and resume coding sessions
 - Review structured responses, reasoning, code blocks, images, and diffs
-- Approve restricted development actions before they run
+- Confirm restricted development actions before they run
 - Inspect Git status and manage branches and worktrees
-- Use text, images, and optional voice input
-- Keep separate connection profiles for Macs you control
-- Connect over a local network, a private network such as Tailscale, or HTTPS
+- Use text, images, and on-device voice input
+- Keep separate connection profiles for different computers
+- Connect over a local network, private network, or HTTPS
 
-Mimi Remote does not provide AI models, AI subscriptions, cloud code execution, a VPN, or hosted project storage. You install and operate Codex and the Mimi companion service on your Mac. Model-provider communication is initiated by the tools configured on that Mac and is not relayed through a Mimi Remote developer service.
-
-An optional experimental Claude Code bridge can be enabled separately on the Mac. It is not required for the core Codex experience and Mimi Remote does not provide a Claude account or subscription.
+Mimi Remote communicates directly with the host you configure. The app does not download or execute code on the mobile device and does not provide models, third-party accounts, subscriptions, cloud code execution, a VPN, traffic relay, or hosted project storage. Project content and connection credentials are not sent to the Mimi Remote developer.
 
 Requirements:
-- A compatible Mac with Codex CLI installed and configured
-- The Mimi companion service installed on that Mac
-- Network access from the iPhone or iPad to the configured Mac
+- A computer with the Mimi companion service and a compatible developer runtime installed
+- Network access from the mobile device to that computer
+- Access only to devices and projects you own or are explicitly authorized to use
 
-Mimi Remote is open source and independently developed. It is not affiliated with or endorsed by OpenAI, Anthropic, Tailscale, or GitHub.
+Mimi Remote is independently developed and open source. It is not affiliated with or endorsed by providers of compatible tools.

@@ -2,4 +2,5 @@
 - Improved session restoration, queued input, and structured question forms.
 - Refined iPhone and iPad workbench navigation.
 - Added direct access to Privacy Policy, Terms of Use, and Support.
-- Improved optional Claude Code bridge compatibility and usage status reporting.
+- Switched voice input to live on-device transcription.
+- Replaced third-party brand artwork with neutral runtime symbols.

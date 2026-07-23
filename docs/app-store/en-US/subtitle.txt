@@ -1,1 +1,1 @@
-Codex client for your Mac
+Self-hosted developer console

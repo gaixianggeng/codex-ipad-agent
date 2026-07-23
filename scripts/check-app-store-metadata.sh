@@ -34,12 +34,32 @@ for locale in ("en-US", "zh-Hans"):
         elif len(value) > limit:
             errors.append(f"{metadata_file} has {len(value)} characters; limit is {limit}")
 
+        # 中国大陆首发的公开元数据不使用被上一轮审核明确指出的品牌词。
+        if re.search(r"\b(?:OpenAI|ChatGPT)\b", value, re.IGNORECASE):
+            errors.append(f"{metadata_file} contains a China-mainland high-risk brand term")
+        if filename == "subtitle.txt" and re.search(
+            r"\b(?:Mac|MacBook|iPhone|iPad|OpenAI|ChatGPT|Codex|Claude)\b",
+            value,
+            re.IGNORECASE,
+        ):
+            errors.append(f"{metadata_file} contains a third-party product name in the subtitle")
+
+expected_names = {
+    "en-US": "Mimi Remote",
+    "zh-Hans": "咪咪 Console",
+}
+for locale, expected_name in expected_names.items():
+    actual_name = (root / locale / "name.txt").read_text(encoding="utf-8").strip()
+    if actual_name != expected_name:
+        errors.append(f"{locale}/name.txt must match the localized App Store name: {expected_name}")
+
 required_documents = (
     Path("docs/privacy-policy.md"),
     Path("docs/terms-of-use.md"),
     Path("docs/support.md"),
     root / "app-review-notes.md",
     root / "review-environment-checklist.md",
+    root / "china-mainland-submission-checklist.md",
 )
 for document in required_documents:
     if not document.is_file() or not document.read_text(encoding="utf-8").strip():
@@ -80,6 +100,19 @@ if 'SWIFT_EMIT_LOC_STRINGS: "NO"' not in project_spec:
 build_match = re.search(r'CURRENT_PROJECT_VERSION:\s*"(\d+)"', project_spec)
 if not build_match or int(build_match.group(1)) < 100048:
     errors.append("CURRENT_PROJECT_VERSION must be numeric and at least 100048")
+
+for removed_asset_catalog in (
+    Path("ios/MimiRemote/Resources/Assets.xcassets/ChatGPT.imageset/Contents.json"),
+    Path("ios/MimiRemote/Resources/Assets.xcassets/Claude.imageset/Contents.json"),
+):
+    if removed_asset_catalog.exists():
+        errors.append(f"Third-party brand asset catalog must not be bundled: {removed_asset_catalog}")
+
+voice_preferences = Path(
+    "ios/MimiRemote/Sources/State/VoiceInputPreferences.swift"
+).read_text(encoding="utf-8")
+if "storeAvailableCases: [VoiceInputProvider] = [.apple]" not in voice_preferences:
+    errors.append("Store build must expose on-device voice transcription only")
 
 if errors:
     print("App Store metadata gate failed:", file=sys.stderr)

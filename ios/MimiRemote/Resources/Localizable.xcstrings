@@ -83,7 +83,21 @@
 
     },
     "Mimi Remote" : {
-
+      "comment" : "Localized product display name used in the app chrome.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mimi Remote"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "咪咪 Console"
+          }
+        }
+      }
     },
     "SKILL" : {
       "comment" : "A label for a skill.",
@@ -1865,13 +1879,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple"
+            "value" : "On-device"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple"
+            "value" : "设备端"
           }
         }
       }
@@ -1882,13 +1896,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input transcribes on device in real time and responds faster, but it may be less accurate than Codex for technical terms and complex instructions."
+            "value" : "On-device voice input transcribes locally in real time and does not send recordings to a model-provider endpoint."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 语音输入会在设备端实时转写，响应更快，但对技术术语和复杂指令的识别准确性可能不如 Codex。"
+            "value" : "设备端语音输入会在本机实时转写，不会把录音发送到模型提供方端点。"
           }
         }
       }
@@ -1898,13 +1912,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input could not convert microphone audio."
+            "value" : "On-device voice input could not convert microphone audio."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 语音输入无法转换麦克风音频。"
+            "value" : "设备端语音输入无法转换麦克风音频。"
           }
         }
       }
@@ -1914,13 +1928,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input has no compatible audio format on this device."
+            "value" : "On-device voice input has no compatible audio format on this device."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前设备没有 Apple 语音输入可用的音频格式。"
+            "value" : "当前设备没有可用于设备端语音输入的音频格式。"
           }
         }
       }
@@ -1930,13 +1944,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input could not start recording."
+            "value" : "On-device voice input could not start recording."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 语音输入无法启动录音。"
+            "value" : "设备端语音输入无法启动录音。"
           }
         }
       }
@@ -1963,13 +1977,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input does not support the current system language."
+            "value" : "On-device voice input does not support the current system language."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 语音输入暂不支持当前系统语言。"
+            "value" : "设备端语音输入暂不支持当前系统语言。"
           }
         }
       }
@@ -1979,13 +1993,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input failed: %@"
+            "value" : "On-device voice input failed: %@"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 语音输入失败：%@"
+            "value" : "设备端语音输入失败：%@"
           }
         }
       }
@@ -1995,13 +2009,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple voice input is currently unavailable."
+            "value" : "On-device voice input is currently unavailable."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple 语音输入当前不可用。"
+            "value" : "设备端语音输入当前不可用。"
           }
         }
       }
@@ -5810,13 +5824,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Create a new Claude Code session"
+            "value" : "Create with optional runtime"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "新建 Claude Code 会话"
+            "value" : "使用可选运行时新建"
           }
         }
       }
@@ -5827,13 +5841,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Create a new Codex session"
+            "value" : "Create a new session"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "新建 Codex 会话"
+            "value" : "新建会话"
           }
         }
       }
@@ -9805,13 +9819,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Get started with the Claude Code runtime"
+            "value" : "Start using the configured optional runtime"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用 Claude Code 运行时开始"
+            "value" : "使用已配置的可选运行时开始"
           }
         }
       }
@@ -10641,13 +10655,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "I'll go over Homebrew, source build and pairing processes, and break down the Codex and Claude runtime boundaries."
+            "value" : "I'll review the source build and pairing flow, then document the primary and optional runtime boundaries."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "我会核对 Homebrew、源码构建和配对流程，并把 Codex 与 Claude 的运行边界拆开说明。"
+            "value" : "我会核对源码构建和配对流程，并把主运行时与可选运行时的边界拆开说明。"
           }
         }
       }
@@ -19939,6 +19953,40 @@
         }
       }
     },
+    "ui.runtime_default" : {
+      "comment" : "Neutral user-facing label for the primary configured developer runtime.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Default runtime"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认运行时"
+          }
+        }
+      }
+    },
+    "ui.runtime_optional" : {
+      "comment" : "Neutral user-facing label for an optional configured developer runtime.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optional runtime"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可选运行时"
+          }
+        }
+      }
+    },
     "ui.runtime_provider" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -23052,13 +23100,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Switch to Apple Voice Input?"
+            "value" : "Switch to on-device voice input?"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "切换到 Apple 语音输入？"
+            "value" : "切换到设备端语音输入？"
           }
         }
       }
@@ -23356,13 +23404,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tap to stop and finalize Apple voice input"
+            "value" : "Tap to stop and finalize on-device voice input"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "轻点停止并完成 Apple 语音输入"
+            "value" : "轻点停止并完成设备端语音输入"
           }
         }
       }
@@ -28073,13 +28121,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Use Apple"
+            "value" : "Use on-device"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用 Apple"
+            "value" : "使用设备端"
           }
         }
       }
@@ -29617,13 +29665,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codex is more accurate and transcribes after recording. Apple transcribes on device in real time and responds faster, but may be less accurate."
+            "value" : "Voice input is transcribed locally on the device in real time."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codex 准确性更高，会在录音结束后转写；Apple 在设备端实时转写，响应更快，但准确性可能较低。"
+            "value" : "语音输入会在设备端实时转写。"
           }
         }
       }

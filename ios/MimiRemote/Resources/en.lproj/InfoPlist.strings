@@ -1,5 +1,6 @@
 /* Localized system permission prompts. Keep the base Info.plist in English as the fallback. */
-"NSLocalNetworkUsageDescription" = "Allow Mimi Remote to find and connect to Mimi Mac Assistant (agentd) on your local network or through Tailscale.";
-"NSCameraUsageDescription" = "Allow Mimi Remote to scan the pairing QR code shown by Mimi Mac Assistant (agentd).";
-"NSMicrophoneUsageDescription" = "Allow Mimi Remote to turn your speech into a Codex prompt in the message composer.";
+"CFBundleDisplayName" = "Mimi Remote";
+"NSLocalNetworkUsageDescription" = "Allow Mimi Remote to find and connect to a development environment you configure.";
+"NSCameraUsageDescription" = "Allow Mimi Remote to scan a pairing QR code.";
+"NSMicrophoneUsageDescription" = "Allow Mimi Remote to turn your speech into text in the message composer.";
 "NSSpeechRecognitionUsageDescription" = "Allow Mimi Remote to recognize speech and insert it into the message composer.";

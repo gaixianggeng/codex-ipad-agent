@@ -1,6 +1,7 @@
 import Foundation
 
-/// 语音提供方是设备级偏好；缺失或未来版本写入未知值时必须回到现有 Codex 链路。
+/// 语音提供方是设备级偏好。正式商店版本只开放设备端实时转写；
+/// 旧值继续保留解码能力，便于升级时无损迁移，但不会再作为可选入口。
 enum VoiceInputProvider: String, CaseIterable, Identifiable {
     static let storageKey = "voice.input.provider"
     static let appleTipAcknowledgedStorageKey = "voice.input.appleTipAcknowledged"
@@ -9,6 +10,8 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
     case apple
 
     var id: String { rawValue }
+
+    static let storeAvailableCases: [VoiceInputProvider] = [.apple]
 
     var title: String {
         switch self {
@@ -34,14 +37,15 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         case .codex:
             return "waveform"
         case .apple:
-            return "apple.logo"
+            return "waveform.badge.mic"
         }
     }
 
     static func stored(in defaults: UserDefaults = .standard) -> VoiceInputProvider {
-        guard let rawValue = defaults.string(forKey: storageKey) else {
-            return .codex
+        // 中国大陆版本不把录音发送到第三方模型转写端点；旧 Codex 偏好和未知值统一迁移到设备端。
+        guard defaults.string(forKey: storageKey) == VoiceInputProvider.apple.rawValue else {
+            return .apple
         }
-        return VoiceInputProvider(rawValue: rawValue) ?? .codex
+        return .apple
     }
 }

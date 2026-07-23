@@ -1,5 +1,6 @@
 /* 系统权限弹窗文案。 */
-"NSLocalNetworkUsageDescription" = "用于通过本机网络或 Tailscale 连接 Mimi Mac Assistant（agentd）。";
-"NSCameraUsageDescription" = "用于扫描 Mimi Mac Assistant（agentd）显示的配对二维码。";
-"NSMicrophoneUsageDescription" = "用于在消息输入框中将语音转换为 Codex 提示词。";
+"CFBundleDisplayName" = "咪咪 Console";
+"NSLocalNetworkUsageDescription" = "用于查找并连接你配置的开发环境。";
+"NSCameraUsageDescription" = "用于扫描配对二维码。";
+"NSMicrophoneUsageDescription" = "用于在消息输入框中将语音转换为文字。";
 "NSSpeechRecognitionUsageDescription" = "用于识别语音并填入消息输入框。";

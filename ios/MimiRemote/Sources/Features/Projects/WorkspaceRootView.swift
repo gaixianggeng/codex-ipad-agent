@@ -24,12 +24,14 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var brandAssetName: String {
+    /// 商店版本只使用系统符号表达运行时类型。
+    /// 第三方产品名称可用于兼容性说明，但不把第三方商标图标打包成 Mimi 的品牌资产。
+    var systemImageName: String {
         switch self {
         case .codex:
-            return "ChatGPT"
+            return "terminal.fill"
         case .claude:
-            return "Claude"
+            return "sparkles"
         }
     }
 
@@ -768,14 +770,13 @@ private struct WorkspaceDetailView: View {
 
     @ViewBuilder
     private func actionIcon(choice: WorkspaceSessionRuntimeChoice) -> some View {
-        // 两个入口都使用完整的 38pt 承载面，避免 ChatGPT 图片自带留白后视觉上小一圈。
-        Image(choice.brandAssetName)
-            .resizable()
-            .renderingMode(.original)
-            .scaledToFit()
-            .frame(
-                width: choice == .codex ? 38 : 20,
-                height: choice == .codex ? 38 : 20
+        // 使用中性的系统符号，避免把第三方产品图标误当成 App 自有品牌或官方背书。
+        Image(systemName: choice.systemImageName)
+            .font(themeStore.uiFont(size: 18, weight: .semibold))
+            .foregroundStyle(
+                choice == .codex
+                    ? Color(red: 0.20, green: 0.24, blue: 0.29)
+                    : Color(red: 0.68, green: 0.31, blue: 0.18)
             )
             .frame(width: 38, height: 38)
             .background(
@@ -993,7 +994,9 @@ private struct WorkspaceDetailView: View {
 
     private func runtimeTitle(for session: AgentSession) -> String {
         let provider = session.runtimeProvider ?? session.source
-        return provider.lowercased().contains("claude") ? "Claude Code" : "Codex"
+        return provider.lowercased().contains("claude")
+            ? L10n.text("ui.runtime_optional")
+            : L10n.text("ui.runtime_default")
     }
 
     private func sessionTimeText(for session: AgentSession) -> String {

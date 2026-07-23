@@ -456,7 +456,7 @@ struct SessionContextSidebarView: View {
         case "appserver", "app-server", "codex app-server":
             return "app-server"
         case "ipad", "iphone", "ios":
-            return "Mimi Remote"
+            return L10n.text("Mimi Remote")
         case "user":
             return L10n.text("ui.user_initiated")
         default:
