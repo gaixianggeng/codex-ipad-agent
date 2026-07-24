@@ -54,7 +54,8 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 archive="$OUTPUT_DIR/$SKILL_NAME.zip"
 checksum="$archive.sha256"
-stage="$(mktemp -d -t mimi-skill-package)"
+# 使用 BSD/GNU mktemp 都接受的完整模板，避免 Linux 发布 Runner 因 -t 语义差异失败。
+stage="$(mktemp -d "${TMPDIR:-/tmp}/mimi-skill-package.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 
 mkdir -p "$stage/$SKILL_NAME/agents"
