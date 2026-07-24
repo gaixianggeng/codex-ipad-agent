@@ -116,6 +116,7 @@ final class HostStoreTests: XCTestCase {
         await store.refreshPairing(network: .localNetwork)
 
         XCTAssertEqual(events.values, [
+            "pair-auto",
             "register-mac",
             "lan-true",
             "unregister-mac",
@@ -124,6 +125,46 @@ final class HostStoreTests: XCTestCase {
         ])
         XCTAssertEqual(store.pairingNetwork, .localNetwork)
         XCTAssertEqual(store.pairing, lanPairing)
+    }
+
+    func testAutomaticPairingFallsBackToLANWhenTailscaleIsUnavailable() async {
+        let events = EventRecorder()
+        let lanPairing = PairingInfo(
+            endpoint: "http://192.168.31.20:8787",
+            network: .localNetwork,
+            pairURL: "mimiremote://pair?pair_sig=automatic-lan",
+            expiresAt: "2026-07-22T12:00:00Z",
+            warnings: ["仅限同一局域网"]
+        )
+        let store = makeStore(
+            configExists: true,
+            registerAgent: { events.append("register-mac") },
+            setLANAccess: { enabled in
+                events.append("lan-\(enabled)")
+                return NetworkConfigurationResult(
+                    lanEnabled: enabled,
+                    changed: false,
+                    restartRequired: false
+                )
+            },
+            pair: { network in
+                events.append("pair-\(network.rawValue)")
+                if network == .automatic {
+                    throw TestError.expected
+                }
+                return lanPairing
+            }
+        )
+        await store.bootstrap()
+
+        await store.refreshPairing()
+
+        XCTAssertEqual(store.pairingNetwork, .localNetwork)
+        XCTAssertEqual(store.pairing, lanPairing)
+        XCTAssertEqual(events.values, [
+            "pair-auto", "lan-true", "register-mac",
+            "pair-auto", "lan-true", "pair-lan",
+        ])
     }
 
     func testDoctorKeepsHomebrewMigrationState() async {

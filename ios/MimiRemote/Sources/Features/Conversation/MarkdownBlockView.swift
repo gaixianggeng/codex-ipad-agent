@@ -352,6 +352,7 @@ struct ConversationImagePreview: View {
     let source: ConversationImageSource
     let title: String?
     let style: MarkdownStyle
+    let statusStyle: MarkdownStyle?
     var maxHeight: CGFloat = 280
     var showsCaption = true
     var fillsAvailableWidth = false
@@ -360,6 +361,7 @@ struct ConversationImagePreview: View {
         source: ConversationImageSource,
         title: String?,
         style: MarkdownStyle,
+        statusStyle: MarkdownStyle? = nil,
         maxHeight: CGFloat = 280,
         showsCaption: Bool = true,
         fillsAvailableWidth: Bool = false
@@ -367,6 +369,7 @@ struct ConversationImagePreview: View {
         self.source = source
         self.title = title
         self.style = style
+        self.statusStyle = statusStyle
         self.maxHeight = maxHeight
         self.showsCaption = showsCaption
         self.fillsAvailableWidth = fillsAvailableWidth
@@ -540,37 +543,40 @@ struct ConversationImagePreview: View {
     }
 
     private var loadingPlaceholder: some View {
-        HStack(spacing: 8) {
+        let resolvedStatusStyle = statusStyle ?? style
+        return HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
             Text(L10n.text("ui.picture_loading"))
                 .font(style.captionFont)
         }
-        .foregroundStyle(style.secondaryColor)
+        .foregroundStyle(resolvedStatusStyle.secondaryColor)
         .frame(maxWidth: .infinity, minHeight: 120)
-        .background(style.tableBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(resolvedStatusStyle.tableBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(style.dividerColor, lineWidth: 1)
+                .strokeBorder(resolvedStatusStyle.dividerColor, lineWidth: 1)
         }
     }
 
     private func fallback(_ title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let resolvedStatusStyle = statusStyle ?? style
+        return VStack(alignment: .leading, spacing: 6) {
             Label(title, systemImage: "photo")
                 .font(style.captionFont.weight(.semibold))
+                .foregroundStyle(resolvedStatusStyle.textColor)
             Text(detail)
                 .font(style.captionFont)
+                .foregroundStyle(resolvedStatusStyle.secondaryColor)
                 .lineLimit(2)
                 .truncationMode(.middle)
         }
-        .foregroundStyle(style.secondaryColor)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.tableBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(resolvedStatusStyle.tableBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(style.dividerColor, lineWidth: 1)
+                .strokeBorder(resolvedStatusStyle.dividerColor, lineWidth: 1)
         }
     }
 

@@ -180,6 +180,15 @@ struct ConversationMessageContent: View {
 
     @ViewBuilder
     private func userImageGallery(style: MarkdownStyle) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        // 图片网格位于深色用户气泡之外；加载/失败状态必须使用页面中性表面，
+        // 否则气泡内的浅色文字和透明白底叠到浅色页面后会几乎不可见。
+        let statusStyle = MarkdownStyle.make(
+            role: .assistant,
+            colorScheme: colorScheme,
+            fontScale: themeStore.fontScale,
+            tokens: tokens
+        )
         if userImageSources.count > 1 {
             LazyVGrid(
                 columns: [
@@ -194,6 +203,7 @@ struct ConversationMessageContent: View {
                         source: source,
                         title: nil,
                         style: style,
+                        statusStyle: statusStyle,
                         maxHeight: 208,
                         showsCaption: false,
                         fillsAvailableWidth: true
@@ -208,6 +218,7 @@ struct ConversationMessageContent: View {
                     source: source,
                     title: nil,
                     style: style,
+                    statusStyle: statusStyle,
                     maxHeight: 320,
                     showsCaption: false,
                     fillsAvailableWidth: true

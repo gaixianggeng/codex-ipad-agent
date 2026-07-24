@@ -97,7 +97,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先绑定 Tailscale IP")
+	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale，缺失时使用局域网")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -156,7 +156,7 @@ func runUp(args []string) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先绑定 Tailscale IP")
+	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale，缺失时使用局域网")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
@@ -206,7 +206,7 @@ func runUp(args []string) error {
 
 	serviceOK := true
 	serviceError := ""
-	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
+	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		serviceOK = false
 		serviceError = err.Error()
 		if *noPair {
@@ -315,7 +315,7 @@ func runStart(args []string) error {
 		return err
 	}
 
-	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
+	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		return fmt.Errorf("后台服务已提交，但就绪检查未通过，暂不展示配对二维码：%w", err)
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "agentd 后台服务已启动")
@@ -353,7 +353,7 @@ func runRestart(args []string) error {
 	if err := runManagedServiceForPlatform(managedServicePlatform, "restart", os.Stdout, os.Stderr); err != nil {
 		return err
 	}
-	if err := waitForServiceReady(context.Background(), result.Endpoint, result.Token, version, *waitTimeout); err != nil {
+	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		return fmt.Errorf("后台服务已重启，但就绪检查未通过，暂不展示配对二维码：%w", err)
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已重新连接")
@@ -403,7 +403,13 @@ func runStatus(args []string) error {
 		return err
 	}
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
-	serviceStatus := probeAgentServiceStatus(context.Background(), result.Endpoint, result.Token, version, 2*time.Second)
+	serviceStatus := probeAgentServiceStatus(
+		context.Background(),
+		loopbackServiceEndpoint(result.Endpoint),
+		result.Token,
+		version,
+		2*time.Second,
+	)
 	doctorResults := doctor.Results{
 		OK:      false,
 		Version: version,
@@ -1522,16 +1528,18 @@ func printPairResult(w io.Writer, result agentsetup.Result) {
 }
 
 type qrOnlyPairOutput struct {
-	Endpoint      string   `json:"endpoint"`
-	PairURL       string   `json:"pair_url"`
-	PairExpiresAt string   `json:"pair_expires_at"`
-	Warnings      []string `json:"warnings,omitempty"`
+	Endpoint      string                    `json:"endpoint"`
+	Network       agentsetup.PairingNetwork `json:"network,omitempty"`
+	PairURL       string                    `json:"pair_url"`
+	PairExpiresAt string                    `json:"pair_expires_at"`
+	Warnings      []string                  `json:"warnings,omitempty"`
 }
 
 func qrOnlyPairResult(result agentsetup.Result) qrOnlyPairOutput {
 	// 安装日志可能被终端或 CI 留存；安全模式只暴露短期票据，绝不复制长期 Token/connect URL。
 	return qrOnlyPairOutput{
 		Endpoint:      result.Endpoint,
+		Network:       result.Network,
 		PairURL:       result.PairURL,
 		PairExpiresAt: result.PairExpiresAt,
 		Warnings:      result.Warnings,
@@ -1773,4 +1781,15 @@ func serviceCheckURL(endpoint string, path string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+func loopbackServiceEndpoint(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Port() == "" {
+		return endpoint
+	}
+	// setup/start/restart/status 都是本机控制面命令。保留对外展示的 Endpoint，
+	// 但健康与就绪探测固定走同端口 loopback，避免自检绕 Tailscale 后受 Wi-Fi/打洞抖动影响。
+	parsed.Host = net.JoinHostPort("127.0.0.1", parsed.Port())
+	return parsed.String()
 }

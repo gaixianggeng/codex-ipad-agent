@@ -291,6 +291,47 @@ final class ConversationSnapshotTests: XCTestCase {
             .frame(width: 1024, height: 900)
     }
 
+    private func makeUnavailableUserImageGallery() -> some View {
+        let sessionID = "snapshot_unavailable_user_images"
+        let conversationStore = ConversationStore()
+        let themeStore = makeThemeStore()
+        let unavailableImages = [
+            "codex-clipboard-9ba62714-bcfb-4693-805b-1be6e284e924.png",
+            "codex-clipboard-fcc85816-9d5f-4ea6-919a-ea89b639a5d9.png",
+            "codex-clipboard-15031bdc-111a-4669-b3e6-4ef5f2094829.png",
+            "codex-clipboard-f64f3119-46f6-479a-b93d-abc5d81f879f.png"
+        ]
+        let imageInput = unavailableImages.map { CodexAppServerUserInput.image(url: $0) }
+
+        conversationStore.setHistory([
+            CodexHistoryMessage(
+                id: "unavailable-images-user",
+                role: "user",
+                content: "请评估这四张封面",
+                turnPayload: CodexAppServerTurnPayload(
+                    input: [.text("请评估这四张封面")] + imageInput
+                ),
+                createdAt: snapshotMessageDate,
+                turnID: "turn_unavailable_images",
+                sendStatus: .confirmed
+            )
+        ], sessionID: sessionID)
+
+        let sessionStore = SessionStore(
+            appStore: makeSnapshotAppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.selectedSessionID = sessionID
+
+        return ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
+            .frame(width: 1024, height: 900)
+    }
+
     private func makeExpandedProcessGroup() -> some View {
         let themeStore = makeThemeStore()
         let turnID = "snapshot-process-group"
@@ -513,6 +554,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
+        )
+    }
+
+    func testUnavailableUserImageGalleryRemainsLegibleInLightTheme() {
+        assertSnapshot(
+            of: makeUnavailableUserImageGallery(),
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
         )
     }
@@ -814,7 +862,8 @@ final class ConversationSnapshotTests: XCTestCase {
                 project: project,
                 title: "历史会话分页加载",
                 status: "history",
-                preview: "只加载最近消息，向上滚动时再按 cursor 补旧内容。"
+                preview: "只加载最近消息，向上滚动时再按 cursor 补旧内容。",
+                runtimeProvider: "claude"
             ),
             makeSnapshotSession(
                 id: "done",
@@ -851,6 +900,59 @@ final class ConversationSnapshotTests: XCTestCase {
         assertSnapshot(
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
+        )
+    }
+
+    func testSessionRuntimeBadgesInConversationList() {
+        let project = AgentProject(id: "runtime-badges", name: "runtime-badges", path: "/Users/me/code/runtime-badges")
+        let themeStore = makeThemeStore()
+        let codex = makeSnapshotSession(
+            id: "runtime-codex",
+            project: project,
+            title: "优化会话列表",
+            status: "completed",
+            preview: "Codex 会话"
+        )
+        let claude = makeSnapshotSession(
+            id: "runtime-claude",
+            project: project,
+            title: "检查兼容性",
+            status: "completed",
+            preview: "Claude Code 会话",
+            runtimeProvider: "claude"
+        )
+
+        let view = VStack(spacing: 8) {
+            SessionIndexRow(
+                session: codex,
+                foregroundActivity: nil,
+                isSelected: true,
+                isPinned: false,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                style: .library
+            )
+            SessionIndexRow(
+                session: claude,
+                foregroundActivity: nil,
+                isSelected: false,
+                isPinned: false,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                style: .library
+            )
+        }
+        .padding(16)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .background(themeStore.tokens(for: .light).background)
+        .frame(width: 460, height: 190)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
         )
     }
 
@@ -973,7 +1075,8 @@ final class ConversationSnapshotTests: XCTestCase {
         usage: UsageSummary? = nil,
         rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil,
-        goal: ThreadGoal? = nil
+        goal: ThreadGoal? = nil,
+        runtimeProvider: String? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -983,6 +1086,7 @@ final class ConversationSnapshotTests: XCTestCase {
             title: title,
             status: status,
             source: "codex",
+            runtimeProvider: runtimeProvider,
             resumeID: "thread-\(id)",
             createdAt: nil,
             updatedAt: nil,

@@ -58,6 +58,9 @@ xcodebuild test -quiet \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testDefaultDarkConversationPalette \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testRichMarkdownConversationRendering \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testMixedActivityAndImageConversationRendering \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testUnavailableUserImageGalleryRemainsLegibleInLightTheme \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testSessionRuntimeBadgesInConversationList \
+  -only-testing:MimiRemoteTests/ConversationSnapshotTests/testProjectSessionDashboard \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testCommentaryAndTrailingProcessRendering \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testExpandedProcessGroupRendering \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \

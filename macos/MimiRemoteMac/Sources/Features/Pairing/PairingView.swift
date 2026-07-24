@@ -32,12 +32,12 @@ struct PairingView: View {
             PairingWindowBackdrop()
         }
         .task {
+            if store.pairing == nil {
+                await store.refreshPairing()
+            }
             if selectedNetwork != store.pairingNetwork {
                 suppressNextNetworkChange = true
                 selectedNetwork = store.pairingNetwork
-            }
-            if store.pairing == nil {
-                await store.refreshPairing(network: store.pairingNetwork)
             }
         }
         .onChange(of: selectedNetwork) { _, network in
@@ -199,6 +199,8 @@ private struct PairingNetworkPicker: View {
 
     private var hint: String {
         switch selection {
+        case .automatic:
+            "自动选择可用网络"
         case .tailscale:
             "默认推荐 · 支持跨网络连接"
         case .localNetwork:
@@ -208,6 +210,7 @@ private struct PairingNetworkPicker: View {
 
     private var hintSymbol: String {
         switch selection {
+        case .automatic: "arrow.triangle.branch"
         case .tailscale: "network"
         case .localNetwork: "wifi"
         }

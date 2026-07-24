@@ -57,8 +57,33 @@ func pairingEndpoint(
 		return "", nil, err
 	}
 	if network == PairingNetworkAuto {
-		endpoint, warnings := endpointForListen(ctx, cfg.Listen)
-		return endpoint, warnings, nil
+		configuredHost, port := splitListen(cfg.Listen)
+		if port == "" {
+			port = defaultAgentDPort
+		}
+		configuredIP := net.ParseIP(strings.Trim(configuredHost, "[]"))
+		listensEverywhere := configuredIP != nil && configuredIP.IsUnspecified()
+
+		switch {
+		case isTailscaleIPv4(configuredIP):
+			if strings.TrimSpace(lookups.tailscaleIP(ctx)) != "" {
+				return httpEndpoint(configuredIP.String(), port), nil, nil
+			}
+			if cfg.Network.AllowLAN {
+				return pairingEndpoint(ctx, cfg, PairingNetworkLAN, lookups)
+			}
+			return "", nil, fmt.Errorf("未检测到 Tailscale IPv4，当前服务也尚未启用局域网访问")
+		case isPrivateLANIPv4(configuredIP):
+			return pairingEndpoint(ctx, cfg, PairingNetworkLAN, lookups)
+		case cfg.Network.AllowLAN || listensEverywhere:
+			if host := strings.TrimSpace(lookups.tailscaleIP(ctx)); host != "" {
+				return httpEndpoint(host, port), nil, nil
+			}
+			return pairingEndpoint(ctx, cfg, PairingNetworkLAN, lookups)
+		default:
+			endpoint, warnings := endpointForListen(ctx, cfg.Listen)
+			return endpoint, warnings, nil
+		}
 	}
 
 	configuredHost, port := splitListen(cfg.Listen)
@@ -105,6 +130,22 @@ func pairingEndpoint(
 
 func httpEndpoint(host string, port string) string {
 	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String()
+}
+
+func pairingNetworkForEndpoint(endpoint string) PairingNetwork {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(strings.Trim(parsed.Hostname(), "[]"))
+	switch {
+	case isTailscaleIPv4(ip):
+		return PairingNetworkTailscale
+	case isPrivateLANIPv4(ip):
+		return PairingNetworkLAN
+	default:
+		return ""
+	}
 }
 
 func isTailscaleIPv4(ip net.IP) bool {

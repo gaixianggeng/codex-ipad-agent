@@ -52,6 +52,69 @@ func TestPairingEndpointSelectsTailscaleOrLANWithoutChangingToken(t *testing.T) 
 	}
 }
 
+func TestPairingEndpointAutoPrefersTailscaleAndFallsBackToLAN(t *testing.T) {
+	cfg := config.Config{
+		Listen:  "0.0.0.0:8787",
+		Network: config.NetworkConfig{AllowLAN: true},
+	}
+	lookups := pairingNetworkLookups{
+		tailscaleIP: func(context.Context) string { return "100.100.100.100" },
+		lanIP:       func() string { return "192.168.31.20" },
+	}
+
+	endpoint, warnings, err := pairingEndpoint(context.Background(), cfg, PairingNetworkAuto, lookups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "http://100.100.100.100:8787" || len(warnings) != 0 {
+		t.Fatalf("自动配对应优先 Tailscale：endpoint=%s warnings=%v", endpoint, warnings)
+	}
+
+	lookups.tailscaleIP = func(context.Context) string { return "" }
+	endpoint, warnings, err = pairingEndpoint(context.Background(), cfg, PairingNetworkAuto, lookups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint != "http://192.168.31.20:8787" ||
+		len(warnings) != 1 ||
+		!strings.Contains(warnings[0], "同一局域网") {
+		t.Fatalf("无 Tailscale 时自动配对应回退 LAN：endpoint=%s warnings=%v", endpoint, warnings)
+	}
+}
+
+func TestPairingEndpointAutoRejectsStaleTailscaleWithoutLAN(t *testing.T) {
+	cfg := config.Config{Listen: "100.127.16.9:8787"}
+	_, _, err := pairingEndpoint(
+		context.Background(),
+		cfg,
+		PairingNetworkAuto,
+		pairingNetworkLookups{
+			tailscaleIP: func(context.Context) string { return "" },
+			lanIP:       func() string { return "192.168.31.20" },
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "尚未启用局域网") {
+		t.Fatalf("失效 Tailscale 配置必须要求启用 LAN：%v", err)
+	}
+}
+
+func TestPairingNetworkForEndpointClassifiesRemoteNetwork(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		want     PairingNetwork
+	}{
+		{endpoint: "http://100.100.20.30:8787", want: PairingNetworkTailscale},
+		{endpoint: "http://192.168.31.20:8787", want: PairingNetworkLAN},
+		{endpoint: "http://10.0.0.8:8787", want: PairingNetworkLAN},
+		{endpoint: "http://127.0.0.1:8787", want: ""},
+	}
+	for _, testCase := range tests {
+		if got := pairingNetworkForEndpoint(testCase.endpoint); got != testCase.want {
+			t.Fatalf("网络类型识别错误：endpoint=%s got=%q want=%q", testCase.endpoint, got, testCase.want)
+		}
+	}
+}
+
 func TestPairingEndpointRejectsLANWhenAccessIsDisabled(t *testing.T) {
 	cfg := config.Config{Listen: "100.127.16.9:8787"}
 	_, _, err := pairingEndpoint(

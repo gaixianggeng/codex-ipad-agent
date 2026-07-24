@@ -18,8 +18,8 @@ catalog = json.loads(catalog_path.read_text())
 strings = catalog.get("strings", {})
 errors = []
 
-if catalog.get("version") != "1.0":
-    errors.append('String Catalog must declare "version": "1.0"')
+if catalog.get("version") not in ("1.0", "1.1"):
+    errors.append('String Catalog must declare a supported version ("1.0" or "1.1")')
 
 permission_keys = (
     "NSLocalNetworkUsageDescription",
@@ -96,7 +96,9 @@ for script_name, required in (
             errors.append(f"{script_name} must set {flag}")
 
 def localized_values(entry, language):
-    localization = entry["localizations"][language]
+    localization = entry.get("localizations", {}).get(language)
+    if localization is None:
+        return []
     if "stringUnit" in localization:
         return [localization["stringUnit"].get("value", "")]
     return [
@@ -104,11 +106,17 @@ def localized_values(entry, language):
         for variant in localization.get("variations", {}).get("plural", {}).values()
     ]
 
+translatable_strings = {
+    key: entry
+    for key, entry in strings.items()
+    if entry.get("shouldTranslate", True)
+}
+
 for language in ("en", "zh-Hans"):
-    if not all(language in entry.get("localizations", {}) for entry in strings.values()):
+    if not all(language in entry.get("localizations", {}) for entry in translatable_strings.values()):
         errors.append(f"String Catalog has an entry without {language} translation")
 
-for key, entry in strings.items():
+for key, entry in translatable_strings.items():
     for value in localized_values(entry, "en"):
         if re.search(r"[\u3400-\u9fff]", value):
             errors.append(f"English catalog value contains Chinese text: {key}")
@@ -141,7 +149,7 @@ for key in steering_keys:
         if steering_drift.search(value):
             errors.append(f"Steering UI must use Steer terminology: {key}")
 
-for key, entry in strings.items():
+for key, entry in translatable_strings.items():
     for value in localized_values(entry, "en"):
         if re.search(r"\bassistant\b", value, re.IGNORECASE) and "Mimi Mac Assistant" not in value:
             errors.append(f"Mac component name must be Mimi Mac Assistant: {key}")

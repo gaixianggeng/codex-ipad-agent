@@ -32,7 +32,7 @@
   <img src="artifacts/social-preview/mimi-remote-social-preview-v3.png" alt="Mimi Remote continuing a Codex session across a real iPad and iPhone interface" width="100%" />
 </p>
 
-Mimi Remote connects to your Mac through Tailscale and keeps source code, agent credentials, and full sessions on your own devices. Codex is the primary supported runtime; an optional Claude Code bridge is available as an experimental channel.
+Mimi Remote connects to your Mac through Tailscale or the same local network and keeps source code, agent credentials, and full sessions on your own devices. Codex is the primary supported runtime; an optional Claude Code bridge is available as an experimental channel.
 
 Mimi Remote is an independent third-party project. It is not affiliated with, endorsed by, or a product of OpenAI, Anthropic, or Tailscale.
 
@@ -97,7 +97,7 @@ Codex is the primary supported runtime. Claude Code is available only through th
 
 ```mermaid
 flowchart TD
-    A["Mimi Remote\niPhone / iPad"] -->|"Tailscale · Bearer token\nREST + WebSocket"| B["agentd\nGo control plane / safety gateway"]
+    A["Mimi Remote\niPhone / iPad"] -->|"Tailscale / local network · Bearer token\nREST + WebSocket"| B["agentd\nGo control plane / safety gateway"]
     B -->|"allowlist · cwd scope\nJSON-RPC policy"| C["Codex app-server"]
     C --> D["Codex CLI credentials\nand local projects"]
     B -->|"runtime=claude\none process per connection"| E["alleycat-claude-bridge"]
@@ -113,7 +113,7 @@ The iOS app stores only the outer `agentd` token in Keychain. The loopback app-s
 Requirements:
 
 - A Mac with Codex CLI installed and signed in.
-- The Mac and iPhone/iPad joined to the same Tailscale network.
+- The Mac and iPhone/iPad connected to the same private network. Tailscale is recommended for access across different networks but is optional for same-LAN use.
 - Homebrew on macOS.
 - Xcode 26 or later, including an iOS 26 SDK.
 
@@ -126,7 +126,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` creates private local configuration and separate tokens, starts the service, waits for the app-server WebSocket, and prints a short-lived pairing QR code.
+`agentd up` creates private local configuration and separate tokens, starts the service, waits for the app-server WebSocket, and prints a short-lived pairing QR code. It prefers Tailscale when available; otherwise it enables same-LAN access and publishes the current private LAN address.
 
 Useful commands:
 
@@ -242,7 +242,7 @@ This is an experimental channel: a network interruption, device lock, or WebSock
 - Mimi Remote is not a general-purpose SSH terminal and does not run Codex inside the iOS sandbox.
 - It has no cloud account, code-hosting proxy, public relay, arbitrary remote shell, unattended deletion, or multi-user sharing.
 - One iOS WebSocket can attach to a session at a time. Cloud/projectless threads, background push, offline remote notifications, profile sync, and IDE sync are not implemented.
-- The recommended endpoint is a private Tailscale address. Do not expose `agentd` directly to the public Internet.
+- A private Tailscale address is recommended across networks. Without Tailscale, Mimi Remote can use a private LAN address only while both devices are on the same local network. Do not expose `agentd` directly to the public Internet.
 - Claude Code support depends on external CLI and bridge behavior, has a smaller feature surface, and must not be treated as the default runtime.
 
 For the complete, code-oriented capability matrix and risk list, see [project status (Chinese)](docs/project-status.md).
@@ -251,7 +251,7 @@ For the complete, code-oriented capability matrix and risk list, see [project st
 
 Mimi Remote has no ads, analytics SDK, or maintainer-operated telemetry service. Project content, conversations, logs, code, and Codex/Claude credentials remain on your devices unless you explicitly use a third-party service such as Codex, Claude Code, GitHub, Codex voice transcription, or MCP. Apple voice input uses on-device SpeechAnalyzer processing.
 
-The app rejects public HTTP endpoints at the application layer and is designed for Tailscale/private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the bilingual [privacy policy](docs/privacy-policy.md), [terms of use](docs/terms-of-use.md), and [support page](docs/support.md).
+The app rejects public HTTP endpoints at the application layer and is designed for Tailscale or same-LAN private-network use. Do not put real tokens, Tailnet IPs, private paths, logs, or project content in public issues, pull requests, or screenshots. Report vulnerabilities privately using [SECURITY.md](SECURITY.md). See the bilingual [privacy policy](docs/privacy-policy.md), [terms of use](docs/terms-of-use.md), and [support page](docs/support.md).
 
 ## Development checks
 

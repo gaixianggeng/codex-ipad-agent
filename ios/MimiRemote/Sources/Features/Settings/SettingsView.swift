@@ -217,7 +217,15 @@ struct SettingsView: View {
             guard !appStore.requiresRePairing else {
                 return
             }
-            guard await appStore.preflightConnection(), appStore.isConfigured else {
+            let preflightSucceeded = await appStore.preflightConnection()
+            _ = await appStore.testConnectionOnFirstSettingsAppearanceIfNeeded()
+            let hasConnectedStatus: Bool
+            if case .connected = appStore.connectionStatus {
+                hasConnectedStatus = true
+            } else {
+                hasConnectedStatus = false
+            }
+            guard (preflightSucceeded || hasConnectedStatus), appStore.isConfigured else {
                 return
             }
             // 用 channel/model 元数据判断 Claude 是否真正接入；设置页独立打开时也要刷新，
