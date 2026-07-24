@@ -34,6 +34,17 @@ on:
       - "docs/terms-of-use.md"
       - ".github/workflows/ios-ci.yml"
   workflow_dispatch:
+    inputs:
+      publish_app_store:
+        description: "在稳定 macOS 26 runner 上归档并上传 App Store 构建"
+        required: true
+        default: false
+        type: boolean
+      what_to_test:
+        description: "TestFlight What to Test"
+        required: true
+        default: "App Store 正式审核候选构建：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
+        type: string
 
 permissions:
   contents: read
@@ -86,3 +97,160 @@ jobs:
       # fresh GitHub runner cannot mask an English bundle lookup regression.
       - name: Run English localization smoke
         run: bash ./scripts/test-ios-localization-smoke.sh
+
+  app-store-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      IOS_BUNDLE_ID: com.gaixianggeng.mimi
+      DEVELOPMENT_TEAM: 9HZ89R58PZ
+      TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
+      IOS_TESTFLIGHT_UPLOAD: "1"
+      IOS_TESTFLIGHT_VALIDATE: "0"
+      IOS_RELEASE_EXPECTED_MACOS_MAJOR: "26"
+      IOS_RELEASE_EXPECTED_XCODE_VERSION: "26.6"
+      IOS_RELEASE_EXPECTED_XCODE_BUILD: 17F113
+      IOS_RELEASE_EXPECTED_SDK_VERSION: "26.5"
+      IOS_RELEASE_EXPECTED_SDK_BUILD: 23F81a
+      TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
+    steps:
+      - name: Checkout clean release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Select exact stable Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected_developer_dir=""
+          for app in /Applications/Xcode*.app; do
+            [[ -d "$app/Contents/Developer" ]] || continue
+            version="$(
+              DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version
+            )"
+            if [[ "$version" == $'Xcode 26.6\nBuild version 17F113' ]]; then
+              selected_developer_dir="$app/Contents/Developer"
+              break
+            fi
+          done
+          [[ -n "$selected_developer_dir" ]] || {
+            echo "Xcode 26.6 (17F113) is not installed on this runner." >&2
+            find /Applications -maxdepth 1 -name 'Xcode*.app' -print >&2
+            exit 1
+          }
+          echo "DEVELOPER_DIR=$selected_developer_dir" >> "$GITHUB_ENV"
+
+      - name: Verify stable host and SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-build-version
+          [[ "$(sw_vers -productVersion)" == 26.* ]]
+          [[ "$(xcodebuild -version)" == $'Xcode 26.6\nBuild version 17F113' ]]
+          [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == "26.5" ]]
+          [[ "$(xcrun --sdk iphoneos --show-sdk-build-version)" == "23F81a" ]]
+
+      - name: Prepare App Store signing
+        shell: bash
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for secret_name in \
+            ASC_KEY_ID \
+            ASC_ISSUER_ID \
+            ASC_PRIVATE_KEY \
+            IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 \
+            IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
+            IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
+            IOS_KEYCHAIN_PASSWORD; do
+            [[ -n "${!secret_name}" ]] || {
+              echo "Required GitHub Actions secret is empty: $secret_name" >&2
+              exit 1
+            }
+          done
+
+          release_secrets="$RUNNER_TEMP/ios-release-secrets"
+          mkdir -p "$release_secrets"
+          chmod 700 "$release_secrets"
+
+          api_key="$release_secrets/AuthKey_${ASC_KEY_ID}.p8"
+          certificate="$release_secrets/distribution.p12"
+          profile="$release_secrets/app-store.mobileprovision"
+          profile_plist="$release_secrets/profile.plist"
+          keychain="$release_secrets/signing.keychain-db"
+
+          printf '%s' "$ASC_PRIVATE_KEY" > "$api_key"
+          printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          printf '%s' "$IOS_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
+          chmod 600 "$api_key" "$certificate" "$profile"
+
+          security cms -D -i "$profile" > "$profile_plist"
+          profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$profile_plist")"
+          profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+          profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist")"
+          [[ "$profile_team" == "$DEVELOPMENT_TEAM" ]]
+          [[ "$profile_app_id" == "$DEVELOPMENT_TEAM.$IOS_BUNDLE_ID" ]]
+          ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$profile_expiration"
+
+          profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profiles_dir"
+          cp "$profile" "$profiles_dir/$profile_uuid.mobileprovision"
+
+          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" \
+            -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$IOS_KEYCHAIN_PASSWORD" \
+            "$keychain"
+          original_keychains=()
+          while IFS= read -r existing_keychain; do
+            [[ -n "$existing_keychain" ]] && original_keychains+=("$existing_keychain")
+          done < <(
+            security list-keychains -d user \
+              | sed -E 's/^[[:space:]]*"([^"]+)"[[:space:]]*$/\1/'
+          )
+          security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
+
+          signing_identity="$(
+            security find-identity -v -p codesigning "$keychain" \
+              | sed -nE 's/.*"((Apple|iPhone) Distribution:[^"]+)".*/\1/p' \
+              | head -n 1
+          )"
+          [[ -n "$signing_identity" && "$signing_identity" == *"($DEVELOPMENT_TEAM)" ]]
+
+          {
+            echo "APP_STORE_CONNECT_API_KEY_ID=$ASC_KEY_ID"
+            echo "APP_STORE_CONNECT_API_ISSUER_ID=$ASC_ISSUER_ID"
+            echo "APP_STORE_CONNECT_API_KEY_PATH=$api_key"
+            echo "IOS_SIGNING_KEYCHAIN_PATH=$keychain"
+            echo "IOS_PROVISIONING_PROFILE_SPECIFIER<<__PROFILE__"
+            echo "$profile_name"
+            echo "__PROFILE__"
+            echo "IOS_CODE_SIGN_IDENTITY<<__IDENTITY__"
+            echo "$signing_identity"
+            echo "__IDENTITY__"
+          } >> "$GITHUB_ENV"
+
+      - name: Archive, audit, upload, and distribute build
+        shell: bash
+        run: bash ./scripts/ios_testflight_ci.sh

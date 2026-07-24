@@ -18,7 +18,7 @@ require_env() {
   [[ -n "${!1:-}" ]] || fail "$1 is required"
 }
 
-for command in git ruby bash xcodebuild xcrun plutil find; do
+for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
 for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER; do
@@ -35,6 +35,37 @@ fi
 [[ -f "$PROJECT/project.pbxproj" ]] || fail "Xcode project not found: $PROJECT"
 [[ -f "$ROOT_DIR/scripts/ios_asc_build_number_preflight.rb" ]] || fail "missing build-number preflight"
 [[ -f "$ROOT_DIR/scripts/distribute_internal_build.rb" ]] || fail "missing distribution script"
+
+# 正式发布必须记录并校验“宿主系统 + Xcode + SDK”完整组合。只检查
+# xcodebuild -version 不够，因为 Beta macOS 也会写入归档的 BuildMachineOSBuild。
+host_os_version="$(sw_vers -productVersion)"
+host_os_build="$(sw_vers -buildVersion)"
+xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
+xcode_build="$(xcodebuild -version | sed -n '2s/^Build version //p')"
+sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+sdk_build="$(xcrun --sdk iphoneos --show-sdk-build-version)"
+
+check_expected() {
+  local variable_name="$1"
+  local actual="$2"
+  local label="$3"
+  local expected="${!variable_name:-}"
+  [[ -z "$expected" || "$actual" == "$expected" ]] \
+    || fail "$label mismatch: expected=$expected actual=$actual"
+}
+
+check_expected IOS_RELEASE_EXPECTED_MACOS_VERSION "$host_os_version" "macOS version"
+check_expected IOS_RELEASE_EXPECTED_MACOS_BUILD "$host_os_build" "macOS build"
+check_expected IOS_RELEASE_EXPECTED_XCODE_VERSION "$xcode_version" "Xcode version"
+check_expected IOS_RELEASE_EXPECTED_XCODE_BUILD "$xcode_build" "Xcode build"
+check_expected IOS_RELEASE_EXPECTED_SDK_VERSION "$sdk_version" "iOS SDK version"
+check_expected IOS_RELEASE_EXPECTED_SDK_BUILD "$sdk_build" "iOS SDK build"
+if [[ -n "${IOS_RELEASE_EXPECTED_MACOS_MAJOR:-}" ]]; then
+  [[ "$host_os_version" == "$IOS_RELEASE_EXPECTED_MACOS_MAJOR".* ]] \
+    || fail "macOS major mismatch: expected=$IOS_RELEASE_EXPECTED_MACOS_MAJOR actual=$host_os_version"
+fi
+echo "ios-testflight-ci: host macOS=$host_os_version ($host_os_build)"
+echo "ios-testflight-ci: toolchain Xcode=$xcode_version ($xcode_build) SDK=$sdk_version ($sdk_build)"
 
 # 本地执行器会提供干净 worktree；入口再检查一次，避免发布时混入临时改动。
 git -C "$ROOT_DIR" diff --quiet
@@ -109,7 +140,53 @@ archive_info="$archive/Products/Applications/MimiRemote.app/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$archive_info")" == "$marketing_version" ]] || fail "archive version mismatch"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$archive_info")" == "$build_number" ]] || fail "archive build mismatch"
 [[ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$archive_info")" == "false" ]] || fail "encryption declaration must be false"
-echo "ios-testflight-ci: archive toolchain DTXcodeBuild=$(plutil -extract DTXcodeBuild raw -o - "$archive_info") DTSDKName=$(plutil -extract DTSDKName raw -o - "$archive_info")"
+echo "ios-testflight-ci: archive toolchain BuildMachineOSBuild=$(plutil -extract BuildMachineOSBuild raw -o - "$archive_info") DTXcodeBuild=$(plutil -extract DTXcodeBuild raw -o - "$archive_info") DTSDKName=$(plutil -extract DTSDKName raw -o - "$archive_info")"
+
+# 递归检查归档内所有 bundle 和 Mach-O，避免主 App 已切换正式 Xcode，
+# 但 Frameworks、PlugIns 或复制进包的预编译二进制仍来自 Beta SDK。
+bundle_count=0
+while IFS= read -r -d '' plist; do
+  bundle_xcode_build="$(plutil -extract DTXcodeBuild raw -o - "$plist" 2>/dev/null || true)"
+  [[ -n "$bundle_xcode_build" ]] || continue
+  bundle_count=$((bundle_count + 1))
+  relative_plist="${plist#"$archive/"}"
+  bundle_machine_build="$(plutil -extract BuildMachineOSBuild raw -o - "$plist" 2>/dev/null || true)"
+  bundle_sdk_name="$(plutil -extract DTSDKName raw -o - "$plist" 2>/dev/null || true)"
+  bundle_sdk_build="$(plutil -extract DTSDKBuild raw -o - "$plist" 2>/dev/null || true)"
+  bundle_platform_build="$(plutil -extract DTPlatformBuild raw -o - "$plist" 2>/dev/null || true)"
+  [[ "$bundle_machine_build" == "$host_os_build" ]] \
+    || fail "$relative_plist BuildMachineOSBuild mismatch: $bundle_machine_build"
+  [[ "$bundle_xcode_build" == "$xcode_build" ]] \
+    || fail "$relative_plist DTXcodeBuild mismatch: $bundle_xcode_build"
+  [[ "$bundle_sdk_name" == "iphoneos$sdk_version" ]] \
+    || fail "$relative_plist DTSDKName mismatch: $bundle_sdk_name"
+  [[ "$bundle_sdk_build" == "$sdk_build" ]] \
+    || fail "$relative_plist DTSDKBuild mismatch: $bundle_sdk_build"
+  [[ "$bundle_platform_build" == "$sdk_build" ]] \
+    || fail "$relative_plist DTPlatformBuild mismatch: $bundle_platform_build"
+  echo "ios-testflight-ci: audited bundle $relative_plist"
+done < <(find "$archive/Products/Applications" -name Info.plist -type f -print0)
+(( bundle_count > 0 )) || fail "no bundle toolchain metadata found in archive"
+
+macho_count=0
+while IFS= read -r -d '' candidate; do
+  file_type="$(file -b "$candidate")"
+  [[ "$file_type" == *"Mach-O"* ]] || continue
+  macho_count=$((macho_count + 1))
+  relative_binary="${candidate#"$archive/"}"
+  macho_sdks="$(
+    xcrun vtool -show-build "$candidate" \
+      | awk '$1 == "sdk" { print $2 }' \
+      | sort -u
+  )"
+  [[ -n "$macho_sdks" ]] || fail "$relative_binary has no LC_BUILD_VERSION SDK"
+  while IFS= read -r macho_sdk; do
+    [[ "$macho_sdk" == "$sdk_version" ]] \
+      || fail "$relative_binary SDK mismatch: expected=$sdk_version actual=$macho_sdk"
+  done <<< "$macho_sdks"
+  echo "ios-testflight-ci: audited Mach-O $relative_binary sdk=$macho_sdks"
+done < <(find "$archive/Products/Applications" -type f -perm -111 -print0)
+(( macho_count > 0 )) || fail "no Mach-O binaries found in archive"
 
 xcodebuild -exportArchive \
   -archivePath "$archive" \
