@@ -1049,6 +1049,43 @@ func TestWaitForServiceReadyAllowsDevelopmentClientVersion(t *testing.T) {
 	}
 }
 
+func TestLoopbackServiceEndpointPreservesSchemePortAndPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{
+			name:     "tailscale ipv4",
+			endpoint: "http://100.127.16.9:8787",
+			want:     "http://127.0.0.1:8787",
+		},
+		{
+			name:     "lan with path",
+			endpoint: "https://192.168.31.20:9443/base?source=status",
+			want:     "https://127.0.0.1:9443/base?source=status",
+		},
+		{
+			name:     "invalid endpoint unchanged",
+			endpoint: "not-an-endpoint",
+			want:     "not-an-endpoint",
+		},
+		{
+			name:     "missing port unchanged",
+			endpoint: "http://100.127.16.9",
+			want:     "http://100.127.16.9",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := loopbackServiceEndpoint(testCase.endpoint); got != testCase.want {
+				t.Fatalf("loopback Endpoint 错误：got=%q want=%q", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestWaitForServiceReadyTreatsRelease010AsFormalVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true,"version":"0.0.9"}`))

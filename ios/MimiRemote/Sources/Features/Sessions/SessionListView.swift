@@ -5,6 +5,88 @@ enum SessionIndexRowStyle {
     case library
 }
 
+struct SessionRuntimePresentation: Equatable {
+    enum Kind: Equatable {
+        case codex
+        case claude
+    }
+
+    let kind: Kind
+
+    init(session: AgentSession) {
+        self.init(runtimeProvider: session.runtimeProvider, source: session.source)
+    }
+
+    init(runtimeProvider: String?, source: String) {
+        let provider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawValue = provider?.isEmpty == false ? provider : source
+        kind = CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) == "claude"
+            ? .claude
+            : .codex
+    }
+
+    var title: String {
+        switch kind {
+        case .codex:
+            return L10n.text("ui.runtime_default")
+        case .claude:
+            return L10n.text("ui.runtime_optional")
+        }
+    }
+
+    var brandAssetName: String {
+        switch kind {
+        case .codex:
+            return "ChatGPT"
+        case .claude:
+            return "Claude"
+        }
+    }
+}
+
+/// 会话列表里的运行时标识使用中性胶囊承载品牌图标和名称。
+/// 它需要比普通元数据更容易扫读，但不能抢过会话标题和需要处理的状态。
+struct SessionRuntimeBadge: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let presentation: SessionRuntimePresentation
+    var compact = false
+
+    init(session: AgentSession, compact: Bool = false) {
+        presentation = SessionRuntimePresentation(session: session)
+        self.compact = compact
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let iconSize: CGFloat = compact ? 10 : 12
+
+        HStack(spacing: compact ? 3 : 4) {
+            Image(presentation.brandAssetName)
+                .resizable()
+                .renderingMode(.original)
+                .scaledToFit()
+                .frame(width: iconSize, height: iconSize)
+
+            Text(presentation.title)
+                .lineLimit(1)
+        }
+        .font(themeStore.uiFont(size: compact ? 9 : 10, weight: .medium))
+        .foregroundStyle(tokens.secondaryText)
+        .padding(.horizontal, compact ? 5 : 6)
+        .padding(.vertical, compact ? 1.5 : 2)
+        .background(tokens.elevatedSurface.opacity(0.76), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(tokens.border.opacity(0.54), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presentation.title)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -353,6 +435,8 @@ struct SessionIndexRow: View {
                 if isPinned { Image(systemName: "pin.fill") }
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
+
+                SessionRuntimeBadge(session: session, compact: style == .sidebar)
 
                 Text(session.project.isEmpty ? session.dir : session.project)
                     .lineLimit(1)

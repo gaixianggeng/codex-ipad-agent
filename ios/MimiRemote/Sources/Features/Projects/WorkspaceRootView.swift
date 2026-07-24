@@ -24,14 +24,12 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 商店版本只使用系统符号表达运行时类型。
-    /// 第三方产品名称可用于兼容性说明，但不把第三方商标图标打包成 Mimi 的品牌资产。
-    var systemImageName: String {
+    var brandAssetName: String {
         switch self {
         case .codex:
-            return "terminal.fill"
+            return "ChatGPT"
         case .claude:
-            return "sparkles"
+            return "Claude"
         }
     }
 
@@ -693,7 +691,6 @@ private struct WorkspaceDetailView: View {
                 ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
                     actionButton(
                         choice: choice,
-                        subtitle: choice == .codex ? L10n.text("ui.start_using_the_default_runtime") : L10n.text("ui.get_started_with_the_claude_code_runtime"),
                         tokens: tokens
                     ) {
                         // thread 创建时就绑定 runtime；这里必须把用户选择一路传到 SessionStore。
@@ -719,7 +716,6 @@ private struct WorkspaceDetailView: View {
 
     private func actionButton(
         choice: WorkspaceSessionRuntimeChoice,
-        subtitle: String? = nil,
         tokens: ThemeTokens,
         action: @escaping () -> Void
     ) -> some View {
@@ -729,19 +725,10 @@ private struct WorkspaceDetailView: View {
             HStack(spacing: 12) {
                 actionIcon(choice: choice)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(choice.title)
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
-                    }
-                }
+                Text(choice.title)
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
 
                 Spacer(minLength: 8)
             }
@@ -761,13 +748,14 @@ private struct WorkspaceDetailView: View {
 
     @ViewBuilder
     private func actionIcon(choice: WorkspaceSessionRuntimeChoice) -> some View {
-        // 使用中性的系统符号，避免把第三方产品图标误当成 App 自有品牌或官方背书。
-        Image(systemName: choice.systemImageName)
-            .font(themeStore.uiFont(size: 18, weight: .semibold))
-            .foregroundStyle(
-                choice == .codex
-                    ? Color(red: 0.20, green: 0.24, blue: 0.29)
-                    : Color(red: 0.68, green: 0.31, blue: 0.18)
+        // 只恢复运行时图标；操作卡片继续使用中性背景，不恢复 Codex 入口原来的深色强调底。
+        Image(choice.brandAssetName)
+            .resizable()
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(
+                width: choice == .codex ? 38 : 20,
+                height: choice == .codex ? 38 : 20
             )
             .frame(width: 38, height: 38)
             .background(
@@ -933,12 +921,12 @@ private struct WorkspaceDetailView: View {
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    Text(runtimeTitle(for: session))
-                    Text("·")
+                    SessionRuntimeBadge(session: session)
                     Text(status.title)
+                        .foregroundStyle(statusTone)
                 }
                 .font(themeStore.uiFont(.caption2))
-                .foregroundStyle(statusTone)
+                .foregroundStyle(tokens.secondaryText)
             }
 
             Spacer(minLength: 8)
@@ -955,13 +943,6 @@ private struct WorkspaceDetailView: View {
         .padding(.horizontal, 14)
         .frame(minHeight: 62)
         .contentShape(Rectangle())
-    }
-
-    private func runtimeTitle(for session: AgentSession) -> String {
-        let provider = session.runtimeProvider ?? session.source
-        return provider.lowercased().contains("claude")
-            ? L10n.text("ui.runtime_optional")
-            : L10n.text("ui.runtime_default")
     }
 
     private func sessionTimeText(for session: AgentSession) -> String {

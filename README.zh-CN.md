@@ -34,7 +34,7 @@
   <img src="artifacts/social-preview/mimi-remote-social-preview-v3.png" alt="Mimi Remote 在真实 iPad 与 iPhone 界面间继续 Codex 会话" width="100%" />
 </p>
 
-Mimi Remote 通过 Tailscale 连接用户自己 Mac 上的 `agentd`，在明确授权的工作区内使用 Codex；Claude Code 通过仓库内的可选 Rust bridge 作为实验通道接入。代码、Codex / Claude 凭证和完整会话都留在用户自己的设备上，不经过项目维护者的服务器。
+Mimi Remote 通过 Tailscale 或同一局域网连接用户自己 Mac 上的 `agentd`，在明确授权的工作区内使用 Codex；Claude Code 通过仓库内的可选 Rust bridge 作为实验通道接入。代码、Codex / Claude 凭证和完整会话都留在用户自己的设备上，不经过项目维护者的服务器。
 
 > Mimi Remote 是独立开发的第三方客户端，不隶属于 OpenAI、Anthropic 或 Tailscale，也不代表这些公司的官方产品。当前没有公开 App Store 版本，需要从源码构建；内部 TestFlight 不是公开下载渠道。
 
@@ -108,7 +108,7 @@ Mimi Remote 不是通用 SSH 终端，也不是把桌面网页缩到手机里。
 
 ```mermaid
 flowchart TD
-    A["Mimi Remote<br/>iPhone / iPad"] -->|"Tailscale · Bearer Token<br/>REST + WebSocket"| B["agentd<br/>Go control plane / 安全网关"]
+    A["Mimi Remote<br/>iPhone / iPad"] -->|"Tailscale / 同一局域网 · Bearer Token<br/>REST + WebSocket"| B["agentd<br/>Go control plane / 安全网关"]
     B -->|"allowlist · cwd scope<br/>JSON-RPC policy"| C["Codex app-server"]
     C --> D["Codex CLI 凭证与本机项目"]
     B -->|"runtime=claude<br/>每条连接一个子进程"| E["alleycat-claude-bridge"]
@@ -121,7 +121,7 @@ flowchart TD
 - `agentd` 只允许配置中的项目、`browse_roots` 和受管 Worktree。
 - Codex app-server capability token 只保存在 Mac 的 loopback 环境。
 - 远程命令只允许执行配置中的 action，并带确认、超时和输出上限。
-- 默认只建议通过 Tailscale 私网访问，不建议把 `agentd` 暴露到公网。
+- 跨网络默认推荐 Tailscale；未安装时可在同一局域网直连。两种方式都不应把 `agentd` 暴露到公网。
 
 ### Claude Code 为什么需要单独 bridge
 
@@ -138,7 +138,7 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 要求：
 
 - 已安装并登录 Codex CLI；
-- Mac 与 iPhone / iPad 已加入同一个 Tailscale 网络；
+- Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络；
 - macOS 已安装 Homebrew。
 
 ```bash
@@ -150,7 +150,7 @@ codex app-server --help
 agentd up
 ```
 
-`agentd up` 会生成用户私有配置和两层独立 Token，启动后台服务，等待真实 app-server WebSocket 就绪，然后在终端显示短期配对二维码。
+`agentd up` 会生成用户私有配置和两层独立 Token，启动后台服务，等待真实 app-server WebSocket 就绪，然后在终端显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。
 
 常用命令：
 
@@ -343,7 +343,7 @@ bridges/claude/          Rust Claude Code 协议 bridge
 
 ### Is Mimi Remote self-hosted and local-first? / 这是自托管、本地优先的吗？
 
-是。移动端通过 Tailscale 访问你自己的 `agentd`，项目维护者不运营中转服务。源代码、会话、日志以及 Codex / Claude 凭证留在你的设备上。
+是。移动端通过 Tailscale 或同一局域网访问你自己的 `agentd`，项目维护者不运营中转服务。源代码、会话、日志以及 Codex / Claude 凭证留在你的设备上。
 
 ### Does it support Claude Code? / 支持 Claude Code 吗？
 

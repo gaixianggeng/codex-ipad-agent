@@ -65,7 +65,9 @@ bash ./scripts/test-install-linux.sh >/dev/null
 if [[ -f SKILL.md ]] && ! cmp -s SKILL.md packaging/skill/install-mimi-remote/SKILL.md; then
   fail "根 SKILL.md 与独立 Skill 包内容不一致。"
 fi
-skill_dist="$(mktemp -d -t mimi-skill-check)"
+# BSD 与 GNU mktemp 对 -t 模板的语义不同；显式使用带 XXXXXX 的完整路径，
+# 保证 macOS 本地发布和 Linux GitHub Actions 使用同一实现。
+skill_dist="$(mktemp -d "${TMPDIR:-/tmp}/mimi-skill-check.XXXXXX")"
 trap 'rm -rf "$skill_dist"' EXIT
 bash ./scripts/package-skill.sh "$skill_dist" >/dev/null
 [[ -f "$skill_dist/install-mimi-remote.zip" ]] \

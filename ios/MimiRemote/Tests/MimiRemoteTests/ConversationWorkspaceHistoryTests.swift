@@ -1529,8 +1529,23 @@ extension ConversationDataFlowTests {
         )
         XCTAssertNil(WorkspaceSessionRuntimeChoice.codex.runtimeProvider)
         XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.runtimeProvider, "claude")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.systemImageName, "terminal.fill")
-        XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.systemImageName, "sparkles")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.codex.brandAssetName, "ChatGPT")
+        XCTAssertEqual(WorkspaceSessionRuntimeChoice.claude.brandAssetName, "Claude")
+    }
+
+    func testSessionRuntimePresentationNormalizesKnownRuntimeAliases() {
+        XCTAssertEqual(
+            SessionRuntimePresentation(runtimeProvider: nil, source: "openai").kind,
+            .codex
+        )
+        XCTAssertEqual(
+            SessionRuntimePresentation(runtimeProvider: "anthropic", source: "codex").kind,
+            .claude
+        )
+        XCTAssertEqual(
+            SessionRuntimePresentation(runtimeProvider: "claude-code", source: "local").brandAssetName,
+            "Claude"
+        )
     }
 
     func testWorkspaceStripUsesViewportWidthToCenterSmallCardGroups() {

@@ -902,6 +902,25 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(probedEndpoints, ["http://100.64.0.1:8787"])
     }
 
+    func testSettingsAutomaticConnectionTestRunsOnlyOncePerAppLifetime() async throws {
+        let suiteName = "PairingLinkTests.SettingsAutomaticConnectionTest.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(defaults: defaults, prefersLocalConnection: false)
+        // 使用同步失败的非法地址验证一次性门闩，测试不发出真实网络请求。
+        store.endpoint = "not-a-valid-endpoint"
+        store.token = "test-token"
+
+        let firstAttemptStarted = await store.testConnectionOnFirstSettingsAppearanceIfNeeded()
+        let secondAttemptStarted = await store.testConnectionOnFirstSettingsAppearanceIfNeeded()
+
+        XCTAssertTrue(firstAttemptStarted)
+        XCTAssertFalse(secondAttemptStarted)
+        guard case .failed = store.connectionStatus else {
+            return XCTFail("首次自动测速失败后应发布失败状态")
+        }
+    }
+
     func testConnectionPreflightPublishesFailure() async throws {
         let suiteName = "PairingLinkTests.ConnectionPreflightFailure.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

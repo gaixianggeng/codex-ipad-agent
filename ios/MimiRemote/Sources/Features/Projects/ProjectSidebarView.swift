@@ -1245,17 +1245,18 @@ private struct SessionRow: View, Equatable {
                 trailingMetadata
             }
 
-            // 侧栏作为会话索引，默认不展示聊天 preview，避免内容摘要压过标题和关键状态。
-            if shouldShowStatusLine {
-                HStack(spacing: 5) {
+            // 运行时是稳定的会话身份，始终显示；动态状态只在需要关注时追加。
+            HStack(spacing: 5) {
+                SessionRuntimeBadge(session: session, compact: true)
+                if shouldShowStatusLine {
                     statusCapsule(statusSummary)
-                    if isObserving {
-                        observationCapsule
-                    }
-                    Spacer(minLength: 0)
                 }
-                .lineLimit(1)
+                if isObserving {
+                    observationCapsule
+                }
+                Spacer(minLength: 0)
             }
+            .lineLimit(1)
 
             if let searchSnippet, !searchSnippet.isEmpty {
                 Text(searchSnippet)

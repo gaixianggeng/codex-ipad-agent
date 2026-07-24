@@ -2,6 +2,10 @@
   "schemaVersion": 1,
   "items": [
     {
+      "value": "不支持",
+      "reason": "Matches an upstream app-server compatibility error and is not displayed as product UI."
+    },
+    {
       "value": "method 不允许",
       "reason": "Matches an upstream protocol/error payload and is not displayed as product UI."
     },

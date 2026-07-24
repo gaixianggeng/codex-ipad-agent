@@ -380,6 +380,12 @@ enum ActiveConnectionRoute: Equatable {
 final class AppStore: ObservableObject {
     static let connectionProfileDisplayNameLimit = 48
 
+    private enum AutomaticSettingsConnectionTestState {
+        case pending
+        case running
+        case completed
+    }
+
     @Published var endpoint: String
     @Published private(set) var connectionProfiles: [ConnectionProfile]
     @Published private(set) var activeConnectionProfileID: String?
@@ -410,6 +416,7 @@ final class AppStore: ObservableObject {
     private let localAgentPairingClaim: LocalAgentPairingClaim
     private let routeProbe: ConnectionRouteProbe
     private var isConnectionPreflightRunning = false
+    private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
     private var activeRouteEndpoint: String?
     private var activeRuntimeBundle: AppServerRuntimeBundle?
@@ -987,6 +994,50 @@ final class AppStore: ObservableObject {
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
         }
+    }
+
+    /// 每次 App 生命周期内只在第一次进入正式设置页时自动测速一次。
+    ///
+    /// 冷启动的 RootView 可能仍在执行轻量 preflight；这里先等待它结束，再决定是否需要完整测速，
+    /// 避免两个探测同时改写连接状态。用户手动点击“重新测速”不经过此门闩，后续仍可随时执行。
+    @discardableResult
+    func testConnectionOnFirstSettingsAppearanceIfNeeded() async -> Bool {
+        guard case .pending = automaticSettingsConnectionTestState else {
+            return false
+        }
+        automaticSettingsConnectionTestState = .running
+        var shouldRetryAfterCancellation = false
+        defer {
+            automaticSettingsConnectionTestState = shouldRetryAfterCancellation ? .pending : .completed
+        }
+
+        guard isConfigured, !requiresRePairing else {
+            return false
+        }
+
+        do {
+            while case .testing = connectionStatus {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        } catch {
+            // 页面快速关闭导致任务取消时不消耗本次机会，下次真正进入设置仍会自动测速。
+            shouldRetryAfterCancellation = true
+            return false
+        }
+
+        guard !Task.isCancelled else {
+            shouldRetryAfterCancellation = true
+            return false
+        }
+        guard lastConnectionTestReport == nil else {
+            return false
+        }
+
+        await testConnection(endpoint: endpoint, token: token)
+        if Task.isCancelled {
+            shouldRetryAfterCancellation = true
+        }
+        return true
     }
 
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
