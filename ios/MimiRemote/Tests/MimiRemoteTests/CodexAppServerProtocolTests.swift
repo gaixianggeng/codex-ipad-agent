@@ -434,6 +434,33 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(queryItems.first(where: { $0.name == "thread_id" })?.value, "thr_claude")
     }
 
+    // 真实连接的 thread_id 是空的（一条连接承载所有线程），所以能不能接回常驻会话
+    // 全看这个 session 键。它必须存在、跨调用稳定、且落在网关的字符集白名单里。
+    func testGatewayURLCarriesStableSessionKey() throws {
+        let first = try CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", runtimeProvider: "claude")
+        let second = try CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "", runtimeProvider: "claude")
+
+        func sessionKey(_ url: URL) throws -> String {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return try XCTUnwrap(items.first(where: { $0.name == "session" })?.value)
+        }
+
+        let key = try sessionKey(first)
+        XCTAssertFalse(key.isEmpty)
+        XCTAssertEqual(key, try sessionKey(second), "同一安装的会话键必须稳定，否则每次重连都是新会话")
+        XCTAssertTrue(key.hasSuffix("-claude"))
+        XCTAssertLessThanOrEqual(key.count, 128)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+        XCTAssertNil(key.rangeOfCharacter(from: allowed.inverted), "会话键含网关会拒绝的字符：\(key)")
+
+        // 不同 runtime 各自一条常驻会话，不能互相串。
+        let codex = try CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787", sessionID: "")
+        XCTAssertNotEqual(try sessionKey(codex), key)
+    }
+
     func testRequestBuilderAllowsFullAccessSandboxWithApproval() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])

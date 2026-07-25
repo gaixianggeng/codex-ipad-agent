@@ -55,6 +55,7 @@ type Router struct {
 	claudeMu                      sync.Mutex
 	claudeProbe                   appServerBridgeProbe
 	activeClaudeBridge            int
+	claudeBridge                  *claudeBridgeSupervisor
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
 	managedWorktreeCleanupMu      sync.Mutex
@@ -68,10 +69,15 @@ type Router struct {
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
-	return NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	handler, _ := NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	return handler
 }
 
-func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) http.Handler {
+// NewRouterWithRuntime also hands back the *Router so a caller that owns the
+// process lifetime can shut down what the handler started. That matters now
+// that the Claude bridge is resident: it survives individual connections by
+// design, so nothing else would ever reap it.
+func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) (http.Handler, *Router) {
 	r := &Router{
 		cfg:      cfg,
 		projects: registry,
@@ -94,6 +100,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 		managedWorktreePendingUses:  map[string]int{},
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
 		pairingClaims:               map[string]time.Time{},
+		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
@@ -139,7 +146,18 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/history-media/", r.auth.Middleware(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
-	return logging(limitAPIRequestBodies(mux), r.monitor)
+	return logging(limitAPIRequestBodies(mux), r.monitor), r
+}
+
+// Shutdown releases the long-lived runtimes the router started. Call it after
+// the HTTP server has drained: the resident Claude bridge spawns Claude Code
+// children of its own, and killing it earlier would cut turns that in-flight
+// requests are still watching.
+func (r *Router) Shutdown() {
+	if r == nil {
+		return
+	}
+	r.claudeBridge.shutdown()
 }
 
 func sameOriginOrNoOrigin(r *http.Request) bool {

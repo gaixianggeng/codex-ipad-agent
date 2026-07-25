@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,6 +138,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
+		p.rememberReplayedServerRequests(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 				payload = redacted
@@ -383,6 +385,46 @@ func (p *appServerGatewayPolicy) prunePendingClientRequestsLocked(now time.Time)
 	for id, pending := range p.pendingClientRequests {
 		if pending.createdAt.IsZero() || now.Sub(pending.createdAt) > appServerGatewayPendingClientRequestTTL {
 			delete(p.pendingClientRequests, id)
+		}
+	}
+}
+
+// rememberReplayedServerRequests re-registers the server requests a resident
+// bridge reports as still unanswered when a connection attaches.
+//
+// The pending table is per-connection, but the requests it guards are not:
+// the bridge holds an approval prompt open across a disconnect, and announces
+// the survivors in a `serverRequest/replay` notification. That frame carries
+// no JSON-RPC id of its own, so without this the ids inside it were never
+// registered and `validateClientResponse` rejected the user's answer as "not
+// issued by app-server" — the prompt would come back after a reconnect and
+// then refuse to be answered.
+func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServerGatewayFrame) {
+	if strings.TrimSpace(frame.Method) != claudeBridgeServerRequestReplayMethod || len(frame.Params) == 0 {
+		return
+	}
+	var params struct {
+		Outstanding []struct {
+			ID     *json.RawMessage `json:"id"`
+			Method string           `json:"method"`
+		} `json:"outstanding"`
+	}
+	if err := json.Unmarshal(frame.Params, &params); err != nil {
+		log.Printf("claude bridge serverRequest/replay 解析失败 err=%v", err)
+		return
+	}
+	for _, entry := range params.Outstanding {
+		if entry.ID == nil || strings.TrimSpace(entry.Method) == "" {
+			continue
+		}
+		if !appServerServerRequestAllowed(p.runtimeID, entry.Method) {
+			// The client cannot render it, so it will never answer it; leaving
+			// it unregistered keeps the pending table honest.
+			continue
+		}
+		if err := p.rememberPendingServerRequest(entry.ID, entry.Method); err != nil {
+			log.Printf("claude bridge 重放 server request 登记失败 method=%s err=%v",
+				sanitizeGatewayDiagnostic(entry.Method), err)
 		}
 	}
 }

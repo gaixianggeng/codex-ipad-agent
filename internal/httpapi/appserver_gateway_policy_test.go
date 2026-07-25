@@ -1286,6 +1286,46 @@ func TestAppServerGatewayRejectsInvalidThreadNameAndReviewParams(t *testing.T) {
 	assertNoUpstreamFrame(t, received)
 }
 
+// The pending table is per-connection but the prompts it guards are not: a
+// resident bridge keeps an approval open across a disconnect and lists it in
+// serverRequest/replay on attach. Those ids have to be registered from the
+// notification, or the user's answer comes back and gets rejected as never
+// having been issued — a prompt that reappears and then cannot be answered.
+func TestAppServerGatewayRegistersReplayedServerRequests(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		runtimeID:             "claude",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	replay := []byte(`{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[` +
+		`{"id":"req-abc","method":"item/commandExecution/requestApproval","params":{"threadId":"thr_1"}},` +
+		`{"id":7,"method":"item/tool/requestUserInput","params":{"threadId":"thr_1"}},` +
+		`{"id":"req-nope","method":"account/chatgptAuthTokens/refresh","params":{}}]}}`)
+	got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, replay)
+	if policyErr != nil || !forward || !bytes.Equal(got, replay) {
+		t.Fatalf("replay 通知应原样转发 forward=%v err=%+v got=%s", forward, policyErr, got)
+	}
+
+	for _, expected := range []struct {
+		rawID  string
+		method string
+	}{
+		{`"req-abc"`, "item/commandExecution/requestApproval"},
+		{`7`, "item/tool/requestUserInput"},
+	} {
+		rawID := json.RawMessage(expected.rawID)
+		frame := &appServerGatewayFrame{ID: &rawID, Result: json.RawMessage(`{"decision":"approve"}`)}
+		if _, err := policy.validateClientResponse([]byte(`{"id":`+expected.rawID+`,"result":{"decision":"approve"}}`), frame); err != nil {
+			t.Fatalf("重放的 server request 应可被回答 id=%s err=%v", expected.rawID, err)
+		}
+	}
+
+	// 移动端渲染不了的方法不登记：它永远不会被回答，登记只会占着 pending 表。
+	unsupported := json.RawMessage(`"req-nope"`)
+	if _, ok := policy.consumePendingServerRequest(&unsupported); ok {
+		t.Fatal("未被移动端支持的重放请求不应登记 pending")
+	}
+}
+
 func TestAppServerGatewayServerRequestAllowlistMatchesMobileCapabilities(t *testing.T) {
 	policy := &appServerGatewayPolicy{
 		runtimeID:             "codex",

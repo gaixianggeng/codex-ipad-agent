@@ -132,6 +132,7 @@
 		CE32FFAC6FF1C8B88332FADF /* ConversationLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2E9BE6E1D3AD3BE0B2C111B /* ConversationLayout.swift */; };
 		CE8D6606331D38D9A5FF738B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DE04A73144E31515A65F5830 /* Assets.xcassets */; };
 		D4B700AC9DF628887258F469 /* SessionStoreTurns.swift in Sources */ = {isa = PBXBuildFile; fileRef = A38A8CE5A8F1D7EE3889F078 /* SessionStoreTurns.swift */; };
+		D8263551DECB2E7EBCD66E3B /* testSessionRuntimeBadgesInConversationList.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 433E75D8BEEA45B9D02DDDCE /* testSessionRuntimeBadgesInConversationList.1.png */; };
 		DAAB5AD21F6B77F6D691B94F /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 373EDA921B7F6B3F6B680140 /* ConversationStore.swift */; };
 		DDCFB91D621190F7BA26678D /* AppExternalLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = D28C291AC46CF73586F8764A /* AppExternalLinks.swift */; };
 		E158B34D71964DBF782D1DDF /* MimiRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B337007E06BFD01501A0C9BD /* MimiRemoteApp.swift */; };
@@ -150,6 +151,7 @@
 		F38D8C9DDF3FCC6EBBE20885 /* SessionIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD9975BE3B6F00A870817B17 /* SessionIndexStore.swift */; };
 		F3ABBC8502D690C76985F756 /* AgentAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF761429383D479BD96FC52 /* AgentAPIClient.swift */; };
 		F430ECB13EE142C8AB67D5DF /* ConversationTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 730CE8CD91CC2F2DFB5E6FBA /* ConversationTimelineView.swift */; };
+		F52369AA62CB6C0A7664D4B0 /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 712B1CDEF343C4D9D338DDDC /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png */; };
 		F996F870AD345E2888F2913B /* ConversationProcessGrouper.swift in Sources */ = {isa = PBXBuildFile; fileRef = C529DD917A76943BC8A1C09E /* ConversationProcessGrouper.swift */; };
 		FA451031EB72AE10C3552C3F /* AppExternalLinksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 554F31B0074B97074AE97B31 /* AppExternalLinksTests.swift */; };
 		FAD77559CF6FDCD943849D7C /* CodexAppServerSessionClients.swift in Sources */ = {isa = PBXBuildFile; fileRef = 469FD622125F7CE507C2607E /* CodexAppServerSessionClients.swift */; };
@@ -220,6 +222,7 @@
 		3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreSupport.swift; sourceTree = "<group>"; };
 		40A98707004C8DC4ED81CBCD /* ComposerVoiceSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVoiceSupport.swift; sourceTree = "<group>"; };
 		41787BD804E7C9AD16448E38 /* ComposerRequestCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerRequestCards.swift; sourceTree = "<group>"; };
+		433E75D8BEEA45B9D02DDDCE /* testSessionRuntimeBadgesInConversationList.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testSessionRuntimeBadgesInConversationList.1.png; sourceTree = "<group>"; };
 		469FD622125F7CE507C2607E /* CodexAppServerSessionClients.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerSessionClients.swift; sourceTree = "<group>"; };
 		476737709E01875A7992BABB /* SkillModelPickerSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillModelPickerSnapshotTests.swift; sourceTree = "<group>"; };
 		485CC79160188BE6A5022A81 /* DiffPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffPanelView.swift; sourceTree = "<group>"; };
@@ -247,6 +250,7 @@
 		67866EABC0460FF9A4867E87 /* AppServerProtocolModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServerProtocolModels.swift; sourceTree = "<group>"; };
 		6C7C7C0DF7B33C596EBE5FC7 /* ConversationSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSnapshotTests.swift; sourceTree = "<group>"; };
 		6C892E2BB83F2EE5FDD6EDA4 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		712B1CDEF343C4D9D338DDDC /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png; sourceTree = "<group>"; };
 		730CE8CD91CC2F2DFB5E6FBA /* ConversationTimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimelineView.swift; sourceTree = "<group>"; };
 		7348A6FCD28C7489CC7097AD /* ThemeStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStoreTests.swift; sourceTree = "<group>"; };
 		73BF91C2135478711BB991B2 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -510,6 +514,8 @@
 				2328266C2B65106940564667 /* testMixedActivityAndImageConversationRendering.1.png */,
 				2E4A0A29797384D5BD5002D1 /* testProjectSessionDashboard.1.png */,
 				2ACC589478ECDD4A4FB9BEB0 /* testRichMarkdownConversationRendering.1.png */,
+				433E75D8BEEA45B9D02DDDCE /* testSessionRuntimeBadgesInConversationList.1.png */,
+				712B1CDEF343C4D9D338DDDC /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png */,
 				26D33D121E5B1B664D27BCCD /* testUnifiedWorkbenchSidebarNavigationChrome.1.png */,
 				0AEF1C233E236BA44225FA2F /* testWorkspaceOpenCurrentDirectoryButton.1.png */,
 			);
@@ -732,6 +738,13 @@
 			path = State;
 			sourceTree = "<group>";
 		};
+		"TEMP_5769549F-4F4E-48D9-A2FD-8F06B9AC0CF5" /* .claude */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = .claude;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -841,7 +854,9 @@
 				0F2BC7AA12BEC9037307837A /* testMixedActivityAndImageConversationRendering.1.png in Resources */,
 				B2628282609AF897C62B6178 /* testProjectSessionDashboard.1.png in Resources */,
 				9CDA4F02261EE4460043EC2B /* testRichMarkdownConversationRendering.1.png in Resources */,
+				D8263551DECB2E7EBCD66E3B /* testSessionRuntimeBadgesInConversationList.1.png in Resources */,
 				6B9100C88D46D2BB9A294B6F /* testSkillCardsAndModelGridDarkAppearance.1.png in Resources */,
+				F52369AA62CB6C0A7664D4B0 /* testUnavailableUserImageGalleryRemainsLegibleInLightTheme.1.png in Resources */,
 				3555D54084E26E1CD6667F85 /* testUnifiedWorkbenchSidebarNavigationChrome.1.png in Resources */,
 				F08F39B329A077D24D08FECF /* testWorkspaceOpenCurrentDirectoryButton.1.png in Resources */,
 			);
@@ -1015,7 +1030,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100059;
+				CURRENT_PROJECT_VERSION = 100063;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
@@ -1126,7 +1141,7 @@
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIconMac;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Resources/MimiRemote-Catalyst.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 100059;
+				CURRENT_PROJECT_VERSION = 100063;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				INFOPLIST_FILE = Resources/Info.plist;

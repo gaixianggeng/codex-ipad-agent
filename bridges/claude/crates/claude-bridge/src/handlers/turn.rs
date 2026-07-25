@@ -32,6 +32,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use alleycat_bridge_core::session::TurnGuard;
 use alleycat_codex_proto as p;
 
 use crate::approval;
@@ -274,6 +275,12 @@ pub async fn handle_turn_start(
     // Subscribe BEFORE writing the prompt so the first event isn't lost.
     let events_rx = handle.subscribe_events();
 
+    // Claim the session before the prompt reaches claude: from here on there
+    // is work in flight, and it has to outlive whatever the client's network
+    // — or the user's decision to close the app — does next. Dropped on the
+    // error path below; otherwise handed to the pump.
+    let turn_guard = state.session().begin_turn();
+
     if let Err(e) = handle.send_serialized(&envelope) {
         clear_active_turn(&params.thread_id);
         state.claude_pool().mark_idle(&params.thread_id).await;
@@ -287,14 +294,17 @@ pub async fn handle_turn_start(
     // uses the first user message's first line as the preview.
     maybe_backfill_preview(state, &params.thread_id, &params.input).await;
 
-    spawn_event_pump(EventPumpArgs {
-        state: Arc::clone(state),
-        thread_id: params.thread_id.clone(),
-        turn_id: turn_id.clone(),
-        handle: Arc::clone(&handle),
-        events_rx,
-        started_at,
-    });
+    spawn_event_pump(
+        EventPumpArgs {
+            state: Arc::clone(state),
+            thread_id: params.thread_id.clone(),
+            turn_id: turn_id.clone(),
+            handle: Arc::clone(&handle),
+            events_rx,
+            started_at,
+        },
+        turn_guard,
+    );
 
     Ok(p::TurnStartResponse { turn })
 }
@@ -496,9 +506,14 @@ struct EventPumpArgs {
     started_at: i64,
 }
 
-fn spawn_event_pump(args: EventPumpArgs) {
+fn spawn_event_pump(args: EventPumpArgs, turn_guard: TurnGuard) {
     tokio::spawn(async move {
         run_event_pump(args).await;
+        // Released only here. For as long as the pump runs, the session is
+        // busy and the reaper leaves it alone — the client closing the app
+        // mid-turn is not a reason to stop the work or throw away the events
+        // it is still producing.
+        drop(turn_guard);
     });
 }
 
@@ -510,8 +525,24 @@ async fn run_event_pump(mut args: EventPumpArgs) {
     let interaction_gate = Arc::new(AsyncMutex::new(()));
     let mut interaction_tasks = Vec::new();
 
+    // Set when the session was reclaimed out from under this turn: nobody can
+    // reach it any more, so there is no point producing events for it.
+    let mut abandoned = false;
+
     loop {
-        let event = match args.events_rx.recv().await {
+        let received = tokio::select! {
+            biased;
+            // A reclaimed session means the client is gone for good — not
+            // merely disconnected, which the whole design exists to survive.
+            // Stop rather than keep driving claude for a stream no one can
+            // ever read.
+            _ = args.state.session().cancelled() => {
+                abandoned = true;
+                break;
+            }
+            received = args.events_rx.recv() => received,
+        };
+        let event = match received {
             Ok(ev) => ev,
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!(
@@ -659,7 +690,20 @@ async fn run_event_pump(mut args: EventPumpArgs) {
         .record_turn_completed(&args.thread_id, &args.turn_id, completed_at, status, error);
 
     clear_active_turn(&args.thread_id);
-    args.state.claude_pool().mark_idle(&args.thread_id).await;
+    if abandoned {
+        // Nobody will ever resume this thread through this session, so don't
+        // leave its claude process parked in the pool waiting for the idle
+        // sweep — release it now and free the slot. The transcript is on disk
+        // either way, so a later `--resume` still works.
+        tracing::info!(
+            thread_id = %args.thread_id,
+            turn_id = %args.turn_id,
+            "session reclaimed while a turn was running; releasing claude process"
+        );
+        args.state.claude_pool().release(&args.thread_id).await;
+    } else {
+        args.state.claude_pool().mark_idle(&args.thread_id).await;
+    }
 }
 
 /// Map a `ServerNotification` to its `method` string and consult the

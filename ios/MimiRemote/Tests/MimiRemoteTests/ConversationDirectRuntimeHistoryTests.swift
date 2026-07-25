@@ -427,6 +427,72 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
     }
 
+    // 关掉 App 一小时后回来：bridge 的会话还活着、turn 还停在审批上，attach 时用
+    // serverRequest/replay 把未应答的请求推回来。这条路必须绕开僵尸审批检查——
+    // Claude bridge 把停在审批上的线程仍报成 idle，走那个检查会把真正在等的提示
+    // 直接 decline 掉，用户看到的就是一个永远不动的任务。
+    func testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread() async throws {
+        let project = AgentProject(id: "proj_replay", name: "Replay", path: "/tmp/replay")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let sessionTask = Task {
+            try await client.session(id: "thr_replay")
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_replay","sessionId":"thr_replay","preview":"等审批","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/replay","cliVersion":"0.0.0","source":"claude","threadSource":"user","name":"等审批","turns":[]}}}"#)
+        _ = try await sessionTask.value
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+        socket.connect(sessionID: "thr_replay")
+
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let resume = try decodeAppServerRequest(resumeMessages[3])
+        XCTAssertEqual(resume.method, "thread/resume")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_replay","sessionId":"thr_replay","preview":"等审批","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/replay","cliVersion":"0.0.0","source":"claude","threadSource":"user","name":"等审批","turns":[]}}}"#)
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        transport.enqueue(#"{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[{"id":"req-abc","method":"item/commandExecution/requestApproval","params":{"threadId":"thr_replay","turnId":"turn_live","itemId":"cmd_live","command":"cargo install --path ."}}]}}"#)
+
+        for _ in 0..<200 where !events.contains(where: { if case .approvalRequest = $0 { return true } else { return false } }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .approvalRequest = $0 {
+                return true
+            }
+            return false
+        }, "重放的未应答审批应当重新弹出审批卡")
+
+        // 它是活的，不能被当成僵尸请求自动 decline 掉。
+        let sent = await transport.sentMessages()
+        XCTAssertFalse(sent.contains { $0.contains("\"decision\":\"decline\"") },
+                       "重放的审批不应被自动拒绝")
+
+        socket.disconnect()
+    }
+
     func testDirectRuntimeDropsStaleReplayedApprovalForIdleThread() async throws {
         let project = AgentProject(id: "proj_stale", name: "Stale", path: "/tmp/stale")
         let transport = FakeCodexAppServerTransport()

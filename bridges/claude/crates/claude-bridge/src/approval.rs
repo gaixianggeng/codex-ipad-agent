@@ -457,24 +457,24 @@ async fn send_server_request(
     // set deterministically across iroh disconnects.
     let req_id_str = state.session().next_request_id();
     let req_id = RequestId::String(req_id_str);
+    let frame = JsonRpcMessage::Request(JsonRpcRequest {
+        jsonrpc: JsonRpcVersion,
+        id: req_id.clone(),
+        method: method.to_string(),
+        params: Some(params.clone()),
+    });
+    // Becoming outstanding and reaching the wire must be one step: a reattach
+    // landing between them would show the client both the replay snapshot and
+    // the live request.
     let rx = state
-        .register_pending_request(req_id.clone(), method.to_string(), params.clone())
-        .await;
+        .publish_server_request(req_id.clone(), method.to_string(), params, frame)
+        .await
+        .map_err(|_| ApprovalError::ConnectionClosed)?;
     let mut guard = PendingRequestGuard {
         state: Arc::clone(state),
         request_id: req_id.clone(),
         armed: true,
     };
-
-    let frame = JsonRpcMessage::Request(JsonRpcRequest {
-        jsonrpc: JsonRpcVersion,
-        id: req_id.clone(),
-        method: method.to_string(),
-        params: Some(params),
-    });
-    state
-        .send(frame)
-        .map_err(|_| ApprovalError::ConnectionClosed)?;
 
     let result = if let Some(deadline) = timeout {
         match tokio::time::timeout(deadline, rx).await {

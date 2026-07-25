@@ -259,6 +259,35 @@ impl ConnectionState {
         }
     }
 
+    /// Register a server→client request and put its frame on the wire in one
+    /// step. See [`Session::publish_server_request`]: registering first and
+    /// sending after leaves a window where a reattach delivers the prompt
+    /// twice.
+    pub async fn publish_server_request(
+        &self,
+        request_id: RequestId,
+        method: String,
+        params: Value,
+        frame: JsonRpcMessage,
+    ) -> Result<oneshot::Receiver<Result<Value, ServerRequestError>>, SendError> {
+        let payload = serde_json::to_value(&frame).map_err(|_| SendError::ConnectionClosed)?;
+        let (tx, rx) = oneshot::channel();
+        let key = request_id.to_string();
+        let (core_tx, core_rx) =
+            oneshot::channel::<Result<Value, alleycat_bridge_core::state::ServerRequestError>>();
+        self.session
+            .publish_server_request(key, method, params, core_tx, payload);
+        tokio::spawn(async move {
+            let mapped = match core_rx.await {
+                Ok(Ok(v)) => Ok(v),
+                Ok(Err(e)) => Err(e.into()),
+                Err(_) => Err(ServerRequestError::ConnectionClosed),
+            };
+            let _ = tx.send(mapped);
+        });
+        Ok(rx)
+    }
+
     pub async fn register_pending_request(
         &self,
         request_id: RequestId,

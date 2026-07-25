@@ -921,9 +921,10 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
 
+	apiHandler, apiRouter := httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, nil),
+		Handler:           apiHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -935,7 +936,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			for _, opened := range listeners {
 				_ = opened.Close()
 			}
-			_ = shutdownServeResources(manager, appServerWSProcess)
+			_ = shutdownServeResources(manager, appServerWSProcess, apiRouter)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
 		listeners = append(listeners, listener)
@@ -964,7 +965,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	defer signal.Stop(stopCh)
 	return waitForServeExit(stopCh, errCh, func() error {
 		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
-			return shutdownServeResources(manager, appServerWSProcess)
+			return shutdownServeResources(manager, appServerWSProcess, apiRouter)
 		})
 	})
 }
@@ -1056,11 +1057,14 @@ func managedAppServerExitedError(process *appserver.ManagedWebSocketProcess) err
 	return fmt.Errorf("%s", message)
 }
 
-func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess) error {
+func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess, apiRouter *httpapi.Router) error {
 	// listener 绑定失败，或 HTTP 已完成 drain 后，都必须回收运行时资源，避免会话/托管子进程成为孤儿。
 	if manager != nil {
 		manager.Shutdown()
 	}
+	// 常驻 Claude bridge 独立进程组，不会随 agentd 退出而结束；它还会再拉起 Claude Code
+	// 子进程，漏掉这一步就会在每次重启后留下一整棵仍在跑的孤儿进程树。
+	apiRouter.Shutdown()
 	if appServerWSProcess != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), serveRuntimeShutdownTimeout)
 		err := appServerWSProcess.Shutdown(ctx)

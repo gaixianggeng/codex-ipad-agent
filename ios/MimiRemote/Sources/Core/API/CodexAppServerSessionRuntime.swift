@@ -1796,6 +1796,32 @@ actor CodexAppServerSessionRuntime {
         try await ensureConnection().respond(to: request, result: userInputResponse(for: request, answers: answers))
     }
 
+    /// Stable per-install name for this client's resumable gateway session.
+    ///
+    /// One gateway connection carries every thread of a runtime — the URL's
+    /// `thread_id` is empty on the real connection — so the resident bridge
+    /// session it maps to is keyed to the app install, not to a thread. It
+    /// has to survive app restarts, because that is the case the resident
+    /// bridge exists for: close the app mid-task, come back an hour later,
+    /// and reattach to the session that kept running.
+    /// Minting is serialized: two connections coming up together must not each
+    /// generate a key and race to persist it, or one of them would connect
+    /// under a name that is not the one stored — and silently fail to find its
+    /// session on the next launch.
+    private static let gatewaySessionKeyLock = NSLock()
+
+    static func gatewaySessionKey(defaults: UserDefaults = .standard) -> String {
+        let storageKey = "appServer.gatewaySessionKey"
+        gatewaySessionKeyLock.lock()
+        defer { gatewaySessionKeyLock.unlock() }
+        if let stored = defaults.string(forKey: storageKey), !stored.isEmpty {
+            return stored
+        }
+        let minted = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        defaults.set(minted, forKey: storageKey)
+        return minted
+    }
+
     static func gatewayURL(endpoint: String, sessionID: SessionID, runtimeProvider: String = "codex") throws -> URL {
         // WebSocket 也必须复用 HTTP Endpoint 策略；ATS 不会替应用阻止自行构造的公网 ws:// 地址。
         let validatedEndpoint = try EndpointTransportPolicy.validatedEndpoint(endpoint)
@@ -1816,6 +1842,9 @@ actor CodexAppServerSessionRuntime {
         if runtime != "codex" {
             queryItems.append(URLQueryItem(name: "runtime", value: runtime))
         }
+        // 命名这条连接对应的常驻会话。不带它，网关只能按连接给一个隔离会话，
+        // 断线重连拿不回还在跑的 turn 和未应答的审批。
+        queryItems.append(URLQueryItem(name: "session", value: "\(gatewaySessionKey())-\(runtime)"))
         components.queryItems = queryItems
         guard let url = components.url else {
             throw AgentAPIError.invalidEndpoint
@@ -2141,6 +2170,10 @@ actor CodexAppServerSessionRuntime {
             }
             return
         }
+        if notification.method == "serverRequest/replay" {
+            redeliverReplayedServerRequests(notification)
+            return
+        }
         if notification.method == "deprecationNotice",
            approvalSessionID(from: notification.params?.objectValue ?? [:]) == nil {
             // deprecationNotice 是连接级通知，官方协议不带 threadId。直接 emit 会被路由层丢弃，
@@ -2195,6 +2228,53 @@ actor CodexAppServerSessionRuntime {
             return
         }
         emit(event)
+    }
+
+    /// Re-deliver the server requests a reconnect found still waiting.
+    ///
+    /// A bridge whose sessions outlive the connection keeps an approval
+    /// prompt pending across a disconnect — that is the whole point of it —
+    /// and lists the survivors in one notification as soon as we attach.
+    /// Each entry goes back through the live path, so a restored prompt is
+    /// bookkept and rendered exactly like the original was.
+    ///
+    /// `isStaleReplayedApproval` is deliberately not consulted here. That
+    /// check exists for app-servers that re-deliver zombie approvals from
+    /// turns they have long since moved past; this list is the bridge's own
+    /// not-yet-answered table, emptied the moment a request resolves or its
+    /// turn dies, so everything in it is live by construction. Running the
+    /// check would decline the very prompts the user came back to answer,
+    /// because a thread parked on an approval still reports itself as idle.
+    func redeliverReplayedServerRequests(_ notification: CodexAppServerNotification) {
+        for entry in notification.params?["outstanding"]?.arrayValue ?? [] {
+            guard let method = entry["method"]?.stringValue,
+                  let id = replayedServerRequestID(entry["id"]) else {
+                continue
+            }
+            let request = CodexAppServerServerRequest(id: id, method: method, params: entry["params"])
+            if isUserInputServerRequest(request) {
+                handleUserInputRequest(request)
+                continue
+            }
+            rememberPendingApprovalRequest(request)
+            guard let event = projector.project(request) else {
+                continue
+            }
+            emit(event)
+        }
+    }
+
+    /// The id travels back to the bridge verbatim when the user answers, so
+    /// keep its JSON type instead of coercing everything to a string.
+    func replayedServerRequestID(_ value: CodexAppServerJSONValue?) -> CodexAppServerRequestID? {
+        switch value {
+        case .string(let text):
+            return .string(text)
+        case .int(let number):
+            return .int(number)
+        default:
+            return nil
+        }
     }
 
     func handleUserInputRequest(_ request: CodexAppServerServerRequest) {

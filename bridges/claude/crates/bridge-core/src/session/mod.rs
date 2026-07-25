@@ -10,12 +10,12 @@ pub mod registry;
 pub mod ring;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::state::{Capabilities, PendingServerRequest, ServerRequestError};
 
@@ -63,19 +63,21 @@ pub struct AttachHandle {
     /// Frames the client missed while detached, in seq order.
     pub backlog: Vec<Sequenced>,
     /// Synthetic `serverRequest/replay` frame to emit after the backlog, if
-    /// there are any outstanding requests at attach time. None for fresh
-    /// attaches or reattaches with no outstanding requests.
+    /// there are any outstanding requests at attach time. None only when
+    /// nothing is waiting on the user.
     pub replay_redelivery: Option<Value>,
     /// New live channel; producers `enqueue` after this point will push here.
     pub live_rx: mpsc::UnboundedReceiver<Sequenced>,
+    /// Which attachment this handle owns. Hand it back to
+    /// [`Session::drop_attachment`] so a connection only ever tears down its
+    /// own stream.
+    pub generation: u64,
 }
 
 #[derive(Debug)]
 struct Attachment {
     live_tx: mpsc::UnboundedSender<Sequenced>,
     /// Monotonic counter incremented on every fresh `install_attachment`.
-    /// Surfaced via `Session::attachment_generation()` for log correlation.
-    #[allow(dead_code)]
     generation: u64,
 }
 
@@ -114,6 +116,59 @@ pub struct Session {
     /// so the most recent uncertain frame is re-sent — duplicates over
     /// missing data.
     last_attempted_seq: AtomicU64,
+    /// Turns currently executing against this session, held up by
+    /// [`Session::begin_turn`] guards.
+    ///
+    /// The reaper measures idleness as "how long since a client detached",
+    /// which says nothing about whether work is still running: a long tool
+    /// call can go minutes without emitting a frame. Without this counter a
+    /// phone that closes the app mid-task would have its session dropped out
+    /// from under a turn that is still going, and the turn would keep filling
+    /// a replay ring nobody can reach again.
+    active_turns: AtomicUsize,
+    /// Connections that have claimed this session but have not installed
+    /// their attachment yet.
+    ///
+    /// Resolving an attach and installing it are necessarily separate — the
+    /// ack goes out in between — and in that gap the session still looks
+    /// detached and idle. Without a claim the reaper drops it right out from
+    /// under the connection that just picked it up: that connection keeps
+    /// serving from an Arc no longer in the registry, and the next reconnect
+    /// mints a blank session instead of resuming.
+    attach_reservations: AtomicUsize,
+    /// Set once the session has been abandoned and reclaimed. Producers watch
+    /// it so a turn still running against a session nobody can reach any more
+    /// stops instead of burning tokens into a ring with no reader.
+    cancelled: AtomicBool,
+    cancel_signal: Notify,
+}
+
+/// Keeps a session marked busy for as long as a turn is running. Drop order
+/// does the bookkeeping, so a panicking or cancelled turn still releases it.
+#[derive(Debug)]
+pub struct TurnGuard {
+    session: Arc<Session>,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.session.active_turns.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Holds a session against the reaper from the moment a connection claims it
+/// until that connection is done with it.
+#[derive(Debug)]
+pub struct AttachReservation {
+    session: Arc<Session>,
+}
+
+impl Drop for AttachReservation {
+    fn drop(&mut self) {
+        self.session
+            .attach_reservations
+            .fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl std::fmt::Debug for Session {
@@ -147,6 +202,10 @@ impl Session {
             attachment_generation: AtomicU64::new(0),
             detach: Mutex::new(DetachState { detached_at: None }),
             last_attempted_seq: AtomicU64::new(0),
+            active_turns: AtomicUsize::new(0),
+            attach_reservations: AtomicUsize::new(0),
+            cancelled: AtomicBool::new(false),
+            cancel_signal: Notify::new(),
         }
     }
 
@@ -185,6 +244,61 @@ impl Session {
         if let Some(attachment) = attachment.as_ref() {
             // Best-effort: if the drainer is gone, the message is still in
             // the ring and a future reattach will replay it.
+            let _ = attachment.live_tx.send(Sequenced {
+                seq,
+                payload,
+                bytes: 0,
+            });
+        }
+        seq
+    }
+
+    /// Publish a server→client request: make it outstanding and put it on the
+    /// wire as one indivisible step.
+    ///
+    /// Doing these separately leaves a window that a reattach can land in.
+    /// Registered-but-not-yet-enqueued, the request is in the replay snapshot
+    /// while its frame is not yet in the ring — so the client gets the
+    /// synthetic replay, and then `enqueue` hands the *original* request to
+    /// the attachment that was just installed. Two copies of one prompt, and
+    /// the second arrives by the ordinary request path, which a client that
+    /// has not rehydrated may answer on its own.
+    ///
+    /// The attachment lock is the barrier: `install_attachment` holds it
+    /// across its entire snapshot, so the two cannot interleave. Lock order
+    /// here is attachment → pending → outstanding → ring; `enqueue` releases
+    /// the ring before touching the attachment, so nothing ever holds ring
+    /// while waiting for attachment and the orders cannot invert.
+    pub fn publish_server_request(
+        &self,
+        id: String,
+        method: String,
+        params: Value,
+        responder: oneshot::Sender<Result<Value, ServerRequestError>>,
+        mut payload: Value,
+    ) -> u64 {
+        let attachment = self.attachment.lock().unwrap();
+        self.pending.lock().unwrap().insert(
+            id.clone(),
+            PendingServerRequest {
+                method: method.clone(),
+                responder,
+            },
+        );
+        self.outstanding
+            .lock()
+            .unwrap()
+            .insert(id, OutstandingRequest { method, params });
+
+        let seq = {
+            let mut ring = self.ring.lock().unwrap();
+            let next = ring.next_seq_peek();
+            stamp_alleycat_seq(&mut payload, next);
+            ring.push(payload.clone())
+        };
+        if let Some(attachment) = attachment.as_ref() {
+            // Best-effort, exactly as in `enqueue`: with no live drainer the
+            // frame still sits in the ring for the next reattach.
             let _ = attachment.live_tx.send(Sequenced {
                 seq,
                 payload,
@@ -294,11 +408,27 @@ impl Session {
         };
         drop(ring_guard);
 
-        let replay_redelivery = if matches!(outcome, AttachOutcome::Resumed) {
-            outstanding_replay_message(&self.outstanding.lock().unwrap())
-        } else {
-            None
-        };
+        let outstanding = self.outstanding.lock().unwrap();
+        // A prompt raised while the client was away sits in two places: the
+        // ring, because it was enqueued like any frame, and the outstanding
+        // table. Delivering both hands the client the same approval twice —
+        // and the first copy arrives as an ordinary server request, which a
+        // client that has not yet rehydrated may auto-dismiss, answering it
+        // upstream for real. The synthetic replay would then draw a card for
+        // a request that is already resolved. So the replay notification is
+        // the single restoration path, and the ring copies step aside.
+        let backlog: Vec<Sequenced> = backlog
+            .into_iter()
+            .filter(|frame| !is_unanswered_server_request(&frame.payload, &outstanding))
+            .collect();
+        // Whatever we could or couldn't replay, a prompt still waiting on the
+        // user is state the client has to be told about — it is the whole
+        // reason the session is still here. DriftReload is where this matters
+        // most: the backlog is empty precisely because a lot happened while
+        // they were gone, so the replay notification is the only thing that
+        // tells them the turn is parked on a question rather than stuck.
+        let replay_redelivery = outstanding_replay_message(&outstanding);
+        drop(outstanding);
 
         let (live_tx, live_rx) = mpsc::unbounded_channel();
         let generation = self.attachment_generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -308,10 +438,14 @@ impl Session {
             live_tx,
             generation,
         });
-        drop(attachment_slot);
 
-        // Clear detach bookkeeping while attached.
+        // Clear detach bookkeeping while still holding the attachment lock, so
+        // "is attached" and "when did it detach" can never disagree. Dropping
+        // the slot lock first leaves a window where a concurrent detach writes
+        // its timestamp after we cleared it, marking a session detached that
+        // someone is attached to — and handing a live session to the reaper.
         self.detach.lock().unwrap().detached_at = None;
+        drop(attachment_slot);
 
         AttachHandle {
             outcome,
@@ -320,22 +454,44 @@ impl Session {
             backlog,
             replay_redelivery,
             live_rx,
+            generation,
         }
     }
 
-    /// Clear the attachment slot. Producer enqueues continue to go into the
-    /// ring; only the live forwarding stops. If `pending_grace` is configured
-    /// and elapses without a reattach, the session reaper will drain pending
-    /// requests with `ConnectionClosed` (see [`SessionRegistry`]).
-    pub fn drop_attachment(&self) {
+    /// Clear the attachment slot owned by `generation`. Producer enqueues
+    /// continue to go into the ring; only the live forwarding stops.
+    ///
+    /// The generation check is what makes a handover safe. A client that
+    /// reconnects before the old connection has noticed it is dead preempts
+    /// the slot, and the old reader then finishes and calls this — without
+    /// the check it would tear down the *new* client's stream and mark a
+    /// session detached that in fact has someone attached, handing it to the
+    /// reaper. Returns whether this call actually detached anything.
+    pub fn drop_attachment(&self, generation: u64) -> bool {
         let mut slot = self.attachment.lock().unwrap();
+        match slot.as_ref() {
+            Some(current) if current.generation != generation => return false,
+            None => return false,
+            _ => {}
+        }
         *slot = None;
-        drop(slot);
+        // Timestamp under the same lock that cleared the slot — see
+        // `install_attachment` for why the two must move together.
         self.detach.lock().unwrap().detached_at = Some(Instant::now());
+        drop(slot);
+        true
     }
 
     pub fn is_attached(&self) -> bool {
         self.attachment.lock().unwrap().is_some()
+    }
+
+    /// Generation of the most recently installed attachment. Useful for log
+    /// correlation; a connection tearing down its own stream should pass the
+    /// generation from its own [`AttachHandle`] instead, so it cannot detach
+    /// a successor that preempted it.
+    pub fn attachment_generation(&self) -> u64 {
+        self.attachment_generation.load(Ordering::Relaxed)
     }
 
     /// True when the session has been detached for at least `grace`. While
@@ -349,6 +505,84 @@ impl Session {
 
     pub fn has_outstanding_requests(&self) -> bool {
         !self.outstanding.lock().unwrap().is_empty()
+    }
+
+    /// Mark a turn as running until the returned guard is dropped. Callers
+    /// hold it for the whole turn — from accepting the prompt to emitting the
+    /// terminal event — so the session survives a client that goes away in
+    /// the middle.
+    pub fn begin_turn(self: &Arc<Self>) -> TurnGuard {
+        self.active_turns.fetch_add(1, Ordering::SeqCst);
+        TurnGuard {
+            session: Arc::clone(self),
+        }
+    }
+
+    pub fn has_active_turns(&self) -> bool {
+        self.active_turns.load(Ordering::SeqCst) > 0
+    }
+
+    /// Claim the session on behalf of a connection that is about to attach.
+    /// Held until that connection is finished, so the reaper cannot drop a
+    /// session mid-handover.
+    pub fn reserve_attach(self: &Arc<Self>) -> AttachReservation {
+        self.attach_reservations.fetch_add(1, Ordering::SeqCst);
+        AttachReservation {
+            session: Arc::clone(self),
+        }
+    }
+
+    /// Reclaim an abandoned session: fail everything waiting on the client
+    /// and tell any running turn to stop.
+    ///
+    /// Removing the registry's `Arc` is not enough to free anything — an
+    /// approval future holds the session through its own chain of `Arc`s, so
+    /// the pending responder, the ring and the agent process all stay alive,
+    /// now permanently unreachable. Cancelling is what actually unwinds them:
+    /// the awaiting handlers resolve with `ConnectionClosed` and drop their
+    /// references, and the turn observing [`Session::cancelled`] winds down
+    /// and releases its process.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancel_signal.notify_waiters();
+        self.cancel_all_pending();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once the session has been reclaimed. Producers select on it
+    /// alongside their own work so an abandoned turn does not run on forever.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.cancel_signal.notified();
+        // Re-check after arming: `cancel` may have fired in between, and the
+        // notification it sent has no waiter to wake.
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+
+    /// Whether a connection is partway through taking this session over.
+    /// Even the hard backstop respects it: dropping a session while a client
+    /// is attaching would strand that connection on an unregistered Arc.
+    pub fn has_pending_attach(&self) -> bool {
+        self.attach_reservations.load(Ordering::SeqCst) > 0
+    }
+
+    /// Whether the session has work or a claim that must not be thrown away:
+    /// a turn in flight, an approval prompt waiting on a human, or a
+    /// connection partway through attaching. The first two are states the
+    /// user expects to still be there when they reopen the app; the third is
+    /// a client that is picking the session up right now.
+    pub fn is_busy(&self) -> bool {
+        self.has_active_turns()
+            || self.has_outstanding_requests()
+            || self.attach_reservations.load(Ordering::SeqCst) > 0
     }
 
     /// Read-only snapshot of `(current_seq, floor_seq)`. Useful for probing
@@ -374,6 +608,26 @@ fn stamp_alleycat_seq(payload: &mut Value, seq: u64) {
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("_alleycat_seq".to_string(), Value::from(seq));
     }
+}
+
+/// True when `payload` is a server→client request whose id is still unanswered
+/// — one the replay notification is about to restore, so the ring's copy of it
+/// must not go out as well.
+fn is_unanswered_server_request(
+    payload: &Value,
+    outstanding: &HashMap<String, OutstandingRequest>,
+) -> bool {
+    if outstanding.is_empty() || payload.get("method").and_then(Value::as_str).is_none() {
+        return false;
+    }
+    // Request ids are keyed by their `Display` form, which is the bare string
+    // for string ids and the digits for numeric ones.
+    let key = match payload.get("id") {
+        Some(Value::String(id)) => id.clone(),
+        Some(Value::Number(id)) => id.to_string(),
+        _ => return false,
+    };
+    outstanding.contains_key(&key)
 }
 
 fn outstanding_replay_message(outstanding: &HashMap<String, OutstandingRequest>) -> Option<Value> {
@@ -500,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn outstanding_replay_emitted_on_resume_only() {
+    fn outstanding_replay_emitted_whenever_something_awaits_the_user() {
         let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
         session.enqueue(notif("first"));
         let (tx, _rx) = oneshot::channel();
@@ -510,13 +764,44 @@ mod tests {
             serde_json::json!({"command": "rm -rf /"}),
             tx,
         );
-        // Fresh attach: no replay redelivery even with outstanding present.
+        // However the client arrives, it has to learn that a prompt is
+        // parked on it — otherwise the turn just looks stuck.
         let h_fresh = session.install_attachment(None);
-        assert!(h_fresh.replay_redelivery.is_none());
-        // Re-attach within window: redelivery emitted.
+        assert!(h_fresh.replay_redelivery.is_some());
         session.enqueue(notif("second"));
         let h_resume = session.install_attachment(Some(1));
         assert!(h_resume.replay_redelivery.is_some());
+    }
+
+    #[test]
+    fn outstanding_replay_survives_a_drifted_reattach() {
+        // Came back after a long absence: the ring rolled over, so there is
+        // no backlog to replay. The waiting approval is exactly what the
+        // client still needs, and it is all it will get.
+        let session = Session::new("pi", "node-abc".into(), 2, 1 << 20);
+        let (tx, _rx) = oneshot::channel();
+        session.register_pending(
+            "req-1".into(),
+            "command/approve".into(),
+            serde_json::json!({"command": "cargo install"}),
+            tx,
+        );
+        for _ in 0..5 {
+            session.enqueue(notif("chatter"));
+        }
+        let handle = session.install_attachment(Some(0));
+        assert!(matches!(handle.outcome, AttachOutcome::DriftReload));
+        assert!(handle.backlog.is_empty());
+        assert!(handle.replay_redelivery.is_some());
+    }
+
+    #[test]
+    fn no_replay_redelivery_when_nothing_awaits_the_user() {
+        let session = Session::new("pi", "node-abc".into(), 16, 1 << 20);
+        session.enqueue(notif("first"));
+        session.enqueue(notif("second"));
+        let handle = session.install_attachment(Some(1));
+        assert!(handle.replay_redelivery.is_none());
     }
 
     #[test]
@@ -544,7 +829,7 @@ mod tests {
         assert!(!session.detached_for(Duration::from_millis(0)));
         let _h = session.install_attachment(None);
         assert!(!session.detached_for(Duration::from_millis(0)));
-        session.drop_attachment();
+        session.drop_attachment(session.attachment_generation());
         assert!(session.detached_for(Duration::from_millis(0)));
     }
 }

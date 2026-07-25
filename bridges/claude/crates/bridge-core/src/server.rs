@@ -209,6 +209,10 @@ where
     if let Some(params) = attach_params(&first) {
         let resolved = registry.resolve_attach(params.session_key.clone(), agent, params.last_seen);
         write_json_line(&mut writer, &attached_ack(&params.session_key, &resolved)).await?;
+        // Held for the whole connection: it covers the gap between claiming
+        // the session and installing the attachment, and costs nothing after
+        // that, since an attached session is never idle anyway.
+        let _reservation = resolved.reservation;
         return serve_split_with_session(
             bridge,
             reader,
@@ -413,13 +417,19 @@ where
     let conn = Conn::from_session(Arc::clone(&session));
 
     let attach = session.install_attachment(last_seen);
+    // Only this connection's own attachment may be torn down below. A client
+    // that reconnects before we notice this socket is dead has already
+    // preempted the slot, and detaching it here would kill the live stream it
+    // just set up — and mark a session detached that someone is attached to,
+    // which hands a live session to the reaper.
+    let generation = attach.generation;
     let writer_task = tokio::spawn(drain_attachment(writer, attach, Arc::clone(&session)));
 
     if let Some(value) = pending {
         dispatch_inbound(&bridge, &conn, value).await;
     }
     let result = run_reader(bridge, &conn, &mut reader).await;
-    session.drop_attachment();
+    session.drop_attachment(generation);
     let _ = writer_task.await;
     result
 }
