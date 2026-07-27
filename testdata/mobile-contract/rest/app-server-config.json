@@ -1,0 +1,46 @@
+{
+  "gateway_ws_url": "ws://100.64.0.8:8787/api/app-server/ws",
+  "runtime": {
+    "type": "codex",
+    "transport": "websocket",
+    "managed": true,
+    "gateway_available": true,
+    "upstream_configured": true,
+    "running": true,
+    "initialized": true,
+    "pending_requests": 0
+  },
+  "channels": [
+    {
+      "id": "codex",
+      "runtime_id": "codex",
+      "title": "Codex",
+      "provider": "codex",
+      "type": "app-server",
+      "protocol": "codex-app-server",
+      "gateway_ws_url": "ws://100.64.0.8:8787/api/app-server/ws",
+      "gateway_available": true,
+      "managed": true,
+      "experimental": false,
+      "lifecycle": "ready",
+      "methods": ["initialize", "thread/list", "thread/start", "thread/resume", "turn/start", "turn/interrupt"],
+      "capabilities": {
+        "threads": true,
+        "turns": true,
+        "approvals": true
+      }
+    }
+  ],
+  "projects": [
+    {
+      "id": "project-mimi",
+      "name": "mimi-remote",
+      "path": "/Users/test/code/mimi-remote"
+    }
+  ],
+  "policy": {
+    "allowed_methods": ["initialize", "thread/list", "thread/start", "thread/resume", "turn/start", "turn/interrupt"],
+    "projects_source": "config"
+  }
+}
+

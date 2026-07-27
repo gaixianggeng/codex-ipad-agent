@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "thread": {
+        "id": "thr-search-1",
+        "name": "Named session",
+        "preview": "Fallback preview",
+        "cwd": "/repo/one",
+        "createdAt": 1780490000,
+        "updatedAt": 1780490100
+      },
+      "snippet": "Matched historical text"
+    },
+    {
+      "thread": {
+        "id": "thr-search-2",
+        "preview": "Second session",
+        "cwd": "/repo/two",
+        "created_at": 1780490200,
+        "updated_at": 1780490300
+      },
+      "snippet": "Another match"
+    }
+  ],
+  "nextCursor": "search-next"
+}

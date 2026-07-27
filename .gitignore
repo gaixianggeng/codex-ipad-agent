@@ -44,3 +44,11 @@ docs/ios-markdown-rendering-design.md
 /logs/
 *.log
 *.tmp
+
+# Android local environment and build output
+android/.gradle/
+android/local.properties
+android/**/build/
+android/captures/
+*.apk
+*.aab

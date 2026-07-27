@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "product_baseline": "c3c8326",
+  "fixtures": [
+    "rest/health.json",
+    "rest/pairing-claim-request.json",
+    "rest/pairing-claim-response.json",
+    "rest/projects.json",
+    "rest/app-server-config.json",
+    "rest/git-status.json",
+    "app-server/conversation.ndjson",
+    "app-server/history-page.json"
+  ]
+}

@@ -10,7 +10,7 @@
 
 使用前请确认：
 
-- iPhone 或 iPad 运行 App 支持的系统版本。
+- iPhone、iPad 或 Android 设备运行 App 支持的系统版本。
 - Mac 已安装并登录 Codex CLI。
 - Mac 已通过 Homebrew 安装并启动 `mimi-remote` 后端。
 - 移动设备能够通过局域网、Tailscale 私有网络或用户配置的 HTTPS 地址访问 Mac。
@@ -33,7 +33,7 @@ agentd status
 3. 在 App 中打开“设置 → 诊断与支持”，运行连接测速并查看失败阶段。
 4. 重新执行 `agentd pair`，使用新的二维码配对。
 
-删除本地连接资料：在“设置 → Mac 连接”中选择“忘记连接”或删除连接档案。这样会删除对应配置和 Keychain Token。删除 App 前建议先完成此操作。
+删除本地连接资料：在“设置 → Mac 连接”中选择“忘记连接”或删除连接档案。这样会删除对应配置，以及 Keychain 或 Android Keystore 保护的 Token。删除 App 前建议先完成此操作。
 
 ### 风险与优化
 
@@ -51,7 +51,7 @@ This page provides installation, connection, diagnostics, data-deletion, and con
 
 Before using the app, confirm that:
 
-- Your iPhone or iPad runs a supported system version.
+- Your iPhone, iPad, or Android device runs a supported system version.
 - Codex CLI is installed and signed in on your Mac.
 - The `mimi-remote` backend is installed with Homebrew and running on the Mac.
 - The mobile device can reach the Mac over a local network, a private Tailscale network, or an HTTPS endpoint you configure.
@@ -74,7 +74,7 @@ If connection fails:
 3. Open Settings → Diagnostics & Support in the app, run the connection speed test, and inspect the failed stage.
 4. Run `agentd pair` again and pair with a fresh QR code.
 
-To remove local connection data, choose Forget Connection or delete the connection profile under Settings → Mac Connection. This removes its configuration and Keychain token. Do this before uninstalling if you want credentials explicitly removed.
+To remove local connection data, choose Forget Connection or delete the connection profile under Settings → Mac Connection. This removes its configuration and its Keychain or Android-Keystore-protected token. Do this before uninstalling if you want credentials explicitly removed.
 
 ### Contact and safe reporting
 

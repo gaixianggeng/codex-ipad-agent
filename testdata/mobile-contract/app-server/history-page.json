@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "id": "turn-new",
+      "items": [
+        {"type": "userMessage", "id": "user-new", "content": [{"type": "text", "text": "New question"}]},
+        {"type": "agentMessage", "id": "assistant-new", "text": "New answer", "phase": "final_answer"}
+      ]
+    },
+    {
+      "id": "turn-old",
+      "items": [
+        {"type": "userMessage", "id": "user-old", "content": [{"type": "text", "text": "Old question"}]},
+        {"type": "agentMessage", "id": "assistant-old", "text": "Old answer", "phase": "final_answer"}
+      ]
+    }
+  ],
+  "nextCursor": "older-page"
+}

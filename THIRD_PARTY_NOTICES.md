@@ -2,9 +2,9 @@
 
 ## 目标
 
-本文件随 Mimi Remote 源码、`agentd` 发布压缩包和 iOS App 一起分发，用于保留直接依赖及其已解析依赖的版权声明、NOTICE 和许可证正文。
+本文件随 Mimi Remote 源码、`agentd` 发布压缩包、iOS App 和 Android App 一起分发，用于保留直接依赖及其已解析依赖的版权声明、NOTICE 和许可证正文。
 
-Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时，其依赖版本再以 `ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` 为准。测试依赖不会进入正式运行时，但仍在这里保留声明，方便源码分发和审计。
+Go 依赖版本以 `go.mod`、`go.sum` 为准；iOS 依赖版本以 `ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` 为准；Android 直接依赖版本以 `android/gradle/libs.versions.toml` 和 Gradle 已解析运行时图为准。测试依赖不会进入正式运行时，但仍可在源码分发中保留声明，方便审计。
 
 ## 依赖清单
 
@@ -23,8 +23,57 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `swift-snapshot-testing` | `1.19.2` | iOS 测试 |
 | `swift-custom-dump` | `1.6.0` | iOS 测试 |
 | `xctest-dynamic-overlay` | `1.9.0` | iOS 测试 |
+| `AndroidX / Jetpack Compose` | Compose BOM `2026.06.00`；Core `1.19.0`；Activity `1.13.0`；Lifecycle `2.11.0`；DataStore `1.2.1`；Navigation 3 `1.1.4`；Material 3 Adaptive `1.2.0`；CameraX `1.6.1` | Android 运行时 |
+| `Kotlin / kotlinx.coroutines / kotlinx.serialization` | Kotlin 插件 `2.3.21`；Coroutines `1.11.0`；Serialization `1.11.0` | Android 运行时 |
+| `OkHttp` | `5.4.0` | Android 运行时 |
+| `Coil` | `3.5.0` | Android 运行时 |
+| `commonmark-java`、GFM tables/strikethrough/task-list extensions | `0.29.0` | Android 运行时 |
+| `Google ML Kit Barcode Scanning` | `17.3.0` | Android 运行时；适用 Google APIs Terms of Service |
 
 ## 许可证正文
+
+### AndroidX、Jetpack Compose、Kotlin、kotlinx、OkHttp、Coil 与 CameraX
+
+使用范围：Android 运行时
+
+上述项目依各自发布包中的声明按 Apache License 2.0 提供。本文件下方已完整保留 Apache License 2.0 正文。
+
+### commonmark-java 0.29.0
+
+使用范围：Android 运行时
+
+```text
+Copyright (c) 2015, Robin Stocker
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```
+
+### Google ML Kit Barcode Scanning 17.3.0
+
+使用范围：Android 运行时
+
+Google ML Kit Barcode Scanning SDK 及其 Google Play services/ODML 组件不是以本文件中的开源许可证重新授权。其使用受 [Google APIs Terms of Service](https://developers.google.com/terms) 及随 SDK 发布的适用条款约束。
 
 ### Go standard library/runtime go1.25.0
 

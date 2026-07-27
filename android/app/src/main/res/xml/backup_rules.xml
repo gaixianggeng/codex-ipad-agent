@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="credentials/" />
+    <exclude domain="file" path="queue/" />
+    <exclude domain="root" path="." />
+</full-backup-content>
+

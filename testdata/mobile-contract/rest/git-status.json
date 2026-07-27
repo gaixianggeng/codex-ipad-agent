@@ -1,0 +1,21 @@
+{
+  "path": "/Users/test/code/mimi-remote",
+  "is_repository": true,
+  "branch": "main",
+  "head": "abc1234",
+  "status_text": " M android/app/src/main/MainActivity.kt",
+  "diff_stat": "1 file changed, 2 insertions(+)",
+  "unstaged_diff": "diff --git a/android/app/src/main/MainActivity.kt b/android/app/src/main/MainActivity.kt",
+  "staged_diff": null,
+  "files": [
+    {
+      "path": "android/app/src/main/MainActivity.kt",
+      "code": " M",
+      "staged": false,
+      "unstaged": true,
+      "untracked": false
+    }
+  ],
+  "truncated": false,
+  "truncated_note": null
+}

@@ -1,0 +1,7 @@
+{
+  "endpoint": "http://100.64.0.8:8787",
+  "issued_at": "2026-07-23T00:00:00Z",
+  "expires_at": "2026-07-23T00:10:00Z",
+  "pair_sig": "test-pair-signature"
+}
+

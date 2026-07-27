@@ -1,0 +1,10 @@
+{"id":1,"result":{"userAgent":"mimi-remote-android","protocolVersion":"1"}}
+{"id":2,"result":{"data":[{"id":"thread-1","preview":"Add retry to network client","cwd":"/Users/test/code/mimi-remote","createdAt":1784764800,"updatedAt":1784764860}],"nextCursor":null}}
+{"method":"thread/started","params":{"thread":{"id":"thread-1","preview":"Add retry to network client","cwd":"/Users/test/code/mimi-remote"}}}
+{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}}
+{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"agentMessage","text":""}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"Working on it."}}
+{"id":"approval-1","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"command-1","reason":"Run unit tests","command":"go test ./...","cwd":"/Users/test/code/mimi-remote"}}
+{"id":"input-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"input-item-1","questions":[{"id":"scope","header":"Test scope","question":"Which tests should run?","isOther":true,"isSecret":false,"multiSelect":false,"options":[{"label":"unit","description":"Run unit tests"},{"label":"all","description":"Run all tests"}]}]}}
+{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"agentMessage","text":"Working on it."}}}
+{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}
