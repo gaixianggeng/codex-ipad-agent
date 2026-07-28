@@ -577,7 +577,7 @@ extension SessionStore {
         runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
         if let session = selectedSession, isExternalReadOnlySession(session) {
-            threadGoalErrorMessage = "Mac · \(L10n.text("ui.just_observe"))"
+            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
         let normalizedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -667,7 +667,7 @@ extension SessionStore {
             return false
         }
         if let session = selectedSession, isExternalReadOnlySession(session) {
-            setErrorMessage("Mac · \(L10n.text("ui.just_observe"))")
+            setErrorMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
         if let notice = selectedQuotaNotice, notice.blocksSending {
@@ -1733,7 +1733,7 @@ extension SessionStore {
         tokenBudget: Int64?
     ) async -> Bool {
         if let session = sessionsByID[threadID], isExternalReadOnlySession(session) {
-            threadGoalErrorMessage = "Mac · \(L10n.text("ui.just_observe"))"
+            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1792,7 +1792,7 @@ extension SessionStore {
             return
         }
         if let session = sessionsByID[sessionID], isExternalReadOnlySession(session) {
-            threadGoalErrorMessage = "Mac · \(L10n.text("ui.just_observe"))"
+            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return
         }
         isUpdatingThreadGoal = true

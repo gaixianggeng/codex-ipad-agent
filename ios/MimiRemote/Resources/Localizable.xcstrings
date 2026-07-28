@@ -13380,6 +13380,23 @@
         }
       }
     },
+    "ui.mac_observe_only" : {
+      "comment" : "Read-only status for a session currently running in Codex Desktop on the Mac.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac · Observe only"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac · 仅观察"
+          }
+        }
+      }
+    },
     "ui.mac_preparation" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState" : "stale",

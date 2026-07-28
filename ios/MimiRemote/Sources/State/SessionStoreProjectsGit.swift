@@ -893,7 +893,7 @@ extension SessionStore {
     @discardableResult
     func toggleSessionArchivedRemote(_ session: AgentSession) async -> Bool {
         guard !isExternalReadOnlySession(session) else {
-            setStatusMessage("Mac · \(L10n.text("ui.just_observe"))")
+            setStatusMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
         let shouldArchive = !archivedSessionIDs.contains(session.id)

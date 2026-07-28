@@ -442,7 +442,7 @@ struct SessionIndexRow: View {
                 SessionRuntimeBadge(session: session, compact: style == .sidebar)
 
                 if isExternalReadOnly {
-                    Text("Mac · \(L10n.text("ui.just_observe"))")
+                    Text(L10n.text("ui.mac_observe_only"))
                         .font(themeStore.uiFont(size: style == .sidebar ? 9 : 11, weight: .semibold))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: true, vertical: false)

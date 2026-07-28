@@ -1283,7 +1283,7 @@ final class SessionStore: ObservableObject {
             return nil
         }
         if let session = selectedSession, isExternalReadOnlySession(session) {
-            return "Mac · \(L10n.text("ui.just_observe"))"
+            return L10n.text("ui.mac_observe_only")
         }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
     }
@@ -1301,7 +1301,7 @@ final class SessionStore: ObservableObject {
 
     func takeOverSession(_ session: AgentSession) {
         guard !isExternalReadOnlySession(session) else {
-            setStatusMessage("Mac · \(L10n.text("ui.just_observe"))")
+            setStatusMessage(L10n.text("ui.mac_observe_only"))
             return
         }
         setSessionControlState(.takenOver, sessionID: session.id)
