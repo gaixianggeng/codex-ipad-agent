@@ -421,79 +421,91 @@ struct SessionIndexRow: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .top, spacing: style == .sidebar ? 8 : 12) {
-            leadingIcon(tokens: tokens)
-
-            VStack(alignment: .leading, spacing: style == .sidebar ? 3 : 7) {
-                HStack(alignment: .center, spacing: 7) {
-                    Text(session.title)
-                        .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(style == .sidebar ? 1 : 2)
-                        .layoutPriority(1)
-
-                    Spacer(minLength: 8)
-
-                    if style == .library {
-                        Text(timestampText)
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.tertiaryText)
-                            .fixedSize()
-                    }
+        VStack(alignment: .leading, spacing: style == .sidebar ? 3 : 7) {
+            HStack(alignment: .center, spacing: 7) {
+                if style == .library {
+                    Circle()
+                        .fill(statusColor(tokens: tokens))
+                        .frame(width: 7, height: 7)
                 }
 
-                HStack(spacing: 6) {
-                    if isPinned { Image(systemName: "pin.fill") }
-                    if isArchived { Image(systemName: "archivebox.fill") }
-                    if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
+                Text(session.title)
+                    .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
 
-                    SessionRuntimeBadge(session: session, compact: style == .sidebar)
+                Spacer(minLength: 8)
 
-                    if isExternalReadOnly {
-                        Text(L10n.text("ui.mac_observe_only"))
-                            .font(themeStore.uiFont(size: style == .sidebar ? 9 : 11, weight: .semibold))
-                            .foregroundStyle(tokens.secondaryText)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
+                if style == .library {
+                    Text(timestampText)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .fixedSize()
+                }
+            }
 
-                    if let branch = session.gitBranchName {
+            HStack(spacing: 6) {
+                if isPinned { Image(systemName: "pin.fill") }
+                if isArchived { Image(systemName: "archivebox.fill") }
+                if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
+
+                SessionRuntimeBadge(session: session, compact: style == .sidebar)
+
+                if isExternalReadOnly {
+                    Text(L10n.text("ui.mac_observe_only"))
+                        .font(themeStore.uiFont(size: style == .sidebar ? 9 : 11, weight: .semibold))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+
+                if let branch = session.gitBranchName {
+                    HStack(spacing: 3) {
+                        // 紫色只用于节点图标，既保留 Git 识别度，也不抢标题和运行状态的层级。
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .font(themeStore.uiFont(size: style == .sidebar ? 8 : 10, weight: .semibold))
+                            .foregroundStyle(tokens.primaryAction)
+                            .accessibilityHidden(true)
+
                         Text(branch)
                             .foregroundStyle(tokens.tertiaryText)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .frame(maxWidth: style == .sidebar ? 100 : 150, alignment: .leading)
-                            .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
                     }
-
-                    Text(session.project.isEmpty ? session.dir : session.project)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    statusLabel(tokens: tokens)
-
-                    if isObserving {
-                        Image(systemName: "eye")
-                            .foregroundStyle(tokens.tertiaryText)
-                            .accessibilityLabel(L10n.text("ui.just_observe"))
-                    }
-
-                    if style == .sidebar {
-                        Text("·")
-                        Text(timestampText)
-                    }
+                    .frame(maxWidth: style == .sidebar ? 100 : 150, alignment: .leading)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
                 }
-                .font(themeStore.uiFont(size: style == .sidebar ? 10 : 12, weight: .regular))
-                .foregroundStyle(tokens.tertiaryText)
-                .lineLimit(1)
 
-                if style == .library,
-                   let searchSnippet,
-                   !searchSnippet.isEmpty {
-                    Text(searchSnippet)
-                        .font(themeStore.uiFont(size: 12, weight: .regular))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(2)
+                Text(session.project.isEmpty ? session.dir : session.project)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                statusLabel(tokens: tokens)
+
+                if isObserving {
+                    Image(systemName: "eye")
+                        .foregroundStyle(tokens.tertiaryText)
+                        .accessibilityLabel(L10n.text("ui.just_observe"))
                 }
+
+                if style == .sidebar {
+                    Text("·")
+                    Text(timestampText)
+                }
+            }
+            .font(themeStore.uiFont(size: style == .sidebar ? 10 : 12, weight: .regular))
+            .foregroundStyle(tokens.tertiaryText)
+            .lineLimit(1)
+
+            if style == .library,
+               let searchSnippet,
+               !searchSnippet.isEmpty {
+                Text(searchSnippet)
+                    .font(themeStore.uiFont(size: 12, weight: .regular))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(2)
             }
         }
         .padding(.horizontal, style == .sidebar ? 10 : 14)
@@ -515,29 +527,6 @@ struct SessionIndexRow: View {
                     .stroke(rowBorder(tokens: tokens), lineWidth: 1)
             }
         }
-    }
-
-    /// 左侧头像是会话类型的第一视觉锚点：Git 会话显示分支，普通会话保持聊天语义。
-    private func leadingIcon(tokens: ThemeTokens) -> some View {
-        let size: CGFloat = style == .sidebar ? 30 : 42
-        let cornerRadius: CGFloat = style == .sidebar ? 8 : 11
-        let hasGitBranch = session.gitBranchName != nil
-        let gitTint = isSelected
-            ? tokens.primaryAction
-            : (session.isRunning ? statusColor(tokens: tokens) : tokens.secondaryText)
-        let gitBackground = isSelected
-            ? tokens.primaryAction.opacity(0.14)
-            : statusColor(tokens: tokens).opacity(session.isRunning ? 0.14 : 0.08)
-
-        return Image(systemName: hasGitBranch ? "arrow.triangle.branch" : "bubble.left.fill")
-            .font(themeStore.uiFont(size: style == .sidebar ? 13 : 17, weight: .semibold))
-            .foregroundStyle(hasGitBranch ? gitTint : tokens.tertiaryText)
-            .frame(width: size, height: size)
-            .background(
-                hasGitBranch ? gitBackground : tokens.elevatedSurface.opacity(0.78),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .accessibilityHidden(true)
     }
 
     private var status: AgentSessionDisplayStatus {

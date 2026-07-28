@@ -1256,7 +1256,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let codex = makeSnapshotSession(
             id: "runtime-codex",
             project: project,
-            title: "优化会话列表",
+            title: "从当前 main 分支创建新的 worktree 并优化会话列表中的分支信息展示",
             status: "completed",
             preview: "Codex 会话",
             context: SessionContextSnapshot(
