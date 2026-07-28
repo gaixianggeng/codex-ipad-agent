@@ -73,7 +73,7 @@ func TestLoadOrCreateInstallationIDRejectsCorruptionWithoutReplacement(t *testin
 	}
 }
 
-func TestLoadOrCreateInstallationIDRejectsUnsafePermissionAndSymlink(t *testing.T) {
+func TestLoadOrCreateInstallationIDRepairsPermissionAndRejectsSymlink(t *testing.T) {
 	valid := "00112233-4455-4677-8899-aabbccddeeff\n"
 
 	t.Run("permission", func(t *testing.T) {
@@ -81,15 +81,44 @@ func TestLoadOrCreateInstallationIDRejectsUnsafePermissionAndSymlink(t *testing.
 		if err := os.WriteFile(path, []byte(valid), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadOrCreateInstallationID(path, bytes.NewReader(make([]byte, 16))); err == nil || !strings.Contains(err.Error(), "0600") {
-			t.Fatalf("宽松权限必须 fail closed：%v", err)
+		got, err := loadOrCreateInstallationID(path, bytes.NewReader(make([]byte, 16)))
+		if err != nil {
+			t.Fatalf("合法身份应自动收紧权限：%v", err)
+		}
+		if got != strings.TrimSpace(valid) {
+			t.Fatalf("权限修复不能轮换安装身份：got=%q", got)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("合法身份权限应收紧为 0600：%04o", info.Mode().Perm())
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != valid {
+			t.Fatalf("权限修复不能改写内容：%q", raw)
+		}
+	})
+
+	t.Run("damaged content with unsafe permission", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), installationIDFileName)
+		const damaged = "not-an-installation-id\n"
+		if err := os.WriteFile(path, []byte(damaged), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadOrCreateInstallationID(path, bytes.NewReader(make([]byte, 16))); err == nil {
+			t.Fatal("格式损坏不能因权限可修复而放行")
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if info.Mode().Perm() != 0o644 {
-			t.Fatalf("加载器不能静默修复或替换异常权限：%04o", info.Mode().Perm())
+			t.Fatalf("内容损坏时不能先修改文件：%04o", info.Mode().Perm())
 		}
 	})
 

@@ -64,6 +64,9 @@ extension SessionStore {
     func deleteConnectionProfile(id: String) async throws {
         try await appStore.deleteConnectionProfile(id: id)
         purgeConnectionProfileData(profileID: id)
+        // 删除重复 endpoint 的非当前 Profile 后，旧版 endpoint 数据可能刚刚变为唯一可归属。
+        // 立即重载本地 Store，避免必须切换 Mac 或手动刷新后才恢复最近工作区等偏好。
+        reloadRecentWorkspaces()
     }
 
     /// 当前 Mac 与非当前 Mac 共用同一条清理路径。先完成 Keychain 提交，再退役连接和清理
