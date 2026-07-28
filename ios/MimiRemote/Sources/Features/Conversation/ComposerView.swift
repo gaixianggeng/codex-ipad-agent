@@ -250,6 +250,10 @@ struct ComposerView: View {
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
         }
+        .onChange(of: composerState.modelSelectionSnapshot()) { _, snapshot in
+            // 模型偏好独立于正文保存；空输入、发送成功和视图重建都不能清掉会话选择。
+            sessionStore.saveComposerModelSelection(snapshot, for: activeComposerDraftScope)
+        }
         .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
             guard let completion,
                   completion.targetScope == activeComposerDraftScope,
@@ -262,11 +266,19 @@ struct ComposerView: View {
             composerState.addAttachment(.uploadedFile(completion.attachment))
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
+            // 会话 scope 的 onChange 可能稍晚到达。此时仍显示旧 Composer，不能先用新
+            // runtime 改写并保存旧会话的模型；scope 切换完成后会统一恢复并校验。
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
         }
         .onChange(of: modelOptionsForMenu) { _, _ in
             // model/list 刷新后能力元数据可能变化；立即清理当前模型已不支持的推理强度。
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
             clampModelSelectionToSelectedSessionRuntime()
         }
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
@@ -303,6 +315,10 @@ struct ComposerView: View {
         .onDisappear {
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
+            sessionStore.saveComposerModelSelection(
+                composerState.modelSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
             cancelVoiceInteraction(clearStatus: true)
             activeSkillQuery = nil
         }
@@ -435,12 +451,16 @@ struct ComposerView: View {
         )
         synchronizeComposerTextBeforeDraftScopeChange()
         let outgoingDraft = composerState.draftSnapshot()
+        let outgoingModelSelection = composerState.modelSelectionSnapshot()
         sessionStore.saveComposerDraft(outgoingDraft, for: previousScope)
+        sessionStore.saveComposerModelSelection(outgoingModelSelection, for: previousScope)
         if isOptimisticHandoff {
             // local:* 只是创建接口返回前的临时身份。服务端 ID 回来时迁移当前可见草稿，
-            // 避免用户正在输入的追加指令被新 scope 的空草稿覆盖。
+            // 避免用户正在输入的追加指令和模型选择被新 scope 的默认值覆盖。
             sessionStore.saveComposerDraft(outgoingDraft, for: nextScope)
+            sessionStore.saveComposerModelSelection(outgoingModelSelection, for: nextScope)
             sessionStore.removeComposerDraft(for: previousScope)
+            sessionStore.removeComposerModelSelection(for: previousScope)
         }
         cancelVoiceInteraction(clearStatus: true)
 
@@ -450,6 +470,8 @@ struct ComposerView: View {
         composerState.setSendMode(restoredSendMode)
         persistComposerSendMode(restoredSendMode, for: nextScope)
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
+        restoreComposerModelSelection(for: nextScope)
+        clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
@@ -473,6 +495,19 @@ struct ComposerView: View {
 
     func persistComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
         sessionStore.saveComposerSendMode(mode, for: scope)
+    }
+
+    func restoreComposerModelSelection(for scope: ComposerDraftScopeKey) {
+        if let snapshot = sessionStore.composerModelSelection(for: scope) {
+            composerState.restoreModelSelectionSnapshot(snapshot)
+            return
+        }
+
+        let runtimeProvider = selectedSessionRuntimeProviderForModelMenu
+            ?? normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider)
+        composerState.updateTurnOptions { options in
+            applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
+        }
     }
 
     func resetComposerSendModeAfterSubmit() {
@@ -1890,8 +1925,10 @@ struct ComposerView: View {
         guard let session = sessionStore.selectedSession else {
             return nil
         }
+        // 新建页已经选择了 runtime；本地草稿的 nil 是 Codex 的协议简写，不表示
+        // 可以再由模型菜单切换到 Claude。
         if session.source == "local", session.runtimeProvider == nil {
-            return nil
+            return "codex"
         }
         return normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
     }
@@ -1901,6 +1938,12 @@ struct ComposerView: View {
             return
         }
         let runtimeChanged = normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider
+        let explicitModelID = composerState.turnOptions.model?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appServerNilIfEmpty
+        let unsupportedModel = !developerModeEnabled &&
+            explicitModelID != nil &&
+            modelOption(matching: explicitModelID) == nil
         let normalizedEffort: CodexAppServerReasoningEffort?
         if developerModeEnabled {
             normalizedEffort = composerState.turnOptions.reasoningEffort.flatMap { effort in
@@ -1918,18 +1961,14 @@ struct ComposerView: View {
         let unsupportedServiceTier = runtimeProvider == "claude"
             && composerState.turnOptions.serviceTier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
-        guard runtimeChanged || unsupportedEffort || unsupportedServiceTier else {
+        guard runtimeChanged || unsupportedModel || unsupportedEffort || unsupportedServiceTier else {
             return
         }
         composerState.updateTurnOptions { options in
-            if runtimeChanged {
-                options.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
-                options.model = nil
-                options.modelProvider = nil
-                options.reasoningEffort = nil
-                if !developerModeEnabled {
-                    normalizeModelControlsForStandardComposer(&options)
-                }
+            if runtimeChanged || unsupportedModel {
+                // 切换 runtime 或目录刷新淘汰旧模型时，使用产品约定默认值：
+                // Codex 为 GPT-5.6 Sol/xhigh，Claude 为 Opus 5/high。
+                applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
             } else if unsupportedEffort {
                 options.reasoningEffort = normalizedEffort
             }
@@ -1937,6 +1976,40 @@ struct ComposerView: View {
                 options.serviceTier = nil
             }
         }
+    }
+
+    func applyPreferredDefaultModel(
+        runtimeProvider: String,
+        to options: inout CodexAppServerTurnOptions
+    ) {
+        guard let option = ModelReasoningGridCatalog.preferredDefaultOption(
+            runtimeProvider: runtimeProvider,
+            options: modelOptionsForMenu
+        ) else {
+            options.runtimeProvider = runtimeProvider == "codex" ? nil : runtimeProvider
+            options.model = nil
+            options.modelProvider = nil
+            options.reasoningEffort = nil
+            options.serviceTier = nil
+            return
+        }
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: runtimeProvider,
+            options: modelOptionsForMenu
+        )
+        let effort = ModelReasoningGridCatalog.preferredDefaultEffort(
+            runtimeProvider: runtimeProvider,
+            option: option,
+            layout: layout
+        )
+        ModelReasoningGridCatalog.applySelection(
+            option: option,
+            effort: effort,
+            preservesServerDefault: false,
+            fallbackRuntimeProvider: runtimeProvider == "codex" ? nil : runtimeProvider,
+            to: &options
+        )
+        options.serviceTier = nil
     }
 
     func supportsReasoningEffort(

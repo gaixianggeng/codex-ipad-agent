@@ -179,6 +179,19 @@ final class ConversationStore: ObservableObject {
         touchConversationSession(scopedSessionID)
     }
 
+    /// 本地空草稿被放弃时立即释放消息与索引，避免失败过的首发内容留在不可见缓存中。
+    func reset(sessionID: String) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        let messages = messagesByScopedSessionID[scopedSessionID] ?? []
+        clearConversationSessionState(scopedSessionID: scopedSessionID, messages: messages)
+        guard messagesByScopedSessionID[scopedSessionID] != nil else {
+            return
+        }
+        var next = messagesByScopedSessionID
+        next.removeValue(forKey: scopedSessionID)
+        messagesByScopedSessionID = next
+    }
+
     func setHistory(
         _ history: [CodexHistoryMessage],
         sessionID: String,

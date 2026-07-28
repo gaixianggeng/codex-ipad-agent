@@ -24,6 +24,7 @@ extension SessionStore {
         resume: AgentSession?,
         clientMessageID: ClientMessageID? = nil,
         initialGoalObjective: String? = nil,
+        replacingLocalDraft localDraft: AgentSession? = nil,
         ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
     ) async -> Bool {
         let createIntent = expectedSelectionLease ?? reserveSelectionIntent()
@@ -44,19 +45,39 @@ extension SessionStore {
             return false
         }
         projectID = workspace.id
+        if resume == nil, payload.isEmpty {
+            return createLocalDraftSession(
+                projectID: projectID,
+                runtimeProvider: payload.options.runtimeProvider,
+                ifCurrent: createIntent
+            )
+        }
+        let requestedLocalDraft = localDraft
+        let localDraft = requestedLocalDraft.flatMap { draft -> AgentSession? in
+            guard draft.isLocalDraft,
+                  draft.projectID == projectID,
+                  isSelectionLeaseCurrent(createIntent),
+                  sessionsByID[draft.id]?.isLocalDraft == true else {
+                return nil
+            }
+            return draft
+        }
+        if requestedLocalDraft != nil, localDraft == nil {
+            return false
+        }
         isLoading = true
         defer { isLoading = false }
         let prompt = payload.previewText
-        let optimisticSessionID = optimisticSessionID(
+        let optimisticSessionID = localDraft?.id ?? optimisticSessionID(
             projectID: projectID,
             resume: resume,
             clientMessageID: clientMessageID,
             prompt: prompt
-        ) ?? (resume == nil && payload.isEmpty ? "local:\(projectID):\(UUID().uuidString)" : nil)
+        )
         var optimisticSelectionLease: SessionSelectionLease?
         if let optimisticSessionID {
-            // 空会话也先发布本地占位，让 UI 立即离开创建弹窗；带首轮输入时继续用
-            // client_message_id 合并本地气泡，服务端确认后再迁移到真实 session_id。
+            // 本地草稿或带首轮输入的新会话先发布运行态占位；服务端确认后再用
+            // client_message_id 合并本地气泡并迁移到真实 session_id。
             if resume == nil {
                 upsert(makeOptimisticSession(
                     id: optimisticSessionID,
@@ -119,6 +140,8 @@ extension SessionStore {
                     // 真实 ID 的预览/最近活动投影当成孤儿清掉，造成新会话瞬间回跳或消失。
                     upsert(responseSession)
                     removeSession(optimisticSessionID)
+                    conversationStore.reset(sessionID: optimisticSessionID)
+                    logStore.reset(sessionID: optimisticSessionID)
                 }
             }
             upsert(responseSession)
@@ -244,8 +267,15 @@ extension SessionStore {
                     clearSessionListProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
                 }
                 clearSessionRecentActivityProjection(sessionID: optimisticSessionID, clientMessageID: clientMessageID)
-                updateSession(optimisticSessionID) { item in
-                    item.status = "failed"
+                if let localDraft {
+                    // 首发失败不销毁草稿，也不能把它改成普通 failed 会话；用户修正配置或
+                    // 网络恢复后应能直接重试，且重试仍然是 thread/start 而不是 thread/resume。
+                    upsert(localDraft)
+                    setSessionRecentActivityProjection(sessionID: localDraft.id, clientMessageID: nil)
+                } else {
+                    updateSession(optimisticSessionID) { item in
+                        item.status = "failed"
+                    }
                 }
                 clearForegroundActivity(sessionID: optimisticSessionID)
             }
@@ -267,6 +297,10 @@ extension SessionStore {
 
     @discardableResult
     func loadHistoryIfNeeded(for session: AgentSession) async -> Bool {
+        // 本地草稿没有服务端 thread，更没有 rollout；所有历史读取都必须短路。
+        if session.isLocalDraft {
+            return true
+        }
         if canReuseFreshEmptyHistory(for: session) {
             return true
         }
@@ -304,6 +338,9 @@ extension SessionStore {
         allowPolicyRetry: Bool = true,
         recoveryGeneration: UInt64? = nil
     ) async -> Bool {
+        if session.isLocalDraft {
+            return true
+        }
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
             return true
         }
@@ -1247,6 +1284,11 @@ extension SessionStore {
         selectionLease: SessionSelectionLease
     ) async {
         guard isSelectionLeaseCurrent(selectionLease) else { return }
+        if session.isLocalDraft {
+            // 会话列表轮询可以保留选中的本地草稿，但绝不能为它读历史或建立订阅。
+            disconnectWebSocket()
+            return
+        }
         await loadHistoryIfNeeded(for: session)
         guard isSelectionLeaseCurrent(selectionLease) else { return }
         if session.isRunning {
@@ -1287,6 +1329,11 @@ extension SessionStore {
         guard generation == recoveryHistoryGeneration,
               let session = sessionsByID[sessionID] else {
             return false
+        }
+        if session.isLocalDraft {
+            reconciledRecoveryGenerationBySessionID[sessionID] = generation
+            recoveryHistorySucceededBySessionID[sessionID] = true
+            return true
         }
         let didLoad = await loadHistory(
             for: session,
@@ -1681,6 +1728,58 @@ extension SessionStore {
         return "local:\(projectID):\(clientMessageID)"
     }
 
+    @discardableResult
+    func createLocalDraftSession(
+        projectID: String,
+        runtimeProvider: String?,
+        ifCurrent selectionIntent: SessionSelectionLease
+    ) -> Bool {
+        guard isSelectionLeaseCurrent(selectionIntent) else {
+            return false
+        }
+        // 单窗口只保留一个尚未发送的草稿。切换工作区或再次点击新建时直接丢弃旧草稿，
+        // 避免侧栏积累永远无法从服务端恢复的 local:* 项。
+        discardLocalDraftSessions()
+        let draft = makeLocalDraftSession(
+            id: "local:\(projectID):\(UUID().uuidString)",
+            projectID: projectID,
+            runtimeProvider: runtimeProvider
+        )
+        upsert(draft)
+        setSessionRecentActivityProjection(sessionID: draft.id, clientMessageID: nil)
+        guard commitSelection(
+            projectID: projectID,
+            sessionID: draft.id,
+            reason: .userOpen,
+            ifCurrent: selectionIntent
+        ) != nil else {
+            discardLocalDraft(draft)
+            return false
+        }
+        insertExpandedProjectID(projectID)
+        disconnectWebSocket()
+        setStatusMessage(L10n.text("ui.session_started"))
+        setErrorMessage(nil)
+        return true
+    }
+
+    func makeLocalDraftSession(id: SessionID, projectID: String, runtimeProvider: String?) -> AgentSession {
+        let project = sidebarProjectsByID[projectID] ?? projectsByID[projectID]
+        return AgentSession(
+            id: id,
+            projectID: projectID,
+            project: project?.name ?? projectID,
+            dir: project?.path ?? "",
+            title: L10n.text("ui.new_session"),
+            status: "draft",
+            source: Self.optimisticSessionSource,
+            runtimeProvider: runtimeProvider,
+            resumeID: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+    }
+
     func makeOptimisticSession(id: SessionID, projectID: String, prompt: String, runtimeProvider: String?) -> AgentSession {
         let project = sidebarProjectsByID[projectID] ?? projectsByID[projectID]
         let title = Self.promptTitle(prompt)
@@ -1698,6 +1797,22 @@ extension SessionStore {
             updatedAt: Date(),
             preview: prompt
         )
+    }
+
+    func discardLocalDraftSessions(except retainedSessionID: SessionID? = nil) {
+        let drafts = sessions.filter { $0.isLocalDraft && $0.id != retainedSessionID }
+        for draft in drafts {
+            discardLocalDraft(draft)
+        }
+    }
+
+    func discardLocalDraft(_ draft: AgentSession) {
+        guard draft.isLocalDraft else {
+            return
+        }
+        conversationStore.reset(sessionID: draft.id)
+        logStore.reset(sessionID: draft.id)
+        removeSession(draft.id)
     }
 
     func removeSession(_ id: SessionID) {
