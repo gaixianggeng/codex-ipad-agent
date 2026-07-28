@@ -34,7 +34,7 @@ enum MimiFileContextCodec {
     private static let headerSuffix = ">"
     private static let contentStart = "<file_content>"
     private static let contentEnd = "</file_content>"
-    private static let textElementType = "mimi_file_context"
+    private static let legacyTextElementType = "mimi_file_context"
 
     private struct EnvelopeMetadata: Codable, Hashable {
         let version: Int
@@ -113,17 +113,10 @@ enum MimiFileContextCodec {
             \(contentEnd)
             """
         }
-        return .text(
-            text,
-            textElements: [
-                .object([
-                    "type": .string(textElementType),
-                    "version": .int(Int64(version)),
-                    "upload_id": .string(file.uploadID),
-                    "page_image_count": .int(Int64(file.pageImageDataURLs.count))
-                ])
-            ]
-        )
+        // app-server 的 text_elements 只接受带 byteRange 的标准 TextElement，
+        // 不能用它承载 Mimi 私有元数据。文件恢复信息已完整编码在首行 header，
+        // 因此保持空数组即可兼容不同版本的 app-server。
+        return .text(text)
     }
 
     /// 把 app-server 历史中的内部文本 + 连续页面图还原为本地文件附件。
@@ -187,7 +180,7 @@ enum MimiFileContextCodec {
         if !textElements.isEmpty {
             let validElement = textElements.contains { element in
                 guard let object = element.objectValue else { return false }
-                return object["type"]?.stringValue == textElementType &&
+                return object["type"]?.stringValue == legacyTextElementType &&
                     object["version"]?.intValue == version &&
                     object["upload_id"]?.stringValue == metadata.uploadID &&
                     object["page_image_count"]?.intValue == metadata.pageImageCount

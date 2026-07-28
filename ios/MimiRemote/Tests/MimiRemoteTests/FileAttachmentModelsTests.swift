@@ -45,6 +45,7 @@ final class FileAttachmentModelsTests: XCTestCase {
         XCTAssertEqual(values.count, 4)
         XCTAssertEqual(values[0].objectValue?["type"]?.stringValue, "text")
         XCTAssertEqual(values[1].objectValue?["type"]?.stringValue, "text")
+        XCTAssertEqual(values[1].objectValue?["text_elements"]?.arrayValue, [])
         XCTAssertEqual(values[2].objectValue?["type"]?.stringValue, "image")
         XCTAssertEqual(values[3].objectValue?["type"]?.stringValue, "image")
         XCTAssertFalse(values.contains {
