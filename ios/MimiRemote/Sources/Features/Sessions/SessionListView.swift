@@ -430,7 +430,8 @@ struct SessionIndexRow: View {
                 Text(session.title)
                     .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(tokens.primaryText)
-                    .lineLimit(style == .sidebar ? 1 : 2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .layoutPriority(1)
 
                 Spacer(minLength: 8)
@@ -449,6 +450,24 @@ struct SessionIndexRow: View {
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
                 SessionRuntimeBadge(session: session, compact: style == .sidebar)
+
+                if let branch = session.gitBranchName {
+                    HStack(spacing: 3) {
+                        // 紫色只用于节点图标，既保留 Git 识别度，也不抢标题和运行状态的层级。
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .font(themeStore.uiFont(size: style == .sidebar ? 8 : 10, weight: .semibold))
+                            .foregroundStyle(tokens.primaryAction)
+                            .accessibilityHidden(true)
+
+                        Text(branch)
+                            .foregroundStyle(tokens.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .frame(maxWidth: style == .sidebar ? 100 : 150, alignment: .leading)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
+                }
 
                 Text(session.project.isEmpty ? session.dir : session.project)
                     .lineLimit(1)

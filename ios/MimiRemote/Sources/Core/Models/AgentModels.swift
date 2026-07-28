@@ -104,6 +104,15 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var goal: ThreadGoal?
     let context: SessionContextSnapshot?
 
+    /// 会话列表只认有名称的分支；空白值和 detached HEAD 不应伪装成可读分支。
+    var gitBranchName: String? {
+        guard let branch = context?.git?.branch?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !branch.isEmpty else {
+            return nil
+        }
+        return branch
+    }
+
     var isAppServerHistory: Bool {
         status == "history"
     }

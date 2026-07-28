@@ -1255,9 +1255,12 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let codex = makeSnapshotSession(
             id: "runtime-codex",
             project: project,
-            title: "优化会话列表",
+            title: "从当前 main 分支创建新的 worktree 并优化会话列表中的分支信息展示",
             status: "completed",
-            preview: "Codex 会话"
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "feature/session-git-branch-indicator")
+            )
         )
         let claude = makeSnapshotSession(
             id: "runtime-claude",
@@ -1436,7 +1439,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil,
         goal: ThreadGoal? = nil,
-        runtimeProvider: String? = nil
+        runtimeProvider: String? = nil,
+        context: SessionContextSnapshot? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -1457,7 +1461,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             usage: usage,
             rateLimit: rateLimit,
             pendingApproval: pendingApproval,
-            goal: goal
+            goal: goal,
+            context: context
         )
     }
 }
