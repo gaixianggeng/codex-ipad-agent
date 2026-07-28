@@ -1027,8 +1027,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             id: "gpt-5.6-sol",
             title: "GPT-5.6 Sol",
             description: "Detail and polish",
+            isDefault: true,
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-            defaultReasoningEffort: "low"
+            defaultReasoningEffort: "xhigh"
         ),
         CodexAppServerModelOption(
             id: "gpt-5.6-terra",
@@ -1044,7 +1045,7 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
             defaultReasoningEffort: "medium"
         ),
-        CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true),
+        CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5"),
         CodexAppServerModelOption(id: "gpt-5-codex", title: "gpt-5-codex"),
         CodexAppServerModelOption(id: "gpt-5.1-codex", title: "gpt-5.1-codex"),
         CodexAppServerModelOption(id: "gpt-5", title: "gpt-5"),

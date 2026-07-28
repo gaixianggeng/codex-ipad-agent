@@ -914,7 +914,8 @@ extension SessionStore {
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
-        Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
+        !session.isLocalDraft
+            && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
     }
 
     @discardableResult

@@ -2353,6 +2353,56 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(composerState.isGoalModeSelected)
     }
 
+    func testComposerModelSelectionCacheRestoresEachSessionIndependently() throws {
+        let codexScope = ComposerDraftScopeKey.session("thread-codex")
+        let claudeScope = ComposerDraftScopeKey.session("thread-claude")
+        var cache = ComposerModelSelectionCache()
+        var codexOptions = CodexAppServerTurnOptions.default
+        codexOptions.model = "gpt-5.6-sol"
+        codexOptions.modelProvider = "openai"
+        codexOptions.reasoningEffort = .xhigh
+        var claudeOptions = CodexAppServerTurnOptions.default
+        claudeOptions.runtimeProvider = "claude"
+        claudeOptions.model = "claude-opus-5"
+        claudeOptions.modelProvider = "anthropic"
+        claudeOptions.reasoningEffort = .high
+
+        cache.save(ComposerModelSelectionSnapshot(options: codexOptions), for: codexScope)
+        cache.save(ComposerModelSelectionSnapshot(options: claudeOptions), for: claudeScope)
+
+        var recreatedComposer = ComposerState()
+        recreatedComposer.restoreModelSelectionSnapshot(
+            try XCTUnwrap(cache.snapshot(for: claudeScope))
+        )
+        XCTAssertEqual(recreatedComposer.turnOptions.runtimeProvider, "claude")
+        XCTAssertEqual(recreatedComposer.turnOptions.model, "claude-opus-5")
+        XCTAssertEqual(recreatedComposer.turnOptions.reasoningEffort, .high)
+
+        recreatedComposer.restoreModelSelectionSnapshot(
+            try XCTUnwrap(cache.snapshot(for: codexScope))
+        )
+        XCTAssertEqual(recreatedComposer.turnOptions.runtimeProvider, codexOptions.runtimeProvider)
+        XCTAssertEqual(recreatedComposer.turnOptions.model, "gpt-5.6-sol")
+        XCTAssertEqual(recreatedComposer.turnOptions.reasoningEffort, .xhigh)
+    }
+
+    func testComposerModelSelectionCacheKeepsExplicitDefaultWhenDraftIsEmpty() throws {
+        let scope = ComposerDraftScopeKey.session("thread-server-default")
+        var cache = ComposerModelSelectionCache()
+        var options = CodexAppServerTurnOptions.default
+        options.model = nil
+        options.modelProvider = nil
+        options.reasoningEffort = .high
+        options.serviceTier = "priority"
+
+        cache.save(ComposerModelSelectionSnapshot(options: options), for: scope)
+
+        let restored = try XCTUnwrap(cache.snapshot(for: scope))
+        XCTAssertNil(restored.model, "显式选择服务端默认模型时必须保留 nil 语义")
+        XCTAssertEqual(restored.reasoningEffort, .high)
+        XCTAssertEqual(restored.serviceTier, "priority")
+    }
+
     func testComposerDraftCacheKeepsDraftsScopedToSessionOrNewProject() {
         let sessionScope = ComposerDraftScopeKey.current(selectedSessionID: "thread-a", selectedProjectID: "project-1")
         let newProjectScope = ComposerDraftScopeKey.current(selectedSessionID: nil, selectedProjectID: "project-1")
@@ -2479,6 +2529,32 @@ final class ConversationDataFlowTests: XCTestCase {
 
         sessionStore.removeComposerDraft(for: scope)
         XCTAssertEqual(sessionStore.composerDraft(for: scope), .empty)
+    }
+
+    func testSessionStoreRetainsComposerModelSelectionAcrossComposerRecreation() throws {
+        let sessionStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let scope = ComposerDraftScopeKey.session("thread-model-recreation")
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        options.model = "opus"
+        options.modelProvider = "anthropic"
+        options.reasoningEffort = .high
+        let expected = ComposerModelSelectionSnapshot(options: options)
+
+        sessionStore.saveComposerModelSelection(expected, for: scope)
+
+        var recreatedComposer = ComposerState()
+        recreatedComposer.restoreModelSelectionSnapshot(
+            try XCTUnwrap(sessionStore.composerModelSelection(for: scope))
+        )
+        XCTAssertEqual(recreatedComposer.modelSelectionSnapshot(), expected)
+
+        sessionStore.removeComposerModelSelection(for: scope)
+        XCTAssertNil(sessionStore.composerModelSelection(for: scope))
     }
 
     /// 这些旧回归专注验证第一遍 activity/process 聚合；外层 work-group 语义由

@@ -413,6 +413,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let workspacePages: [String: SessionsPage]
     let cursorPages: [String: SessionsPage]
     let createSessionResponse: CreateSessionResponse?
+    var createSessionResults: [Result<CreateSessionResponse, Error>]
     let sessionArchiveResults: [String: Result<Void, Error>]
     let sessionForkResults: [String: Result<AgentSession, Error>]
     let threadGoalSetResults: [String: Result<ThreadGoal, Error>]
@@ -508,6 +509,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         workspacePages: [String: SessionsPage] = [:],
         cursorPages: [String: SessionsPage] = [:],
         createSessionResponse: CreateSessionResponse? = nil,
+        createSessionResults: [Result<CreateSessionResponse, Error>] = [],
         sessionArchiveResults: [String: Result<Void, Error>] = [:],
         sessionForkResults: [String: Result<AgentSession, Error>] = [:],
         threadGoalSetResults: [String: Result<ThreadGoal, Error>] = [:],
@@ -554,6 +556,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.workspacePages = workspacePages
         self.cursorPages = cursorPages
         self.createSessionResponse = createSessionResponse
+        self.createSessionResults = createSessionResults
         self.sessionArchiveResults = sessionArchiveResults
         self.sessionForkResults = sessionForkResults
         self.threadGoalSetResults = threadGoalSetResults
@@ -973,6 +976,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
         createPayloads.append(payload)
+        if !createSessionResults.isEmpty {
+            return try createSessionResults.removeFirst().get()
+        }
         guard let createSessionResponse else {
             throw MockError.unimplemented
         }
