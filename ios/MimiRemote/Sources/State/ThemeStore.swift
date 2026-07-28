@@ -300,6 +300,15 @@ extension ThemeTokens {
         }
     }
 
+    /// 会话库与工作区里的大块内容容器复用输入面板的暖石墨层级。
+    /// 最外层仍保持暖黑，既拉开层次，也避免把所有通用 surface 一起提亮。
+    var contentPanelBackground: Color {
+        guard preset == .codex, resolvedScheme == .dark else {
+            return surface
+        }
+        return elevatedSurface
+    }
+
     /// 工作区卡片需要比通用选中底更明确，但不使用发光描边。
     /// 仅默认深色主题采用整块深梅紫，其余外观继续复用各自的选中语义色。
     var workspaceCardSelectionFill: Color {

@@ -579,10 +579,9 @@ struct SessionIndexRow: View {
         guard style == .library else {
             return .clear
         }
-        if session.isRunning {
-            return statusColor(tokens: tokens).opacity(0.06)
-        }
-        return tokens.surface.opacity(0.58)
+        // 会话库行与输入面板使用同一层暖石墨填充；运行状态交给图标和标签表达，
+        // 不再用大面积紫色/状态色染底。
+        return tokens.contentPanelBackground
     }
 
     private func rowBorder(tokens: ThemeTokens) -> Color {

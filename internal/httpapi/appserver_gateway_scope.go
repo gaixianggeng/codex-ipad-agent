@@ -268,9 +268,9 @@ func validateGatewayCollaborationMode(value any) error {
 			return fmt.Errorf("collaborationMode.settings.reasoning_effort 必须是字符串或 null")
 		}
 		switch text {
-		// max 是 Claude 原生 effort 的最高档；网关只做枚举校验，
-		// 具体模型是否支持该档位仍由 runtime 的 model/list 能力约束。
-		case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		// 网关只校验 app-server 已知枚举；具体模型和账号是否支持 Max/Ultra，
+		// 继续交给 runtime 的 model/list 能力与上游校验决定。
+		case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 		default:
 			return fmt.Errorf("collaborationMode.settings.reasoning_effort 不支持：%s", text)
 		}

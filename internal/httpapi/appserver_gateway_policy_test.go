@@ -750,6 +750,16 @@ func TestValidateGatewayCollaborationModeAllowsOptionalModelOnlyWhenSafe(t *test
 			},
 		},
 		{
+			name: "Codex ultra effort is allowed",
+			value: map[string]any{
+				"mode": "default",
+				"settings": map[string]any{
+					"reasoning_effort":       "ultra",
+					"developer_instructions": nil,
+				},
+			},
+		},
+		{
 			name: "unknown effort is rejected",
 			value: map[string]any{
 				"mode": "plan",

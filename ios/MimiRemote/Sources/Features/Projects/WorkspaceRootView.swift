@@ -761,7 +761,7 @@ private struct WorkspaceLibraryCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
         .background(
-            isSelected ? tokens.workspaceCardSelectionFill : tokens.surface,
+            isSelected ? tokens.workspaceCardSelectionFill : tokens.contentPanelBackground,
             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
         .overlay {
@@ -806,7 +806,12 @@ private struct WorkspaceLibraryCard: View {
                         .frame(width: 11, height: 11)
                         .overlay {
                             Circle()
-                                .stroke(tokens.surface, lineWidth: 2)
+                                .stroke(
+                                    isSelected
+                                        ? tokens.workspaceCardSelectionFill
+                                        : tokens.contentPanelBackground,
+                                    lineWidth: 2
+                                )
                         }
                         .offset(x: 1, y: 1)
                         .accessibilityHidden(true)
@@ -1171,8 +1176,9 @@ private struct WorkspaceDetailView: View {
             .padding(.horizontal, 14)
             // 所有快捷入口共用同一个随 Dynamic Type 缩放的高度，视觉和触控面积保持一致。
             .frame(maxWidth: .infinity, minHeight: actionButtonHeight, maxHeight: actionButtonHeight, alignment: .leading)
-            // 快捷入口是立即执行的动作，不是持久选择项；默认统一使用中性背景。
-            .background(tokens.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            // 快捷入口是立即执行的动作；使用与输入面板同层的暖石墨填充，
+            // 在暖黑页面上形成明确但克制的内容层级。
+            .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
@@ -1235,11 +1241,11 @@ private struct WorkspaceDetailView: View {
                     Button(L10n.text("ui.reload"), action: onRefreshSessions)
                 }
                 .frame(maxWidth: .infinity, minHeight: 150)
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else if recentSessions.isEmpty {
                 ContentUnavailableView(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right", description: Text(L10n.text("ui.after_a_new_session_is_created_in_this")))
                     .frame(maxWidth: .infinity, minHeight: 150)
-                    .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 VStack(spacing: 0) {
                     let firstStaleIndex = WorkspaceSessionAgeBoundary.firstStaleIndex(
@@ -1295,7 +1301,7 @@ private struct WorkspaceDetailView: View {
                         .disabled(isLoadingMoreSessions)
                     }
                 }
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(tokens.border.opacity(0.72), lineWidth: 1)
@@ -1316,7 +1322,7 @@ private struct WorkspaceDetailView: View {
                 .font(themeStore.uiFont(.caption2, weight: .medium))
                 .foregroundStyle(tokens.tertiaryText)
                 .padding(.horizontal, 8)
-                .background(tokens.surface)
+                .background(tokens.contentPanelBackground)
                 .fixedSize()
         }
         .padding(.leading, 48)
@@ -1354,7 +1360,7 @@ private struct WorkspaceDetailView: View {
                 }
             }
         }
-        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(tokens.border.opacity(0.72), lineWidth: 1)
