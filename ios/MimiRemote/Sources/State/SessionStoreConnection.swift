@@ -15,6 +15,12 @@ extension SessionStore {
             setWebSocketStatus(.disconnected)
             return
         }
+        // 本地草稿尚无远端 thread id，任何 history/resume/WebSocket 请求都会把 local: id
+        // 误送给 app-server。首条消息创建真实 thread 后再按正常路径连接。
+        guard !session.isLocalDraft else {
+            disconnectWebSocket()
+            return
+        }
         guard connectionTermination == nil, !appStore.requiresRePairing else {
             setWebSocketStatus(.terminated(.credentialsInvalid))
             return
@@ -1737,6 +1743,7 @@ extension SessionStore {
         // endpoint 切换后 session/project ID 可能重复；旧 Mac 的草稿不能恢复到新连接。
         clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
+        composerModelSelectionCache.removeAll()
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()
         queuedRunningTurnsBySessionID.removeAll()

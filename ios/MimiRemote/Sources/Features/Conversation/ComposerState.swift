@@ -133,6 +133,54 @@ struct ComposerDraftCache {
     }
 }
 
+struct ComposerModelSelectionSnapshot: Equatable {
+    var runtimeProvider: String?
+    var model: String?
+    var modelProvider: String?
+    var reasoningEffort: CodexAppServerReasoningEffort?
+    var serviceTier: String?
+
+    init(options: CodexAppServerTurnOptions) {
+        runtimeProvider = options.runtimeProvider
+        model = options.model
+        modelProvider = options.modelProvider
+        reasoningEffort = options.reasoningEffort
+        serviceTier = options.serviceTier
+    }
+
+    func apply(to options: inout CodexAppServerTurnOptions) {
+        options.runtimeProvider = runtimeProvider
+        options.model = model
+        options.modelProvider = modelProvider
+        options.reasoningEffort = reasoningEffort
+        options.serviceTier = serviceTier
+    }
+}
+
+struct ComposerModelSelectionCache {
+    private var snapshotsByScope: [ComposerDraftScopeKey: ComposerModelSelectionSnapshot] = [:]
+
+    mutating func save(_ snapshot: ComposerModelSelectionSnapshot, for scope: ComposerDraftScopeKey) {
+        guard scope != .none else {
+            return
+        }
+        // 模型偏好与正文是否为空无关；即使消息已经发出，也要在切回会话时恢复。
+        snapshotsByScope[scope] = snapshot
+    }
+
+    func snapshot(for scope: ComposerDraftScopeKey) -> ComposerModelSelectionSnapshot? {
+        snapshotsByScope[scope]
+    }
+
+    mutating func remove(scope: ComposerDraftScopeKey) {
+        snapshotsByScope.removeValue(forKey: scope)
+    }
+
+    mutating func removeAll() {
+        snapshotsByScope.removeAll(keepingCapacity: false)
+    }
+}
+
 enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     case requestApproval
     case readOnly
@@ -461,6 +509,14 @@ struct ComposerState {
         voiceDraftBase = nil
         voiceLastRenderedDraft = nil
         voiceRealtimeManualSuffix = ""
+    }
+
+    func modelSelectionSnapshot() -> ComposerModelSelectionSnapshot {
+        ComposerModelSelectionSnapshot(options: turnOptions)
+    }
+
+    mutating func restoreModelSelectionSnapshot(_ snapshot: ComposerModelSelectionSnapshot) {
+        snapshot.apply(to: &turnOptions)
     }
 
     mutating func addAttachment(_ input: CodexAppServerUserInput) {
