@@ -29,6 +29,43 @@ func TestVersionDoesNotRequireConfig(t *testing.T) {
 	}
 }
 
+func TestLoadInstallationIDForServeIsStableAndFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	first, err := loadInstallationIDForServe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadInstallationIDForServe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || second != first {
+		t.Fatalf("serve 必须复用稳定安装身份：first=%q second=%q", first, second)
+	}
+
+	configDir, err := config.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(configDir, "installation-id")
+	if err := os.WriteFile(identityPath, []byte("damaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadInstallationIDForServe(); err == nil || !strings.Contains(err.Error(), "加载 agentd 安装身份失败") {
+		t.Fatalf("损坏身份必须阻止 serve 启动：%v", err)
+	}
+	raw, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "damaged\n" {
+		t.Fatalf("serve 不能静默替换损坏身份：%q", raw)
+	}
+}
+
 func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	fixture := prepareMainLegacyConfigFixture(t)
 	prepareBrewSideEffectProbe(t)

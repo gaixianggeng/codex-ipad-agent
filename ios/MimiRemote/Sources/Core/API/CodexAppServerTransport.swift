@@ -229,7 +229,15 @@ actor CodexAppServerConnection {
         isConnected = false
         isInitialized = false
         failAllPending(with: CodexAppServerConnectionError.disconnected)
-        try await transport.connect(url: url, token: token)
+        do {
+            try await transport.connect(url: url, token: token)
+            // connect() 是 actor 的可重入点：候选切换可能在这里先执行 disconnect()。
+            // 必须在恢复后检查原任务取消态，避免已关闭的 candidate 又继续 initialize。
+            try Task.checkCancellation()
+        } catch {
+            await transport.close()
+            throw error
+        }
         isConnected = true
         isInitialized = false
         receiveTask = Task { [weak self] in

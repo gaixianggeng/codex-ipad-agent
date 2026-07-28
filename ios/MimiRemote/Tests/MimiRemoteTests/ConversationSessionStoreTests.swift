@@ -220,13 +220,19 @@ extension ConversationDataFlowTests {
         store.toggleSessionPinned(older)
         XCTAssertTrue(store.isSessionPinned(older.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [older.id, newer.id])
-        XCTAssertEqual(preferences.load(endpoint: appStore.endpoint).pinnedSessionIDs, [older.id])
+        XCTAssertEqual(
+            preferences.load(profileID: appStore.notificationRoutingProfileID).pinnedSessionIDs,
+            [older.id]
+        )
 
         await store.toggleSessionArchivedRemote(older)
         XCTAssertFalse(store.isSessionPinned(older.id))
         XCTAssertTrue(store.isSessionArchived(older.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [newer.id])
-        XCTAssertEqual(preferences.load(endpoint: appStore.endpoint).archivedSessionIDs, [older.id])
+        XCTAssertEqual(
+            preferences.load(profileID: appStore.notificationRoutingProfileID).archivedSessionIDs,
+            [older.id]
+        )
 
         await store.toggleSessionArchivedRemote(older)
         XCTAssertFalse(store.isSessionArchived(older.id))
@@ -275,13 +281,16 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(reminder.title, session.title)
         XCTAssertEqual(reminder.fireAt, now.addingTimeInterval(30 * 60))
         XCTAssertEqual(scheduler.scheduled, [reminder])
-        XCTAssertEqual(reminderStore.load(endpoint: appStore.endpoint)[session.id], reminder)
+        XCTAssertEqual(
+            reminderStore.load(profileID: appStore.notificationRoutingProfileID)[session.id],
+            reminder
+        )
 
         store.clearSessionReminder(session)
 
         XCTAssertNil(store.sessionReminder(for: session.id))
         XCTAssertEqual(scheduler.canceledSessionIDs, [session.id])
-        XCTAssertTrue(reminderStore.load(endpoint: appStore.endpoint).isEmpty)
+        XCTAssertTrue(reminderStore.load(profileID: appStore.notificationRoutingProfileID).isEmpty)
     }
 
     func testSessionReminderPermissionDeniedKeepsLocalStateButPastRequestDoesNotPersist() async throws {
@@ -309,7 +318,10 @@ extension ConversationDataFlowTests {
         await store.scheduleSessionReminder(session, after: 30 * 60, now: now)
 
         let saved = try XCTUnwrap(store.sessionReminder(for: session.id))
-        XCTAssertEqual(reminderStore.load(endpoint: appStore.endpoint)[session.id], saved)
+        XCTAssertEqual(
+            reminderStore.load(profileID: appStore.notificationRoutingProfileID)[session.id],
+            saved
+        )
         XCTAssertEqual(scheduler.scheduled, [saved])
         XCTAssertEqual(store.statusMessage, L10n.text("ui.the_in_app_reminder_has_been_saved_the"))
         XCTAssertNotEqual(store.statusMessage, L10n.format("ui.reminder_value_has_been_set", session.title))
@@ -317,7 +329,7 @@ extension ConversationDataFlowTests {
         await store.scheduleSessionReminder(session, after: -1, now: now)
 
         XCTAssertNil(store.sessionReminder(for: session.id))
-        XCTAssertTrue(reminderStore.load(endpoint: appStore.endpoint).isEmpty)
+        XCTAssertTrue(reminderStore.load(profileID: appStore.notificationRoutingProfileID).isEmpty)
         XCTAssertEqual(scheduler.scheduled, [saved], "已过期请求不能再进入系统通知调度")
         XCTAssertEqual(scheduler.canceledSessionIDs, [session.id])
         XCTAssertEqual(store.statusMessage, L10n.format("ui.the_reminder_time_has_passed_and_the_reminder", session.title))
@@ -351,7 +363,7 @@ extension ConversationDataFlowTests {
                 expiredAtReload.sessionID: expiredAtReload,
                 expiresInBackground.sessionID: expiresInBackground
             ],
-            endpoint: appStore.endpoint
+            profileID: appStore.notificationRoutingProfileID
         )
         let scheduler = FakeSessionReminderScheduler()
         let store = SessionStore(
@@ -367,7 +379,7 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.sessionReminder(for: expiredAtReload.sessionID))
         XCTAssertEqual(store.sessionReminder(for: expiresInBackground.sessionID), expiresInBackground)
         XCTAssertEqual(
-            reminderStore.load(endpoint: appStore.endpoint),
+            reminderStore.load(profileID: appStore.notificationRoutingProfileID),
             [expiresInBackground.sessionID: expiresInBackground]
         )
         XCTAssertEqual(scheduler.canceledSessionIDs, [expiredAtReload.sessionID])
@@ -376,7 +388,7 @@ extension ConversationDataFlowTests {
         await store.resumeFromForeground()
 
         XCTAssertNil(store.sessionReminder(for: expiresInBackground.sessionID))
-        XCTAssertTrue(reminderStore.load(endpoint: appStore.endpoint).isEmpty)
+        XCTAssertTrue(reminderStore.load(profileID: appStore.notificationRoutingProfileID).isEmpty)
         XCTAssertEqual(
             scheduler.canceledSessionIDs,
             [expiredAtReload.sessionID, expiresInBackground.sessionID]
@@ -579,7 +591,12 @@ extension ConversationDataFlowTests {
             "user-input:session-a:request-2",
             "completed:session-a:turn-1",
             "failed:session-a:turn-2"
-        ].map(UserNotificationSessionReminderScheduler.runtimeNotificationID(for:))
+        ].map {
+            UserNotificationSessionReminderScheduler.runtimeNotificationID(
+                profileID: "mac-a",
+                id: $0
+            )
+        }
         let runtimeID = runtimeIDs[0]
         let defaultOptions: UNNotificationPresentationOptions = [.banner, .sound]
 
@@ -616,7 +633,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             adapter.presentationOptions(
                 forNotificationIdentifier: UserNotificationSessionReminderScheduler.notificationID(
-                    for: currentRoute.sessionID
+                    profileID: currentRoute.profileID,
+                    sessionID: currentRoute.sessionID
                 ),
                 userInfo: otherRoute.userInfo
             ),
@@ -1371,11 +1389,13 @@ extension ConversationDataFlowTests {
             pendingUserInput: request
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         conversationStore.appendSystem("等待补充信息：\(request.title)", sessionID: running.id, kind: .userInput)
         var sockets: [MockWebSocketClient] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -1660,11 +1680,15 @@ extension ConversationDataFlowTests {
         )
         let appStore = AppStore()
         let recentStore = makeRecentWorkspaceStore(
-            workspaces: [
+            workspaces: [],
+            endpoint: appStore.endpoint
+        )
+        recentStore.save(
+            [
                 AgentWorkspace(project: activeProject, lastOpenedAt: Date(timeIntervalSince1970: 20)),
                 AgentWorkspace(project: browsedProject, lastOpenedAt: Date(timeIntervalSince1970: 10))
             ],
-            endpoint: appStore.endpoint
+            profileID: appStore.notificationRoutingProfileID
         )
         let client = MockSessionStoreClient(
             projects: [activeProject, browsedProject],
@@ -1740,7 +1764,10 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(store.projects.map(\.id), [openedProject.id, legacyAutoProject.id, unopenedCandidate.id])
         XCTAssertEqual(store.sidebarProjects.map(\.id), [openedProject.id])
-        XCTAssertEqual(recentStore.load(endpoint: appStore.endpoint).map(\.id), [openedProject.id])
+        XCTAssertEqual(
+            recentStore.load(profileID: appStore.notificationRoutingProfileID).map(\.id),
+            [openedProject.id]
+        )
     }
 
     func testApprovalSummaryDecodesLegacyPayloadAndRequiresDetailsForApproval() throws {
@@ -2125,10 +2152,11 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.remoteSessionSearchResults.isEmpty)
 
         let oldConnectionGeneration = appStore.connectionGeneration
-        XCTAssertTrue(try store.commitPreparedConnection(PreparedConnectionSettings(
+        let didCommit = try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: "http://100.64.0.20:8787",
             token: "new-token"
-        )))
+        ))
+        XCTAssertTrue(didCommit)
         XCTAssertGreaterThan(appStore.connectionGeneration, oldConnectionGeneration)
         XCTAssertEqual(store.sessionSearchQuery, "")
         XCTAssertFalse(store.isSearchingRemoteSessionResults)
@@ -2406,10 +2434,11 @@ extension ConversationDataFlowTests {
         }
         try await waitForThreadSearchQueries(gate, count: 2)
         let oldConnectionGeneration = appStore.connectionGeneration
-        XCTAssertTrue(try store.commitPreparedConnection(PreparedConnectionSettings(
+        let didCommit = try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: "http://100.64.0.20:8787",
             token: "new-token"
-        )))
+        ))
+        XCTAssertTrue(didCommit)
         XCTAssertGreaterThan(appStore.connectionGeneration, oldConnectionGeneration)
         XCTAssertEqual(store.sessionSearchQuery, "", "切换 Mac 后不能保留旧 Mac 的搜索词")
         XCTAssertTrue(store.remoteSessionSearchResults.isEmpty)
@@ -2466,6 +2495,87 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedGitStatusPaths, [session.dir])
         XCTAssertEqual(store.selectedGitStatus?.unstagedDiff, gitStatus.unstagedDiff)
         XCTAssertNil(store.selectedGitStatusErrorMessage)
+    }
+
+    func testLateGitStatusFromPreviousHostCannotOverwriteCurrentHostState() async throws {
+        let suiteName = "ConversationSessionStoreTests.GitHostLease.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let path = "/shared/project"
+        let oldStatus = GitStatusResponse(
+            path: path,
+            isRepository: true,
+            branch: "mac-a",
+            head: "aaa",
+            statusText: " M OLD.md",
+            diffStat: nil,
+            unstagedDiff: "old",
+            stagedDiff: nil,
+            truncated: false,
+            truncatedNote: nil
+        )
+        let currentStatus = GitStatusResponse(
+            path: path,
+            isRepository: true,
+            branch: "mac-b",
+            head: "bbb",
+            statusText: nil,
+            diffStat: nil,
+            unstagedDiff: nil,
+            stagedDiff: nil,
+            truncated: false,
+            truncatedNote: nil
+        )
+        let gate = GitStatusResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            gitStatusHandler: { requestedPath in
+                try await gate.response(for: requestedPath)
+            }
+        )
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+        var clientFactoryCallCount = 0
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: {
+                clientFactoryCallCount += 1
+                return client
+            }
+        )
+        let previousScope = appStore.activeHostScope
+
+        let refreshTask = Task { @MainActor in
+            await store.refreshGitStatus(path: path)
+        }
+        await gate.waitUntilStarted()
+        XCTAssertEqual(clientFactoryCallCount, 1)
+
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "Mac B"),
+            installationID: "installation-b"
+        ))
+        XCTAssertNotEqual(appStore.activeHostScope, previousScope)
+        // 模拟 B 已经发布自己的同路径状态；A 的迟到结果和 defer 都不能覆盖它。
+        store.gitStatusByPath[path] = currentStatus
+        store.isRefreshingGitStatus = true
+
+        await gate.resolve(oldStatus)
+        await refreshTask.value
+
+        XCTAssertEqual(clientFactoryCallCount, 1, "await 后不得重新从全局工厂获取新主机 client")
+        XCTAssertEqual(store.gitStatusByPath[path], currentStatus)
+        XCTAssertTrue(store.isRefreshingGitStatus, "旧主机 defer 不能清掉新主机的 loading")
+        XCTAssertNil(store.gitStatusErrorByPath[path])
     }
 
     func testSessionStorePerformsGitActionAndUpdatesCachedStatus() async {
@@ -2939,4 +3049,33 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.capabilityErrorMessage)
     }
 
+}
+
+private actor GitStatusResponseGate {
+    private var continuation: CheckedContinuation<GitStatusResponse, Error>?
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func response(for path: String) async throws -> GitStatusResponse {
+        _ = path
+        return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            didStart = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func resolve(_ response: GitStatusResponse) {
+        continuation?.resume(returning: response)
+        continuation = nil
+    }
 }

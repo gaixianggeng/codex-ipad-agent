@@ -337,173 +337,6 @@ extension SessionStore {
         }
     }
 
-    func resetConnectionForSettingsChange(clearData: Bool = false) {
-        invalidatePreparedConnectionChange()
-        connectionTermination = nil
-        appLifecycleSuspendedSessionID = nil
-        networkSuspendedSessionID = nil
-        disconnectWebSocket()
-        if clearData {
-            if !appStore.isConfigured, let profileID = currentQueuedTurnProfileID {
-                do {
-                    try queuedTurnStore.remove(profileID: profileID)
-                    queuedTurnStorageErrorMessage = nil
-                } catch {
-                    reportQueuedTurnStorageError(error)
-                }
-            }
-            clearConnectionData()
-        }
-        setErrorMessage(nil)
-        setStatusMessage(nil)
-    }
-
-    @discardableResult
-    func applyConnectionSettings(
-        endpoint: String,
-        token: String
-    ) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.prepareConnectionSettings(
-                endpoint: endpoint,
-                token: token
-            )
-        }
-    }
-
-    @discardableResult
-    func addConnectionProfile(
-        endpoint: String,
-        token: String,
-        displayName: String
-    ) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.prepareNewConnectionProfile(
-                endpoint: endpoint,
-                token: token,
-                displayName: displayName
-            )
-        }
-    }
-
-    @discardableResult
-    func switchConnectionProfile(id: String) async throws -> Bool {
-        // 切换前完整验证目标 Mac；只有验证和 Keychain/元数据提交都成功，
-        // commitPreparedConnection 才会退役旧 WebSocket 并清理旧 Mac 的会话数据。
-        try await performPreparedConnectionChange {
-            try await appStore.prepareConnectionProfileSwitch(id: id)
-        }
-    }
-
-    func deleteConnectionProfile(id: String) throws {
-        try appStore.deleteConnectionProfile(id: id)
-        do {
-            try queuedTurnStore.remove(profileID: id)
-            queuedTurnStorageErrorMessage = nil
-        } catch {
-            // 档案凭据已经按 AppStore 的事务边界删除；本地队列清理失败不回滚凭据，
-            // 只显式提示残留，避免界面误以为 Mac 连接仍然存在。
-            reportQueuedTurnStorageError(error)
-        }
-    }
-
-    @discardableResult
-    func applyPairingURL(_ url: URL) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.preparePairingURL(url)
-        }
-    }
-
-    @discardableResult
-    func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.prepareNewPairingURL(url, displayName: displayName)
-        }
-    }
-
-    /// 串行化所有“验证新凭据后提交”的入口。该方法保持 internal 是为了让 XCTest 能用
-    /// 可控 prepare 闭包确定性复现取消/并发，不把测试钩子带进线上分支。
-    @discardableResult
-    func performPreparedConnectionChange(
-        _ prepare: () async throws -> PreparedConnectionSettings
-    ) async throws -> Bool {
-        let operationGeneration = try beginPreparedConnectionChange()
-        let previousStatus = appStore.connectionStatus
-        let previousError = appStore.lastError
-        let previousDuration = appStore.lastConnectionTestDurationMillis
-        let previousReport = appStore.lastConnectionTestReport
-        let previousRecentReports = appStore.recentConnectionTestReports
-        let previousSessionTermination = connectionTermination
-        let previousAppTermination = appStore.connectionTermination
-        defer { finishPreparedConnectionChange(operationGeneration) }
-
-        do {
-            let prepared = try await prepare()
-            try Task.checkCancellation()
-            guard operationGeneration == connectionChangeGeneration,
-                  inFlightConnectionChangeGeneration == operationGeneration,
-                  !isAppInBackground else {
-                throw CancellationError()
-            }
-            return try commitPreparedConnection(prepared)
-        } catch {
-            // 失败时恢复验证前的展示状态，但若等待期间旧 WS 已进入鉴权终态，必须保留
-            // 新终态；否则一次失败的切换会把“访问码已失效”错误覆盖回已连接。
-            if connectionTermination == previousSessionTermination,
-               appStore.connectionTermination == previousAppTermination {
-                appStore.connectionStatus = previousStatus
-                appStore.lastError = previousError
-                appStore.lastConnectionTestDurationMillis = previousDuration
-                appStore.lastConnectionTestReport = previousReport
-                appStore.recentConnectionTestReports = previousRecentReports
-            }
-            if Task.isCancelled || error is CancellationError {
-                throw CancellationError()
-            }
-            throw error
-        }
-    }
-
-    func beginPreparedConnectionChange() throws -> Int {
-        guard !isAppInBackground else {
-            throw CancellationError()
-        }
-        guard inFlightConnectionChangeGeneration == nil else {
-            throw ConnectionProfileError.operationInProgress
-        }
-        connectionChangeGeneration += 1
-        inFlightConnectionChangeGeneration = connectionChangeGeneration
-        return connectionChangeGeneration
-    }
-
-    func finishPreparedConnectionChange(_ generation: Int) {
-        guard inFlightConnectionChangeGeneration == generation else { return }
-        inFlightConnectionChangeGeneration = nil
-    }
-
-    func invalidatePreparedConnectionChange() {
-        // 不提前释放占用：旧 prepare 可能仍在网络回调中。等它返回并在提交门前发现代次失效，
-        // 才允许下一项操作开始，避免两个 validateConnection 同时改写 AppStore 状态。
-        connectionChangeGeneration += 1
-    }
-
-    func commitPreparedConnection(_ prepared: PreparedConnectionSettings) throws -> Bool {
-        // 必须先原子提交 Keychain/endpoint，再退役旧连接。若 Keychain 写入失败，
-        // 旧 WebSocket、runtime bundle、connectionGeneration 和当前会话数据都保持不变。
-        let didChange = try appStore.commitConnectionSettings(prepared)
-        connectionTermination = nil
-        appLifecycleSuspendedSessionID = nil
-        networkSuspendedSessionID = nil
-        disconnectWebSocket()
-        if didChange {
-            clearConnectionData()
-            reloadQueuedTurns()
-        }
-        setErrorMessage(nil)
-        setStatusMessage(nil)
-        return didChange
-    }
-
     /// 打开本地通知对应会话。安全边界：只允许当前 profile，最多做一次有界首屏刷新，绝不自动切 Mac。
     func openSessionFromNotification(
         _ route: SessionNotificationRoute,
@@ -1090,6 +923,10 @@ extension SessionStore {
 
         let generation = (queuedSessionSocketGenerationByID[sessionID] ?? 0) + 1
         queuedSessionSocketGenerationByID[sessionID] = generation
+        let eventLease = HostSessionLease(
+            hostScope: appStore.activeHostScope,
+            sessionID: sessionID
+        )
         let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
         socket.onStatus = { [weak self] status in
             Task { @MainActor in
@@ -1120,7 +957,7 @@ extension SessionStore {
                 guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
                     return
                 }
-                await self?.applyRuntimeEvent(event, sessionID: sessionID)
+                await self?.applyRuntimeEvent(event, lease: eventLease)
             }
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
@@ -1758,6 +1595,10 @@ extension SessionStore {
         let socket = webSocket
         webSocket = nil
         connectedSessionID = nil
+        connectedHostScope = nil
+        runtimeEventFlushTasks.values.forEach { $0.cancel() }
+        runtimeEventFlushTasks.removeAll(keepingCapacity: false)
+        terminalStreamStore.removeAll(profileID: appStore.activeHostScope.profileID)
         socket?.disconnect()
         if let reconnectSessionID {
             markDispatchingQueuedTurnsNeedsConfirmation(

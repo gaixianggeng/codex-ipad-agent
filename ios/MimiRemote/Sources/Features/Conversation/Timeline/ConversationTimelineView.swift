@@ -31,6 +31,7 @@ struct ConversationTimelineView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let hostProfileID = sessionStore.mediaProfileScope
         let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
         let timelineSnapshot = timelineItemCache.snapshot(
             from: messages,
@@ -98,7 +99,10 @@ struct ConversationTimelineView: View {
                 .listStyle(.plain)
                 // 每个会话使用独立的 List 身份，避免复用上一个会话的 contentOffset；
                 // 挂载后再定位到固定尾部哨兵。
-                .id(sessionStore.selectedSessionID)
+                .id(ScopedSessionID(
+                    profileID: hostProfileID,
+                    sessionID: sessionStore.selectedSessionID ?? "__none__"
+                ))
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .background(tokens.background)
@@ -181,6 +185,21 @@ struct ConversationTimelineView: View {
                         animatedFirstAttempt: false,
                         force: true
                     )
+                }
+            }
+            .onChange(of: hostProfileID) { _, _ in
+                timelineItemCache.removeAll()
+                cancelPendingTailScrollAttempts()
+                shouldFollowMessageTail = true
+                forceNextMessageTailScroll = true
+                isTailFollowLocked = sessionStore.selectedSessionID != nil
+                if !messages.isEmpty {
+                    HostSwitchSignpost.event("first_text_visible")
+                }
+            }
+            .onChange(of: messages.isEmpty) { _, isEmpty in
+                if !isEmpty {
+                    HostSwitchSignpost.event("first_text_visible")
                 }
             }
             .onChange(of: messages.last?.id) { _, newID in

@@ -26,16 +26,17 @@ import (
 )
 
 type Router struct {
-	cfg          config.Config
-	projects     *projects.Registry
-	sessions     *session.Manager
-	runtime      SessionRuntime
-	doctor       *doctor.Checker
-	auth         auth.Authenticator
-	version      string
-	upgrader     websocket.Upgrader
-	monitor      *relayMonitor
-	historyMedia *appServerHistoryMediaStore
+	cfg            config.Config
+	projects       *projects.Registry
+	sessions       *session.Manager
+	runtime        SessionRuntime
+	doctor         *doctor.Checker
+	auth           auth.Authenticator
+	version        string
+	installationID string
+	upgrader       websocket.Upgrader
+	monitor        *relayMonitor
+	historyMedia   *appServerHistoryMediaStore
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -90,17 +91,31 @@ func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.
 	return handler
 }
 
+// NewRouterWithInstallationID 为生产入口注入启动阶段已加载的稳定安装身份。
+// Router 只保留内存副本，确保高频 /api/version 探测不会读磁盘或连接 upstream。
+func NewRouterWithInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string) http.Handler {
+	handler, _ := NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, installationID, nil)
+	return handler
+}
+
 // NewRouterWithRuntime also hands back the *Router so a caller that owns the
 // process lifetime can shut down what the handler started. That matters now
 // that the Claude bridge is resident: it survives individual connections by
 // design, so nothing else would ever reap it.
 func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) (http.Handler, *Router) {
+	return NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, "", runtime)
+}
+
+// NewRouterWithRuntimeAndInstallationID 同时注入 runtime 与稳定安装身份。
+// 保留旧构造器作为兼容包装，现有测试和内部调用无需一次性迁移。
+func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string, runtime SessionRuntime) (http.Handler, *Router) {
 	r := &Router{
-		cfg:      cfg,
-		projects: registry,
-		sessions: manager,
-		runtime:  runtime,
-		doctor:   checker,
+		cfg:            cfg,
+		projects:       registry,
+		sessions:       manager,
+		runtime:        runtime,
+		doctor:         checker,
+		installationID: installationID,
 		auth: auth.NewWithOptions(cfg.Auth.Token, cfg.DevInsecure, auth.Options{
 			AllowQueryToken: cfg.Auth.AllowQueryToken,
 		}),
@@ -308,7 +323,11 @@ func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"name": "agentd", "version": r.version})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":            "agentd",
+		"version":         r.version,
+		"installation_id": r.installationID,
+	})
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {

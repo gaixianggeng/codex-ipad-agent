@@ -209,155 +209,6 @@ struct ConnectionTestStageStability: Identifiable, Equatable {
     }
 }
 
-struct ConnectionProfile: Codable, Identifiable, Equatable {
-    let id: String
-    var displayName: String
-    var endpoint: String
-    var lastSuccessfulAt: Date?
-}
-
-struct ConnectionProfileSettingsItem: Identifiable, Equatable {
-    let profile: ConnectionProfile
-    let isCurrent: Bool
-
-    var id: String { profile.id }
-    var canSwitch: Bool { !isCurrent }
-    var canDelete: Bool { !isCurrent }
-}
-
-struct ConnectionProfileSettingsModel: Equatable {
-    let current: ConnectionProfileSettingsItem?
-    let others: [ConnectionProfileSettingsItem]
-
-    init(profiles: [ConnectionProfile], activeProfileID: String?) {
-        let items = profiles
-            .sorted { lhs, rhs in
-                let lhsDate = lhs.lastSuccessfulAt ?? .distantPast
-                let rhsDate = rhs.lastSuccessfulAt ?? .distantPast
-                if lhsDate != rhsDate { return lhsDate > rhsDate }
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-            }
-            .map { ConnectionProfileSettingsItem(profile: $0, isCurrent: $0.id == activeProfileID) }
-        current = items.first(where: \.isCurrent)
-        others = items.filter { !$0.isCurrent }
-    }
-}
-
-/// 删除连接凭据前展示的纯值确认模型。
-/// 这里只保存目标和文案，不持有删除闭包，确保第一次点击按钮只会进入确认态。
-struct ConnectionCredentialRemovalConfirmation: Identifiable, Equatable {
-    enum Target: Equatable {
-        case current(profileID: String?)
-        case savedProfile(profileID: String)
-    }
-
-    let target: Target
-    let displayName: String?
-
-    static func forgettingCurrent(_ profile: ConnectionProfile?) -> Self {
-        Self(
-            target: .current(profileID: profile?.id),
-            displayName: profile?.displayName
-        )
-    }
-
-    static func deletingSavedProfile(_ profile: ConnectionProfile) -> Self {
-        Self(
-            target: .savedProfile(profileID: profile.id),
-            displayName: profile.displayName
-        )
-    }
-
-    var id: String {
-        switch target {
-        case .current(let profileID):
-            return "forget-current:\(profileID ?? "legacy")"
-        case .savedProfile(let profileID):
-            return "delete-profile:\(profileID)"
-        }
-    }
-
-    var title: String {
-        switch target {
-        case .current:
-            return L10n.text("ui.forgot_your_current_mac")
-        case .savedProfile:
-            return L10n.format("ui.delete_value_c193903e", displayName ?? L10n.text("ui.this_mac"))
-        }
-    }
-
-    var message: String {
-        switch target {
-        case .current:
-            let targetName = displayName.map { "“\($0)”" } ?? L10n.text("ui.current_mac")
-            return L10n.format("ui.this_will_delete_value_s_access_code_from", targetName)
-        case .savedProfile:
-            let targetName = displayName ?? L10n.text("ui.this_mac")
-            return L10n.format("ui.this_will_delete_value_s_connection_profile_and", targetName)
-        }
-    }
-
-    var confirmButtonTitle: String {
-        switch target {
-        case .current:
-            return L10n.text("ui.forget_this_mac")
-        case .savedProfile:
-            return L10n.text("ui.delete_connection_file")
-        }
-    }
-}
-
-enum ConnectionProfileError: LocalizedError, Equatable {
-    case notFound
-    case missingToken
-    case cannotDeleteCurrent
-    case operationInProgress
-    case invalidDisplayName
-    case displayNameTooLong(maximum: Int)
-
-    var errorDescription: String? {
-        switch self {
-        case .notFound:
-            return L10n.text("ui.the_connection_file_cannot_be_found_for_this")
-        case .missingToken:
-            return L10n.text("ui.the_access_code_for_this_mac_does_not")
-        case .cannotDeleteCurrent:
-            return L10n.text("ui.please_switch_to_another_mac_before_deleting_this")
-        case .operationInProgress:
-            return L10n.text("ui.another_mac_connection_operation_is_still_in_progress")
-        case .invalidDisplayName:
-            return L10n.text("ui.mac_name_cannot_be_empty")
-        case .displayNameTooLong(let maximum):
-            return L10n.format("ui.mac_name_can_be_up_to_value_characters", maximum)
-        }
-    }
-}
-
-enum PreparedConnectionProfileTarget: Equatable {
-    case currentOrNew(displayName: String?)
-    case newProfile(id: String, displayName: String)
-    case existingProfile(id: String)
-}
-
-struct PreparedConnectionSettings: Equatable {
-    let endpoint: String
-    let token: String
-    let profileTarget: PreparedConnectionProfileTarget
-    let validatedAt: Date
-
-    init(
-        endpoint: String,
-        token: String,
-        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
-        validatedAt: Date = Date()
-    ) {
-        self.endpoint = endpoint
-        self.token = token
-        self.profileTarget = profileTarget
-        self.validatedAt = validatedAt
-    }
-}
-
 typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> Void
 typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async throws -> Void
 typealias LocalAgentPairingClaim = (_ endpoint: String, _ timeout: TimeInterval) async throws -> String
@@ -390,6 +241,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var connectionProfiles: [ConnectionProfile]
     @Published private(set) var activeConnectionProfileID: String?
     @Published private(set) var connectionGeneration = 0
+    @Published private(set) var activeHostState: ActiveHostState
     @Published var token: String
     @Published var connectionStatus: ConnectionStatus = .idle
     @Published private(set) var connectionTermination: ConnectionTerminationStatus?
@@ -401,7 +253,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var activeConnectionRoute: ActiveConnectionRoute = .configured
 
     private let endpointKey = "agentd.endpoint"
-    private static let profilesKey = "agentd.connectionProfiles.v1"
+    private static let profilesKey = "agentd.connectionProfiles.v2"
+    private static let legacyProfilesKey = "agentd.connectionProfiles.v1"
     private static let activeProfileIDKey = "agentd.activeConnectionProfileID.v1"
     private let retiredFallbackEndpointKey = "agentd.fallbackEndpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
@@ -410,17 +263,21 @@ final class AppStore: ObservableObject {
     private let maxConnectionTestReportHistory = 20
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
+    private let credentialVault: HostCredentialVault
     private let routeProbeTimeout: TimeInterval
     private let prefersLocalConnection: Bool
     private let localAgentProbe: LocalAgentProbe
     private let localAgentPairingClaim: LocalAgentPairingClaim
     private let routeProbe: ConnectionRouteProbe
+    private let usesDefaultRouteProbe: Bool
     private var isConnectionPreflightRunning = false
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
     private var activeRouteEndpoint: String?
     private var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
+    private var credentialSuspensionTask: Task<Void, Never>?
+    private var credentialLifecycleGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
     private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
@@ -437,16 +294,23 @@ final class AppStore: ObservableObject {
     ) {
         self.defaults = defaults
         self.tokenStore = tokenStore
+        credentialVault = HostCredentialVault(tokenStore: tokenStore)
         self.routeProbeTimeout = routeProbeTimeout
         self.prefersLocalConnection = prefersLocalConnection ?? Self.isRunningOnMacCatalyst
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
+        usesDefaultRouteProbe = routeProbe == nil
 
         var initialProfiles = Self.loadConnectionProfiles(from: defaults)
+        if defaults.data(forKey: Self.profilesKey) == nil,
+           !initialProfiles.isEmpty,
+           let migratedProfiles = try? JSONEncoder().encode(initialProfiles) {
+            defaults.set(migratedProfiles, forKey: Self.profilesKey)
+        }
         var initialActiveProfileID = defaults.string(forKey: Self.activeProfileIDKey)
         var initialEndpoint = defaults.string(forKey: endpointKey) ?? defaultEndpoint
-        var initialToken = tokenStore.load()
+        var initialToken = ""
 
         if let activeProfileID = initialActiveProfileID,
            let activeProfile = initialProfiles.first(where: { $0.id == activeProfileID }),
@@ -454,29 +318,37 @@ final class AppStore: ObservableObject {
            !profileToken.isEmpty {
             initialEndpoint = activeProfile.endpoint
             initialToken = profileToken
-        } else if initialProfiles.isEmpty, !initialToken.isEmpty {
-            // 旧版本只有一个 endpoint + `agentd-token`。先把 Token 写入新的独立 account，
-            // 成功后才发布档案元数据；任一步失败都继续使用旧内存态和旧 Keychain 项。
-            let normalizedEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
-            let migratedProfile = ConnectionProfile(
-                id: UUID().uuidString,
-                displayName: Self.defaultProfileDisplayName(endpoint: normalizedEndpoint),
-                endpoint: normalizedEndpoint,
-                lastSuccessfulAt: nil
-            )
-            do {
-                let encodedProfiles = try JSONEncoder().encode([migratedProfile])
-                try tokenStore.save(initialToken, profileID: migratedProfile.id)
-                defaults.set(encodedProfiles, forKey: Self.profilesKey)
-                defaults.set(migratedProfile.id, forKey: Self.activeProfileIDKey)
-                initialProfiles = [migratedProfile]
-                initialActiveProfileID = migratedProfile.id
-                // 新档案已完整可恢复后再清理 legacy；删除失败只会留下冗余 Keychain 项，
-                // 不会让当前连接或新档案失效。
-                try? tokenStore.delete(allowMissing: true)
-            } catch {
-                initialProfiles = []
+        } else if initialProfiles.isEmpty {
+            // 稳定 V2 冷启动只读 active profile account；只有确实没有 Profile 时才读一次 legacy，
+            // 避免保存 5 台 Mac 后把 Keychain 读取次数带进首屏关键路径。
+            initialToken = tokenStore.load()
+            if initialToken.isEmpty {
                 initialActiveProfileID = nil
+            } else {
+                // 旧版本只有一个 endpoint + `agentd-token`。先把 Token 写入新的独立 account，
+                // 成功后才发布档案元数据；任一步失败都继续使用旧内存态和旧 Keychain 项。
+                let normalizedEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
+                let migratedProfile = ConnectionProfile(
+                    id: UUID().uuidString,
+                    displayName: Self.defaultProfileDisplayName(endpoint: normalizedEndpoint),
+                    endpoint: normalizedEndpoint,
+                    lastSuccessfulAt: nil
+                )
+                do {
+                    let encodedProfiles = try JSONEncoder().encode([migratedProfile])
+                    try tokenStore.save(initialToken, profileID: migratedProfile.id)
+                    defaults.set(encodedProfiles, forKey: Self.profilesKey)
+                    defaults.set(encodedProfiles, forKey: Self.legacyProfilesKey)
+                    defaults.set(migratedProfile.id, forKey: Self.activeProfileIDKey)
+                    initialProfiles = [migratedProfile]
+                    initialActiveProfileID = migratedProfile.id
+                    // 新档案已完整可恢复后再清理 legacy；删除失败只会留下冗余 Keychain 项，
+                    // 不会让当前连接或新档案失效。
+                    try? tokenStore.delete(allowMissing: true)
+                } catch {
+                    initialProfiles = []
+                    initialActiveProfileID = nil
+                }
             }
         } else {
             // 已存在档案时，即使 legacy item 因旧迁移清理失败而残留，也绝不能重新迁移并覆盖档案列表。
@@ -501,6 +373,18 @@ final class AppStore: ObservableObject {
         self.token = initialToken
         connectionProfiles = initialProfiles
         activeConnectionProfileID = initialActiveProfileID
+        let initialProfile = initialProfiles.first { $0.id == initialActiveProfileID }
+        let initialProfileID = initialProfile?.id ?? initialActiveProfileID ?? "legacy"
+        activeHostState = ActiveHostState(
+            scope: HostScope(
+                profileID: initialProfileID,
+                installationID: initialProfile?.installationID ?? Self.unboundInstallationID(profileID: initialProfileID),
+                generation: 0
+            ),
+            endpoint: initialEndpoint,
+            displayName: initialProfile?.displayName ?? Self.defaultProfileDisplayName(endpoint: initialEndpoint),
+            committedAt: Date()
+        )
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
 #endif
@@ -556,6 +440,74 @@ final class AppStore: ObservableObject {
             profiles: connectionProfiles,
             activeProfileID: activeConnectionProfileID
         )
+    }
+
+    var activeHostScope: HostScope {
+        activeHostState.scope
+    }
+
+    /// 只为主机选择器生成探活描述；Token 读取在独立 actor 中执行。
+    /// await 返回后再次核对 revision，避免设置页编辑期间把旧凭据发向新地址。
+    func hostProbeDescriptor(profileID: String) async throws -> HostProbeDescriptor {
+        guard let profile = connectionProfiles.first(where: { $0.id == profileID }) else {
+            throw ConnectionProfileError.notFound
+        }
+        let capturedRevision = profile.revision
+        let token = try await credentialVault.token(for: profileID)
+        guard let current = connectionProfiles.first(where: { $0.id == profileID }),
+              current.revision == capturedRevision,
+              current.endpoint == profile.endpoint else {
+            throw CancellationError()
+        }
+        guard !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ConnectionProfileError.missingToken
+        }
+        return HostProbeDescriptor(
+            profileID: profile.id,
+            profileRevision: profile.revision,
+            endpoint: profile.endpoint,
+            token: token,
+            expectedInstallationID: profile.installationID
+        )
+    }
+
+    /// 进入后台时同时清空 Vault、公开内存 Token 与复用 Runtime。
+    /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
+    func suspendCredentialsForBackground() {
+        credentialLifecycleGeneration &+= 1
+        let runtimeBundle = activeRuntimeBundle
+        activeRuntimeBundle = nil
+        activeRuntimeIdentity = nil
+        token = ""
+        let vault = credentialVault
+        credentialSuspensionTask = Task {
+            await vault.clearMemory()
+            await runtimeBundle?.shutdownForHostSwitch()
+        }
+    }
+
+    /// SessionStore 恢复任何 REST/WS 之前先取回当前 Profile Token，避免后台清理后
+    /// 使用空凭据触发一次无意义的 401 或创建半初始化 Runtime。
+    func restoreCredentialsForForeground() async throws {
+        let lifecycleGeneration = credentialLifecycleGeneration
+        let suspensionTask = credentialSuspensionTask
+        await suspensionTask?.value
+        if credentialLifecycleGeneration == lifecycleGeneration {
+            credentialSuspensionTask = nil
+        }
+        guard let profileID = activeConnectionProfileID,
+              connectionProfiles.contains(where: { $0.id == profileID }) else {
+            return
+        }
+        let restoredToken = try await credentialVault.token(for: profileID)
+        guard !restoredToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ConnectionProfileError.missingToken
+        }
+        // await 期间若发生连接提交，旧 Profile 的 Token 不得覆盖新主机。
+        guard activeConnectionProfileID == profileID else {
+            throw CancellationError()
+        }
+        token = restoredToken
     }
 
     var requiresRePairing: Bool {
@@ -626,14 +578,18 @@ final class AppStore: ObservableObject {
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
     ) async throws -> PreparedConnectionSettings {
         let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
-        // 保存前先用短超时验证控制面和 WebSocket，失败时快速反馈；通过后再跑完整诊断报告。
+        if usesDefaultRouteProbe {
+            return try await prepareFastHostContext(
+                endpoint: normalizedEndpoint,
+                token: token,
+                profileTarget: profileTarget
+            )
+        }
+
+        // 测试和兼容注入仍保留原 routeProbe seam，但不再在快速入口后重复执行完整 diagnostics。
+        // 设置页“连接测速”继续显式调用 validateConnection。
         try await routeProbe(normalizedEndpoint, token, routeProbeTimeout)
-        let validatedEndpoint = try await validateConnection(endpoint: normalizedEndpoint, token: token)
-        return PreparedConnectionSettings(
-            endpoint: validatedEndpoint,
-            token: token,
-            profileTarget: profileTarget
-        )
+        return PreparedConnectionSettings(endpoint: normalizedEndpoint, token: token, profileTarget: profileTarget)
     }
 
     func prepareNewConnectionProfile(
@@ -655,7 +611,7 @@ final class AppStore: ObservableObject {
         guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
             throw ConnectionProfileError.notFound
         }
-        let profileToken = try tokenStore.load(profileID: id)
+        let profileToken = try await credentialVault.token(for: id)
         guard !profileToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ConnectionProfileError.missingToken
         }
@@ -690,48 +646,95 @@ final class AppStore: ObservableObject {
                 id: UUID().uuidString,
                 displayName: Self.normalizedProfileDisplayName(displayName, endpoint: prepared.endpoint)
             ),
-            validatedAt: prepared.validatedAt
+            validatedAt: prepared.validatedAt,
+            installationID: prepared.installationID,
+            hostContext: prepared.hostContext
         )
     }
 
     @discardableResult
-    func commitConnectionSettings(_ prepared: PreparedConnectionSettings) throws -> Bool {
+    func commitConnectionSettings(_ prepared: PreparedConnectionSettings) async throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
+        let installationID = Self.normalizedInstallationID(prepared.installationID)
+        let preparedLease = installationID.map {
+            PreparedHostLease(
+                endpoint: normalizedEndpoint,
+                installationID: $0,
+                profileTarget: prepared.profileTarget,
+                profileRevision: profileRevision(for: prepared.profileTarget),
+                tokenFingerprint: Self.tokenFingerprint(prepared.token)
+            )
+        }
+        let candidateRuntime: AppServerRuntimeBundle?
+        if let hostContext = prepared.hostContext {
+            guard let preparedLease else {
+                throw ConnectionProfileError.preparedContextMismatch
+            }
+            candidateRuntime = try hostContext.validatedRuntimeBundle(matching: preparedLease)
+        } else {
+            candidateRuntime = nil
+        }
         let targetProfile: ConnectionProfile
         switch prepared.profileTarget {
         case .currentOrNew(let displayName):
             if let activeConnectionProfileID,
                let current = connectionProfiles.first(where: { $0.id == activeConnectionProfileID }) {
+                try Self.validateInstallationIdentity(
+                    actual: installationID,
+                    expected: current.installationID,
+                    profileName: current.displayName
+                )
+                try rejectDuplicateInstallation(
+                    installationID,
+                    excludingProfileID: current.id
+                )
                 targetProfile = ConnectionProfile(
                     id: current.id,
                     displayName: Self.normalizedProfileDisplayName(displayName ?? current.displayName, endpoint: normalizedEndpoint),
                     endpoint: normalizedEndpoint,
-                    lastSuccessfulAt: prepared.validatedAt
+                    lastSuccessfulAt: prepared.validatedAt,
+                    installationID: installationID ?? current.installationID,
+                    revision: current.revision &+ 1
                 )
             } else {
+                try rejectDuplicateInstallation(installationID, excludingProfileID: nil)
                 targetProfile = ConnectionProfile(
                     id: UUID().uuidString,
                     displayName: Self.normalizedProfileDisplayName(displayName ?? "", endpoint: normalizedEndpoint),
                     endpoint: normalizedEndpoint,
-                    lastSuccessfulAt: prepared.validatedAt
+                    lastSuccessfulAt: prepared.validatedAt,
+                    installationID: installationID
                 )
             }
         case .newProfile(let id, let displayName):
+            try rejectDuplicateInstallation(installationID, excludingProfileID: id)
             targetProfile = ConnectionProfile(
                 id: id,
                 displayName: Self.normalizedProfileDisplayName(displayName, endpoint: normalizedEndpoint),
                 endpoint: normalizedEndpoint,
-                lastSuccessfulAt: prepared.validatedAt
+                lastSuccessfulAt: prepared.validatedAt,
+                installationID: installationID
             )
         case .existingProfile(let id):
             guard let existing = connectionProfiles.first(where: { $0.id == id }) else {
                 throw ConnectionProfileError.notFound
             }
+            try Self.validateInstallationIdentity(
+                actual: installationID,
+                expected: existing.installationID,
+                profileName: existing.displayName
+            )
+            try rejectDuplicateInstallation(
+                installationID,
+                excludingProfileID: existing.id
+            )
             targetProfile = ConnectionProfile(
                 id: existing.id,
                 displayName: existing.displayName,
                 endpoint: normalizedEndpoint,
-                lastSuccessfulAt: prepared.validatedAt
+                lastSuccessfulAt: prepared.validatedAt,
+                installationID: installationID ?? existing.installationID,
+                revision: existing.revision &+ 1
             )
         }
 
@@ -740,25 +743,61 @@ final class AppStore: ObservableObject {
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
         let didChange = normalizedEndpoint != endpoint ||
             prepared.token != token ||
-            targetProfile.id != activeConnectionProfileID
+            targetProfile.id != activeConnectionProfileID ||
+            targetProfile.installationID != activeConnectionProfile?.installationID
 
-        // Token 必须按档案先写入 Keychain；失败时不能发布 activeID，更不能让 SessionStore 退役旧连接。
-        try tokenStore.save(prepared.token, profileID: targetProfile.id)
-        defaults.set(encodedProfiles, forKey: Self.profilesKey)
+        // Token 必须按档案先经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
+        // 失败时不能发布 activeID，更不能让 SessionStore 退役旧连接。
+        let credentialLifecycle = credentialLifecycleGeneration
+        let credentialReceipt = try await credentialVault.save(prepared.token, for: targetProfile.id)
+        guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled else {
+            // App 在 Keychain await 期间进入后台时，候选提交必须回滚，A 的元数据和 Runtime 不变。
+            try? await credentialVault.rollback(credentialReceipt, profileID: targetProfile.id)
+            throw CancellationError()
+        }
+        persistProfiles(encodedProfiles)
         defaults.set(targetProfile.id, forKey: Self.activeProfileIDKey)
         defaults.set(normalizedEndpoint, forKey: endpointKey)
         defaults.removeObject(forKey: retiredFallbackEndpointKey)
         defaults.removeObject(forKey: retiredConnectionModeKey)
 
+        let previousRuntimeBundle = activeRuntimeBundle
         endpoint = normalizedEndpoint
         token = prepared.token
         connectionProfiles = nextProfiles
         activeConnectionProfileID = targetProfile.id
         connectionTermination = nil
-        // 每次提交都开启新的连接代次。即使地址没变，也要清掉旧 config/allowlist 缓存。
+        // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
-        resetConnectionRoute()
+        activeRouteEndpoint = nil
+        activeConnectionRoute = .configured
+        if let candidateRuntime {
+            prepared.hostContext?.markConsumed()
+            activeRuntimeIdentity = runtimeIdentity(endpoint: normalizedEndpoint, token: prepared.token)
+            activeRuntimeBundle = candidateRuntime
+        } else {
+            activeRuntimeIdentity = nil
+            activeRuntimeBundle = nil
+        }
+        activeHostState = ActiveHostState(
+            scope: HostScope(
+                profileID: targetProfile.id,
+                installationID: targetProfile.installationID ?? Self.unboundInstallationID(profileID: targetProfile.id),
+                generation: UInt64(connectionGeneration)
+            ),
+            endpoint: normalizedEndpoint,
+            displayName: targetProfile.displayName,
+            committedAt: prepared.validatedAt
+        )
         lastError = nil
+        HostSwitchSignpost.event("host_commit")
+
+        if let previousRuntimeBundle,
+           candidateRuntime.map({ previousRuntimeBundle === $0 }) != true {
+            Task {
+                await previousRuntimeBundle.shutdownForHostSwitch()
+            }
+        }
         return didChange
     }
 
@@ -774,7 +813,7 @@ final class AppStore: ObservableObject {
         return PairingCredentials(endpoint: normalized, token: credentials.token)
     }
 
-    func clearPairing() throws {
+    func clearPairing() async throws {
         // Keychain 删除是唯一可能失败的步骤，必须先完成它再清理 UserDefaults 和内存态。
         // 否则系统暂时禁止 Keychain 访问时，下一次启动会变成“旧 Token + 默认 Endpoint”的半提交状态。
         let nextProfiles: [ConnectionProfile]
@@ -784,12 +823,13 @@ final class AppStore: ObservableObject {
             nextProfiles = connectionProfiles
         }
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
-        if let activeConnectionProfileID {
-            try tokenStore.delete(profileID: activeConnectionProfileID, allowMissing: true)
+        let removedProfileID = activeConnectionProfileID
+        if let removedProfileID {
+            try await credentialVault.delete(profileID: removedProfileID)
         } else {
-            try tokenStore.delete(allowMissing: true)
+            try await credentialVault.deleteLegacy()
         }
-        defaults.set(encodedProfiles, forKey: Self.profilesKey)
+        persistProfiles(encodedProfiles)
         defaults.removeObject(forKey: Self.activeProfileIDKey)
         defaults.removeObject(forKey: endpointKey)
         defaults.removeObject(forKey: retiredFallbackEndpointKey)
@@ -800,6 +840,17 @@ final class AppStore: ObservableObject {
         activeConnectionProfileID = nil
         connectionGeneration += 1
         token = ""
+        let legacyProfileID = "legacy"
+        activeHostState = ActiveHostState(
+            scope: HostScope(
+                profileID: legacyProfileID,
+                installationID: Self.unboundInstallationID(profileID: legacyProfileID),
+                generation: UInt64(connectionGeneration)
+            ),
+            endpoint: defaultEndpoint,
+            displayName: Self.defaultProfileDisplayName(endpoint: defaultEndpoint),
+            committedAt: Date()
+        )
         connectionTermination = nil
         connectionStatus = .idle
         lastError = nil
@@ -808,7 +859,7 @@ final class AppStore: ObservableObject {
         recentConnectionTestReports = []
     }
 
-    func deleteConnectionProfile(id: String) throws {
+    func deleteConnectionProfile(id: String) async throws {
         guard id != activeConnectionProfileID else {
             throw ConnectionProfileError.cannotDeleteCurrent
         }
@@ -818,8 +869,8 @@ final class AppStore: ObservableObject {
         let nextProfiles = connectionProfiles.filter { $0.id != id }
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
         // 删除也以 Keychain 为提交点；系统暂时不可访问时保留整条档案，方便用户稍后重试。
-        try tokenStore.delete(profileID: id, allowMissing: true)
-        defaults.set(encodedProfiles, forKey: Self.profilesKey)
+        try await credentialVault.delete(profileID: id)
+        persistProfiles(encodedProfiles)
         connectionProfiles = nextProfiles
     }
 
@@ -843,9 +894,18 @@ final class AppStore: ObservableObject {
 
         var nextProfiles = connectionProfiles
         nextProfiles[profileIndex].displayName = displayName
+        nextProfiles[profileIndex].revision &+= 1
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
-        defaults.set(encodedProfiles, forKey: Self.profilesKey)
+        persistProfiles(encodedProfiles)
         connectionProfiles = nextProfiles
+        if id == activeConnectionProfileID {
+            activeHostState = ActiveHostState(
+                scope: activeHostState.scope,
+                endpoint: activeHostState.endpoint,
+                displayName: displayName,
+                committedAt: activeHostState.committedAt
+            )
+        }
         return true
     }
 
@@ -1332,7 +1392,7 @@ final class AppStore: ObservableObject {
     }
 
     private static func loadConnectionProfiles(from defaults: UserDefaults) -> [ConnectionProfile] {
-        guard let data = defaults.data(forKey: profilesKey),
+        guard let data = defaults.data(forKey: profilesKey) ?? defaults.data(forKey: legacyProfilesKey),
               let decoded = try? JSONDecoder().decode([ConnectionProfile].self, from: data)
         else {
             return []
@@ -1350,9 +1410,17 @@ final class AppStore: ObservableObject {
                 id: id,
                 displayName: normalizedProfileDisplayName(profile.displayName, endpoint: normalizedEndpoint),
                 endpoint: normalizedEndpoint,
-                lastSuccessfulAt: profile.lastSuccessfulAt
+                lastSuccessfulAt: profile.lastSuccessfulAt,
+                installationID: normalizedInstallationID(profile.installationID),
+                revision: profile.revision
             )
         }
+    }
+
+    private func persistProfiles(_ encodedProfiles: Data) {
+        // V1 镜像保留一个兼容周期，确保旧版本回滚后仍可读取连接档案；Token 仍只在 Keychain。
+        defaults.set(encodedProfiles, forKey: Self.profilesKey)
+        defaults.set(encodedProfiles, forKey: Self.legacyProfilesKey)
     }
 
     private static func normalizedProfileDisplayName(_ raw: String, endpoint: String) -> String {
@@ -1369,6 +1437,229 @@ final class AppStore: ObservableObject {
             return L10n.text("ui.this_mac")
         }
         return host
+    }
+
+    private func prepareFastHostContext(
+        endpoint: String,
+        token: String,
+        profileTarget: PreparedConnectionProfileTarget
+    ) async throws -> PreparedConnectionSettings {
+        let deadline = Date().addingTimeInterval(8)
+        let client = AgentAPIClient(endpoint: endpoint, token: token)
+        HostSwitchSignpost.begin("switch_prepare")
+        defer { HostSwitchSignpost.end("switch_prepare") }
+
+        async let versionResponse: VersionResponse = Self.retryingIdempotentTransportRequest(
+            deadline: deadline
+        ) { timeout in
+            try await client.version(timeout: timeout)
+        }
+        async let configResponse: CodexAppServerConfigResponse = Self.retryingIdempotentTransportRequest(
+            deadline: deadline
+        ) { timeout in
+            try await client.appServerConfig(timeout: timeout)
+        }
+
+        let (version, config) = try await (versionResponse, configResponse)
+        try Task.checkCancellation()
+        guard let installationID = Self.normalizedInstallationID(version.installationID) else {
+            throw ConnectionProfileError.installationIdentityRequired
+        }
+        try validateCandidateInstallationIdentity(installationID, target: profileTarget)
+
+        var gatewayAttempt = 0
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0.25 else {
+                throw URLError(.timedOut)
+            }
+            let bundle = AppServerRuntimeBundle(
+                endpoint: endpoint,
+                token: token,
+                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
+                requestTimeout: remaining,
+                preparedConfig: config
+            )
+            do {
+                try await bundle.prepareForHostActivation()
+                try Task.checkCancellation()
+                guard deadline.timeIntervalSinceNow > 0 else {
+                    throw URLError(.timedOut)
+                }
+
+                HostSwitchSignpost.event("gateway_initialized")
+                return PreparedConnectionSettings(
+                    endpoint: endpoint,
+                    token: token,
+                    profileTarget: profileTarget,
+                    installationID: installationID,
+                    hostContext: PreparedHostContext(
+                        lease: PreparedHostLease(
+                            endpoint: endpoint,
+                            installationID: installationID,
+                            profileTarget: profileTarget,
+                            profileRevision: profileRevision(for: profileTarget),
+                            tokenFingerprint: Self.tokenFingerprint(token)
+                        ),
+                        runtimeBundle: bundle,
+                        expiresAt: deadline
+                    )
+                )
+            } catch {
+                // 每次失败都先完整退役 candidate；重试时始终只有一条候选业务 WS。
+                await bundle.shutdownForHostSwitch()
+                guard gatewayAttempt == 0,
+                      Self.isRetryableGatewayInitializationError(error),
+                      deadline.timeIntervalSinceNow > 0.25 else {
+                    throw error
+                }
+                gatewayAttempt += 1
+            }
+        }
+    }
+
+    private func validateCandidateInstallationIdentity(
+        _ installationID: String,
+        target: PreparedConnectionProfileTarget
+    ) throws {
+        switch target {
+        case .existingProfile(let id):
+            guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
+                throw ConnectionProfileError.notFound
+            }
+            try Self.validateInstallationIdentity(
+                actual: installationID,
+                expected: profile.installationID,
+                profileName: profile.displayName
+            )
+            try rejectDuplicateInstallation(
+                installationID,
+                excludingProfileID: profile.id
+            )
+        case .newProfile(let id, _):
+            try rejectDuplicateInstallation(installationID, excludingProfileID: id)
+        case .currentOrNew:
+            if let activeConnectionProfile {
+                try Self.validateInstallationIdentity(
+                    actual: installationID,
+                    expected: activeConnectionProfile.installationID,
+                    profileName: activeConnectionProfile.displayName
+                )
+                try rejectDuplicateInstallation(
+                    installationID,
+                    excludingProfileID: activeConnectionProfile.id
+                )
+            } else {
+                try rejectDuplicateInstallation(installationID, excludingProfileID: nil)
+            }
+        }
+    }
+
+    private static func retryingIdempotentTransportRequest<T>(
+        deadline: Date,
+        operation: @escaping (_ timeout: TimeInterval) async throws -> T
+    ) async throws -> T {
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                throw URLError(.timedOut)
+            }
+            do {
+                return try await operation(min(4, remaining))
+            } catch {
+                guard attempt == 0,
+                      isRetryableTransportError(error),
+                      deadline.timeIntervalSinceNow > 0.25 else {
+                    throw error
+                }
+                attempt += 1
+            }
+        }
+    }
+
+    private static func isRetryableTransportError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        switch urlError.code {
+        case .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+             .networkConnectionLost, .notConnectedToInternet, .internationalRoamingOff,
+             .callIsActive, .dataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isRetryableGatewayInitializationError(_ error: Error) -> Bool {
+        if isCredentialInvalidatingError(error) {
+            return false
+        }
+        if isRetryableTransportError(error) {
+            return true
+        }
+        guard let connectionError = error as? CodexAppServerConnectionError else {
+            return false
+        }
+        switch connectionError {
+        case .disconnected, .notInitialized, .timeout, .transport:
+            return true
+        case .duplicateRequestID, .appServer, .decoding:
+            return false
+        }
+    }
+
+    private func profileRevision(for target: PreparedConnectionProfileTarget) -> UInt64? {
+        switch target {
+        case .existingProfile(let id), .newProfile(let id, _):
+            return connectionProfiles.first(where: { $0.id == id })?.revision
+        case .currentOrNew:
+            return activeConnectionProfile?.revision
+        }
+    }
+
+    private static func tokenFingerprint(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private func rejectDuplicateInstallation(
+        _ installationID: String?,
+        excludingProfileID: String?
+    ) throws {
+        guard let installationID,
+              let duplicate = connectionProfiles.first(where: {
+                  $0.id != excludingProfileID && Self.normalizedInstallationID($0.installationID) == installationID
+              }) else {
+            return
+        }
+        throw ConnectionProfileError.duplicateInstallation(profileName: duplicate.displayName)
+    }
+
+    private static func validateInstallationIdentity(
+        actual: String?,
+        expected: String?,
+        profileName: String
+    ) throws {
+        guard let expected = normalizedInstallationID(expected) else {
+            return
+        }
+        guard normalizedInstallationID(actual) == expected else {
+            throw ConnectionProfileError.installationIdentityMismatch(profileName: profileName)
+        }
+    }
+
+    private static func normalizedInstallationID(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func unboundInstallationID(profileID: String) -> String {
+        "unbound:\(profileID)"
     }
 
     private static func defaultConnectionRouteProbe(
@@ -1409,17 +1700,15 @@ final class AppStore: ObservableObject {
             throw PairingLinkError.missingToken
         }
         // 不信任免鉴权响应中的 endpoint；网络目标始终锁定已探测成功的固定 loopback。
-        // 用真实 gateway 握手验证新 Token 后才写入 Keychain，避免发布半可用连接。
-        try await routeProbe(localAgentEndpoint, claimedToken, routeProbeTimeout)
-        try Task.checkCancellation()
-        let prepared = PreparedConnectionSettings(
+        // 同样走快速候选链路，确保首次本机配对也绑定 installation_id 并复用已初始化 gateway。
+        let prepared = try await prepareConnectionSettings(
             endpoint: localAgentEndpoint,
             token: claimedToken,
             profileTarget: .currentOrNew(
                 displayName: activeConnectionProfile == nil ? L10n.text("ui.this_mac") : nil
             )
         )
-        _ = try commitConnectionSettings(prepared)
+        _ = try await commitConnectionSettings(prepared)
         activateConnectionRoute(.local, endpoint: localAgentEndpoint)
         connectionTermination = nil
         connectionStatus = .connected(ActiveConnectionRoute.local.statusTitle)
@@ -1457,7 +1746,7 @@ final class AppStore: ObservableObject {
     }
 
     private func runtimeBundle(endpoint: String, token: String) -> AppServerRuntimeBundle {
-        let identity = "\(endpoint)\n\(token)"
+        let identity = runtimeIdentity(endpoint: endpoint, token: token)
         if activeRuntimeIdentity == identity, let bundle = activeRuntimeBundle {
             return bundle
         }
@@ -1467,9 +1756,19 @@ final class AppStore: ObservableObject {
         return bundle
     }
 
+    private func runtimeIdentity(endpoint: String, token: String) -> String {
+        "\(endpoint)\n\(token)"
+    }
+
     private func resetDirectRuntime() {
+        let retiredRuntime = activeRuntimeBundle
         activeRuntimeIdentity = nil
         activeRuntimeBundle = nil
+        if let retiredRuntime {
+            Task {
+                await retiredRuntime.shutdownForHostSwitch()
+            }
+        }
     }
 }
 

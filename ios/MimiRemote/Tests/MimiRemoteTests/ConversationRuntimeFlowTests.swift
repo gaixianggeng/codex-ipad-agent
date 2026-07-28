@@ -267,11 +267,14 @@ extension ConversationDataFlowTests {
             ],
             messagesResult: []
         )
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
         let logStore = LogStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        logStore.activate(profileID: appStore.activeHostScope.profileID)
         logStore.append("本地已有输出", sessionID: running.id, seq: 12)
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: logStore,
             clientFactory: { client }
@@ -302,6 +305,10 @@ extension ConversationDataFlowTests {
 
     func testTerminalStreamStoreBatchesRuntimeEventsBySession() async {
         let store = TerminalStreamStore(maxBatchSize: 2)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_batch"
+        )
         let metadata = AgentEventMetadata(
             seq: 1,
             sessionID: "sess_batch",
@@ -313,19 +320,26 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )
 
-        let firstShouldFlush = store.append(.turnStarted(metadata), sessionID: "sess_batch")
-        let secondShouldFlush = store.append(.assistantDelta(AgentDelta(text: "hi", role: .assistant, kind: .message), metadata), sessionID: "sess_batch")
+        let firstShouldFlush = store.append(.turnStarted(metadata), lease: lease)
+        let secondShouldFlush = store.append(
+            .assistantDelta(AgentDelta(text: "hi", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
 
         XCTAssertFalse(firstShouldFlush)
         XCTAssertTrue(secondShouldFlush)
-        let drained = store.drain(sessionID: "sess_batch")
-        let drainedAgain = store.drain(sessionID: "sess_batch")
+        let drained = store.drain(lease: lease)
+        let drainedAgain = store.drain(lease: lease)
         XCTAssertEqual(drained.count, 2)
         XCTAssertTrue(drainedAgain.isEmpty)
     }
 
     func testTerminalStreamStoreCompactsContiguousAssistantDeltasWithoutCrossingBoundaries() {
         let store = TerminalStreamStore(maxBatchSize: 64)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_compact"
+        )
         let metadata = AgentEventMetadata(
             seq: 1,
             sessionID: "sess_compact",
@@ -337,20 +351,66 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )
 
-        _ = store.append(.assistantDelta(AgentDelta(text: "你", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
-        _ = store.append(.assistantDelta(AgentDelta(text: "好", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "你", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "好", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
 
-        let compacted = store.drain(sessionID: "sess_compact")
+        let compacted = store.drain(lease: lease)
         XCTAssertEqual(compacted.count, 1)
         guard case .assistantDelta(let delta, _) = compacted.first else {
             return XCTFail("连续正文增量应合并为一个事件")
         }
         XCTAssertEqual(delta.text, "你好")
 
-        _ = store.append(.assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
-        _ = store.append(.turnStarted(metadata), sessionID: "sess_compact")
-        _ = store.append(.assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
-        XCTAssertEqual(store.drain(sessionID: "sess_compact").count, 3, "控制事件边界不能被合并穿透")
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        _ = store.append(.turnStarted(metadata), lease: lease)
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        XCTAssertEqual(store.drain(lease: lease).count, 3, "控制事件边界不能被合并穿透")
+    }
+
+    func testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes() {
+        let store = TerminalStreamStore(maxBatchSize: 64)
+        let macALease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "same-session"
+        )
+        let macBLease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-b", installationID: "install-b", generation: 2),
+            sessionID: "same-session"
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: "same-session",
+            turnID: "same-turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )
+
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata),
+            lease: macALease
+        )
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata),
+            lease: macBLease
+        )
+
+        XCTAssertEqual(store.drain(lease: macALease).count, 1)
+        XCTAssertEqual(store.drain(lease: macBLease).count, 1)
     }
 
     func testDisconnectFlushesBufferedRuntimeEventsBeforeSwitchingSession() async throws {

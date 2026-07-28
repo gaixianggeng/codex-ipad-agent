@@ -861,7 +861,12 @@ extension SessionStore {
         loadMode: HistoryMessagesPage.LoadMode,
         cachePolicy: HistoryFirstPageCachePolicy
     ) async throws -> HistoryFirstPageResult {
-        let key = HistoryFirstPageRequestKey(sessionID: sessionID, limit: limit, loadMode: loadMode)
+        let key = HistoryFirstPageRequestKey(
+            profileID: appStore.activeHostScope.profileID,
+            sessionID: sessionID,
+            limit: limit,
+            loadMode: loadMode
+        )
         if cachePolicy == .reuseRecent,
            let cached = historyFirstPageCacheByKey[key],
            Date().timeIntervalSince(cached.loadedAt) < historyFirstPageCacheTTL {
@@ -1050,14 +1055,18 @@ extension SessionStore {
 
     func sessionLibraryPage(
         workspace: AgentWorkspace,
-        consistency: SessionListConsistency = .fastIndexed
+        consistency: SessionListConsistency = .fastIndexed,
+        client: (any SessionStoreAPIClient)? = nil,
+        hostScope: HostScope? = nil
     ) async -> (workspace: AgentWorkspace, page: SessionsPage?) {
         do {
             let page = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: consistency == .fastIndexed,
-                consistency: consistency
+                consistency: consistency,
+                client: client,
+                hostScope: hostScope
             )
             return (workspace, page)
         } catch {
@@ -1083,10 +1092,17 @@ extension SessionStore {
         workspace: AgentWorkspace,
         limit: Int,
         reuseRecent: Bool,
-        consistency: SessionListConsistency = .fastIndexed
+        consistency: SessionListConsistency = .fastIndexed,
+        client fixedClient: (any SessionStoreAPIClient)? = nil,
+        hostScope expectedHostScope: HostScope? = nil
     ) async throws -> SessionsPage {
+        let hostScope = expectedHostScope ?? appStore.activeHostScope
+        guard appStore.activeHostScope == hostScope else {
+            throw CancellationError()
+        }
         let key = SessionListFirstPageRequestKey(
-            connectionGeneration: appStore.connectionGeneration,
+            profileID: hostScope.profileID,
+            connectionGeneration: Int(truncatingIfNeeded: hostScope.generation),
             workspaceID: workspace.id,
             workspacePath: workspace.path,
             limit: limit,
@@ -1099,7 +1115,8 @@ extension SessionStore {
         // 会话库只需要 8 条时，可以复用同工作区正在执行的 20 条请求；反向复用会缩短主列表，不能做。
         // 后台快速刷新也可以等待更强的权威请求；权威刷新不能复用快速索引结果，否则会重新引入漏会话问题。
         if let largerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
-            entry.key.connectionGeneration == key.connectionGeneration
+            entry.key.profileID == key.profileID
+                && entry.key.connectionGeneration == key.connectionGeneration
                 && entry.key.workspaceID == key.workspaceID
                 && entry.key.workspacePath == key.workspacePath
                 && (
@@ -1125,9 +1142,12 @@ extension SessionStore {
             }
             // 冷启动没有任何可展示数据时才等待窗口并继续请求，保证首屏最终自动恢复。
             await sessionListSleep(cooldownDelay)
+            guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+                throw CancellationError()
+            }
         }
 
-        let client = try clientFactory()
+        let client = try fixedClient ?? clientFactory()
         let task = Task {
             try await client.sessionsPage(
                 workspace: workspace,
@@ -1140,6 +1160,9 @@ extension SessionStore {
         do {
             let page = try await task.value
             sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+            guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+                throw CancellationError()
+            }
             sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(page: page, loadedAt: sessionListNow())
             clearSessionListCooldown(for: workspace)
             return page
@@ -1162,7 +1185,8 @@ extension SessionStore {
     ) -> SessionListFirstPageCacheEntry? {
         sessionListFirstPageCacheByKey
             .filter { entry in
-                entry.key.connectionGeneration == appStore.connectionGeneration
+                entry.key.profileID == appStore.activeHostScope.profileID
+                    && entry.key.connectionGeneration == appStore.connectionGeneration
                     && entry.key.workspaceID == workspace.id
                     && entry.key.workspacePath == workspace.path
                     && entry.key.limit >= minimumLimit
@@ -1180,7 +1204,11 @@ extension SessionStore {
         } else {
             cwd = workspacePath
         }
-        return SessionListBudgetKey(connectionGeneration: appStore.connectionGeneration, cwd: cwd)
+        return SessionListBudgetKey(
+            profileID: appStore.activeHostScope.profileID,
+            connectionGeneration: appStore.connectionGeneration,
+            cwd: cwd
+        )
     }
 
     func standardizedSessionListPath(_ rawPath: String) -> String {

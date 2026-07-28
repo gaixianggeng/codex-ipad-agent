@@ -110,10 +110,11 @@ extension ConversationDataFlowTests {
         )
         let endpoint = "http://100.64.0.88:8787"
         let token = "committed-after-pairing"
-        XCTAssertTrue(try store.commitPreparedConnection(PreparedConnectionSettings(
+        let didCommit = try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: endpoint,
             token: token
-        )))
+        ))
+        XCTAssertTrue(didCommit)
 
         let didLoad = await store.refreshAfterConnectionCommit(maxWait: 0)
 

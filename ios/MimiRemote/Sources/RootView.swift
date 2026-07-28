@@ -5,15 +5,18 @@ struct RootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @EnvironmentObject private var hostStatusStore: HostStatusStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingLogInspector = false
     @SceneStorage("root.lastSessionSnapshot") private var lastSessionSnapshot = ""
     @SceneStorage("root.workbenchRoute.v1") private var workbenchRouteStorage = WorkbenchRestorationRoute.defaultStorageValue
+    @SceneStorage("root.hostRestoration.v2") private var hostRestorationStorage = ""
     @State private var notificationRouteAlertMessage: String?
     @State private var hasCompletedInitialBootstrap = false
     @State private var workbenchRouteRevision: UInt64 = 0
     @State private var pendingNotificationRouteRevision: UInt64?
+    @State private var activeRestorationProfileID: String?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -27,6 +30,7 @@ struct RootView: View {
             }
         }
         .task {
+            restoreActiveHostNavigationIfNeeded()
             defer { hasCompletedInitialBootstrap = true }
 #if targetEnvironment(macCatalyst)
             // Catalyst 先完成本机选路，再创建首批 REST/WebSocket client；否则并行 bootstrap
@@ -107,18 +111,37 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
+                persistActiveHostRestoration()
+                hostStatusStore.cancel()
                 sessionStore.suspendForBackground()
+                appStore.suspendCredentialsForBackground()
                 return
             }
             guard phase == .active else {
                 return
             }
             Task {
-                await sessionStore.resumeFromForeground()
+                do {
+                    try await appStore.restoreCredentialsForForeground()
+                    await sessionStore.resumeFromForeground()
+                } catch is CancellationError {
+                    // 后台/前台快速抖动或同时切换主机时由最新生命周期操作接管。
+                } catch {
+                    appStore.connectionStatus = .failed(error.localizedDescription)
+                    appStore.lastError = error.localizedDescription
+                }
             }
         }
         .onChange(of: sessionStore.selectedSession) { _, session in
             persistSessionRestoreSnapshotIfNeeded(session)
+        }
+        .onChange(of: appStore.activeConnectionProfileID) { _, profileID in
+            switchRestorationNamespace(to: profileID)
+        }
+        .onChange(of: sessionStore.isConnectionSwitchInProgress) { _, isSwitching in
+            if isSwitching {
+                hostStatusStore.cancel()
+            }
         }
         .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
@@ -170,6 +193,7 @@ struct RootView: View {
     private var decodedSessionRestoreSnapshot: SessionRestoreSnapshot? {
         workbenchRoute.restoreSnapshot(
             from: lastSessionSnapshot,
+            currentProfileID: appStore.activeConnectionProfileID,
             currentEndpoint: appStore.endpoint
         )
     }
@@ -196,6 +220,7 @@ struct RootView: View {
             // 通知和工作区入口可能先完成 selectSession、再切详情路由；这里补齐另一种事件顺序。
             persistSessionRestoreSnapshotIfNeeded(sessionStore.selectedSession, route: route)
         }
+        persistActiveHostRestoration()
     }
 
     private func persistSessionRestoreSnapshotIfNeeded(
@@ -205,10 +230,72 @@ struct RootView: View {
         let route = route ?? workbenchRoute
         guard let session,
               route.detailSessionID == session.id else { return }
-        let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: session)
+        let snapshot = SessionRestoreSnapshot(
+            profileID: appStore.notificationRoutingProfileID,
+            endpoint: appStore.endpoint,
+            session: session
+        )
         if let data = try? JSONEncoder().encode(snapshot) {
             lastSessionSnapshot = data.base64EncodedString()
+            persistActiveHostRestoration()
         }
+    }
+
+    private func restoreActiveHostNavigationIfNeeded() {
+        guard activeRestorationProfileID == nil else { return }
+        let profileID = appStore.notificationRoutingProfileID
+        activeRestorationProfileID = profileID
+        guard let record = hostRestorationEnvelope.records[profileID] else {
+            return
+        }
+        workbenchRouteRevision &+= 1
+        workbenchRouteStorage = record.routeStorage
+        lastSessionSnapshot = record.sessionSnapshot
+    }
+
+    private func switchRestorationNamespace(to rawProfileID: String?) {
+        let nextProfileID = rawProfileID ?? appStore.notificationRoutingProfileID
+        if let currentProfileID = activeRestorationProfileID {
+            persistRestorationRecord(for: currentProfileID)
+        }
+        activeRestorationProfileID = nextProfileID
+        let record = hostRestorationEnvelope.records[nextProfileID]
+        workbenchRouteRevision &+= 1
+        workbenchRouteStorage = record?.routeStorage ?? WorkbenchRestorationRoute.defaultStorageValue
+        lastSessionSnapshot = record?.sessionSnapshot ?? ""
+    }
+
+    private func persistActiveHostRestoration() {
+        guard let profileID = activeRestorationProfileID else { return }
+        persistRestorationRecord(for: profileID)
+    }
+
+    private func persistRestorationRecord(for profileID: String) {
+        var envelope = hostRestorationEnvelope
+        envelope.records[profileID] = HostRestorationRecord(
+            routeStorage: workbenchRouteStorage,
+            sessionSnapshot: lastSessionSnapshot,
+            updatedAt: Date()
+        )
+        // SceneStorage 只保留最近 8 台的轻量导航，不保存历史正文或媒体。
+        if envelope.records.count > 8 {
+            let retainedIDs = envelope.records
+                .sorted { $0.value.updatedAt > $1.value.updatedAt }
+                .prefix(8)
+                .map(\.key)
+            envelope.records = envelope.records.filter { retainedIDs.contains($0.key) }
+        }
+        if let data = try? JSONEncoder().encode(envelope) {
+            hostRestorationStorage = data.base64EncodedString()
+        }
+    }
+
+    private var hostRestorationEnvelope: HostRestorationEnvelope {
+        guard let data = Data(base64Encoded: hostRestorationStorage),
+              let decoded = try? JSONDecoder().decode(HostRestorationEnvelope.self, from: data) else {
+            return HostRestorationEnvelope(records: [:])
+        }
+        return decoded
     }
 
     private var appShell: some View {
@@ -217,6 +304,16 @@ struct RootView: View {
             restorationRoute: workbenchRouteBinding
         )
     }
+}
+
+private struct HostRestorationEnvelope: Codable {
+    var records: [String: HostRestorationRecord]
+}
+
+private struct HostRestorationRecord: Codable {
+    let routeStorage: String
+    let sessionSnapshot: String
+    let updatedAt: Date
 }
 
 private struct NotificationRouteTaskID: Equatable {

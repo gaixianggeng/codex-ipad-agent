@@ -127,6 +127,19 @@ final class SessionStore: ObservableObject {
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
     @Published var queuedRunningTurnsBySessionID: [SessionID: [QueuedTurnEntry]] = [:]
     @Published var queuedTurnStorageErrorMessage: String?
+    /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
+    @Published private(set) var connectionSwitchTargetProfileID: String?
+
+    var isConnectionSwitchInProgress: Bool {
+        connectionSwitchTargetProfileID != nil
+    }
+
+    func setConnectionSwitchTargetProfileID(_ profileID: String?) {
+        guard connectionSwitchTargetProfileID != profileID else {
+            return
+        }
+        connectionSwitchTargetProfileID = profileID
+    }
 
     let appStore: AppStore
     let conversationStore: ConversationStore
@@ -139,9 +152,11 @@ final class SessionStore: ObservableObject {
     let sessionReminderStore: SessionReminderStore
     let sessionReminderScheduler: any SessionReminderScheduling
     let sessionReminderNow: () -> Date
+    let runtimeCompletionNotificationsEnabled: Bool
     let historySavingsNoticeStore: HistorySavingsNoticeStore
     let queuedTurnStore: any QueuedTurnPersisting
     let terminalStreamStore = TerminalStreamStore()
+    let hostWarmSnapshotCache = HostWarmSnapshotCache()
     // 草稿跟随 SessionStore 生命周期，避免窗口 resize 或详情页重建时随 ComposerView 的 @State 一起丢失。
     // 不使用 @Published，防止每次键入都触发整个工作台刷新。
     var composerDraftCache = ComposerDraftCache()
@@ -163,6 +178,7 @@ final class SessionStore: ObservableObject {
     let sessionSearchSleep: (UInt64) async throws -> Void
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
+    var connectedHostScope: HostScope?
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     var webSocketReconnectTask: Task<Void, Never>?
@@ -179,9 +195,11 @@ final class SessionStore: ObservableObject {
     var isAppInBackground = false
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
+    var connectionSwitchTargetGeneration: Int?
+    var preparedConnectionTask: Task<PreparedConnectionSettings, Error>?
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
-    var runtimeEventFlushTasks: [SessionID: Task<Void, Never>] = [:]
+    var runtimeEventFlushTasks: [HostSessionLease: Task<Void, Never>] = [:]
     var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
 #if DEBUG
     var didApplyDebugWorkbenchUISeed = false
@@ -291,6 +309,7 @@ final class SessionStore: ObservableObject {
         queuedTurnStore: (any QueuedTurnPersisting)? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
         sessionReminderNow: @escaping () -> Date = Date.init,
+        runtimeCompletionNotificationsEnabled: Bool = false,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
@@ -313,6 +332,12 @@ final class SessionStore: ObservableObject {
         self.conversationStore = conversationStore
         self.logStore = logStore
         self.contextStore = contextStore ?? SessionContextStore()
+        let initialProfileID = appStore.activeHostScope.profileID
+        // 三个高频内存 Store 共用全局预算，但所有读写必须先绑定当前 Profile namespace。
+        // 初始化阶段完成绑定，避免首批 bootstrap 数据落入空字符串兼容命名空间。
+        conversationStore.activate(profileID: initialProfileID)
+        logStore.activate(profileID: initialProfileID)
+        self.contextStore.activate(profileID: initialProfileID)
         self.eventReducer = EventReducer()
         if let recentWorkspaceStore {
             self.recentWorkspaceStore = recentWorkspaceStore
@@ -372,6 +397,8 @@ final class SessionStore: ObservableObject {
             self.sessionReminderScheduler = UserNotificationSessionReminderScheduler()
         }
         self.sessionReminderNow = sessionReminderNow
+        // 审批和补充信息始终允许提醒；完成/失败属于高频日常事件，首版默认关闭。
+        self.runtimeCompletionNotificationsEnabled = runtimeCompletionNotificationsEnabled
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         if let sessionWebSocketFactory {
@@ -1130,6 +1157,9 @@ final class SessionStore: ObservableObject {
     }
 
     func canControlSession(_ session: AgentSession?) -> Bool {
+        guard !isConnectionSwitchInProgress else {
+            return false
+        }
         guard let session else {
             return true
         }

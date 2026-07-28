@@ -310,10 +310,13 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             of: view,
             // 这张组件基线既会在 @2x iPad 也会在 @3x iPhone 上执行。
             // 固定渲染 scale，避免同一逻辑尺寸因运行设备不同产生 560/840px 误报。
-            as: .image(
-                precision: 0.98,
-                layout: .fixed(width: 560, height: 112),
-                traits: UITraitCollection(displayScale: 2)
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 560, height: 112),
+                    traits: UITraitCollection(displayScale: 2)
+                )
             )
         )
     }

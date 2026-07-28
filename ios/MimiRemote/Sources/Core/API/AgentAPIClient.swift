@@ -283,8 +283,13 @@ struct AgentAPIClient {
         )
     }
 
-    func version() async throws -> VersionResponse {
-        try await request(path: "/api/version", method: "GET", body: Optional<Data>.none)
+    func version(timeout: TimeInterval = 20) async throws -> VersionResponse {
+        try await request(
+            path: "/api/version",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
     }
 
     func appServerConfig(timeout: TimeInterval = 20) async throws -> CodexAppServerConfigResponse {

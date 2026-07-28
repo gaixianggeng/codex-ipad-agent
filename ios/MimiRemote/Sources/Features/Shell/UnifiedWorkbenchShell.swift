@@ -510,6 +510,16 @@ struct UnifiedWorkbenchShell: View {
         TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
                 sessionList(layout: layout)
+                    .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            HostSwitcherMenu(
+                                presentation: .compact(subtitle: CompactWorkbenchTab.sessions.title),
+                                manageConnections: {
+                                    openConnectionSettings(layout: layout)
+                                }
+                            )
+                        }
+                    }
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
@@ -522,6 +532,16 @@ struct UnifiedWorkbenchShell: View {
 
             NavigationStack(path: compactPathBinding(for: .workspaces, layout: layout)) {
                 workspaces(layout: layout)
+                    .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            HostSwitcherMenu(
+                                presentation: .compact(subtitle: CompactWorkbenchTab.workspaces.title),
+                                manageConnections: {
+                                    openConnectionSettings(layout: layout)
+                                }
+                            )
+                        }
+                    }
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
@@ -563,6 +583,14 @@ struct UnifiedWorkbenchShell: View {
             detail(layout: layout, tokens: tokens)
         }
         .navigationSplitViewStyle(.balanced)
+    }
+
+    private func openConnectionSettings(layout: WorkbenchLayout) {
+        if layout.usesCompactNavigation {
+            applyNavigation(.compactTabChanged(.settings), layout: layout)
+        } else {
+            presentedSheet = .settings
+        }
     }
 
     private func credentialsInvalidBanner(tokens: ThemeTokens) -> some View {
@@ -716,31 +744,13 @@ struct UnifiedWorkbenchShell: View {
             )
             .fixedSize()
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 7) {
-                    Text(L10n.text("ui.mimi"))
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-
-                    Circle()
-                        .fill(connectionTone(tokens: tokens))
-                        .frame(width: 7, height: 7)
-                        .accessibilityHidden(true)
+            HostSwitcherMenu(
+                presentation: .sidebar,
+                manageConnections: {
+                    presentedSheet = .settings
                 }
-
-                Text(connectionSubtitle)
-                    .font(themeStore.uiFont(.caption2))
-                    .foregroundStyle(tokens.tertiaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.86)
-            }
-            // 品牌是这个标题项的主信息；窄侧栏先压缩副标题，不能把标题整体挤没。
-            .layoutPriority(1)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(
-                L10n.format("ui.mimi_remote_connection_accessibility", connectionSubtitle)
             )
+            .layoutPriority(1)
         }
         .frame(width: headerWidth, alignment: .leading)
     }
@@ -862,25 +872,15 @@ struct UnifiedWorkbenchShell: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
-                        .font(themeStore.uiFont(size: 17, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(selectedSessionStatusColor(tokens: tokens))
-                            .frame(width: 5, height: 5)
-
-                        Text(sessionTitleSubtitle)
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
-                            .foregroundStyle(tokens.tertiaryText)
-                            .lineLimit(1)
+                HostSwitcherMenu(
+                    presentation: .compact(
+                        subtitle: sessionStore.selectedSession?.title ?? L10n.text("ui.session")
+                    ),
+                    manageConnections: {
+                        openConnectionSettings(layout: layout)
                     }
-                }
+                )
                 .frame(maxWidth: layout.titleMaxWidth, alignment: .leading)
-                .accessibilityElement(children: .combine)
             }
             if layout.usesCompactNavigation {
                 ToolbarItem(placement: .topBarTrailing) {

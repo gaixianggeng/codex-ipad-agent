@@ -37,7 +37,7 @@ struct AttachmentPreviewSheet: View {
                 }
             }
         }
-        .task(id: previewImageSource?.id) {
+        .task(id: previewMediaRequestIdentity) {
             await loadEmbeddedImageIfNeeded()
         }
     }
@@ -93,10 +93,21 @@ struct AttachmentPreviewSheet: View {
         ConversationImageSource.input(item)
     }
 
+    private var previewMediaRequestIdentity: MediaRequestIdentity {
+        MediaRequestIdentity(
+            profileID: sessionStore.mediaProfileScope,
+            resourceID: previewImageSource?.id ?? "none"
+        )
+    }
+
     @MainActor
     private func loadEmbeddedImageIfNeeded() async {
+        let profileID = sessionStore.mediaProfileScope
+        previewURL = nil
         embeddedImage = nil
         isLoadingEmbeddedImage = false
+        previewingLocalImagePath = nil
+        localImagePreviewError = nil
         guard case .dataURL(let value, _) = previewImageSource else {
             return
         }
@@ -108,9 +119,13 @@ struct AttachmentPreviewSheet: View {
         let image = await DataURLImageDecoder.image(
             from: value,
             cacheKey: expectedSourceID,
+            profileID: profileID,
             maxPixelSize: 2_400
         )
-        guard !Task.isCancelled, previewImageSource?.id == expectedSourceID else {
+        guard !Task.isCancelled,
+              previewImageSource?.id == expectedSourceID,
+              sessionStore.mediaProfileScope == profileID
+        else {
             return
         }
         embeddedImage = image
@@ -161,6 +176,8 @@ struct AttachmentPreviewSheet: View {
         }
         do {
             previewURL = try await sessionStore.previewFile(path: targetPath)
+        } catch is CancellationError {
+            return
         } catch {
             localImagePreviewError = userFacingPreviewError(error)
         }

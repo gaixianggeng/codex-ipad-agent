@@ -72,7 +72,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     // 首次运行会自动录制参考图到 __Snapshots__/，之后逐像素对比。
     private func makeSeededConversation(colorScheme: ColorScheme = .light) -> some View {
         let sessionID = "snapshot_session"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
 
         conversationStore.appendSystem("Codex 交互式会话已启动。", sessionID: sessionID, createdAt: snapshotMessageDate)
@@ -106,7 +107,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -122,7 +123,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
     private func makeRichMarkdownConversation() -> some View {
         let sessionID = "snapshot_markdown_session"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let markdown = """
         # Markdown 验收
@@ -162,7 +164,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -179,7 +181,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     private func makeMixedActivityConversation() async -> some View {
         let sessionID = "snapshot_mixed_activity"
         let turnID = "turn_mixed_activity"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let landscapeImage = snapshotImageDataURL(size: CGSize(width: 420, height: 210), accent: .systemPurple)
         let portraitImage = snapshotImageDataURL(size: CGSize(width: 240, height: 360), accent: .systemOrange)
@@ -187,11 +190,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         _ = await DataURLImageDecoder.image(
             from: landscapeImage,
             cacheKey: ConversationImageSource.markdown(landscapeImage).id,
+            profileID: appStore.notificationRoutingProfileID,
             maxPixelSize: 1_600
         )
         _ = await DataURLImageDecoder.image(
             from: portraitImage,
             cacheKey: ConversationImageSource.markdown(portraitImage).id,
+            profileID: appStore.notificationRoutingProfileID,
             maxPixelSize: 1_600
         )
         let history = [
@@ -306,7 +311,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         conversationStore.setHistory(history, sessionID: sessionID)
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -322,7 +327,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
     private func makeUnavailableUserImageGallery() -> some View {
         let sessionID = "snapshot_unavailable_user_images"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let unavailableImages = [
             "codex-clipboard-9ba62714-bcfb-4693-805b-1be6e284e924.png",
@@ -347,7 +353,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         ], sessionID: sessionID)
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -521,7 +527,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     private func makeCommentaryAndTrailingProcessConversation() -> some View {
         let sessionID = "snapshot-commentary"
         let turnID = "turn-commentary"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         conversationStore.setHistory([
             CodexHistoryMessage(
@@ -629,7 +636,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         ], sessionID: sessionID)
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -669,7 +676,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 900)
+                )
+            )
         )
     }
 
@@ -709,10 +722,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     }
 
     func testEmptyConversationState() {
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -726,7 +740,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -832,7 +852,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -841,7 +867,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 744, height: 1133))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 1133)
+                )
+            )
         )
     }
 
@@ -855,7 +887,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 832, height: 744))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 832, height: 744)
+                )
+            )
         )
     }
 
@@ -864,7 +902,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 420, height: 768)
+                )
+            )
         )
     }
 
@@ -873,7 +917,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 320, height: 700))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 320, height: 700)
+                )
+            )
         )
     }
 
@@ -882,7 +932,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 420, height: 768)
+                )
+            )
         )
     }
 
@@ -892,7 +948,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -906,7 +968,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 744, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 768)
+                )
+            )
         )
     }
 
@@ -1051,7 +1119,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             rateLimit: RateLimitSummary(limitName: "Codex", primaryUsedPercent: 85, primaryResetsAt: 1_782_883_260),
             goal: goal
         )
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         conversationStore.applyAssistantDelta(
             AgentDelta(
                 text: "这条消息用于把 composer 推到真实会话底部；状态托盘应该保持紧凑，不要把输入框挤出首屏。",
@@ -1071,7 +1140,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             fallbackSessionID: sessionID
         )
         let themeStore = makeThemeStore()
-        let appStore = makeSnapshotAppStore()
         let sessionStore = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
@@ -1084,6 +1152,17 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 SnapshotSessionAPIClient(projects: [project], sessions: [session])
             }
         )
+        // 固定一个明确支持 xhigh 的默认模型，避免异步 model/list 刷新后把推理强度
+        // 归一化掉，导致快照取决于首帧与 `.task` 谁先完成。
+        sessionStore.appServerModelOptions = [
+            CodexAppServerModelOption(
+                id: "gpt-5.5",
+                title: "GPT-5.5",
+                isDefault: true,
+                supportedReasoningEfforts: ["xhigh"],
+                defaultReasoningEffort: "xhigh"
+            )
+        ]
         await sessionStore.refreshAll(autoAttach: false)
         await sessionStore.toggleProjectExpansion(project)
         sessionStore.selectedSessionID = sessionID
@@ -1274,7 +1353,13 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 340, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 340, height: 768)
+                )
+            )
         )
     }
 
@@ -1328,6 +1413,14 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return AppStore(defaults: defaults, tokenStore: TokenStore(keychain: TestKeychainOperations()))
+    }
+
+    private func makeSnapshotConversationStore(appStore: AppStore) -> ConversationStore {
+        let store = ConversationStore()
+        // 快照在 SessionStore 初始化前预置数据，必须明确写入同一个 HostScope；
+        // 否则 Profile 隔离会正确地隐藏空命名空间中的旧测试数据。
+        store.activate(profileID: appStore.activeHostScope.profileID)
+        return store
     }
 
     private func makeRecentWorkspaceStore(workspaces: [AgentWorkspace], endpoint: String) -> RecentWorkspaceStore {
@@ -1532,7 +1625,10 @@ final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCas
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
+            as: .wait(
+                for: 0.8,
+                on: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
+            )
         )
     }
 }

@@ -31946,6 +31946,210 @@
           }
         }
       }
+    },
+    "ui.agentd_version_too_old_for_multi_mac" : {
+      "comment" : "Shown when a Mac cannot provide the stable installation identity required for safe multi-Mac switching.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac is running an older agentd version that cannot securely verify multiple Mac identities. Update and restart agentd."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 Mac 的 agentd 版本过旧，尚不支持安全的多 Mac 身份校验。请先升级并重启 agentd。"
+          }
+        }
+      }
+    },
+    "ui.check_mac_status" : {
+      "comment" : "Menu action that refreshes the cached availability status of saved Macs.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Mac Status"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查 Mac 状态"
+          }
+        }
+      }
+    },
+    "ui.mac_already_saved_as_value" : {
+      "comment" : "Shown when the stable installation identity already belongs to another saved Mac profile. The placeholder is the existing profile name.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac is already saved as “%@”. Update the existing connection address instead of adding a duplicate."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 Mac 已保存为“%@”。请更新已有连接地址，不要重复添加。"
+          }
+        }
+      }
+    },
+    "ui.mac_installation_identity_mismatch" : {
+      "comment" : "Shown when a saved profile resolves to a different agentd installation. The placeholder is the saved profile name.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” returned a different installation identity. To prevent data from being mixed, pair it again as a new Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@”返回了不同的安装身份。为防止串数据，请将它作为一台新 Mac 重新配对。"
+          }
+        }
+      }
+    },
+    "ui.manage_connections" : {
+      "comment" : "Button title that opens the saved Mac connection manager.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Manage Connections"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理连接"
+          }
+        }
+      }
+    },
+    "ui.offline" : {
+      "comment" : "Compact status shown when the current device has no usable network connection.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offline"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "离线"
+          }
+        }
+      }
+    },
+    "ui.prepared_connection_consumed" : {
+      "comment" : "Shown when a one-shot prepared host connection was already committed or discarded.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The candidate connection has already been used. Try switching again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "候选连接已被使用，请重试切换。"
+          }
+        }
+      }
+    },
+    "ui.prepared_connection_expired" : {
+      "comment" : "Shown when a prepared host connection exceeds its short activation deadline.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The candidate connection expired. Try switching again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "候选连接已过期，请重试切换。"
+          }
+        }
+      }
+    },
+    "ui.prepared_connection_mismatch" : {
+      "comment" : "Shown when profile metadata changes after a candidate connection was prepared.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The candidate connection no longer matches the current Mac profile. Verify it again before switching."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "候选连接与当前 Mac 档案已不一致，请重新验证后再切换。"
+          }
+        }
+      }
+    },
+    "ui.retry" : {
+      "comment" : "Generic retry button title.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retry"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重试"
+          }
+        }
+      }
+    },
+    "ui.switch_failed" : {
+      "comment" : "Alert title shown when switching the active Mac fails.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch Failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换失败"
+          }
+        }
+      }
+    },
+    "ui.unconfirmed_send_after_mac_switch" : {
+      "comment" : "Safety warning for a turn whose send acknowledgement was unknown when the user switched Macs.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When switching Macs, the send result could not be confirmed. After switching back, check the history first; it will not be resent automatically."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换 Mac 时发送结果尚未确认；切回后请先核对历史，系统不会自动重发。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

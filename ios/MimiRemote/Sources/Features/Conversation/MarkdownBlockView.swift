@@ -342,12 +342,6 @@ enum ConversationImageSource: Hashable, Identifiable {
 
 struct ConversationImagePreview: View {
     @EnvironmentObject private var sessionStore: SessionStore
-    @State private var embeddedImage: UIImage?
-    @State private var localImage: UIImage?
-    @State private var localFileURL: URL?
-    @State private var quickLookURL: URL?
-    @State private var isLoadingLocalImage = false
-    @State private var loadError: String?
 
     let source: ConversationImageSource
     let title: String?
@@ -373,9 +367,70 @@ struct ConversationImagePreview: View {
         self.maxHeight = maxHeight
         self.showsCaption = showsCaption
         self.fillsAvailableWidth = fillsAvailableWidth
+    }
+
+    var body: some View {
+        let profileID = sessionStore.mediaProfileScope
+        let identity = MediaRequestIdentity(
+            profileID: profileID,
+            resourceID: source.id
+        )
+
+        ConversationImagePreviewContent(
+            profileID: profileID,
+            source: source,
+            title: title,
+            style: style,
+            statusStyle: statusStyle,
+            maxHeight: maxHeight,
+            showsCaption: showsCaption,
+            fillsAvailableWidth: fillsAvailableWidth
+        )
+        // Profile 改变时重建媒体叶子状态，旧 Mac 的 UIImage/QuickLook URL 不会闪现在新 Mac。
+        .id(identity)
+    }
+}
+
+private struct ConversationImagePreviewContent: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+    @State private var embeddedImage: UIImage?
+    @State private var localImage: UIImage?
+    @State private var localFileURL: URL?
+    @State private var quickLookURL: URL?
+    @State private var isLoadingLocalImage = false
+    @State private var loadError: String?
+
+    let profileID: String
+    let source: ConversationImageSource
+    let title: String?
+    let style: MarkdownStyle
+    let statusStyle: MarkdownStyle?
+    var maxHeight: CGFloat = 280
+    var showsCaption = true
+    var fillsAvailableWidth = false
+
+    init(
+        profileID: String,
+        source: ConversationImageSource,
+        title: String?,
+        style: MarkdownStyle,
+        statusStyle: MarkdownStyle? = nil,
+        maxHeight: CGFloat = 280,
+        showsCaption: Bool = true,
+        fillsAvailableWidth: Bool = false
+    ) {
+        self.profileID = profileID
+        self.source = source
+        self.title = title
+        self.style = style
+        self.statusStyle = statusStyle
+        self.maxHeight = maxHeight
+        self.showsCaption = showsCaption
+        self.fillsAvailableWidth = fillsAvailableWidth
         _embeddedImage = State(
             initialValue: DataURLImageDecoder.cachedImage(
                 cacheKey: source.id,
+                profileID: profileID,
                 maxPixelSize: 1_600
             )
         )
@@ -394,9 +449,13 @@ struct ConversationImagePreview: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .quickLookPreview($quickLookURL)
-        .task(id: source.id) {
+        .task(id: mediaRequestIdentity) {
             await loadSourceIfNeeded()
         }
+    }
+
+    private var mediaRequestIdentity: MediaRequestIdentity {
+        MediaRequestIdentity(profileID: profileID, resourceID: source.id)
     }
 
     @ViewBuilder
@@ -425,7 +484,10 @@ struct ConversationImagePreview: View {
             }
         case .localPath(let path):
             localImageContent(path: path)
-                .task(id: path) {
+                .task(id: MediaRequestIdentity(
+                    profileID: profileID,
+                    resourceID: "local:\(path)"
+                )) {
                     await loadLocalImage(path: path)
                 }
         case .historyMedia(let id):
@@ -443,6 +505,7 @@ struct ConversationImagePreview: View {
             loadError = nil
             if let cached = DataURLImageDecoder.cachedImage(
                 cacheKey: expectedSourceID,
+                profileID: profileID,
                 maxPixelSize: 1_600
             ) {
                 embeddedImage = cached
@@ -451,16 +514,24 @@ struct ConversationImagePreview: View {
             }
             embeddedImage = nil
             isLoadingLocalImage = true
+            HostSwitchSignpost.event("first_media_request")
             let image = await DataURLImageDecoder.image(
                 from: value,
                 cacheKey: expectedSourceID,
+                profileID: profileID,
                 maxPixelSize: 1_600
             )
-            guard !Task.isCancelled, source.id == expectedSourceID else {
+            guard !Task.isCancelled,
+                  source.id == expectedSourceID,
+                  sessionStore.mediaProfileScope == profileID
+            else {
                 return
             }
             embeddedImage = image
             isLoadingLocalImage = false
+            if image != nil {
+                HostSwitchSignpost.event("first_media_decoded")
+            }
         case .historyMedia(let id):
             embeddedImage = nil
             isLoadingLocalImage = false
@@ -597,20 +668,28 @@ struct ConversationImagePreview: View {
         do {
             // 本机路径只代表 Mac/agentd 可读文件，iPad 端必须走 agentd 的授权文件读取接口；
             // 这样既能内嵌展示，也不会绕过后端的 projects/browse_roots 边界检查。
+            HostSwitchSignpost.event("first_media_request")
             let url = try await sessionStore.previewFile(path: targetPath)
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
                 return
             }
             guard let image = await DataURLImageDecoder.image(
                 fromFileURL: url,
                 cacheKey: "local:\(targetPath)",
+                profileID: profileID,
                 maxPixelSize: 1_600
             ) else {
                 loadError = L10n.text("ui.the_file_was_read_but_could_not_be")
                 return
             }
+            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
+                return
+            }
             localFileURL = url
             localImage = image
+            HostSwitchSignpost.event("first_media_decoded")
+        } catch is CancellationError {
+            return
         } catch {
             loadError = userFacingPreviewError(error)
         }
@@ -632,20 +711,26 @@ struct ConversationImagePreview: View {
 
         do {
             // 历史图片首屏只保留短 ID；用户点按时再从 agentd 短期缓存取回原始二进制。
+            HostSwitchSignpost.event("first_media_request")
             let url = try await sessionStore.previewHistoryMedia(id: targetID)
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
                 return
             }
             guard let image = await DataURLImageDecoder.image(
                 fromFileURL: url,
                 cacheKey: "historyMedia:\(targetID)",
+                profileID: profileID,
                 maxPixelSize: 1_600
             ) else {
                 loadError = L10n.text("ui.historical_pictures_were_read_but_could_not_be")
                 return
             }
+            guard !Task.isCancelled, sessionStore.mediaProfileScope == profileID else {
+                return
+            }
             localFileURL = url
             localImage = image
+            HostSwitchSignpost.event("first_media_decoded")
         } catch is CancellationError {
             return
         } catch {

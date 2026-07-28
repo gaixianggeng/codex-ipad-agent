@@ -2,15 +2,30 @@ import Foundation
 
 @MainActor
 final class SessionContextStore: ObservableObject {
-    @Published private var contextsBySessionID: [SessionID: SessionContextSnapshot] = [:]
+    @Published private var activeProfileID = ""
+    @Published private var contextsBySessionID: [ScopedSessionID: SessionContextSnapshot] = [:]
 
     private let maxTasks = 8
+
+    func activate(profileID: String) {
+        guard activeProfileID != profileID else {
+            return
+        }
+        activeProfileID = profileID
+    }
+
+    func remove(profileID: String) {
+        let filteredContexts = contextsBySessionID.filter { $0.key.profileID != profileID }
+        if filteredContexts.count != contextsBySessionID.count {
+            contextsBySessionID = filteredContexts
+        }
+    }
 
     func context(for sessionID: SessionID?) -> SessionContextSnapshot? {
         guard let sessionID else {
             return nil
         }
-        return contextsBySessionID[sessionID]
+        return contextsBySessionID[scopedSessionID(for: sessionID)]
     }
 
     func upsert(_ context: SessionContextSnapshot, fallbackSessionID: SessionID?) {
@@ -20,11 +35,12 @@ final class SessionContextStore: ObservableObject {
         }
         var next = context
         next.sessionID = sessionID
-        let merged = Self.merged(base: contextsBySessionID[sessionID], update: next, maxTasks: maxTasks)
-        guard contextsBySessionID[sessionID] != merged else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        let merged = Self.merged(base: contextsBySessionID[scopedSessionID], update: next, maxTasks: maxTasks)
+        guard contextsBySessionID[scopedSessionID] != merged else {
             return
         }
-        contextsBySessionID[sessionID] = merged
+        contextsBySessionID[scopedSessionID] = merged
         attachSubagentsToParents(from: merged)
     }
 
@@ -68,7 +84,8 @@ final class SessionContextStore: ObservableObject {
     }
 
     func clearGoal(sessionID: SessionID) {
-        guard var context = contextsBySessionID[sessionID] else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        guard var context = contextsBySessionID[scopedSessionID] else {
             return
         }
         guard context.goal != nil else {
@@ -76,11 +93,12 @@ final class SessionContextStore: ObservableObject {
         }
         context.goal = nil
         context.updatedAt = Date()
-        contextsBySessionID[sessionID] = context
+        contextsBySessionID[scopedSessionID] = context
     }
 
     func clearPendingApprovalTasks(sessionID: SessionID) {
-        guard var context = contextsBySessionID[sessionID] else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        guard var context = contextsBySessionID[scopedSessionID] else {
             return
         }
         let filtered = context.tasks.filter { task in
@@ -95,7 +113,7 @@ final class SessionContextStore: ObservableObject {
         }
         context.tasks = filtered
         context.updatedAt = Date()
-        contextsBySessionID[sessionID] = context
+        contextsBySessionID[scopedSessionID] = context
     }
 
     private func attachSubagentsToParents(from context: SessionContextSnapshot) {
@@ -108,18 +126,23 @@ final class SessionContextStore: ObservableObject {
                 candidateIDs.append("codex_\(parentThreadID)")
             }
             for parentSessionID in Set(candidateIDs) {
+                let scopedParentSessionID = scopedSessionID(for: parentSessionID)
                 let parentUpdate = SessionContextSnapshot(
                     sessionID: parentSessionID,
                     threadID: parentThreadID,
                     subagents: [subagent],
                     updatedAt: Date()
                 )
-                let merged = Self.merged(base: contextsBySessionID[parentSessionID], update: parentUpdate, maxTasks: maxTasks)
-                if contextsBySessionID[parentSessionID] != merged {
-                    contextsBySessionID[parentSessionID] = merged
+                let merged = Self.merged(base: contextsBySessionID[scopedParentSessionID], update: parentUpdate, maxTasks: maxTasks)
+                if contextsBySessionID[scopedParentSessionID] != merged {
+                    contextsBySessionID[scopedParentSessionID] = merged
                 }
             }
         }
+    }
+
+    private func scopedSessionID(for sessionID: SessionID) -> ScopedSessionID {
+        ScopedSessionID(profileID: activeProfileID, sessionID: sessionID)
     }
 
     private static func merged(

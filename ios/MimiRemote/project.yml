@@ -1,6 +1,8 @@
 name: MimiRemote
 options:
   bundleIdPrefix: com.gaixianggeng
+  # 与当前工程的 Xcode 27 元数据保持一致，避免每次 XcodeGen 把 scheme 降级到旧版本。
+  xcodeVersion: "27.0"
   deploymentTarget:
     iOS: "26.0"
 settings:
@@ -90,6 +92,9 @@ targets:
       - path: Tests
         excludes:
           - MimiRemoteTests/ConversationSnapshotTests.swift
+          # UI 测试由独立 target 编译，不能同时落入 unit-test bundle。
+          - MimiRemoteUITests
+          - MimiRemoteUITests/**
       - path: Tests/MimiRemoteTests/ConversationSnapshotTests.swift
         destinationFilters:
           - iOS
@@ -123,3 +128,23 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
         TEST_TARGET_NAME: MimiRemote
+schemes:
+  MimiRemote:
+    build:
+      targets:
+        MimiRemote: all
+        MimiRemoteTests:
+          - test
+    test:
+      language: zh-Hans
+      targets:
+        - MimiRemoteTests
+  MimiRemotePhysicalUITests:
+    build:
+      targets:
+        MimiRemote: all
+        MimiRemoteUITests:
+          - test
+    test:
+      targets:
+        - MimiRemoteUITests

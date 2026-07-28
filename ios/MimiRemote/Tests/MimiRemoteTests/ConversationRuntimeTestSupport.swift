@@ -136,6 +136,7 @@ func occurrenceCount(of needle: String, in haystack: String) -> Int {
 
 final class FakeCodexAppServerTransport: CodexAppServerTransport {
     private let sentStore = FakeCodexAppServerSentStore()
+    private let lifecycleStore = FakeCodexAppServerLifecycleStore()
     private var receiveContinuation: AsyncThrowingStream<String, Error>.Continuation?
     private var receiveIterator: AsyncThrowingStream<String, Error>.Iterator
 
@@ -159,6 +160,7 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
     }
 
     func close() async {
+        await lifecycleStore.recordClose()
         receiveContinuation?.finish()
     }
 
@@ -172,6 +174,10 @@ final class FakeCodexAppServerTransport: CodexAppServerTransport {
 
     func sentMessages() async -> [String] {
         await sentStore.snapshot()
+    }
+
+    func closeCallCount() async -> Int {
+        await lifecycleStore.closeCallCount
     }
 }
 
@@ -240,6 +246,14 @@ actor FakeCodexAppServerSentStore {
 
     func snapshot() -> [String] {
         messages
+    }
+}
+
+actor FakeCodexAppServerLifecycleStore {
+    private(set) var closeCallCount = 0
+
+    func recordClose() {
+        closeCallCount += 1
     }
 }
 
@@ -741,6 +755,13 @@ func makeSessionListPreferenceStore() -> SessionListPreferenceStore {
     let defaults = UserDefaults(suiteName: suiteName) ?? .standard
     defaults.removePersistentDomain(forName: suiteName)
     return SessionListPreferenceStore(defaults: defaults)
+}
+
+func makeSessionControlStateStore() -> SessionControlStateStore {
+    let suiteName = "SessionControlStateStoreTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+    defaults.removePersistentDomain(forName: suiteName)
+    return SessionControlStateStore(defaults: defaults)
 }
 
 func makeSessionReminderStore() -> SessionReminderStore {

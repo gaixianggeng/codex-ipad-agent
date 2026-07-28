@@ -2,21 +2,22 @@ import Foundation
 
 @MainActor
 final class ConversationStore: ObservableObject {
-    @Published private(set) var messagesBySessionID: [String: [ConversationMessage]] = [:]
+    @Published private var activeProfileID = ""
+    @Published private var messagesByScopedSessionID: [ScopedSessionID: [ConversationMessage]] = [:]
 
-    private var loadedHistorySessionIDs: Set<String> = []
-    private var lastSeenSeqBySessionID: [String: EventSequence] = [:]
+    private var loadedHistorySessionIDs: Set<ScopedSessionID> = []
+    private var lastSeenSeqBySessionID: [ScopedSessionID: EventSequence] = [:]
     private var revisionByStableMessageID: [StableMessageCacheKey: ModelRevision] = [:]
     private var messageUUIDByStableMessageID: [StableMessageCacheKey: UUID] = [:]
-    private var messageIndexByStableIDBySessionID: [String: [MessageID: Int]] = [:]
-    private var messageIndexByClientMessageIDBySessionID: [String: [ClientMessageID: Int]] = [:]
-    private var messageIndexByUUIDBySessionID: [String: [UUID: Int]] = [:]
-    private var historyProjectionCacheBySessionID: [String: HistoryProjectionCache] = [:]
-    private var pendingAssistantDeltasBySessionID: [String: PendingAssistantDelta] = [:]
-    private var assistantDeltaFlushTasks: [String: Task<Void, Never>] = [:]
-    private var turnLifecycleBySessionID: [SessionID: [TurnID: ConversationTurnLifecycle]] = [:]
-    private var sessionAccessTickBySessionID: [String: UInt64] = [:]
-    private var retainedByteCountBySessionID: [String: Int] = [:]
+    private var messageIndexByStableIDBySessionID: [ScopedSessionID: [MessageID: Int]] = [:]
+    private var messageIndexByClientMessageIDBySessionID: [ScopedSessionID: [ClientMessageID: Int]] = [:]
+    private var messageIndexByUUIDBySessionID: [ScopedSessionID: [UUID: Int]] = [:]
+    private var historyProjectionCacheBySessionID: [ScopedSessionID: HistoryProjectionCache] = [:]
+    private var pendingAssistantDeltasBySessionID: [ScopedSessionID: PendingAssistantDelta] = [:]
+    private var assistantDeltaFlushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
+    private var turnLifecycleBySessionID: [ScopedSessionID: [TurnID: ConversationTurnLifecycle]] = [:]
+    private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
+    private var retainedByteCountBySessionID: [ScopedSessionID: Int] = [:]
     private var totalRetainedByteCount = 0
     private var sessionAccessCounter: UInt64 = 0
     private let timelineReducer = ConversationTimelineReducer()
@@ -71,7 +72,7 @@ final class ConversationStore: ObservableObject {
     }
 
     private struct StableMessageCacheKey: Hashable {
-        let sessionID: String
+        let scopedSessionID: ScopedSessionID
         let stableID: MessageID
     }
 
@@ -111,29 +112,71 @@ final class ConversationStore: ObservableObject {
 
     private static let undatedHistoryFallbackDate = Date(timeIntervalSince1970: 0)
 
+    /// 兼容现有定向测试与只读诊断；业务热路径应继续通过 messages(for:) 读取当前 Profile。
+    var messagesBySessionID: [String: [ConversationMessage]] {
+        var activeMessages: [String: [ConversationMessage]] = [:]
+        for (key, messages) in messagesByScopedSessionID where key.profileID == activeProfileID {
+            activeMessages[key.sessionID] = messages
+        }
+        return activeMessages
+    }
+
+    /// 激活 Profile 只切换命名空间，不复制缓存；LRU 与字节预算仍由所有 scoped session 共同竞争。
+    func activate(profileID: String) {
+        guard activeProfileID != profileID else {
+            return
+        }
+        activeProfileID = profileID
+    }
+
+    /// 删除连接档案时立即释放该 Profile 的正文、索引、流式缓冲和 LRU 记账。
+    /// 这里不改变 activeProfileID；SessionStore 已禁止删除当前档案。
+    func remove(profileID: String) {
+        var scopedSessionIDs = Set(messagesByScopedSessionID.keys.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(loadedHistorySessionIDs.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(lastSeenSeqBySessionID.keys.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(pendingAssistantDeltasBySessionID.keys.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(assistantDeltaFlushTasks.keys.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(turnLifecycleBySessionID.keys.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(sessionAccessTickBySessionID.keys.filter { $0.profileID == profileID })
+        scopedSessionIDs.formUnion(retainedByteCountBySessionID.keys.filter { $0.profileID == profileID })
+
+        for scopedSessionID in scopedSessionIDs {
+            clearConversationSessionState(
+                scopedSessionID: scopedSessionID,
+                messages: messagesByScopedSessionID[scopedSessionID] ?? []
+            )
+        }
+        let filteredMessages = messagesByScopedSessionID.filter { $0.key.profileID != profileID }
+        if filteredMessages.count != messagesByScopedSessionID.count {
+            messagesByScopedSessionID = filteredMessages
+        }
+    }
+
     func messages(for sessionID: String?) -> [ConversationMessage] {
         guard let sessionID else {
             return []
         }
-        return messagesBySessionID[sessionID] ?? []
+        return messagesByScopedSessionID[scopedSessionID(for: sessionID)] ?? []
     }
 
     func hasLoadedHistory(sessionID: String) -> Bool {
-        loadedHistorySessionIDs.contains(sessionID)
+        loadedHistorySessionIDs.contains(scopedSessionID(for: sessionID))
     }
 
     func lastSeenSeq(for sessionID: String?) -> EventSequence? {
         guard let sessionID else {
             return nil
         }
-        return lastSeenSeqBySessionID[sessionID]
+        return lastSeenSeqBySessionID[scopedSessionID(for: sessionID)]
     }
 
     func retainSessionCache(sessionID: String) {
-        guard messagesBySessionID[sessionID] != nil else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        guard messagesByScopedSessionID[scopedSessionID] != nil else {
             return
         }
-        touchConversationSession(sessionID)
+        touchConversationSession(scopedSessionID)
     }
 
     func setHistory(
@@ -141,6 +184,7 @@ final class ConversationStore: ObservableObject {
         sessionID: String,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
     ) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         flushPendingAssistantDelta(sessionID: sessionID)
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
         recordTurnLifecycles(from: converted, sessionID: sessionID)
@@ -153,23 +197,23 @@ final class ConversationStore: ObservableObject {
                 }
             }
         }
-        if let current = messagesBySessionID[sessionID], areMessagesEquivalent(current, converted) {
+        if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, converted) {
             // 重复刷新同一页历史时，投影已经完全等价，直接标记已加载并刷新 LRU。
             // 这沿用 Litter 的 projection no-op 思路，跳过后续 merge/sort 和 @Published 检查。
-            loadedHistorySessionIDs.insert(sessionID)
-            touchConversationSession(sessionID)
+            loadedHistorySessionIDs.insert(scopedSessionID)
+            touchConversationSession(scopedSessionID)
             return
         }
         setMessages(
             mergeHistory(
                 converted,
-                with: messagesBySessionID[sessionID] ?? [],
+                with: messagesByScopedSessionID[scopedSessionID] ?? [],
                 sessionID: sessionID,
                 authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
             ),
             sessionID: sessionID
         )
-        loadedHistorySessionIDs.insert(sessionID)
+        loadedHistorySessionIDs.insert(scopedSessionID)
     }
 
     func replaceHistorySnapshot(
@@ -177,8 +221,9 @@ final class ConversationStore: ObservableObject {
         sessionID: String,
         authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>] = [:]
     ) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         flushPendingAssistantDelta(sessionID: sessionID)
-        let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[sessionID]?.messages.map(\.id) ?? [])
+        let previousHistoryProjectionIDs = Set(historyProjectionCacheBySessionID[scopedSessionID]?.messages.map(\.id) ?? [])
         let converted = projectedHistoryMessages(history, sessionID: sessionID)
         recordTurnLifecycles(from: converted, sessionID: sessionID)
         for message in converted {
@@ -191,30 +236,30 @@ final class ConversationStore: ObservableObject {
             }
         }
 
-        if converted.isEmpty, messagesBySessionID[sessionID]?.isEmpty == false {
+        if converted.isEmpty, messagesByScopedSessionID[scopedSessionID]?.isEmpty == false {
             // app-server 偶发返回空首屏时，不能清掉用户当前可见的历史和运行态消息；
             // 只标记本轮加载完成，分页游标由 SessionStore 根据 page metadata 继续维护。
-            loadedHistorySessionIDs.insert(sessionID)
-            touchConversationSession(sessionID)
+            loadedHistorySessionIDs.insert(scopedSessionID)
+            touchConversationSession(scopedSessionID)
             return
         }
 
         let snapshot = mergeHistory(
             converted,
-            with: messagesBySessionID[sessionID] ?? [],
+            with: messagesByScopedSessionID[scopedSessionID] ?? [],
             sessionID: sessionID,
             replacingHistoryProjectionIDs: previousHistoryProjectionIDs,
             authoritativeCompletedTurnItems: authoritativeCompletedTurnItems
         )
-        if let current = messagesBySessionID[sessionID], areMessagesEquivalent(current, snapshot) {
-            loadedHistorySessionIDs.insert(sessionID)
-            touchConversationSession(sessionID)
+        if let current = messagesByScopedSessionID[scopedSessionID], areMessagesEquivalent(current, snapshot) {
+            loadedHistorySessionIDs.insert(scopedSessionID)
+            touchConversationSession(scopedSessionID)
             return
         }
         // 首屏 full/summary 历史是当前会话的 canonical 快照。替换上一轮历史投影，
         // 但保留尚未进入 thread/read 的本地发送、审批、补充信息等运行态消息。
         setMessages(snapshot, sessionID: sessionID)
-        loadedHistorySessionIDs.insert(sessionID)
+        loadedHistorySessionIDs.insert(scopedSessionID)
     }
 
     func appendUser(_ text: String, sessionID: String, createdAt: Date? = nil) {
@@ -230,8 +275,9 @@ final class ConversationStore: ObservableObject {
         userDelivery: UserMessageDelivery? = nil,
         createdAt: Date? = nil
     ) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         if let clientMessageID,
-           var list = messagesBySessionID[sessionID],
+           var list = messagesByScopedSessionID[scopedSessionID],
            let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) {
             let didChange = list[index].content != text ||
                 list[index].sendStatus != sendStatus ||
@@ -264,7 +310,7 @@ final class ConversationStore: ObservableObject {
 
     @discardableResult
     func updateSendStatus(clientMessageID: ClientMessageID, sessionID: String, status: MessageSendStatus) -> Bool {
-        guard var list = messagesBySessionID[sessionID],
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) else {
             return false
         }
@@ -278,7 +324,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func markSendingUserMessagesFailed(sessionID: String) {
-        guard var list = messagesBySessionID[sessionID] else {
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
             return
         }
         var changed = false
@@ -294,7 +340,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func compactTurnPayloadAfterSendAccepted(clientMessageID: ClientMessageID, sessionID: String) {
-        guard var list = messagesBySessionID[sessionID],
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID),
               let payload = list[index].turnPayload else {
             return
@@ -337,7 +383,7 @@ final class ConversationStore: ObservableObject {
 
     func resolveApproval(_ approval: ApprovalSummary, accepted: Bool, sessionID: String) {
         let text = accepted ? L10n.format("ui.approval_approved_value", approval.title) : L10n.format("ui.approval_rejected_value", approval.title)
-        guard var list = messagesBySessionID[sessionID] else {
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
             appendSystem(text, sessionID: sessionID, kind: .approval)
             return
         }
@@ -354,7 +400,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func resolveLatestPendingApproval(sessionID: String) {
-        guard var list = messagesBySessionID[sessionID],
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = list.lastIndex(where: { message in
                   message.kind == .approval && message.content.hasPrefix(L10n.text("ui.awaiting_approval"))
               }) else {
@@ -369,7 +415,7 @@ final class ConversationStore: ObservableObject {
     }
 
     func resolveLatestPendingUserInput(sessionID: String, skipped: Bool) {
-        guard var list = messagesBySessionID[sessionID],
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
               let index = list.lastIndex(where: { message in
                   message.kind == .userInput
                       && (message.content.hasPrefix(L10n.text("ui.waiting_for_additional_information_3a146c9c")) || message.content.hasPrefix(L10n.text("ui.waiting_for_boot_input")))
@@ -388,7 +434,7 @@ final class ConversationStore: ObservableObject {
 
     func restorePendingUserInput(_ request: AgentUserInputRequest, sessionID: String) {
         let text = L10n.format("ui.waiting_for_additional_information_named", request.title)
-        guard var list = messagesBySessionID[sessionID] else {
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
             appendSystem(text, sessionID: sessionID, kind: .userInput)
             return
         }
@@ -406,8 +452,10 @@ final class ConversationStore: ObservableObject {
     }
 
     func moveLocalEcho(clientMessageID: ClientMessageID, from sourceSessionID: String, to targetSessionID: String) {
+        let scopedSourceSessionID = scopedSessionID(for: sourceSessionID)
+        let scopedTargetSessionID = scopedSessionID(for: targetSessionID)
         guard sourceSessionID != targetSessionID,
-              var source = messagesBySessionID[sourceSessionID],
+              var source = messagesByScopedSessionID[scopedSourceSessionID],
               let sourceIndex = messageIndex(clientMessageID: clientMessageID, sessionID: sourceSessionID) else {
             return
         }
@@ -417,7 +465,7 @@ final class ConversationStore: ObservableObject {
         var message = source.remove(at: sourceIndex)
         message.sendStatus = .sent
 
-        var target = messagesBySessionID[targetSessionID] ?? []
+        var target = messagesByScopedSessionID[scopedTargetSessionID] ?? []
         if let targetIndex = messageIndex(clientMessageID: clientMessageID, sessionID: targetSessionID) {
             target[targetIndex].content = message.content
             target[targetIndex].sendStatus = message.sendStatus
@@ -429,17 +477,17 @@ final class ConversationStore: ObservableObject {
         }
 
         if source.isEmpty {
-            clearConversationSessionState(sessionID: sourceSessionID, messages: source)
-            var next = messagesBySessionID
-            next.removeValue(forKey: sourceSessionID)
-            messagesBySessionID = next
+            clearConversationSessionState(scopedSessionID: scopedSourceSessionID, messages: source)
+            var next = messagesByScopedSessionID
+            next.removeValue(forKey: scopedSourceSessionID)
+            messagesByScopedSessionID = next
         } else {
             setMessages(source, sessionID: sourceSessionID)
         }
     }
 
     private func upsertPendingApprovalMessage(_ text: String, sessionID: String) -> Bool {
-        guard var list = messagesBySessionID[sessionID] else {
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
             return false
         }
         let title = pendingApprovalTitle(from: text)
@@ -463,7 +511,7 @@ final class ConversationStore: ObservableObject {
         sessionID: String,
         metadata: AgentEventMetadata?
     ) -> Bool {
-        guard var list = messagesBySessionID[sessionID] else {
+        guard var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)] else {
             return false
         }
         let requestID = metadata?.itemID
@@ -575,8 +623,9 @@ final class ConversationStore: ObservableObject {
         revision: ModelRevision?,
         sessionID: String
     ) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         let activityAt = createdAt ?? Date()
-        if pendingAssistantDeltasBySessionID[sessionID]?.stableID != stableID {
+        if pendingAssistantDeltasBySessionID[scopedSessionID]?.stableID != stableID {
             flushPendingAssistantDelta(sessionID: sessionID)
         }
 
@@ -597,21 +646,21 @@ final class ConversationStore: ObservableObject {
             return
         }
         if let index,
-           messagesBySessionID[sessionID]?[index].sendStatus == .confirmed {
+           messagesByScopedSessionID[scopedSessionID]?[index].sendStatus == .confirmed {
             // item/completed 是权威最终内容；它落地后迟到的 delta 不能再把气泡改回 streaming。
             return
         }
 
         // 第一段 delta 已经创建了可见气泡；后续文本先合并到 per-session buffer，
         // 以固定节奏批量发布，避免每个 token/分片都触发 SwiftUI 列表重绘。
-        if var pending = pendingAssistantDeltasBySessionID[sessionID] {
+        if var pending = pendingAssistantDeltasBySessionID[scopedSessionID] {
             pending.text += text
             pending.kind = kind
             pending.revision = revision ?? pending.revision
             pending.updatedAt = latestDate(pending.updatedAt, activityAt)
-            pendingAssistantDeltasBySessionID[sessionID] = pending
+            pendingAssistantDeltasBySessionID[scopedSessionID] = pending
         } else {
-            pendingAssistantDeltasBySessionID[sessionID] = PendingAssistantDelta(
+            pendingAssistantDeltasBySessionID[scopedSessionID] = PendingAssistantDelta(
                 stableID: stableID,
                 uuid: uuid,
                 clientMessageID: clientMessageID,
@@ -629,6 +678,7 @@ final class ConversationStore: ObservableObject {
 
     func completeMessage(_ message: AgentMessage, metadata: AgentEventMetadata, fallbackSessionID: String) {
         let sessionID = firstNonEmpty(metadata.sessionID, message.sessionID, fallbackSessionID)
+        let scopedSessionID = scopedSessionID(for: sessionID)
         guard shouldAccept(metadata: metadata, sessionID: sessionID) else {
             return
         }
@@ -653,7 +703,7 @@ final class ConversationStore: ObservableObject {
         }
         let displayKind: MessageKind = message.role == .tool && message.kind == .message ? .commandSummary : message.kind
 
-        var list = messagesBySessionID[sessionID] ?? []
+        var list = messagesByScopedSessionID[scopedSessionID] ?? []
         if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
             let previous = list[index]
             list[index].stableID = stableID
@@ -665,7 +715,7 @@ final class ConversationStore: ObservableObject {
             list[index].revision = message.revision
             list[index].updatedAt = message.updatedAt ?? metadata.createdAt ?? Date()
             if let turnID = message.turnID {
-                list[index].turnLifecycle = turnLifecycleBySessionID[sessionID]?[turnID] ?? list[index].turnLifecycle
+                list[index].turnLifecycle = turnLifecycleBySessionID[scopedSessionID]?[turnID] ?? list[index].turnLifecycle
             }
             list[index].isTimestampFallback = message.isTimestampFallback
             list[index].userDelivery = nil
@@ -696,7 +746,7 @@ final class ConversationStore: ObservableObject {
                 sendStatus: message.sendStatus,
                 revision: message.revision,
                 activityPayload: message.activityPayload,
-                turnLifecycle: message.turnID.flatMap { turnLifecycleBySessionID[sessionID]?[$0] },
+                turnLifecycle: message.turnID.flatMap { turnLifecycleBySessionID[scopedSessionID]?[$0] },
                 isTimestampFallback: message.isTimestampFallback
             )
             // 回放/迟到的 completed 事件带的是流式 item id；thread/read 把 item id 重排成 item-N 后，
@@ -713,14 +763,14 @@ final class ConversationStore: ObservableObject {
                 twin.revision = max(message.revision, twin.revision ?? message.revision)
                 twin.activityPayload = twin.activityPayload ?? message.activityPayload
                 if let turnID = message.turnID {
-                    twin.turnLifecycle = turnLifecycleBySessionID[sessionID]?[turnID] ?? twin.turnLifecycle
+                    twin.turnLifecycle = turnLifecycleBySessionID[scopedSessionID]?[turnID] ?? twin.turnLifecycle
                 }
                 list[twinIndex] = twin
                 messageUUIDByStableMessageID[key] = twin.id
                 // 同一 Item 的 completed 只能更新首次出现的槽位；真实时间是展示信息，不能触发重排。
                 replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
                 // 流式 id 也指向孪生卡，后续同一事件的补发/查找直接原位命中。
-                messageIndexByStableIDBySessionID[sessionID, default: [:]][stableID] = twinIndex
+                messageIndexByStableIDBySessionID[scopedSessionID, default: [:]][stableID] = twinIndex
                 return
             }
             messageUUIDByStableMessageID[key] = completedMessage.id
@@ -748,12 +798,13 @@ final class ConversationStore: ObservableObject {
 
     func markCurrentAssistantCompleted(metadata: AgentEventMetadata, fallbackSessionID: String) {
         let sessionID = metadata.sessionID ?? fallbackSessionID
+        let scopedSessionID = scopedSessionID(for: sessionID)
         guard shouldAccept(metadata: metadata, sessionID: sessionID) else {
             return
         }
         flushPendingAssistantDelta(sessionID: sessionID)
         let stableID = stableMessageID(prefix: "assistant", metadata: metadata, fallbackSessionID: sessionID)
-        guard var list = messagesBySessionID[sessionID],
+        guard var list = messagesByScopedSessionID[scopedSessionID],
               let index = messageIndex(stableID: stableID, sessionID: sessionID) else {
             return
         }
@@ -774,8 +825,9 @@ final class ConversationStore: ObservableObject {
             return
         }
         let sessionID = metadata.sessionID ?? fallbackSessionID
-        turnLifecycleBySessionID[sessionID, default: [:]][turnID] = lifecycle
-        guard var list = messagesBySessionID[sessionID] else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        turnLifecycleBySessionID[scopedSessionID, default: [:]][turnID] = lifecycle
+        guard var list = messagesByScopedSessionID[scopedSessionID] else {
             return
         }
         var changed = false
@@ -789,26 +841,28 @@ final class ConversationStore: ObservableObject {
     }
 
     private func append(_ message: ConversationMessage, sessionID: String) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         var message = message
         if let turnID = message.turnID, message.turnLifecycle == nil {
-            message.turnLifecycle = turnLifecycleBySessionID[sessionID]?[turnID]
+            message.turnLifecycle = turnLifecycleBySessionID[scopedSessionID]?[turnID]
         }
         if message.role != .assistant {
             flushPendingAssistantDelta(sessionID: sessionID)
         }
-        var list = messagesBySessionID[sessionID] ?? []
+        var list = messagesByScopedSessionID[scopedSessionID] ?? []
         list.append(message)
         appendMessageWithIndex(message, list: list, sessionID: sessionID)
     }
 
     private func shouldAccept(metadata: AgentEventMetadata, sessionID: String) -> Bool {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         guard let seq = metadata.seq else {
             return true
         }
-        if let last = lastSeenSeqBySessionID[sessionID], seq <= last {
+        if let last = lastSeenSeqBySessionID[scopedSessionID], seq <= last {
             return false
         }
-        lastSeenSeqBySessionID[sessionID] = seq
+        lastSeenSeqBySessionID[scopedSessionID] = seq
         return true
     }
 
@@ -873,7 +927,11 @@ final class ConversationStore: ObservableObject {
     }
 
     private func stableCacheKey(stableID: MessageID, sessionID: String) -> StableMessageCacheKey {
-        StableMessageCacheKey(sessionID: sessionID, stableID: stableID)
+        StableMessageCacheKey(scopedSessionID: scopedSessionID(for: sessionID), stableID: stableID)
+    }
+
+    private func stableCacheKey(stableID: MessageID, scopedSessionID: ScopedSessionID) -> StableMessageCacheKey {
+        StableMessageCacheKey(scopedSessionID: scopedSessionID, stableID: stableID)
     }
 
     private func stableMessageID(prefix: String, metadata: AgentEventMetadata, fallbackSessionID: String) -> String {
@@ -905,7 +963,8 @@ final class ConversationStore: ObservableObject {
         revision: ModelRevision?,
         sessionID: String
     ) {
-        var list = messagesBySessionID[sessionID] ?? []
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        var list = messagesByScopedSessionID[scopedSessionID] ?? []
         let message = ConversationMessage(
             id: uuid,
             stableID: stableID,
@@ -918,38 +977,45 @@ final class ConversationStore: ObservableObject {
             createdAt: createdAt ?? Date(),
             sendStatus: .sending,
             revision: revision,
-            turnLifecycle: turnID.flatMap { turnLifecycleBySessionID[sessionID]?[$0] }
+            turnLifecycle: turnID.flatMap { turnLifecycleBySessionID[scopedSessionID]?[$0] }
         )
         list.append(message)
         appendMessageWithIndex(message, list: list, sessionID: sessionID)
     }
 
     private func scheduleAssistantDeltaFlush(sessionID: String) {
-        guard assistantDeltaFlushTasks[sessionID] == nil else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        guard assistantDeltaFlushTasks[scopedSessionID] == nil else {
             return
         }
         let delay = assistantDeltaFlushDelay
-        assistantDeltaFlushTasks[sessionID] = Task { [weak self] in
+        // 延迟 flush 捕获固定 Profile + Session；activate 后不能用新 Profile 重算缓存键。
+        assistantDeltaFlushTasks[scopedSessionID] = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: delay)
             } catch {
                 return
             }
             await MainActor.run { [weak self] in
-                self?.flushPendingAssistantDelta(sessionID: sessionID)
+                self?.flushPendingAssistantDelta(scopedSessionID: scopedSessionID)
             }
         }
     }
 
     private func flushPendingAssistantDelta(sessionID: String) {
-        assistantDeltaFlushTasks[sessionID]?.cancel()
-        assistantDeltaFlushTasks[sessionID] = nil
-        guard let pending = pendingAssistantDeltasBySessionID.removeValue(forKey: sessionID) else {
+        flushPendingAssistantDelta(scopedSessionID: scopedSessionID(for: sessionID))
+    }
+
+    private func flushPendingAssistantDelta(scopedSessionID: ScopedSessionID) {
+        assistantDeltaFlushTasks[scopedSessionID]?.cancel()
+        assistantDeltaFlushTasks[scopedSessionID] = nil
+        guard let pending = pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID) else {
             return
         }
 
-        var list = messagesBySessionID[sessionID] ?? []
-        if let index = messageIndex(stableID: pending.stableID, sessionID: sessionID) ?? messageIndex(uuid: pending.uuid, sessionID: sessionID) {
+        var list = messagesByScopedSessionID[scopedSessionID] ?? []
+        if let index = messageIndex(stableID: pending.stableID, scopedSessionID: scopedSessionID)
+            ?? messageIndex(uuid: pending.uuid, scopedSessionID: scopedSessionID) {
             let previousRetainedByteCount = estimatedRetainedByteCount(of: list[index])
             list[index].appendContent(pending.text)
             list[index].kind = pending.kind
@@ -961,7 +1027,7 @@ final class ConversationStore: ObservableObject {
             let retainedByteDelta = estimatedRetainedByteCount(of: list[index]) - previousRetainedByteCount
             replaceMessagesWithoutEquivalenceCheck(
                 list,
-                sessionID: sessionID,
+                scopedSessionID: scopedSessionID,
                 rebuildIndexes: false,
                 retainedByteDelta: retainedByteDelta
             )
@@ -981,13 +1047,21 @@ final class ConversationStore: ObservableObject {
             updatedAt: pending.updatedAt,
             sendStatus: .sending,
             revision: pending.revision,
-            turnLifecycle: pending.turnID.flatMap { turnLifecycleBySessionID[sessionID]?[$0] }
+            turnLifecycle: pending.turnID.flatMap { turnLifecycleBySessionID[scopedSessionID]?[$0] }
         )
         list.append(message)
-        appendMessageWithIndex(message, list: list, sessionID: sessionID)
+        appendMessageWithIndex(message, list: list, scopedSessionID: scopedSessionID)
     }
 
     private func appendMessageWithIndex(_ message: ConversationMessage, list: [ConversationMessage], sessionID: String) {
+        appendMessageWithIndex(message, list: list, scopedSessionID: scopedSessionID(for: sessionID))
+    }
+
+    private func appendMessageWithIndex(
+        _ message: ConversationMessage,
+        list: [ConversationMessage],
+        scopedSessionID: ScopedSessionID
+    ) {
         // 新消息只增加自身成本；不要为了更新缓存预算重新扫描整段会话和历史大附件。
         let retainedByteDelta = estimatedRetainedByteCount(of: message)
         // 实时事件通常直接追加。只有旧 Turn 的迟到 completed 需要插回所属 Turn；此处只决定新槽位，
@@ -1000,7 +1074,7 @@ final class ConversationStore: ObservableObject {
             reordered.insert(message, at: insertionIndex)
             replaceMessagesWithoutEquivalenceCheck(
                 reordered,
-                sessionID: sessionID,
+                scopedSessionID: scopedSessionID,
                 rebuildIndexes: true,
                 retainedByteDelta: retainedByteDelta
             )
@@ -1008,11 +1082,11 @@ final class ConversationStore: ObservableObject {
         }
         replaceMessagesWithoutEquivalenceCheck(
             list,
-            sessionID: sessionID,
+            scopedSessionID: scopedSessionID,
             rebuildIndexes: false,
             retainedByteDelta: retainedByteDelta
         )
-        indexMessage(message, at: list.count - 1, sessionID: sessionID)
+        indexMessage(message, at: list.count - 1, scopedSessionID: scopedSessionID)
     }
 
     private func liveInsertionIndex(
@@ -1036,31 +1110,40 @@ final class ConversationStore: ObservableObject {
 
     @discardableResult
     private func setMessages(_ list: [ConversationMessage], sessionID: String, rebuildIndexes: Bool = true) -> Bool {
-        let current = messagesBySessionID[sessionID]
+        setMessages(list, scopedSessionID: scopedSessionID(for: sessionID), rebuildIndexes: rebuildIndexes)
+    }
+
+    @discardableResult
+    private func setMessages(
+        _ list: [ConversationMessage],
+        scopedSessionID: ScopedSessionID,
+        rebuildIndexes: Bool = true
+    ) -> Bool {
+        let current = messagesByScopedSessionID[scopedSessionID]
         let messagesChanged = !areMessagesEquivalent(current, list)
-        touchConversationSession(sessionID)
-        if messagesChanged || retainedByteCountBySessionID[sessionID] == nil {
+        touchConversationSession(scopedSessionID)
+        if messagesChanged || retainedByteCountBySessionID[scopedSessionID] == nil {
             updateRetainedByteCount(
                 estimatedRetainedByteCount(of: list),
-                sessionID: sessionID
+                scopedSessionID: scopedSessionID
             )
         }
-        let evictedSessionIDs = trimConversationSessionCacheCandidates(protecting: sessionID)
+        let evictedSessionIDs = trimConversationSessionCacheCandidates(protecting: scopedSessionID)
         guard messagesChanged || !evictedSessionIDs.isEmpty else {
             return false
         }
 
-        var nextMessagesBySessionID = messagesBySessionID
-        nextMessagesBySessionID[sessionID] = list
+        var nextMessagesBySessionID = messagesByScopedSessionID
+        nextMessagesBySessionID[scopedSessionID] = list
         for evictedSessionID in evictedSessionIDs {
             let evictedMessages = nextMessagesBySessionID.removeValue(forKey: evictedSessionID) ?? []
-            clearConversationSessionState(sessionID: evictedSessionID, messages: evictedMessages)
+            clearConversationSessionState(scopedSessionID: evictedSessionID, messages: evictedMessages)
         }
 
         // 单次写回 @Published 字典，避免一次新增消息又逐个删除旧 session 造成多次 UI 发布。
-        messagesBySessionID = nextMessagesBySessionID
+        messagesByScopedSessionID = nextMessagesBySessionID
         if rebuildIndexes {
-            rebuildMessageIndexes(for: sessionID, messages: list)
+            rebuildMessageIndexes(for: scopedSessionID, messages: list)
         }
         return true
     }
@@ -1071,30 +1154,44 @@ final class ConversationStore: ObservableObject {
         rebuildIndexes: Bool = true,
         retainedByteDelta: Int? = nil
     ) {
-        touchConversationSession(sessionID)
+        replaceMessagesWithoutEquivalenceCheck(
+            list,
+            scopedSessionID: scopedSessionID(for: sessionID),
+            rebuildIndexes: rebuildIndexes,
+            retainedByteDelta: retainedByteDelta
+        )
+    }
+
+    private func replaceMessagesWithoutEquivalenceCheck(
+        _ list: [ConversationMessage],
+        scopedSessionID: ScopedSessionID,
+        rebuildIndexes: Bool = true,
+        retainedByteDelta: Int? = nil
+    ) {
+        touchConversationSession(scopedSessionID)
         if let retainedByteDelta,
-           retainedByteCountBySessionID[sessionID] != nil || messagesBySessionID[sessionID] == nil {
-            let current = retainedByteCountBySessionID[sessionID] ?? 0
+           retainedByteCountBySessionID[scopedSessionID] != nil || messagesByScopedSessionID[scopedSessionID] == nil {
+            let current = retainedByteCountBySessionID[scopedSessionID] ?? 0
             updateRetainedByteCount(
                 max(0, current + retainedByteDelta),
-                sessionID: sessionID
+                scopedSessionID: scopedSessionID
             )
         } else {
             updateRetainedByteCount(
                 estimatedRetainedByteCount(of: list),
-                sessionID: sessionID
+                scopedSessionID: scopedSessionID
             )
         }
-        let evictedSessionIDs = trimConversationSessionCacheCandidates(protecting: sessionID)
-        var nextMessagesBySessionID = messagesBySessionID
-        nextMessagesBySessionID[sessionID] = list
+        let evictedSessionIDs = trimConversationSessionCacheCandidates(protecting: scopedSessionID)
+        var nextMessagesBySessionID = messagesByScopedSessionID
+        nextMessagesBySessionID[scopedSessionID] = list
         for evictedSessionID in evictedSessionIDs {
             let evictedMessages = nextMessagesBySessionID.removeValue(forKey: evictedSessionID) ?? []
-            clearConversationSessionState(sessionID: evictedSessionID, messages: evictedMessages)
+            clearConversationSessionState(scopedSessionID: evictedSessionID, messages: evictedMessages)
         }
-        messagesBySessionID = nextMessagesBySessionID
+        messagesByScopedSessionID = nextMessagesBySessionID
         if rebuildIndexes {
-            rebuildMessageIndexes(for: sessionID, messages: list)
+            rebuildMessageIndexes(for: scopedSessionID, messages: list)
         }
     }
 
@@ -1140,15 +1237,15 @@ final class ConversationStore: ObservableObject {
             && lhs.contentByteCount == rhs.contentByteCount
     }
 
-    private func touchConversationSession(_ sessionID: String) {
+    private func touchConversationSession(_ scopedSessionID: ScopedSessionID) {
         // 流式回复会高频刷新当前 session。参考 Litter 的 render cache，用单调访问序号记录
         // LRU 热度，普通 touch 只做 O(1) 写字典；只有真正超过保留上限时才扫描找最旧项。
         sessionAccessCounter &+= 1
-        sessionAccessTickBySessionID[sessionID] = sessionAccessCounter
+        sessionAccessTickBySessionID[scopedSessionID] = sessionAccessCounter
     }
 
-    private func trimConversationSessionCacheCandidates(protecting protectedSessionID: String) -> [String] {
-        var evicted: [String] = []
+    private func trimConversationSessionCacheCandidates(protecting protectedSessionID: ScopedSessionID) -> [ScopedSessionID] {
+        var evicted: [ScopedSessionID] = []
         while sessionAccessTickBySessionID.count > 1,
               (sessionAccessTickBySessionID.count > Self.retainedSessionLimit
                   || totalRetainedByteCount > Self.retainedSessionByteLimit),
@@ -1156,28 +1253,28 @@ final class ConversationStore: ObservableObject {
                 .filter({ $0.key != protectedSessionID })
                 .min(by: { $0.value < $1.value }) {
             sessionAccessTickBySessionID.removeValue(forKey: oldest.key)
-            removeRetainedByteCount(sessionID: oldest.key)
+            removeRetainedByteCount(scopedSessionID: oldest.key)
             evicted.append(oldest.key)
         }
         return evicted
     }
 
-    private func clearConversationSessionState(sessionID: String, messages: [ConversationMessage]) {
-        loadedHistorySessionIDs.remove(sessionID)
-        lastSeenSeqBySessionID.removeValue(forKey: sessionID)
-        messageIndexByStableIDBySessionID.removeValue(forKey: sessionID)
-        messageIndexByClientMessageIDBySessionID.removeValue(forKey: sessionID)
-        messageIndexByUUIDBySessionID.removeValue(forKey: sessionID)
-        historyProjectionCacheBySessionID.removeValue(forKey: sessionID)
-        pendingAssistantDeltasBySessionID.removeValue(forKey: sessionID)
-        assistantDeltaFlushTasks[sessionID]?.cancel()
-        assistantDeltaFlushTasks.removeValue(forKey: sessionID)
-        turnLifecycleBySessionID.removeValue(forKey: sessionID)
-        sessionAccessTickBySessionID.removeValue(forKey: sessionID)
-        removeRetainedByteCount(sessionID: sessionID)
+    private func clearConversationSessionState(scopedSessionID: ScopedSessionID, messages: [ConversationMessage]) {
+        loadedHistorySessionIDs.remove(scopedSessionID)
+        lastSeenSeqBySessionID.removeValue(forKey: scopedSessionID)
+        messageIndexByStableIDBySessionID.removeValue(forKey: scopedSessionID)
+        messageIndexByClientMessageIDBySessionID.removeValue(forKey: scopedSessionID)
+        messageIndexByUUIDBySessionID.removeValue(forKey: scopedSessionID)
+        historyProjectionCacheBySessionID.removeValue(forKey: scopedSessionID)
+        pendingAssistantDeltasBySessionID.removeValue(forKey: scopedSessionID)
+        assistantDeltaFlushTasks[scopedSessionID]?.cancel()
+        assistantDeltaFlushTasks.removeValue(forKey: scopedSessionID)
+        turnLifecycleBySessionID.removeValue(forKey: scopedSessionID)
+        sessionAccessTickBySessionID.removeValue(forKey: scopedSessionID)
+        removeRetainedByteCount(scopedSessionID: scopedSessionID)
 
-        messageUUIDByStableMessageID = messageUUIDByStableMessageID.filter { $0.key.sessionID != sessionID }
-        revisionByStableMessageID = revisionByStableMessageID.filter { $0.key.sessionID != sessionID }
+        messageUUIDByStableMessageID = messageUUIDByStableMessageID.filter { $0.key.scopedSessionID != scopedSessionID }
+        revisionByStableMessageID = revisionByStableMessageID.filter { $0.key.scopedSessionID != scopedSessionID }
     }
 
     private func estimatedRetainedByteCount(of messages: [ConversationMessage]) -> Int {
@@ -1209,30 +1306,35 @@ final class ConversationStore: ObservableObject {
         return result
     }
 
-    private func updateRetainedByteCount(_ value: Int, sessionID: String) {
-        let previous = retainedByteCountBySessionID[sessionID] ?? 0
+    private func updateRetainedByteCount(_ value: Int, scopedSessionID: ScopedSessionID) {
+        let previous = retainedByteCountBySessionID[scopedSessionID] ?? 0
         let normalized = max(0, value)
-        retainedByteCountBySessionID[sessionID] = normalized
+        retainedByteCountBySessionID[scopedSessionID] = normalized
         totalRetainedByteCount = max(0, totalRetainedByteCount + normalized - previous)
     }
 
-    private func removeRetainedByteCount(sessionID: String) {
-        guard let removed = retainedByteCountBySessionID.removeValue(forKey: sessionID) else {
+    private func removeRetainedByteCount(scopedSessionID: ScopedSessionID) {
+        guard let removed = retainedByteCountBySessionID.removeValue(forKey: scopedSessionID) else {
             return
         }
         totalRetainedByteCount = max(0, totalRetainedByteCount - removed)
     }
 
     private func recordTurnLifecycles(from messages: [ConversationMessage], sessionID: SessionID) {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         for message in messages {
             guard let turnID = message.turnID, let lifecycle = message.turnLifecycle else {
                 continue
             }
-            turnLifecycleBySessionID[sessionID, default: [:]][turnID] = lifecycle
+            turnLifecycleBySessionID[scopedSessionID, default: [:]][turnID] = lifecycle
         }
     }
 
     private func rebuildMessageIndexes(for sessionID: String, messages: [ConversationMessage]) {
+        rebuildMessageIndexes(for: scopedSessionID(for: sessionID), messages: messages)
+    }
+
+    private func rebuildMessageIndexes(for scopedSessionID: ScopedSessionID, messages: [ConversationMessage]) {
         var stableIndexes: [MessageID: Int] = [:]
         var clientIndexes: [ClientMessageID: Int] = [:]
         var uuidIndexes: [UUID: Int] = [:]
@@ -1251,55 +1353,68 @@ final class ConversationStore: ObservableObject {
             }
         }
 
-        messageIndexByStableIDBySessionID[sessionID] = stableIndexes
-        messageIndexByClientMessageIDBySessionID[sessionID] = clientIndexes
-        messageIndexByUUIDBySessionID[sessionID] = uuidIndexes
+        messageIndexByStableIDBySessionID[scopedSessionID] = stableIndexes
+        messageIndexByClientMessageIDBySessionID[scopedSessionID] = clientIndexes
+        messageIndexByUUIDBySessionID[scopedSessionID] = uuidIndexes
     }
 
     private func indexMessage(_ message: ConversationMessage, at index: Int, sessionID: String) {
-        messageIndexByUUIDBySessionID[sessionID, default: [:]][message.id] = index
+        indexMessage(message, at: index, scopedSessionID: scopedSessionID(for: sessionID))
+    }
+
+    private func indexMessage(_ message: ConversationMessage, at index: Int, scopedSessionID: ScopedSessionID) {
+        messageIndexByUUIDBySessionID[scopedSessionID, default: [:]][message.id] = index
         if let stableID = message.stableID {
-            messageIndexByStableIDBySessionID[sessionID, default: [:]][stableID] = index
+            messageIndexByStableIDBySessionID[scopedSessionID, default: [:]][stableID] = index
         }
         // client_message_id 只索引 user 行，避免 runtime 过程事件误用同一个 client id 后影响 retry/status。
         if message.role == .user, let clientMessageID = message.clientMessageID {
-            messageIndexByClientMessageIDBySessionID[sessionID, default: [:]][clientMessageID] = index
+            messageIndexByClientMessageIDBySessionID[scopedSessionID, default: [:]][clientMessageID] = index
         }
     }
 
     private func removeMessageIndex(_ message: ConversationMessage, at index: Int, sessionID: String) {
-        if messageIndexByUUIDBySessionID[sessionID]?[message.id] == index {
-            messageIndexByUUIDBySessionID[sessionID]?[message.id] = nil
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        if messageIndexByUUIDBySessionID[scopedSessionID]?[message.id] == index {
+            messageIndexByUUIDBySessionID[scopedSessionID]?[message.id] = nil
         }
         if let stableID = message.stableID,
-           messageIndexByStableIDBySessionID[sessionID]?[stableID] == index {
-            messageIndexByStableIDBySessionID[sessionID]?[stableID] = nil
+           messageIndexByStableIDBySessionID[scopedSessionID]?[stableID] == index {
+            messageIndexByStableIDBySessionID[scopedSessionID]?[stableID] = nil
         }
         // 原地确认本地 echo 时 stableID 会从临时 client id 变成服务端 id；
         // 只删除旧行自己的 client 索引，再由 indexMessage 写回更新后的 user 行索引。
         if message.role == .user,
            let clientMessageID = message.clientMessageID,
-           messageIndexByClientMessageIDBySessionID[sessionID]?[clientMessageID] == index {
-            messageIndexByClientMessageIDBySessionID[sessionID]?[clientMessageID] = nil
+           messageIndexByClientMessageIDBySessionID[scopedSessionID]?[clientMessageID] == index {
+            messageIndexByClientMessageIDBySessionID[scopedSessionID]?[clientMessageID] = nil
         }
     }
 
     private func messageIndex(stableID: MessageID, sessionID: String) -> Int? {
-        if let direct = messageIndexByStableIDBySessionID[sessionID]?[stableID] {
+        messageIndex(stableID: stableID, scopedSessionID: scopedSessionID(for: sessionID))
+    }
+
+    private func messageIndex(stableID: MessageID, scopedSessionID: ScopedSessionID) -> Int? {
+        if let direct = messageIndexByStableIDBySessionID[scopedSessionID]?[stableID] {
             return direct
         }
-        guard let uuid = messageUUIDByStableMessageID[stableCacheKey(stableID: stableID, sessionID: sessionID)] else {
+        guard let uuid = messageUUIDByStableMessageID[stableCacheKey(stableID: stableID, scopedSessionID: scopedSessionID)] else {
             return nil
         }
-        return messageIndexByUUIDBySessionID[sessionID]?[uuid]
+        return messageIndexByUUIDBySessionID[scopedSessionID]?[uuid]
     }
 
     private func messageIndex(clientMessageID: ClientMessageID, sessionID: String) -> Int? {
-        messageIndexByClientMessageIDBySessionID[sessionID]?[clientMessageID]
+        messageIndexByClientMessageIDBySessionID[scopedSessionID(for: sessionID)]?[clientMessageID]
     }
 
     private func messageIndex(uuid: UUID, sessionID: String) -> Int? {
-        messageIndexByUUIDBySessionID[sessionID]?[uuid]
+        messageIndex(uuid: uuid, scopedSessionID: scopedSessionID(for: sessionID))
+    }
+
+    private func messageIndex(uuid: UUID, scopedSessionID: ScopedSessionID) -> Int? {
+        messageIndexByUUIDBySessionID[scopedSessionID]?[uuid]
     }
 
     private func mergeHistory(
@@ -1331,18 +1446,19 @@ final class ConversationStore: ObservableObject {
     }
 
     private func projectedHistoryMessages(_ history: [CodexHistoryMessage], sessionID: String) -> [ConversationMessage] {
+        let scopedSessionID = scopedSessionID(for: sessionID)
         let keys = history.map { historyProjectionKey(for: $0) }
         let fallbackCreatedAts = deterministicHistoryCreatedAtFallbacks(for: history)
         // Litter 的 ConversationScreenModel 会缓存“hydrated -> UI item”的投影结果；
         // 这里也把历史 JSON 消息到本地 ConversationMessage 的转换缓存住。这样手动刷新、
         // 前后台恢复拿到同一页历史时，不会因为缺少稳定 id 的历史项而反复生成新 UUID。
-        if let cached = historyProjectionCacheBySessionID[sessionID],
+        if let cached = historyProjectionCacheBySessionID[scopedSessionID],
            cached.keys == keys {
             return cached.messages
         }
 
         let converted: [ConversationMessage]
-        if let cached = historyProjectionCacheBySessionID[sessionID],
+        if let cached = historyProjectionCacheBySessionID[scopedSessionID],
            cached.keys.count == cached.messages.count {
             converted = incrementallyProjectedHistoryMessages(
                 history,
@@ -1362,7 +1478,7 @@ final class ConversationStore: ObservableObject {
                 )
             }
         }
-        historyProjectionCacheBySessionID[sessionID] = HistoryProjectionCache(keys: keys, messages: converted)
+        historyProjectionCacheBySessionID[scopedSessionID] = HistoryProjectionCache(keys: keys, messages: converted)
         return converted
     }
 
@@ -1530,7 +1646,7 @@ final class ConversationStore: ObservableObject {
 
     private func unstableHistoryReuseBuckets(sessionID: String, excludingIDs: Set<UUID> = []) -> [UnstableHistoryReuseKey: UnstableHistoryReuseBucket] {
         var grouped: [UnstableHistoryReuseKey: [ConversationMessage]] = [:]
-        for message in messagesBySessionID[sessionID] ?? [] {
+        for message in messagesByScopedSessionID[scopedSessionID(for: sessionID)] ?? [] {
             guard message.stableID == nil,
                   message.clientMessageID == nil,
                   message.turnID == nil,
@@ -1705,6 +1821,10 @@ final class ConversationStore: ObservableObject {
         case .message, .commentary, .approval, .userInput, .error:
             return nil
         }
+    }
+
+    private func scopedSessionID(for sessionID: SessionID) -> ScopedSessionID {
+        ScopedSessionID(profileID: activeProfileID, sessionID: sessionID)
     }
 
 }

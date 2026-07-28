@@ -53,8 +53,8 @@ final class ConversationDataFlowTests: XCTestCase {
 
         // 模拟系统 Keychain 暂时不可写。提交失败后不能先拆旧 WebSocket，也不能清空会话列表。
         keychain.forcedUpdateStatus = errSecInteractionNotAllowed
-        XCTAssertThrowsError(
-            try store.commitPreparedConnection(
+        await XCTAssertThrowsErrorAsync(
+            try await store.commitPreparedConnection(
                 PreparedConnectionSettings(
                     endpoint: "http://100.64.0.20:8787",
                     token: "new-token"
@@ -115,7 +115,7 @@ final class ConversationDataFlowTests: XCTestCase {
         try await waitForWebSocketStatus(.connected, store: store)
         let validatedAt = Date(timeIntervalSince1970: 1_720_000_000)
 
-        let changed = try store.commitPreparedConnection(PreparedConnectionSettings(
+        let changed = try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: profiles[1].endpoint,
             token: "token-b",
             profileTarget: .existingProfile(id: "mac-b"),
@@ -172,9 +172,9 @@ final class ConversationDataFlowTests: XCTestCase {
         try await waitForWebSocketStatus(.connected, store: store)
         keychain.forcedUpdateStatus = errSecInteractionNotAllowed
 
-        XCTAssertThrowsError(try store.commitPreparedConnection(PreparedConnectionSettings(
+        await XCTAssertThrowsErrorAsync(try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: profiles[1].endpoint,
-            token: "token-b",
+            token: "replacement-token-b",
             profileTarget: .existingProfile(id: "mac-b")
         )))
 
@@ -589,14 +589,16 @@ final class ConversationDataFlowTests: XCTestCase {
     func testConversationTimelineStartsAtTailAfterSwitchingFromScrolledSession() async throws {
         let firstSessionID = "tail-position-first"
         let secondSessionID = "tail-position-second"
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         for index in 0..<36 {
             conversationStore.appendSystem("会话 A 消息 \(index)", sessionID: firstSessionID)
             conversationStore.appendSystem("会话 B 消息 \(index)", sessionID: secondSessionID)
         }
 
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -656,7 +658,9 @@ final class ConversationDataFlowTests: XCTestCase {
 #endif
         let longSessionID = "tail-race-long"
         let shortSessionID = "tail-race-short"
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         for index in 0..<72 {
             conversationStore.appendSystem("长会话消息 \(index)", sessionID: longSessionID)
         }
@@ -665,7 +669,7 @@ final class ConversationDataFlowTests: XCTestCase {
         }
 
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )

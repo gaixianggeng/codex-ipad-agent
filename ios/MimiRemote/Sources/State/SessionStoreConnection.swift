@@ -33,22 +33,30 @@ extension SessionStore {
         if !isReconnectAttempt {
             cancelWebSocketReconnect(resetAttempts: true)
         }
-        if connectedSessionID == session.id, case .connected = webSocketStatus {
+        if connectedSessionID == session.id,
+           connectedHostScope == appStore.activeHostScope,
+           case .connected = webSocketStatus {
             return
         }
         disconnectWebSocket(cancelReconnect: !isReconnectAttempt)
 
+        let hostScope = appStore.activeHostScope
+        let eventLease = HostSessionLease(hostScope: hostScope, sessionID: session.id)
         webSocketConnectionGeneration += 1
         let connectionGeneration = webSocketConnectionGeneration
         let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
         socket.onStatus = { [weak self] status in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                guard self?.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) == true else {
                     return
                 }
                 switch status {
                 case .failed, .disconnected, .terminated:
-                    await self?.flushRuntimeEvents(sessionID: session.id)
+                    await self?.flushRuntimeEvents(lease: eventLease)
                 default:
                     break
                 }
@@ -58,21 +66,29 @@ extension SessionStore {
         let terminalStreamStore = terminalStreamStore
         socket.onEvent = { [weak self, terminalStreamStore] event in
             guard let self,
-                  self.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) else {
+                  self.isCurrentWebSocketConnection(
+                      sessionID: session.id,
+                      generation: connectionGeneration,
+                      hostScope: hostScope
+                  ) else {
                 return
             }
             if let metadata = self.metadata(for: event) {
                 self.recordEventWatermark(metadata, fallbackSessionID: session.id)
             }
-            let shouldFlushImmediately = terminalStreamStore.append(event, sessionID: session.id)
-            self.scheduleRuntimeEventFlush(sessionID: session.id, immediately: shouldFlushImmediately)
+            let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
             Task { @MainActor in
                 guard let clientMessageID else {
                     return
                 }
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                guard self?.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) == true else {
                     return
                 }
                 if self?.handleQueuedSendAccepted(
@@ -87,7 +103,11 @@ extension SessionStore {
         }
         socket.onSendFailure = { [weak self] clientMessageID, message in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                guard self?.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) == true else {
                     return
                 }
                 if let clientMessageID {
@@ -109,7 +129,11 @@ extension SessionStore {
         socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
             Task { @MainActor in
                 guard let self,
-                      self.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) else {
+                      self.isCurrentWebSocketConnection(
+                          sessionID: session.id,
+                          generation: connectionGeneration,
+                          hostScope: hostScope
+                      ) else {
                     return
                 }
                 self.handleTurnSendOutcome(
@@ -121,7 +145,11 @@ extension SessionStore {
         }
         socket.onApprovalDecisionFailure = { [weak self] approvalID, message in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                guard self?.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) == true else {
                     return
                 }
                 self?.clearPendingApprovalDecision(sessionID: session.id, approvalID: approvalID)
@@ -130,7 +158,11 @@ extension SessionStore {
         }
         socket.onUserInputResponseFailure = { [weak self] requestID, message in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                guard self?.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) == true else {
                     return
                 }
                 let request = self?.clearPendingUserInputResponse(sessionID: session.id, requestID: requestID)
@@ -142,7 +174,11 @@ extension SessionStore {
         }
         socket.onControlFailure = { [weak self] message in
             Task { @MainActor in
-                guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
+                guard self?.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                ) == true else {
                     return
                 }
                 self?.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", message))
@@ -150,10 +186,11 @@ extension SessionStore {
         }
         webSocket = socket
         connectedSessionID = session.id
+        connectedHostScope = hostScope
         conversationStore.resetLiveTranscript(sessionID: session.id)
         syncRuntimeActivity(with: session)
-        runtimeEventFlushTasks[session.id]?.cancel()
-        runtimeEventFlushTasks[session.id] = nil
+        runtimeEventFlushTasks[eventLease]?.cancel()
+        runtimeEventFlushTasks[eventLease] = nil
         socket.connect(sessionID: session.id, replayBufferedEvents: replayBufferedEvents)
     }
 
@@ -194,10 +231,15 @@ extension SessionStore {
         case .connecting, .connected, .terminated:
             shouldReconnect = false
         }
-        if connectedSessionID != session.id || webSocket == nil || shouldReconnect {
+        if connectedSessionID != session.id ||
+            connectedHostScope != appStore.activeHostScope ||
+            webSocket == nil ||
+            shouldReconnect {
             connectWebSocket(session, allowNonRunning: allowNonRunning)
         }
-        guard let webSocket, connectedSessionID == session.id else {
+        guard let webSocket,
+              connectedSessionID == session.id,
+              connectedHostScope == appStore.activeHostScope else {
             setErrorMessage(L10n.text("ui.websocket_is_reconnecting_please_try_again_later"))
             return nil
         }
@@ -234,6 +276,7 @@ extension SessionStore {
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID) && !policyRejected
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
+                connectedHostScope = nil
                 webSocket = nil
             }
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -261,6 +304,7 @@ extension SessionStore {
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
+                connectedHostScope = nil
                 webSocket = nil
             }
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -311,6 +355,10 @@ extension SessionStore {
         let socket = webSocket
         webSocket = nil
         connectedSessionID = nil
+        connectedHostScope = nil
+        runtimeEventFlushTasks.values.forEach { $0.cancel() }
+        runtimeEventFlushTasks.removeAll(keepingCapacity: false)
+        terminalStreamStore.removeAll(profileID: appStore.activeHostScope.profileID)
         socket?.disconnect()
         setWebSocketStatus(.terminated(reason))
         setErrorMessage(reason.message)
@@ -321,14 +369,23 @@ extension SessionStore {
         if cancelReconnect {
             cancelWebSocketReconnect(resetAttempts: true)
         }
-        let sessionIDsToFlush = Set(([connectedSessionID].compactMap { $0 }) + Array(runtimeEventFlushTasks.keys))
-        for sessionID in sessionIDsToFlush {
-            runtimeEventFlushTasks[sessionID]?.cancel()
-            runtimeEventFlushTasks[sessionID] = nil
-            Task { [weak self] in
-                // 手动切会话/断开时，最后一个合并窗口里的事件已经在本地 actor 中；
-                // 先异步 drain，避免新连接启动时把尾包清掉。
-                await self?.flushRuntimeEvents(sessionID: sessionID)
+        var leasesToFlush = Set(runtimeEventFlushTasks.keys)
+        if let connectedSessionID, let connectedHostScope {
+            leasesToFlush.insert(HostSessionLease(
+                hostScope: connectedHostScope,
+                sessionID: connectedSessionID
+            ))
+        }
+        for lease in leasesToFlush {
+            runtimeEventFlushTasks[lease]?.cancel()
+            runtimeEventFlushTasks[lease] = nil
+            if lease.hostScope == appStore.activeHostScope {
+                Task { [weak self] in
+                    // 同一 HostScope 内手动切会话时保留最后一个合并窗口；跨主机/代次时明确丢弃。
+                    await self?.flushRuntimeEvents(lease: lease)
+                }
+            } else {
+                terminalStreamStore.removeAll(lease: lease)
             }
         }
         webSocketConnectionGeneration += 1
@@ -336,6 +393,7 @@ extension SessionStore {
         let socket = webSocket
         webSocket = nil
         connectedSessionID = nil
+        connectedHostScope = nil
         socket?.disconnect()
         if let previousSessionID {
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -350,8 +408,15 @@ extension SessionStore {
         setWebSocketStatus(.disconnected)
     }
 
-    func isCurrentWebSocketConnection(sessionID: SessionID, generation: Int) -> Bool {
-        connectedSessionID == sessionID && webSocketConnectionGeneration == generation
+    func isCurrentWebSocketConnection(
+        sessionID: SessionID,
+        generation: Int,
+        hostScope: HostScope? = nil
+    ) -> Bool {
+        connectedSessionID == sessionID &&
+            webSocketConnectionGeneration == generation &&
+            (hostScope == nil || connectedHostScope == hostScope) &&
+            (hostScope == nil || appStore.activeHostScope == hostScope)
     }
 
     func shouldAutoReconnectWebSocket(sessionID: SessionID) -> Bool {
@@ -361,6 +426,7 @@ extension SessionStore {
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
               connectedSessionID == sessionID,
+              connectedHostScope == appStore.activeHostScope,
               selectedSessionID == sessionID,
               sessionsByID[sessionID] != nil,
               appStore.isConfigured else {
@@ -481,14 +547,14 @@ extension SessionStore {
         }
     }
 
-    func scheduleRuntimeEventFlush(sessionID: SessionID, immediately: Bool = false) {
+    func scheduleRuntimeEventFlush(lease: HostSessionLease, immediately: Bool = false) {
         // 一个 session 同时只保留一个消费任务。即使 80ms 窗口内越过批量阈值，
         // 也不为后续每个事件反复取消并新建 Task；最长只多等待当前合并窗口。
-        guard runtimeEventFlushTasks[sessionID] == nil else {
+        guard runtimeEventFlushTasks[lease] == nil else {
             return
         }
         let delay = immediately ? 0 : runtimeEventFlushDelayNanoseconds
-        runtimeEventFlushTasks[sessionID] = Task { [weak self] in
+        runtimeEventFlushTasks[lease] = Task { [weak self] in
             if delay > 0 {
                 do {
                     try await Task.sleep(nanoseconds: delay)
@@ -496,23 +562,26 @@ extension SessionStore {
                     return
                 }
             }
-            await self?.flushRuntimeEvents(sessionID: sessionID)
+            await self?.flushRuntimeEvents(lease: lease)
         }
     }
 
-    func flushRuntimeEvents(sessionID: SessionID) async {
-        runtimeEventFlushTasks[sessionID]?.cancel()
-        runtimeEventFlushTasks[sessionID] = nil
-        let events = terminalStreamStore.drain(sessionID: sessionID)
-        guard !events.isEmpty else {
+    func flushRuntimeEvents(lease: HostSessionLease) async {
+        runtimeEventFlushTasks[lease]?.cancel()
+        runtimeEventFlushTasks[lease] = nil
+        let events = terminalStreamStore.drain(lease: lease)
+        guard !events.isEmpty, appStore.activeHostScope == lease.hostScope else {
             return
         }
         for event in events {
-            await applyRuntimeEvent(event, sessionID: sessionID)
+            guard appStore.activeHostScope == lease.hostScope else { return }
+            await applyRuntimeEvent(event, lease: lease)
         }
     }
 
-    func applyRuntimeEvent(_ event: AgentEvent, sessionID: String) async {
+    func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease) async {
+        guard appStore.activeHostScope == lease.hostScope else { return }
+        let sessionID = lease.sessionID
         let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
         defer {
             replayAckSocket?.acknowledgeAppliedEvent(event)
@@ -533,6 +602,7 @@ extension SessionStore {
             fallbackSessionID: sessionID,
             outputIdleClearDelay: foregroundOutputIdleClearDelay
         )
+        guard appStore.activeHostScope == lease.hostScope else { return }
         applyEventReducerOutput(output)
         if case .turnStarted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
@@ -555,7 +625,10 @@ extension SessionStore {
         if case .turnCompleted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
             if let projectID = sessionsByID[id]?.projectID {
-                scheduleSessionListReconciliation(projectID: projectID)
+                scheduleSessionListReconciliation(
+                    projectID: projectID,
+                    hostScope: lease.hostScope
+                )
             }
             if let completedTurnID = metadata.turnID {
                 let hasPersistedAcceptedTurnBarrier = queuedRunningTurnsBySessionID[id]?.contains(where: {
@@ -603,7 +676,11 @@ extension SessionStore {
             }
             scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: id)
         }
-        await scheduleRuntimeNotificationIfNeeded(runtimeNotification)
+        guard appStore.activeHostScope == lease.hostScope else { return }
+        await scheduleRuntimeNotificationIfNeeded(
+            runtimeNotification,
+            hostScope: lease.hostScope
+        )
     }
 
     func replayBoundarySocket(
@@ -633,13 +710,20 @@ extension SessionStore {
         return false
     }
 
-    func scheduleSessionListReconciliation(projectID: String) {
+    func scheduleSessionListReconciliation(
+        projectID: String,
+        hostScope: HostScope? = nil
+    ) {
+        let capturedHostScope = hostScope ?? appStore.activeHostScope
         sessionListReconciliationTasksByProjectID[projectID]?.cancel()
         sessionListReconciliationTasksByProjectID[projectID] = Task { [weak self] in
             guard let self else { return }
             do {
                 try await Task.sleep(nanoseconds: self.sessionListReconciliationDelayNanoseconds)
             } catch {
+                return
+            }
+            guard self.appStore.activeHostScope == capturedHostScope else {
                 return
             }
             await self.refreshSessions(
@@ -651,18 +735,32 @@ extension SessionStore {
                 reuseRecent: false,
                 activatesProject: false
             )
+            guard self.appStore.activeHostScope == capturedHostScope else {
+                return
+            }
             self.sessionListReconciliationTasksByProjectID.removeValue(forKey: projectID)
         }
     }
 
-    func scheduleRuntimeNotificationIfNeeded(_ notification: SessionRuntimeNotification?) async {
+    func scheduleRuntimeNotificationIfNeeded(
+        _ notification: SessionRuntimeNotification?,
+        hostScope: HostScope
+    ) async {
+        guard appStore.activeHostScope == hostScope else {
+            return
+        }
         guard let notification else {
             return
         }
-        guard !deliveredRuntimeNotificationIDs.contains(notification.id) else {
+        guard notification.kind == .approval || runtimeCompletionNotificationsEnabled else {
             return
         }
-        deliveredRuntimeNotificationIDs.insert(notification.id)
+        let profileID = hostScope.profileID
+        let deliveryKey = "\(profileID.utf8.count):\(profileID):\(notification.id)"
+        guard !deliveredRuntimeNotificationIDs.contains(deliveryKey) else {
+            return
+        }
+        deliveredRuntimeNotificationIDs.insert(deliveryKey)
         do {
             // 运行态通知不持久化：它只是实时提示，不应该在会话列表状态里留下“待处理任务”的假象。
             guard let session = sessionsByID[notification.sessionID] else {
@@ -670,12 +768,15 @@ extension SessionStore {
                 return
             }
             let route = SessionNotificationRoute.current(
-                profileID: appStore.notificationRoutingProfileID,
+                profileID: profileID,
                 projectID: session.projectID,
                 sessionID: session.id
             )
             try await sessionReminderScheduler.notify(notification, route: route)
         } catch {
+            guard appStore.activeHostScope == hostScope else {
+                return
+            }
             setStatusMessage(L10n.format("ui.notification_scheduling_failed_value", error.localizedDescription))
         }
     }
@@ -1073,14 +1174,24 @@ extension SessionStore {
     }
 
     func reloadRecentWorkspaces() {
-        setRecentWorkspacesIfChanged(recentWorkspaceStore.load(endpoint: appStore.endpoint))
+        setRecentWorkspacesIfChanged(
+            recentWorkspaceStore.load(
+                profileID: appStore.notificationRoutingProfileID,
+                legacyEndpoint: appStore.endpoint,
+                profiles: appStore.connectionProfiles
+            )
+        )
         reloadSessionListPreferences()
         reloadSessionControlStates()
         reloadSessionReminders()
     }
 
     func reloadSessionListPreferences() {
-        let preferences = sessionListPreferenceStore.load(endpoint: appStore.endpoint)
+        let preferences = sessionListPreferenceStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
         let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(preferences.sessionWorkspaceIDs)
         guard pinnedSessionIDs != preferences.pinnedSessionIDs
             || archivedSessionIDs != preferences.archivedSessionIDs
@@ -1104,7 +1215,7 @@ extension SessionStore {
                 archivedSessionIDs: archivedSessionIDs,
                 sessionWorkspaceIDs: sessionWorkspaceIDs
             ),
-            endpoint: appStore.endpoint
+            profileID: appStore.notificationRoutingProfileID
         )
     }
 
@@ -1142,7 +1253,11 @@ extension SessionStore {
     }
 
     func reloadSessionControlStates() {
-        let states = sessionControlStateStore.load(endpoint: appStore.endpoint)
+        let states = sessionControlStateStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
         guard sessionControlStateByID != states else {
             return
         }
@@ -1150,7 +1265,10 @@ extension SessionStore {
     }
 
     func saveSessionControlStates() {
-        sessionControlStateStore.save(sessionControlStateByID, endpoint: appStore.endpoint)
+        sessionControlStateStore.save(
+            sessionControlStateByID,
+            profileID: appStore.notificationRoutingProfileID
+        )
     }
 
     func setSessionControlState(_ state: SessionControlState, sessionID: SessionID) {
@@ -1162,7 +1280,11 @@ extension SessionStore {
     }
 
     func reloadSessionReminders() {
-        let loaded = sessionReminderStore.load(endpoint: appStore.endpoint)
+        let loaded = sessionReminderStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
         let now = sessionReminderNow()
         var reminders: [SessionID: SessionReminder] = [:]
         reminders.reserveCapacity(loaded.count)
@@ -1176,9 +1298,15 @@ extension SessionStore {
         }
         if reminders != loaded {
             // 提醒触发后只需在加载/回前台时收敛持久化状态；不为精确秒级 UI 增加后台 timer。
-            sessionReminderStore.save(reminders, endpoint: appStore.endpoint)
+            sessionReminderStore.save(
+                reminders,
+                profileID: appStore.notificationRoutingProfileID
+            )
             for sessionID in expiredSessionIDs {
-                sessionReminderScheduler.cancel(sessionID: sessionID)
+                sessionReminderScheduler.cancel(
+                    sessionID: sessionID,
+                    profileID: appStore.notificationRoutingProfileID
+                )
             }
         }
         guard sessionRemindersByID != reminders else {
@@ -1188,7 +1316,10 @@ extension SessionStore {
     }
 
     func saveSessionReminders() {
-        sessionReminderStore.save(sessionRemindersByID, endpoint: appStore.endpoint)
+        sessionReminderStore.save(
+            sessionRemindersByID,
+            profileID: appStore.notificationRoutingProfileID
+        )
     }
 
     func clearSessionReminders(forProjectID projectID: String) {
@@ -1200,13 +1331,19 @@ extension SessionStore {
         }
         for sessionID in sessionIDs {
             sessionRemindersByID.removeValue(forKey: sessionID)
-            sessionReminderScheduler.cancel(sessionID: sessionID)
+            sessionReminderScheduler.cancel(
+                sessionID: sessionID,
+                profileID: appStore.notificationRoutingProfileID
+            )
         }
         saveSessionReminders()
     }
 
     func rememberWorkspace(_ workspace: AgentWorkspace) {
-        let next = recentWorkspaceStore.upsert(workspace, endpoint: appStore.endpoint)
+        let next = recentWorkspaceStore.upsert(
+            workspace,
+            profileID: appStore.notificationRoutingProfileID
+        )
         setRecentWorkspacesIfChanged(next)
     }
 
@@ -1244,7 +1381,10 @@ extension SessionStore {
 
     func forgetWorkspaceAfterWorktreeDeletion(_ workspace: AgentWorkspace) {
         let project = workspace.project
-        let next = recentWorkspaceStore.forget(id: project.id, endpoint: appStore.endpoint)
+        let next = recentWorkspaceStore.forget(
+            id: project.id,
+            profileID: appStore.notificationRoutingProfileID
+        )
         setRecentWorkspacesIfChanged(next)
         removeExpandedProjectID(project.id)
         removeShowingAllSessionProjectID(project.id)
@@ -1453,6 +1593,7 @@ extension SessionStore {
 
     func currentSelectionLease() -> SessionSelectionLease {
         SessionSelectionLease(
+            hostScope: appStore.activeHostScope,
             generation: selectionGeneration,
             projectID: selectedProjectID,
             sessionID: selectedSessionID
@@ -1573,6 +1714,10 @@ extension SessionStore {
     }
 
     func clearConnectionData() {
+        networkRecoveryTask?.cancel()
+        networkRecoveryTask = nil
+        networkSuspendedSessionID = nil
+        appLifecycleSuspendedSessionID = nil
         sessionSearchTask?.cancel()
         sessionSearchTask = nil
         sessionSearchGeneration &+= 1
@@ -1599,9 +1744,49 @@ extension SessionStore {
         setProjectsIfChanged([])
         setRecentWorkspacesIfChanged([])
         setSidebarProjectsIfChanged([])
+        sessionWorkspaceIDs = nil
+        pinnedSessionIDs = []
+        archivedSessionIDs = []
+        sessionVisibleLimitByProjectID = [:]
+        worktreeBranchesByPath = [:]
+        worktreeBranchErrorByPath = [:]
+        managedWorktrees = []
+        worktreeErrorMessage = nil
+        isCreatingWorktree = false
+        isRefreshingWorktreeBranches = false
+        isRefreshingWorktrees = false
+        isDeletingWorktree = false
+        isPruningWorktrees = false
+        gitStatusByPath = [:]
+        gitStatusErrorByPath = [:]
         workspaceGitSummaryByPath = [:]
         workspaceGitSummaryUpdatedAtByPath = [:]
         refreshingWorkspaceGitSummaryPaths = []
+        isRefreshingGitStatus = false
+        gitActionErrorByPath = [:]
+        commandActionsByPath = [:]
+        commandActionErrorByPath = [:]
+        commandActionResultByPath = [:]
+        commandActionHistoryByPath = [:]
+        queuedCommandActionRuns = []
+        queuedCommandActionIDsByPath = [:]
+        runningCommandActionPath = nil
+        runningCommandActionID = nil
+        isRefreshingCommandActions = false
+        isRunningGitAction = false
+        isCommittingGitChanges = false
+        isPushingGitBranch = false
+        isQuickPublishingGitChanges = false
+        gitQuickPublishResultByPath = [:]
+        gitTestFlightStatusByPath = [:]
+        gitTestFlightErrorByPath = [:]
+        isRefreshingGitTestFlightStatus = false
+        isStartingGitTestFlightRelease = false
+        pullRequestURLByPath = [:]
+        pullRequestStatusByPath = [:]
+        pullRequestStatusErrorByPath = [:]
+        isCreatingPullRequest = false
+        isRefreshingPullRequestStatus = false
         unavailableWorkspaceIDs = []
         sessions = []
         setExpandedProjectIDs([])
@@ -1615,6 +1800,7 @@ extension SessionStore {
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
         sessionListCooldownUntilByBudgetKey = [:]
+        lastSessionLibraryIndexRefreshAt = nil
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }
         sessionListReconciliationTasksByProjectID = [:]
         missingRunningSessionReconciliationTasksByID.values.forEach { $0.cancel() }
@@ -1641,7 +1827,25 @@ extension SessionStore {
         lastSeenEventSeqBySessionID = [:]
         listProjectionBySessionID = [:]
         recentActivityProjectionBySessionID = [:]
+        pendingApprovalDecisionIDsBySessionID = [:]
+        pendingUserInputResponseIDsBySessionID = [:]
+        pendingUserInputRequestsBySessionID = [:]
+        pendingUserInputFormStateCache.resetForSessionChange()
+        deliveredRuntimeNotificationIDs = []
+        threadGoalErrorMessage = nil
+        isUpdatingThreadGoal = false
+        appServerModelOptions = []
+        appServerModelOptionsLastRefresh = nil
+        isClaudeRuntimeChannelAvailable = false
+        accountRateLimitsByRuntime = [:]
+        refreshingUsageRuntimeProviders = []
+        isRefreshingAppServerModels = false
+        capabilityList = nil
+        capabilityErrorMessage = nil
+        isRefreshingCapabilities = false
+        reloadSessionListPreferences()
         reloadSessionControlStates()
+        reloadSessionReminders()
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]
         locallyCompletedSessionIDs = []

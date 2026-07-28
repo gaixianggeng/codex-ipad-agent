@@ -529,7 +529,10 @@ extension SessionStore {
                 }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
-        recentWorkspaceStore.save(nextWorkspaces, endpoint: appStore.endpoint)
+        recentWorkspaceStore.save(
+            nextWorkspaces,
+            profileID: appStore.notificationRoutingProfileID
+        )
         setRecentWorkspacesIfChanged(nextWorkspaces)
     }
 

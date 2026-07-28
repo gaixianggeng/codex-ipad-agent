@@ -49,6 +49,12 @@ struct CodexAppServerPreparedConnection {
     let serverRequests: AsyncStream<CodexAppServerServerRequest>
 }
 
+struct CodexAppServerConnectionAttempt {
+    let id: UUID
+    let connection: CodexAppServerConnection
+    let task: Task<CodexAppServerPreparedConnection, Error>
+}
+
 struct CodexAppServerResolvedServerRequests {
     var approvalSessionIDs: [SessionID] = []
     var userInputSessionIDs: [SessionID] = []
@@ -73,7 +79,7 @@ actor CodexAppServerSessionRuntime {
     let configProvider: () async throws -> CodexAppServerConfigResponse
     var config: CodexAppServerConfigResponse?
     var connection: CodexAppServerConnection?
-    var connectionTask: Task<CodexAppServerPreparedConnection, Error>?
+    var connectionAttempt: CodexAppServerConnectionAttempt?
     var notificationPumpTask: Task<Void, Never>?
     var serverRequestPumpTask: Task<Void, Never>?
     var projector = CodexAppServerEventProjector()
@@ -148,7 +154,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     deinit {
-        connectionTask?.cancel()
+        connectionAttempt?.task.cancel()
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
         rateLimitRefreshTask?.cancel()
@@ -221,6 +227,37 @@ actor CodexAppServerSessionRuntime {
         let probe = CodexAppServerConnection(transport: transportFactory())
         try await probe.connect(url: gatewayURL, token: token)
         await probe.disconnect()
+    }
+
+    /// 候选主机只初始化共享 gateway，不 resume thread、不拉取任何业务数据。
+    /// 提交后 SessionStore 会直接复用这条连接，避免 bootstrap 再次 initialize。
+    func prepareForHostActivation() async throws {
+        try await withTaskCancellationHandler {
+            _ = try await ensureConnection()
+        } onCancel: {
+            Task {
+                await self.shutdownForHostSwitch()
+            }
+        }
+    }
+
+    /// 主机切换结束或候选验证失败时显式释放连接和 pump。
+    /// 不能只依赖 deinit，否则短时间内可能同时残留多条业务 WebSocket。
+    func shutdownForHostSwitch() async {
+        await cancelConnectionAttempt()
+        rateLimitRefreshTask?.cancel()
+        rateLimitRefreshTask = nil
+        guard let activeConnection = connection else {
+            notificationPumpTask?.cancel()
+            notificationPumpTask = nil
+            serverRequestPumpTask?.cancel()
+            serverRequestPumpTask = nil
+            threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
+            threadResumeTasksBySessionID.removeAll(keepingCapacity: false)
+            finishAttachedEventStreams()
+            return
+        }
+        await retireConnection(activeConnection)
     }
 
     func channelAvailable(runtimeProvider raw: String) async throws -> Bool {
@@ -2015,8 +2052,8 @@ actor CodexAppServerSessionRuntime {
             }
             await retireConnection(connection)
         }
-        if let connectionTask {
-            return try await installPreparedConnectionIfNeeded(from: connectionTask)
+        if let connectionAttempt {
+            return try await installPreparedConnectionIfNeeded(from: connectionAttempt)
         }
         let config = try await connectionConfig()
         guard runtimeGatewayAvailable(in: config) else {
@@ -2034,32 +2071,64 @@ actor CodexAppServerSessionRuntime {
                 serverRequests: serverRequests
             )
         }
-        connectionTask = task
-        do {
-            return try await installPreparedConnectionIfNeeded(from: task)
-        } catch {
-            connectionTask = nil
-            await next.disconnect()
-            throw error
-        }
+        let attempt = CodexAppServerConnectionAttempt(
+            id: UUID(),
+            connection: next,
+            task: task
+        )
+        connectionAttempt = attempt
+        return try await installPreparedConnectionIfNeeded(from: attempt)
     }
 
     func installPreparedConnectionIfNeeded(
-        from task: Task<CodexAppServerPreparedConnection, Error>
+        from attempt: CodexAppServerConnectionAttempt
     ) async throws -> CodexAppServerConnection {
-        let prepared: CodexAppServerPreparedConnection
-        do {
-            prepared = try await task.value
-            connectionTask = nil
-        } catch {
-            connectionTask = nil
-            throw error
+        try await withTaskCancellationHandler {
+            let prepared: CodexAppServerPreparedConnection
+            do {
+                prepared = try await attempt.task.value
+                try Task.checkCancellation()
+            } catch {
+                await cancelConnectionAttempt(id: attempt.id)
+                throw error
+            }
+
+            // 相同 single-flight 可能有多个等待者；只有仍持有租约的第一个等待者可以安装连接。
+            // 旧尝试即使迟到成功，也只能复用已经安装的新连接或立即释放，不能覆盖当前代次。
+            guard connectionAttempt?.id == attempt.id else {
+                if let connection, await connection.isReadyForRequests() {
+                    return connection
+                }
+                await prepared.connection.disconnect()
+                throw CancellationError()
+            }
+            connectionAttempt = nil
+            if let connection, await connection.isReadyForRequests() {
+                if connection !== prepared.connection {
+                    await prepared.connection.disconnect()
+                }
+                return connection
+            }
+            try Task.checkCancellation()
+            installConnection(prepared)
+            return prepared.connection
+        } onCancel: {
+            // Task.value 不会把等待者的取消自动传给非结构化 Task。转回 runtime actor 后按租约
+            // 同时取消连接任务和 candidate，disconnect 会恢复 initialize 的挂起 continuation。
+            Task {
+                await self.cancelConnectionAttempt(id: attempt.id)
+            }
         }
-        if let connection, await connection.isReadyForRequests() {
-            return connection
+    }
+
+    func cancelConnectionAttempt(id: UUID? = nil) async {
+        guard let attempt = connectionAttempt,
+              id == nil || attempt.id == id else {
+            return
         }
-        installConnection(prepared)
-        return prepared.connection
+        connectionAttempt = nil
+        attempt.task.cancel()
+        await attempt.connection.disconnect()
     }
 
     func connectionConfig() async throws -> CodexAppServerConfigResponse {

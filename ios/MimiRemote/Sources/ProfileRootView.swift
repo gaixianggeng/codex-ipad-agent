@@ -353,7 +353,9 @@ struct MacConnectionPanel: View {
             presenting: pendingRemovalConfirmation
         ) { confirmation in
             Button(confirmation.confirmButtonTitle, role: .destructive) {
-                confirmForgetCurrent(confirmation)
+                Task {
+                    await confirmForgetCurrent(confirmation)
+                }
             }
             .accessibilityIdentifier("root.connection.forget.confirm")
 
@@ -710,12 +712,11 @@ struct MacConnectionPanel: View {
         return didLoad
     }
 
-    private func clearPairing() {
+    private func clearPairing() async {
         do {
-            try appStore.clearPairing()
+            try await sessionStore.clearCurrentConnectionProfile()
             endpoint = appStore.endpoint
             token = appStore.token
-            sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
         } catch {
             localError = error.localizedDescription
@@ -726,7 +727,7 @@ struct MacConnectionPanel: View {
         pendingRemovalConfirmation = .forgettingCurrent(appStore.activeConnectionProfile)
     }
 
-    private func confirmForgetCurrent(_ confirmation: ConnectionCredentialRemovalConfirmation) {
+    private func confirmForgetCurrent(_ confirmation: ConnectionCredentialRemovalConfirmation) async {
         guard case .current(let expectedProfileID) = confirmation.target else {
             return
         }
@@ -737,7 +738,7 @@ struct MacConnectionPanel: View {
             return
         }
         pendingRemovalConfirmation = nil
-        clearPairing()
+        await clearPairing()
     }
 }
 

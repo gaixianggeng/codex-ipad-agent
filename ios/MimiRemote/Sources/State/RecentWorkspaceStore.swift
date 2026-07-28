@@ -1,9 +1,7 @@
 import Foundation
 
 struct RecentWorkspaceStore {
-    private struct Storage: Codable {
-        var byEndpoint: [String: [AgentWorkspace]] = [:]
-    }
+    private typealias Storage = ProfileScopedStorage<[AgentWorkspace]>
 
     private let defaults: UserDefaults
     private let key: String
@@ -27,6 +25,53 @@ struct RecentWorkspaceStore {
         persist(storage)
     }
 
+    func load(
+        profileID: String,
+        legacyEndpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> [AgentWorkspace] {
+        var storage = storage()
+        let didMigrate = storage.migrateLegacyValueIfUnique(
+            profileID: profileID,
+            endpoint: legacyEndpoint,
+            profiles: profiles
+        )
+        if didMigrate {
+            persist(storage)
+        }
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return []
+        }
+        if let workspaces = storage.byProfileID[profileKey] {
+            return workspaces.sorted(by: Self.workspaceSort)
+        }
+        // 测试、调试和迁移失败后的单连接可以继续只读旧值；只有唯一 Profile 才会持久化复制。
+        if profiles.isEmpty {
+            return storage.byEndpoint[normalizedEndpoint(legacyEndpoint)]?
+                .sorted(by: Self.workspaceSort)
+                ?? []
+        }
+        return []
+    }
+
+    func load(profileID: String) -> [AgentWorkspace] {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return []
+        }
+        return storage().byProfileID[profileKey]?
+            .sorted(by: Self.workspaceSort)
+            ?? []
+    }
+
+    func save(_ workspaces: [AgentWorkspace], profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        storage.byProfileID[profileKey] = bounded(workspaces)
+        persist(storage)
+    }
+
     func upsert(_ workspace: AgentWorkspace, endpoint: String, openedAt: Date = Date()) -> [AgentWorkspace] {
         var items = load(endpoint: endpoint)
         items.removeAll { $0.id == workspace.id }
@@ -36,10 +81,40 @@ struct RecentWorkspaceStore {
         return next
     }
 
+    func upsert(
+        _ workspace: AgentWorkspace,
+        profileID: String,
+        openedAt: Date = Date()
+    ) -> [AgentWorkspace] {
+        var items = load(profileID: profileID)
+        items.removeAll { $0.id == workspace.id }
+        items.insert(workspace.opened(at: openedAt), at: 0)
+        let next = bounded(items)
+        save(next, profileID: profileID)
+        return next
+    }
+
     func forget(id: String, endpoint: String) -> [AgentWorkspace] {
         let next = load(endpoint: endpoint).filter { $0.id != id }
         save(next, endpoint: endpoint)
         return next
+    }
+
+    func forget(id: String, profileID: String) -> [AgentWorkspace] {
+        let next = load(profileID: profileID).filter { $0.id != id }
+        save(next, profileID: profileID)
+        return next
+    }
+
+    func remove(profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        guard storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+            return
+        }
+        persist(storage)
     }
 
     private func bounded(_ workspaces: [AgentWorkspace]) -> [AgentWorkspace] {

@@ -1697,8 +1697,100 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.messages(for: "sess_new_2").first?.content, "新历史 2")
     }
 
+    func testConversationStoreScopesSameSessionAndDelayedDeltaByProfile() async throws {
+        let store = ConversationStore()
+        let sessionID = "shared_session"
+
+        store.activate(profileID: "mac-a")
+        store.applyAssistantDelta(
+            AgentDelta(text: "A", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn-a",
+                itemID: "item-a",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        store.applyAssistantDelta(
+            AgentDelta(text: " delayed", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 2,
+                sessionID: sessionID,
+                turnID: "turn-a",
+                itemID: "item-a",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 2,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+        let macAMessageID = try XCTUnwrap(store.messages(for: sessionID).first?.id)
+
+        store.activate(profileID: "mac-b")
+        XCTAssertTrue(store.messages(for: sessionID).isEmpty)
+        store.applyAssistantDelta(
+            AgentDelta(text: "B only", role: .assistant, kind: .message),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn-a",
+                itemID: "item-a",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: nil
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        // A 的 80ms delta flush 在切换后完成，也只能回写捕获的 A scoped key。
+        try await Task.sleep(nanoseconds: 160_000_000)
+        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["B only"])
+        XCTAssertNotEqual(store.messages(for: sessionID).first?.id, macAMessageID)
+
+        store.activate(profileID: "mac-a")
+        XCTAssertEqual(store.messages(for: sessionID).map(\.content), ["A delayed"])
+        XCTAssertEqual(store.lastSeenSeq(for: sessionID), 2)
+
+        store.activate(profileID: "mac-b")
+        XCTAssertEqual(store.lastSeenSeq(for: sessionID), 1)
+    }
+
+    func testConversationStoreUsesOneGlobalLRUBudgetAcrossProfiles() {
+        let store = ConversationStore()
+        let retainedLimit = ConversationStore.retainedSessionLimit
+        let createdAt = Date(timeIntervalSince1970: 500)
+
+        store.activate(profileID: "mac-a")
+        for index in 0..<retainedLimit {
+            store.setHistory(
+                [CodexHistoryMessage(role: "assistant", content: "A \(index)", createdAt: createdAt)],
+                sessionID: "sess_\(index)"
+            )
+        }
+
+        store.activate(profileID: "mac-b")
+        store.setHistory(
+            [CodexHistoryMessage(role: "assistant", content: "B", createdAt: createdAt)],
+            sessionID: "sess_b"
+        )
+        XCTAssertEqual(store.messages(for: "sess_b").first?.content, "B")
+
+        store.activate(profileID: "mac-a")
+        XCTAssertTrue(store.messages(for: "sess_0").isEmpty, "B 新增会话必须参与同一全局 32-session LRU")
+        XCTAssertEqual(store.messages(for: "sess_1").first?.content, "A 1")
+    }
+
     func testSelectingLoadedSessionRetainsConversationCache() async {
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         let retainedLimit = ConversationStore.retainedSessionLimit
         let createdAt = Date(timeIntervalSince1970: 400)
         let project = makeProject(id: "proj_lru")
@@ -1710,7 +1802,7 @@ extension ConversationDataFlowTests {
             ], sessionID: "sess_\(index)")
         }
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [selectedHistory]) }
@@ -2518,6 +2610,163 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(store.load(endpoint: "http://agent-a.local:8787"), [first.sessionID: first])
         XCTAssertEqual(store.load(endpoint: "http://agent-b.local:8787"), [second.sessionID: second])
+    }
+
+    func testProfileScopedStoresIsolateSameRemoteIDsAndRemoveOnlyTargetProfile() {
+        let profileA = "profile-a"
+        let profileB = "profile-b"
+        let sharedSessionID = "shared-session"
+        let workspaceStore = makeRecentWorkspaceStore(workspaces: [], endpoint: "http://legacy.local:8787")
+        let preferenceStore = makeSessionListPreferenceStore()
+        let controlStore = makeSessionControlStateStore()
+        let reminderStore = makeSessionReminderStore()
+        let workspaceA = AgentWorkspace(id: "shared-project", name: "Mac A", path: "/mac-a/project")
+        let workspaceB = AgentWorkspace(id: "shared-project", name: "Mac B", path: "/mac-b/project")
+        let reminderA = SessionReminder(
+            sessionID: sharedSessionID,
+            title: "Mac A 提醒",
+            fireAt: Date(timeIntervalSince1970: 3_600),
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        let reminderB = SessionReminder(
+            sessionID: sharedSessionID,
+            title: "Mac B 提醒",
+            fireAt: Date(timeIntervalSince1970: 7_200),
+            createdAt: Date(timeIntervalSince1970: 2)
+        )
+
+        workspaceStore.save([workspaceA], profileID: profileA)
+        workspaceStore.save([workspaceB], profileID: profileB)
+        preferenceStore.save(
+            SessionListPreferences(pinnedSessionIDs: [sharedSessionID]),
+            profileID: profileA
+        )
+        preferenceStore.save(
+            SessionListPreferences(archivedSessionIDs: [sharedSessionID]),
+            profileID: profileB
+        )
+        controlStore.save([sharedSessionID: .ipadOwned], profileID: profileA)
+        controlStore.save([sharedSessionID: .observing], profileID: profileB)
+        reminderStore.save([sharedSessionID: reminderA], profileID: profileA)
+        reminderStore.save([sharedSessionID: reminderB], profileID: profileB)
+
+        XCTAssertEqual(workspaceStore.load(profileID: profileA).first?.name, "Mac A")
+        XCTAssertEqual(workspaceStore.load(profileID: profileB).first?.name, "Mac B")
+        XCTAssertEqual(preferenceStore.load(profileID: profileA).pinnedSessionIDs, [sharedSessionID])
+        XCTAssertEqual(preferenceStore.load(profileID: profileB).archivedSessionIDs, [sharedSessionID])
+        XCTAssertEqual(controlStore.load(profileID: profileA)[sharedSessionID], .ipadOwned)
+        XCTAssertEqual(controlStore.load(profileID: profileB)[sharedSessionID], .observing)
+        XCTAssertEqual(reminderStore.load(profileID: profileA)[sharedSessionID], reminderA)
+        XCTAssertEqual(reminderStore.load(profileID: profileB)[sharedSessionID], reminderB)
+
+        workspaceStore.remove(profileID: profileA)
+        preferenceStore.remove(profileID: profileA)
+        controlStore.remove(profileID: profileA)
+        reminderStore.remove(profileID: profileA)
+
+        XCTAssertTrue(workspaceStore.load(profileID: profileA).isEmpty)
+        XCTAssertTrue(preferenceStore.load(profileID: profileA).pinnedSessionIDs.isEmpty)
+        XCTAssertTrue(controlStore.load(profileID: profileA).isEmpty)
+        XCTAssertTrue(reminderStore.load(profileID: profileA).isEmpty)
+        XCTAssertEqual(workspaceStore.load(profileID: profileB).first?.name, "Mac B")
+        XCTAssertEqual(preferenceStore.load(profileID: profileB).archivedSessionIDs, [sharedSessionID])
+        XCTAssertEqual(controlStore.load(profileID: profileB)[sharedSessionID], .observing)
+        XCTAssertEqual(reminderStore.load(profileID: profileB)[sharedSessionID], reminderB)
+    }
+
+    func testProfileScopedStoresMigrateUniqueLegacyEndpointOnlyOnce() {
+        let endpoint = "http://mac-a.local:8787"
+        let profile = ConnectionProfile(
+            id: "profile-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let workspaceStore = makeRecentWorkspaceStore(workspaces: [], endpoint: endpoint)
+        let preferenceStore = makeSessionListPreferenceStore()
+        let controlStore = makeSessionControlStateStore()
+        let reminderStore = makeSessionReminderStore()
+        let workspace = AgentWorkspace(id: "legacy-project", name: "旧工作区", path: "/legacy/project")
+        let reminder = SessionReminder(
+            sessionID: "legacy-session",
+            title: "旧提醒",
+            fireAt: Date(timeIntervalSince1970: 7_200),
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+
+        workspaceStore.save([workspace], endpoint: endpoint)
+        preferenceStore.save(
+            SessionListPreferences(pinnedSessionIDs: ["legacy-session"]),
+            endpoint: endpoint
+        )
+        controlStore.save(["legacy-session": .takenOver], endpoint: endpoint)
+        reminderStore.save(["legacy-session": reminder], endpoint: endpoint)
+
+        XCTAssertEqual(
+            workspaceStore.load(profileID: profile.id, legacyEndpoint: endpoint, profiles: [profile]),
+            [workspace]
+        )
+        XCTAssertEqual(
+            preferenceStore.load(profileID: profile.id, legacyEndpoint: endpoint, profiles: [profile])
+                .pinnedSessionIDs,
+            ["legacy-session"]
+        )
+        XCTAssertEqual(
+            controlStore.load(profileID: profile.id, legacyEndpoint: endpoint, profiles: [profile]),
+            ["legacy-session": .takenOver]
+        )
+        XCTAssertEqual(
+            reminderStore.load(profileID: profile.id, legacyEndpoint: endpoint, profiles: [profile]),
+            ["legacy-session": reminder]
+        )
+
+        // 修改旧 endpoint 数据后再次加载，Profile 副本不能被覆盖。
+        workspaceStore.save([], endpoint: endpoint)
+        preferenceStore.save(SessionListPreferences(), endpoint: endpoint)
+        controlStore.save([:], endpoint: endpoint)
+        reminderStore.save([:], endpoint: endpoint)
+
+        XCTAssertEqual(workspaceStore.load(profileID: profile.id), [workspace])
+        XCTAssertEqual(preferenceStore.load(profileID: profile.id).pinnedSessionIDs, ["legacy-session"])
+        XCTAssertEqual(controlStore.load(profileID: profile.id), ["legacy-session": .takenOver])
+        XCTAssertEqual(reminderStore.load(profileID: profile.id), ["legacy-session": reminder])
+    }
+
+    func testProfileScopedMigrationSkipsAmbiguousEndpointUntilUnique() {
+        let endpoint = "http://shared-mac.local:8787"
+        let first = ConnectionProfile(
+            id: "profile-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let second = ConnectionProfile(
+            id: "profile-b",
+            displayName: "Mac B",
+            endpoint: endpoint + "/",
+            lastSuccessfulAt: nil
+        )
+        let store = makeSessionListPreferenceStore()
+        store.save(
+            SessionListPreferences(pinnedSessionIDs: ["legacy-session"]),
+            endpoint: endpoint
+        )
+
+        let ambiguous = store.load(
+            profileID: first.id,
+            legacyEndpoint: endpoint,
+            profiles: [first, second]
+        )
+
+        XCTAssertTrue(ambiguous.pinnedSessionIDs.isEmpty)
+        XCTAssertTrue(store.load(profileID: first.id).pinnedSessionIDs.isEmpty)
+
+        let migratedAfterResolution = store.load(
+            profileID: first.id,
+            legacyEndpoint: endpoint,
+            profiles: [first]
+        )
+        XCTAssertEqual(migratedAfterResolution.pinnedSessionIDs, ["legacy-session"])
     }
 
 }

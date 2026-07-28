@@ -83,6 +83,47 @@ final class LogStoreTests: XCTestCase {
         XCTAssertEqual(store.log(for: "sess_b"), "session-b")
     }
 
+    func testLogStoreScopesSameSessionAndPendingFlushByProfile() async {
+        let store = LogStore()
+        let sessionID = "shared_session"
+
+        store.activate(profileID: "mac-a")
+        store.append("A only", sessionID: sessionID, seq: 7)
+        store.activate(profileID: "mac-b")
+        store.append("B only", sessionID: sessionID, seq: 7)
+
+        let didFlushB = await waitUntil { store.log(for: sessionID) == "B only" }
+        XCTAssertTrue(didFlushB)
+        XCTAssertEqual(store.lastSeq(for: sessionID), 7)
+
+        store.activate(profileID: "mac-a")
+        let didFlushA = await waitUntil { store.log(for: sessionID) == "A only" }
+        XCTAssertTrue(didFlushA)
+        XCTAssertEqual(store.lastSeq(for: sessionID), 7)
+
+        store.activate(profileID: "mac-b")
+        XCTAssertEqual(store.log(for: sessionID), "B only")
+    }
+
+    func testLogStoreUsesOneGlobalLRUBudgetAcrossProfiles() async {
+        let store = LogStore()
+
+        store.activate(profileID: "mac-a")
+        for index in 0..<LogStore.retainedSessionLimit {
+            store.append("A \(index)", sessionID: "sess_\(index)")
+        }
+
+        store.activate(profileID: "mac-b")
+        store.append("B", sessionID: "sess_b")
+        let didFlushB = await waitUntil { store.log(for: "sess_b") == "B" }
+        XCTAssertTrue(didFlushB)
+
+        store.activate(profileID: "mac-a")
+        XCTAssertEqual(store.log(for: "sess_0"), "", "B 新增日志必须参与同一全局 16-session LRU")
+        let didFlushA = await waitUntil { store.log(for: "sess_1") == "A 1" }
+        XCTAssertTrue(didFlushA)
+    }
+
     func testLogStoreStripsAnsiTerminalSequences() async {
         let store = LogStore()
         let sessionID = "sess_ansi"

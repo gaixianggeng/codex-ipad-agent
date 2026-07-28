@@ -2,18 +2,19 @@ import Foundation
 
 @MainActor
 final class LogStore: ObservableObject {
-    @Published private(set) var visibleLogs: [String: String] = [:]
+    @Published private var activeProfileID = ""
+    @Published private var visibleLogsByScopedSession: [ScopedSessionID: String] = [:]
     // 已渲染的日志行：在后台线程算好再发布，避免 LogPanelView 在 body 里对 8 万字符做 split+正则。
-    @Published private(set) var renderedLinesBySession: [String: [LogDisplayLine]] = [:]
+    @Published private var renderedLinesByScopedSession: [ScopedSessionID: [LogDisplayLine]] = [:]
     @Published var autoScroll = true
 
-    private var buffers: [String: String] = [:]
-    private var bufferStartLineBySessionID: [String: Int] = [:]
-    private var pendingChunks: [String: [String]] = [:]
-    private var pendingChunkCharacters: [String: Int] = [:]
-    private var flushTasks: [String: Task<Void, Never>] = [:]
-    private var lastSeenSeqBySessionID: [String: EventSequence] = [:]
-    private var sessionAccessTickBySessionID: [String: UInt64] = [:]
+    private var buffers: [ScopedSessionID: String] = [:]
+    private var bufferStartLineBySessionID: [ScopedSessionID: Int] = [:]
+    private var pendingChunks: [ScopedSessionID: [String]] = [:]
+    private var pendingChunkCharacters: [ScopedSessionID: Int] = [:]
+    private var flushTasks: [ScopedSessionID: Task<Void, Never>] = [:]
+    private var lastSeenSeqBySessionID: [ScopedSessionID: EventSequence] = [:]
+    private var sessionAccessTickBySessionID: [ScopedSessionID: UInt64] = [:]
     private var sessionAccessCounter: UInt64 = 0
     private let maxPendingCharacters = 160_000
     private let maxBufferCharacters = 120_000
@@ -21,11 +22,44 @@ final class LogStore: ObservableObject {
     private let flushDelayNanoseconds: UInt64 = 120_000_000
     static let retainedSessionLimit = 16
 
+    var visibleLogs: [String: String] {
+        activeValues(in: visibleLogsByScopedSession)
+    }
+
+    var renderedLinesBySession: [String: [LogDisplayLine]] {
+        activeValues(in: renderedLinesByScopedSession)
+    }
+
+    /// 切换主机只替换当前命名空间，不复制或清空缓存；所有主机继续共享同一组 LRU 上限。
+    func activate(profileID: String) {
+        guard activeProfileID != profileID else {
+            return
+        }
+        activeProfileID = profileID
+    }
+
+    /// 删除档案时清掉该 Profile 的原始缓冲、渲染结果和延迟 flush Task。
+    func remove(profileID: String) {
+        for (scopedSessionID, task) in flushTasks where scopedSessionID.profileID == profileID {
+            task.cancel()
+        }
+        flushTasks = flushTasks.filter { $0.key.profileID != profileID }
+        pendingChunks = pendingChunks.filter { $0.key.profileID != profileID }
+        pendingChunkCharacters = pendingChunkCharacters.filter { $0.key.profileID != profileID }
+        buffers = buffers.filter { $0.key.profileID != profileID }
+        bufferStartLineBySessionID = bufferStartLineBySessionID.filter { $0.key.profileID != profileID }
+        visibleLogsByScopedSession = visibleLogsByScopedSession.filter { $0.key.profileID != profileID }
+        renderedLinesByScopedSession = renderedLinesByScopedSession.filter { $0.key.profileID != profileID }
+        lastSeenSeqBySessionID = lastSeenSeqBySessionID.filter { $0.key.profileID != profileID }
+        sessionAccessTickBySessionID = sessionAccessTickBySessionID.filter { $0.key.profileID != profileID }
+    }
+
     func log(for sessionID: String?) -> String {
         guard let sessionID else {
             return ""
         }
-        return visibleLogs[sessionID] ?? buffers[sessionID] ?? ""
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        return visibleLogsByScopedSession[scopedSessionID] ?? buffers[scopedSessionID] ?? ""
     }
 
     /// 导出读取已完成 ANSI 清洗的当前内存缓存窗口（最多 12 万字符），而不是 UI 的 8 万字符可见窗口。
@@ -35,70 +69,74 @@ final class LogStore: ObservableObject {
         guard let sessionID else {
             return ""
         }
-        return buffers[sessionID] ?? visibleLogs[sessionID] ?? ""
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        return buffers[scopedSessionID] ?? visibleLogsByScopedSession[scopedSessionID] ?? ""
     }
 
     func lines(for sessionID: String?) -> [LogDisplayLine] {
         guard let sessionID else {
             return []
         }
-        return renderedLinesBySession[sessionID] ?? []
+        return renderedLinesByScopedSession[scopedSessionID(for: sessionID)] ?? []
     }
 
     func lastSeq(for sessionID: String?) -> EventSequence? {
         guard let sessionID else {
             return nil
         }
-        return lastSeenSeqBySessionID[sessionID]
+        return lastSeenSeqBySessionID[scopedSessionID(for: sessionID)]
     }
 
     func retainSessionCache(sessionID: String) {
-        guard hasCacheState(sessionID: sessionID) else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        guard hasCacheState(scopedSessionID: scopedSessionID) else {
             return
         }
-        touchLogSession(sessionID)
+        touchLogSession(scopedSessionID)
     }
 
     func append(_ chunk: String, sessionID: String, seq: EventSequence? = nil) {
         guard !chunk.isEmpty else {
             return
         }
-        guard shouldAccept(seq: seq, sessionID: sessionID) else {
+        let scopedSessionID = scopedSessionID(for: sessionID)
+        guard shouldAccept(seq: seq, scopedSessionID: scopedSessionID) else {
             return
         }
 
         // 日志只维护自己的缓冲区；输入框和对话解析都不会反向触发这里。
-        pendingChunks[sessionID, default: []].append(chunk)
-        pendingChunkCharacters[sessionID, default: 0] += chunk.count
-        trimPendingChunksIfNeeded(sessionID: sessionID)
-        touchLogSession(sessionID)
+        pendingChunks[scopedSessionID, default: []].append(chunk)
+        pendingChunkCharacters[scopedSessionID, default: 0] += chunk.count
+        trimPendingChunksIfNeeded(scopedSessionID: scopedSessionID)
+        touchLogSession(scopedSessionID)
         trimLogSessionCachesIfNeeded()
-        scheduleFlush(sessionID: sessionID)
+        scheduleFlush(scopedSessionID: scopedSessionID)
     }
 
     func reset(sessionID: String) {
-        clearLogSessionState(sessionID: sessionID, publishEmptyState: true)
+        clearLogSessionState(scopedSessionID: scopedSessionID(for: sessionID), publishEmptyState: true)
     }
 
-    private func shouldAccept(seq: EventSequence?, sessionID: String) -> Bool {
+    private func shouldAccept(seq: EventSequence?, scopedSessionID: ScopedSessionID) -> Bool {
         guard let seq else {
             return true
         }
-        if let last = lastSeenSeqBySessionID[sessionID], seq <= last {
+        if let last = lastSeenSeqBySessionID[scopedSessionID], seq <= last {
             return false
         }
         // 结构化日志可能在重连后 bounded replay；按 Codex/Litter 的单调 seq 思路，
         // Store 层先做轻量去重，避免旧块再次触发布局和行解析。
-        lastSeenSeqBySessionID[sessionID] = seq
+        lastSeenSeqBySessionID[scopedSessionID] = seq
         return true
     }
 
-    private func scheduleFlush(sessionID: String) {
-        guard flushTasks[sessionID] == nil else {
+    private func scheduleFlush(scopedSessionID: ScopedSessionID) {
+        guard flushTasks[scopedSessionID] == nil else {
             return
         }
         let delay = flushDelayNanoseconds
-        flushTasks[sessionID] = Task { [weak self] in
+        // Task 捕获不可变 scoped key；主机切换后只能回写原 Profile，不能按新的 activeProfileID 重算。
+        flushTasks[scopedSessionID] = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: delay)
             } catch {
@@ -110,9 +148,9 @@ final class LogStore: ObservableObject {
                 guard let self else {
                     return ""
                 }
-                let joined = self.pendingChunks[sessionID, default: []].joined()
-                self.pendingChunks[sessionID] = []
-                self.pendingChunkCharacters[sessionID] = 0
+                let joined = self.pendingChunks[scopedSessionID, default: []].joined()
+                self.pendingChunks[scopedSessionID] = []
+                self.pendingChunkCharacters[scopedSessionID] = 0
                 return joined
             }
 
@@ -130,13 +168,13 @@ final class LogStore: ObservableObject {
                     return ("", 0)
                 }
                 if !chunk.isEmpty {
-                    let current = (self.buffers[sessionID] ?? "") + chunk
-                    let trimmed = self.trimmedLogBuffer(current, sessionID: sessionID)
-                    self.buffers[sessionID] = trimmed
+                    let current = (self.buffers[scopedSessionID] ?? "") + chunk
+                    let trimmed = self.trimmedLogBuffer(current, scopedSessionID: scopedSessionID)
+                    self.buffers[scopedSessionID] = trimmed
                 }
-                let visible = self.visibleLogWindow(sessionID: sessionID)
-                self.setVisibleLogIfChanged(visible, sessionID: sessionID)
-                return (visible, self.visibleStartLineID(sessionID: sessionID, visible: visible))
+                let visible = self.visibleLogWindow(scopedSessionID: scopedSessionID)
+                self.setVisibleLogIfChanged(visible, scopedSessionID: scopedSessionID)
+                return (visible, self.visibleStartLineID(scopedSessionID: scopedSessionID, visible: visible))
             }
 
             // 行解析（split + 逐行正则 + 去噪）是最重的一步，放到后台线程算好再发布。
@@ -151,31 +189,31 @@ final class LogStore: ObservableObject {
                 guard let self else {
                     return
                 }
-                self.setRenderedLinesIfChanged(lines, sessionID: sessionID)
-                self.flushTasks[sessionID] = nil
+                self.setRenderedLinesIfChanged(lines, scopedSessionID: scopedSessionID)
+                self.flushTasks[scopedSessionID] = nil
                 // 后台处理期间可能又有分片落入 pendingChunks，补一次调度避免漏刷。
-                if self.pendingChunks[sessionID]?.isEmpty == false {
-                    self.scheduleFlush(sessionID: sessionID)
+                if self.pendingChunks[scopedSessionID]?.isEmpty == false {
+                    self.scheduleFlush(scopedSessionID: scopedSessionID)
                 }
             }
         }
     }
 
-    private func setVisibleLogIfChanged(_ visible: String, sessionID: String) {
-        guard visibleLogs[sessionID] != visible else {
+    private func setVisibleLogIfChanged(_ visible: String, scopedSessionID: ScopedSessionID) {
+        guard visibleLogsByScopedSession[scopedSessionID] != visible else {
             return
         }
-        visibleLogs[sessionID] = visible
+        visibleLogsByScopedSession[scopedSessionID] = visible
     }
 
-    private func setRenderedLinesIfChanged(_ lines: [LogDisplayLine], sessionID: String) {
-        guard renderedLinesBySession[sessionID] != lines else {
+    private func setRenderedLinesIfChanged(_ lines: [LogDisplayLine], scopedSessionID: ScopedSessionID) {
+        guard renderedLinesByScopedSession[scopedSessionID] != lines else {
             return
         }
-        renderedLinesBySession[sessionID] = lines
+        renderedLinesByScopedSession[scopedSessionID] = lines
     }
 
-    private func trimmedLogBuffer(_ current: String, sessionID: String) -> String {
+    private func trimmedLogBuffer(_ current: String, scopedSessionID: ScopedSessionID) -> String {
         guard current.count > maxBufferCharacters else {
             return current
         }
@@ -183,21 +221,21 @@ final class LogStore: ObservableObject {
         let dropIndex = current.index(current.startIndex, offsetBy: dropCount)
         let droppedPrefix = current[..<dropIndex]
         // 缓冲区裁剪时累加被丢弃的换行数，后续渲染行继续使用绝对行号，避免 SwiftUI 把尾部行全部当成新行。
-        bufferStartLineBySessionID[sessionID, default: 0] += newlineCount(in: droppedPrefix)
+        bufferStartLineBySessionID[scopedSessionID, default: 0] += newlineCount(in: droppedPrefix)
         return String(current[dropIndex...])
     }
 
-    private func visibleLogWindow(sessionID: String) -> String {
-        let buffer = buffers[sessionID] ?? ""
+    private func visibleLogWindow(scopedSessionID: ScopedSessionID) -> String {
+        let buffer = buffers[scopedSessionID] ?? ""
         guard buffer.count > maxVisibleCharacters else {
             return buffer
         }
         return String(buffer.suffix(maxVisibleCharacters))
     }
 
-    private func visibleStartLineID(sessionID: String, visible: String) -> Int {
-        let buffer = buffers[sessionID] ?? ""
-        var startLineID = bufferStartLineBySessionID[sessionID] ?? 0
+    private func visibleStartLineID(scopedSessionID: ScopedSessionID, visible: String) -> Int {
+        let buffer = buffers[scopedSessionID] ?? ""
+        var startLineID = bufferStartLineBySessionID[scopedSessionID] ?? 0
         guard buffer.count > visible.count else {
             return startLineID
         }
@@ -213,26 +251,26 @@ final class LogStore: ObservableObject {
         }
     }
 
-    private func hasCacheState(sessionID: String) -> Bool {
-        buffers[sessionID] != nil
-            || visibleLogs[sessionID] != nil
-            || renderedLinesBySession[sessionID] != nil
-            || pendingChunks[sessionID]?.isEmpty == false
-            || pendingChunkCharacters[sessionID, default: 0] > 0
-            || lastSeenSeqBySessionID[sessionID] != nil
+    private func hasCacheState(scopedSessionID: ScopedSessionID) -> Bool {
+        buffers[scopedSessionID] != nil
+            || visibleLogsByScopedSession[scopedSessionID] != nil
+            || renderedLinesByScopedSession[scopedSessionID] != nil
+            || pendingChunks[scopedSessionID]?.isEmpty == false
+            || pendingChunkCharacters[scopedSessionID, default: 0] > 0
+            || lastSeenSeqBySessionID[scopedSessionID] != nil
     }
 
-    private func trimPendingChunksIfNeeded(sessionID: String) {
-        guard let total = pendingChunkCharacters[sessionID],
+    private func trimPendingChunksIfNeeded(scopedSessionID: ScopedSessionID) {
+        guard let total = pendingChunkCharacters[scopedSessionID],
               total > maxPendingCharacters,
-              let chunks = pendingChunks[sessionID]
+              let chunks = pendingChunks[scopedSessionID]
         else {
             return
         }
 
         let trimmed = trimPendingChunkWindow(chunks: chunks, total: total, maxCharacters: maxPendingCharacters)
-        pendingChunks[sessionID] = trimmed.chunks
-        pendingChunkCharacters[sessionID] = trimmed.total
+        pendingChunks[scopedSessionID] = trimmed.chunks
+        pendingChunkCharacters[scopedSessionID] = trimmed.total
     }
 
     private func trimPendingChunkWindow(
@@ -279,10 +317,10 @@ final class LogStore: ObservableObject {
         return (keptChunks, keptTotal)
     }
 
-    private func touchLogSession(_ sessionID: String) {
+    private func touchLogSession(_ scopedSessionID: ScopedSessionID) {
         // 日志分片可能高频到达；touch 只更新时间戳，避免数组 firstIndex/removeFirst 在多会话下反复搬移。
         sessionAccessCounter &+= 1
-        sessionAccessTickBySessionID[sessionID] = sessionAccessCounter
+        sessionAccessTickBySessionID[scopedSessionID] = sessionAccessCounter
     }
 
     private func trimLogSessionCachesIfNeeded() {
@@ -290,20 +328,32 @@ final class LogStore: ObservableObject {
         // 参考 Codex/Litter 的有界状态思路，只保留最近访问的会话，避免长期运行后内存线性增长。
         while sessionAccessTickBySessionID.count > Self.retainedSessionLimit,
               let oldest = sessionAccessTickBySessionID.min(by: { $0.value < $1.value }) {
-            clearLogSessionState(sessionID: oldest.key, publishEmptyState: false)
+            clearLogSessionState(scopedSessionID: oldest.key, publishEmptyState: false)
         }
     }
 
-    private func clearLogSessionState(sessionID: String, publishEmptyState: Bool) {
-        flushTasks[sessionID]?.cancel()
-        flushTasks[sessionID] = nil
-        pendingChunks[sessionID] = publishEmptyState ? [] : nil
-        pendingChunkCharacters[sessionID] = nil
-        buffers[sessionID] = publishEmptyState ? "" : nil
-        bufferStartLineBySessionID[sessionID] = publishEmptyState ? 0 : nil
-        visibleLogs[sessionID] = publishEmptyState ? "" : nil
-        renderedLinesBySession[sessionID] = publishEmptyState ? [] : nil
-        lastSeenSeqBySessionID[sessionID] = nil
-        sessionAccessTickBySessionID[sessionID] = nil
+    private func clearLogSessionState(scopedSessionID: ScopedSessionID, publishEmptyState: Bool) {
+        flushTasks[scopedSessionID]?.cancel()
+        flushTasks[scopedSessionID] = nil
+        pendingChunks[scopedSessionID] = publishEmptyState ? [] : nil
+        pendingChunkCharacters[scopedSessionID] = nil
+        buffers[scopedSessionID] = publishEmptyState ? "" : nil
+        bufferStartLineBySessionID[scopedSessionID] = publishEmptyState ? 0 : nil
+        visibleLogsByScopedSession[scopedSessionID] = publishEmptyState ? "" : nil
+        renderedLinesByScopedSession[scopedSessionID] = publishEmptyState ? [] : nil
+        lastSeenSeqBySessionID[scopedSessionID] = nil
+        sessionAccessTickBySessionID[scopedSessionID] = nil
+    }
+
+    private func scopedSessionID(for sessionID: String) -> ScopedSessionID {
+        ScopedSessionID(profileID: activeProfileID, sessionID: sessionID)
+    }
+
+    private func activeValues<Value>(in values: [ScopedSessionID: Value]) -> [String: Value] {
+        var result: [String: Value] = [:]
+        for (key, value) in values where key.profileID == activeProfileID {
+            result[key.sessionID] = value
+        }
+        return result
     }
 }

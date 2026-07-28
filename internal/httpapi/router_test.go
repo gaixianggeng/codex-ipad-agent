@@ -24,7 +24,10 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
-const testToken = "0123456789abcdef0123456789abcdef"
+const (
+	testToken          = "0123456789abcdef0123456789abcdef"
+	testInstallationID = "00112233-4455-4677-8899-aabbccddeeff"
+)
 
 type testServer struct {
 	handler http.Handler
@@ -71,7 +74,7 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 
 	checker := doctor.NewChecker("test", cfg, registry)
 	return testServer{
-		handler: NewRouter(cfg, registry, manager, checker, "test"),
+		handler: NewRouterWithInstallationID(cfg, registry, manager, checker, "test", testInstallationID),
 		manager: manager,
 	}
 }

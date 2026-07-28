@@ -5,6 +5,23 @@ import SwiftUI
 import UIKit
 @testable import MimiRemote
 
+/// XCTest 的同步断言不能包裹 async Keychain/Vault 事务；这里确保测试等待 actor 提交完成。
+@MainActor
+func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    _ message: @autoclosure () -> String = "",
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ errorHandler: (Error) -> Void = { _ in }
+) async {
+    do {
+        _ = try await expression()
+        XCTFail(message().isEmpty ? "Expected expression to throw an error." : message(), file: file, line: line)
+    } catch {
+        errorHandler(error)
+    }
+}
+
 // 多个测试领域共享的网络、WebSocket、API client 与等待工具。
 final class TestNetworkPathStatusSource: NetworkPathStatusSource {
     private(set) var currentStatus: NetworkReachabilityStatus
@@ -292,6 +309,7 @@ final class FakeSessionReminderScheduler: SessionReminderScheduling {
     private(set) var runtimeNotifications: [SessionRuntimeNotification] = []
     private(set) var runtimeNotificationRoutes: [SessionNotificationRoute] = []
     private(set) var canceledSessionIDs: [SessionID] = []
+    private(set) var canceledProfileIDs: [String] = []
     var scheduleOutcome: SessionReminderScheduleOutcome
 
     init(scheduleOutcome: SessionReminderScheduleOutcome = .scheduled) {
@@ -315,8 +333,12 @@ final class FakeSessionReminderScheduler: SessionReminderScheduling {
         runtimeNotificationRoutes.append(route)
     }
 
-    func cancel(sessionID: SessionID) {
+    func cancel(sessionID: SessionID, profileID: String) {
         canceledSessionIDs.append(sessionID)
+    }
+
+    func cancel(profileID: String) {
+        canceledProfileIDs.append(profileID)
     }
 }
 
@@ -414,6 +436,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let commandActionResults: [String: Result<[AgentCommandAction], Error>]
     let commandActionRunResults: [String: Result<CommandActionRunResponse, Error>]
     let gitStatusResults: [String: Result<GitStatusResponse, Error>]
+    let gitStatusHandler: ((String) async throws -> GitStatusResponse)?
     let gitActionResults: [String: Result<GitStatusResponse, Error>]
     let gitPatchActionResults: [String: Result<GitStatusResponse, Error>]
     let gitCommitResults: [String: Result<GitStatusResponse, Error>]
@@ -508,6 +531,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         commandActionResults: [String: Result<[AgentCommandAction], Error>] = [:],
         commandActionRunResults: [String: Result<CommandActionRunResponse, Error>] = [:],
         gitStatusResults: [String: Result<GitStatusResponse, Error>] = [:],
+        gitStatusHandler: ((String) async throws -> GitStatusResponse)? = nil,
         gitActionResults: [String: Result<GitStatusResponse, Error>] = [:],
         gitPatchActionResults: [String: Result<GitStatusResponse, Error>] = [:],
         gitCommitResults: [String: Result<GitStatusResponse, Error>] = [:],
@@ -556,6 +580,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.commandActionResults = commandActionResults
         self.commandActionRunResults = commandActionRunResults
         self.gitStatusResults = gitStatusResults
+        self.gitStatusHandler = gitStatusHandler
         self.gitActionResults = gitActionResults
         self.gitPatchActionResults = gitPatchActionResults
         self.gitCommitResults = gitCommitResults
@@ -769,6 +794,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func gitStatus(path: String) async throws -> GitStatusResponse {
         requestedGitStatusPaths.append(path)
+        if let gitStatusHandler {
+            return try await gitStatusHandler(path)
+        }
         switch gitStatusResults[path] {
         case .success(let response):
             return response

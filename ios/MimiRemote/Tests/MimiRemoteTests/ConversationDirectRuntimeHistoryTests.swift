@@ -1943,6 +1943,46 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(context?.status?.activeFlags, ["waitingOnApproval"])
     }
 
+    func testSessionContextStoreScopesSameSessionByProfile() {
+        let store = SessionContextStore()
+        let sessionID = "shared_session"
+
+        store.activate(profileID: "mac-a")
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: sessionID,
+                environment: SessionContextEnvironment(
+                    id: "local-a",
+                    kind: "local",
+                    label: "Mac A",
+                    cwd: "/tmp/a",
+                    provider: "openai"
+                )
+            ),
+            fallbackSessionID: nil
+        )
+
+        store.activate(profileID: "mac-b")
+        XCTAssertNil(store.context(for: sessionID))
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: sessionID,
+                environment: SessionContextEnvironment(
+                    id: "local-b",
+                    kind: "local",
+                    label: "Mac B",
+                    cwd: "/tmp/b",
+                    provider: "openai"
+                )
+            ),
+            fallbackSessionID: nil
+        )
+        XCTAssertEqual(store.context(for: sessionID)?.environment?.cwd, "/tmp/b")
+
+        store.activate(profileID: "mac-a")
+        XCTAssertEqual(store.context(for: sessionID)?.environment?.cwd, "/tmp/a")
+    }
+
     func testCodexAppServerRequestBuildersUseRemoteSafeDefaults() throws {
         let project = AgentProject(id: "proj_safe", name: "Safe", path: "/tmp/safe-project")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])

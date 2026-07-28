@@ -386,32 +386,36 @@ extension SessionStoreAPIClient {
 @MainActor
 final class TerminalStreamStore {
     let maxBatchSize: Int
-    var eventsBySessionID: [SessionID: [AgentEvent]] = [:]
+    var eventsByLease: [HostSessionLease: [AgentEvent]] = [:]
 
     init(maxBatchSize: Int = 64) {
         self.maxBatchSize = max(1, maxBatchSize)
     }
 
-    func append(_ event: AgentEvent, sessionID: SessionID) -> Bool {
-        var events = eventsBySessionID[sessionID] ?? []
+    func append(_ event: AgentEvent, lease: HostSessionLease) -> Bool {
+        var events = eventsByLease[lease] ?? []
         if let previous = events.last,
            let merged = previous.mergingContiguous(with: event) {
             events[events.index(before: events.endIndex)] = merged
         } else {
             events.append(event)
         }
-        eventsBySessionID[sessionID] = events
+        eventsByLease[lease] = events
         return events.count >= maxBatchSize
     }
 
-    func drain(sessionID: SessionID) -> [AgentEvent] {
-        let events = eventsBySessionID[sessionID] ?? []
-        eventsBySessionID[sessionID] = []
+    func drain(lease: HostSessionLease) -> [AgentEvent] {
+        let events = eventsByLease[lease] ?? []
+        eventsByLease.removeValue(forKey: lease)
         return events
     }
 
-    func removeAll(sessionID: SessionID) {
-        eventsBySessionID.removeValue(forKey: sessionID)
+    func removeAll(lease: HostSessionLease) {
+        eventsByLease.removeValue(forKey: lease)
+    }
+
+    func removeAll(profileID: String) {
+        eventsByLease = eventsByLease.filter { $0.key.hostScope.profileID != profileID }
     }
 
 }

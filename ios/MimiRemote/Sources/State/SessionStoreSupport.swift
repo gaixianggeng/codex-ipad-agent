@@ -9,12 +9,14 @@ struct QueuedCommandActionRun: Equatable {
 }
 
 struct HistoryFirstPageRequestKey: Hashable {
+    let profileID: String
     let sessionID: SessionID
     let limit: Int
     let loadMode: HistoryMessagesPage.LoadMode
 }
 
 struct SessionListFirstPageRequestKey: Hashable {
+    let profileID: String
     let connectionGeneration: Int
     let workspaceID: String
     let workspacePath: String
@@ -23,6 +25,7 @@ struct SessionListFirstPageRequestKey: Hashable {
 }
 
 struct SessionListBudgetKey: Hashable {
+    let profileID: String
     let connectionGeneration: Int
     let cwd: String
 }
@@ -154,10 +157,81 @@ struct SessionListPreferences: Codable, Equatable {
     var sessionWorkspaceIDs: Set<String>? = nil
 }
 
-struct SessionListPreferenceStore {
-    struct Storage: Codable {
-        var byEndpoint: [String: SessionListPreferences] = [:]
+/// V2 持久化同时保留只读的 endpoint 旧数据与新的 Profile 命名空间。
+///
+/// 旧键不会在本版本删除；迁移成功后用 endpoint marker 保证只复制一次，删除 Profile 后也不会
+/// 因重新添加同地址的另一台 Mac 而把旧数据复活。
+struct ProfileScopedStorage<Value: Codable>: Codable {
+    var byEndpoint: [String: Value] = [:]
+    var byProfileID: [String: Value] = [:]
+    var migratedLegacyEndpoints: Set<String> = []
+
+    private enum CodingKeys: String, CodingKey {
+        case byEndpoint
+        case byProfileID
+        case migratedLegacyEndpoints
     }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        byEndpoint = try container.decodeIfPresent([String: Value].self, forKey: .byEndpoint) ?? [:]
+        byProfileID = try container.decodeIfPresent([String: Value].self, forKey: .byProfileID) ?? [:]
+        migratedLegacyEndpoints = try container.decodeIfPresent(
+            Set<String>.self,
+            forKey: .migratedLegacyEndpoints
+        ) ?? []
+    }
+
+    mutating func migrateLegacyValueIfUnique(
+        profileID: String,
+        endpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> Bool {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID),
+              byProfileID[profileKey] == nil
+        else {
+            return false
+        }
+        let endpointKey = AgentAPIClient.normalizedEndpoint(endpoint)
+        guard !migratedLegacyEndpoints.contains(endpointKey),
+              ProfileScopedPersistence.isUniqueEndpointMatch(
+                  profileID: profileKey,
+                  normalizedEndpoint: endpointKey,
+                  profiles: profiles
+              ),
+              let legacyValue = byEndpoint[endpointKey]
+        else {
+            return false
+        }
+
+        byProfileID[profileKey] = legacyValue
+        migratedLegacyEndpoints.insert(endpointKey)
+        return true
+    }
+}
+
+enum ProfileScopedPersistence {
+    static func normalizedProfileID(_ profileID: String) -> String? {
+        let normalized = profileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    static func isUniqueEndpointMatch(
+        profileID: String,
+        normalizedEndpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> Bool {
+        let matches = profiles.filter {
+            AgentAPIClient.normalizedEndpoint($0.endpoint) == normalizedEndpoint
+        }
+        return matches.count == 1 && matches[0].id == profileID
+    }
+}
+
+struct SessionListPreferenceStore {
+    typealias Storage = ProfileScopedStorage<SessionListPreferences>
 
     let defaults: UserDefaults
     let key: String
@@ -174,6 +248,60 @@ struct SessionListPreferenceStore {
     func save(_ preferences: SessionListPreferences, endpoint: String) {
         var storage = storage()
         storage.byEndpoint[normalizedEndpoint(endpoint)] = preferences
+        persist(storage)
+    }
+
+    func load(
+        profileID: String,
+        legacyEndpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> SessionListPreferences {
+        var storage = storage()
+        let didMigrate = storage.migrateLegacyValueIfUnique(
+            profileID: profileID,
+            endpoint: legacyEndpoint,
+            profiles: profiles
+        )
+        if didMigrate {
+            persist(storage)
+        }
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return SessionListPreferences()
+        }
+        if let value = storage.byProfileID[profileKey] {
+            return value
+        }
+        // 无 Profile 的 legacy/debug 单连接只读旧值，不把“0 个匹配”伪装成正式迁移。
+        if profiles.isEmpty {
+            return storage.byEndpoint[normalizedEndpoint(legacyEndpoint)] ?? SessionListPreferences()
+        }
+        return SessionListPreferences()
+    }
+
+    func load(profileID: String) -> SessionListPreferences {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return SessionListPreferences()
+        }
+        return storage().byProfileID[profileKey] ?? SessionListPreferences()
+    }
+
+    func save(_ preferences: SessionListPreferences, profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        storage.byProfileID[profileKey] = preferences
+        persist(storage)
+    }
+
+    func remove(profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        guard storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+            return
+        }
         persist(storage)
     }
 
@@ -209,9 +337,7 @@ enum SessionControlState: String, Codable, Equatable {
 }
 
 struct SessionControlStateStore {
-    struct Storage: Codable {
-        var byEndpoint: [String: [SessionID: SessionControlState]] = [:]
-    }
+    typealias Storage = ProfileScopedStorage<[SessionID: SessionControlState]>
 
     let defaults: UserDefaults
     let key: String
@@ -228,6 +354,59 @@ struct SessionControlStateStore {
     func save(_ states: [SessionID: SessionControlState], endpoint: String) {
         var storage = storage()
         storage.byEndpoint[normalizedEndpoint(endpoint)] = states
+        persist(storage)
+    }
+
+    func load(
+        profileID: String,
+        legacyEndpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> [SessionID: SessionControlState] {
+        var storage = storage()
+        let didMigrate = storage.migrateLegacyValueIfUnique(
+            profileID: profileID,
+            endpoint: legacyEndpoint,
+            profiles: profiles
+        )
+        if didMigrate {
+            persist(storage)
+        }
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return [:]
+        }
+        if let value = storage.byProfileID[profileKey] {
+            return value
+        }
+        if profiles.isEmpty {
+            return storage.byEndpoint[normalizedEndpoint(legacyEndpoint)] ?? [:]
+        }
+        return [:]
+    }
+
+    func load(profileID: String) -> [SessionID: SessionControlState] {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return [:]
+        }
+        return storage().byProfileID[profileKey] ?? [:]
+    }
+
+    func save(_ states: [SessionID: SessionControlState], profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        storage.byProfileID[profileKey] = states
+        persist(storage)
+    }
+
+    func remove(profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        guard storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+            return
+        }
         persist(storage)
     }
 
@@ -280,9 +459,7 @@ struct SessionRuntimeNotification: Equatable {
 }
 
 struct SessionReminderStore {
-    struct Storage: Codable {
-        var byEndpoint: [String: [SessionID: SessionReminder]] = [:]
-    }
+    typealias Storage = ProfileScopedStorage<[SessionID: SessionReminder]>
 
     let defaults: UserDefaults
     let key: String
@@ -299,6 +476,59 @@ struct SessionReminderStore {
     func save(_ reminders: [SessionID: SessionReminder], endpoint: String) {
         var storage = storage()
         storage.byEndpoint[normalizedEndpoint(endpoint)] = reminders
+        persist(storage)
+    }
+
+    func load(
+        profileID: String,
+        legacyEndpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> [SessionID: SessionReminder] {
+        var storage = storage()
+        let didMigrate = storage.migrateLegacyValueIfUnique(
+            profileID: profileID,
+            endpoint: legacyEndpoint,
+            profiles: profiles
+        )
+        if didMigrate {
+            persist(storage)
+        }
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return [:]
+        }
+        if let value = storage.byProfileID[profileKey] {
+            return value
+        }
+        if profiles.isEmpty {
+            return storage.byEndpoint[normalizedEndpoint(legacyEndpoint)] ?? [:]
+        }
+        return [:]
+    }
+
+    func load(profileID: String) -> [SessionID: SessionReminder] {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return [:]
+        }
+        return storage().byProfileID[profileKey] ?? [:]
+    }
+
+    func save(_ reminders: [SessionID: SessionReminder], profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        storage.byProfileID[profileKey] = reminders
+        persist(storage)
+    }
+
+    func remove(profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        guard storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+            return
+        }
         persist(storage)
     }
 
@@ -396,7 +626,8 @@ protocol SessionReminderScheduling {
         _ notification: SessionRuntimeNotification,
         route: SessionNotificationRoute
     ) async throws
-    func cancel(sessionID: SessionID)
+    func cancel(sessionID: SessionID, profileID: String)
+    func cancel(profileID: String)
 }
 
 struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
@@ -425,12 +656,16 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
 
         let interval = max(reminder.fireAt.timeIntervalSinceNow, 1)
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
+        let notificationID = Self.notificationID(
+            profileID: route.profileID,
+            sessionID: reminder.sessionID
+        )
         let request = UNNotificationRequest(
-            identifier: Self.notificationID(for: reminder.sessionID),
+            identifier: notificationID,
             content: content,
             trigger: trigger
         )
-        center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID(for: reminder.sessionID)])
+        center.removePendingNotificationRequests(withIdentifiers: [notificationID])
         try await add(request)
         return .scheduled
     }
@@ -451,17 +686,42 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
         content.userInfo = route.userInfo
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let notificationID = Self.runtimeNotificationID(
+            profileID: route.profileID,
+            id: notification.id
+        )
         let request = UNNotificationRequest(
-            identifier: Self.runtimeNotificationID(for: notification.id),
+            identifier: notificationID,
             content: content,
             trigger: trigger
         )
-        center.removePendingNotificationRequests(withIdentifiers: [Self.runtimeNotificationID(for: notification.id)])
+        center.removePendingNotificationRequests(withIdentifiers: [notificationID])
         try await add(request)
     }
 
-    func cancel(sessionID: SessionID) {
-        center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID(for: sessionID)])
+    func cancel(sessionID: SessionID, profileID: String) {
+        let identifier = Self.notificationID(profileID: profileID, sessionID: sessionID)
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    func cancel(profileID: String) {
+        let profilePrefix = Self.profileNotificationPrefix(profileID)
+        let reminderPrefix = "mimi.sessionReminder.\(profilePrefix)"
+        let runtimePrefix = "\(Self.runtimeNotificationIDPrefix)\(profilePrefix)"
+        let belongsToProfile: (String) -> Bool = {
+            $0.hasPrefix(reminderPrefix) || $0.hasPrefix(runtimePrefix)
+        }
+        center.getPendingNotificationRequests { requests in
+            let identifiers = requests.map(\.identifier).filter(belongsToProfile)
+            guard !identifiers.isEmpty else { return }
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        }
+        center.getDeliveredNotifications { notifications in
+            let identifiers = notifications.map(\.request.identifier).filter(belongsToProfile)
+            guard !identifiers.isEmpty else { return }
+            center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        }
     }
 
     func requestAuthorizationIfNeeded() async throws -> Bool {
@@ -510,16 +770,20 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
         }
     }
 
-    static func notificationID(for sessionID: SessionID) -> String {
-        "mimi.sessionReminder.\(sessionID)"
+    static func notificationID(profileID: String, sessionID: SessionID) -> String {
+        "mimi.sessionReminder.\(profileNotificationPrefix(profileID))\(sessionID)"
     }
 
-    static func runtimeNotificationID(for id: String) -> String {
-        "\(runtimeNotificationIDPrefix)\(id)"
+    static func runtimeNotificationID(profileID: String, id: String) -> String {
+        "\(runtimeNotificationIDPrefix)\(profileNotificationPrefix(profileID))\(id)"
     }
 
     static func isRuntimeNotificationID(_ identifier: String) -> Bool {
         identifier.hasPrefix(runtimeNotificationIDPrefix)
+    }
+
+    private static func profileNotificationPrefix(_ profileID: String) -> String {
+        "\(profileID.utf8.count):\(profileID):"
     }
 }
 
@@ -532,7 +796,8 @@ struct NoopSessionReminderScheduler: SessionReminderScheduling {
         _ notification: SessionRuntimeNotification,
         route: SessionNotificationRoute
     ) async throws {}
-    func cancel(sessionID: SessionID) {}
+    func cancel(sessionID: SessionID, profileID: String) {}
+    func cancel(profileID: String) {}
 }
 
 enum FilePreviewStoreError: LocalizedError {
@@ -829,13 +1094,28 @@ struct HistoryLoadProgress: Equatable {
 }
 
 struct SessionRestoreSnapshot: Codable, Equatable {
+    let profileID: String?
     let endpoint: String
     let session: AgentSession
+
+    init(profileID: String, endpoint: String, session: AgentSession) {
+        self.profileID = profileID
+        self.endpoint = endpoint
+        self.session = session
+    }
+
+    /// 兼容 V1 测试和旧 SceneStorage；新写入一律使用 profileID。
+    init(endpoint: String, session: AgentSession) {
+        profileID = nil
+        self.endpoint = endpoint
+        self.session = session
+    }
 }
 
 /// 跨 await 的前台选择凭证。除了代次，还同时校验项目和会话，避免同一 ID
 /// 在工作区切换、身份替换等场景下被误认为仍是当前选择。
 struct SessionSelectionLease: Equatable {
+    let hostScope: HostScope
     let generation: UInt64
     let projectID: String?
     let sessionID: SessionID?
@@ -903,17 +1183,36 @@ enum WorkbenchRestorationRoute: Codable, Equatable {
         }
     }
 
-    func restoreSnapshot(from storageValue: String, currentEndpoint: String) -> SessionRestoreSnapshot? {
+    func restoreSnapshot(
+        from storageValue: String,
+        currentProfileID: String?,
+        currentEndpoint: String
+    ) -> SessionRestoreSnapshot? {
         guard let detailSessionID,
               !detailSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let data = Data(base64Encoded: storageValue),
               let snapshot = try? JSONDecoder().decode(SessionRestoreSnapshot.self, from: data),
-              snapshot.session.id == detailSessionID,
-              AgentAPIClient.normalizedEndpoint(snapshot.endpoint) == AgentAPIClient.normalizedEndpoint(currentEndpoint)
+              snapshot.session.id == detailSessionID
         else {
             return nil
         }
+        if let snapshotProfileID = snapshot.profileID,
+           !snapshotProfileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard snapshotProfileID == currentProfileID else {
+                return nil
+            }
+        } else {
+            // V1 endpoint 数据只做一次兼容匹配；V2 缓存身份永远不再使用可变 endpoint。
+            guard AgentAPIClient.normalizedEndpoint(snapshot.endpoint) ==
+                    AgentAPIClient.normalizedEndpoint(currentEndpoint) else {
+                return nil
+            }
+        }
         return snapshot
+    }
+
+    func restoreSnapshot(from storageValue: String, currentEndpoint: String) -> SessionRestoreSnapshot? {
+        restoreSnapshot(from: storageValue, currentProfileID: nil, currentEndpoint: currentEndpoint)
     }
 }
 

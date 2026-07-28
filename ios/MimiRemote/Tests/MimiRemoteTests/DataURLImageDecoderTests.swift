@@ -31,6 +31,44 @@ final class DataURLImageDecoderTests: XCTestCase {
         XCTAssertTrue(first === second)
     }
 
+    func testDataURLImageDecoderDoesNotReuseSameMediaIDAcrossProfiles() async throws {
+        let firstURL = try makeDataURL(size: CGSize(width: 96, height: 64), color: .systemRed)
+        let secondURL = try makeDataURL(size: CGSize(width: 96, height: 64), color: .systemBlue)
+
+        let firstResult = await DataURLImageDecoder.image(
+            from: firstURL,
+            cacheKey: "shared-media-id",
+            profileID: "profile-a",
+            maxPixelSize: 256
+        )
+        let secondResult = await DataURLImageDecoder.image(
+            from: secondURL,
+            cacheKey: "shared-media-id",
+            profileID: "profile-b",
+            maxPixelSize: 256
+        )
+        let first = try XCTUnwrap(firstResult)
+        let second = try XCTUnwrap(secondResult)
+        let firstAgain = DataURLImageDecoder.cachedImage(
+            cacheKey: "shared-media-id",
+            profileID: "profile-a",
+            maxPixelSize: 256
+        )
+        let secondAgain = DataURLImageDecoder.cachedImage(
+            cacheKey: "shared-media-id",
+            profileID: "profile-b",
+            maxPixelSize: 256
+        )
+
+        XCTAssertFalse(first === second)
+        XCTAssertTrue(first === firstAgain)
+        XCTAssertTrue(second === secondAgain)
+        XCTAssertNotEqual(
+            MediaRequestIdentity(profileID: "profile-a", resourceID: "shared-media-id"),
+            MediaRequestIdentity(profileID: "profile-b", resourceID: "shared-media-id")
+        )
+    }
+
     func testDataURLImageDecoderDownsamplesWithoutChangingAspectRatio() async throws {
         let dataURL = try makeDataURL(size: CGSize(width: 800, height: 400), color: .systemOrange)
 
@@ -71,6 +109,90 @@ final class DataURLImageDecoderTests: XCTestCase {
         XCTAssertTrue(decoded === second)
     }
 
+    func testFileImageDecoderScopesSamePathByProfile() async throws {
+        let firstURL = try makeImageFile(color: .systemPink)
+        let secondURL = try makeImageFile(color: .systemCyan)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+
+        let firstResult = await DataURLImageDecoder.image(
+            fromFileURL: firstURL,
+            cacheKey: "same/local/path.png",
+            profileID: "profile-a",
+            maxPixelSize: 128
+        )
+        let secondResult = await DataURLImageDecoder.image(
+            fromFileURL: secondURL,
+            cacheKey: "same/local/path.png",
+            profileID: "profile-b",
+            maxPixelSize: 128
+        )
+        let first = try XCTUnwrap(firstResult)
+        let second = try XCTUnwrap(secondResult)
+
+        XCTAssertFalse(first === second)
+    }
+
+    func testMediaWorkerDecodesAndWritesPreviewOffMainActor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-media-worker-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = MediaWorker(previewRootDirectory: root)
+        let payload = Data("preview-payload".utf8)
+        let response = FileReadResponse(
+            path: "/repo/report.pdf",
+            name: "../report.pdf",
+            contentType: "application/pdf",
+            size: Int64(payload.count),
+            contentBase64: payload.base64EncodedString()
+        )
+
+        let url = try await worker.previewURL(
+            from: MediaPreviewPayload(response: response),
+            profileID: "profile-a"
+        )
+        let ranOnMainThread = await worker.lastPreviewWorkRanOnMainThreadForTesting()
+
+        XCTAssertFalse(ranOnMainThread)
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+        XCTAssertTrue(url.lastPathComponent.hasSuffix("-report.pdf"))
+        XCTAssertNotEqual(url.deletingLastPathComponent(), root)
+    }
+
+    func testMediaWorkerHonorsCancellationBeforeDecode() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-media-worker-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = MediaWorker(previewRootDirectory: root)
+        let payload = Data(repeating: 0x7f, count: 2 * 1_024 * 1_024)
+        let response = FileReadResponse(
+            path: "/repo/large.bin",
+            name: "large.bin",
+            contentType: "application/octet-stream",
+            size: Int64(payload.count),
+            contentBase64: payload.base64EncodedString()
+        )
+        let task = Task {
+            try await worker.previewURL(
+                from: MediaPreviewPayload(response: response),
+                profileID: "profile-a"
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("取消后的媒体任务不应生成预览文件")
+        } catch is CancellationError {
+            // 预期路径。
+        } catch {
+            XCTFail("应返回 CancellationError，实际为 \(error)")
+        }
+        XCTAssertTrue(previewFiles(in: root).isEmpty)
+    }
+
     func testDataURLImageDecoderRapidSourceSwitchDiscardsCancelledResult() async throws {
         let firstURL = try makeDataURL(size: CGSize(width: 1_024, height: 768), color: .systemRed)
         let secondURL = try makeDataURL(size: CGSize(width: 160, height: 90), color: .systemTeal)
@@ -93,5 +215,33 @@ final class DataURLImageDecoderTests: XCTestCase {
         }
         let data = try XCTUnwrap(image.pngData())
         return "data:image/png;base64,\(data.base64EncodedString())"
+    }
+
+    private func makeImageFile(color: UIColor) throws -> URL {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80)).image { context in
+            color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 120, height: 80))
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-image-decoder-\(UUID().uuidString).png")
+        try XCTUnwrap(image.pngData()).write(to: url, options: .atomic)
+        return url
+    }
+
+    private func previewFiles(in root: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return []
+        }
+        return enumerator.compactMap { element in
+            guard let url = element as? URL,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            else {
+                return nil
+            }
+            return url
+        }
     }
 }

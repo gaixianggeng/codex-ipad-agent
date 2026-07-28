@@ -8,6 +8,19 @@ struct HealthResponse: Codable {
 struct VersionResponse: Codable {
     let name: String
     let version: String
+    let installationID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case version
+        case installationID = "installation_id"
+    }
+
+    init(name: String, version: String, installationID: String? = nil) {
+        self.name = name
+        self.version = version
+        self.installationID = installationID
+    }
 }
 
 struct VoiceTranscriptionRequest: Encodable {

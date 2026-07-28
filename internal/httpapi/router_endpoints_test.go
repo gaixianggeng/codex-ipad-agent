@@ -710,6 +710,9 @@ func TestHealthzDoesNotRequireAuth(t *testing.T) {
 	if body["ok"] != true || body["version"] != "test" {
 		t.Fatalf("healthz 响应异常：%v", body)
 	}
+	if _, exposed := body["installation_id"]; exposed {
+		t.Fatalf("未认证 healthz 不得暴露安装身份：%v", body)
+	}
 }
 
 func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t *testing.T) {
@@ -734,7 +737,7 @@ func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t 
 		t.Fatalf("version 应返回 200，got=%d body=%s", version.Code, version.Body.String())
 	}
 	versionBody := decodeJSON(t, version)
-	if versionBody["name"] != "agentd" || versionBody["version"] != "test" {
+	if versionBody["name"] != "agentd" || versionBody["version"] != "test" || versionBody["installation_id"] != testInstallationID {
 		t.Fatalf("version 响应必须保留移动端所需字段：%v", versionBody)
 	}
 

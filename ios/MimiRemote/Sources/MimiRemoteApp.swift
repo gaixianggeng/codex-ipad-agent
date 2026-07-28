@@ -151,6 +151,7 @@ struct MimiRemoteApp: App {
     @StateObject private var sessionStore: SessionStore
     @StateObject private var themeStore: ThemeStore
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @StateObject private var hostStatusStore: HostStatusStore
 
     init() {
         let appStore = AppStore()
@@ -165,6 +166,7 @@ struct MimiRemoteApp: App {
         _contextStore = StateObject(wrappedValue: contextStore)
         _themeStore = StateObject(wrappedValue: themeStore)
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
+        _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
         _sessionStore = StateObject(wrappedValue: SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
@@ -187,6 +189,7 @@ struct MimiRemoteApp: App {
                 .environmentObject(contextStore)
                 .environmentObject(themeStore)
                 .environmentObject(notificationResponseAdapter)
+                .environmentObject(hostStatusStore)
                 .onOpenURL { url in
                     Task { @MainActor in
                         do {

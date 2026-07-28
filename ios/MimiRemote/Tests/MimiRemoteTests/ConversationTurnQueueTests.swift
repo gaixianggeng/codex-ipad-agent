@@ -1819,6 +1819,7 @@ extension ConversationDataFlowTests {
             conversationStore: conversationStore,
             logStore: LogStore(),
             sessionReminderScheduler: scheduler,
+            runtimeCompletionNotificationsEnabled: true,
             clientFactory: { client },
             webSocketFactory: {
                 let socket = MockWebSocketClient()
@@ -2106,6 +2107,7 @@ extension ConversationDataFlowTests {
         let appStore = AppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         conversationStore.appendSystem("等待审批：运行危险命令，风险：high", sessionID: waiting.id, kind: .approval)
         let client = MockSessionStoreClient(projects: [project], sessions: [waiting])
         var sockets: [MockWebSocketClient] = []

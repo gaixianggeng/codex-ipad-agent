@@ -3055,7 +3055,10 @@ extension ConversationDataFlowTests {
                 revision: nil,
                 createdAt: nil
             )),
-            sessionID: running.id
+            lease: HostSessionLease(
+                hostScope: store.appStore.activeHostScope,
+                sessionID: running.id
+            )
         )
 
         XCTAssertEqual(store.selectedSessionID, running.id)

@@ -274,7 +274,9 @@ struct InitialConnectionSettingsSections: View {
                 presenting: pendingRemovalConfirmation
             ) { confirmation in
                 Button(confirmation.confirmButtonTitle, role: .destructive) {
-                    performCredentialRemoval(confirmation)
+                    Task {
+                        await performCredentialRemoval(confirmation)
+                    }
                 }
                 .accessibilityIdentifier(removalConfirmationAccessibilityIdentifier(confirmation))
 
@@ -1007,16 +1009,16 @@ struct InitialConnectionSettingsSections: View {
         }
     }
 
-    private func deleteConnectionProfile(id: String) {
+    private func deleteConnectionProfile(id: String) async {
         do {
-            try sessionStore.deleteConnectionProfile(id: id)
+            try await sessionStore.deleteConnectionProfile(id: id)
             localError = nil
         } catch {
             localError = error.localizedDescription
         }
     }
 
-    private func performCredentialRemoval(_ confirmation: ConnectionCredentialRemovalConfirmation) {
+    private func performCredentialRemoval(_ confirmation: ConnectionCredentialRemovalConfirmation) async {
         pendingRemovalConfirmation = nil
         switch confirmation.target {
         case .current(let expectedProfileID):
@@ -1025,9 +1027,9 @@ struct InitialConnectionSettingsSections: View {
                 localError = L10n.text("ui.the_current_mac_has_changed_please_try_again")
                 return
             }
-            clearPairing()
+            await clearPairing()
         case .savedProfile(let profileID):
-            deleteConnectionProfile(id: profileID)
+            await deleteConnectionProfile(id: profileID)
         }
     }
 
@@ -1139,12 +1141,11 @@ struct InitialConnectionSettingsSections: View {
         return didLoad
     }
 
-    private func clearPairing() {
+    private func clearPairing() async {
         do {
-            try appStore.clearPairing()
+            try await sessionStore.clearCurrentConnectionProfile()
             endpoint = appStore.endpoint
             token = appStore.token
-            sessionStore.resetConnectionForSettingsChange(clearData: true)
             localError = nil
         } catch {
             localError = error.localizedDescription

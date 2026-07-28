@@ -932,6 +932,10 @@ func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, err
 }
 
 func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker) error {
+	installationID, err := loadInstallationIDForServe()
+	if err != nil {
+		return err
+	}
 	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
@@ -959,7 +963,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
 
-	apiHandler, apiRouter := httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, installationID, nil)
 	if appServerWSProcess != nil {
 		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
 	}
@@ -1009,6 +1013,14 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			return shutdownServeResources(manager, appServerWSProcess, apiRouter)
 		})
 	})
+}
+
+func loadInstallationIDForServe() (string, error) {
+	installationID, err := config.LoadOrCreateInstallationID()
+	if err != nil {
+		return "", fmt.Errorf("加载 agentd 安装身份失败：%w", err)
+	}
+	return installationID, nil
 }
 
 func agentDListenAddresses(configured string, allowLAN bool) []string {

@@ -190,15 +190,16 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(store.connectionProfiles, profiles)
         XCTAssertNil(store.activeConnectionProfileID)
         XCTAssertEqual(store.endpoint, profiles[0].endpoint)
-        XCTAssertEqual(store.token, "legacy-leftover")
+        XCTAssertEqual(store.token, "")
         XCTAssertFalse(store.isConfigured, "残留 legacy Token 不能绕过缺失的当前档案 Token")
         XCTAssertFalse(store.canEnterWorkbench)
         XCTAssertEqual(defaults.data(forKey: "agentd.connectionProfiles.v1"), encodedProfiles)
         XCTAssertEqual(keychain.accounts, ["agentd-token"])
+        XCTAssertEqual(keychain.copyCallCount, 1, "已有 Profile 时只读取当前 account，不得回退扫描 legacy")
         XCTAssertEqual(keychain.deleteCallCount, 0)
     }
 
-    func testCommittingNewProfileKeepsPreviousTokenAndPersistsMetadataOnly() throws {
+    func testCommittingNewProfileKeepsPreviousTokenAndPersistsMetadataOnly() async throws {
         let suiteName = "PairingLinkTests.AddProfile.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -208,7 +209,7 @@ final class PairingLinkTests: XCTestCase {
         let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
         let oldProfile = try XCTUnwrap(store.activeConnectionProfile)
 
-        try store.commitConnectionSettings(PreparedConnectionSettings(
+        try await store.commitConnectionSettings(PreparedConnectionSettings(
             endpoint: "http://100.64.0.20:8787/",
             token: "token-b",
             profileTarget: .newProfile(id: "mac-b", displayName: "工作室 Mac")
@@ -231,7 +232,226 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(reloaded.connectionProfiles.count, 2)
     }
 
-    func testDeletingOtherProfileIsKeychainFirstAndKeepsCurrentProfile() throws {
+    func testV1ProfileBindsInstallationIdentityOnFirstSuccessfulCommit() async throws {
+        let suiteName = "PairingLinkTests.ProfileV2IdentityMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        let generation = store.connectionGeneration
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: profile.endpoint,
+            token: "token-a",
+            profileTarget: .existingProfile(id: profile.id),
+            installationID: " 550E8400-E29B-41D4-A716-446655440000 "
+        ))
+
+        XCTAssertEqual(
+            store.activeConnectionProfile?.installationID,
+            "550e8400-e29b-41d4-a716-446655440000"
+        )
+        XCTAssertEqual(store.activeHostScope.profileID, profile.id)
+        XCTAssertEqual(
+            store.activeHostScope.installationID,
+            "550e8400-e29b-41d4-a716-446655440000"
+        )
+        XCTAssertEqual(store.connectionGeneration, generation + 1)
+        XCTAssertNotNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+    }
+
+    func testInstallationIdentityMismatchRejectsCommitWithoutChangingActiveHost() async throws {
+        let suiteName = "PairingLinkTests.ProfileIdentityMismatch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil,
+            installationID: "installation-a"
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        let oldScope = store.activeHostScope
+        let oldGeneration = store.connectionGeneration
+        let oldUpdateCount = keychain.updateCallCount
+
+        await XCTAssertThrowsErrorAsync(try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.99:8787",
+            token: "replacement-token",
+            profileTarget: .existingProfile(id: profile.id),
+            installationID: "installation-b"
+        ))) { error in
+            XCTAssertEqual(
+                error as? ConnectionProfileError,
+                .installationIdentityMismatch(profileName: "Mac A")
+            )
+        }
+
+        XCTAssertEqual(store.activeHostScope, oldScope)
+        XCTAssertEqual(store.connectionGeneration, oldGeneration)
+        XCTAssertEqual(store.endpoint, profile.endpoint)
+        XCTAssertEqual(store.token, "token-a")
+        XCTAssertEqual(keychain.updateCallCount, oldUpdateCount)
+    }
+
+    func testDuplicateInstallationCannotCreateSecondProfile() async throws {
+        let suiteName = "PairingLinkTests.DuplicateInstallation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil,
+            installationID: "same-installation"
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        await XCTAssertThrowsErrorAsync(try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "重复 Mac"),
+            installationID: "same-installation"
+        ))) { error in
+            XCTAssertEqual(
+                error as? ConnectionProfileError,
+                .duplicateInstallation(profileName: "Mac A")
+            )
+        }
+        XCTAssertEqual(store.connectionProfiles, [profile])
+        XCTAssertNil(keychain.data(account: "agentd-profile.mac-b"))
+    }
+
+    func testUnboundV1ProfileCannotBindToAnotherSavedMacInstallation() async throws {
+        let suiteName = "PairingLinkTests.DuplicateV1Binding.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = [
+            ConnectionProfile(
+                id: "mac-a",
+                displayName: "Mac A",
+                endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil,
+                installationID: "installation-a"
+            ),
+            ConnectionProfile(
+                id: "mac-b",
+                displayName: "旧版 Mac B",
+                endpoint: "http://100.64.0.20:8787",
+                lastSuccessfulAt: nil
+            )
+        ]
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profiles[0].endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        await XCTAssertThrowsErrorAsync(try await store.commitConnectionSettings(
+            PreparedConnectionSettings(
+                endpoint: profiles[1].endpoint,
+                token: "token-b",
+                profileTarget: .existingProfile(id: "mac-b"),
+                installationID: "installation-a"
+            )
+        )) { error in
+            XCTAssertEqual(
+                error as? ConnectionProfileError,
+                .duplicateInstallation(profileName: "Mac A")
+            )
+        }
+        XCTAssertNil(store.connectionProfiles.first(where: { $0.id == "mac-b" })?.installationID)
+    }
+
+    func testPreparedHostContextRejectsProfileRevisionOrTokenLeaseMismatch() async {
+        let endpoint = "http://100.64.0.20:8787"
+        let target = PreparedConnectionProfileTarget.existingProfile(id: "mac-b")
+        let originalLease = PreparedHostLease(
+            endpoint: endpoint,
+            installationID: "installation-b",
+            profileTarget: target,
+            profileRevision: 3,
+            tokenFingerprint: "token-fingerprint-a"
+        )
+        let context = PreparedHostContext(
+            lease: originalLease,
+            runtimeBundle: AppServerRuntimeBundle(endpoint: endpoint, token: "token-b"),
+            expiresAt: Date().addingTimeInterval(8)
+        )
+        let mismatchedLease = PreparedHostLease(
+            endpoint: endpoint,
+            installationID: "installation-b",
+            profileTarget: target,
+            profileRevision: 4,
+            tokenFingerprint: "token-fingerprint-b"
+        )
+
+        XCTAssertThrowsError(try context.validatedRuntimeBundle(matching: mismatchedLease)) { error in
+            XCTAssertEqual(error as? ConnectionProfileError, .preparedContextMismatch)
+        }
+        await context.discard()
+    }
+
+    func testSameInstallationCanUpdateExistingProfileEndpoint() async throws {
+        let suiteName = "PairingLinkTests.UpdateProfileEndpoint.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil,
+            installationID: "installation-a"
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        let didCommit = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.88:8787",
+            token: "token-a",
+            profileTarget: .existingProfile(id: profile.id),
+            installationID: "installation-a"
+        ))
+
+        XCTAssertTrue(didCommit)
+        XCTAssertEqual(store.activeConnectionProfileID, profile.id)
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://100.64.0.88:8787")
+        XCTAssertEqual(store.activeConnectionProfile?.installationID, "installation-a")
+    }
+
+    func testDeletingOtherProfileIsKeychainFirstAndKeepsCurrentProfile() async throws {
         let suiteName = "PairingLinkTests.DeleteOtherProfile.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -248,19 +468,19 @@ final class PairingLinkTests: XCTestCase {
         let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
 
         keychain.forcedDeleteStatus = errSecInteractionNotAllowed
-        XCTAssertThrowsError(try store.deleteConnectionProfile(id: "mac-b"))
+        await XCTAssertThrowsErrorAsync(try await store.deleteConnectionProfile(id: "mac-b"))
         XCTAssertEqual(store.connectionProfiles.map(\.id), ["mac-a", "mac-b"])
         XCTAssertEqual(keychain.data(account: "agentd-profile.mac-b"), Data("token-b".utf8))
 
         keychain.forcedDeleteStatus = nil
-        try store.deleteConnectionProfile(id: "mac-b")
+        try await store.deleteConnectionProfile(id: "mac-b")
         XCTAssertEqual(store.connectionProfiles.map(\.id), ["mac-a"])
         XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
         XCTAssertEqual(keychain.data(account: "agentd-profile.mac-a"), Data("token-a".utf8))
         XCTAssertNil(keychain.data(account: "agentd-profile.mac-b"))
     }
 
-    func testCurrentProfileRequiresClearPairingAndFailureDoesNotHalfCommit() throws {
+    func testCurrentProfileRequiresClearPairingAndFailureDoesNotHalfCommit() async throws {
         let suiteName = "PairingLinkTests.ClearCurrentProfile.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -277,17 +497,17 @@ final class PairingLinkTests: XCTestCase {
         keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
         let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
 
-        XCTAssertThrowsError(try store.deleteConnectionProfile(id: "mac-a")) { error in
+        await XCTAssertThrowsErrorAsync(try await store.deleteConnectionProfile(id: "mac-a")) { error in
             XCTAssertEqual(error as? ConnectionProfileError, .cannotDeleteCurrent)
         }
         keychain.forcedDeleteStatus = errSecInteractionNotAllowed
-        XCTAssertThrowsError(try store.clearPairing())
+        await XCTAssertThrowsErrorAsync(try await store.clearPairing())
         XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
         XCTAssertEqual(store.token, "token-a")
         XCTAssertEqual(store.connectionProfiles, profiles)
 
         keychain.forcedDeleteStatus = nil
-        try store.clearPairing()
+        try await store.clearPairing()
         XCTAssertNil(store.activeConnectionProfileID)
         XCTAssertEqual(store.token, "")
         XCTAssertEqual(store.connectionProfiles.map(\.id), ["mac-b"])
@@ -312,6 +532,38 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(model.others.map(\.id), ["mac-b"])
         XCTAssertEqual(model.others.first?.canSwitch, true)
         XCTAssertEqual(model.others.first?.canDelete, true)
+    }
+
+    func testFiveSavedProfilesColdStartReadsOnlyActiveProfileToken() throws {
+        let suiteName = "PairingLinkTests.ColdStartFiveProfiles.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = (0..<5).map { index in
+            ConnectionProfile(
+                id: "mac-\(index)",
+                displayName: "Mac \(index)",
+                endpoint: "http://100.64.0.\(10 + index):8787",
+                lastSuccessfulAt: nil,
+                installationID: "installation-\(index)"
+            )
+        }
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-3", forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profiles[3].endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        for index in 0..<5 {
+            keychain.setData(Data("token-\(index)".utf8), account: "agentd-profile.mac-\(index)")
+        }
+
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        XCTAssertEqual(store.activeConnectionProfileID, "mac-3")
+        XCTAssertEqual(store.token, "token-3")
+        XCTAssertEqual(keychain.copyCallCount, 1, "冷启动不得读取任何非当前 Mac 的 Keychain 项")
+        XCTAssertEqual(keychain.updateCallCount, 0)
+        XCTAssertEqual(keychain.addCallCount, 0)
+        XCTAssertEqual(keychain.deleteCallCount, 0)
     }
 
     func testConnectionCredentialRemovalConfirmationCarriesTargetAndExplicitWarning() {
@@ -439,7 +691,7 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(keychain.data(account: "agentd-profile.mac-a"), Data("token-a".utf8))
     }
 
-    func testClearPairingDeleteFailurePreservesPreviousConnection() throws {
+    func testClearPairingDeleteFailurePreservesPreviousConnection() async throws {
         let suiteName = "PairingLinkTests.ClearPairingFailure.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -460,7 +712,7 @@ final class PairingLinkTests: XCTestCase {
         let oldGeneration = store.connectionGeneration
         let deleteCallCountBeforeClear = keychain.deleteCallCount
 
-        XCTAssertThrowsError(try store.clearPairing()) { error in
+        await XCTAssertThrowsErrorAsync(try await store.clearPairing()) { error in
             guard case TokenStoreError.deleteFailed(let status) = error else {
                 return XCTFail("应返回 Keychain 删除失败，实际为：\(error)")
             }
@@ -477,7 +729,7 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(keychain.deleteCallCount, deleteCallCountBeforeClear + 1)
     }
 
-    func testClearPairingCommitsAfterKeychainDeleteSucceeds() throws {
+    func testClearPairingCommitsAfterKeychainDeleteSucceeds() async throws {
         let suiteName = "PairingLinkTests.ClearPairingSuccess.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -491,7 +743,7 @@ final class PairingLinkTests: XCTestCase {
         let oldGeneration = store.connectionGeneration
         let deleteCallCountBeforeClear = keychain.deleteCallCount
 
-        try store.clearPairing()
+        try await store.clearPairing()
 
         XCTAssertEqual(store.endpoint, "http://127.0.0.1:8787")
         XCTAssertEqual(store.token, "")

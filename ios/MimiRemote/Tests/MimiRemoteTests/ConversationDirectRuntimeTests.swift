@@ -296,6 +296,43 @@ extension ConversationDataFlowTests {
         await connection.disconnect()
     }
 
+    func testCandidatePrepareCancellationClosesInitializingConnectionImmediately() async throws {
+        let project = AgentProject(
+            id: "proj_cancel_candidate",
+            name: "Cancel Candidate",
+            path: "/tmp/cancel-candidate"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "candidate-token",
+            transportFactory: { transport },
+            requestTimeout: 30,
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let prepareTask = Task {
+            try await runtime.prepareForHostActivation()
+        }
+
+        // 保持 initialize 不响应，精确覆盖过去会一直挂到 requestTimeout 的窗口。
+        _ = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        let cancelled = expectation(description: "候选连接取消后立即退出 initialize")
+        Task {
+            if case .success = await prepareTask.result {
+                XCTFail("已取消的候选连接不应完成激活")
+            }
+            cancelled.fulfill()
+        }
+
+        prepareTask.cancel()
+        await fulfillment(of: [cancelled], timeout: 1)
+
+        let closeCallCount = await transport.closeCallCount()
+        let hasReadyConnection = await runtime.hasReadyConnectionForTesting()
+        XCTAssertGreaterThanOrEqual(closeCallCount, 1)
+        XCTAssertFalse(hasReadyConnection)
+    }
+
     func testCodexAppServerCapabilitiesOnlyForceReloadsForExplicitRefresh() async throws {
         let project = AgentProject(id: "proj_capability_reload", name: "Capabilities", path: "/tmp/capability-reload")
         let transport = FakeCodexAppServerTransport()
