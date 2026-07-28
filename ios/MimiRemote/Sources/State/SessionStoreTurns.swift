@@ -323,6 +323,9 @@ extension SessionStore {
             sessionID: nil,
             reason: .invalidation
         )
+        if let previousSession, previousSession.isLocalDraft {
+            discardLocalDraft(previousSession)
+        }
         guard !wasAlreadyOnList else {
             return
         }
@@ -493,6 +496,11 @@ extension SessionStore {
                 unsubscribeThreadInBackground(previousSession.id)
             }
         }
+        if let previousSession,
+           previousSession.id != session.id,
+           previousSession.isLocalDraft {
+            discardLocalDraft(previousSession)
+        }
         stopQueuedSessionMonitoring(sessionID: session.id)
         revealProjectInSidebar(session.projectID)
         setErrorMessage(nil)
@@ -502,6 +510,11 @@ extension SessionStore {
         }
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
+        if session.isLocalDraft {
+            // 草稿只存在本机内存；选中时不读历史、不订阅 WebSocket。
+            disconnectWebSocket()
+            return true
+        }
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
             setStatusMessage(L10n.format("ui.debug_session_value_selected", session.title))
@@ -538,8 +551,8 @@ extension SessionStore {
         return true
     }
 
-    // 新建会话在点击瞬间就急切创建空线程并绑定 runtime；不传 runtimeProvider 时由默认模型
-    // 决定（当前是 Codex）。要开 Claude 会话必须在这里显式指定，事后无法把线程迁到另一条通道。
+    // 新建会话先创建本地草稿；runtime 选择随草稿保留，到首条消息发送时才原子执行
+    // thread/start + turn/start，避免空线程闲置后因没有 rollout 而无法恢复。
     func startNewSession(runtimeProvider: String? = nil) async {
         guard let selectedProjectID else {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
@@ -629,8 +642,9 @@ extension SessionStore {
             return sent
         }
 
-        let resume = selectedSession
-        let projectID = resume?.projectID ?? selectedProjectID
+        let localDraft = selectedSession?.isLocalDraft == true ? selectedSession : nil
+        let resume = localDraft == nil ? selectedSession : nil
+        let projectID = localDraft?.projectID ?? resume?.projectID ?? selectedProjectID
         guard let projectID else {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
             return false
@@ -640,7 +654,8 @@ extension SessionStore {
             payload: payload,
             resume: resume,
             clientMessageID: UUID().uuidString,
-            initialGoalObjective: normalizedObjective
+            initialGoalObjective: normalizedObjective,
+            replacingLocalDraft: localDraft
         )
         if started {
             setStatusMessage(L10n.text("ui.the_target_task_has_been_started"))
@@ -676,6 +691,16 @@ extension SessionStore {
         }
         let payload = runningDelivery == .queued ? await payloadResolvingRequiredModel(payload) : payload
         let prompt = payload.previewText
+
+        if let localDraft = selectedSession, localDraft.isLocalDraft {
+            return await createSession(
+                projectID: localDraft.projectID,
+                payload: payload,
+                resume: nil,
+                clientMessageID: UUID().uuidString,
+                replacingLocalDraft: localDraft
+            )
+        }
 
         let selectedSessionHasQueuedTurns = selectedSession.map {
             queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false

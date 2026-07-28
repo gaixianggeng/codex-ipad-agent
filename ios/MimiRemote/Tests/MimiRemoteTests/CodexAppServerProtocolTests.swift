@@ -955,7 +955,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
             ModelReasoningGridCatalog.visibleEfforts(for: luna, layout: layout),
             [.medium, .high, .xhigh]
         )
-        XCTAssertEqual(sol.defaultReasoningEffort, "low")
+        XCTAssertEqual(sol.defaultReasoningEffort, "xhigh")
+        XCTAssertTrue(sol.isDefault)
         XCTAssertEqual(terra.defaultReasoningEffort, "medium")
         XCTAssertEqual(luna.defaultReasoningEffort, "medium")
         XCTAssertTrue(ModelReasoningGridCatalog.supports(.ultra, option: sol))
@@ -971,6 +972,136 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
+    }
+
+    func testPreferredCodexDefaultOverridesServerDefaultWithSolXHigh() throws {
+        let options = [
+            CodexAppServerModelOption(
+                id: "gpt-5.6-terra",
+                title: "GPT-5.6 Terra",
+                runtimeProvider: "codex",
+                isDefault: true,
+                supportedReasoningEfforts: ["medium", "high", "xhigh"]
+            ),
+            CodexAppServerModelOption(
+                id: "gpt-5.6-sol",
+                title: "GPT-5.6 Sol",
+                provider: "openai",
+                runtimeProvider: "codex",
+                supportedReasoningEfforts: ["medium", "high", "xhigh", "ultra"],
+                defaultReasoningEffort: "medium"
+            )
+        ]
+        let option = try XCTUnwrap(
+            ModelReasoningGridCatalog.preferredDefaultOption(
+                runtimeProvider: "codex",
+                options: options
+            )
+        )
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
+
+        XCTAssertEqual(option.model, "gpt-5.6-sol")
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.preferredDefaultEffort(
+                runtimeProvider: "codex",
+                option: option,
+                layout: layout
+            ),
+            .xhigh
+        )
+    }
+
+    func testPreferredClaudeDefaultUsesCanonicalOpus5High() throws {
+        let options = [
+            CodexAppServerModelOption(
+                id: "claude-fable-5",
+                title: "Claude Fable 5",
+                runtimeProvider: "claude",
+                isDefault: true,
+                supportedReasoningEfforts: ["medium", "high", "xhigh", "max"]
+            ),
+            CodexAppServerModelOption(
+                id: "claude-opus-5",
+                title: "Claude Opus 5",
+                provider: "anthropic",
+                runtimeProvider: "claude",
+                supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
+                defaultReasoningEffort: "medium"
+            )
+        ]
+        let option = try XCTUnwrap(
+            ModelReasoningGridCatalog.preferredDefaultOption(
+                runtimeProvider: "claude",
+                options: options
+            )
+        )
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: options)
+
+        XCTAssertEqual(option.model, "claude-opus-5")
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.preferredDefaultEffort(
+                runtimeProvider: "claude",
+                option: option,
+                layout: layout
+            ),
+            .high
+        )
+    }
+
+    func testPreferredClaudeFallbackUsesOpusAliasHigh() throws {
+        let option = try XCTUnwrap(
+            ModelReasoningGridCatalog.preferredDefaultOption(
+                runtimeProvider: "claude",
+                options: []
+            )
+        )
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "claude",
+            options: CodexAppServerModelOption.builtInClaudeFallback
+        )
+
+        XCTAssertEqual(option.model, "opus")
+        XCTAssertTrue(option.isDefault)
+        XCTAssertEqual(option.defaultReasoningEffort, "high")
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.preferredDefaultEffort(
+                runtimeProvider: "claude",
+                option: option,
+                layout: layout
+            ),
+            .high
+        )
+    }
+
+    func testPreferredDefaultFallsBackToAvailableCatalogModel() throws {
+        let onlyAvailable = CodexAppServerModelOption(
+            id: "gpt-account-default",
+            title: "Account Default",
+            runtimeProvider: "codex",
+            isDefault: true,
+            supportedReasoningEfforts: ["medium"]
+        )
+        let option = try XCTUnwrap(
+            ModelReasoningGridCatalog.preferredDefaultOption(
+                runtimeProvider: "codex",
+                options: [onlyAvailable]
+            )
+        )
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "codex",
+            options: [onlyAvailable]
+        )
+
+        XCTAssertEqual(option.model, "gpt-account-default")
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.preferredDefaultEffort(
+                runtimeProvider: "codex",
+                option: option,
+                layout: layout
+            ),
+            .medium,
+            "账号没有 Sol 时必须使用目录内可发送组合，不能硬编码未授权模型"
+        )
     }
 
     func testEmptyReasoningMetadataUsesProviderSpecificFallback() {
@@ -1069,7 +1200,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 current: .max,
                 layout: layout
             ),
-            .medium
+            .xhigh
         )
     }
 

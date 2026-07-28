@@ -740,11 +740,21 @@ func TestValidateGatewayCollaborationModeAllowsOptionalModelOnlyWhenSafe(t *test
 			wantErr: "model",
 		},
 		{
-			name: "unknown effort is rejected",
+			name: "Claude max effort is allowed",
 			value: map[string]any{
 				"mode": "plan",
 				"settings": map[string]any{
 					"reasoning_effort":       "max",
+					"developer_instructions": nil,
+				},
+			},
+		},
+		{
+			name: "unknown effort is rejected",
+			value: map[string]any{
+				"mode": "plan",
+				"settings": map[string]any{
+					"reasoning_effort":       "turbo",
 					"developer_instructions": nil,
 				},
 			},

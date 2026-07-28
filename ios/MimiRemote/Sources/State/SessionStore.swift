@@ -170,6 +170,9 @@ final class SessionStore: ObservableObject {
     // 草稿跟随 SessionStore 生命周期，避免窗口 resize 或详情页重建时随 ComposerView 的 @State 一起丢失。
     // 不使用 @Published，防止每次键入都触发整个工作台刷新。
     var composerDraftCache = ComposerDraftCache()
+    // 模型与推理强度按会话保留，但只存在当前连接的内存生命周期内。
+    // 与内容草稿分开后，空输入或发送成功也不会误删模型偏好。
+    var composerModelSelectionCache = ComposerModelSelectionCache()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -595,6 +598,23 @@ final class SessionStore: ObservableObject {
 
     func removeComposerDraft(for scope: ComposerDraftScopeKey) {
         composerDraftCache.remove(scope: scope)
+    }
+
+    func saveComposerModelSelection(
+        _ snapshot: ComposerModelSelectionSnapshot,
+        for scope: ComposerDraftScopeKey
+    ) {
+        composerModelSelectionCache.save(snapshot, for: scope)
+    }
+
+    func composerModelSelection(
+        for scope: ComposerDraftScopeKey
+    ) -> ComposerModelSelectionSnapshot? {
+        composerModelSelectionCache.snapshot(for: scope)
+    }
+
+    func removeComposerModelSelection(for scope: ComposerDraftScopeKey) {
+        composerModelSelectionCache.remove(scope: scope)
     }
 
     func composerSendModeForScopeActivation(
@@ -1042,6 +1062,9 @@ final class SessionStore: ObservableObject {
         guard let selectedSession else {
             return nil
         }
+        if selectedSession.isLocalDraft {
+            return L10n.text("ui.new_session")
+        }
         guard selectedSession.isRunning else {
             if selectedSession.isAppServerHistory {
                 return L10n.text("ui.history")
@@ -1073,12 +1096,12 @@ final class SessionStore: ObservableObject {
 
     /// 进行中的任务不能被“最近 8 条”截断；侧栏始终展示当前已加载索引里的全部运行态。
     var activeSessions: [AgentSession] {
-        Self.sortedSessions(sessions.filter { isListableSession($0) && $0.isRunning })
+        Self.sortedSessions(sessions.filter { isListableSession($0) && ($0.isRunning || $0.isLocalDraft) })
     }
 
     /// 历史区单独保留最近 8 条，避免运行任务占掉历史预览名额。
     var recentHistorySessions: [AgentSession] {
-        Array(Self.sortedSessions(sessions.filter { isListableSession($0) && !$0.isRunning }).prefix(8))
+        Array(Self.sortedSessions(sessions.filter { isListableSession($0) && !$0.isRunning && !$0.isLocalDraft }).prefix(8))
     }
 
     var filteredSidebarProjects: [AgentProject] {

@@ -1779,7 +1779,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.model, "gpt-5.5")
+        XCTAssertEqual(createPayload.turnOptions.model, "gpt-5.6-sol")
         XCTAssertNil(createPayload.turnOptions.modelProvider)
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
@@ -2175,12 +2175,12 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(failedMessage.sendStatus, .failed)
         XCTAssertTrue(payloadContainsInlineImage(failedMessage.turnPayload))
         XCTAssertEqual(failedMessage.turnPayload?.input, payload.input)
-        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.5")
+        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.6-sol")
 
         let retryTask = Task { await store.retryFailedUserMessage(failedMessage) }
         await client.waitForCreateRequestCount(2)
         XCTAssertEqual(client.createPayloads[1].input, payload.input)
-        XCTAssertEqual(client.createPayloads[1].turnOptions.model, "gpt-5.5")
+        XCTAssertEqual(client.createPayloads[1].turnOptions.model, "gpt-5.6-sol")
         XCTAssertTrue(client.createPayloads[1].input.contains { item in
             if case .image(let url, _) = item {
                 return url == "data:image/png;base64,AA=="
@@ -2349,7 +2349,7 @@ extension ConversationDataFlowTests {
         let sent = try XCTUnwrap(sockets[0].sentTurns.first)
         XCTAssertEqual(sent.clientMessageID, "client-rich-retry")
         XCTAssertEqual(sent.payload.input, payload.input)
-        XCTAssertEqual(sent.payload.options.model, "gpt-5.5")
+        XCTAssertEqual(sent.payload.options.model, "gpt-5.6-sol")
     }
 
     func testRunningSendKeepsInlineImagePayloadAfterAcceptedForPreview() async throws {
@@ -2392,7 +2392,7 @@ extension ConversationDataFlowTests {
         let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
         XCTAssertTrue(payloadContainsInlineImage(localEcho.turnPayload))
         XCTAssertEqual(localEcho.turnPayload?.input, payload.input)
-        XCTAssertEqual(localEcho.turnPayload?.options.model, "gpt-5.5")
+        XCTAssertEqual(localEcho.turnPayload?.options.model, "gpt-5.6-sol")
 
         sockets[0].onSendAccepted?(clientMessageID)
         let acceptedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
