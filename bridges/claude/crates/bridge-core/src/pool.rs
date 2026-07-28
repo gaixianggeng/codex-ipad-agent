@@ -182,6 +182,27 @@ impl<H: PoolMember + 'static> ProcessPool<H> {
         }
     }
 
+    /// Release only when `thread_id` still points at `expected`.
+    ///
+    /// 异常退出的旧 driver 可能晚于新进程结束清理。按 `Arc` 实例比较后再删除，
+    /// 避免旧 driver 把同一 thread 刚冷恢复出来的新进程误删。
+    pub async fn release_if_same(&self, thread_id: &str, expected: &Arc<H>) -> bool {
+        let entry = {
+            let mut inner = self.inner.lock().await;
+            let matches = inner
+                .processes
+                .get(thread_id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.handle, expected));
+            matches.then(|| inner.remove(thread_id)).flatten()
+        };
+        if let Some(entry) = entry {
+            entry.handle.shutdown().await;
+            true
+        } else {
+            false
+        }
+    }
+
     pub async fn loaded_thread_ids(&self) -> Vec<ThreadId> {
         self.inner.lock().await.processes.keys().cloned().collect()
     }
@@ -379,6 +400,21 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PoolError::DuplicateThread(_)));
+    }
+
+    #[tokio::test]
+    async fn release_if_same_never_removes_replacement() {
+        let p = pool(4, Duration::from_secs(60));
+        let (old, old_shutdowns) = track(&p, "t1", "/a").await;
+        let (unrelated, _) = FakeHandle::new();
+
+        assert!(!p.release_if_same("t1", &unrelated).await);
+        assert!(Arc::ptr_eq(&p.get("t1").await.expect("old remains"), &old));
+        assert_eq!(old_shutdowns.load(Ordering::SeqCst), 0);
+
+        assert!(p.release_if_same("t1", &old).await);
+        assert!(p.get("t1").await.is_none());
+        assert_eq!(old_shutdowns.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

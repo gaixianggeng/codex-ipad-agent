@@ -162,7 +162,7 @@ extension SessionStore {
                     path: "/Users/demo/.codex/skills/.system/imagegen/SKILL.md",
                     enabled: true,
                     displayName: "Image Generation",
-                    shortDescription: "创建产品概念图、插图与位图素材",
+                    shortDescription: L10n.text("ui.debug_image_generation_skill_description"),
                     brandColor: "#7D65D8"
                 ),
                 SkillCapability(
@@ -172,7 +172,7 @@ extension SessionStore {
                     path: "/Users/demo/.codex/plugins/swiftui-ui-patterns/SKILL.md",
                     enabled: true,
                     displayName: "SwiftUI Patterns",
-                    shortDescription: "稳定的数据流、组件布局与原生交互",
+                    shortDescription: L10n.text("ui.debug_swiftui_patterns_skill_description"),
                     brandColor: "#D47B45"
                 ),
                 SkillCapability(
@@ -182,7 +182,7 @@ extension SessionStore {
                     path: "/Users/demo/.codex/plugins/ios-debugger-agent/SKILL.md",
                     enabled: true,
                     displayName: "iOS Debugger",
-                    shortDescription: "在真机或模拟器上构建、运行并诊断界面问题",
+                    shortDescription: L10n.text("ui.debug_ios_debugger_skill_description"),
                     brandColor: "#4089D6"
                 )
             ],

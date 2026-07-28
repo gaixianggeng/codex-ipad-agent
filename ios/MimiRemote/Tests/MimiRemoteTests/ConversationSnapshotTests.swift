@@ -1040,6 +1040,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             isGoalUpdating: false,
             goalErrorMessage: nil,
             isRefreshDisabled: false,
+            allowsTakeOver: true,
             onTakeOver: {},
             onRefreshUsage: {},
             onEditGoal: {},
@@ -1257,7 +1258,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             project: project,
             title: "优化会话列表",
             status: "completed",
-            preview: "Codex 会话"
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "feature/session-git-branch-indicator")
+            )
         )
         let claude = makeSnapshotSession(
             id: "runtime-claude",
@@ -1277,6 +1281,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
+                isExternalReadOnly: false,
                 style: .library
             )
             SessionIndexRow(
@@ -1287,6 +1292,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
+                isExternalReadOnly: false,
                 style: .library
             )
         }
@@ -1436,7 +1442,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil,
         goal: ThreadGoal? = nil,
-        runtimeProvider: String? = nil
+        runtimeProvider: String? = nil,
+        context: SessionContextSnapshot? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -1457,7 +1464,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             usage: usage,
             rateLimit: rateLimit,
             pendingApproval: pendingApproval,
-            goal: goal
+            goal: goal,
+            context: context
         )
     }
 }

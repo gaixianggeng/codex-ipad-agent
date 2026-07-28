@@ -8,6 +8,13 @@ extension SessionStore {
         replayBufferedEvents: Bool = true,
         allowNonRunning: Bool = false
     ) {
+        guard !isExternalReadOnlySession(session) else {
+            if connectedSessionID == session.id {
+                disconnectWebSocket()
+            }
+            setWebSocketStatus(.disconnected)
+            return
+        }
         // 本地草稿尚无远端 thread id，任何 history/resume/WebSocket 请求都会把 local: id
         // 误送给 app-server。首条消息创建真实 thread 后再按正常路径连接。
         guard !session.isLocalDraft else {
@@ -1855,6 +1862,10 @@ extension SessionStore {
         reloadSessionControlStates()
         reloadSessionReminders()
         foregroundActivityBySessionID = [:]
+        externalActivityBySessionID = [:]
+        externalReadOnlySessionIDs = []
+        isRefreshingExternalActivity = false
+        externalActivityCapabilityUnavailable = false
         runtimeActivityBySessionID = [:]
         locallyCompletedSessionIDs = []
         locallyCompletedGoalThreadIDs = []

@@ -88,8 +88,9 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 		t.Fatalf("config metadata 应返回 Codex channel：%v", body)
 	}
 	capabilities, ok := channels[0].(map[string]any)["capabilities"].(map[string]any)
-	if !ok || capabilities["rename"] != true || capabilities["compact"] != true || capabilities["review"] != true {
-		t.Fatalf("Codex channel 应声明 rename/compact/review 能力：%v", channels[0])
+	if !ok || capabilities["rename"] != true || capabilities["compact"] != true ||
+		capabilities["review"] != true || capabilities["external_activity"] != true {
+		t.Fatalf("Codex channel 应声明 rename/compact/review/external_activity 能力：%v", channels[0])
 	}
 }
 
@@ -124,7 +125,8 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 		t.Fatalf("Claude bridge metadata 异常：%v", bridge)
 	}
 	capabilities := claude["capabilities"].(map[string]any)
-	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false || capabilities["rate_limits"] != true {
+	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false ||
+		capabilities["rate_limits"] != true || capabilities["external_activity"] != false {
 		t.Fatalf("Claude channel 不应声明 Codex 专属能力：%v", capabilities)
 	}
 	methods := claude["methods"].([]any)

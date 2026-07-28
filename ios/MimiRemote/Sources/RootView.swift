@@ -109,6 +109,12 @@ struct RootView: View {
             }
             await sessionStore.pollSelectedProjectSessionsWhileVisible()
         }
+        .task(id: scenePhase == .active ? appStore.activeHostScope : nil) {
+            guard scenePhase == .active else {
+                return
+            }
+            await sessionStore.pollExternalActivitiesWhileVisible()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 persistActiveHostRestoration()

@@ -249,6 +249,10 @@ pub enum ClaudeOutbound {
     /// `hook_callback`, `mcp_message`). Bridge ignores in v1; permission
     /// bridging is a v2 follow-up (#13).
     ControlRequest(serde_json::Value),
+    /// Claude cancels one of its earlier `control_request`s, for example
+    /// when an interrupt makes a pending mobile approval irrelevant.
+    /// Keeping this typed lets the turn driver cancel the exact waiter.
+    ControlCancelRequest(ControlCancelEnvelope),
     /// Reply to a bridge → claude `control_request`. The reader task peels
     /// `request_id` off and routes the payload to the matching pending-control
     /// oneshot in `pool::process` before broadcasting; the translator then
@@ -748,6 +752,20 @@ mod tests {
             "phase": "started"
         }));
         assert!(matches!(lifecycle, ClaudeOutbound::Other));
+    }
+
+    #[test]
+    fn parses_outbound_control_cancel_request() {
+        let cancel: ClaudeOutbound = parse(json!({
+            "type": "control_cancel_request",
+            "request_id": "approval-42"
+        }));
+        assert_eq!(
+            cancel,
+            ClaudeOutbound::ControlCancelRequest(ControlCancelEnvelope {
+                request_id: "approval-42".into(),
+            })
+        );
     }
 
     #[test]

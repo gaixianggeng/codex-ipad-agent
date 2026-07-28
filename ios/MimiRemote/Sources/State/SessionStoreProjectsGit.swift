@@ -892,6 +892,10 @@ extension SessionStore {
 
     @discardableResult
     func toggleSessionArchivedRemote(_ session: AgentSession) async -> Bool {
+        guard !isExternalReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.mac_observe_only"))
+            return false
+        }
         let shouldArchive = !archivedSessionIDs.contains(session.id)
         let hostScope = appStore.activeHostScope
         toggleSessionArchived(session)
@@ -914,7 +918,8 @@ extension SessionStore {
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
-        !session.isLocalDraft
+        !isExternalReadOnlySession(session)
+            && !session.isLocalDraft
             && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
     }
 

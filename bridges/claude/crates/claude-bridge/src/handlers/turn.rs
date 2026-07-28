@@ -668,7 +668,9 @@ struct DrivenTurn {
     translator: EventTranslatorState,
     error_message: Option<String>,
     interaction_gate: Arc<AsyncMutex<()>>,
-    interaction_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Claude control request id → mobile interaction task. A typed
+    /// `control_cancel_request` can abort only the waiter it invalidates.
+    interaction_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     turn_guard: TurnGuard,
     autonomous: bool,
 }
@@ -687,7 +689,7 @@ impl DrivenTurn {
             started_at,
             error_message: None,
             interaction_gate: Arc::new(AsyncMutex::new(())),
-            interaction_tasks: Vec::new(),
+            interaction_tasks: HashMap::new(),
             turn_guard,
             autonomous,
         }
@@ -837,9 +839,11 @@ async fn begin_driver_turn(
 async fn run_event_driver(mut args: EventDriverArgs) {
     let mut current: Option<DrivenTurn> = None;
     let mut background = BackgroundWork::default();
+    let mut process_unhealthy = false;
 
     loop {
         if *args.exit_rx.borrow() {
+            process_unhealthy = true;
             if let Some(turn) = current.as_mut() {
                 turn.error_message = Some("claude process exited unexpectedly".into());
             }
@@ -877,7 +881,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                     Some(EventDriverCommand::AbortTurn { turn_id }) => {
                         if current.as_ref().is_some_and(|turn| turn.turn_id == turn_id) {
                             let mut turn = current.take().unwrap();
-                            for task in turn.interaction_tasks.drain(..) {
+                            for (_, task) in turn.interaction_tasks.drain() {
                                 task.abort();
                             }
                             clear_active_turn_if(&args.thread_id, &turn_id);
@@ -894,6 +898,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
             received = args.events_rx.recv() => received,
             exited = args.exit_rx.changed() => {
                 if exited.is_err() || *args.exit_rx.borrow() {
+                    process_unhealthy = true;
                     if let Some(turn) = current.as_mut() {
                         turn.error_message = Some("claude process exited unexpectedly".into());
                     }
@@ -912,6 +917,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                 continue;
             }
             Err(broadcast::error::RecvError::Closed) => {
+                process_unhealthy = true;
                 if let Some(turn) = current.as_mut() {
                     turn.error_message = Some("claude process exited unexpectedly".into());
                 }
@@ -956,7 +962,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                 // Spawn the HITL handler off the pump so the codex round-trip
                 // (which can sit on a phone for minutes) doesn't block
                 // subsequent stream events.
-                if let Some(req) = approval::parse_can_use_tool(&value) {
+                if let Some(req) = approval::parse_can_use_tool(value) {
                     let Some(handle) = args.handle.upgrade() else {
                         turn.error_message =
                             Some("claude process exited while requesting approval".into());
@@ -966,8 +972,9 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                     let thread_id = args.thread_id.clone();
                     let turn_id = turn.turn_id.clone();
                     let request_id = req.request_id.clone();
+                    let request_id_for_task = request_id.clone();
                     let interaction_gate = Arc::clone(&turn.interaction_gate);
-                    turn.interaction_tasks.push(tokio::spawn(async move {
+                    let interaction = tokio::spawn(async move {
                         let _guard = interaction_gate.lock().await;
                         match approval::handle_can_use_tool(
                             &state, &handle, &thread_id, &turn_id, req,
@@ -982,12 +989,13 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                                 // hang waiting for our response.
                                 approval::reply_control_error(
                                     &handle,
-                                    &request_id,
+                                    &request_id_for_task,
                                     format!("bridge HITL failed: {err}"),
                                 );
                             }
                         }
-                    }));
+                    });
+                    turn.interaction_tasks.insert(request_id, interaction);
                 } else if let Some(request_id) =
                     value.get("request_id").and_then(serde_json::Value::as_str)
                 {
@@ -1003,6 +1011,20 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                         turn.error_message =
                             Some("claude process exited during control request".into());
                     }
+                }
+            }
+            ClaudeOutbound::ControlCancelRequest(cancel) => {
+                if let Some(task) = turn.interaction_tasks.remove(&cancel.request_id) {
+                    task.abort();
+                    tracing::debug!(
+                        request_id = %cancel.request_id,
+                        "cancelled claude mobile interaction"
+                    );
+                } else {
+                    tracing::debug!(
+                        request_id = %cancel.request_id,
+                        "control_cancel_request had no active mobile interaction"
+                    );
                 }
             }
             _ => {}
@@ -1055,12 +1077,29 @@ async fn run_event_driver(mut args: EventDriverArgs) {
         finish_driven_turn(&args, turn, &mut background).await;
     }
 
-    let mut drivers = EVENT_DRIVERS.lock().unwrap();
-    if drivers
-        .get(&args.thread_id)
-        .is_some_and(|driver| driver.generation == args.generation)
     {
-        drivers.remove(&args.thread_id);
+        let mut drivers = EVENT_DRIVERS.lock().unwrap();
+        if drivers
+            .get(&args.thread_id)
+            .is_some_and(|driver| driver.generation == args.generation)
+        {
+            drivers.remove(&args.thread_id);
+        }
+    }
+
+    if process_unhealthy {
+        if let Some(handle) = args.handle.upgrade() {
+            let released = args
+                .state
+                .claude_pool()
+                .release_if_same(&args.thread_id, &handle)
+                .await;
+            tracing::debug!(
+                thread_id = %args.thread_id,
+                released,
+                "reaped unhealthy claude process generation"
+            );
+        }
     }
 }
 
@@ -1125,8 +1164,22 @@ async fn finish_driven_turn(
 ) {
     // turn 结束或进程断开时取消所有等待中的移动端交互；
     // approval::PendingRequestGuard 会同步回收 pending request 槽位。
-    for task in driven.interaction_tasks.drain(..) {
+    for (_, task) in driven.interaction_tasks.drain() {
         task.abort();
+    }
+
+    let dangling_reason = driven
+        .error_message
+        .as_deref()
+        .unwrap_or("claude turn ended before the item completed");
+    for notif in driven.translator.abort_open_items(dangling_reason) {
+        if let p::ServerNotification::ItemCompleted(ref n) = notif {
+            args.state
+                .record_item(&args.thread_id, &driven.turn_id, n.item.clone());
+        }
+        if state_should_emit(&args.state, &notif) {
+            let _ = args.state.send(notification_frame(notif));
+        }
     }
 
     let (status, error) = turn_status_from_result(driven.error_message.as_deref());

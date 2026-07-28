@@ -203,7 +203,12 @@ impl ClaudePool {
         cwd: Option<&Path>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
         if let Some(handle) = self.inner.try_reuse_for_utility(cwd).await {
-            return Ok(handle);
+            if !handle.has_exited() {
+                return Ok(handle);
+            }
+            self.inner
+                .release_if_same(handle.thread_id(), &handle)
+                .await;
         }
         let cwd = cwd
             .map(Path::to_path_buf)
@@ -216,8 +221,15 @@ impl ClaudePool {
 
     /// Look up the claude process that owns `thread_id`, refreshing its
     /// last-active timestamp so the reaper won't pick it up immediately.
+    /// Dead handles are synchronously removed and reaped instead of being
+    /// handed back to interrupt/resume paths.
     pub async fn get(&self, thread_id: &str) -> Option<Arc<ClaudeProcessHandle>> {
-        self.inner.get(thread_id).await
+        let handle = self.inner.get(thread_id).await?;
+        if !handle.has_exited() {
+            return Some(handle);
+        }
+        self.inner.release_if_same(thread_id, &handle).await;
+        None
     }
 
     /// Mark a thread as currently driving a turn (or any other long-running
@@ -237,6 +249,16 @@ impl ClaudePool {
     /// thread isn't in the pool.
     pub async fn release(&self, thread_id: &str) {
         self.inner.release(thread_id).await
+    }
+
+    /// Remove and reap a specific process generation without risking a newer
+    /// process that has already been installed for the same thread id.
+    pub async fn release_if_same(
+        &self,
+        thread_id: &str,
+        expected: &Arc<ClaudeProcessHandle>,
+    ) -> bool {
+        self.inner.release_if_same(thread_id, expected).await
     }
 
     /// All thread ids currently tracked by the pool.
@@ -279,7 +301,7 @@ impl ClaudePool {
         append_system_prompt: Option<String>,
     ) -> Result<Arc<ClaudeProcessHandle>, PoolError> {
         let _spawn_guard = self.spawn_lock.lock().await;
-        if let Some(handle) = self.inner.get(&thread_id).await {
+        if let Some(handle) = self.get(&thread_id).await {
             return Ok(handle);
         }
 

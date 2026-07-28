@@ -5432,6 +5432,23 @@
         }
       }
     },
+    "ui.connection_profile_status_value" : {
+      "comment" : "Accessibility label combining a Mac profile name with its current connection status.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，%@"
+          }
+        }
+      }
+    },
     "ui.connecting_699ade16" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -6695,6 +6712,40 @@
         }
       }
     },
+    "ui.debug_image_generation_skill_description" : {
+      "comment" : "Short description for the seeded Image Generation skill in the offline Debug UI sample.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create product concepts, illustrations, and bitmap assets"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建产品概念图、插图与位图素材"
+          }
+        }
+      }
+    },
+    "ui.debug_ios_debugger_skill_description" : {
+      "comment" : "Short description for the seeded iOS Debugger skill in the offline Debug UI sample.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build, run, and diagnose UI issues on devices or simulators"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在真机或模拟器上构建、运行并诊断界面问题"
+          }
+        }
+      }
+    },
     "ui.debug_session_value_selected" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState" : "stale",
@@ -6709,6 +6760,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已选择 Debug 会话 %@"
+          }
+        }
+      }
+    },
+    "ui.debug_swiftui_patterns_skill_description" : {
+      "comment" : "Short description for the seeded SwiftUI Patterns skill in the offline Debug UI sample.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stable data flow, component layouts, and native interactions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "稳定的数据流、组件布局与原生交互"
           }
         }
       }
@@ -13376,6 +13444,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mac 名称不能为空"
+          }
+        }
+      }
+    },
+    "ui.mac_observe_only" : {
+      "comment" : "Read-only status for a session currently running in Codex Desktop on the Mac.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac · Observe only"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac · 仅观察"
           }
         }
       }

@@ -660,7 +660,7 @@ private struct WorkspaceLibraryCard: View {
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.primaryAction)
+                    .foregroundStyle(tokens.accent)
                     .frame(width: 32, height: 32)
                     .padding(.top, 10)
                     .padding(.trailing, 8)
@@ -746,7 +746,11 @@ private struct WorkspaceLibraryCard: View {
             }
 
             Divider()
-                .overlay(tokens.border.opacity(0.56))
+                .overlay(
+                    isSelected
+                        ? tokens.primaryText.opacity(0.14)
+                        : tokens.border.opacity(0.56)
+                )
 
             TimelineView(.periodic(from: .now, by: 60)) { _ in
                 // TimelineView 只负责按分钟触发刷新；时间来源可在视觉测试中固定，
@@ -756,13 +760,15 @@ private struct WorkspaceLibraryCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
-        .background(isSelected ? tokens.selectionFill : tokens.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(
+            isSelected ? tokens.workspaceCardSelectionFill : tokens.surface,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    isSelected ? tokens.primaryAction : tokens.border.opacity(0.72),
-                    lineWidth: isSelected ? 2 : 1
-                )
+            if !isSelected {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+            }
         }
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .animation(
@@ -949,7 +955,7 @@ private struct WorkspaceCardStatus {
     func color(tokens: ThemeTokens) -> Color {
         switch tone {
         case .accent:
-            return tokens.primaryAction
+            return tokens.accent
         case .success:
             return tokens.success
         case .warning:

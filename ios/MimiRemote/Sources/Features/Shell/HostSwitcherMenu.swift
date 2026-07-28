@@ -124,7 +124,13 @@ struct HostSwitcherMenu: View {
             .foregroundStyle(.tint)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
-                Text("\(profileName)，\(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)")
+                Text(
+                    L10n.format(
+                        "ui.connection_profile_status_value",
+                        profileName,
+                        isSwitching ? L10n.text("ui.connecting") : currentConnectionText
+                    )
+                )
             )
         }
     }

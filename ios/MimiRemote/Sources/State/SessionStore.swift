@@ -38,6 +38,7 @@ final class SessionStore: ObservableObject {
             rebuildSessionIndexes()
         }
     }
+    @Published var externalActivityBySessionID: [SessionID: ExternalSessionActivity] = [:]
     @Published var remoteSessionSearchResults: [AgentSession] = [] {
         didSet {
             rebuildProjectSessionListSnapshots()
@@ -210,6 +211,7 @@ final class SessionStore: ObservableObject {
     let sessionListSleep: (UInt64) async -> Void
     let sessionSearchDebounceNanoseconds: UInt64
     let sessionSearchSleep: (UInt64) async throws -> Void
+    let externalActivitySleep: (UInt64) async -> Void
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
     var connectedHostScope: HostScope?
@@ -227,6 +229,11 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
+    // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
+    // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
+    var externalReadOnlySessionIDs: Set<SessionID> = []
+    var isRefreshingExternalActivity = false
+    var externalActivityCapabilityUnavailable = false
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -307,6 +314,8 @@ final class SessionStore: ObservableObject {
     let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
     let sessionListConnectedPollingDelayNanoseconds: UInt64 = 60_000_000_000
     let sessionListDisconnectedPollingDelayNanoseconds: UInt64 = 8_000_000_000
+    let externalActivityDefaultPollingDelayNanoseconds: UInt64 = 8_000_000_000
+    let externalActivitySelectedPollingDelayNanoseconds: UInt64 = 5_000_000_000
     let sessionListFirstPageCacheTTL: TimeInterval = 2
     let sessionLibraryIndexPollingInterval: TimeInterval = 60
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
@@ -361,6 +370,9 @@ final class SessionStore: ObservableObject {
         sessionSearchDebounceNanoseconds: UInt64 = 300_000_000,
         sessionSearchSleep: @escaping (UInt64) async throws -> Void = { nanoseconds in
             try await Task.sleep(nanoseconds: nanoseconds)
+        },
+        externalActivitySleep: @escaping (UInt64) async -> Void = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
         }
     ) {
         self.appStore = appStore
@@ -466,6 +478,7 @@ final class SessionStore: ObservableObject {
         self.sessionListSleep = sessionListSleep
         self.sessionSearchDebounceNanoseconds = sessionSearchDebounceNanoseconds
         self.sessionSearchSleep = sessionSearchSleep
+        self.externalActivitySleep = externalActivitySleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
         reloadSessionControlStates()
@@ -1206,6 +1219,9 @@ final class SessionStore: ObservableObject {
     }
 
     func controlState(for session: AgentSession) -> SessionControlState {
+        if isExternalReadOnlySession(session) {
+            return .observing
+        }
         if let state = sessionControlStateByID[session.id] {
             return state
         }
@@ -1218,6 +1234,9 @@ final class SessionStore: ObservableObject {
         }
         guard let session else {
             return true
+        }
+        guard !isExternalReadOnlySession(session) else {
+            return false
         }
         guard session.isRunning else {
             return true
@@ -1286,10 +1305,28 @@ final class SessionStore: ObservableObject {
         guard isSelectedSessionObserving else {
             return nil
         }
+        if let session = selectedSession, isExternalReadOnlySession(session) {
+            return L10n.text("ui.mac_observe_only")
+        }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
     }
 
+    var selectedSessionAllowsTakeOver: Bool {
+        guard let session = selectedSession else {
+            return false
+        }
+        return !isExternalReadOnlySession(session)
+    }
+
+    func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
+        externalReadOnlySessionIDs.contains(session.id)
+    }
+
     func takeOverSession(_ session: AgentSession) {
+        guard !isExternalReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.mac_observe_only"))
+            return
+        }
         setSessionControlState(.takenOver, sessionID: session.id)
         if session.id == selectedSessionID, session.isRunning {
             // 接管前消息区已经由 selectSession/刷新用 thread/read 快照兜底；backlog 走状态级
