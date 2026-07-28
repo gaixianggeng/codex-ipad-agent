@@ -18,6 +18,9 @@ exception_reason() {
     ios/MimiRemote/Tests/MimiRemoteTests/ConversationDataFlowTests.swift)
       printf '%s' '会话数据流回归矩阵，后续按流式事件、审批和附件场景拆分'
       ;;
+    ios/MimiRemote/Tests/MimiRemoteTests/ConversationRuntimeFlowTests.swift)
+      printf '%s' '运行时切换与消息流回归矩阵，后续按运行时选择和会话执行场景拆分'
+      ;;
     ios/MimiRemote/Tests/MimiRemoteTests/ConversationWorkspaceHistoryTests.swift)
       printf '%s' 'Workspace 历史回归矩阵，后续按目录解析与会话恢复场景拆分'
       ;;
