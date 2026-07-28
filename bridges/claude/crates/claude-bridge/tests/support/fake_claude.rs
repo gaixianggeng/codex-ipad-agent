@@ -29,6 +29,10 @@
 //! - `FAKE_CLAUDE_INIT_DELAY_MS`: optional delay before emitting the
 //!   `system/init`. Defaults to 0. Used by tests that need to exercise
 //!   `wait_for_init` slow paths.
+//! - A script line `{"type":"exit_once","marker":"/tmp/path"}` atomically
+//!   creates `marker` and exits the first fake process that reaches it.
+//!   Later processes skip the directive. This models one crashed Claude
+//!   generation followed by a healthy cold resume.
 //!
 //! Stays intentionally minimal — extend on demand. Nothing here needs to
 //! match claude's wire byte-for-byte; only the fields the bridge actually
@@ -150,7 +154,9 @@ fn main() -> ExitCode {
         }
 
         turn_counter += 1;
-        run_script(&mut out, &script, &session_id, turn_counter);
+        if run_script(&mut out, &script, &session_id, turn_counter) {
+            return ExitCode::from(23);
+        }
     }
 
     ExitCode::SUCCESS
@@ -165,6 +171,7 @@ fn emit<W: Write>(out: &mut W, v: &Value) {
 enum ScriptStep {
     Event(Value),
     Sleep(Duration),
+    ExitOnce(std::path::PathBuf),
 }
 
 fn load_script() -> Vec<ScriptStep> {
@@ -186,11 +193,17 @@ fn load_script() -> Vec<ScriptStep> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if value.get("type").and_then(|v| v.as_str()) == Some("sleep") {
-            let ms = value.get("ms").and_then(|v| v.as_u64()).unwrap_or(0);
-            steps.push(ScriptStep::Sleep(Duration::from_millis(ms)));
-        } else {
-            steps.push(ScriptStep::Event(value));
+        match value.get("type").and_then(Value::as_str) {
+            Some("sleep") => {
+                let ms = value.get("ms").and_then(Value::as_u64).unwrap_or(0);
+                steps.push(ScriptStep::Sleep(Duration::from_millis(ms)));
+            }
+            Some("exit_once") => {
+                if let Some(marker) = value.get("marker").and_then(Value::as_str) {
+                    steps.push(ScriptStep::ExitOnce(marker.into()));
+                }
+            }
+            _ => steps.push(ScriptStep::Event(value)),
         }
     }
     if steps.is_empty() {
@@ -272,7 +285,8 @@ fn default_script() -> Vec<ScriptStep> {
     ]
 }
 
-fn run_script<W: Write>(out: &mut W, steps: &[ScriptStep], session_id: &str, turn: u64) {
+/// Returns true when the fake should terminate immediately.
+fn run_script<W: Write>(out: &mut W, steps: &[ScriptStep], session_id: &str, turn: u64) -> bool {
     for step in steps {
         match step {
             ScriptStep::Event(template) => {
@@ -282,8 +296,19 @@ fn run_script<W: Write>(out: &mut W, steps: &[ScriptStep], session_id: &str, tur
                 emit(out, &event);
             }
             ScriptStep::Sleep(d) => thread::sleep(*d),
+            ScriptStep::ExitOnce(marker) => {
+                if fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(marker)
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
         }
     }
+    false
 }
 
 fn substitute_session(value: &mut Value, session_id: &str) {

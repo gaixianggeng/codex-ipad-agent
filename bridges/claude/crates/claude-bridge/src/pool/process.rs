@@ -445,6 +445,14 @@ impl ClaudeProcessHandle {
         self.exit_tx.subscribe()
     }
 
+    /// Whether stdout has closed and the child can no longer serve requests.
+    ///
+    /// `watch` keeps the terminal value, so callers can reject a dead pooled
+    /// handle even when the event driver has not finished its cleanup yet.
+    pub fn has_exited(&self) -> bool {
+        *self.exit_tx.borrow()
+    }
+
     /// Wait until claude has emitted its `system/init` line, returning a
     /// clone of the captured payload. If init has already landed, returns
     /// immediately.

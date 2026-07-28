@@ -210,6 +210,7 @@ impl EventTranslatorState {
             // follow-up tracked separately.
             ClaudeOutbound::KeepAlive
             | ClaudeOutbound::ControlRequest(_)
+            | ClaudeOutbound::ControlCancelRequest(_)
             | ClaudeOutbound::ControlResponse(_)
             | ClaudeOutbound::StreamlinedText(_)
             | ClaudeOutbound::StreamlinedToolUseSummary(_)
@@ -1053,6 +1054,50 @@ impl EventTranslatorState {
         out
     }
 
+    /// Close every item that is still open when the turn terminates without
+    /// its matching content-block stop or tool result.
+    ///
+    /// Claude can lose stdout or be interrupted between `tool_use` and
+    /// `tool_result`. Leaving those items InProgress makes the App look as if
+    /// the turn is still running even after `turn/completed{failed}`.
+    pub fn abort_open_items(&mut self, reason: &str) -> Vec<ServerNotification> {
+        let mut out = Vec::new();
+
+        let messages = std::mem::take(&mut self.open_message_items);
+        for (_, item) in messages {
+            out.push(self.item_completed_with(
+                ThreadItem::AgentMessage {
+                    id: item.item_id,
+                    text: item.accumulated,
+                    phase: Some(Value::String("final_answer".into())),
+                    memory_citation: None,
+                },
+                item.parent_tool_use_id.as_deref(),
+            ));
+        }
+
+        let thinking = std::mem::take(&mut self.open_thinking_items);
+        for (_, item) in thinking {
+            out.push(self.item_completed_with(
+                ThreadItem::Reasoning {
+                    id: item.item_id,
+                    summary: Vec::new(),
+                    content: vec![item.accumulated],
+                },
+                item.parent_tool_use_id.as_deref(),
+            ));
+        }
+
+        let tools = std::mem::take(&mut self.open_tool_calls);
+        for (_, call) in tools {
+            out.extend(self.complete_tool_call(call, reason.to_string(), None, true, None));
+        }
+        self.block_index_to_tool_id.clear();
+        self.subagent_parents.clear();
+        self.subagent_buffer.clear();
+        out
+    }
+
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
@@ -1160,6 +1205,7 @@ fn event_parent_tool_use_id(event: &ClaudeOutbound) -> Option<&str> {
         | ClaudeOutbound::Result(_)
         | ClaudeOutbound::KeepAlive
         | ClaudeOutbound::ControlRequest(_)
+        | ClaudeOutbound::ControlCancelRequest(_)
         | ClaudeOutbound::ControlResponse(_)
         | ClaudeOutbound::StreamlinedText(_)
         | ClaudeOutbound::StreamlinedToolUseSummary(_)
@@ -2056,6 +2102,14 @@ mod tests {
         assert!(
             s.translate(ClaudeOutbound::ControlRequest(json!({"request_id": "r1"})))
                 .is_empty()
+        );
+        assert!(
+            s.translate(ClaudeOutbound::ControlCancelRequest(
+                crate::pool::claude_protocol::ControlCancelEnvelope {
+                    request_id: "r1".into(),
+                },
+            ))
+            .is_empty()
         );
         assert!(
             s.translate(ClaudeOutbound::ControlResponse(
