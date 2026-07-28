@@ -1,5 +1,7 @@
 import AVFoundation
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
     case initialConnection
@@ -130,6 +132,10 @@ struct InitialConnectionSettingsSections: View {
     @State private var pendingRemovalConfirmation: ConnectionCredentialRemovalConfirmation?
     @State private var isShowingAdvancedManualConnection = false
     @State private var localError: String?
+    @State private var copyingConnectionProfileID: String?
+    @State private var copiedConnectionProfileID: String?
+    @State private var copyConnectionTask: Task<Void, Never>?
+    @State private var copyFeedbackTask: Task<Void, Never>?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -146,7 +152,10 @@ struct InitialConnectionSettingsSections: View {
                 } header: {
                     Text(L10n.text("ui.saved_mac"))
                 } footer: {
-                    Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n.text("ui.only_one_mac_is_connected_at_a_time"))
+                        Text(L10n.text("ui.connection_info_copy_security_notice"))
+                    }
                 }
             }
 
@@ -172,20 +181,37 @@ struct InitialConnectionSettingsSections: View {
                 if !appStore.isConfigured && !appStore.localAgentDetected {
                     MacInstallationSetupView(
                         isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
-                        onScan: beginScanningMac
+                        onScan: beginScanningMac,
+                        onPasteConnectionInfo: pasteConnectionInfo
                     )
                 } else {
-                    Button {
-                        beginScanningMac()
-                    } label: {
-                        Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
+                    VStack(spacing: 10) {
+                        Button {
+                            beginScanningMac()
+                        } label: {
+                            Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(tokens.primaryAction)
+                        .controlSize(.large)
+                        .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+                        .accessibilityIdentifier("settings.connection.scanQRCode")
+
+                        Button(action: pasteConnectionInfo) {
+                            Label(
+                                L10n.text("ui.paste_connection_info"),
+                                systemImage: "doc.on.clipboard"
+                            )
                             .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(tokens.primaryAction)
+                        .controlSize(.large)
+                        .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+                        .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
+                        .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(tokens.primaryAction)
-                    .controlSize(.large)
-                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
-                    .accessibilityIdentifier("settings.connection.scanQRCode")
                 }
 
                 DisclosureGroup {
@@ -356,6 +382,10 @@ struct InitialConnectionSettingsSections: View {
         .listRowBackground(tokens.elevatedSurface)
         // 连接地址/Token 是高频编辑状态，放在这个小子树里，避免每次删字都重绘整个设置页。
         .onAppear(perform: loadInitialConnectionIfNeeded)
+        .onDisappear {
+            copyConnectionTask?.cancel()
+            copyFeedbackTask?.cancel()
+        }
         .task {
             // 根启动任务负责自动配对和提交；这里与它复用同一个探测 Task，只更新设置页提示，
             // 避免两个连接事务争抢后导致 bootstrap 提前返回。
@@ -516,6 +546,36 @@ struct InitialConnectionSettingsSections: View {
                 .disabled(isSavingConnection || profileOperationID != nil)
                 .accessibilityIdentifier("settings.profile.switch.\(item.id)")
             }
+
+            Button {
+                copyConnectionInfo(for: item.profile)
+            } label: {
+                Group {
+                    if copyingConnectionProfileID == item.id {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: copiedConnectionProfileID == item.id ? "checkmark" : "doc.on.doc")
+                            .font(themeStore.uiFont(.body, weight: .semibold))
+                            .foregroundStyle(
+                                copiedConnectionProfileID == item.id
+                                    ? themeStore.tokens(for: colorScheme).success
+                                    : themeStore.tokens(for: colorScheme).secondaryText
+                            )
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .disabled(copyingConnectionProfileID != nil)
+            .accessibilityLabel(
+                copiedConnectionProfileID == item.id
+                    ? L10n.text("ui.connection_info_copied")
+                    : L10n.format("ui.copy_connection_info_for_value", item.profile.displayName)
+            )
+            .accessibilityHint(L10n.text("ui.connection_info_copy_security_notice"))
+            .accessibilityIdentifier("settings.profile.copy.\(item.id)")
 
             Menu {
                 Button(L10n.text("ui.rename")) {
@@ -884,6 +944,7 @@ struct InitialConnectionSettingsSections: View {
             return L10n.text("ui.the_connection_credentials_have_been_saved_safely_but")
         }
         let localizedConnectionLinkKeys = [
+            "ui.clipboard_does_not_contain_connection_info",
             "ui.invalid_connection_link",
             "ui.the_connection_link_is_missing_the_access_code",
             "ui.the_link_is_missing_an_address",
@@ -931,6 +992,57 @@ struct InitialConnectionSettingsSections: View {
             : .addConnectionProfile
         pendingManualConnectionIntent = nil
         qrScannerPresentation.request(intent)
+    }
+
+    private func pasteConnectionInfo() {
+        guard let rawValue = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !rawValue.isEmpty else {
+            localError = L10n.text("ui.clipboard_does_not_contain_connection_info")
+            return
+        }
+        let intent: ConnectionQRCodeScanIntent = appStore.activeConnectionProfile == nil
+            ? .initialConnection
+            : .addConnectionProfile
+        Task {
+            _ = await applyScannedConnection(rawValue, intent: intent)
+        }
+    }
+
+    private func copyConnectionInfo(for profile: ConnectionProfile) {
+        copyConnectionTask?.cancel()
+        copyingConnectionProfileID = profile.id
+        copyConnectionTask = Task {
+            defer {
+                if copyingConnectionProfileID == profile.id {
+                    copyingConnectionProfileID = nil
+                }
+            }
+            do {
+                let link = try await appStore.connectionTransferLink(profileID: profile.id)
+                try Task.checkCancellation()
+                // 不设置 localOnly，才能通过系统通用剪贴板交给用户自己的另一台设备。
+                // 同时设置系统过期时间，减少长期访问码在剪贴板中停留的窗口。
+                UIPasteboard.general.setItems(
+                    [[UTType.plainText.identifier: link.url.absoluteString]],
+                    options: [.expirationDate: link.expiresAt]
+                )
+                localError = nil
+                copiedConnectionProfileID = profile.id
+                copyFeedbackTask?.cancel()
+                copyFeedbackTask = Task {
+                    try? await Task.sleep(for: .seconds(1.6))
+                    guard !Task.isCancelled, copiedConnectionProfileID == profile.id else {
+                        return
+                    }
+                    copiedConnectionProfileID = nil
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                localError = error.localizedDescription
+            }
+        }
     }
 
     private func configureQRCodeScannerPresentation() {

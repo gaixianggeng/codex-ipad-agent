@@ -8,6 +8,7 @@ struct MacInstallationSetupView: View {
 
     let isScanDisabled: Bool
     let onScan: () -> Void
+    let onPasteConnectionInfo: () -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -85,18 +86,34 @@ struct MacInstallationSetupView: View {
                 title: L10n.text("ui.scan_qr_code_to_connect"),
                 detail: nil
             ) {
-                Button(action: onScan) {
-                    Label(
-                        L10n.text("ui.scan_qr_code_on_mac"),
-                        systemImage: "qrcode.viewfinder"
-                    )
-                    .frame(maxWidth: .infinity)
+                VStack(spacing: 10) {
+                    Button(action: onScan) {
+                        Label(
+                            L10n.text("ui.scan_qr_code_on_mac"),
+                            systemImage: "qrcode.viewfinder"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(tokens.primaryAction)
+                    .controlSize(.large)
+                    .disabled(isScanDisabled)
+                    .accessibilityIdentifier("settings.macInstaller.scan")
+
+                    Button(action: onPasteConnectionInfo) {
+                        Label(
+                            L10n.text("ui.paste_connection_info"),
+                            systemImage: "doc.on.clipboard"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(tokens.primaryAction)
+                    .controlSize(.large)
+                    .disabled(isScanDisabled)
+                    .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
+                    .accessibilityIdentifier("settings.macInstaller.pasteConnectionInfo")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(tokens.primaryAction)
-                .controlSize(.large)
-                .disabled(isScanDisabled)
-                .accessibilityIdentifier("settings.macInstaller.scan")
             }
         }
         .padding(.vertical, 6)

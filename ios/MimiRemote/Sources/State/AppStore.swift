@@ -472,6 +472,29 @@ final class AppStore: ObservableObject {
         )
     }
 
+    /// 只在用户明确点击复制时读取目标 Profile 的 Keychain 凭据。
+    /// await 返回后重新核对 revision，避免并发编辑时把旧 Token 与新地址拼成错误链接。
+    func connectionTransferLink(
+        profileID: String,
+        issuedAt: Date = Date()
+    ) async throws -> ConnectionTransferLink {
+        guard let profile = connectionProfiles.first(where: { $0.id == profileID }) else {
+            throw ConnectionProfileError.notFound
+        }
+        let capturedRevision = profile.revision
+        let profileToken = try await credentialVault.token(for: profileID)
+        guard let current = connectionProfiles.first(where: { $0.id == profileID }),
+              current.revision == capturedRevision,
+              current.endpoint == profile.endpoint else {
+            throw CancellationError()
+        }
+        return try ConnectionTransferLink(
+            endpoint: profile.endpoint,
+            token: profileToken,
+            issuedAt: issuedAt
+        )
+    }
+
     /// 进入后台时同时清空 Vault、公开内存 Token 与复用 Runtime。
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {

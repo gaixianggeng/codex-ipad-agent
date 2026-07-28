@@ -32695,6 +32695,108 @@
           }
         }
       }
+    },
+    "ui.clipboard_does_not_contain_connection_info" : {
+      "comment" : "Error shown when the user asks to import a Mac connection but the clipboard has no usable Mimi Remote link.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The clipboard doesn't contain valid Mimi Remote connection information."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剪贴板中没有有效的 Mimi Remote 连接信息。"
+          }
+        }
+      }
+    },
+    "ui.connection_info_copied" : {
+      "comment" : "Accessibility feedback after copying a saved Mac connection link.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection info copied"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接信息已复制"
+          }
+        }
+      }
+    },
+    "ui.connection_info_copy_security_notice" : {
+      "comment" : "Security notice for transferring a saved Mac connection to another personal device.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection info includes an access code. Import it only on your own device; the link expires after 10 minutes."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接信息包含访问码，请只导入到自己的设备；链接将在 10 分钟后过期。"
+          }
+        }
+      }
+    },
+    "ui.copy_connection_info_for_value" : {
+      "comment" : "Accessibility label for copying one named Mac connection. The placeholder is the saved Mac name.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy connection info for %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制“%@”的连接信息"
+          }
+        }
+      }
+    },
+    "ui.paste_connection_info" : {
+      "comment" : "Button that imports and connects using a Mimi Remote link on the clipboard.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paste Connection Info"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴连接信息"
+          }
+        }
+      }
+    },
+    "ui.paste_connection_info_hint" : {
+      "comment" : "Accessibility hint explaining what Paste Connection Info does.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reads a Mimi Remote connection link from the clipboard, verifies it, and connects to the Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取剪贴板中的 Mimi Remote 连接链接，验证后连接这台 Mac。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

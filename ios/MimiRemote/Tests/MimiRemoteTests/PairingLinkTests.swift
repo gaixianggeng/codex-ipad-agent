@@ -571,6 +571,46 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(model.others.first?.canDelete, true)
     }
 
+    func testConnectionTransferLinkReadsSelectedProfileWithoutSwitchingCurrentMac() async throws {
+        let suiteName = "PairingLinkTests.ConnectionTransferLink.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profiles = [
+            ConnectionProfile(
+                id: "mac-a",
+                displayName: "Mac A",
+                endpoint: "http://100.64.0.10:8787",
+                lastSuccessfulAt: nil
+            ),
+            ConnectionProfile(
+                id: "mac-b",
+                displayName: "Mac B",
+                endpoint: "http://100.64.0.20:8787",
+                lastSuccessfulAt: nil
+            )
+        ]
+        defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+        defaults.set("mac-a", forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profiles[0].endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        let link = try await store.connectionTransferLink(
+            profileID: "mac-b",
+            issuedAt: Date()
+        )
+        let credentials = try AppStore.pairingCredentials(from: link.url)
+
+        XCTAssertEqual(credentials.endpoint, profiles[1].endpoint)
+        XCTAssertEqual(credentials.token, "token-b")
+        XCTAssertEqual(store.activeConnectionProfileID, "mac-a")
+        XCTAssertEqual(store.endpoint, profiles[0].endpoint)
+        XCTAssertEqual(store.token, "token-a")
+    }
+
     func testFiveSavedProfilesColdStartReadsOnlyActiveProfileToken() throws {
         let suiteName = "PairingLinkTests.ColdStartFiveProfiles.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -824,6 +864,30 @@ final class PairingLinkTests: XCTestCase {
 
         XCTAssertEqual(credentials.endpoint, "http://100.64.0.1:8787")
         XCTAssertEqual(credentials.token, "0123456789abcdef0123456789abcdef")
+    }
+
+    func testConnectionTransferLinkUsesMacCompatibleConnectFormatAndTenMinuteWindow() throws {
+        let issuedAt = Date()
+        let link = try ConnectionTransferLink(
+            endpoint: "http://100.64.0.1:8787/",
+            token: "token+with/slash",
+            issuedAt: issuedAt
+        )
+        let components = try XCTUnwrap(URLComponents(url: link.url, resolvingAgainstBaseURL: false))
+        let queryItems = try XCTUnwrap(components.queryItems)
+        let queryValues = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+        let credentials = try AppStore.pairingCredentials(from: link.url)
+
+        XCTAssertEqual(components.scheme, "mimiremote")
+        XCTAssertEqual(components.host, "connect")
+        XCTAssertEqual(queryItems.map(\.name), ["endpoint", "expires_at", "issued_at", "token"])
+        XCTAssertEqual(queryValues["endpoint"], "http://100.64.0.1:8787")
+        XCTAssertEqual(queryValues["token"], "token+with/slash")
+        XCTAssertEqual(link.expiresAt.timeIntervalSince(issuedAt), 10 * 60)
+        XCTAssertEqual(credentials.endpoint, "http://100.64.0.1:8787")
+        XCTAssertEqual(credentials.token, "token+with/slash")
     }
 
     func testParsesUnexpiredPairingURL() throws {

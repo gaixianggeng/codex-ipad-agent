@@ -78,6 +78,51 @@ struct ConnectionProfileSettingsModel: Equatable {
     }
 }
 
+/// 在自己的另一台设备上复用 Mac 连接时使用的短期导入链接。
+///
+/// 格式沿用 Mac 端已经提供的 `mimiremote://` 协议；区别仅在于已保存档案
+/// 持有长期访问码，因此使用 `connect` 路由并通过 `expires_at` 限制 App 的导入窗口。
+struct ConnectionTransferLink: Equatable {
+    static let validityInterval: TimeInterval = 10 * 60
+
+    let url: URL
+    let expiresAt: Date
+
+    init(
+        endpoint: String,
+        token: String,
+        issuedAt: Date = Date(),
+        validityInterval: TimeInterval = Self.validityInterval
+    ) throws {
+        let normalizedEndpoint = try EndpointTransportPolicy.validatedEndpoint(endpoint)
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else {
+            throw ConnectionProfileError.missingToken
+        }
+
+        let expiresAt = issuedAt.addingTimeInterval(validityInterval)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+
+        var components = URLComponents()
+        components.scheme = "mimiremote"
+        components.host = "connect"
+        // 与 agentd 的 url.Values.Encode 输出保持相同字段和稳定顺序，方便跨端排查。
+        components.queryItems = [
+            URLQueryItem(name: "endpoint", value: normalizedEndpoint),
+            URLQueryItem(name: "expires_at", value: formatter.string(from: expiresAt)),
+            URLQueryItem(name: "issued_at", value: formatter.string(from: issuedAt)),
+            URLQueryItem(name: "token", value: normalizedToken)
+        ]
+        guard let url = components.url else {
+            throw PairingLinkError.unsupportedURL
+        }
+
+        self.url = url
+        self.expiresAt = expiresAt
+    }
+}
+
 /// 删除连接凭据前展示的纯值确认模型。
 /// 这里只保存目标和文案，不持有删除闭包，确保第一次点击按钮只会进入确认态。
 struct ConnectionCredentialRemovalConfirmation: Identifiable, Equatable {
