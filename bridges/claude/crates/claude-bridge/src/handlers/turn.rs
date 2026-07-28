@@ -962,7 +962,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                 // Spawn the HITL handler off the pump so the codex round-trip
                 // (which can sit on a phone for minutes) doesn't block
                 // subsequent stream events.
-                if let Some(req) = approval::parse_can_use_tool(&value) {
+                if let Some(req) = approval::parse_can_use_tool(value) {
                     let Some(handle) = args.handle.upgrade() else {
                         turn.error_message =
                             Some("claude process exited while requesting approval".into());
