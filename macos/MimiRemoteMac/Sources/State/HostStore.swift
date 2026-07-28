@@ -111,9 +111,8 @@ final class HostStore {
             pairing = nextPairing
             pairingNetwork = nextPairing.network
             await enableLoginLaunchBestEffort()
-            try services.registerAgent()
             owner = .macApp
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
         }
@@ -142,9 +141,8 @@ final class HostStore {
             try await prepareAutomaticNetworkBeforeServiceStart()
             try await homebrew.stop()
             homebrewLoaded = false
-            try services.registerAgent()
             owner = .macApp
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
         } catch {
             let takeoverError = error
             await rollbackAfterFailedTakeover(oldAgent: oldAgent, cause: takeoverError)
@@ -357,8 +355,7 @@ final class HostStore {
         defer { isBusy = false }
         do {
             try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-            try services.registerAgent()
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
         }
@@ -405,6 +402,14 @@ final class HostStore {
         case .enabled:
             owner = .macApp
             do {
+                if !services.isAgentRegistrationCurrent() {
+                    // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
+                    // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
+                    lifecycle = .starting
+                    try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+                    try await registerMacAgentAndWaitForReady()
+                    return
+                }
                 let current = try await agent.status()
                 status = current
                 doctor = current.doctor
@@ -413,8 +418,7 @@ final class HostStore {
                     // 启动阶段发现明确版本漂移时做一次受控换代，避免长期半更新。
                     lifecycle = .starting
                     try await unregisterMacAgentAndWait(endpoint: current.endpoint)
-                    try services.registerAgent()
-                    try await waitForMacAgentReady()
+                    try await registerMacAgentAndWaitForReady()
                 } else {
                     apply(current)
                 }
@@ -425,9 +429,8 @@ final class HostStore {
             lifecycle = .starting
             do {
                 try await prepareAutomaticNetworkBeforeServiceStart()
-                try services.registerAgent()
                 owner = .macApp
-                try await waitForMacAgentReady()
+                try await registerMacAgentAndWaitForReady()
             } catch {
                 fail(error)
             }
@@ -453,6 +456,13 @@ final class HostStore {
         }
         let detail = lastStatus?.serviceError ?? "服务在 15 秒内没有通过就绪检查。"
         throw AgentClientError.commandFailed(detail)
+    }
+
+    private func registerMacAgentAndWaitForReady() async throws {
+        try services.registerAgent()
+        try await waitForMacAgentReady()
+        // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
+        services.markAgentRegistrationCurrent()
     }
 
     private func waitForMacAgentUnregistered() async throws {
@@ -581,9 +591,8 @@ final class HostStore {
             try? await homebrew.stop()
         }
         do {
-            try services.registerAgent()
             owner = .macApp
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
             homebrewLoaded = false
             lastError = "恢复 Homebrew 失败，已继续使用 App 服务：\(cause.localizedDescription)"
         } catch {
@@ -871,7 +880,11 @@ final class HostStore {
             version: { status.version }
         )
         let services = ServiceManagementClient(
-            agentStatus: { .enabled }, registerAgent: {}, unregisterAgent: {},
+            agentStatus: { .enabled },
+            isAgentRegistrationCurrent: { true },
+            markAgentRegistrationCurrent: {},
+            registerAgent: {},
+            unregisterAgent: {},
             mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
             openLoginItemsSettings: {}
         )

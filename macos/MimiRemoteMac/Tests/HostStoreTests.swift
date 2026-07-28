@@ -304,6 +304,49 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.owner, .macApp)
     }
 
+    func testBootstrapReregistersEnabledAgentWhenRegistrationRevisionIsStale() async {
+        let events = EventRecorder()
+        let registration = LaggingAgentRegistration()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registration.nextStatus() },
+            isAgentRegistrationCurrent: { false },
+            markAgentRegistrationCurrent: { events.append("mark-registration") },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-mac", "register-mac", "mark-registration",
+        ])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+    }
+
+    func testBootstrapReusesEnabledAgentWhenRegistrationRevisionIsCurrent() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            isAgentRegistrationCurrent: { true },
+            markAgentRegistrationCurrent: { events.append("mark-registration") },
+            status: {
+                events.append("status")
+                return Self.readyStatus
+            },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["status"])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+    }
+
     func testMenuAppearanceReusesRecentBootstrapStatus() async {
         let events = EventRecorder()
         let current = AgentStatus(
@@ -397,6 +440,8 @@ final class HostStoreTests: XCTestCase {
         configExists: Bool,
         homebrewLoaded: Bool = false,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
+        isAgentRegistrationCurrent: @escaping @MainActor () -> Bool = { true },
+        markAgentRegistrationCurrent: @escaping @MainActor () -> Void = {},
         status: @escaping @Sendable () async throws -> AgentStatus = {
             HostStoreTests.readyStatus
         },
@@ -425,6 +470,8 @@ final class HostStoreTests: XCTestCase {
         )
         let services = ServiceManagementClient(
             agentStatus: agentStatus,
+            isAgentRegistrationCurrent: isAgentRegistrationCurrent,
+            markAgentRegistrationCurrent: markAgentRegistrationCurrent,
             registerAgent: registerAgent,
             unregisterAgent: unregisterAgent,
             mainAppStatus: { .enabled },
