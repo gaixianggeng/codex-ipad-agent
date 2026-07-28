@@ -87,6 +87,46 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertNil(store.customEmoji(profileID: "mac-b", projectID: "project-1"))
     }
 
+    func testLegacyEndpointEmojiRetriesAfterAmbiguityResolves() throws {
+        let key = "agentd.workspaceAppearancePreferences.v1"
+        let endpoint = "http://shared-mac.local:8787"
+        let legacy = [
+            "byEndpoint": [
+                endpoint: [
+                    "project-1": "🧑‍💻"
+                ]
+            ]
+        ]
+        defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: key)
+        let current = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let duplicate = ConnectionProfile(
+            id: "mac-b",
+            displayName: "Mac B",
+            endpoint: endpoint + "/",
+            lastSuccessfulAt: nil
+        )
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+
+        store.migrateLegacyValueIfNeeded(
+            profileID: current.id,
+            endpoint: current.endpoint,
+            profiles: [current, duplicate]
+        )
+        XCTAssertNil(store.customEmoji(profileID: current.id, projectID: "project-1"))
+
+        store.migrateLegacyValueIfNeeded(
+            profileID: current.id,
+            endpoint: current.endpoint,
+            profiles: [current]
+        )
+        XCTAssertEqual(store.customEmoji(profileID: current.id, projectID: "project-1"), "🧑‍💻")
+    }
+
     func testCustomEmojiAcceptsOneGraphemeAndRejectsPlainText() {
         XCTAssertEqual(WorkspaceAppearanceStore.normalizedEmoji("  🌈  "), "🌈")
         XCTAssertEqual(WorkspaceAppearanceStore.normalizedEmoji("⚾️"), "⚾️")
