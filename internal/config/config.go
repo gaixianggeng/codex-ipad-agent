@@ -69,6 +69,8 @@ type AppServerConfig struct {
 	Managed     bool   `json:"managed"`
 	Listen      string `json:"listen,omitempty"`
 	WSTokenFile string `json:"ws_token_file,omitempty"`
+	// AutoTitle 只在 Mac 端通过本机 app-server 生成标题，移动端不接触 provider 凭据。
+	AutoTitle bool `json:"auto_title"`
 }
 
 type VoiceConfig struct {
@@ -193,6 +195,7 @@ func defaults() Config {
 			Transport: "ws",
 			Managed:   true,
 			Listen:    defaultAppServerListen,
+			AutoTitle: true,
 		},
 		Voice: VoiceConfig{
 			CodexTranscriptionBaseURL: "https://chatgpt.com/backend-api",
@@ -271,6 +274,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("AGENTD_APP_SERVER_MANAGED"); v != "" {
 		cfg.AppServer.Managed = truthy(v)
+	}
+	if v := os.Getenv("AGENTD_APP_SERVER_AUTO_TITLE"); v != "" {
+		cfg.AppServer.AutoTitle = truthy(v)
 	}
 	if v := os.Getenv("AGENTD_CODEX_TRANSCRIPTION_BASE_URL"); v != "" {
 		cfg.Voice.CodexTranscriptionBaseURL = strings.TrimRight(strings.TrimSpace(v), "/")

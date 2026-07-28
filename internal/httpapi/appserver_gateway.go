@@ -301,11 +301,12 @@ type gatewayScope struct {
 }
 
 type appServerGatewayAllowedThread struct {
-	id        string
-	runtimeID string
-	cwd       string
-	scopeID   string
-	lastSeen  time.Time
+	id                string
+	runtimeID         string
+	cwd               string
+	scopeID           string
+	autoTitleEligible bool
+	lastSeen          time.Time
 }
 
 type appServerGatewayThreadWire struct {

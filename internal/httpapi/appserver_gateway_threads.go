@@ -138,6 +138,9 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
+		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
+			return payload, false, nil
+		}
 		p.rememberReplayedServerRequests(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
@@ -563,8 +566,9 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			continue
 		}
 		out = append(out, appServerGatewayAllowedThread{
-			id:        strings.TrimSpace(id),
-			runtimeID: normalizeAppServerRuntimeID(p.runtimeID),
+			id:                strings.TrimSpace(id),
+			runtimeID:         normalizeAppServerRuntimeID(p.runtimeID),
+			autoTitleEligible: pending.method == "thread/start" && normalizeAppServerRuntimeID(p.runtimeID) == "codex",
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,
 			scopeID: scope.id,
@@ -652,6 +656,9 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 		thread.runtimeID = "codex"
 	}
 	thread.runtimeID = normalizeAppServerRuntimeID(thread.runtimeID)
+	// 新建资格只属于发起 thread/start 的 gateway 连接。全局表服务断线恢复，
+	// 不能让一次 resume 在重连后把历史线程误判成新会话。
+	thread.autoTitleEligible = false
 	now := time.Now()
 	thread.lastSeen = now
 	r.gatewayThreadsMu.Lock()

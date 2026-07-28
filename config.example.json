@@ -11,7 +11,8 @@
     "transport": "ws",
     "managed": true,
     "listen": "ws://127.0.0.1:4222",
-    "ws_token_file": "/Users/you/Library/Application Support/mimi-remote/app-server-ws-token"
+    "ws_token_file": "/Users/you/Library/Application Support/mimi-remote/app-server-ws-token",
+    "auto_title": true
   },
   "voice": {
     "codex_transcription_base_url": "https://chatgpt.com/backend-api"

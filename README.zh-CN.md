@@ -80,6 +80,7 @@ iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界�
 ## 它不是口袋里的终端
 
 - Codex 的消息、推理、命令、Tool 调用、审批和执行过程会组成结构化时间线，不是一整屏终端日志。
+- 新建 Codex 会话由 Mac 端异步生成简短标题；生成失败不会阻塞对话，可通过 `app_server.auto_title` 关闭。
 - 模型、推理强度、Skill、速度、权限模式和待发送队列都留在 Composer 附近。
 - Markdown、图片、文件引用、语音输入和安全的 Quick Look 读取都按移动端内容呈现。
 - Worktree 与 Git 操作带预览、确认、超时和输出上限，不向手机暴露不受控的任意 Shell。
