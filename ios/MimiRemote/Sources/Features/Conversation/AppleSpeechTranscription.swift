@@ -50,9 +50,15 @@ enum AppleSpeechTranscriptionError: LocalizedError {
 final class AppleSpeechTranscriptionSession {
     private var analyzer: SpeechAnalyzer?
     private var audioEngine: AVAudioEngine?
+    private let audioSessionCoordinator: VoiceAudioSessionCoordinator
+    private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var isFinishing = false
+
+    init(audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared) {
+        self.audioSessionCoordinator = audioSessionCoordinator
+    }
 
     func start(
         locale: Locale,
@@ -109,7 +115,7 @@ final class AppleSpeechTranscriptionSession {
 
         try await analyzer.start(inputSequence: inputSequence)
         do {
-            try startAudioCapture(
+            try await startAudioCapture(
                 analyzerFormat: analyzerFormat,
                 continuation: continuation,
                 onLevel: onLevel,
@@ -126,7 +132,7 @@ final class AppleSpeechTranscriptionSession {
             return
         }
         isFinishing = true
-        stopAudioCapture()
+        await stopAudioCapture()
         inputContinuation?.finish()
         inputContinuation = nil
         try await analyzer.finalizeAndFinishThroughEndOfInput()
@@ -136,7 +142,7 @@ final class AppleSpeechTranscriptionSession {
 
     func cancel() async {
         isFinishing = true
-        stopAudioCapture()
+        await stopAudioCapture()
         inputContinuation?.finish()
         inputContinuation = nil
         resultsTask?.cancel()
@@ -151,60 +157,68 @@ final class AppleSpeechTranscriptionSession {
         continuation: AsyncStream<AnalyzerInput>.Continuation,
         onLevel: @escaping @MainActor (CGFloat) -> Void,
         onFailure: @escaping @MainActor (Error) -> Void
-    ) throws {
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    ) async throws {
+        let activation = try await audioSessionCoordinator.activate()
+        do {
+            // start() 等待系统会话期间可能已被取消；先检查，再触碰 MainActor 上的 engine。
+            try Task.checkCancellation()
 
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0,
-              inputFormat.channelCount > 0,
-              let converter = AppleSpeechAudioBufferConverter(from: inputFormat, to: analyzerFormat)
-        else {
-            throw AppleSpeechTranscriptionError.audioFormatUnavailable
-        }
+            let engine = AVAudioEngine()
+            let inputNode = engine.inputNode
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0,
+                  inputFormat.channelCount > 0,
+                  let converter = AppleSpeechAudioBufferConverter(from: inputFormat, to: analyzerFormat)
+            else {
+                throw AppleSpeechTranscriptionError.audioFormatUnavailable
+            }
 
-        var didFailConversion = false
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { buffer, _ in
-            guard !didFailConversion else { return }
-            do {
-                let converted = try converter.convert(buffer)
-                continuation.yield(AnalyzerInput(buffer: converted))
-                let level = AppleSpeechAudioLevel.normalizedPower(from: buffer)
-                Task { @MainActor in
-                    onLevel(level)
-                }
-            } catch {
+            var didFailConversion = false
+            inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { buffer, _ in
                 guard !didFailConversion else { return }
-                didFailConversion = true
-                continuation.finish()
-                Task { @MainActor in
-                    onFailure(error)
+                do {
+                    let converted = try converter.convert(buffer)
+                    continuation.yield(AnalyzerInput(buffer: converted))
+                    let level = AppleSpeechAudioLevel.normalizedPower(from: buffer)
+                    Task { @MainActor in
+                        onLevel(level)
+                    }
+                } catch {
+                    guard !didFailConversion else { return }
+                    didFailConversion = true
+                    continuation.finish()
+                    Task { @MainActor in
+                        onFailure(error)
+                    }
                 }
             }
-        }
-        engine.prepare()
-        do {
-            try engine.start()
+            engine.prepare()
+            do {
+                try engine.start()
+            } catch {
+                inputNode.removeTap(onBus: 0)
+                throw AppleSpeechTranscriptionError.recordingFailed
+            }
+            audioEngine = engine
+            audioSessionActivation = activation
         } catch {
-            inputNode.removeTap(onBus: 0)
-            throw AppleSpeechTranscriptionError.recordingFailed
+            await audioSessionCoordinator.deactivate(activation)
+            throw error
         }
-        audioEngine = engine
     }
 
-    private func stopAudioCapture() {
-        guard let audioEngine else {
-            return
+    private func stopAudioCapture() async {
+        if let audioEngine {
+            if audioEngine.isRunning {
+                audioEngine.stop()
+            }
+            audioEngine.inputNode.removeTap(onBus: 0)
+            self.audioEngine = nil
         }
-        if audioEngine.isRunning {
-            audioEngine.stop()
+        if let activation = audioSessionActivation {
+            audioSessionActivation = nil
+            await audioSessionCoordinator.deactivate(activation)
         }
-        audioEngine.inputNode.removeTap(onBus: 0)
-        self.audioEngine = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func reset() {

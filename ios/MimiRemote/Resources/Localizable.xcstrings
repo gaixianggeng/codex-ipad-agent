@@ -20968,6 +20968,41 @@
         }
       }
     },
+    "ui.saved_macs_count" : {
+      "comment" : "Number of Mac connection profiles saved on this device.",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Saved Mac"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Saved Macs"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "已保存 %lld 台 Mac"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "ui.saved_to_this_machine_and_preparing_to_send" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

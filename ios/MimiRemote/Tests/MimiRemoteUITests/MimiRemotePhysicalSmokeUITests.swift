@@ -194,6 +194,66 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "取消文件选择后 App 应保持前台运行")
     }
 
+    func testComposerSkillPickerSupportsImmediateMultiSelectFromBothEntrances() throws {
+        try openComposerIfNeeded()
+
+        let addContent = app.descendant(identifier: "composer.addContent")
+        XCTAssertTrue(addContent.waitForExistence(timeout: 10), "Composer 应展示加号入口")
+        addContent.tap()
+
+        let addContentSkill = app.descendant(identifier: "composer.addContent.skills")
+        XCTAssertTrue(addContentSkill.waitForExistence(timeout: 8), "添加内容面板应展示 Skill 入口")
+        addContentSkill.tap()
+
+        let imagegen = app.descendant(identifier: "composer.skillPicker.row.imagegen")
+        let swiftUI = app.descendant(identifier: "composer.skillPicker.row.swiftui-ui-patterns")
+        let done = app.descendant(identifier: "composer.skillPicker.done")
+        XCTAssertTrue(imagegen.waitForExistence(timeout: 8), "统一 Skill 面板应展示固定调试数据")
+        XCTAssertTrue(swiftUI.waitForExistence(timeout: 4))
+        XCTAssertTrue(done.waitForExistence(timeout: 4))
+        assertMinimumTouchTarget(imagegen, named: "Skill 行")
+        assertMinimumTouchTarget(done, named: "完成按钮")
+
+        imagegen.tap()
+        XCTAssertTrue(waitUntilSelected(imagegen), "勾选 Skill 后应立即生效")
+        swiftUI.tap()
+        XCTAssertTrue(waitUntilSelected(swiftUI), "同一面板应支持连续多选")
+        imagegen.tap()
+        XCTAssertTrue(waitUntilNotSelected(imagegen), "再次点击已选 Skill 应立即取消")
+        done.tap()
+
+        XCTAssertTrue(
+            app.descendant(identifier: "composer.skillAttachment.swiftui-ui-patterns")
+                .waitForExistence(timeout: 8),
+            "完成关闭面板后，当前勾选应保留到附件条"
+        )
+        XCTAssertFalse(
+            app.descendant(identifier: "composer.skillAttachment.imagegen").exists,
+            "已经取消的 Skill 不应留在附件条"
+        )
+
+        // iPad 保留输入框上方的快捷入口；iPhone 设计上只通过加号进入。
+        // 若当前布局有快捷入口，复用同一组行和即时多选语义再验证一次。
+        let directSkill = app.descendant(identifier: "composer.skill")
+        if directSkill.waitForExistence(timeout: 2), directSkill.isHittable {
+            directSkill.tap()
+            let directImagegen = app.descendant(identifier: "composer.skillPicker.row.imagegen")
+            let directSwiftUI = app.descendant(identifier: "composer.skillPicker.row.swiftui-ui-patterns")
+            XCTAssertTrue(directImagegen.waitForExistence(timeout: 8))
+            XCTAssertTrue(waitUntilSelected(directSwiftUI), "两个入口必须读取同一组选中状态")
+            directImagegen.tap()
+            XCTAssertTrue(waitUntilSelected(directImagegen))
+            app.descendant(identifier: "composer.skillPicker.done").tap()
+            XCTAssertTrue(
+                app.descendant(identifier: "composer.skillAttachment.imagegen")
+                    .waitForExistence(timeout: 8),
+                "快捷入口的选择也应写入同一附件条"
+            )
+        }
+
+        XCTAssertEqual(app.state, .runningForeground, "连续选择和取消 Skill 后 App 应保持前台运行")
+    }
+
     private func presentQRScanner() throws {
         installCameraPermissionMonitor()
 
@@ -401,6 +461,19 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 block: { object, _ in
                     guard let candidate = object as? XCUIElement else { return false }
                     return self.isSelected(candidate)
+                }
+            ),
+            object: element
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed
+    }
+
+    private func waitUntilNotSelected(_ element: XCUIElement) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                block: { object, _ in
+                    guard let candidate = object as? XCUIElement else { return false }
+                    return candidate.exists && !self.isSelected(candidate)
                 }
             ),
             object: element

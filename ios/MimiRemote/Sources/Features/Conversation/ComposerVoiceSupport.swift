@@ -479,6 +479,72 @@ enum AdvancedTurnOptionsError: LocalizedError {
     }
 }
 
+/// 将系统音频会话调用隔离在非 MainActor 的串行执行域中。
+///
+/// AVAudioSession 的 category/active 切换可能阻塞；UI 与录音器生命周期仍由 MainActor 管理，
+/// 这里只负责不可并发的系统会话状态，避免阻塞界面或发生旧清理关闭新录音的竞态。
+protocol VoiceAudioSessionBackend: Sendable {
+    func prepareForRecording() throws
+    func activateForRecording() throws
+    func deactivateRecording() throws
+}
+
+final class SystemVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
+    private let audioSession: AVAudioSession
+
+    init(audioSession: AVAudioSession = .sharedInstance()) {
+        self.audioSession = audioSession
+    }
+
+    func prepareForRecording() throws {
+        try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+    }
+
+    func activateForRecording() throws {
+        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    func deactivateRecording() throws {
+        try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+actor VoiceAudioSessionCoordinator {
+    struct Activation: Sendable, Equatable {
+        fileprivate let id: UUID
+    }
+
+    static let shared = VoiceAudioSessionCoordinator()
+
+    private let backend: any VoiceAudioSessionBackend
+    private var currentActivationID: UUID?
+
+    init(backend: any VoiceAudioSessionBackend = SystemVoiceAudioSessionBackend()) {
+        self.backend = backend
+    }
+
+    func prewarm() throws {
+        try backend.prepareForRecording()
+    }
+
+    func activate() throws -> Activation {
+        try backend.prepareForRecording()
+        try backend.activateForRecording()
+        let activation = Activation(id: UUID())
+        currentActivationID = activation.id
+        return activation
+    }
+
+    func deactivate(_ activation: Activation) {
+        // 快速停止后重新开始时，旧清理任务可能晚到；租约不匹配就不能关闭新会话。
+        guard currentActivationID == activation.id else {
+            return
+        }
+        currentActivationID = nil
+        try? backend.deactivateRecording()
+    }
+}
+
 @MainActor
 final class VoiceInputController: NSObject, ObservableObject {
     @Published private(set) var isPreparing = false
@@ -501,6 +567,14 @@ final class VoiceInputController: NSObject, ObservableObject {
     private var appleSession: AppleSpeechTranscriptionSession?
     private var appleLifecycleTask: Task<Void, Never>?
     private var appleFinishHandler: (() -> Void)?
+    private let audioSessionCoordinator: VoiceAudioSessionCoordinator
+    private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
+    private var audioSessionCleanupTask: Task<Void, Never>?
+
+    init(audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared) {
+        self.audioSessionCoordinator = audioSessionCoordinator
+        super.init()
+    }
 
     func start(onFinish: @escaping (VoiceRecordingResult?) -> Void) {
         guard activeProvider == nil, !isRecording, finishHandler == nil else {
@@ -543,7 +617,13 @@ final class VoiceInputController: NSObject, ObservableObject {
         isPreparing = true
         VoiceHaptics.prepareRecordingStarted()
 
+        let pendingAudioSessionCleanup = audioSessionCleanupTask
         Task {
+            // 新一轮录音必须等待上一轮清理落地，避免 category/active 状态交叉。
+            await pendingAudioSessionCleanup?.value
+            guard startRequestID == requestID else {
+                return
+            }
             // 按住说话时权限弹窗可能晚于松手返回；用 requestID 防止松手后又启动录音。
             guard await requestRecordPermission() else {
                 guard startRequestID == requestID else {
@@ -557,7 +637,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                 return
             }
             do {
-                try startRecording()
+                try await startRecording(requestID: requestID)
             } catch {
                 guard startRequestID == requestID else {
                     return
@@ -585,11 +665,15 @@ final class VoiceInputController: NSObject, ObservableObject {
 
         isPreparing = true
         VoiceHaptics.prepareRecordingStarted()
-        let session = AppleSpeechTranscriptionSession()
+        let session = AppleSpeechTranscriptionSession(audioSessionCoordinator: audioSessionCoordinator)
         appleSession = session
+        let pendingAudioSessionCleanup = audioSessionCleanupTask
         appleLifecycleTask = Task { [weak self, weak session] in
             guard let self, let session else { return }
             do {
+                // cancel() 会立即恢复 UI；真正开始下一轮前仍需等旧音频会话清理完毕。
+                await pendingAudioSessionCleanup?.value
+                guard startRequestID == requestID else { return }
                 guard await requestRecordPermission() else {
                     guard startRequestID == requestID else { return }
                     errorMessage = L10n.text("ui.microphone_permission_is_not_enabled_please_allow_it")
@@ -699,12 +783,17 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     private func cancelAppleTranscription(notifyFinish: Bool) {
         let session = appleSession
-        appleLifecycleTask?.cancel()
-        appleLifecycleTask = nil
-        completeAppleInteraction(notifyFinish: notifyFinish)
-        Task {
+        let lifecycleTask = appleLifecycleTask
+        lifecycleTask?.cancel()
+        let previousCleanup = audioSessionCleanupTask
+        audioSessionCleanupTask = Task {
+            // 等被取消的 start/finish 任务真正退出后再补一次幂等清理；
+            // 下一次 start 会等待这条任务链，避免旧 Apple 会话与新录音交叉。
+            await previousCleanup?.value
+            await lifecycleTask?.value
             await session?.cancel()
         }
+        completeAppleInteraction(notifyFinish: notifyFinish)
     }
 
     private func completeAppleInteraction(notifyFinish: Bool) {
@@ -717,7 +806,6 @@ final class VoiceInputController: NSObject, ObservableObject {
         isPreparing = false
         isRecording = false
         levelMeter.reset()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         if notifyFinish {
             handler?()
         }
@@ -755,37 +843,47 @@ final class VoiceInputController: NSObject, ObservableObject {
         guard recorder == nil, !isRecording else {
             return
         }
-        try? AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.duckOthers])
+        Task {
+            try? await audioSessionCoordinator.prewarm()
+        }
         VoiceHaptics.prepareRecordingStarted()
     }
 
-    private func startRecording() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    private func startRecording(requestID: UUID) async throws {
+        let activation = try await audioSessionCoordinator.activate()
+        do {
+            try Task.checkCancellation()
+            guard startRequestID == requestID else {
+                throw CancellationError()
+            }
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44_100,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        recorder.isMeteringEnabled = true
-        guard recorder.record() else {
-            throw VoiceInputError.recordingFailed
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("voice-\(UUID().uuidString)")
+                .appendingPathExtension("m4a")
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 44_100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
+            let recorder = try AVAudioRecorder(url: url, settings: settings)
+            recorder.isMeteringEnabled = true
+            guard recorder.record() else {
+                throw VoiceInputError.recordingFailed
+            }
+            self.recorder = recorder
+            audioSessionActivation = activation
+            recordingURL = url
+            recordingStartedAt = Date()
+            levelMeter.prepareForRecording()
+            isPreparing = false
+            isRecording = true
+            VoiceHaptics.recordingStarted()
+            startMetering()
+        } catch {
+            await audioSessionCoordinator.deactivate(activation)
+            throw error
         }
-        self.recorder = recorder
-        recordingURL = url
-        recordingStartedAt = Date()
-        levelMeter.prepareForRecording()
-        isPreparing = false
-        isRecording = true
-        VoiceHaptics.recordingStarted()
-        startMetering()
     }
 
     private func startMetering() {
@@ -871,7 +969,8 @@ final class VoiceInputController: NSObject, ObservableObject {
         isRecording = false
         activeProvider = nil
         levelMeter.reset()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        scheduleAudioSessionCleanup(audioSessionActivation)
+        audioSessionActivation = nil
         if let fileURL {
             finishHandler?(VoiceRecordingResult(
                 fileURL: fileURL,
@@ -882,6 +981,18 @@ final class VoiceInputController: NSObject, ObservableObject {
             finishHandler?(nil)
         }
         finishHandler = nil
+    }
+
+    private func scheduleAudioSessionCleanup(_ activation: VoiceAudioSessionCoordinator.Activation?) {
+        guard let activation else {
+            return
+        }
+        let previousCleanup = audioSessionCleanupTask
+        audioSessionCleanupTask = Task { [audioSessionCoordinator] in
+            // 清理任务排成一条链；即使用户快速点按，也不会并发改动系统音频会话。
+            await previousCleanup?.value
+            await audioSessionCoordinator.deactivate(activation)
+        }
     }
 
     nonisolated private static func normalizedPower(average: Float, peak: Float) -> CGFloat {

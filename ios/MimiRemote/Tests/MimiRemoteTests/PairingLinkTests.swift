@@ -563,6 +563,7 @@ final class PairingLinkTests: XCTestCase {
         )
 
         XCTAssertEqual(model.current?.id, "mac-a")
+        XCTAssertEqual(model.savedCount, 2)
         XCTAssertEqual(model.current?.canSwitch, false)
         XCTAssertEqual(model.current?.canDelete, false)
         XCTAssertEqual(model.others.map(\.id), ["mac-b"])

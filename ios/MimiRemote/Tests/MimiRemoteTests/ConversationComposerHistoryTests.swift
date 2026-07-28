@@ -343,6 +343,46 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(accumulator.text, "检查项目并补测试")
     }
 
+    func testVoiceAudioSessionCoordinatorSerializesLifecycleAndIgnoresStaleCleanup() async throws {
+        let backend = RecordingVoiceAudioSessionBackend()
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+
+        try await coordinator.prewarm()
+        let firstActivation = try await coordinator.activate()
+        let secondActivation = try await coordinator.activate()
+        await coordinator.deactivate(firstActivation)
+
+        // 第一轮清理晚到时不能关闭第二轮刚激活的会话。
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .prepare, .activate, .prepare, .activate]
+        )
+
+        await coordinator.deactivate(secondActivation)
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .prepare, .activate, .prepare, .activate, .deactivate]
+        )
+        XCTAssertFalse(backend.wasCalledOnMainThread)
+    }
+
+    func testVoiceAudioSessionCoordinatorPropagatesActivationFailure() async {
+        let backend = RecordingVoiceAudioSessionBackend(failingOperation: .activate)
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+
+        do {
+            _ = try await coordinator.activate()
+            XCTFail("Expected activation failure")
+        } catch let error as RecordingVoiceAudioSessionBackend.TestError {
+            XCTAssertEqual(error, .requestedFailure(.activate))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(backend.operations, [.prepare, .activate])
+        XCTAssertFalse(backend.wasCalledOnMainThread)
+    }
+
     func testComposerStateVoiceDraftRequiresReviewUntilSubmitted() throws {
         var composerState = ComposerState()
         XCTAssertFalse(composerState.voiceDraftNeedsReview)
@@ -2769,4 +2809,55 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(migratedAfterResolution.pinnedSessionIDs, ["legacy-session"])
     }
 
+}
+
+private final class RecordingVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
+    enum Operation: Equatable {
+        case prepare
+        case activate
+        case deactivate
+    }
+
+    enum TestError: Error, Equatable {
+        case requestedFailure(Operation)
+    }
+
+    private let lock = NSLock()
+    private let failingOperation: Operation?
+    private var storedOperations: [Operation] = []
+    private var storedWasCalledOnMainThread = false
+
+    init(failingOperation: Operation? = nil) {
+        self.failingOperation = failingOperation
+    }
+
+    var operations: [Operation] {
+        lock.withLock { storedOperations }
+    }
+
+    var wasCalledOnMainThread: Bool {
+        lock.withLock { storedWasCalledOnMainThread }
+    }
+
+    func prepareForRecording() throws {
+        try record(.prepare)
+    }
+
+    func activateForRecording() throws {
+        try record(.activate)
+    }
+
+    func deactivateRecording() throws {
+        try record(.deactivate)
+    }
+
+    private func record(_ operation: Operation) throws {
+        try lock.withLock {
+            storedOperations.append(operation)
+            storedWasCalledOnMainThread = storedWasCalledOnMainThread || Thread.isMainThread
+            if failingOperation == operation {
+                throw TestError.requestedFailure(operation)
+            }
+        }
+    }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 
 enum HostSwitcherPresentation {
     case sidebar
-    case compact(subtitle: String?)
+    case toolbar
 }
 
 struct HostSwitcherMenu: View {
@@ -102,23 +102,30 @@ struct HostSwitcherMenu: View {
                 }
             }
             .frame(maxWidth: 150, alignment: .leading)
-        case .compact(let subtitle):
-            VStack(spacing: 1) {
-                HStack(spacing: 5) {
-                    Text(profileName)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        case .toolbar:
+            // 顶栏只表达“当前 Mac 可切换”，完整名称/IP 和连接操作留在菜单内，
+            // 避免全局连接信息占据第二行并与当前页面争夺视觉中心。
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 16, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+
+                if isSwitching {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .offset(x: 3, y: 3)
+                } else {
+                    Circle()
+                        .fill(currentConnectionColor)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 2, y: 2)
                 }
             }
+            .foregroundStyle(.tint)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                Text("\(profileName)，\(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)")
+            )
         }
     }
 

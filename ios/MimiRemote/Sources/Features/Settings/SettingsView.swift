@@ -114,8 +114,15 @@ struct SettingsView: View {
                             connectionSettingsDestination = .management
                         } label: {
                             SettingsConnectionSummaryCell(
-                                title: L10n.text("ui.status"),
-                                value: compactConnectionStatusText,
+                                title: L10n.plural(
+                                    "ui.saved_macs_count",
+                                    count: appStore.connectionProfileSettingsModel.savedCount
+                                ),
+                                value: L10n.format(
+                                    "ui.labeled_value",
+                                    L10n.text("ui.current_mac"),
+                                    compactConnectionStatusText
+                                ),
                                 tint: connectionStatusTone(tokens: tokens),
                                 systemImage: nil
                             )

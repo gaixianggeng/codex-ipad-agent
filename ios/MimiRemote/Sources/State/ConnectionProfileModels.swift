@@ -60,6 +60,7 @@ struct ConnectionProfileSettingsItem: Identifiable, Equatable {
 struct ConnectionProfileSettingsModel: Equatable {
     let current: ConnectionProfileSettingsItem?
     let others: [ConnectionProfileSettingsItem]
+    let savedCount: Int
 
     init(profiles: [ConnectionProfile], activeProfileID: String?) {
         let items = profiles
@@ -72,6 +73,8 @@ struct ConnectionProfileSettingsModel: Equatable {
             .map { ConnectionProfileSettingsItem(profile: $0, isCurrent: $0.id == activeProfileID) }
         current = items.first(where: \.isCurrent)
         others = items.filter { !$0.isCurrent }
+        // 设置概览展示所有已保存设备；当前仍只有一个激活连接。
+        savedCount = items.count
     }
 }
 

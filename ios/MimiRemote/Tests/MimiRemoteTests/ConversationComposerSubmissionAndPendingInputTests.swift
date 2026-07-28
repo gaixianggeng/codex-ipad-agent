@@ -38,21 +38,47 @@ extension ConversationDataFlowTests {
         sessionStore.selectedSessionID = runningSession.id
         sessionStore.sessionControlStateByID[runningSession.id] = .takenOver
         let themeStore = ThemeStore(defaults: defaults)
-        let view = ComposerView(availableWidth: 390)
-            .environmentObject(sessionStore)
-            .environmentObject(themeStore)
-            .environment(\.horizontalSizeClass, .compact)
-            .defaultAppStorage(defaults)
-            .frame(width: 390, height: 360)
-        let host = UIHostingController(rootView: view)
+        let rootView: (CGFloat, CGFloat) -> AnyView = { width, height in
+            AnyView(
+                ComposerView(availableWidth: width)
+                    .environmentObject(sessionStore)
+                    .environmentObject(themeStore)
+                    .environment(\.horizontalSizeClass, .compact)
+                    .defaultAppStorage(defaults)
+                    .frame(width: width, height: height)
+            )
+        }
+        let host = UIHostingController(rootView: rootView(320, 520))
 
-        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 360)
-        host.view.setNeedsLayout()
-        host.view.layoutIfNeeded()
-        let fittingSize = host.sizeThatFits(in: CGSize(width: 390, height: 360))
+        // 同一个 Host 反复切换窄/宽与横竖尺寸，覆盖模型标题显隐和旋转后的重建。
+        let layoutScenarios: [(width: CGFloat, height: CGFloat)] = [
+            (320, 520),
+            (390, 360),
+            (667, 300),
+            (390, 360)
+        ]
+        for (width, height) in layoutScenarios {
+            host.rootView = rootView(width, height)
+            host.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            XCTAssertGreaterThan(host.sizeThatFits(in: CGSize(width: width, height: height)).height, 0)
+        }
+
+        // 运行态会增加“排队/引导”菜单；完成态移除它。来回切换验证两个泛型分支
+        // 都只通过浅层 shell 构建，不会再次把巨大 Menu 类型聚合进同一栈帧。
+        var completedSession = runningSession
+        completedSession.status = SessionStatus.completed.rawValue
+        completedSession.activeTurnID = nil
+        for session in [completedSession, runningSession, completedSession, runningSession] {
+            sessionStore.sessionsByID[session.id] = session
+            host.rootView = rootView(390, 360)
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            XCTAssertGreaterThan(host.sizeThatFits(in: CGSize(width: 390, height: 360)).height, 0)
+        }
 
         XCTAssertGreaterThan(host.view.bounds.width, 0)
-        XCTAssertGreaterThan(fittingSize.height, 0)
     }
 
     func testComposerRetiredTextViewDropsLateInputMethodCallbacks() {
@@ -103,6 +129,89 @@ extension ConversationDataFlowTests {
         coordinator.textViewDidEndEditing(textView)
 
         XCTAssertEqual(boundText, "", "已退休编辑器的迟到回调不能复活已发送正文")
+    }
+
+    func testComposerCoordinatorDropsDelegateWritesDuringSwiftUISynchronization() {
+        var boundText = "SwiftUI 草稿"
+        var focusRequestID: UUID?
+        let representable = makeComposerTextView(
+            text: Binding(
+                get: { boundText },
+                set: { boundText = $0 }
+            ),
+            focusRequestID: Binding(
+                get: { focusRequestID },
+                set: { focusRequestID = $0 }
+            )
+        )
+        let coordinator = representable.makeCoordinator()
+        let textView = CommandSubmitTextView()
+        textView.text = "UIKit 系统同步"
+
+        coordinator.performSwiftUISynchronization {
+            coordinator.textViewDidChange(textView)
+            coordinator.textViewDidChangeSelection(textView)
+            coordinator.textViewDidEndEditing(textView)
+        }
+
+        XCTAssertFalse(coordinator.isSynchronizingFromSwiftUI)
+        XCTAssertEqual(boundText, "SwiftUI 草稿", "SwiftUI 更新事务中的 delegate 回调不能反向写 Binding")
+    }
+
+    func testComposerCoordinatorPublishesRealUserInputOutsideSwiftUISynchronization() {
+        var boundText = ""
+        var focusRequestID: UUID?
+        let representable = makeComposerTextView(
+            text: Binding(
+                get: { boundText },
+                set: { boundText = $0 }
+            ),
+            focusRequestID: Binding(
+                get: { focusRequestID },
+                set: { focusRequestID = $0 }
+            )
+        )
+        let coordinator = representable.makeCoordinator()
+        let textView = CommandSubmitTextView()
+        textView.text = "真实用户输入"
+
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertEqual(boundText, "真实用户输入", "保护期外的真实输入仍需立即写回草稿")
+    }
+
+    func testComposerCoordinatorCoalescesSkillQueryToLatestInput() async {
+        var boundText = ""
+        var focusRequestID: UUID?
+        var reportedQueries: [String?] = []
+        let reported = expectation(description: "只发布最新 Skill 查询")
+        let representable = makeComposerTextView(
+            text: Binding(
+                get: { boundText },
+                set: { boundText = $0 }
+            ),
+            focusRequestID: Binding(
+                get: { focusRequestID },
+                set: { focusRequestID = $0 }
+            ),
+            onSkillQueryChange: { query in
+                reportedQueries.append(query?.query)
+                reported.fulfill()
+            }
+        )
+        let coordinator = representable.makeCoordinator()
+        let textView = CommandSubmitTextView()
+
+        textView.text = "$a"
+        textView.selectedRange = NSRange(location: 2, length: 0)
+        coordinator.textViewDidChange(textView)
+        textView.text = "$apple"
+        textView.selectedRange = NSRange(location: 6, length: 0)
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertTrue(reportedQueries.isEmpty, "Skill 查询不能在 UIKit delegate 调用栈里同步发布")
+        await fulfillment(of: [reported], timeout: 1)
+        XCTAssertEqual(reportedQueries, ["apple"])
     }
 
     func testComposerSubmissionRevisionProtectsNextDraftWithImage() throws {
@@ -202,5 +311,32 @@ extension ConversationDataFlowTests {
         state.resetForSessionChange()
         XCTAssertNil(state.activePresentationID)
         XCTAssertEqual(state.draft, PendingUserInputDraft())
+    }
+
+    private func makeComposerTextView(
+        text: Binding<String>,
+        focusRequestID: Binding<UUID?>,
+        onSkillQueryChange: @escaping (ComposerSkillQuery?) -> Void = { _ in }
+    ) -> ComposerTextView {
+        ComposerTextView(
+            text: text,
+            submitBridge: ComposerTextSubmitBridge(),
+            font: .preferredFont(forTextStyle: .body),
+            textColor: .label,
+            tintColor: .systemBlue,
+            externalTextRevision: 0,
+            focusRequestID: focusRequestID,
+            minHeight: 72,
+            maxHeight: 220,
+            onSubmit: { true },
+            onContentHeightChange: { _ in },
+            onCompositionStateChange: { _ in },
+            onVoiceShortcutPressChanged: { _ in },
+            skillAutocompleteActive: false,
+            onSkillQueryChange: onSkillQueryChange,
+            onSkillAutocompleteMove: { _ in },
+            onSkillAutocompleteCommit: {},
+            onSkillAutocompleteDismiss: {}
+        )
     }
 }

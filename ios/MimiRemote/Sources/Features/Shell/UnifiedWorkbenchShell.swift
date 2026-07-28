@@ -13,6 +13,35 @@ private enum AppSheetDestination: String, Identifiable {
     var id: String { rawValue }
 }
 
+/// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
+/// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
+@MainActor
+final class WorkbenchNavigationBindingScheduler {
+    enum Lane: Hashable {
+        case splitSelection
+        case compactTab
+        case compactSessionsPath
+        case compactWorkspacesPath
+    }
+
+    private var revisions: [Lane: UInt] = [:]
+
+    func schedule(
+        on lane: Lane,
+        action: @escaping @MainActor () -> Void
+    ) {
+        let revision = revisions[lane, default: 0] &+ 1
+        revisions[lane] = revision
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.revisions[lane] == revision else {
+                return
+            }
+            self.revisions[lane] = nil
+            action()
+        }
+    }
+}
+
 enum CompactWorkbenchTab: Hashable {
     case sessions
     case workspaces
@@ -397,6 +426,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var presentedSheet: AppSheetDestination?
     @State private var notificationVisibilitySceneID = UUID()
+    @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -510,16 +540,6 @@ struct UnifiedWorkbenchShell: View {
         TabView(selection: compactTabBinding(layout: layout)) {
             NavigationStack(path: compactPathBinding(for: .sessions, layout: layout)) {
                 sessionList(layout: layout)
-                    .toolbar {
-                        ToolbarItem(placement: .principal) {
-                            HostSwitcherMenu(
-                                presentation: .compact(subtitle: CompactWorkbenchTab.sessions.title),
-                                manageConnections: {
-                                    openConnectionSettings(layout: layout)
-                                }
-                            )
-                        }
-                    }
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
@@ -533,9 +553,9 @@ struct UnifiedWorkbenchShell: View {
             NavigationStack(path: compactPathBinding(for: .workspaces, layout: layout)) {
                 workspaces(layout: layout)
                     .toolbar {
-                        ToolbarItem(placement: .principal) {
+                        ToolbarItem(placement: .topBarLeading) {
                             HostSwitcherMenu(
-                                presentation: .compact(subtitle: CompactWorkbenchTab.workspaces.title),
+                                presentation: .toolbar,
                                 manageConnections: {
                                     openConnectionSettings(layout: layout)
                                 }
@@ -839,11 +859,16 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sessionList(layout: WorkbenchLayout) -> some View {
-        SessionListView(
+        let manageConnections: (() -> Void)? = layout.usesCompactNavigation
+            ? { openConnectionSettings(layout: layout) }
+            : nil
+
+        return SessionListView(
             onNewSession: { presentedSheet = .newSession },
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
-            }
+            },
+            manageConnections: manageConnections
         )
     }
 
@@ -873,15 +898,15 @@ struct UnifiedWorkbenchShell: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HostSwitcherMenu(
-                    presentation: .compact(
-                        subtitle: sessionStore.selectedSession?.title ?? L10n.text("ui.session")
-                    ),
-                    manageConnections: {
-                        openConnectionSettings(layout: layout)
-                    }
-                )
-                .frame(maxWidth: layout.titleMaxWidth, alignment: .leading)
+                // 会话详情优先展示当前任务；Mac 切换保留在上一级主界面，避免全局信息挤占标题。
+                Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
+                    .font(.headline)
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(.center)
+                    .frame(width: layout.titleMaxWidth)
+                    .accessibilityIdentifier("sessionDetail.title")
             }
             if layout.usesCompactNavigation {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -945,8 +970,14 @@ struct UnifiedWorkbenchShell: View {
             set: { destination in
                 // List 可能在数据刷新时短暂写 nil；忽略这一过渡值，避免无意关闭详情。
                 guard let destination else { return }
-                let source: WorkbenchRootPage? = if case .session = destination { .sessions } else { nil }
-                applyNavigation(.open(destination, source: source), layout: layout)
+                let expectedSelection = navigationState.selection
+                guard destination != expectedSelection else { return }
+                navigationBindingScheduler.schedule(on: .splitSelection) {
+                    // 外部恢复或会话选择若已推进导航，丢弃旧的 List 规范化回写。
+                    guard navigationState.selection == expectedSelection else { return }
+                    let source: WorkbenchRootPage? = if case .session = destination { .sessions } else { nil }
+                    applyNavigation(.open(destination, source: source), layout: layout)
+                }
             }
         )
     }
@@ -957,12 +988,19 @@ struct UnifiedWorkbenchShell: View {
     ) -> Binding<[AppDestination]> {
         Binding(
             get: {
-                tab == .workspaces
-                    ? navigationState.compactWorkspacePath
-                    : navigationState.compactSessionPath
+                compactPath(for: tab)
             },
             set: { path in
-                applyNavigation(.compactPathChanged(tab: tab, path: path), layout: layout)
+                let expectedPath = compactPath(for: tab)
+                guard path != expectedPath else { return }
+                let lane: WorkbenchNavigationBindingScheduler.Lane = tab == .workspaces
+                    ? .compactWorkspacesPath
+                    : .compactSessionsPath
+                navigationBindingScheduler.schedule(on: lane) {
+                    // 只接收基于当前 path 的最新写入，防止启动恢复后的旧 [] 覆盖详情页。
+                    guard compactPath(for: tab) == expectedPath else { return }
+                    applyNavigation(.compactPathChanged(tab: tab, path: path), layout: layout)
+                }
             }
         )
     }
@@ -971,9 +1009,20 @@ struct UnifiedWorkbenchShell: View {
         Binding(
             get: { navigationState.compactSelectedTab },
             set: { tab in
-                applyNavigation(.compactTabChanged(tab), layout: layout)
+                let expectedTab = navigationState.compactSelectedTab
+                guard tab != expectedTab else { return }
+                navigationBindingScheduler.schedule(on: .compactTab) {
+                    guard navigationState.compactSelectedTab == expectedTab else { return }
+                    applyNavigation(.compactTabChanged(tab), layout: layout)
+                }
             }
         )
+    }
+
+    private func compactPath(for tab: CompactWorkbenchTab) -> [AppDestination] {
+        tab == .workspaces
+            ? navigationState.compactWorkspacePath
+            : navigationState.compactSessionPath
     }
 
     private func open(
