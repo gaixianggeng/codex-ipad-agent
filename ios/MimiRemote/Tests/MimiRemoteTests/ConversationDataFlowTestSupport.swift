@@ -450,6 +450,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
+    let externalActivityResponses: [ExternalActivityResponse?]
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -498,6 +499,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
     private(set) var requestedRateLimitProviders: [String] = []
+    private(set) var externalActivityCallCount = 0
 
     init(
         projects: [AgentProject],
@@ -544,7 +546,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         runtimeChannelAvailability: [String: Bool] = [:],
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
-        threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil
+        threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
+        externalActivityResponses: [ExternalActivityResponse?] = []
     ) {
         self.projectsResult = projects
         self.sessionsResult = sessions
@@ -594,10 +597,20 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitsByRuntime = rateLimitsByRuntime
         self.rateLimitHandler = rateLimitHandler
         self.threadSearchHandler = threadSearchHandler
+        self.externalActivityResponses = externalActivityResponses
     }
 
     func projects() async throws -> [AgentProject] {
         projectsResult
+    }
+
+    func externalActivities() async throws -> ExternalActivityResponse? {
+        let index = min(externalActivityCallCount, max(0, externalActivityResponses.count - 1))
+        externalActivityCallCount += 1
+        guard !externalActivityResponses.isEmpty else {
+            return nil
+        }
+        return externalActivityResponses[index]
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {

@@ -339,6 +339,7 @@ struct ComposerStatusTray: View {
     let isGoalUpdating: Bool
     let goalErrorMessage: String?
     let isRefreshDisabled: Bool
+    let allowsTakeOver: Bool
     let onTakeOver: () -> Void
     let onRefreshUsage: () -> Void
     let onEditGoal: () -> Void
@@ -521,13 +522,15 @@ struct ComposerStatusTray: View {
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
-                Button(action: onTakeOver) {
-                    Text(L10n.text("ui.take_over"))
+                if allowsTakeOver {
+                    Button(action: onTakeOver) {
+                        Text(L10n.text("ui.take_over"))
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.accent)
             }
             .accessibilityElement(children: .combine)
             .accessibilityHint(notice)

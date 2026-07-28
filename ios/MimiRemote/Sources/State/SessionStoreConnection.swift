@@ -8,6 +8,13 @@ extension SessionStore {
         replayBufferedEvents: Bool = true,
         allowNonRunning: Bool = false
     ) {
+        guard !isExternalReadOnlySession(session) else {
+            if connectedSessionID == session.id {
+                disconnectWebSocket()
+            }
+            setWebSocketStatus(.disconnected)
+            return
+        }
         guard connectionTermination == nil, !appStore.requiresRePairing else {
             setWebSocketStatus(.terminated(.credentialsInvalid))
             return
@@ -1848,6 +1855,10 @@ extension SessionStore {
         reloadSessionControlStates()
         reloadSessionReminders()
         foregroundActivityBySessionID = [:]
+        externalActivityBySessionID = [:]
+        externalReadOnlySessionIDs = []
+        isRefreshingExternalActivity = false
+        externalActivityCapabilityUnavailable = false
         runtimeActivityBySessionID = [:]
         locallyCompletedSessionIDs = []
         locallyCompletedGoalThreadIDs = []

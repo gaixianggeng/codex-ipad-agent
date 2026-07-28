@@ -1047,6 +1047,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             isGoalUpdating: false,
             goalErrorMessage: nil,
             isRefreshDisabled: false,
+            allowsTakeOver: true,
             onTakeOver: {},
             onRefreshUsage: {},
             onEditGoal: {},
@@ -1284,6 +1285,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
+                isExternalReadOnly: false,
                 style: .library
             )
             SessionIndexRow(
@@ -1294,6 +1296,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
+                isExternalReadOnly: false,
                 style: .library
             )
         }

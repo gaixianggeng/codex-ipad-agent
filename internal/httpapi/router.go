@@ -38,6 +38,9 @@ type Router struct {
 	monitor        *relayMonitor
 	historyMedia   *appServerHistoryMediaStore
 	fileUploads    *fileUploadStore
+	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
+	// 它与本进程 app-server runtime 分离，不能被用于 resume、审批或中断外部 turn。
+	externalActivity externalActivitySource
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -127,6 +130,7 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
 		fileUploads:                 newFileUploadStore(defaultFileUploadRoot()),
+		externalActivity:            codexhistory.NewDefaultExternalActivityTracker(registry),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
@@ -182,6 +186,7 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 	mux.Handle("/api/voice/transcribe", r.auth.Middleware(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/runtime/status", r.auth.Middleware(http.HandlerFunc(r.runtimeStatusHandler)))
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
+	mux.Handle("/api/app-server/external-activity", r.auth.Middleware(http.HandlerFunc(r.externalActivityHandler)))
 	mux.Handle("/api/app-server/history-media/", r.auth.Middleware(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r

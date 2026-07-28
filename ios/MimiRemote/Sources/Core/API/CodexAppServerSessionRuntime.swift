@@ -165,6 +165,20 @@ actor CodexAppServerSessionRuntime {
         try await ensureConfig().projects
     }
 
+    func externalActivities() async throws -> ExternalActivityResponse? {
+        let config = try await ensureConfig()
+        let channel = config.channels.first { channel in
+            let channelRuntime = (channel.runtimeID ?? channel.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return channelRuntime == "codex"
+        }
+        guard channel?.capabilities?["external_activity"] == true else {
+            return nil
+        }
+        return try await AgentAPIClient(endpoint: endpoint, token: token).externalActivities()
+    }
+
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         let result = try await sendRecoveringFromStaleInitialization(
             CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).modelList()

@@ -765,6 +765,7 @@ struct UnifiedWorkbenchShell: View {
                 isArchived: sessionStore.isSessionArchived(session.id),
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
+                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                 style: .sidebar
             )
         }

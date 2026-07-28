@@ -728,6 +728,7 @@ struct ComposerView: View {
                 isGoalUpdating: sessionStore.isUpdatingThreadGoal,
                 goalErrorMessage: sessionStore.threadGoalErrorMessage,
                 isRefreshDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading,
+                allowsTakeOver: sessionStore.selectedSessionAllowsTakeOver,
                 onTakeOver: {
                     sessionStore.takeOverSelectedSession()
                 },

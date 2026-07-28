@@ -180,6 +180,7 @@ type appServerChannelCapability struct {
 	Compact          bool `json:"compact"`
 	Review           bool `json:"review"`
 	RateLimits       bool `json:"rate_limits"`
+	ExternalActivity bool `json:"external_activity"`
 }
 
 type appServerChannelPolicy struct {
@@ -421,6 +422,7 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Compact:          true,
 			Review:           true,
 			RateLimits:       true,
+			ExternalActivity: true,
 		},
 		Policy: appServerChannelPolicy{
 			ApprovalPolicies: []string{"on-request", "on-failure"},

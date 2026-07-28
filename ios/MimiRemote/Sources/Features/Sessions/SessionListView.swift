@@ -302,6 +302,7 @@ struct SessionListView: View {
                 isArchived: sessionStore.isSessionArchived(session.id),
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
+                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                 style: .library,
                 searchSnippet: sessionStore.sessionSearchSnippet(for: session.id)
             )
@@ -402,6 +403,7 @@ struct SessionIndexRow: View {
     let isArchived: Bool
     let reminder: SessionReminder?
     let isObserving: Bool
+    let isExternalReadOnly: Bool
     let style: SessionIndexRowStyle
     var searchSnippet: String? = nil
 
@@ -438,6 +440,13 @@ struct SessionIndexRow: View {
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
                 SessionRuntimeBadge(session: session, compact: style == .sidebar)
+
+                if isExternalReadOnly {
+                    Text("Mac · \(L10n.text("ui.just_observe"))")
+                        .font(themeStore.uiFont(size: style == .sidebar ? 9 : 11, weight: .semibold))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
 
                 Text(session.project.isEmpty ? session.dir : session.project)
                     .lineLimit(1)
@@ -589,7 +598,8 @@ private struct SessionRowActions: ViewModifier {
         let reminder = sessionStore.sessionReminder(for: session.id)
 
         content.contextMenu {
-            if sessionStore.isSessionObserving(session) {
+            if sessionStore.isSessionObserving(session),
+               !sessionStore.isExternalReadOnlySession(session) {
                 Button {
                     sessionStore.takeOverSession(session)
                 } label: {
@@ -650,6 +660,7 @@ private struct SessionRowActions: ViewModifier {
             } label: {
                 Label(isArchived ? L10n.text("ui.unarchive") : L10n.text("ui.archive"), systemImage: isArchived ? "archivebox.fill" : "archivebox")
             }
+            .disabled(sessionStore.isExternalReadOnlySession(session))
         }
         .sheet(item: $renameTarget) { target in
             SessionRenameSheet(session: target.session)

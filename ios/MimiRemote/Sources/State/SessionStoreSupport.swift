@@ -1316,7 +1316,23 @@ extension SessionStore {
         )
         let previewProjected = sessionApplyingListProjection(preserved)
         let monotonicRecency = sessionPreservingRecencyFloor(previewProjected)
-        return sessionApplyingRecentActivityProjection(monotonicRecency)
+        let recentProjected = sessionApplyingRecentActivityProjection(monotonicRecency)
+        return sessionApplyingExternalActivity(recentProjected)
+    }
+
+    func sessionApplyingExternalActivity(_ incoming: AgentSession) -> AgentSession {
+        guard let activity = externalActivityBySessionID[incoming.id],
+              activity.state == "running" else {
+            return incoming
+        }
+        var projected = incoming
+        projected.status = SessionStatus.running.rawValue
+        projected.activeTurnID = activity.turnID
+        projected.pendingApproval = nil
+        projected.pendingUserInput = nil
+        projected.updatedAt = max(incoming.updatedAt ?? .distantPast, activity.lastActivityAt)
+        projected.recencyAt = max(incoming.recencyAt ?? .distantPast, activity.lastActivityAt)
+        return projected
     }
 
     func sessionPreservingRecencyFloor(_ incoming: AgentSession) -> AgentSession {

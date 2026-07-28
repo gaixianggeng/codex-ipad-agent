@@ -98,6 +98,7 @@ protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
+    func externalActivities() async throws -> ExternalActivityResponse?
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -155,6 +156,12 @@ protocol SessionStoreAPIClient {
 }
 
 extension SessionStoreAPIClient {
+    func externalActivities() async throws -> ExternalActivityResponse? {
+        // 旧 agentd/iOS 测试客户端没有该能力时明确返回 nil；nil 表示“不支持”，
+        // 与新 agentd 返回 activities=[]（支持但当前无活动）不能混为一谈。
+        nil
+    }
+
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         let value = runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return value.isEmpty || value == "codex" || value == "openai"

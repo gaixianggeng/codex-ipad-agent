@@ -576,6 +576,10 @@ extension SessionStore {
         tokenBudget: Int64? = nil,
         runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
+        if let session = selectedSession, isExternalReadOnlySession(session) {
+            threadGoalErrorMessage = "Mac · \(L10n.text("ui.just_observe"))"
+            return false
+        }
         let normalizedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedObjective.isEmpty else {
             threadGoalErrorMessage = L10n.text("ui.target_content_cannot_be_empty")
@@ -660,6 +664,10 @@ extension SessionStore {
         queuedIntent: QueuedTurnIntent? = nil
     ) async -> Bool {
         guard !payload.isEmpty else {
+            return false
+        }
+        if let session = selectedSession, isExternalReadOnlySession(session) {
+            setErrorMessage("Mac · \(L10n.text("ui.just_observe"))")
             return false
         }
         if let notice = selectedQuotaNotice, notice.blocksSending {
@@ -1724,6 +1732,10 @@ extension SessionStore {
         status: ThreadGoalStatus?,
         tokenBudget: Int64?
     ) async -> Bool {
+        if let session = sessionsByID[threadID], isExternalReadOnlySession(session) {
+            threadGoalErrorMessage = "Mac · \(L10n.text("ui.just_observe"))"
+            return false
+        }
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let normalizedObjective, normalizedObjective.isEmpty {
             threadGoalErrorMessage = L10n.text("ui.target_content_cannot_be_empty")
@@ -1777,6 +1789,10 @@ extension SessionStore {
 
     func clearSelectedThreadGoal() async {
         guard let sessionID = selectedSessionID else {
+            return
+        }
+        if let session = sessionsByID[sessionID], isExternalReadOnlySession(session) {
+            threadGoalErrorMessage = "Mac · \(L10n.text("ui.just_observe"))"
             return
         }
         isUpdatingThreadGoal = true
