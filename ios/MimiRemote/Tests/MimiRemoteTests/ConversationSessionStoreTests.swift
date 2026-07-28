@@ -1012,6 +1012,30 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkbenchNavigationBindingSchedulerDefersAndCoalescesEachControl() async {
+        let scheduler = WorkbenchNavigationBindingScheduler()
+        let completed = expectation(description: "两个独立控件的最新导航写入已提交")
+        completed.expectedFulfillmentCount = 2
+        var operations: [String] = []
+
+        scheduler.schedule(on: .compactTab) {
+            operations.append("过期 Tab")
+            completed.fulfill()
+        }
+        scheduler.schedule(on: .compactTab) {
+            operations.append("最新 Tab")
+            completed.fulfill()
+        }
+        scheduler.schedule(on: .compactSessionsPath) {
+            operations.append("会话 Path")
+            completed.fulfill()
+        }
+
+        XCTAssertTrue(operations.isEmpty, "Binding setter 当下不能同步发布 SwiftUI 导航状态")
+        await fulfillment(of: [completed], timeout: 1)
+        XCTAssertEqual(operations, ["最新 Tab", "会话 Path"])
+    }
+
     func testWorkbenchVisibleSessionExcludesSettingsTabAndRootPages() {
         var state = WorkbenchNavigationState(
             route: .session(id: "session-visible", source: .sessions)

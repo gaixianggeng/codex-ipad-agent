@@ -143,6 +143,7 @@ struct SessionListView: View {
 
     var onNewSession: (() -> Void)?
     var onSelectSession: ((AgentSession) -> Void)?
+    var manageConnections: (() -> Void)?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -236,6 +237,16 @@ struct SessionListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $sessionStore.sessionSearchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: L10n.text("ui.search_session"))
         .toolbar {
+            if let manageConnections {
+                ToolbarItem(placement: .topBarLeading) {
+                    HostSwitcherMenu(
+                        presentation: .toolbar,
+                        manageConnections: manageConnections
+                    )
+                }
+                // 全局 Mac 入口与列表筛选是不同作用域，固定间隔让系统分别生成圆形材质。
+                ToolbarSpacer(.fixed, placement: .topBarLeading)
+            }
             ToolbarItem(placement: .topBarLeading) {
                 filterMenu(tokens: tokens)
             }

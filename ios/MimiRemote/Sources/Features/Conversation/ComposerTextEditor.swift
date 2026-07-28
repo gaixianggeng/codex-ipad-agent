@@ -149,7 +149,6 @@ struct ComposerTextView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> CommandSubmitTextView {
         let textView = CommandSubmitTextView()
-        textView.delegate = context.coordinator
         textView.onRetireFromComposer = { [weak coordinator = context.coordinator] in
             coordinator?.retireFromComposer()
         }
@@ -184,74 +183,80 @@ struct ComposerTextView: UIViewRepresentable {
         textView.accessibilityLabel = L10n.text("ui.enter_tasks_or_follow_up_instructions")
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         consumeFocusRequestIfNeeded(for: textView, coordinator: context.coordinator)
+        // 初始属性配置可能触发 TextKit 内部回调；最后再接入 delegate，避免把创建阶段
+        // 误判成用户输入并反向发布 SwiftUI Binding。
+        textView.delegate = context.coordinator
         return textView
     }
 
     func updateUIView(_ uiView: CommandSubmitTextView, context: Context) {
-        context.coordinator.parent = self
-        uiView.onRetireFromComposer = { [weak coordinator = context.coordinator] in
-            coordinator?.retireFromComposer()
-        }
-        submitBridge.attach(uiView)
-        uiView.onCommandSubmit = onSubmit
-        uiView.onContentLayoutChanged = { textView in
-            context.coordinator.reportContentHeight(for: textView)
-        }
-        uiView.onVoiceShortcutPressChanged = onVoiceShortcutPressChanged
-        uiView.isSkillAutocompleteActive = skillAutocompleteActive
-        uiView.onSkillAutocompleteMove = onSkillAutocompleteMove
-        uiView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
-        uiView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
-        consumeFocusRequestIfNeeded(for: uiView, coordinator: context.coordinator)
-        context.coordinator.updateCompositionState(uiView.hasMarkedText)
-        let shouldForceExternalTextSync = context.coordinator.lastAppliedExternalRevision != externalTextRevision
-
-        // 字体/颜色只在真正变化时赋值：UITextView 的 font setter 会让 TextKit 对整段文本重新排版，
-        // 打字时（尤其是中文 marked text 合成期间）每次按键都重设会打断输入法合成并造成可感知卡顿。
-        var needsContentHeightReport = false
-        if uiView.font != font {
-            uiView.font = font
-            needsContentHeightReport = true
-        }
-        if uiView.textColor != textColor {
-            uiView.textColor = textColor
-        }
-        if uiView.tintColor != tintColor {
-            uiView.tintColor = tintColor
-        }
-
-        if uiView.hasMarkedText, context.coordinator.lastSyncedText == text, !shouldForceExternalTextSync {
-            // 中文/日文等输入法会先把拼音或假名放在 marked text 中。此时外层草稿仍是
-            // 上一次已确认文本，不能把 SwiftUI 状态回灌到 UITextView，否则首个字母会被提交成正文。
-            if needsContentHeightReport {
-                context.coordinator.reportContentHeight(for: uiView)
+        let coordinator = context.coordinator
+        // updateUIView 本身运行在 SwiftUI 的视图更新事务中。整段同步都标记为系统驱动，
+        // 即使某个 UIKit setter 同步触发 delegate，也不能在同一事务里反向修改 Binding。
+        coordinator.performSwiftUISynchronization {
+            coordinator.parent = self
+            uiView.onRetireFromComposer = { [weak coordinator] in
+                coordinator?.retireFromComposer()
             }
-            return
-        }
-
-        guard context.coordinator.lastSyncedText != text || shouldForceExternalTextSync else {
-            if needsContentHeightReport {
-                context.coordinator.reportContentHeight(for: uiView)
+            submitBridge.attach(uiView)
+            uiView.onCommandSubmit = onSubmit
+            uiView.onContentLayoutChanged = { textView in
+                coordinator.reportContentHeight(for: textView)
             }
-            return
-        }
+            uiView.onVoiceShortcutPressChanged = onVoiceShortcutPressChanged
+            uiView.isSkillAutocompleteActive = skillAutocompleteActive
+            uiView.onSkillAutocompleteMove = onSkillAutocompleteMove
+            uiView.onSkillAutocompleteCommit = onSkillAutocompleteCommit
+            uiView.onSkillAutocompleteDismiss = onSkillAutocompleteDismiss
+            consumeFocusRequestIfNeeded(for: uiView, coordinator: coordinator)
+            coordinator.updateCompositionState(uiView.hasMarkedText)
+            let shouldForceExternalTextSync = coordinator.lastAppliedExternalRevision != externalTextRevision
 
-        // 外部清空/恢复草稿时才同步 UIKit 文本；用户正常输入由 delegate 单向写回，
-        // 避免中文 marked text 和光标位置在 SwiftUI 重算时被反复重置。
-        let previousText = uiView.text ?? ""
-        let selectedRange = uiView.selectedRange
-        context.coordinator.isApplyingExternalText = true
-        uiView.text = text
-        context.coordinator.lastSyncedText = text
-        context.coordinator.lastAppliedExternalRevision = externalTextRevision
-        context.coordinator.isApplyingExternalText = false
-        context.coordinator.updateCompositionState(false)
-        uiView.selectedRange = TextSelectionPolicy.rangeAfterExternalTextSync(
-            previousText: previousText,
-            nextText: text,
-            previousRange: selectedRange
-        )
-        context.coordinator.reportContentHeight(for: uiView)
+            // 字体/颜色只在真正变化时赋值：UITextView 的 font setter 会让 TextKit 对整段文本重新排版，
+            // 打字时（尤其是中文 marked text 合成期间）每次按键都重设会打断输入法合成并造成可感知卡顿。
+            var needsContentHeightReport = false
+            if uiView.font != font {
+                uiView.font = font
+                needsContentHeightReport = true
+            }
+            if uiView.textColor != textColor {
+                uiView.textColor = textColor
+            }
+            if uiView.tintColor != tintColor {
+                uiView.tintColor = tintColor
+            }
+
+            if uiView.hasMarkedText, coordinator.lastSyncedText == text, !shouldForceExternalTextSync {
+                // 中文/日文等输入法会先把拼音或假名放在 marked text 中。此时外层草稿仍是
+                // 上一次已确认文本，不能把 SwiftUI 状态回灌到 UITextView，否则首个字母会被提交成正文。
+                if needsContentHeightReport {
+                    coordinator.reportContentHeight(for: uiView)
+                }
+                return
+            }
+
+            guard coordinator.lastSyncedText != text || shouldForceExternalTextSync else {
+                if needsContentHeightReport {
+                    coordinator.reportContentHeight(for: uiView)
+                }
+                return
+            }
+
+            // 外部清空/恢复草稿时才同步 UIKit 文本；用户正常输入由 delegate 单向写回，
+            // 避免中文 marked text 和光标位置在 SwiftUI 重算时被反复重置。
+            let previousText = uiView.text ?? ""
+            let selectedRange = uiView.selectedRange
+            uiView.text = text
+            coordinator.lastSyncedText = text
+            coordinator.lastAppliedExternalRevision = externalTextRevision
+            coordinator.updateCompositionState(false)
+            uiView.selectedRange = TextSelectionPolicy.rangeAfterExternalTextSync(
+                previousText: previousText,
+                nextText: text,
+                previousRange: selectedRange
+            )
+            coordinator.reportContentHeight(for: uiView)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -283,10 +288,10 @@ struct ComposerTextView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerTextView
-        var isApplyingExternalText = false
         var lastSyncedText = ""
         var lastAppliedExternalRevision = 0
         var lastHandledFocusRequestID: UUID?
+        private(set) var isSynchronizingFromSwiftUI = false
         private var lastReportedContentHeight: CGFloat = 0
         private var pendingContentHeight: CGFloat?
         private var isContentHeightReportScheduled = false
@@ -294,15 +299,27 @@ struct ComposerTextView: UIViewRepresentable {
         private var pendingCompositionState: Bool?
         private var isCompositionStateReportScheduled = false
         private var lastSkillQuery: ComposerSkillQuery?
+        private var pendingSkillQuery: ComposerSkillQuery?
+        private var isSkillQueryReportScheduled = false
         private var isRetiredFromComposer = false
 
         init(_ parent: ComposerTextView) {
             self.parent = parent
         }
 
+        func performSwiftUISynchronization(_ updates: () -> Void) {
+            let wasAlreadySynchronizing = isSynchronizingFromSwiftUI
+            isSynchronizingFromSwiftUI = true
+            defer {
+                // 保留外层保护状态，让未来嵌套同步也不会提前开放 delegate 回写。
+                isSynchronizingFromSwiftUI = wasAlreadySynchronizing
+            }
+            updates()
+        }
+
         func textViewDidChange(_ textView: UITextView) {
             guard !isRetiredFromComposer,
-                  !isApplyingExternalText,
+                  !isSynchronizingFromSwiftUI,
                   (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
             else {
                 return
@@ -319,7 +336,7 @@ struct ComposerTextView: UIViewRepresentable {
 
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !isRetiredFromComposer,
-                  !isApplyingExternalText,
+                  !isSynchronizingFromSwiftUI,
                   (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
             else {
                 return
@@ -335,7 +352,7 @@ struct ComposerTextView: UIViewRepresentable {
 
         func textViewDidEndEditing(_ textView: UITextView) {
             guard !isRetiredFromComposer,
-                  !isApplyingExternalText,
+                  !isSynchronizingFromSwiftUI,
                   (textView as? CommandSubmitTextView)?.isRetiredFromComposer != true
             else {
                 return
@@ -434,11 +451,18 @@ struct ComposerTextView: UIViewRepresentable {
             guard !isRetiredFromComposer else { return }
             guard query != lastSkillQuery else { return }
             lastSkillQuery = query
+            pendingSkillQuery = query
+            guard !isSkillQueryReportScheduled else { return }
+            isSkillQueryReportScheduled = true
+            // 光标和正文经常在同一个输入事件里连续变化；只把这一拍的最终查询交给 SwiftUI。
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isRetiredFromComposer else {
                     return
                 }
-                self.parent.onSkillQueryChange(query)
+                self.isSkillQueryReportScheduled = false
+                let latestQuery = self.pendingSkillQuery
+                self.pendingSkillQuery = nil
+                self.parent.onSkillQueryChange(latestQuery)
             }
         }
 
@@ -447,6 +471,7 @@ struct ComposerTextView: UIViewRepresentable {
             pendingContentHeight = nil
             pendingCompositionState = nil
             lastSkillQuery = nil
+            pendingSkillQuery = nil
         }
 
         private func visibleContentHeight(for textView: UITextView) -> CGFloat {

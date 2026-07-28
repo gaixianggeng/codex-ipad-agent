@@ -60,6 +60,51 @@ struct ComposerToolbarControlLabel: View {
     }
 }
 
+/// 紧凑工具栏只持有已经擦除的子控件，避免父 View 的泛型类型继续聚合多个
+/// Menu/Popover。真正的复杂子树由 ComposerView 的独立非内联方法逐个构建。
+struct CompactComposerToolbarShell: View {
+    let leadingControls: AnyView
+    let optionsControl: AnyView
+    let microphoneControl: AnyView
+    let submitControl: AnyView
+
+    var body: some View {
+        HStack(spacing: 8) {
+            leadingControls
+            Spacer(minLength: 0)
+            optionsControl
+            microphoneControl
+            submitControl
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// 左侧连续胶囊同样保持固定类型；每个复杂控件先在独立栈帧里擦除，
+/// 再传入这里组合，防止真机在收集泛型元数据时触发 __chkstk_darwin。
+struct CompactComposerLeadingControlsShell: View {
+    let addControl: AnyView
+    let modelControl: AnyView
+    let deliveryControl: AnyView?
+    let backgroundColor: Color
+
+    var body: some View {
+        HStack(spacing: 0) {
+            addControl
+            modelControl
+            if let deliveryControl {
+                deliveryControl
+            }
+        }
+        .background {
+            Capsule()
+                .fill(backgroundColor)
+                .padding(.vertical, 4)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
     @ViewBuilder
@@ -88,6 +133,7 @@ extension ComposerView {
                 permissionModes: availablePermissionModes,
                 selectedPermissionMode: composerState.permissionMode,
                 showsCameraAction: showsCameraAttachmentAction,
+                selectedSkillPaths: selectedSkillPaths,
                 onPickFile: {
                     presentFileImporter()
                 },
@@ -97,8 +143,12 @@ extension ComposerView {
                 onPickPhotos: {
                     presentPhotoLibraryPicker()
                 },
-                onSkillShortcut: { skill in
-                    addSkillAttachment(skill)
+                onToggleSkill: { skill in
+                    toggleSkillAttachment(skill)
+                },
+                onManualAddSkill: {
+                    showsAddContentPanel = false
+                    showsManualSkillInputSheet = true
                 },
                 onPluginShortcut: { plugin in
                     composerState.insertPluginMention(plugin.presentationName)
@@ -1114,7 +1164,7 @@ extension ComposerView {
               photoLibraryPickerRequest == nil,
               cameraAttachmentPickerRequest == nil,
               cameraAttachmentAccessIssue == nil,
-              fileImporterRequest == nil,
+              !fileImporterPresentation.isPresented,
               !isRequestingCameraAuthorization
         else {
             return
@@ -1138,7 +1188,9 @@ extension ComposerView {
                     guard !Task.isCancelled else {
                         return
                     }
-                    fileImporterRequest = FileImporterRequest(targetScope: targetScope)
+                    fileImporterPresentation.present(
+                        FileImporterRequest(targetScope: targetScope)
+                    )
                 } catch {
                     attachmentErrorMessage = error.localizedDescription
                 }
@@ -1196,7 +1248,7 @@ extension ComposerView {
             guard photoLibraryPickerRequest == nil,
                   cameraAttachmentPickerRequest == nil,
                   cameraAttachmentAccessIssue == nil,
-                  fileImporterRequest == nil
+                  !fileImporterPresentation.isPresented
             else {
                 return
             }
@@ -1265,7 +1317,7 @@ extension ComposerView {
             try? await Task.sleep(for: .milliseconds(350))
             guard photoLibraryPickerRequest == nil,
                   cameraAttachmentPickerRequest == nil,
-                  fileImporterRequest == nil
+                  !fileImporterPresentation.isPresented
             else {
                 return
             }

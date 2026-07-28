@@ -414,6 +414,24 @@ struct FileImporterRequest: Identifiable, Equatable {
     let targetScope: ComposerDraftScopeKey
 }
 
+struct FileImporterPresentationState: Equatable {
+    private(set) var request: FileImporterRequest?
+    var isPresented = false
+
+    mutating func present(_ request: FileImporterRequest) {
+        self.request = request
+        isPresented = true
+    }
+
+    mutating func consumeRequest() -> FileImporterRequest? {
+        // 系统会先把 isPresented 写回 false，再调用文件选择结果回调。
+        // 请求上下文必须保留到回调消费，否则用户选中文件后会被静默忽略。
+        isPresented = false
+        defer { request = nil }
+        return request
+    }
+}
+
 struct AddContentPanel: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -432,10 +450,12 @@ struct AddContentPanel: View {
     let permissionModes: [ComposerPermissionMode]
     let selectedPermissionMode: ComposerPermissionMode
     let showsCameraAction: Bool
+    let selectedSkillPaths: Set<String>
     let onPickFile: () -> Void
     let onCapturePhoto: () -> Void
     let onPickPhotos: () -> Void
-    let onSkillShortcut: (SkillCapability) -> Void
+    let onToggleSkill: (SkillCapability) -> Void
+    let onManualAddSkill: () -> Void
     let onPluginShortcut: (CodexPluginCapability) -> Void
     let onRefreshCapabilities: () -> Void
     let onPermissionMode: (ComposerPermissionMode) -> Void
@@ -445,7 +465,7 @@ struct AddContentPanel: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         VStack(spacing: 0) {
-            if page != .root {
+            if page != .root && page != .skills {
                 panelHeader(tokens: tokens)
                     .padding(.bottom, 12)
             }
@@ -457,7 +477,30 @@ struct AddContentPanel: View {
                 case .plugins:
                     pluginList(tokens: tokens)
                 case .skills:
-                    skillList(tokens: tokens)
+                    SkillSelectionContent(
+                        skills: skillShortcuts,
+                        selectedPaths: selectedSkillPaths,
+                        errorMessage: capabilityErrorMessage,
+                        isRefreshing: isRefreshingCapabilities,
+                        maxListHeight: 320,
+                        onBack: {
+                            searchText = ""
+                            page = .root
+                        },
+                        onToggle: onToggleSkill,
+                        onRefresh: onRefreshCapabilities,
+                        onManualAdd: {
+                            // 先让当前展示层退出，再交给外层打开手动添加 Sheet，
+                            // 避免两个 presentation 在同一更新周期争抢宿主控制器。
+                            dismiss()
+                            DispatchQueue.main.async {
+                                onManualAddSkill()
+                            }
+                        },
+                        onDone: {
+                            dismiss()
+                        }
+                    )
                 case .permissions:
                     permissionList(tokens: tokens)
                 case .shortcuts:
@@ -607,6 +650,7 @@ struct AddContentPanel: View {
                 title: "Skill",
                 subtitle: skillShortcuts.isEmpty ? L10n.text("ui.add_structured_workflow") : L10n.plural("ui.skills_available_count", count: skillShortcuts.count),
                 systemImage: "wand.and.stars",
+                accessibilityIdentifier: "composer.addContent.skills",
                 tokens: tokens
             ) {
                 page = .skills
@@ -677,6 +721,7 @@ struct AddContentPanel: View {
                 title: "Skill",
                 subtitle: skillShortcuts.isEmpty ? L10n.text("ui.add_structured_workflow") : L10n.plural("ui.skills_available_count", count: skillShortcuts.count),
                 systemImage: "wand.and.stars",
+                accessibilityIdentifier: "composer.addContent.skills",
                 tokens: tokens
             ) {
                 page = .skills
@@ -750,6 +795,7 @@ struct AddContentPanel: View {
         title: String,
         subtitle: String,
         systemImage: String,
+        accessibilityIdentifier: String = "",
         tokens: ThemeTokens,
         action: @escaping () -> Void
     ) -> some View {
@@ -784,6 +830,7 @@ struct AddContentPanel: View {
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
     private func accessibleListActionButton(
@@ -876,52 +923,6 @@ struct AddContentPanel: View {
                             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
                             .disabled(!plugin.enabled)
                             .opacity(plugin.enabled ? 1 : 0.58)
-                        }
-                    }
-                }
-                .frame(maxHeight: 320)
-                .scrollIndicators(.hidden)
-            }
-        }
-    }
-
-    private func skillList(tokens: ThemeTokens) -> some View {
-        VStack(spacing: 10) {
-            searchField(placeholder: L10n.text("ui.search_skill"), tokens: tokens)
-            if filteredSkills.isEmpty {
-                emptyCapabilities(
-                    title: searchText.isEmpty ? L10n.text("ui.no_skills_available_yet") : L10n.text("ui.no_matching_skill"),
-                    detail: searchText.isEmpty ? L10n.text("ui.if_it_is_still_empty_after_refreshing_please") : L10n.text("ui.try_another_name"),
-                    tokens: tokens
-                )
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 7) {
-                        ForEach(filteredSkills) { skill in
-                            Button {
-                                onSkillShortcut(skill)
-                            } label: {
-                                HStack(spacing: 11) {
-                                    SkillIconView(metadata: SkillVisualMetadata(capability: skill), size: 38)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("$\(skill.presentationName)")
-                                            .font(themeStore.uiFont(.callout, weight: .semibold))
-                                            .foregroundStyle(tokens.primaryText)
-                                            .lineLimit(1)
-                                        Text(skill.presentationDescription ?? L10n.text("ui.added_as_structured_capability"))
-                                            .font(themeStore.uiFont(.caption))
-                                            .foregroundStyle(tokens.secondaryText)
-                                            .lineLimit(1)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    Image(systemName: "plus.circle.fill")
-                                        .foregroundStyle(tokens.accent)
-                                }
-                                .padding(10)
-                                .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            }
-                            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
                         }
                     }
                 }
@@ -1083,16 +1084,6 @@ struct AddContentPanel: View {
         }
     }
 
-    private var filteredSkills: [SkillCapability] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return skillShortcuts }
-        return skillShortcuts.filter { skill in
-            skill.name.localizedCaseInsensitiveContains(query)
-                || skill.presentationName.localizedCaseInsensitiveContains(query)
-                || (skill.presentationDescription?.localizedCaseInsensitiveContains(query) ?? false)
-        }
-    }
-
     private func pluginSubtitle(_ plugin: CodexPluginCapability) -> String {
         nonEmpty(plugin.description)
             ?? nonEmpty(plugin.marketplace)
@@ -1158,9 +1149,15 @@ private struct AddContentPanelPresentationSizing: ViewModifier {
             }
         } else {
             // 子页面继续沿用原来的尺寸和滚动策略。
-            content
-                .presentationSizing(.form)
-                .presentationDetents([.height(470)])
+            if usesAccessibilityLayout {
+                content
+                    .presentationSizing(.form)
+                    .presentationDetents([.large])
+            } else {
+                content
+                    .presentationSizing(.form)
+                    .presentationDetents([.height(470)])
+            }
         }
     }
 }

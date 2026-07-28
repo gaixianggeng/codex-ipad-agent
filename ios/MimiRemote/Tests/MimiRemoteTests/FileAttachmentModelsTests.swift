@@ -2,6 +2,23 @@ import XCTest
 @testable import MimiRemote
 
 final class FileAttachmentModelsTests: XCTestCase {
+    func testFileImporterKeepsRequestUntilResultCallbackAfterDismissal() {
+        let request = FileImporterRequest(
+            targetScope: .session("session-1")
+        )
+        var presentation = FileImporterPresentationState()
+
+        presentation.present(request)
+        XCTAssertTrue(presentation.isPresented)
+
+        // 模拟 SwiftUI 的真实顺序：选择器先关闭，结果回调随后才执行。
+        presentation.isPresented = false
+        XCTAssertEqual(presentation.request, request)
+        XCTAssertEqual(presentation.consumeRequest(), request)
+        XCTAssertNil(presentation.request)
+        XCTAssertFalse(presentation.isPresented)
+    }
+
     func testUploadedFilePersistsAsLocalOnlyInputType() throws {
         let file = makeFile()
         let input = CodexAppServerUserInput.uploadedFile(file)
