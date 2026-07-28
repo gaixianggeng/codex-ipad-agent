@@ -64,6 +64,91 @@ func TestRuntimeStatusRequiresAuthAndReturnsSanitizedCodexSnapshot(t *testing.T)
 	}
 }
 
+func TestRuntimeStatusKeepsSlowCodexQuotaProbeOffRequestPath(t *testing.T) {
+	baseResponder := runtimeStatusCodexResponder(t)
+	upstreamURL, _, _ := fakeAppServerUpstream(t, func(
+		conn *websocket.Conn,
+		messageType int,
+		payload []byte,
+	) {
+		var frame struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("无法解析 fake app-server frame：%v", err)
+			return
+		}
+		if frame.Method == "account/rateLimits/read" {
+			// 覆盖本次回归：真实机器首次额度读取超过旧的 3 秒预算。
+			time.Sleep(3500 * time.Millisecond)
+		}
+		baseResponder(conn, messageType, payload)
+	})
+	handler, _ := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, nil)
+
+	startedAt := time.Now()
+	rec := httptest.NewRecorder()
+	req := authedRequest(t, http.MethodGet, "/api/runtime/status", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	handler.ServeHTTP(rec, req)
+	if elapsed := time.Since(startedAt); elapsed >= 100*time.Millisecond {
+		t.Fatalf("慢 Codex 额度探测不能阻塞菜单请求：elapsed=%s", elapsed)
+	}
+	var first runtimeStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if !first.Refreshing {
+		t.Fatalf("首次请求应立即返回后台刷新占位：%+v", first)
+	}
+
+	_, response := readRuntimeStatusEventually(t, handler)
+	codex := response.Runtimes[0]
+	if codex.RateLimits == nil || codex.RateLimits.Secondary == nil ||
+		codex.RateLimits.Secondary.UsedPercent == nil {
+		t.Fatalf("后台慢查询完成后必须恢复 Codex 圆环数据：%+v", codex)
+	}
+}
+
+func TestCodexRuntimeKeepsRecentQuotaOnTransientProbeFailure(t *testing.T) {
+	baseResponder := runtimeStatusCodexResponder(t)
+	var quotaCalls atomic.Int32
+	upstreamURL, _, _ := fakeAppServerUpstream(t, func(
+		conn *websocket.Conn,
+		messageType int,
+		payload []byte,
+	) {
+		var frame struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("无法解析 fake app-server frame：%v", err)
+			return
+		}
+		if frame.Method == "account/rateLimits/read" && quotaCalls.Add(1) > 1 {
+			_ = conn.Close()
+			return
+		}
+		baseResponder(conn, messageType, payload)
+	})
+	_, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, nil)
+
+	first := router.probeCodexRuntime(context.Background())
+	if first.RateLimits == nil || first.RateLimits.Secondary == nil {
+		t.Fatalf("首次探测应写入额度缓存：%+v", first)
+	}
+	second := router.probeCodexRuntime(context.Background())
+	if second.RateLimits == nil || second.RateLimits.Secondary == nil ||
+		second.RateLimits.Secondary.UsedPercent == nil ||
+		*second.RateLimits.Secondary.UsedPercent !=
+			*first.RateLimits.Secondary.UsedPercent {
+		t.Fatalf("临时失败时应保留最近一次圆环数据：first=%+v second=%+v", first, second)
+	}
+	if second.State != runtimeStateConnected {
+		t.Fatalf("额度临时失败不能降低 Codex 连接状态：%+v", second)
+	}
+}
+
 func TestRuntimeStatusDoesNotTreatServerRequestAsRPCResponse(t *testing.T) {
 	var rejectedServerRequest atomic.Bool
 	upstreamURL, _, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
@@ -222,6 +307,47 @@ while IFS= read -r line; do :; done
 	}
 }
 
+func TestRuntimeStatusDoesNotWaitForSlowClaudeQuotaProbe(t *testing.T) {
+	upstreamURL, _, _ := fakeAppServerUpstream(t, runtimeStatusCodexResponder(t))
+	bridgePath := writeTestBridge(t, `#!/bin/sh
+IFS= read -r initialize
+printf '{"id":1,"result":{"userAgent":"fake-claude"}}\n'
+IFS= read -r initialized
+IFS= read -r rate_limit
+sleep 4
+printf '{"id":2,"result":{"rateLimits":{"limitId":"claude","availability":"available"}}}\n'
+while IFS= read -r line; do :; done
+`)
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridgePath
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+
+	startedAt := time.Now()
+	_, response := readRuntimeStatusEventually(t, handler)
+	if elapsed := time.Since(startedAt); elapsed >= 3*time.Second {
+		t.Fatalf("慢额度查询不能阻塞运行时连接状态：elapsed=%s", elapsed)
+	}
+	claude := response.Runtimes[1]
+	if claude.State != runtimeStateAvailable ||
+		claude.Version != "fake-claude" ||
+		claude.Reason != "quota_refresh_in_progress" {
+		t.Fatalf("额度超时时应先保留 Claude 连接与版本：%+v", claude)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cached := router.cachedClaudeRuntimeQuota(time.Now().UTC()); cached != nil {
+			if cached.Availability != "available" {
+				t.Fatalf("后台额度缓存异常：%+v", cached)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("慢额度查询完成后没有写入 Router 缓存")
+}
+
 func TestRuntimeVersionFromUserAgent(t *testing.T) {
 	tests := map[string]string{
 		"codex_cli_rs/0.146.0-alpha.3.1":  "0.146.0-alpha.3.1",
@@ -377,12 +503,89 @@ func TestRuntimeStatusCacheReturnsImmediatelyAndSingleFlightsRefresh(t *testing.
 	t.Fatal("runtime status cache 没有完成刷新")
 }
 
+func TestRuntimeStatusSuccessfulSnapshotStaysFreshForFiveMinutes(t *testing.T) {
+	base := time.Date(2026, time.July, 28, 2, 0, 0, 0, time.UTC)
+	now := base
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(
+		func(context.Context) runtimeStatusResponse {
+			probes.Add(1)
+			checkedAt := now
+			return runtimeStatusResponse{
+				CheckedAt: &checkedAt,
+				Runtimes: []runtimeAccountStatus{{
+					ID: "codex", Title: "Codex", Enabled: true, State: runtimeStateConnected,
+				}},
+			}
+		},
+		func() runtimeStatusResponse { return runtimeStatusResponse{} },
+	)
+	cache.now = func() time.Time { return now }
+	defer cache.Close()
+
+	_ = cache.Snapshot()
+	deadline := time.Now().Add(time.Second)
+	for cache.Snapshot().Refreshing && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if probes.Load() != 1 {
+		t.Fatalf("首次快照探测次数异常：%d", probes.Load())
+	}
+
+	now = base.Add(4*time.Minute + 59*time.Second)
+	if snapshot := cache.Snapshot(); snapshot.Refreshing || snapshot.Stale {
+		t.Fatalf("5 分钟内的成功快照应直接复用：%+v", snapshot)
+	}
+	if probes.Load() != 1 {
+		t.Fatalf("5 分钟内不能重复探测：%d", probes.Load())
+	}
+
+	now = base.Add(5 * time.Minute)
+	if snapshot := cache.Snapshot(); !snapshot.Refreshing || !snapshot.Stale {
+		t.Fatalf("5 分钟后应后台刷新并继续返回旧快照：%+v", snapshot)
+	}
+}
+
+func TestRuntimeStatusUnavailableQuotaUsesFailureTTL(t *testing.T) {
+	response := runtimeStatusResponse{
+		Runtimes: []runtimeAccountStatus{{
+			ID:      "claude",
+			Title:   "Claude",
+			Enabled: true,
+			State:   runtimeStateAvailable,
+			RateLimits: &runtimeRateLimits{
+				Availability:      "unavailable",
+				UnavailableReason: "headless_statusline_unavailable",
+			},
+		}},
+	}
+	if !runtimeStatusHasFailure(response) {
+		t.Fatal("Claude 额度不可用应使用短失败 TTL，以便登录后自动重试")
+	}
+}
+
+func TestClaudeUnavailableQuotaIsNotCached(t *testing.T) {
+	router := &Router{}
+	router.storeClaudeRuntimeQuota(&runtimeRateLimits{
+		Availability:      "unavailable",
+		UnavailableReason: "headless_statusline_unavailable",
+	})
+	if cached := router.cachedClaudeRuntimeQuota(time.Now().UTC()); cached != nil {
+		t.Fatalf("不可用结果不能阻止后续 OAuth 额度重试：%+v", cached)
+	}
+
+	router.storeClaudeRuntimeQuota(&runtimeRateLimits{Availability: "available"})
+	if cached := router.cachedClaudeRuntimeQuota(time.Now().UTC()); cached == nil {
+		t.Fatal("可用 Claude 额度仍应进入短缓存")
+	}
+}
+
 func readRuntimeStatusEventually(
 	t *testing.T,
 	handler http.Handler,
 ) (*httptest.ResponseRecorder, runtimeStatusResponse) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		rec := httptest.NewRecorder()
 		req := authedRequest(t, http.MethodGet, "/api/runtime/status", nil)

@@ -5,9 +5,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use alleycat_codex_proto as p;
 use anyhow::Result;
+use tokio::time::timeout;
 
 use crate::state::ConnectionState;
 
@@ -75,8 +77,9 @@ pub fn handle_account_read(
 pub async fn handle_account_rate_limits_read(
     state: &Arc<ConnectionState>,
 ) -> p::GetAccountRateLimitsResponse {
-    const OAUTH_CACHE_SECS: i64 = 60;
+    const OAUTH_CACHE_SECS: i64 = 5 * 60;
     const OAUTH_RETRY_SECS: i64 = 15;
+    const OAUTH_REFRESH_BUDGET: Duration = Duration::from_secs(6);
     let now = chrono::Utc::now().timestamp();
     if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
         return p::GetAccountRateLimitsResponse {
@@ -84,32 +87,47 @@ pub async fn handle_account_rate_limits_read(
             rate_limits_by_limit_id: None,
         };
     }
-    // 设置页可能同时触发多次刷新。串行化首次 Keychain/API 查询，让后续请求
-    // 等待并复用缓存，避免后到的 unavailable 覆盖先到的成功结果。
-    let _refresh_guard = state.lock_oauth_rate_limit_refresh().await;
-    let now = chrono::Utc::now().timestamp();
-    if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
-        return p::GetAccountRateLimitsResponse {
-            rate_limits: snapshot,
-            rate_limits_by_limit_id: None,
-        };
-    }
-    if state.begin_oauth_rate_limit_refresh(now, OAUTH_RETRY_SECS) {
-        match crate::oauth_usage::fetch_rate_limit_snapshot(state.claude_pool().claude_bin()).await
-        {
-            Ok(snapshot) => {
-                state.store_oauth_rate_limit(snapshot.clone(), now);
-                return p::GetAccountRateLimitsResponse {
-                    rate_limits: snapshot,
-                    rate_limits_by_limit_id: None,
-                };
-            }
-            Err(err) => {
-                // OAuth 是展示增强能力；凭据缺失、过期或临时网络失败都必须安全
-                // 降级到官方事件缓存，不能影响 Claude 会话与发送链路。
-                tracing::debug!(error = %err, "Claude OAuth usage unavailable; falling back to observed events");
+    // 设置页和菜单栏可能同时触发刷新。包括等待 single-flight 锁在内，整条
+    // Keychain/OAuth 链路最多占用 6 秒；超时会取消隐藏的 Claude CLI/curl，
+    // 避免断开的菜单客户端在 bridge 内留下长达数十秒的工作。
+    let refresh_result = timeout(OAUTH_REFRESH_BUDGET, async {
+        let _refresh_guard = state.lock_oauth_rate_limit_refresh().await;
+        let now = chrono::Utc::now().timestamp();
+        if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
+            return Some(snapshot);
+        }
+        if state.begin_oauth_rate_limit_refresh(now, OAUTH_RETRY_SECS) {
+            match crate::oauth_usage::fetch_rate_limit_snapshot(state.claude_pool().claude_bin())
+                .await
+            {
+                Ok(snapshot) => {
+                    state.store_oauth_rate_limit(snapshot.clone(), chrono::Utc::now().timestamp());
+                    return Some(snapshot);
+                }
+                Err(err) => {
+                    // OAuth 是展示增强能力；凭据缺失、过期或临时网络失败都必须安全
+                    // 降级到官方事件缓存，不能影响 Claude 会话与发送链路。
+                    tracing::debug!(
+                        error = %err,
+                        "Claude OAuth usage unavailable; falling back to observed events"
+                    );
+                }
             }
         }
+        None
+    })
+    .await;
+    if let Ok(Some(snapshot)) = refresh_result {
+        return p::GetAccountRateLimitsResponse {
+            rate_limits: snapshot,
+            rate_limits_by_limit_id: None,
+        };
+    }
+    if refresh_result.is_err() {
+        tracing::debug!(
+            budget_secs = OAUTH_REFRESH_BUDGET.as_secs(),
+            "Claude OAuth usage refresh exceeded budget; falling back to observed events"
+        );
     }
 
     let infos: Vec<_> = state.caches().rate_limit_infos.into_values().collect();

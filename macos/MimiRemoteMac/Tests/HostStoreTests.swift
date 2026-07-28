@@ -304,6 +304,95 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.owner, .macApp)
     }
 
+    func testMenuAppearanceReusesRecentBootstrapStatus() async {
+        let events = EventRecorder()
+        let current = AgentStatus(
+            processOK: Self.readyStatus.processOK,
+            serviceOK: Self.readyStatus.serviceOK,
+            processError: Self.readyStatus.processError,
+            serviceError: Self.readyStatus.serviceError,
+            version: Self.readyStatus.version,
+            serverVersion: Self.readyStatus.serverVersion,
+            endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath,
+            projects: Self.readyStatus.projects,
+            doctorOK: Self.readyStatus.doctorOK,
+            doctor: Self.readyStatus.doctor,
+            pairExpires: Self.readyStatus.pairExpires,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2026-07-28T02:00:00Z",
+                runtimes: [],
+                refreshing: false,
+                stale: false
+            )
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                events.append("status")
+                return current
+            }
+        )
+
+        await store.bootstrap()
+        await store.refreshIfNeeded()
+
+        XCTAssertEqual(events.values, ["status"])
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testTransientMissingRuntimeStatusPreservesPreviousSnapshotAsStale() async {
+        let events = EventRecorder()
+        let snapshot = AgentRuntimeStatusSnapshot(
+            checkedAt: "2026-07-28T02:00:00Z",
+            runtimes: [
+                AgentRuntimeStatus(
+                    id: "codex",
+                    title: "Codex",
+                    enabled: true,
+                    state: .connected,
+                    authMode: "chatgpt",
+                    planType: "pro",
+                    reason: nil,
+                    rateLimits: nil
+                ),
+            ],
+            refreshing: false,
+            stale: false
+        )
+        let statusWithRuntime = AgentStatus(
+            processOK: Self.readyStatus.processOK,
+            serviceOK: Self.readyStatus.serviceOK,
+            processError: Self.readyStatus.processError,
+            serviceError: Self.readyStatus.serviceError,
+            version: Self.readyStatus.version,
+            serverVersion: Self.readyStatus.serverVersion,
+            endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath,
+            projects: Self.readyStatus.projects,
+            doctorOK: Self.readyStatus.doctorOK,
+            doctor: Self.readyStatus.doctor,
+            pairExpires: Self.readyStatus.pairExpires,
+            runtimeStatus: snapshot
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                events.append("status")
+                return events.values.count == 1 ? statusWithRuntime : Self.readyStatus
+            }
+        )
+
+        await store.bootstrap()
+        await store.refresh()
+
+        XCTAssertEqual(events.values, ["status", "status"])
+        XCTAssertEqual(store.status?.runtimeStatus?.runtimes.map(\.id), ["codex"])
+        XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
+    }
+
     private func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,

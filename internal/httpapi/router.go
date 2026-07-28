@@ -48,6 +48,16 @@ type Router struct {
 	// 让菜单栏展示运行时长，而不是误用 agentd 或 Mac App 自身的存活时间。
 	runtimeProcessMu      sync.RWMutex
 	codexRuntimeStartedAt time.Time
+	// Codex 连接探测与额度读取共用一个 app-server 会话。额度偶发超时时保留最近一次
+	// 脱敏窗口，避免菜单把三个圆环整块移除；缓存只存百分比和重置时间，不含账号信息。
+	codexRuntimeQuotaMu        sync.RWMutex
+	codexRuntimeQuota          *runtimeRateLimits
+	codexRuntimeQuotaCheckedAt time.Time
+	// 菜单只为 Claude 额度等待很短时间；慢查询完成后把脱敏结果留在 Router，
+	// 下一轮状态刷新无需依赖已经断开的匿名 bridge connection。
+	claudeRuntimeQuotaMu        sync.RWMutex
+	claudeRuntimeQuota          *runtimeRateLimits
+	claudeRuntimeQuotaCheckedAt time.Time
 	// pairingClaims 只记录短期票据的签名和过期时间，不保存长期 Token。
 	// 状态仅需覆盖当前进程内的短期重放窗口，服务重启后丢失是可接受的 MVP 取舍。
 	pairingClaimsMu sync.Mutex

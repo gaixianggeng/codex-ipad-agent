@@ -141,13 +141,21 @@ struct AgentRuntimeStatusSnapshot: Codable, Equatable, Sendable {
         guard let checkedDate else {
             return refreshing != true
         }
-        return now.timeIntervalSince(checkedDate) > 2 * 60
+        // 服务端成功快照缓存 5 分钟；本地多留 1 分钟容差，避免时钟/调度抖动
+        // 把服务端仍认可的数据提前染成“已过期”。
+        return now.timeIntervalSince(checkedDate) > 6 * 60
     }
 
     var hasRetryableFailure: Bool {
         runtimes.contains {
-            $0.enabled
-                && $0.state == .unavailable
+            guard $0.enabled else { return false }
+            if $0.reason == "quota_refresh_in_progress" {
+                return true
+            }
+            if $0.rateLimits?.availability?.lowercased() == "unavailable" {
+                return true
+            }
+            return $0.state == .unavailable
                 && $0.reason != "refresh_in_progress"
         }
     }

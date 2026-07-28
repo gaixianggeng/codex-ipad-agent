@@ -7,6 +7,9 @@ private enum MenuBarLayout {
     static let symbolColumnWidth: CGFloat = 16
     static let symbolTextSpacing: CGFloat = 8
     static let textColumnLeading = sectionInset + symbolColumnWidth + symbolTextSpacing
+    // 同组操作使用固定高度，避免分隔线、悬停底色或文案状态造成视觉节奏跳动。
+    static let actionRowHeight: CGFloat = 40
+    static let actionDividerOpacity: Double = 0.28
 }
 
 struct MenuBarContentView: View {
@@ -75,7 +78,7 @@ struct MenuBarContentView: View {
                 }
 
                 Divider()
-                    .opacity(0.4)
+                    .opacity(MenuBarLayout.actionDividerOpacity)
                     .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
@@ -86,7 +89,7 @@ struct MenuBarContentView: View {
                 }
 
                 Divider()
-                    .opacity(0.4)
+                    .opacity(MenuBarLayout.actionDividerOpacity)
                     .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
@@ -99,7 +102,7 @@ struct MenuBarContentView: View {
 
                 if store.owner == .macApp {
                     Divider()
-                        .opacity(0.4)
+                        .opacity(MenuBarLayout.actionDividerOpacity)
                         .padding(.leading, MenuBarLayout.textColumnLeading)
 
                     MenuActionRow(
@@ -114,7 +117,7 @@ struct MenuBarContentView: View {
                 }
 
                 Divider()
-                    .opacity(0.4)
+                    .opacity(MenuBarLayout.actionDividerOpacity)
                     .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
@@ -138,7 +141,7 @@ struct MenuBarContentView: View {
             value: store.lifecycle
         )
         .task {
-            await store.refresh()
+            await store.refreshIfNeeded()
         }
     }
 
@@ -381,7 +384,7 @@ private struct MenuRuntimeSummary: View {
     var body: some View {
         let codex = runtime(id: "codex")
         let claude = runtime(id: "claude")
-        let usageItems = MenuRuntimePresentation.usageItems(codex: codex, claude: claude)
+        let usageSlots = MenuRuntimePresentation.usageSlots(codex: codex, claude: claude)
 
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 5) {
@@ -405,6 +408,12 @@ private struct MenuRuntimeSummary: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, MenuBarLayout.sectionInset)
 
+            if !usageSlots.isEmpty {
+                MenuRuntimeUsageOverview(slots: usageSlots)
+                    // 先展示额度总览，再展示各运行时详情，扫描顺序与信息层级一致。
+                    .padding(.horizontal, MenuBarLayout.sectionInset)
+            }
+
             MenuRuntimeRow(
                 runtime: codex,
                 fallbackTitle: "Codex",
@@ -424,16 +433,6 @@ private struct MenuRuntimeSummary: View {
                 isStale: isStale,
                 missingDetail: missingDetail
             )
-
-            if !usageItems.isEmpty {
-                MenuRuntimeUsageOverview(
-                    items: usageItems,
-                    expectedRingCount: claude?.enabled == true ? 3 : 1
-                )
-                // 额度卡是独立模块，不继承运行时行的图标/文字列缩进。
-                // 左右使用相同分区边距，保证卡片中心与菜单内容中心一致。
-                .padding(.horizontal, MenuBarLayout.sectionInset)
-            }
         }
     }
 
@@ -513,7 +512,7 @@ private struct MenuRuntimeRow: View {
 
                     Text(stateTitle)
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(stateColor)
+                        .foregroundStyle(stateTextColor)
 
                     if let accountLabel {
                         Text("· \(accountLabel)")
@@ -583,7 +582,9 @@ private struct MenuRuntimeRow: View {
 
     private var stateTitle: String {
         if runtime?.state == .disabled { return "未启用" }
-        if isStale { return "状态已过期" }
+        // stale-while-revalidate：有旧快照时继续展示最后已知连接状态，
+        // 刷新进度由分区标题承接，不把两行都降级成“过期”。
+        if isStale, !isRefreshing { return "状态已过期" }
         if isRefreshing, runtime?.reason == "refresh_in_progress" {
             return "正在刷新"
         }
@@ -625,7 +626,7 @@ private struct MenuRuntimeRow: View {
 
     private var stateColor: Color {
         if runtime?.state == .disabled { return .secondary }
-        if isStale { return .orange }
+        if isStale, !isRefreshing { return .orange }
         if isRefreshing, runtime?.reason == "refresh_in_progress" {
             return .secondary
         }
@@ -638,6 +639,16 @@ private struct MenuRuntimeRow: View {
         case .signedOut: return Color.orange
         case .disabled: return Color.secondary
         case .unavailable: return Color.red
+        }
+    }
+
+    private var stateTextColor: Color {
+        if isStale, !isRefreshing { return Color.orange.opacity(0.8) }
+        guard let runtime else { return .secondary }
+        switch runtime.state {
+        case .signedOut: return Color.orange.opacity(0.8)
+        case .unavailable: return Color.red.opacity(0.8)
+        case .connected, .available, .disabled: return .secondary
         }
     }
 
@@ -696,28 +707,18 @@ private struct MenuRuntimeRow: View {
 }
 
 private struct MenuRuntimeUsageOverview: View {
-    let items: [MenuRuntimeUsageItem]
-    let expectedRingCount: Int
+    let slots: [MenuRuntimeUsageSlot]
 
     var body: some View {
-        VStack(alignment: .center, spacing: 8) {
-            MenuRuntimeUsageRingsGraphic(
-                items: items,
-                expectedRingCount: expectedRingCount
-            )
-            // 圆环相对整个额度卡片居中，而不是相对左侧信息栏居中。
-            .frame(maxWidth: .infinity, alignment: .center)
+        HStack(alignment: .center, spacing: 14) {
+            MenuRuntimeUsageRingsGraphic(slots: slots)
+                .fixedSize()
 
-            HStack(alignment: .top, spacing: 4) {
-                ForEach(items) { item in
-                    MenuRuntimeUsageCompactColumn(item: item)
-                        .frame(maxWidth: .infinity, alignment: .top)
-                }
-            }
-            .frame(maxWidth: .infinity)
+            MenuRuntimeUsageInfoRows(slots: slots)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             Color.primary.opacity(0.04),
             in: RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -726,11 +727,10 @@ private struct MenuRuntimeUsageOverview: View {
     }
 }
 
-/// 与设置页一致的三层同心圆：Codex 长窗口、Claude 长窗口、Claude 短窗口。
-/// 菜单栏只缩小尺寸，不改变颜色、顺序和“剩余额度”语义。
+/// 三层同心圆依次表示 Codex 长窗口、Claude 长窗口、Claude 短窗口。
+/// 菜单栏降低强调色强度，避免小面积高饱和颜色在浅色材质上过度刺眼。
 private struct MenuRuntimeUsageRingsGraphic: View {
-    let items: [MenuRuntimeUsageItem]
-    let expectedRingCount: Int
+    let slots: [MenuRuntimeUsageSlot]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let diameter: CGFloat = 74
@@ -738,12 +738,12 @@ private struct MenuRuntimeUsageRingsGraphic: View {
     private let ringStep: CGFloat = 20
 
     var body: some View {
-        let ringCount = min(max(expectedRingCount, items.count), 3)
+        let ringCount = min(slots.count, 3)
 
         ZStack(alignment: .center) {
             ForEach(0..<ringCount, id: \.self) { index in
                 let ringDiameter = diameter - CGFloat(index) * ringStep
-                let item = index < items.count ? items[index] : nil
+                let item = slots[index].item
 
                 ZStack {
                     Circle()
@@ -772,61 +772,92 @@ private struct MenuRuntimeUsageRingsGraphic: View {
 
     private func itemTint(_ item: MenuRuntimeUsageItem?) -> Color {
         guard let item else { return .secondary }
-        if item.isExhausted { return .red }
+        if item.isExhausted { return Color.red.opacity(0.82) }
         switch item.tintRole {
-        case .codexLong: return .pink
-        case .claudeLong: return .cyan
-        case .claudeShort: return .mimiPrimary
+        case .codexLong: return Color.pink.opacity(0.78)
+        case .claudeLong: return Color.cyan.opacity(0.72)
+        case .claudeShort: return Color.mimiPrimary.opacity(0.82)
         }
     }
 }
 
-private struct MenuRuntimeUsageCompactColumn: View {
-    let item: MenuRuntimeUsageItem
+private struct MenuRuntimeUsageInfoRows: View {
+    let slots: [MenuRuntimeUsageSlot]
 
     var body: some View {
-        VStack(alignment: .center, spacing: 2) {
+        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 7) {
+            ForEach(slots) { slot in
+                MenuRuntimeUsageInfoRow(slot: slot)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct MenuRuntimeUsageInfoRow: View {
+    let slot: MenuRuntimeUsageSlot
+
+    var body: some View {
+        GridRow(alignment: .firstTextBaseline) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Circle()
                     .fill(tint)
                     .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
 
-                Text("\(item.providerName) · \(item.window.durationLabel)")
+                Text("\(slot.providerName) · \(slot.windowLabel)")
                     .font(.caption2.weight(.semibold))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
+            .gridColumnAlignment(.leading)
 
             Text(valueText)
                 .font(.caption2.monospacedDigit().weight(.semibold))
-                .foregroundStyle(tint)
+                .foregroundStyle(valueColor)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .gridColumnAlignment(.trailing)
 
-            if let resetDate = item.window.resetDate {
-                Text("\(resetText(resetDate)) 重置")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
+            Text(resetDetail)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .gridColumnAlignment(.trailing)
         }
-        .frame(maxWidth: .infinity, alignment: .top)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.providerName) \(item.window.durationLabel)额度")
+        .accessibilityLabel("\(slot.providerName) \(slot.windowLabel)额度")
         .accessibilityValue(valueText)
     }
 
+    private var hasUsageValue: Bool {
+        slot.item?.window.remainingPercentText != nil || slot.item?.isExhausted == true
+    }
+
     private var valueText: String {
-        if item.isExhausted { return "已耗尽" }
-        return item.window.remainingPercentText.map { "剩余 \($0)" } ?? "等待刷新"
+        if slot.item?.isExhausted == true { return "已耗尽" }
+        return slot.item?.window.remainingPercentText.map { "剩余 \($0)" } ?? "等待额度"
+    }
+
+    private var resetDetail: String {
+        guard let resetDate = slot.item?.window.resetDate else { return "" }
+        return resetText(resetDate)
+    }
+
+    private var valueColor: Color {
+        if slot.item?.isExhausted == true {
+            return Color.red.opacity(0.8)
+        }
+        return hasUsageValue ? Color.primary.opacity(0.72) : .secondary
     }
 
     private var tint: Color {
-        if item.isExhausted { return .red }
-        switch item.tintRole {
-        case .codexLong: return .pink
-        case .claudeLong: return .cyan
-        case .claudeShort: return .mimiPrimary
+        if slot.item?.isExhausted == true { return Color.red.opacity(0.82) }
+        switch slot.tintRole {
+        case .codexLong: return Color.pink.opacity(0.78)
+        case .claudeLong: return Color.cyan.opacity(0.72)
+        case .claudeShort: return Color.mimiPrimary.opacity(0.82)
         }
     }
 
@@ -887,9 +918,14 @@ private struct MenuActionRow: View {
                 }
             }
             .padding(.horizontal, MenuBarLayout.sectionInset)
-            .frame(maxWidth: .infinity, minHeight: 35, alignment: .leading)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: MenuBarLayout.actionRowHeight,
+                maxHeight: MenuBarLayout.actionRowHeight,
+                alignment: .leading
+            )
             .background(
-                Color.primary.opacity(isHovered ? 0.075 : 0),
+                hoverBackgroundColor,
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .contentShape(Rectangle())
@@ -905,12 +941,21 @@ private struct MenuActionRow: View {
     }
 
     private var labelColor: Color {
-        role == .destructive ? Color(nsColor: .systemRed) : .primary
+        // 危险语义由电源图标与确认弹窗承接，文字保持普通层级，避免整行高饱和。
+        .primary
     }
 
     private var symbolColor: Color {
-        // 使用 macOS 语义化系统红，自动适配外观并符合用户对危险操作的既有认知。
-        role == .destructive ? Color(nsColor: .systemRed) : .secondary
+        // 保留危险操作语义，但减少高饱和红色在菜单底部形成“主按钮”的错觉。
+        role == .destructive ? Color(nsColor: .systemRed).opacity(0.62) : .secondary
+    }
+
+    private var hoverBackgroundColor: Color {
+        guard isHovered else { return .clear }
+        if role == .destructive {
+            return Color(nsColor: .systemRed).opacity(0.03)
+        }
+        return Color.primary.opacity(0.055)
     }
 }
 

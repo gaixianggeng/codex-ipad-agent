@@ -15,6 +15,18 @@ struct MenuRuntimeUsageItem: Equatable, Identifiable {
     let tintRole: MenuRuntimeUsageTintRole
 }
 
+struct MenuRuntimeUsageSlot: Equatable, Identifiable {
+    let id: String
+    let providerName: String
+    let fallbackWindowLabel: String
+    let tintRole: MenuRuntimeUsageTintRole
+    let item: MenuRuntimeUsageItem?
+
+    var windowLabel: String {
+        item?.window.durationLabel ?? fallbackWindowLabel
+    }
+}
+
 enum MenuRuntimePresentation {
     static func versionText(for runtime: AgentRuntimeStatus?) -> String? {
         guard let runtime,
@@ -132,6 +144,47 @@ enum MenuRuntimePresentation {
             }
         }
         return Array(result.prefix(3))
+    }
+
+    /// 三个槽位固定对应三层圆环，额度暂不可用时也保留对应信息行。
+    /// 这样后台刷新只更新数值，不会让卡片高度和左右对齐发生跳变。
+    static func usageSlots(
+        codex: AgentRuntimeStatus?,
+        claude: AgentRuntimeStatus?
+    ) -> [MenuRuntimeUsageSlot] {
+        guard codex != nil || claude != nil else { return [] }
+        let items = usageItems(codex: codex, claude: claude)
+
+        var slots = [
+            MenuRuntimeUsageSlot(
+                id: "codex:long",
+                providerName: "Codex",
+                fallbackWindowLabel: "长周期",
+                tintRole: .codexLong,
+                item: items.first { $0.tintRole == .codexLong }
+            ),
+        ]
+        if claude?.enabled == true {
+            slots.append(
+                MenuRuntimeUsageSlot(
+                    id: "claude:long",
+                    providerName: "Claude",
+                    fallbackWindowLabel: "长周期",
+                    tintRole: .claudeLong,
+                    item: items.first { $0.tintRole == .claudeLong }
+                )
+            )
+            slots.append(
+                MenuRuntimeUsageSlot(
+                    id: "claude:short",
+                    providerName: "Claude",
+                    fallbackWindowLabel: "短周期",
+                    tintRole: .claudeShort,
+                    item: items.first { $0.tintRole == .claudeShort }
+                )
+            )
+        }
+        return slots
     }
 
     private struct UsageCandidate {

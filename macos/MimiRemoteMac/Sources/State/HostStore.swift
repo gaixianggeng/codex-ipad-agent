@@ -34,6 +34,7 @@ final class HostStore {
     private var monitorTask: Task<Void, Never>?
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
     private var stopServiceAndQuitTask: Task<Void, Never>?
+    private var lastStatusRefreshAt: Date?
 
     init(
         agent: AgentCommandClient,
@@ -83,6 +84,11 @@ final class HostStore {
             await refreshHomebrewStatus()
         } else {
             await startMacAgentIfNeeded()
+        }
+        if owner == .macApp, runtimeStatusNeedsFollowUp {
+            // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
+            // 菜单时通常直接命中 Store，而不是从那一刻才开始 Provider 探测。
+            scheduleRuntimeStatusFollowUp()
         }
         startMonitoring()
     }
@@ -198,12 +204,25 @@ final class HostStore {
                 await startMacAgentIfNeeded()
             }
         }
-        if owner == .macApp,
-           status?.runtimeStatus?.refreshing == true
-            || status?.runtimeStatus?.hasRetryableFailure == true
-        {
+        if owner == .macApp, runtimeStatusNeedsFollowUp {
             scheduleRuntimeStatusFollowUp()
         }
+    }
+
+    /// MenuBarExtra 每次展开都会重建内容视图。短时间重复打开直接复用 Store
+    /// 中的状态，避免为同一份服务状态反复启动 agentd 子进程。
+    func refreshIfNeeded() async {
+        guard lifecycle != .loading, lifecycle != .starting else { return }
+        if let lastStatusRefreshAt,
+           Date().timeIntervalSince(lastStatusRefreshAt) < 30,
+           owner != .macApp || status?.runtimeStatus != nil
+        {
+            if owner == .macApp, runtimeStatusNeedsFollowUp {
+                scheduleRuntimeStatusFollowUp()
+            }
+            return
+        }
+        await refresh()
     }
 
     func refreshPairing(network: PairingNetwork? = nil) async {
@@ -527,6 +546,7 @@ final class HostStore {
             let current = try await agent.statusAt(binary)
             status = current
             doctor = current.doctor
+            lastStatusRefreshAt = Date()
             if !current.serviceOK {
                 lifecycle = .degraded(current.serviceError ?? "Homebrew 服务尚未就绪。")
             } else {
@@ -574,15 +594,54 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
-        status = current
-        doctor = current.doctor
-        if current.serviceOK {
+        let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+        status = resolved
+        doctor = resolved.doctor
+        lastStatusRefreshAt = Date()
+        if resolved.serviceOK {
             lifecycle = .ready
-        } else if current.processOK {
-            lifecycle = .degraded(current.serviceError ?? firstBlockingIssue(in: current.doctor))
+        } else if resolved.processOK {
+            lifecycle = .degraded(
+                resolved.serviceError ?? firstBlockingIssue(in: resolved.doctor)
+            )
         } else {
             lifecycle = .stopped
         }
+    }
+
+    private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
+        guard current.runtimeStatus == nil,
+              current.serviceOK,
+              let previousStatus = status,
+              previousStatus.endpoint == current.endpoint,
+              previousStatus.serverVersion == current.serverVersion,
+              let previousSnapshot = previousStatus.runtimeStatus
+        else {
+            return current
+        }
+        // status CLI 会并行读取 readyz 与 runtime endpoint。后者偶发超时时，
+        // 核心服务状态仍然有效；保留并显式标旧上次快照，避免运行时整块闪空。
+        let staleSnapshot = AgentRuntimeStatusSnapshot(
+            checkedAt: previousSnapshot.checkedAt,
+            runtimes: previousSnapshot.runtimes,
+            refreshing: previousSnapshot.refreshing,
+            stale: true
+        )
+        return AgentStatus(
+            processOK: current.processOK,
+            serviceOK: current.serviceOK,
+            processError: current.processError,
+            serviceError: current.serviceError,
+            version: current.version,
+            serverVersion: current.serverVersion,
+            endpoint: current.endpoint,
+            configPath: current.configPath,
+            projects: current.projects,
+            doctorOK: current.doctorOK,
+            doctor: current.doctor,
+            pairExpires: current.pairExpires,
+            runtimeStatus: staleSnapshot
+        )
     }
 
     private func firstBlockingIssue(in results: AgentDoctorResults) -> String {
@@ -632,10 +691,10 @@ final class HostStore {
             defer { runtimeStatusFollowUpTask = nil }
             // Provider 冷启动可能涉及 bridge 启动、OAuth 刷新和网络查询。
             // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
-            // 首次 unavailable 还会在服务端 15 秒失败 TTL 后重试一次；48 轮
-            // 足够覆盖两次最慢 42 秒 provider 刷新，同时避免永久轮询。
+            // 首次 unavailable/额度刷新还会在服务端 15 秒失败 TTL 后重试一次；
+            // 16 轮足够覆盖两次 9 秒 provider 预算，同时避免永久轮询。
             var didRetryUnavailable = false
-            for _ in 0..<48 {
+            for _ in 0..<16 {
                 let delay: Duration
                 if isRefreshingStatus {
                     delay = .seconds(2)
@@ -671,6 +730,11 @@ final class HostStore {
                 isRefreshingStatus = false
             }
         }
+    }
+
+    private var runtimeStatusNeedsFollowUp: Bool {
+        status?.runtimeStatus?.refreshing == true
+            || status?.runtimeStatus?.hasRetryableFailure == true
     }
 
     nonisolated static func runtimeStatusFollowUpDelay(

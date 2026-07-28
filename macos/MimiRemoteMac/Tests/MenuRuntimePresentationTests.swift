@@ -111,6 +111,31 @@ final class MenuRuntimePresentationTests: XCTestCase {
         )
     }
 
+    func testUsageSlotsKeepThreeAlignedRowsWhileClaudeQuotaIsUnavailable() {
+        let codex = makeRuntime(
+            id: "codex",
+            title: "Codex",
+            state: .connected,
+            authMode: "chatgpt",
+            rateLimits: makeRateLimits(primaryUsed: 80, secondaryUsed: 42)
+        )
+        let claude = makeRuntime(
+            id: "claude",
+            title: "Claude",
+            state: .available,
+            authMode: "oauth"
+        )
+
+        let slots = MenuRuntimePresentation.usageSlots(codex: codex, claude: claude)
+
+        XCTAssertEqual(slots.map(\.id), ["codex:long", "claude:long", "claude:short"])
+        XCTAssertNotNil(slots[0].item)
+        XCTAssertNil(slots[1].item)
+        XCTAssertNil(slots[2].item)
+        XCTAssertEqual(slots[1].windowLabel, "长周期")
+        XCTAssertEqual(slots[2].windowLabel, "短周期")
+    }
+
     private func makeRuntime(
         id: String = "test",
         title: String = "Test",

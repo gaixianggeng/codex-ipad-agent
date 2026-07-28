@@ -103,8 +103,8 @@ final class AgentModelsTests: XCTestCase {
         )
         XCTAssertNil(runtimes[1].startedDate)
         let checkedDate = try XCTUnwrap(snapshot.checkedDate)
-        XCTAssertFalse(snapshot.isExpired(at: checkedDate.addingTimeInterval(60)))
-        XCTAssertTrue(snapshot.isExpired(at: checkedDate.addingTimeInterval(121)))
+        XCTAssertFalse(snapshot.isExpired(at: checkedDate.addingTimeInterval(5 * 60)))
+        XCTAssertTrue(snapshot.isExpired(at: checkedDate.addingTimeInterval(6 * 60 + 1)))
         XCTAssertEqual(runtimes[0].state, .connected)
         XCTAssertEqual(runtimes[0].effectivePlanType, "plus")
         let windows = try XCTUnwrap(runtimes[0].rateLimits).windows
@@ -227,8 +227,56 @@ final class AgentModelsTests: XCTestCase {
             refreshing: false,
             stale: false
         )
+        let quotaRefreshing = AgentRuntimeStatusSnapshot(
+            checkedAt: "2026-07-27T12:00:00Z",
+            runtimes: [
+                AgentRuntimeStatus(
+                    id: "claude",
+                    title: "Claude",
+                    enabled: true,
+                    state: .available,
+                    authMode: nil,
+                    planType: nil,
+                    reason: "quota_refresh_in_progress",
+                    rateLimits: nil
+                ),
+            ],
+            refreshing: false,
+            stale: false
+        )
+        let quotaUnavailable = AgentRuntimeStatusSnapshot(
+            checkedAt: "2026-07-27T12:00:00Z",
+            runtimes: [
+                AgentRuntimeStatus(
+                    id: "claude",
+                    title: "Claude",
+                    enabled: true,
+                    state: .available,
+                    authMode: nil,
+                    planType: nil,
+                    reason: nil,
+                    rateLimits: AgentRuntimeRateLimits(
+                        limitID: "claude",
+                        limitName: "Claude",
+                        planType: nil,
+                        reachedType: nil,
+                        availability: "unavailable",
+                        unavailableReason: "headless_statusline_unavailable",
+                        primary: nil,
+                        secondary: nil,
+                        hasCredits: nil,
+                        creditsUnlimited: nil,
+                        creditBalance: nil
+                    )
+                ),
+            ],
+            refreshing: false,
+            stale: false
+        )
 
         XCTAssertTrue(failed.hasRetryableFailure)
+        XCTAssertTrue(quotaRefreshing.hasRetryableFailure)
+        XCTAssertTrue(quotaUnavailable.hasRetryableFailure)
         XCTAssertEqual(
             HostStore.runtimeStatusFollowUpDelay(
                 snapshot: failed,
