@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 
 private enum MenuBarLayout {
+    static let contentInset: CGFloat = 12
+    // 底部操作已经有完整的 40pt 点击区域；收紧窗口底边留白，避免最后一行显得虚高。
+    static let bottomInset: CGFloat = 6
     // 状态信息、运行时和操作区共用同一列网格，避免不同区块的图标与文字左右漂移。
     static let sectionInset: CGFloat = 3
     static let symbolColumnWidth: CGFloat = 16
@@ -133,7 +136,9 @@ struct MenuBarContentView: View {
             }
             .padding(.top, 6)
         }
-        .padding(12)
+        .padding(.horizontal, MenuBarLayout.contentInset)
+        .padding(.top, MenuBarLayout.contentInset)
+        .padding(.bottom, MenuBarLayout.bottomInset)
         .frame(width: 340)
         .background(MenuBarWindowPositionGuard())
         .animation(
