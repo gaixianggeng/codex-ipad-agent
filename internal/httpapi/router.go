@@ -49,6 +49,13 @@ type Router struct {
 	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
 	// 必须后台 single-flight 刷新，不能阻塞 readiness 或并发创建无上限连接。
 	runtimeStatus *runtimeStatusSnapshotCache
+	// autoThreadTitles 在 Mac 端串行生成新会话标题。它使用独立的 loopback
+	// app-server 连接，不能阻塞或消费移动端 gateway 的 JSON-RPC 响应。
+	autoThreadTitles autoThreadTitleScheduler
+	// autoThreadTitleThreads 记录内部 ephemeral thread 的短期 tombstone。
+	// app-server 会让已初始化连接监听新 thread，Gateway 必须据此丢弃内部标题 Turn 的事件。
+	autoThreadTitleThreadsMu sync.Mutex
+	autoThreadTitleThreads   map[string]time.Time
 	// Codex app-server 由 serve 层启动、由 Router 探测。单独保存真实子进程启动时间，
 	// 让菜单栏展示运行时长，而不是误用 agentd 或 Mac App 自身的存活时间。
 	runtimeProcessMu      sync.RWMutex
@@ -143,6 +150,12 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
+	if cfg.AppServer.AutoTitle {
+		r.autoThreadTitles = newAutoThreadTitleCoordinator(
+			newCodexAutoThreadTitleGenerator(r),
+			autoThreadTitleTimeout,
+		)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
@@ -199,6 +212,9 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 func (r *Router) Shutdown() {
 	if r == nil {
 		return
+	}
+	if r.autoThreadTitles != nil {
+		r.autoThreadTitles.Close()
 	}
 	r.runtimeStatus.Close()
 	r.claudeBridge.shutdown()
