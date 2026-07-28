@@ -177,16 +177,17 @@ struct WorkspaceRootView: View {
             }
         }
         .task(id: appStore.activeHostScope) {
-            appearanceStore.migrateLegacyValueIfNeeded(
-                profileID: appStore.activeHostScope.profileID,
-                endpoint: appStore.endpoint,
-                profiles: appStore.connectionProfiles
-            )
+            migrateLegacyWorkspaceAppearance()
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
             await refreshCatalog()
             synchronizeSelection()
+        }
+        .onChange(of: appStore.connectionProfiles) { _, _ in
+            // 这里只重试本地偏好迁移，不重新请求目录。删除或修改重复 endpoint 后，
+            // 当前 Profile 一旦成为唯一匹配，就应立即恢复旧版自定义 emoji。
+            migrateLegacyWorkspaceAppearance()
         }
         .task {
             // 两个新建入口先稳定渲染；Claude 通道能力独立在后台刷新，不能让网络往返
@@ -240,6 +241,14 @@ struct WorkspaceRootView: View {
             Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
+    }
+
+    private func migrateLegacyWorkspaceAppearance() {
+        appearanceStore.migrateLegacyValueIfNeeded(
+            profileID: appStore.activeHostScope.profileID,
+            endpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
     }
 
     private func navigationContent(tokens: ThemeTokens) -> some View {

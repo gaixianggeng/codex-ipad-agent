@@ -2769,4 +2769,65 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(migratedAfterResolution.pinnedSessionIDs, ["legacy-session"])
     }
 
+    func testDeletingAmbiguousProfileImmediatelyMigratesCurrentRecentWorkspaces() async throws {
+        let suiteName = "RecentWorkspaceStoreTests.DeleteAmbiguousProfile.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let endpoint = "http://shared-mac.local:8787"
+        let current = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let duplicate = ConnectionProfile(
+            id: "mac-b",
+            displayName: "Mac B",
+            endpoint: endpoint + "/",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(
+            try JSONEncoder().encode([current, duplicate]),
+            forKey: "agentd.connectionProfiles.v1"
+        )
+        defaults.set(current.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(current.endpoint, forKey: "agentd.endpoint")
+
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain)
+        )
+        let workspace = AgentWorkspace(
+            id: "legacy-project",
+            name: "旧工作区",
+            path: "/legacy/project"
+        )
+        let recentWorkspaceStore = makeRecentWorkspaceStore(
+            workspaces: [workspace],
+            endpoint: endpoint
+        )
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentWorkspaceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+
+        sessionStore.reloadRecentWorkspaces()
+        XCTAssertTrue(sessionStore.recentWorkspaces.isEmpty)
+
+        try await sessionStore.deleteConnectionProfile(id: duplicate.id)
+
+        XCTAssertEqual(sessionStore.recentWorkspaces.map(\.id), [workspace.id])
+        XCTAssertEqual(recentWorkspaceStore.load(profileID: current.id).map(\.id), [workspace.id])
+    }
+
 }
