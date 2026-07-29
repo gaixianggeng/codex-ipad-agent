@@ -13,6 +13,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "--debug-skip-pairing",
             "--debug-seed-ui"
         ]
+        if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
+            app.launchArguments.append("--debug-seed-mcp-approval-ui")
+        }
         app.launch()
         XCTAssertTrue(
             app.wait(for: .runningForeground, timeout: 25),
@@ -122,6 +125,26 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
         dismissPresentedMenuOrPopover()
         XCTAssertEqual(app.state, .runningForeground, "完成紧凑工具栏操作后 App 应保持前台运行")
+    }
+
+    func testMCPToolApprovalShowsScopedTrustActions() throws {
+        try openComposerIfNeeded()
+
+        let approveOnce = app.descendant(identifier: "approval.approveOnce")
+        let allowForSession = app.descendant(identifier: "approval.allowMCPForSession")
+        let alwaysAllow = app.descendant(identifier: "approval.alwaysAllowMCPTool")
+        let reject = app.descendant(identifier: "approval.reject")
+
+        XCTAssertTrue(approveOnce.waitForExistence(timeout: 12), "MCP 工具审批应保留单次允许入口")
+        XCTAssertTrue(allowForSession.waitForExistence(timeout: 5), "Codex 声明 session 持久化后应展示本次会话允许")
+        XCTAssertTrue(alwaysAllow.waitForExistence(timeout: 5), "Codex 声明 always 持久化后应展示始终允许")
+        XCTAssertTrue(reject.waitForExistence(timeout: 5), "MCP 工具审批应始终允许拒绝")
+
+        assertMinimumTouchTarget(approveOnce, named: "单次允许")
+        assertMinimumTouchTarget(allowForSession, named: "本次会话允许")
+        assertMinimumTouchTarget(alwaysAllow, named: "始终允许")
+        assertMinimumTouchTarget(reject, named: "拒绝")
+        XCTAssertEqual(app.state, .runningForeground, "展示完整 MCP 信任选项后 App 应保持前台运行")
     }
 
     func testComposerCameraAttachmentCanPresentAndCancel() throws {
