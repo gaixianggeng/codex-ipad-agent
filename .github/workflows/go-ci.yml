@@ -1,31 +1,7 @@
 name: Go CI
 
 on:
-  pull_request:
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
-      - ".goreleaser.yml"
-      - "packaging/**"
-      - "scripts/check-packaging.sh"
-      - "scripts/check-macos-release-signing.sh"
-      - "scripts/check-release-artifacts.sh"
-      - "scripts/check-source-size.sh"
-      - "scripts/install-linux.sh"
-      - "scripts/test-install-linux.sh"
-      - "scripts/build-windows-installer.ps1"
-      - "scripts/check-windows-installer.ps1"
-      - "scripts/test-windows-install.ps1"
-      - "scripts/sign-agentd-dev-macos.sh"
-      - "scripts/restart-agentd-dev-macos.sh"
-      - "scripts/restart-agentd-dev-handoff-macos.sh"
-      - "scripts/verify-release.sh"
-      - "README.md"
-      - "docs/install-upgrade-rollback.md"
-      - "docs/codex-protocol-support.md"
-      - ".github/workflows/go-ci.yml"
-      - ".github/workflows/release.yml"
+  workflow_call:
   push:
     branches:
       - main
