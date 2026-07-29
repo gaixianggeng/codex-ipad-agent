@@ -3,6 +3,7 @@ package codexhistory
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,6 +214,255 @@ func TestExternalActivityWithoutStateDatabaseReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestExternalActivityExcludesExactGatewayOwnedTurn(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+	path := fixture.writeRollout("thread-ipad", "Codex Desktop", fixture.projectDir,
+		externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-ipad"),
+		externalUserMessageLine(now.Add(500*time.Millisecond), "client-ipad"))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: path,
+	}}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("同线程、同 client_id 且时间相符的 gateway turn 不应被识别为 Desktop 外部活动：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
+		t.Fatalf("rollout 应保留运行态并标记 gateway 归属：%+v", entry)
+	}
+}
+
+func TestExternalActivityAlsoSupportsUserMessageBeforeTaskStarted(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+	path := fixture.writeRollout("thread-ipad", "Codex Desktop", fixture.projectDir,
+		externalUserMessageLine(now.Add(100*time.Millisecond), "client-ipad"),
+		externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-ipad"))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: path,
+	}}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("user_message 先落盘时也应把紧随其后的 task_started 识别为 gateway turn：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
+		t.Fatalf("反向落盘顺序也应保留 gateway 归属：%+v", entry)
+	}
+}
+
+func TestExternalActivityExpiredPendingEvidenceCannotHideLaterDesktopTurn(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-1",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalUserMessageLine(now.Add(100*time.Millisecond), "client-ipad"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-1", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: path,
+	}}
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("只有 user_message、尚未开始 turn 时不应产生外部活动：%+v", got)
+	}
+	if !fixture.tracker.files[path].gatewayTurnPending {
+		t.Fatal("反向落盘顺序应暂存带时间界限的 gateway 证据")
+	}
+
+	now = now.Add(gatewayTurnLifecycleWindow + time.Second)
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("pending 过期时仍没有 active turn，不应产生外部活动：%+v", got)
+	}
+	if fixture.tracker.files[path].gatewayTurnPending {
+		t.Fatal("超过生命周期关联窗口后，pending gateway 证据必须主动失效")
+	}
+
+	now = now.Add(gatewayTurnRegistrationTTL + time.Second)
+	fixture.appendLine(path, externalEventLineAt(now, "task_started", "turn-desktop"))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+		t.Fatalf("过期 pending 证据不能隐藏稍后的 Desktop turn：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if entry.gatewayOwned || entry.gatewayTurnPending {
+		t.Fatalf("Desktop turn 不应继承过期 gateway 证据：%+v", entry)
+	}
+}
+
+func TestExternalActivityMatchingUserMessageCannotClaimOlderActiveDesktopTurn(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-1",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now.Add(-time.Minute), "task_started", "turn-desktop"),
+		externalUserMessageLine(now.Add(100*time.Millisecond), "client-ipad"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-1", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: path,
+	}}
+
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+		t.Fatalf("匹配消息不能把 registration 之前已运行的 Desktop turn 改写为 gateway 所有：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if entry.gatewayOwned || entry.gatewayTurnPending {
+		t.Fatalf("旧 Desktop turn 不应吸收新 gateway 消息证据：%+v", entry)
+	}
+}
+
+func TestExternalActivityGatewayOwnershipRequiresExactEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		registeredThread string
+		registeredClient string
+		eventClient      string
+		eventAt          time.Time
+	}{
+		{
+			name:             "wrong client id",
+			registeredThread: "thread-1",
+			registeredClient: "client-ipad",
+			eventClient:      "client-desktop",
+			eventAt:          now.Add(time.Second),
+		},
+		{
+			name:             "wrong thread",
+			registeredThread: "thread-other",
+			registeredClient: "client-ipad",
+			eventClient:      "client-ipad",
+			eventAt:          now.Add(time.Second),
+		},
+		{
+			name:             "old rollout timestamp",
+			registeredThread: "thread-1",
+			registeredClient: "client-ipad",
+			eventClient:      "client-ipad",
+			eventAt:          now.Add(-gatewayTurnRegistrationTTL),
+		},
+		{
+			name:             "missing client id",
+			registeredThread: "thread-1",
+			registeredClient: "client-ipad",
+			eventClient:      "",
+			eventAt:          now.Add(time.Second),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExternalActivityTrackerFixture(t)
+			fixture.tracker.now = func() time.Time { return now }
+			fixture.tracker.RegisterGatewayTurnStart(tc.registeredThread, tc.registeredClient)
+			path := fixture.writeRollout("thread-1", "Codex Desktop", fixture.projectDir,
+				externalUserMessageLine(tc.eventAt, tc.eventClient),
+				externalEventLine("task_started", "turn-desktop"))
+			if err := os.Chtimes(path, now, now); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rows = []externalActivityTestRow{{
+				ID: "thread-1", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: path,
+			}}
+
+			got := fixture.snapshot(t)
+			if len(got) != 1 || got[0].ThreadID != "thread-1" || got[0].TurnID != "turn-desktop" {
+				t.Fatalf("证据不完整时必须 fail-safe 保留 Desktop 外部活动：%+v", got)
+			}
+		})
+	}
+}
+
+func TestExternalActivityNewDesktopTurnResetsGatewayOwnership(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+	path := fixture.writeRollout("thread-1", "Codex Desktop", fixture.projectDir,
+		externalUserMessageLine(now.Add(100*time.Millisecond), "client-ipad"),
+		externalEventLineAt(now.Add(500*time.Millisecond), "task_started", "turn-ipad"))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-1", CWD: fixture.projectDir, Source: "vscode", ThreadSource: "user", RolloutPath: path,
+	}}
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("第一轮 iPad turn 不应显示为外部活动：%+v", got)
+	}
+
+	// 后续没有匹配 user_message 的新 task_started 是真正的 Desktop turn，
+	// 必须覆盖上一轮 gateway 归属，重新进入“仅观察”保护。
+	fixture.appendLine(path, externalEventLineAt(now.Add(time.Second), "task_started", "turn-desktop"))
+	if err := os.Chtimes(path, now.Add(time.Second), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+		t.Fatalf("新的 Desktop task_started 应恢复外部活动：%+v", got)
+	}
+
+	fixture.appendLine(path, externalEventLineAt(now.Add(2*time.Second), "task_complete", "turn-desktop"))
+	if err := os.Chtimes(path, now.Add(2*time.Second), now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("terminal 应清除活动与归属状态：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if entry.active || entry.gatewayOwned || entry.gatewayTurnPending {
+		t.Fatalf("terminal 后不应残留 gateway 状态：%+v", entry)
+	}
+}
+
+func TestGatewayTurnRegistrationsAreBoundedAndExpire(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	for index := 0; index < gatewayTurnRegistrationLimit+7; index++ {
+		fixture.tracker.RegisterGatewayTurnStart("thread-1", fmt.Sprintf("client-%d", index))
+		now = now.Add(time.Microsecond)
+	}
+	if got := len(fixture.tracker.gatewayTurns); got != gatewayTurnRegistrationLimit {
+		t.Fatalf("gateway 登记表必须有容量上限：got=%d want=%d", got, gatewayTurnRegistrationLimit)
+	}
+
+	now = now.Add(gatewayTurnRegistrationTTL + time.Second)
+	fixture.tracker.RegisterGatewayTurnStart("thread-fresh", "client-fresh")
+	if got := len(fixture.tracker.gatewayTurns); got != 1 {
+		t.Fatalf("过期 gateway 登记应在新写入时被裁剪：got=%d entries=%+v", got, fixture.tracker.gatewayTurns)
+	}
+	if _, ok := fixture.tracker.gatewayTurns[gatewayTurnRegistrationKey("thread-fresh", "client-fresh")]; !ok {
+		t.Fatal("最新 gateway 登记不应被裁剪")
+	}
+}
+
 type externalActivityTestRow struct {
 	ID           string `json:"id"`
 	CWD          string `json:"cwd"`
@@ -307,8 +557,31 @@ func (f *externalActivityTrackerFixture) snapshot(t *testing.T) []ExternalActivi
 }
 
 func externalEventLine(eventType, turnID string) string {
-	return `{"timestamp":"2026-07-28T14:00:01Z","type":"event_msg","payload":{"type":` +
+	return externalEventLineAt(
+		time.Date(2026, 7, 28, 14, 0, 1, 0, time.UTC),
+		eventType,
+		turnID,
+	)
+}
+
+func externalEventLineAt(timestamp time.Time, eventType, turnID string) string {
+	return `{"timestamp":` + strconvQuote(timestamp.UTC().Format(time.RFC3339Nano)) +
+		`,"type":"event_msg","payload":{"type":` +
 		strconvQuote(eventType) + `,"turn_id":` + strconvQuote(turnID) + `}}`
+}
+
+func externalUserMessageLine(timestamp time.Time, clientID string) string {
+	payload := map[string]any{"type": "user_message"}
+	if strings.TrimSpace(clientID) != "" {
+		payload["client_id"] = clientID
+	}
+	record := map[string]any{
+		"timestamp": timestamp.UTC().Format(time.RFC3339Nano),
+		"type":      "event_msg",
+		"payload":   payload,
+	}
+	data, _ := json.Marshal(record)
+	return string(data)
 }
 
 func mustJSONQuote(t *testing.T, value string) string {

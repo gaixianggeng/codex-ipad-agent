@@ -295,6 +295,59 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         add(pickerScreenshot)
     }
 
+    func testWorkspaceIconStyleSwitchesBetweenEmojiAndJourney() throws {
+        try enterWorkbenchIfNeeded()
+        try openWorkspaceAppearanceSettings()
+
+        let picker = app.descendant(identifier: "settings.workspaceIconStyle")
+        XCTAssertTrue(picker.waitForExistence(timeout: 8), "外观设置应展示工作区图标风格")
+        assertMinimumTouchTarget(picker, named: "工作区图标风格")
+
+        guard let journey = firstExistingButton(
+            labels: ["西游记", "Journey to the West"],
+            timeout: 5
+        ), let emoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+            XCTFail("工作区图标风格应同时提供《西游记》和 Emoji")
+            return
+        }
+        let originallyUsedEmoji = isSelected(emoji)
+
+        emoji.tap()
+        XCTAssertTrue(waitUntilSelected(emoji), "选择 Emoji 后应立即保存")
+        try relaunchDirectlyIntoWorkspaces()
+        XCTAssertTrue(
+            currentWorkspaceIconLabelContainsEmoji(),
+            "切换到 Emoji 后，工作区卡片应立即恢复 Emoji 图标"
+        )
+
+        try openWorkspaceAppearanceSettings()
+        guard let currentJourney = firstExistingButton(
+            labels: ["西游记", "Journey to the West"],
+            timeout: 5
+        ) else {
+            XCTFail("重新进入设置后应仍能找到《西游记》选项")
+            return
+        }
+        currentJourney.tap()
+        XCTAssertTrue(waitUntilSelected(currentJourney), "选择《西游记》后应立即保存")
+        try relaunchDirectlyIntoWorkspaces()
+        XCTAssertFalse(
+            currentWorkspaceIconLabelContainsEmoji(),
+            "切回《西游记》后，工作区卡片不应继续显示 Emoji"
+        )
+
+        // 真机测试不应永久改变用户原来的视觉偏好。
+        if originallyUsedEmoji {
+            try openWorkspaceAppearanceSettings()
+            guard let originalEmoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+                XCTFail("测试结束时应能恢复 Emoji 偏好")
+                return
+            }
+            originalEmoji.tap()
+            XCTAssertTrue(waitUntilSelected(originalEmoji), "测试结束时应恢复原 Emoji 偏好")
+        }
+    }
+
     private func presentQRScanner() throws {
         installCameraPermissionMonitor()
 
@@ -438,6 +491,44 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             app.descendant(identifier: "settings.connectionManagement").waitForExistence(timeout: 12),
             "设置页应正常打开"
         )
+    }
+
+    private func openWorkspaceAppearanceSettings() throws {
+        try openSettings()
+        let appearance = app.descendant(identifier: "settings.appearance")
+        XCTAssertTrue(scrollUntilHittable(appearance), "设置页应提供外观入口")
+        appearance.tap()
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.workspaceIconStyle").waitForExistence(timeout: 8),
+            "外观页应展示工作区图标风格选择器"
+        )
+    }
+
+    private func relaunchDirectlyIntoWorkspaces() throws {
+        app.terminate()
+        if !app.launchArguments.contains("--debug-open-workspaces") {
+            app.launchArguments.append("--debug-open-workspaces")
+        }
+        app.launch()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 25),
+            "MimiRemote 应能重新进入工作区"
+        )
+        let iconButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        XCTAssertTrue(
+            iconButtons.firstMatch.waitForExistence(timeout: 15),
+            "重新进入工作区后应展示可更换的图标"
+        )
+    }
+
+    private func currentWorkspaceIconLabelContainsEmoji() -> Bool {
+        let iconButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        guard iconButtons.firstMatch.exists else { return false }
+        let label = iconButtons.firstMatch.label
+        let builtInEmoji = ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
+        return builtInEmoji.contains { label.contains($0) }
     }
 
     private func selectMode(identifier: String) throws {

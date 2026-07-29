@@ -61,13 +61,14 @@ enum HostInstallationPlatform: String, CaseIterable, Identifiable {
     }
 }
 
-/// 首次连接的普通用户路径。电脑平台选择、安装、首次设置和扫码按真实任务顺序排列，
-/// Homebrew 与手动输入仍由外层设置页保留为高级恢复入口。
+/// 首次连接只保留两个用户阶段：先在电脑上准备，再在当前设备扫码。
+/// 平台选择只改变远端安装入口；配对和凭据处理继续复用同一条安全链路。
 struct HostInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var selectedPlatform: HostInstallationPlatform = .mac
 
+    let connectionFooter: String
     let isScanDisabled: Bool
     let onScan: () -> Void
     let onPasteConnectionInfo: () -> Void
@@ -75,87 +76,82 @@ struct HostInstallationSetupView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 18) {
-            Picker(L10n.text("ui.computer_platform"), selection: $selectedPlatform) {
-                ForEach(HostInstallationPlatform.allCases) { platform in
-                    Text(platform.title).tag(platform)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("settings.hostInstaller.platform")
-
-            setupStep(
-                number: 1,
-                title: selectedPlatform.installTitle,
-                detail: selectedPlatform.installationDetail
-            ) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ShareLink(item: selectedPlatform.installerURL) {
-                        GloballyCenteredActionLabel(
-                            title: selectedPlatform.shareTitle,
-                            systemImage: "square.and.arrow.up"
-                        )
+        Group {
+            Section {
+                Picker(L10n.text("ui.computer_platform"), selection: $selectedPlatform) {
+                    ForEach(HostInstallationPlatform.allCases) { platform in
+                        Text(platform.title).tag(platform)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(tokens.primaryAction)
-                    .controlSize(.large)
-                    .accessibilityIdentifier("settings.hostInstaller.share")
-
-                    Link(destination: selectedPlatform.releaseURL) {
-                        HStack(spacing: 10) {
-                            // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
-                            Image("GitHubInvertocat")
-                                .renderingMode(.original)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 28, height: 28)
-                                .accessibilityHidden(true)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(L10n.text("ui.view_releases_on_github"))
-                                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryText)
-                                Text(selectedPlatform.releaseURL.absoluteString)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(tokens.secondaryText)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 8)
-
-                            Image(systemName: "arrow.up.right")
-                                .font(themeStore.uiFont(.caption, weight: .semibold))
-                                .foregroundStyle(tokens.secondaryText)
-                                .accessibilityHidden(true)
-                        }
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(L10n.text("ui.view_releases_on_github"))
-                    .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
-                    .accessibilityIdentifier("settings.hostInstaller.githubRelease")
                 }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.hostInstaller.platform")
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(selectedPlatform.installTitle)
+                        .font(themeStore.uiFont(.body, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+
+                    Text(selectedPlatform.installationDetail)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+                .accessibilityElement(children: .combine)
+
+                Link(destination: selectedPlatform.releaseURL) {
+                    HStack(spacing: 12) {
+                        // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
+                        Image("GitHubInvertocat")
+                            .renderingMode(.original)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 24, height: 24)
+                            .accessibilityHidden(true)
+
+                        Text(L10n.text("ui.view_releases_on_github"))
+                            .font(themeStore.uiFont(.body))
+                            .foregroundStyle(tokens.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "arrow.up.right")
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .foregroundStyle(tokens.secondaryText)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.text("ui.view_releases_on_github"))
+                .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
+                .accessibilityIdentifier("settings.hostInstaller.githubRelease")
+
+                ShareLink(item: selectedPlatform.installerURL) {
+                    GloballyCenteredActionLabel(
+                        title: selectedPlatform.shareTitle,
+                        systemImage: "square.and.arrow.up"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(tokens.primaryAction)
+                .controlSize(.large)
+                .accessibilityIdentifier("settings.hostInstaller.share")
+            } header: {
+                Text(L10n.text("ui.computer_platform"))
+            } footer: {
+                Text(L10n.text("ui.select_code_directory_then_computer_shows_qr"))
             }
 
-            Divider()
+            Section {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(L10n.text("ui.scan_qr_code_to_connect"))
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
 
-            setupStep(
-                number: 2,
-                title: L10n.text("ui.open_and_finish_initial_setup"),
-                detail: L10n.text("ui.select_code_directory_then_computer_shows_qr")
-            ) {
-                EmptyView()
-            }
-
-            Divider()
-
-            setupStep(
-                number: 3,
-                title: L10n.text("ui.scan_qr_code_to_connect"),
-                detail: nil
-            ) {
-                VStack(spacing: 10) {
                     Button(action: onScan) {
                         GloballyCenteredActionLabel(
                             title: L10n.text("ui.scan_qr_code_on_computer"),
@@ -181,44 +177,14 @@ struct HostInstallationSetupView: View {
                     .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
                     .accessibilityIdentifier("settings.hostInstaller.pasteConnectionInfo")
                 }
+                .padding(.vertical, 4)
+            } header: {
+                Text(L10n.text("ui.connect_on_this_device"))
+            } footer: {
+                Text(connectionFooter)
             }
         }
-        .padding(.vertical, 6)
-    }
-
-    private func setupStep<Actions: View>(
-        number: Int,
-        title: String,
-        detail: String?,
-        @ViewBuilder actions: () -> Actions
-    ) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        return HStack(alignment: .top, spacing: 12) {
-            Text(number.formatted())
-                .font(themeStore.uiFont(.caption, weight: .bold))
-                .foregroundStyle(tokens.primaryActionForeground)
-                .frame(width: 26, height: 26)
-                .background(tokens.primaryAction, in: Circle())
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(themeStore.uiFont(.body, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-
-                if let detail {
-                    Text(detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                actions()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .accessibilityElement(children: .contain)
+        .listRowBackground(tokens.elevatedSurface)
     }
 }
 
@@ -238,6 +204,8 @@ private struct GloballyCenteredActionLabel: View {
 
             Text(title)
                 .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
 
             Color.clear

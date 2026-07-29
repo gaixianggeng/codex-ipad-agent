@@ -1023,10 +1023,22 @@ extension SessionStore {
         }
         socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
             Task { @MainActor in
-                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
+                guard let self else {
                     return
                 }
-                self?.handleTurnSendOutcome(
+                let isCurrentConnection = self.isCurrentQueuedSessionSocket(
+                    sessionID: sessionID,
+                    generation: generation
+                )
+                guard isCurrentConnection ||
+                        self.canReconcileAcceptedTurnFromRetiredSocket(
+                            sessionID: sessionID,
+                            outcome: outcome,
+                            hostScope: eventLease.hostScope
+                        ) else {
+                    return
+                }
+                self.handleTurnSendOutcome(
                     clientMessageID: clientMessageID,
                     sessionID: sessionID,
                     outcome: outcome
@@ -1136,7 +1148,7 @@ extension SessionStore {
         guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
               location.sessionID == sessionID,
               let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
-              item.dispatchState == .dispatching
+              item.dispatchState == .dispatching || item.dispatchState == .needsConfirmation
         else {
             return false
         }
@@ -1208,6 +1220,15 @@ extension SessionStore {
         sessionID: SessionID,
         outcome: TurnSendOutcome
     ) {
+        let recoveredExternalMisclassification: Bool
+        if case .accepted(let turnID) = outcome, let turnID {
+            recoveredExternalMisclassification = recordLocallyStartedTurn(
+                sessionID: sessionID,
+                turnID: turnID
+            )
+        } else {
+            recoveredExternalMisclassification = false
+        }
         guard let clientMessageID else { return }
         switch outcome {
         case .accepted:
@@ -1221,6 +1242,13 @@ extension SessionStore {
                     clientMessageID: clientMessageID,
                     sessionID: sessionID
                 )
+            }
+            if recoveredExternalMisclassification,
+               selectedSessionID != sessionID,
+               queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
+                // external snapshot 会停止后台队列 socket。ACK 对账成功且仍有后续项时，
+                // 重新建立监听，让 FIFO 能在当前 turn 完成后继续派发。
+                ensureQueuedSessionMonitoring(sessionID: sessionID)
             }
         case .activeTurnConflict(let activeTurnID, let message):
             // 这是“新消息未被接受”，不是原会话失败。恢复权威 active turn，

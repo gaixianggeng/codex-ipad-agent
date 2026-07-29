@@ -1892,6 +1892,92 @@ func TestAppServerGatewayForwardsAuthorizedFrameUnchanged(t *testing.T) {
 	}
 }
 
+func TestAppServerGatewayRegistersOnlyValidatedCodexTurnStarts(t *testing.T) {
+	_, router, projectDir := buildAppServerGatewayFixture(t, "", nil)
+	recorder := &recordingExternalActivitySource{}
+	router.externalActivity = recorder
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目目录应命中 gateway scope")
+	}
+	newPolicy := func(runtimeID string) *appServerGatewayPolicy {
+		return &appServerGatewayPolicy{
+			router:    router,
+			runtimeID: runtimeID,
+			allowedThreads: map[string]appServerGatewayAllowedThread{
+				"thread-1": {
+					id: "thread-1", runtimeID: runtimeID, cwd: projectDir, scopeID: scope.id,
+				},
+			},
+		}
+	}
+	turnStart := func(id int, clientID string, networkAccess bool) []byte {
+		clientField := ""
+		if clientID != "" {
+			clientField = fmt.Sprintf(`,"clientUserMessageId":%q`, clientID)
+		}
+		return []byte(fmt.Sprintf(
+			`{"id":%d,"method":"turn/start","params":{"threadId":"thread-1","cwd":%q,"input":[{"type":"text","text":"hi"}]%s,"approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":%t}}}`,
+			id,
+			projectDir,
+			clientField,
+			projectDir,
+			networkAccess,
+		))
+	}
+
+	forwarded, policyErr := newPolicy("codex").validateClientFrame(
+		websocket.TextMessage,
+		turnStart(1, "client-ipad", false),
+	)
+	if policyErr != nil || !bytes.Contains(forwarded, []byte(`"clientUserMessageId":"client-ipad"`)) {
+		t.Fatalf("合法 Codex turn/start 应完成安全改写并转发：err=%+v payload=%s", policyErr, forwarded)
+	}
+	if len(recorder.registrations) != 1 ||
+		recorder.registrations[0].threadID != "thread-1" ||
+		recorder.registrations[0].clientUserMessageID != "client-ipad" {
+		t.Fatalf("合法 Codex turn/start 应登记精确关联 ID：%+v", recorder.registrations)
+	}
+
+	if _, policyErr := newPolicy("codex").validateClientFrame(
+		websocket.TextMessage,
+		turnStart(2, "client-invalid", true),
+	); policyErr == nil {
+		t.Fatal("networkAccess=true 的非法 turn/start 应被拒绝")
+	}
+	if len(recorder.registrations) != 1 {
+		t.Fatalf("未通过策略校验的 turn/start 不应登记：%+v", recorder.registrations)
+	}
+
+	if _, policyErr := newPolicy("codex").validateClientFrame(
+		websocket.TextMessage,
+		turnStart(3, "", false),
+	); policyErr != nil {
+		t.Fatalf("缺 clientUserMessageId 仍可由上游处理，但不能作为 ownership 证据：%+v", policyErr)
+	}
+	if len(recorder.registrations) != 1 {
+		t.Fatalf("缺 clientUserMessageId 的 turn/start 不应登记：%+v", recorder.registrations)
+	}
+
+	steer := []byte(`{"id":4,"method":"turn/steer","params":{"threadId":"thread-1","expectedTurnId":"turn-1","clientUserMessageId":"client-steer","input":[{"type":"text","text":"继续"}]}}`)
+	if _, policyErr := newPolicy("codex").validateClientFrame(websocket.TextMessage, steer); policyErr != nil {
+		t.Fatalf("合法 turn/steer 应继续转发：%+v", policyErr)
+	}
+	if len(recorder.registrations) != 1 {
+		t.Fatalf("turn/steer 不是新 turn ownership 证据，不应登记：%+v", recorder.registrations)
+	}
+
+	if _, policyErr := newPolicy("claude").validateClientFrame(
+		websocket.TextMessage,
+		turnStart(5, "client-claude", false),
+	); policyErr != nil {
+		t.Fatalf("合法 Claude turn/start 应继续转发：%+v", policyErr)
+	}
+	if len(recorder.registrations) != 1 {
+		t.Fatalf("Claude turn/start 不属于 Codex rollout 跟踪，不应登记：%+v", recorder.registrations)
+	}
+}
+
 func TestAppServerHistoryImageRedactionRewritesImageGenerationResult(t *testing.T) {
 	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
 	pngBytes := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0xAB}, 20<<10)...)

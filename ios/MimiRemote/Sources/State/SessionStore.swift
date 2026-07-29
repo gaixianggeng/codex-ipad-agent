@@ -233,6 +233,11 @@ final class SessionStore: ObservableObject {
     // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
     // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
     var externalReadOnlySessionIDs: Set<SessionID> = []
+    // 只记录当前 Host 生命周期内由 iPad 的 turn/start 明确返回的 turnID。不能用持久化的
+    // `.takenOver` / `.ipadOwned` 代替：同一 thread 后续可能真的在 Mac 启动新 turn。
+    // 精确到 session + turn 后，既能过滤 Desktop-origin 历史线程的 rollout 镜像，
+    // 又不会放行 turnID 不同的真实 Mac 活动。
+    var locallyStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
     var isRefreshingExternalActivity = false
     var externalActivityCapabilityUnavailable = false
     var connectionChangeGeneration = 0
