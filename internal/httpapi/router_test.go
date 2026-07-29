@@ -385,6 +385,21 @@ func TestGitStatusSummaryReturnsMetadataWithoutDiff(t *testing.T) {
 	if response.StatusText != "" || response.DiffStat != "" || response.UnstagedDiff != "" || response.StagedDiff != "" {
 		t.Fatalf("轻量摘要不应生成完整状态文本或 diff：%+v", response)
 	}
+
+	full := httptest.NewRecorder()
+	server.handler.ServeHTTP(full, authedRequest(t, http.MethodPost, "/api/git/status", gitStatusRequest{
+		Path: repo,
+	}))
+	if full.Code != http.StatusOK {
+		t.Fatalf("完整 git status 应成功，got=%d body=%s", full.Code, full.Body.String())
+	}
+	var fullResponse gitStatusResponse
+	if err := json.Unmarshal(full.Body.Bytes(), &fullResponse); err != nil {
+		t.Fatalf("完整响应不是 gitStatusResponse：%v", err)
+	}
+	if fullResponse.Upstream != response.Upstream || fullResponse.Ahead != 1 || fullResponse.Behind != 0 {
+		t.Fatalf("完整状态应与摘要返回一致的 upstream/ahead/behind：summary=%+v full=%+v", response, fullResponse)
+	}
 }
 
 func TestGitActionStagesAndUnstagesAllowedFile(t *testing.T) {
@@ -778,6 +793,91 @@ func TestGitQuickPublishStagesCommitsAndPushesAfterConfirmation(t *testing.T) {
 	branch := gitTestOutput(t, repo, "branch", "--show-current")
 	if local, remoteHead := gitTestOutput(t, repo, "rev-parse", "HEAD"), gitTestOutput(t, remote, "rev-parse", branch); local != remoteHead {
 		t.Fatalf("快捷发布后远端应指向本地 HEAD，local=%s remote=%s", local, remoteHead)
+	}
+}
+
+func TestGitQuickPublishPreservesConfiguredNonOriginUpstream(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "company.git")
+	runGitTestCommand(t, t.TempDir(), "init", "--bare", remote)
+	runGitTestCommand(t, repo, "remote", "add", "company", remote)
+	branch := gitTestOutput(t, repo, "branch", "--show-current")
+	runGitTestCommand(t, repo, "push", "-u", "company", branch)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("company upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}}
+	})
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/git/quick-publish", gitQuickPublishRequest{
+		Path:      repo,
+		Message:   "fix: preserve upstream",
+		Confirmed: true,
+	}))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("已有非 origin upstream 时快捷发布应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response gitQuickPublishResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("响应不是 gitQuickPublishResponse：%v", err)
+	}
+	if response.Remote != "company" || response.Status.Upstream != "company/"+branch {
+		t.Fatalf("快捷发布不应改写已有 upstream：%+v", response)
+	}
+	if upstream := gitTestOutput(t, repo, "rev-parse", "--abbrev-ref", "@{upstream}"); upstream != "company/"+branch {
+		t.Fatalf("本地 upstream 被意外改写：%q", upstream)
+	}
+}
+
+func TestGitQuickPublishRejectsBehindBeforeCreatingCommit(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitTestCommand(t, t.TempDir(), "init", "--bare", remote)
+	runGitTestCommand(t, repo, "remote", "add", "origin", remote)
+	branch := gitTestOutput(t, repo, "branch", "--show-current")
+	runGitTestCommand(t, repo, "push", "-u", "origin", branch)
+
+	other := filepath.Join(t.TempDir(), "other")
+	runGitTestCommand(t, t.TempDir(), "clone", remote, other)
+	runGitTestCommand(t, other, "config", "user.name", "Other Tester")
+	runGitTestCommand(t, other, "config", "user.email", "other@example.com")
+	if err := os.WriteFile(filepath.Join(other, "REMOTE.md"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, other, "add", "REMOTE.md")
+	runGitTestCommand(t, other, "commit", "-m", "remote update")
+	runGitTestCommand(t, other, "push", "origin", branch)
+	runGitTestCommand(t, repo, "fetch", "origin")
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("local dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headBefore := gitTestOutput(t, repo, "rev-parse", "HEAD")
+
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}}
+	})
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/git/quick-publish", gitQuickPublishRequest{
+		Path:      repo,
+		Message:   "fix: must not be committed",
+		Confirmed: true,
+	}))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("behind 分支应在提交前返回 409，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if headAfter := gitTestOutput(t, repo, "rev-parse", "HEAD"); headAfter != headBefore {
+		t.Fatalf("behind 阻断后不应产生本地 commit，before=%s after=%s", headBefore, headAfter)
+	}
+	status := gitTestOutput(t, repo, "status", "--porcelain")
+	if !strings.Contains(status, "README.md") {
+		t.Fatalf("behind 阻断后应保留工作区改动：%q", status)
 	}
 }
 

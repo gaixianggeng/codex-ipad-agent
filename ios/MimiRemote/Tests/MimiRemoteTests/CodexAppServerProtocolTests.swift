@@ -1774,6 +1774,38 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertTrue(approval.body?.contains("https://example.test/oauth") == true)
     }
 
+    func testRuntimeProjectsThreadNameUpdateIntoCachedSession() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        await runtime.handle(CodexAppServerNotification(
+            method: "thread/started",
+            params: .object([
+                "thread": .object([
+                    "id": .string("thread-title"),
+                    "cwd": .string("/tmp/thread-title"),
+                    "name": .string("旧标题"),
+                    "status": .object(["type": .string("idle")])
+                ])
+            ])
+        ))
+        await runtime.handle(CodexAppServerNotification(
+            method: "thread/name/updated",
+            params: .object([
+                "threadId": .string("thread-title"),
+                "threadName": .string("  新标题  ")
+            ])
+        ))
+
+        let shell = await runtime.historyThreadShell(
+            sessionID: "thread-title",
+            projects: []
+        )
+
+        XCTAssertEqual(shell["name"]?.stringValue, "新标题")
+    }
+
     func testRuntimeBuildsTypedMcpElicitationResponses() async {
         let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
         let form = CodexAppServerServerRequest(
@@ -1884,10 +1916,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let named = CodexAppServerNotification(method: "thread/name/updated", params: .object([
             "threadId": .string("thread-1"), "threadName": .string("新名称")
         ]))
-        guard case .messageCompleted(let nameMessage, _) = projector.project(named) else {
-            return XCTFail("expected name message")
-        }
-        XCTAssertTrue(nameMessage.content.contains("新名称"))
+        XCTAssertNil(projector.project(named), "标题是导航元数据，不应写入 transcript")
 
         let mcp = CodexAppServerNotification(method: "item/mcpToolCall/progress", params: .object([
             "threadId": .string("thread-1"), "turnId": .string("turn-1"), "itemId": .string("mcp-item"),

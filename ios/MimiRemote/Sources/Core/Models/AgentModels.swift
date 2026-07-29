@@ -85,7 +85,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let projectID: String
     let project: String
     let dir: String
-    let title: String
+    var title: String
     var status: String
     let source: String
     let runtimeProvider: String?

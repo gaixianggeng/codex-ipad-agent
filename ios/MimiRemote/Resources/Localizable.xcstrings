@@ -6068,6 +6068,57 @@
         }
       }
     },
+    "ui.workspace_actions" : {
+      "comment" : "Accessibility label for the menu containing actions for one workspace card.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Workspace actions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作区操作"
+          }
+        }
+      }
+    },
+    "ui.duplicate_session" : {
+      "comment" : "Action that creates a new Codex thread from the selected thread while keeping the same workspace.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duplicate session"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制会话"
+          }
+        }
+      }
+    },
+    "ui.duplicate_session_failed_value" : {
+      "comment" : "Shown when duplicating a Codex session fails. The placeholder is the error message.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t duplicate session: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制会话失败：%@"
+          }
+        }
+      }
+    },
     "ui.copy" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -22712,6 +22763,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "会话提醒"
+          }
+        }
+      }
+    },
+    "ui.session_duplicated_as_value" : {
+      "comment" : "Shown after a Codex session is duplicated successfully. The placeholder is the new title.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duplicated session as %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制会话为 %@"
+          }
+        }
+      }
+    },
+    "ui.session_duplicated_but_rename_failed_value" : {
+      "comment" : "Shown when a thread fork succeeds but assigning the copy title fails. The placeholder is the error message.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Session duplicated, but renaming failed: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话已复制，但重命名失败：%@"
           }
         }
       }
