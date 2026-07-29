@@ -71,7 +71,9 @@ func main() {
 		fatal(err)
 	}
 
-	hash := sha256.Sum256(raw)
+	// Git 在 Windows checkout 时可能把文本转换为 CRLF。契约语义没有变化时，
+	// 生成快照不应因工作区换行风格不同而漂移。
+	hash := sha256.Sum256(normalizeLineEndings(raw))
 	sourceHash := hex.EncodeToString(hash[:])
 	files, err := render(root, spec, sourceHash)
 	if err != nil {
@@ -94,7 +96,7 @@ func main() {
 		if err != nil {
 			fatal(fmt.Errorf("%s 不存在或不可读，请先使用 --write：%w", relative(root, file.path), err))
 		}
-		if !bytes.Equal(current, file.content) {
+		if !bytes.Equal(normalizeLineEndings(current), normalizeLineEndings(file.content)) {
 			fatal(fmt.Errorf("%s 已过期，请运行 go run ./internal/protocolcontract/cmd/generate --write", relative(root, file.path)))
 		}
 	}
@@ -102,6 +104,11 @@ func main() {
 	if *check {
 		fmt.Println("Mimi 协议生成文件与权威契约一致。")
 	}
+}
+
+func normalizeLineEndings(content []byte) []byte {
+	normalized := bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
 }
 
 func repositoryRoot() (string, error) {
