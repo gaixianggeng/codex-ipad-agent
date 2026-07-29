@@ -725,101 +725,6 @@ struct SessionIndexRow: View {
     }()
 }
 
-private struct SessionRowActions: ViewModifier {
-    @EnvironmentObject private var sessionStore: SessionStore
-    @State private var renameTarget: SessionRenameTarget?
-    @State private var reviewPresentation: SessionReviewPresentation?
-    let session: AgentSession
-
-    func body(content: Content) -> some View {
-        let isPinned = sessionStore.isSessionPinned(session.id)
-        let isArchived = sessionStore.isSessionArchived(session.id)
-        let reminder = sessionStore.sessionReminder(for: session.id)
-
-        content.contextMenu {
-            if sessionStore.isSessionObserving(session),
-               !sessionStore.isExternalReadOnlySession(session) {
-                Button {
-                    sessionStore.takeOverSession(session)
-                } label: {
-                    Label(L10n.text("ui.take_over_to_ipad"), systemImage: "hand.raised.fill")
-                }
-            }
-
-            Button {
-                sessionStore.toggleSessionPinned(session)
-            } label: {
-                Label(isPinned ? L10n.text("ui.unpin") : L10n.text("ui.pin_to_top"), systemImage: isPinned ? "pin.slash" : "pin")
-            }
-
-            if sessionStore.supportsCodexThreadManagement(session) {
-                Divider()
-
-                Button {
-                    renameTarget = SessionRenameTarget(session: session)
-                } label: {
-                    Label(L10n.text("ui.rename"), systemImage: "pencil")
-                }
-
-                Button {
-                    Task { await sessionStore.compactSessionContext(session) }
-                } label: {
-                    Label(L10n.text("ui.compression_context"), systemImage: "arrow.down.right.and.arrow.up.left")
-                }
-                .disabled(session.isRunning)
-
-                Button {
-                    reviewPresentation = SessionReviewPresentation(session: session)
-                } label: {
-                    Label(L10n.text("ui.start_code_review"), systemImage: "checklist.checked")
-                }
-                .disabled(session.isRunning)
-            }
-
-            Button {
-                Task { await sessionStore.handoffSessionToWorktree(session) }
-            } label: {
-                Label(L10n.text("ui.go_to_the_new_git_worktree"), systemImage: "arrow.triangle.branch")
-            }
-            .disabled(session.isRunning || sessionStore.isCreatingWorktree)
-
-            Menu {
-                Button(L10n.text("ui.30_minutes_later")) { Task { await sessionStore.scheduleSessionReminder(session, after: 30 * 60) } }
-                Button(L10n.text("ui.2_hours_later")) { Task { await sessionStore.scheduleSessionReminder(session, after: 2 * 60 * 60) } }
-                Button(L10n.text("ui.tomorrow")) { Task { await sessionStore.scheduleSessionReminder(session, after: 24 * 60 * 60) } }
-                if reminder != nil {
-                    Button(L10n.text("ui.clear_reminder"), role: .destructive) { sessionStore.clearSessionReminder(session) }
-                }
-            } label: {
-                Label(L10n.text("ui.reminder"), systemImage: reminder == nil ? "bell" : "bell.fill")
-            }
-
-            Button(role: isArchived ? nil : .destructive) {
-                Task { await sessionStore.toggleSessionArchivedRemote(session) }
-            } label: {
-                Label(isArchived ? L10n.text("ui.unarchive") : L10n.text("ui.archive"), systemImage: isArchived ? "archivebox.fill" : "archivebox")
-            }
-            .disabled(sessionStore.isExternalReadOnlySession(session))
-        }
-        .sheet(item: $renameTarget) { target in
-            SessionRenameSheet(session: target.session)
-        }
-        .sheet(item: $reviewPresentation) { presentation in
-            SessionReviewSheet(session: presentation.session)
-        }
-    }
-}
-
-private struct SessionRenameTarget: Identifiable {
-    let session: AgentSession
-    var id: SessionID { session.id }
-}
-
-private struct SessionReviewPresentation: Identifiable {
-    let session: AgentSession
-    var id: SessionID { session.id }
-}
-
 private enum SessionReviewScope: String, CaseIterable, Identifiable {
     case uncommittedChanges
     case baseBranch
@@ -844,7 +749,7 @@ private enum SessionReviewScope: String, CaseIterable, Identifiable {
     }
 }
 
-private struct SessionReviewSheet: View {
+struct SessionReviewSheet: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -986,7 +891,7 @@ private struct SessionReviewSheet: View {
     }
 }
 
-private struct SessionRenameSheet: View {
+struct SessionRenameSheet: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -1039,11 +944,5 @@ private struct SessionRenameSheet: View {
                 dismiss()
             }
         }
-    }
-}
-
-extension View {
-    func sessionRowActions(_ session: AgentSession) -> some View {
-        modifier(SessionRowActions(session: session))
     }
 }

@@ -128,4 +128,74 @@ final class WorkspaceGitSummaryTests: XCTestCase {
         XCTAssertNil(cached?.statusText)
         XCTAssertNil(cached?.unstagedDiff)
     }
+
+    func testTurnCompletionGitRefreshDebouncesByWorkspacePath() async throws {
+        let project = makeProject(id: "workspace-turn-refresh")
+        let session = makeSession(
+            id: "thread-turn-refresh",
+            projectID: project.id,
+            title: "Git refresh",
+            status: "history",
+            source: "codex"
+        )
+        let refreshedStatus = GitStatusResponse(
+            path: project.path,
+            isRepository: true,
+            branch: "main",
+            head: "new-head",
+            ahead: 0,
+            behind: 0,
+            upstream: "origin/main",
+            statusText: "",
+            diffStat: nil,
+            unstagedDiff: nil,
+            stagedDiff: nil,
+            files: [],
+            truncated: false,
+            truncatedNote: nil
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            gitStatusResults: [project.path: .success(refreshedStatus)]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.gitRefreshDelayNanoseconds = 0
+        store.gitStatusByPath[project.path] = GitStatusResponse(
+            path: project.path,
+            isRepository: true,
+            branch: "main",
+            head: "old-head",
+            statusText: "",
+            diffStat: nil,
+            unstagedDiff: nil,
+            stagedDiff: nil,
+            files: [],
+            truncated: false,
+            truncatedNote: nil
+        )
+
+        store.scheduleGitRefreshAfterTurnCompletion(
+            sessionID: session.id,
+            hostScope: appStore.activeHostScope
+        )
+        store.scheduleGitRefreshAfterTurnCompletion(
+            sessionID: session.id,
+            hostScope: appStore.activeHostScope
+        )
+
+        for _ in 0..<50 where client.requestedGitStatusPaths.isEmpty {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        XCTAssertEqual(client.requestedGitStatusPaths, [project.path])
+        XCTAssertEqual(store.gitStatusByPath[project.path]?.head, "new-head")
+    }
 }
