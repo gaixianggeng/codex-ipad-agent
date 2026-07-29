@@ -713,33 +713,36 @@ final class AppStore: ObservableObject {
         )
     }
 
-    func preparePairingURL(_ url: URL) async throws -> PreparedConnectionSettings {
+    func preparePairingURL(
+        _ url: URL,
+        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
+    ) async throws -> PreparedConnectionSettings {
         if let ticket = try Self.pairingTicket(from: url) {
             let credentials = try await claimPairing(ticket)
             return try await prepareConnectionSettings(
                 endpoint: credentials.endpoint,
-                token: credentials.token
+                token: credentials.token,
+                profileTarget: profileTarget
             )
         }
         let credentials = try Self.pairingCredentials(from: url)
         return try await prepareConnectionSettings(
             endpoint: credentials.endpoint,
-            token: credentials.token
+            token: credentials.token,
+            profileTarget: profileTarget
         )
     }
 
     func prepareNewPairingURL(_ url: URL, displayName: String) async throws -> PreparedConnectionSettings {
-        let prepared = try await preparePairingURL(url)
-        return PreparedConnectionSettings(
-            endpoint: prepared.endpoint,
-            token: prepared.token,
+        // 新档案目标必须在兑换二维码前就确定，并贯穿身份校验、Runtime 预热和提交。
+        // 如果先按 currentOrNew 准备、最后再改成 newProfile，第二台电脑会被误判为
+        // 当前档案更换了安装身份，且 PreparedHostLease 仍会保留错误目标。
+        return try await preparePairingURL(
+            url,
             profileTarget: .newProfile(
                 id: UUID().uuidString,
-                displayName: Self.normalizedProfileDisplayName(displayName, endpoint: prepared.endpoint)
-            ),
-            validatedAt: prepared.validatedAt,
-            installationID: prepared.installationID,
-            hostContext: prepared.hostContext
+                displayName: displayName
+            )
         )
     }
 
