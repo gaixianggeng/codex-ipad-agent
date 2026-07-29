@@ -21,11 +21,10 @@ struct MacInstallationSetupView: View {
             ) {
                 VStack(alignment: .leading, spacing: 10) {
                     ShareLink(item: AppExternalLinks.macInstaller) {
-                        Label(
-                            L10n.text("ui.send_download_link_to_mac"),
+                        GloballyCenteredActionLabel(
+                            title: L10n.text("ui.send_download_link_to_mac"),
                             systemImage: "square.and.arrow.up"
                         )
-                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .tint(tokens.primaryAction)
@@ -88,11 +87,10 @@ struct MacInstallationSetupView: View {
             ) {
                 VStack(spacing: 10) {
                     Button(action: onScan) {
-                        Label(
-                            L10n.text("ui.scan_qr_code_on_mac"),
+                        GloballyCenteredActionLabel(
+                            title: L10n.text("ui.scan_qr_code_on_mac"),
                             systemImage: "qrcode.viewfinder"
                         )
-                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(tokens.primaryAction)
@@ -101,11 +99,10 @@ struct MacInstallationSetupView: View {
                     .accessibilityIdentifier("settings.macInstaller.scan")
 
                     Button(action: onPasteConnectionInfo) {
-                        Label(
-                            L10n.text("ui.paste_connection_info"),
+                        GloballyCenteredActionLabel(
+                            title: L10n.text("ui.paste_connection_info"),
                             systemImage: "doc.on.clipboard"
                         )
-                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .tint(tokens.primaryAction)
@@ -152,5 +149,33 @@ struct MacInstallationSetupView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// 满宽操作按钮的图标不应把标题挤离整条按钮的中心线。
+/// 两侧使用等宽占位，让标题始终相对按钮全局居中，并给大字体留出对称的换行空间。
+private struct GloballyCenteredActionLabel: View {
+    @ScaledMetric(relativeTo: .body) private var accessorySlotWidth = 28.0
+
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Image(systemName: systemImage)
+                .frame(width: accessorySlotWidth, alignment: .leading)
+                .accessibilityHidden(true)
+
+            Text(title)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+
+            Color.clear
+                .frame(width: accessorySlotWidth)
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
     }
 }
