@@ -419,6 +419,9 @@ struct AppearanceView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
+
+    let profileID: String
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -438,6 +441,31 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.dark_and_light_colors"))
             } footer: {
                 Text(L10n.text("ui.system_mode_follows_the_current_device_appearance_light"))
+            }
+            .listRowBackground(tokens.elevatedSurface)
+
+            Section {
+                Picker(selection: workspaceIconStyleBinding) {
+                    ForEach(WorkspaceIconStyle.allCases) { style in
+                        WorkspaceIconStyleOptionLabel(
+                            style: style,
+                            isSelected: workspaceAppearanceStore.style(profileID: profileID) == style,
+                            tokens: tokens
+                        )
+                        .tag(style)
+                    }
+                } label: {
+                    Text(L10n.text("ui.workspace_avatar_style"))
+                }
+                // 代表图需要保留足够尺寸；原生 inline Picker 同时提供系统选中标记、
+                // VoiceOver 单选语义，并能在 iPhone 与大字体下自然纵向排布。
+                .pickerStyle(.inline)
+                .labelsHidden()
+                .accessibilityIdentifier("settings.workspaceIconStyle")
+            } header: {
+                Text(L10n.text("ui.workspace_avatar_style"))
+            } footer: {
+                Text(L10n.text("ui.workspace_avatar_style_description"))
             }
             .listRowBackground(tokens.elevatedSurface)
 
@@ -513,6 +541,10 @@ struct AppearanceView: View {
             Section {
                 Button(role: .destructive) {
                     themeStore.reset()
+                    workspaceAppearanceStore.setStyle(
+                        .journey,
+                        profileID: profileID
+                    )
                 } label: {
                     Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
                 }
@@ -523,7 +555,7 @@ struct AppearanceView: View {
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .background(tokens.background.ignoresSafeArea())
-        .navigationTitle(L10n.text("ui.appearance"))
+        .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
         .tint(tokens.accent)
@@ -531,6 +563,20 @@ struct AppearanceView: View {
 
     private var fontScaleText: String {
         "\(Int((themeStore.fontScale * 100).rounded()))%"
+    }
+
+    private var workspaceIconStyleBinding: Binding<WorkspaceIconStyle> {
+        Binding(
+            get: {
+                workspaceAppearanceStore.style(profileID: profileID)
+            },
+            set: {
+                workspaceAppearanceStore.setStyle(
+                    $0,
+                    profileID: profileID
+                )
+            }
+        )
     }
 
     private func iconName(for mode: ThemeMode) -> String {
@@ -541,6 +587,54 @@ struct AppearanceView: View {
             return "sun.max"
         case .dark:
             return "moon"
+        }
+    }
+}
+
+private struct WorkspaceIconStyleOptionLabel: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let style: WorkspaceIconStyle
+    let isSelected: Bool
+    let tokens: ThemeTokens
+
+    var body: some View {
+        HStack(spacing: 12) {
+            representativeImage
+
+            Text(style.title)
+                .font(themeStore.uiFont(.body))
+                .foregroundStyle(tokens.primaryText)
+        }
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+        .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
+    }
+
+    @ViewBuilder
+    private var representativeImage: some View {
+        switch style {
+        case .journey:
+            Image("WorkspaceCharacterSunWukong")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(tokens.border.opacity(0.5), lineWidth: 0.75)
+                }
+                .accessibilityHidden(true)
+        case .emoji:
+                Text(verbatim: "🦧")
+                .font(.system(size: 28))
+                .frame(width: 44, height: 44)
+                .background(
+                    Color(red: 0.88, green: 0.72, blue: 0.34).opacity(0.22),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .accessibilityHidden(true)
         }
     }
 }

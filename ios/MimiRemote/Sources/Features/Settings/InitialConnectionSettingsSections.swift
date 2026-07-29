@@ -159,32 +159,41 @@ struct InitialConnectionSettingsSections: View {
                 }
             }
 
-            Section {
-#if targetEnvironment(macCatalyst)
-                if appStore.localAgentDetected {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label(
-                            appStore.isUsingLocalConnection ? L10n.text("ui.directly_connected_through_local_assistant") : L10n.text("ui.assistant_has_been_detected_on_this_mac"),
-                            systemImage: "checkmark.circle.fill"
-                        )
-                        .font(themeStore.uiFont(.body, weight: .semibold))
-                        .foregroundStyle(tokens.success)
-                        if !appStore.isConfigured {
-                            Text(localAgentPairingHint)
-                                .font(themeStore.uiFont(.footnote))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 2)
+            if !appStore.isConfigured && !appStore.localAgentDetected {
+                MacInstallationSetupView(
+                    connectionFooter: connectionSectionFooter,
+                    isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
+                    onScan: beginScanningMac,
+                    onPasteConnectionInfo: pasteConnectionInfo
+                )
+
+                connectionPresentationSection {
+                    advancedConnectionOptions(tokens: tokens)
+                } header: {
+                    Text(L10n.text("ui.other_connection_methods"))
+                } footer: {
+                    EmptyView()
                 }
+            } else {
+                connectionPresentationSection {
+#if targetEnvironment(macCatalyst)
+                    if appStore.localAgentDetected {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(
+                                appStore.isUsingLocalConnection ? L10n.text("ui.directly_connected_through_local_assistant") : L10n.text("ui.assistant_has_been_detected_on_this_mac"),
+                                systemImage: "checkmark.circle.fill"
+                            )
+                            .font(themeStore.uiFont(.body, weight: .semibold))
+                            .foregroundStyle(tokens.success)
+                            if !appStore.isConfigured {
+                                Text(localAgentPairingHint)
+                                    .font(themeStore.uiFont(.footnote))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
 #endif
-                if !appStore.isConfigured && !appStore.localAgentDetected {
-                    MacInstallationSetupView(
-                        isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
-                        onScan: beginScanningMac,
-                        onPasteConnectionInfo: pasteConnectionInfo
-                    )
-                } else {
                     VStack(spacing: 10) {
                         Button {
                             beginScanningMac()
@@ -212,105 +221,13 @@ struct InitialConnectionSettingsSections: View {
                         .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
                         .accessibilityIdentifier("settings.connection.pasteConnectionInfo")
                     }
-                }
 
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(L10n.text("ui.first_time_installation"))
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text("brew install gaixianggeng/tap/mimi-remote")
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                        Text(L10n.text("ui.start_the_assistant_and_display_the_qr_code"))
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text("agentd up")
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                        Text(L10n.text("ui.run_agentd_pair_when_the_qr_code_expires"))
-                            .font(themeStore.uiFont(.footnote))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 6)
-                } label: {
-                    Label(
-                        L10n.text("ui.command_line_installation_advanced"),
-                        systemImage: "terminal"
-                    )
+                    advancedConnectionOptions(tokens: tokens)
+                } header: {
+                    Text(appStore.isConfigured ? L10n.text("ui.add_mac") : L10n.text("ui.start_setup"))
+                } footer: {
+                    Text(connectionSectionFooter)
                 }
-
-                DisclosureGroup(isExpanded: manualConnectionExpandedBinding) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if isAddingConnectionProfile {
-                            connectionFieldLabel(L10n.text("ui.display_name")) {
-                                TextField(L10n.text("ui.example_studio_mac"), text: $profileDisplayName)
-                                    .textInputAutocapitalization(.words)
-                                    .accessibilityIdentifier("settings.profileDisplayName")
-                            }
-                        }
-                        connectionFieldLabel(L10n.text("ui.connection_address")) {
-                            StableEndpointTextField(placeholder: endpointPlaceholder, text: $endpoint)
-                                .frame(minHeight: 28)
-                        }
-                        connectionFieldLabel(L10n.text("ui.access_code")) {
-                            SecureField(L10n.text("ui.enter_access_code"), text: $token)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                        }
-                        EndpointTransportNotice(assessment: endpointTransportAssessment)
-                        Button {
-                            Task { await save() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isSavingConnection {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                }
-                                Text(isSavingConnection ? L10n.text("ui.connecting") : manualSaveButtonTitle)
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(tokens.primaryAction)
-                        .disabled(!canSubmit)
-                    }
-                    .padding(.vertical, 6)
-                } label: {
-                    Label(manualConnectionTitle, systemImage: "keyboard")
-                }
-            } header: {
-                Text(appStore.isConfigured ? L10n.text("ui.add_mac") : L10n.text("ui.start_setup"))
-            } footer: {
-                Text(connectionSectionFooter)
-            }
-            // 这里注册业务回调；真正的相机 Cover 由 SettingsView 根层呈现，避免
-            // 系统权限弹窗期间 Form.Section 重建后丢失 presenter。
-            .onAppear(perform: configureQRCodeScannerPresentation)
-            .sheet(item: $profileRenameTarget) { profile in
-                ConnectionProfileRenameSheet(profile: profile) { displayName in
-                    try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
-                    localError = nil
-                }
-            }
-            .confirmationDialog(
-                pendingRemovalConfirmation?.title ?? L10n.text("ui.confirm_to_delete_connection_credentials"),
-                isPresented: removalConfirmationBinding,
-                titleVisibility: .visible,
-                presenting: pendingRemovalConfirmation
-            ) { confirmation in
-                Button(confirmation.confirmButtonTitle, role: .destructive) {
-                    Task {
-                        await performCredentialRemoval(confirmation)
-                    }
-                }
-                .accessibilityIdentifier(removalConfirmationAccessibilityIdentifier(confirmation))
-
-                Button(L10n.text("ui.cancel"), role: .cancel) {
-                    pendingRemovalConfirmation = nil
-                }
-            } message: { confirmation in
-                Text(confirmation.message)
             }
 
             if shouldShowConnectionStatus {
@@ -390,6 +307,120 @@ struct InitialConnectionSettingsSections: View {
             // 根启动任务负责自动配对和提交；这里与它复用同一个探测 Task，只更新设置页提示，
             // 避免两个连接事务争抢后导致 bootstrap 提前返回。
             _ = await appStore.detectLocalAgent()
+        }
+    }
+
+    /// 首次连接时只把高级恢复入口放进这一节；已有连接仍复用同一组控件。
+    /// 默认折叠能保留完整能力，同时不让低频技术信息和扫码主路径竞争注意力。
+    @ViewBuilder
+    private func advancedConnectionOptions(tokens: ThemeTokens) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.text("ui.first_time_installation"))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("brew install gaixianggeng/tap/mimi-remote")
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                Text(L10n.text("ui.start_the_assistant_and_display_the_qr_code"))
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("agentd up")
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                Text(L10n.text("ui.run_agentd_pair_when_the_qr_code_expires"))
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 6)
+        } label: {
+            Label(
+                L10n.text("ui.command_line_installation_advanced"),
+                systemImage: "terminal"
+            )
+        }
+
+        DisclosureGroup(isExpanded: manualConnectionExpandedBinding) {
+            VStack(alignment: .leading, spacing: 12) {
+                if isAddingConnectionProfile {
+                    connectionFieldLabel(L10n.text("ui.display_name")) {
+                        TextField(L10n.text("ui.example_studio_mac"), text: $profileDisplayName)
+                            .textInputAutocapitalization(.words)
+                            .accessibilityIdentifier("settings.profileDisplayName")
+                    }
+                }
+                connectionFieldLabel(L10n.text("ui.connection_address")) {
+                    StableEndpointTextField(placeholder: endpointPlaceholder, text: $endpoint)
+                        .frame(minHeight: 28)
+                }
+                connectionFieldLabel(L10n.text("ui.access_code")) {
+                    SecureField(L10n.text("ui.enter_access_code"), text: $token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                EndpointTransportNotice(assessment: endpointTransportAssessment)
+                Button {
+                    Task { await save() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSavingConnection {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isSavingConnection ? L10n.text("ui.connecting") : manualSaveButtonTitle)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(tokens.primaryAction)
+                .disabled(!canSubmit)
+            }
+            .padding(.vertical, 6)
+        } label: {
+            Label(manualConnectionTitle, systemImage: "keyboard")
+        }
+    }
+
+    /// 业务回调和弹窗只挂到每条连接流程中的一个原生 Section，
+    /// 避免系统权限弹窗期间因多个 presenter 同时存在而重复呈现。
+    private func connectionPresentationSection<Content: View, Header: View, Footer: View>(
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder header: () -> Header,
+        @ViewBuilder footer: () -> Footer
+    ) -> some View {
+        Section {
+            content()
+        } header: {
+            header()
+        } footer: {
+            footer()
+        }
+        // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
+        .onAppear(perform: configureQRCodeScannerPresentation)
+        .sheet(item: $profileRenameTarget) { profile in
+            ConnectionProfileRenameSheet(profile: profile) { displayName in
+                try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
+                localError = nil
+            }
+        }
+        .confirmationDialog(
+            pendingRemovalConfirmation?.title ?? L10n.text("ui.confirm_to_delete_connection_credentials"),
+            isPresented: removalConfirmationBinding,
+            titleVisibility: .visible,
+            presenting: pendingRemovalConfirmation
+        ) { confirmation in
+            Button(confirmation.confirmButtonTitle, role: .destructive) {
+                Task {
+                    await performCredentialRemoval(confirmation)
+                }
+            }
+            .accessibilityIdentifier(removalConfirmationAccessibilityIdentifier(confirmation))
+
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                pendingRemovalConfirmation = nil
+            }
+        } message: { confirmation in
+            Text(confirmation.message)
         }
     }
 

@@ -380,7 +380,12 @@ struct WorkspaceRootView: View {
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
         let profileID = appStore.activeHostScope.profileID
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
+        let iconStyle = appearanceStore.style(profileID: profileID)
         let characterAssignments = appearanceStore.characterAssignments(
+            profileID: profileID,
+            projectIDs: projectIDs
+        )
+        let emojiAssignments = appearanceStore.emojiAssignments(
             profileID: profileID,
             projectIDs: projectIDs
         )
@@ -395,11 +400,17 @@ struct WorkspaceRootView: View {
                                     project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
                                     profileID: profileID,
                                     appearanceStore: appearanceStore,
+                                    iconStyle: iconStyle,
                                     displayedCharacter: appearanceStore.character(
                                         profileID: profileID,
                                         projectID: "loading-\(index)"
                                     ),
+                                    displayedEmoji: appearanceStore.emoji(
+                                        profileID: profileID,
+                                        projectID: "loading-\(index)"
+                                    ),
                                     unavailableCharacterIDs: [],
+                                    unavailableEmoji: [],
                                     gitSummary: nil,
                                     isGitSummaryLoading: true,
                                     hasRunningSession: false,
@@ -420,6 +431,8 @@ struct WorkspaceRootView: View {
                                 let projectSessions = sessionStore.sessions(forProjectID: project.id)
                                 let displayedCharacter = characterAssignments[project.id]
                                     ?? appearanceStore.character(profileID: profileID, projectID: project.id)
+                                let displayedEmoji = emojiAssignments[project.id]
+                                    ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
                                 let unavailableCharacterIDs: Set<String> =
                                     projectIDs.count <= WorkspaceAppearanceStore.builtInCharacters.count
                                     ? Set(
@@ -428,12 +441,23 @@ struct WorkspaceRootView: View {
                                         }
                                     )
                                     : []
+                                let unavailableEmoji: Set<String> =
+                                    projectIDs.count <= WorkspaceAppearanceStore.builtInEmoji.count
+                                    ? Set(
+                                        emojiAssignments.compactMap { otherProjectID, emoji in
+                                            otherProjectID == project.id ? nil : emoji
+                                        }
+                                    )
+                                    : []
                                 WorkspaceLibraryCard(
                                     project: project,
                                     profileID: profileID,
                                     appearanceStore: appearanceStore,
+                                    iconStyle: iconStyle,
                                     displayedCharacter: displayedCharacter,
+                                    displayedEmoji: displayedEmoji,
                                     unavailableCharacterIDs: unavailableCharacterIDs,
+                                    unavailableEmoji: unavailableEmoji,
                                     gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
                                     isGitSummaryLoading: sessionStore.refreshingWorkspaceGitSummaryPaths.contains(project.path),
                                     hasRunningSession: projectSessions.contains(where: \.isRunning),
@@ -661,8 +685,11 @@ private struct WorkspaceLibraryCard: View {
     let project: AgentProject
     let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
+    let iconStyle: WorkspaceIconStyle
     let displayedCharacter: WorkspaceCharacterIcon
+    let displayedEmoji: String
     let unavailableCharacterIDs: Set<String>
+    let unavailableEmoji: Set<String>
     let gitSummary: GitStatusResponse?
     let isGitSummaryLoading: Bool
     let hasRunningSession: Bool
@@ -674,7 +701,7 @@ private struct WorkspaceLibraryCard: View {
     let tokens: ThemeTokens
     let action: () -> Void
     let onRemove: () -> Void
-    @State private var isPresentingCharacterPicker = false
+    @State private var isPresentingIconPicker = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -695,9 +722,9 @@ private struct WorkspaceLibraryCard: View {
             } else {
                 Menu {
                     Button {
-                        isPresentingCharacterPicker = true
+                        isPresentingIconPicker = true
                     } label: {
-                        Label(L10n.text("ui.workspace_icon"), systemImage: "person.crop.square")
+                        Label(L10n.text("ui.workspace_icon"), systemImage: iconStyle == .emoji ? "face.smiling" : "person.crop.square")
                     }
                     Button(role: .destructive, action: onRemove) {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
@@ -719,7 +746,7 @@ private struct WorkspaceLibraryCard: View {
                 VStack(spacing: 0) {
                     HStack(spacing: 0) {
                         Button {
-                            isPresentingCharacterPicker = true
+                            isPresentingIconPicker = true
                         } label: {
                             Color.clear
                                 .frame(width: 52, height: 52)
@@ -731,18 +758,11 @@ private struct WorkspaceLibraryCard: View {
                             L10n.format(
                                 "ui.change_workspace_icon_value",
                                 project.name,
-                                displayedCharacter.name
+                                currentIconName
                             )
                         )
-                        .popover(isPresented: $isPresentingCharacterPicker, arrowEdge: .top) {
-                            WorkspaceCharacterPicker(
-                                project: project,
-                                profileID: profileID,
-                                appearanceStore: appearanceStore,
-                                currentCharacterID: displayedCharacter.id,
-                                unavailableCharacterIDs: unavailableCharacterIDs,
-                                tokens: tokens
-                            )
+                        .popover(isPresented: $isPresentingIconPicker, arrowEdge: .top) {
+                            iconPicker
                         }
                         Spacer(minLength: 0)
                     }
@@ -757,7 +777,7 @@ private struct WorkspaceLibraryCard: View {
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
-                characterTile
+                iconTile
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(project.name)
@@ -807,37 +827,104 @@ private struct WorkspaceLibraryCard: View {
         )
     }
 
-    private var characterTile: some View {
-        Image(displayedCharacter.assetName)
-            .resizable()
-            .scaledToFill()
-            .frame(width: 52, height: 52)
-            .clipShape(WorkspaceIconMeeGoShape())
-            .overlay {
-                // 角色图统一使用暖白底；这里只提供适配明暗模式的轮廓，不再叠加随机主题色。
-                WorkspaceIconMeeGoShape()
-                    .stroke(tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42), lineWidth: 0.75)
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if hasRunningSession {
-                    Circle()
-                        .fill(tokens.secondaryText)
-                        .frame(width: 11, height: 11)
-                        .overlay {
-                            Circle()
-                                .stroke(
-                                    isSelected
-                                        ? tokens.workspaceCardSelectionFill
-                                        : tokens.contentPanelBackground,
-                                    lineWidth: 2
-                                )
-                        }
-                        .offset(x: 1, y: 1)
-                        .accessibilityHidden(true)
+    @ViewBuilder
+    private var iconTile: some View {
+        switch iconStyle {
+        case .journey:
+            Image(displayedCharacter.assetName)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 52, height: 52)
+                .clipShape(WorkspaceIconMeeGoShape())
+                .overlay {
+                    // 角色图统一使用暖白底；这里只提供适配明暗模式的轮廓，不再叠加随机主题色。
+                    WorkspaceIconMeeGoShape()
+                        .stroke(tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42), lineWidth: 0.75)
                 }
-            }
-            .opacity(isUnavailable ? 0.62 : 1)
-            .accessibilityHidden(true)
+                .overlay(alignment: .bottomTrailing) {
+                    runningIndicator
+                }
+                .opacity(isUnavailable ? 0.62 : 1)
+                .accessibilityHidden(true)
+        case .emoji:
+            let palette: [Color] = [
+                Color(red: 0.91, green: 0.63, blue: 0.48),
+                Color(red: 0.47, green: 0.67, blue: 0.78),
+                Color(red: 0.76, green: 0.64, blue: 0.42),
+                Color(red: 0.88, green: 0.72, blue: 0.34),
+                Color(red: 0.64, green: 0.70, blue: 0.48),
+                Color(red: 0.72, green: 0.53, blue: 0.72)
+            ]
+            let tint = palette[
+                WorkspaceAppearanceStore.tintIndex(for: displayedEmoji, count: palette.count)
+            ]
+
+            Text(displayedEmoji)
+                .font(.system(size: 30))
+                .frame(width: 52, height: 52)
+                .background(
+                    tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
+                    in: WorkspaceIconMeeGoShape()
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    runningIndicator
+                }
+                .opacity(isUnavailable ? 0.62 : 1)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var runningIndicator: some View {
+        if hasRunningSession {
+            Circle()
+                .fill(tokens.secondaryText)
+                .frame(width: 11, height: 11)
+                .overlay {
+                    Circle()
+                        .stroke(
+                            isSelected
+                                ? tokens.workspaceCardSelectionFill
+                                : tokens.contentPanelBackground,
+                            lineWidth: 2
+                        )
+                }
+                .offset(x: 1, y: 1)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var iconPicker: some View {
+        switch iconStyle {
+        case .journey:
+            WorkspaceCharacterPicker(
+                project: project,
+                profileID: profileID,
+                appearanceStore: appearanceStore,
+                currentCharacterID: displayedCharacter.id,
+                unavailableCharacterIDs: unavailableCharacterIDs,
+                tokens: tokens
+            )
+        case .emoji:
+            WorkspaceEmojiPicker(
+                project: project,
+                profileID: profileID,
+                appearanceStore: appearanceStore,
+                currentEmoji: displayedEmoji,
+                unavailableEmoji: unavailableEmoji,
+                tokens: tokens
+            )
+        }
+    }
+
+    private var currentIconName: String {
+        switch iconStyle {
+        case .journey:
+            return displayedCharacter.name
+        case .emoji:
+            return displayedEmoji
+        }
     }
 
     private func metadataRow(now: Date) -> some View {
@@ -1072,6 +1159,130 @@ private struct WorkspaceCharacterPicker: View {
         .accessibilityIdentifier("workspace.characterPicker")
     }
 
+}
+
+private struct WorkspaceEmojiPicker: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let project: AgentProject
+    let profileID: String
+    @ObservedObject var appearanceStore: WorkspaceAppearanceStore
+    let currentEmoji: String
+    let unavailableEmoji: Set<String>
+    let tokens: ThemeTokens
+    @State private var customInput = ""
+    @State private var validationMessage: String?
+
+    private let columns = Array(repeating: GridItem(.fixed(44), spacing: 8), count: 6)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n.text("ui.workspace_icon"))
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(project.name)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                ForEach(WorkspaceAppearanceStore.builtInEmoji, id: \.self) { emoji in
+                    let isUnavailable = unavailableEmoji.contains(emoji)
+                    Button {
+                        appearanceStore.setCustomEmoji(
+                            emoji,
+                            profileID: profileID,
+                            projectID: project.id
+                        )
+                        dismiss()
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Text(emoji)
+                                .font(.system(size: 26))
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    tokens.elevatedSurface.opacity(0.68),
+                                    in: WorkspaceIconMeeGoShape()
+                                )
+                            if currentEmoji == emoji {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                    .foregroundStyle(tokens.primaryAction)
+                                    .background(tokens.surface, in: Circle())
+                            }
+                        }
+                    }
+                    .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+                    .disabled(isUnavailable)
+                    .opacity(isUnavailable ? 0.36 : 1)
+                    .accessibilityLabel(emoji)
+                    .accessibilityAddTraits(currentEmoji == emoji ? .isSelected : [])
+                }
+            }
+
+            Divider()
+                .overlay(tokens.border.opacity(0.6))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.text("ui.custom_emoji"))
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+
+                HStack(spacing: 8) {
+                    TextField(L10n.text("ui.enter_one_emoji"), text: $customInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 24))
+                        .submitLabel(.done)
+                        .onSubmit(applyCustomEmoji)
+
+                    Button(L10n.text("ui.apply"), action: applyCustomEmoji)
+                        .buttonStyle(.borderedProminent)
+                        .tint(tokens.primaryAction)
+                        .disabled(customInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if let validationMessage {
+                    Text(validationMessage)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.warning)
+                }
+            }
+
+            Button {
+                appearanceStore.setCustomEmoji(nil, profileID: profileID, projectID: project.id)
+                dismiss()
+            } label: {
+                Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
+            }
+            .font(themeStore.uiFont(.callout, weight: .medium))
+            .disabled(appearanceStore.customEmoji(profileID: profileID, projectID: project.id) == nil)
+        }
+        .padding(18)
+        .frame(width: 336)
+        .background(tokens.surface)
+        .accessibilityIdentifier("workspace.emojiPicker")
+        .onAppear {
+            customInput = appearanceStore.customEmoji(
+                profileID: profileID,
+                projectID: project.id
+            ) ?? ""
+        }
+    }
+
+    private func applyCustomEmoji() {
+        guard let emoji = WorkspaceAppearanceStore.normalizedEmoji(customInput) else {
+            validationMessage = L10n.text("ui.enter_one_valid_emoji")
+            return
+        }
+        guard !unavailableEmoji.contains(emoji) else {
+            validationMessage = L10n.text("ui.emoji_already_used")
+            return
+        }
+        appearanceStore.setCustomEmoji(emoji, profileID: profileID, projectID: project.id)
+        dismiss()
+    }
 }
 
 private struct WorkspaceDetailView: View {

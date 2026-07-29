@@ -415,6 +415,7 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -888,7 +889,8 @@ struct UnifiedWorkbenchShell: View {
             // 紧凑布局的 destination 必须复用外层绑定 path 的 NavigationStack。
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: layout.usesCompactNavigation
-            )
+            ),
+            appearanceStore: workspaceAppearanceStore
         )
     }
 

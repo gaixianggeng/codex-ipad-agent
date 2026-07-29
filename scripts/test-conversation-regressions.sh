@@ -4,23 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [[ -n "${IOS_TEST_DESTINATION:-}" ]]; then
-  resolved_destination="$IOS_TEST_DESTINATION"
-else
-  # GitHub runner 和开发机安装的 Simulator 名称/OS 会变化。优先复用已启动设备，
-  # 否则选择第一个可用 iPad/iPhone，避免把测试绑死到某个 beta runtime。
-  simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
-    devices = JSON.parse(STDIN.read).fetch("devices").values.flatten
-    candidates = devices.select { |item| item["isAvailable"] && item["name"].match?(/iPad|iPhone/) }
-    chosen = candidates.find { |item| item["state"] == "Booted" } || candidates.first
-    print chosen.fetch("udid", "") if chosen
-  ')"
-  if [[ -z "$simulator_id" ]]; then
-    echo "没有可用的 iOS Simulator，请安装 iOS runtime 或设置 IOS_TEST_DESTINATION" >&2
-    exit 1
-  fi
-  resolved_destination="platform=iOS Simulator,id=$simulator_id"
-fi
+# 本地固定到项目默认 iPad；CI 在任务开始时只解析一次 UDID，再由两个测试脚本复用。
+resolved_destination="$(bash "$ROOT_DIR/scripts/ios-dev.sh" prepare)"
+derived_data_path="$(bash "$ROOT_DIR/scripts/ios-dev.sh" derived-data-path)"
 
 echo "==> Go gateway conversation regressions"
 if command -v go >/dev/null 2>&1; then
@@ -49,7 +35,9 @@ echo "==> iOS conversation regressions"
 xcodebuild test -quiet \
   -project ios/MimiRemote/MimiRemote.xcodeproj \
   -scheme MimiRemote \
+  -configuration Debug \
   -destination "$resolved_destination" \
+  -derivedDataPath "$derived_data_path" \
   -testLanguage zh-Hans \
   -testRegion CN \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \

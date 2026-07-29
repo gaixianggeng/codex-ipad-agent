@@ -79,6 +79,7 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: "app-server gateway 连接已关闭"}
 	}
+	p.router.registerGatewayTurnStart(p.runtimeID, method, rewritten)
 	logGatewayForwardedClientTurnSummary(method, rewritten)
 	return rewritten, nil
 }
