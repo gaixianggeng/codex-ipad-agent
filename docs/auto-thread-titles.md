@@ -68,7 +68,7 @@ Gateway 在处理 `thread/start` 成功响应时，只给当前连接内的 thre
 
 生成前和写回前分别调用一次 `thread/read(includeTurns=false)`。公开 `thread/name/set` 没有 compare-and-set 参数，第二次读取把覆盖手动改名的竞态窗口压缩到紧邻写操作的位置；这是当前协议下的 best effort，无法提供严格原子保证。
 
-模型返回值由 `outputSchema` 约束为 `{ "title": string }`。解析或 Turn 状态异常时，使用首条请求压缩后的 36 字符标题降级。只有 `thread/name/set` 成功后才通知移动端。
+模型返回值由 `outputSchema` 约束为 `{ "title": string }`。解析或 Turn 状态异常时，使用不包含用户输入的通用标题 `New coding task` 降级，避免把 Token、本机路径或客户数据写入持久化标题。只有 `thread/name/set` 成功后才通知移动端。
 
 app-server 把 `thread/name/updated` 发给执行写操作的内部连接，不会自动广播到原移动端连接。因此 Gateway 向发起会话的连接补发相同协议形状的 notification。其他客户端稍后通过 `thread/list` / `thread/read` 获取已经持久化的名称。
 

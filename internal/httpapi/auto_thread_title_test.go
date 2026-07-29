@@ -113,10 +113,10 @@ func TestCodexAutoThreadTitleGeneratorDoesNotOverwriteNameChangedDuringGeneratio
 	}
 }
 
-func TestCodexAutoThreadTitleGeneratorFallsBackToPrompt(t *testing.T) {
+func TestCodexAutoThreadTitleGeneratorUsesSafeFallback(t *testing.T) {
 	upstreamURL, state := newAutoThreadTitleUpstream(t, "", `not-json`)
 	generator := newCodexAutoThreadTitleGenerator(autoThreadTitleTestRouter(t, upstreamURL))
-	prompt := "实现一个不会因为模型输出格式异常而丢失的会话标题降级逻辑"
+	prompt := "修复 /Users/private/project，Token 是 sk-sensitive-value"
 
 	title, updated, err := generator.GenerateAndSet(context.Background(), autoThreadTitleRequest{
 		ThreadID: "thread-target",
@@ -126,8 +126,11 @@ func TestCodexAutoThreadTitleGeneratorFallsBackToPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !updated || title != truncateRunes(prompt, autoThreadTitleMaxChars) {
-		t.Fatalf("模型输出异常时应使用 prompt 降级：updated=%t title=%q", updated, title)
+	if !updated || title != autoThreadTitleFallbackUntitled {
+		t.Fatalf("模型输出异常时应使用安全通用标题：updated=%t title=%q", updated, title)
+	}
+	if strings.Contains(title, "/Users/") || strings.Contains(title, "sk-sensitive-value") {
+		t.Fatalf("安全降级标题不能包含用户输入中的路径或 Token：%q", title)
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()

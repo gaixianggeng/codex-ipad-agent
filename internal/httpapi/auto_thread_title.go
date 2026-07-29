@@ -224,7 +224,9 @@ func (g *codexAutoThreadTitleGenerator) GenerateAndSet(
 		g.router.rememberAutoThreadTitleThread,
 	)
 	if generationErr != nil || title == "" {
-		title = fallbackAutoThreadTitle(request.Prompt)
+		// 模型异常时不能直接截取用户输入：首条请求可能包含 Token、本机路径
+		// 或客户数据。统一使用无敏感信息的通用标题，安全性优先于降级可读性。
+		title = fallbackAutoThreadTitle()
 	}
 	if title == "" {
 		return "", false, errors.New("auto title 生成结果为空")
@@ -487,12 +489,8 @@ func decodeAutoThreadTitle(raw string) string {
 	return ""
 }
 
-func fallbackAutoThreadTitle(prompt string) string {
-	title := sanitizeAutoThreadTitle(prompt)
-	if title == "" {
-		return autoThreadTitleFallbackUntitled
-	}
-	return title
+func fallbackAutoThreadTitle() string {
+	return autoThreadTitleFallbackUntitled
 }
 
 func sanitizeAutoThreadTitle(value string) string {
