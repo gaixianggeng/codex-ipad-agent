@@ -188,13 +188,15 @@ Requirements:
 - Windows 10/11 x64, with Codex CLI installed and signed in as the same Windows user.
 - The PC and iPhone/iPad on the same private network. Tailscale is recommended across networks.
 
-Download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest). Verify the SHA-256 and confirm that the Authenticode status is `Valid`, then run the installer:
+Download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest). Always verify the SHA-256. When `metadata.json` reports `authenticode-pfx`, require an Authenticode status of `Valid`; when it reports `unsigned-release`, expect `NotSigned` and a possible Microsoft Defender SmartScreen warning:
 
 ```powershell
 $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 (Get-FileHash $setup -Algorithm SHA256).Hash
 (Get-AuthenticodeSignature $setup).Status
 ```
+
+Unsigned assets include `-unsigned` in the EXE filename. Only run one when it came from this repository's official Release and its SHA-256 matches the published sidecar.
 
 The per-user installer embeds `agentd.exe`, `alleycat-claude-bridge.exe`, and a native `mimi-remote-tray.exe`; Go, Rust, and administrator-level services are not required. It registers a limited current-user Task Scheduler task, starts it, waits for `/api/readyz`, and launches the notification-area controller. The tray shows the endpoint and Codex/Claude state and provides start, stop, restart, pairing, Doctor, and log actions. Configuration and credentials stay under `%APPDATA%\mimi-remote`; logs stay under `%LOCALAPPDATA%\Mimi Remote\logs`. Normal upgrade and uninstall preserve them.
 
@@ -308,7 +310,7 @@ macOS does not provide one background-requestable permission for the entire user
 
 The Claude runtime is disabled by default. When enabled, `agentd` supervises one resident `alleycat-claude-bridge` and attaches mobile WebSocket sessions to it by a stable session key. Each Claude thread owns a headless stdio JSONL process; reconnects replay missed events or reload authoritative history instead of resubmitting `turn/start`.
 
-The Windows installer and Mac DMG already include a signed, compatible bridge next to `agentd`; do not install a second copy with Cargo for those setups. Install the bridge from source only for Homebrew, Linux, or standalone development:
+The Windows installer and Mac DMG already include a compatible bridge next to `agentd`; signed Windows releases and the notarized Mac DMG preserve platform code identity, while an `unsigned-release` Windows package does not. Do not install a second copy with Cargo for those setups. Install the bridge from source only for Homebrew, Linux, or standalone development:
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
