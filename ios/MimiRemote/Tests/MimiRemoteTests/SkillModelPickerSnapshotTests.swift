@@ -68,7 +68,7 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
         XCTAssertFalse(claudeLayout.showsFastMode)
-        XCTAssertEqual(claudeLayout.standardContentHeight, 288)
+        XCTAssertEqual(claudeLayout.standardContentHeight, 236)
     }
 
     func testModelPickerContentHeightTracksVisibleModelRows() {
@@ -95,13 +95,21 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             options: twoModels
         )
 
-        XCTAssertEqual(codexOneRow.standardContentHeight, 184)
-        XCTAssertEqual(claudeTwoRows.standardContentHeight, 236)
-        XCTAssertEqual(codexThreeRows.standardContentHeight, 288)
+        XCTAssertEqual(codexOneRow.standardContentHeight, 132)
+        XCTAssertEqual(claudeTwoRows.standardContentHeight, 184)
+        XCTAssertEqual(codexThreeRows.standardContentHeight, 236)
         XCTAssertTrue(codexOneRow.showsFastMode)
         XCTAssertFalse(claudeTwoRows.showsFastMode)
         XCTAssertEqual(codexOneRow.efforts.last, .ultra)
         XCTAssertEqual(claudeTwoRows.efforts.last, .max)
+
+        // 112pt 角区刚好容纳“全部模型 / 快速”两个 44pt 高控件，
+        // 同时保证最窄 320pt 容器中的四个推理列仍各有 44pt 宽。
+        let narrowGridWidth = 320
+            - ModelReasoningGridMetrics.contentPadding * 2
+            - ModelReasoningGridMetrics.modelLabelWidth
+            - ModelReasoningGridMetrics.gridSpacing
+        XCTAssertEqual(narrowGridWidth / 4, 44)
     }
 
     func testSkillCardsAndModelGridDarkAppearance() throws {
@@ -291,6 +299,24 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         assertSnapshot(
             of: adaptiveModelPicker(
+                width: 420,
+                height: 320,
+                colorScheme: .dark,
+                horizontalSizeClass: .regular,
+                runtimeProvider: "claude",
+                options: CodexAppServerModelOption.builtInClaudeFallback,
+                selection: ModelReasoningGridSelection(modelID: "opus", effort: .high)
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 420, height: 320),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-claude-popover-420-dark"
+        )
+
+        assertSnapshot(
+            of: adaptiveModelPicker(
                 width: 375,
                 height: 372,
                 horizontalSizeClass: .compact
@@ -404,20 +430,26 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         height: CGFloat,
         colorScheme: ColorScheme = .light,
         dynamicTypeSize: DynamicTypeSize = .large,
-        horizontalSizeClass: UserInterfaceSizeClass
+        horizontalSizeClass: UserInterfaceSizeClass,
+        runtimeProvider: String = "codex",
+        options: [CodexAppServerModelOption] = CodexAppServerModelOption.builtInFallback,
+        selection: ModelReasoningGridSelection = ModelReasoningGridSelection(
+            modelID: "gpt-5.6-sol",
+            effort: .xhigh
+        )
     ) -> some View {
         let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)
         themeStore.mode = colorScheme == .dark ? .dark : .light
 
         return ModelReasoningGridPicker(
-            options: CodexAppServerModelOption.builtInFallback,
+            options: options,
             layout: ModelReasoningGridCatalog.layout(
-                runtimeProvider: "codex",
-                options: CodexAppServerModelOption.builtInFallback
+                runtimeProvider: runtimeProvider,
+                options: options
             ),
-            selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
-            selectedModelID: "gpt-5.6-sol",
+            selection: selection,
+            selectedModelID: selection.modelID,
             isRefreshing: false,
             isFastMode: false,
             onSelectModel: { _, _ in },

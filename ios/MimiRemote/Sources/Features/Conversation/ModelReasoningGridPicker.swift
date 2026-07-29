@@ -17,12 +17,12 @@ enum ModelReasoningGridMetrics {
     static let sectionSpacing: CGFloat = 8
     static let effortHeaderHeight: CGFloat = 56
     static let modelRowHeight: CGFloat = 52
+    static let modelLabelWidth: CGFloat = 112
+    static let gridSpacing: CGFloat = 8
 
     static func standardContentHeight(modelRowCount: Int) -> CGFloat {
         let visibleRowCount = max(modelRowCount, 0)
         return contentPadding * 2
-            + headerHeight
-            + sectionSpacing
             + effortHeaderHeight
             + CGFloat(visibleRowCount) * modelRowHeight
     }
@@ -342,20 +342,9 @@ struct ModelReasoningGridPicker: View {
         let tokens = themeStore.tokens(for: colorScheme)
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: ModelReasoningGridMetrics.sectionSpacing) {
-                ModelReasoningPickerHeader(
-                    options: visibleOptions,
-                    layout: layout,
-                    selection: selection,
-                    selectedModelID: selectedModelID,
-                    isRefreshing: isRefreshing,
-                    isFastMode: isFastMode,
-                    onSelectModel: onSelectModel,
-                    onSelectDefaultModel: onSelectDefaultModel,
-                    onFastModeChange: onFastModeChange,
-                    onRefresh: onRefresh
-                )
-
                 if dynamicTypeSize.isAccessibilitySize {
+                    pickerHeader(isInGridCorner: false)
+
                     ModelReasoningAccessiblePicker(
                         layout: layout,
                         selection: selection,
@@ -367,7 +356,8 @@ struct ModelReasoningGridPicker: View {
                         selection: selection,
                         onSelect: { option, effort in
                             onSelectModel(option, effort)
-                        }
+                        },
+                        cornerContent: pickerHeader(isInGridCorner: true)
                     )
                 }
             }
@@ -389,6 +379,22 @@ struct ModelReasoningGridPicker: View {
     private var visibleOptions: [CodexAppServerModelOption] {
         options.filter { !$0.hidden }
     }
+
+    private func pickerHeader(isInGridCorner: Bool) -> some View {
+        ModelReasoningPickerHeader(
+            options: visibleOptions,
+            layout: layout,
+            selection: selection,
+            selectedModelID: selectedModelID,
+            isRefreshing: isRefreshing,
+            isFastMode: isFastMode,
+            isInGridCorner: isInGridCorner,
+            onSelectModel: onSelectModel,
+            onSelectDefaultModel: onSelectDefaultModel,
+            onFastModeChange: onFastModeChange,
+            onRefresh: onRefresh
+        )
+    }
 }
 
 private struct ModelReasoningPickerHeader: View {
@@ -402,83 +408,136 @@ private struct ModelReasoningPickerHeader: View {
     let selectedModelID: String?
     let isRefreshing: Bool
     let isFastMode: Bool
+    let isInGridCorner: Bool
     let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onSelectDefaultModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onFastModeChange: (Bool) -> Void
     let onRefresh: () -> Void
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        HStack(spacing: 8) {
-            Menu {
-                if let defaultOption {
-                    modelMenu(option: defaultOption, preservesServerDefault: true)
-                }
-                ForEach(options) { option in
-                    modelMenu(option: option, preservesServerDefault: false)
-                }
-                Divider()
-                Button(action: onRefresh) {
-                    Label(
-                        isRefreshing ? L10n.text("ui.refreshing") : L10n.text("ui.refresh_model_list"),
-                        systemImage: "arrow.clockwise"
-                    )
-                }
-                .disabled(isRefreshing)
-            } label: {
+        Group {
+            if isInGridCorner {
+                // 标准网格把低频控制收进横纵轴交汇处，减少独立工具条造成的留白。
                 HStack(spacing: 4) {
-                    Text(L10n.text("ui.all_models"))
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(themeStore.uiFont(size: 9, weight: .bold))
-                }
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.accent)
-                .padding(.horizontal, 10)
-                .frame(minHeight: 44)
-                .background(tokens.elevatedSurface.opacity(0.72), in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(tokens.border.opacity(0.58), lineWidth: 0.75)
-                }
-                .contentShape(Rectangle())
-            }
-            .menuStyle(.button)
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-            .accessibilityLabel(L10n.text("ui.all_models"))
-
-            if layout.showsFastMode {
-                Spacer(minLength: 8)
-
-                Toggle(isOn: fastModeBinding) {
-                    HStack(spacing: 5) {
-                        Image(systemName: isFastMode ? "bolt.fill" : "bolt")
-                        Text(L10n.text("ui.fast"))
+                    allModelsMenu(isCompact: true)
+                    if layout.showsFastMode {
+                        fastModeToggle(isCompact: true)
                     }
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(isFastMode ? Color.white : tokens.accent)
-                    .padding(.horizontal, 11)
-                    .frame(minHeight: 44)
-                    .background(
-                        isFastMode ? tokens.accent : tokens.elevatedSurface.opacity(0.72),
-                        in: Capsule()
-                    )
-                    .overlay {
-                        Capsule()
-                            .strokeBorder(
-                                isFastMode ? tokens.accent.opacity(0.88) : tokens.border.opacity(0.58),
-                                lineWidth: 0.75
-                            )
-                    }
-                    .contentShape(Rectangle())
                 }
-                .toggleStyle(.button)
-                .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-                .accessibilityLabel(L10n.text("ui.quick_mode"))
-                .accessibilityValue(isFastMode ? L10n.text("ui.already_turned_on") : L10n.text("ui.closed"))
-                .accessibilityHint(L10n.text("ui.after_turning_it_on_the_priority_service_speed"))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                HStack(spacing: 8) {
+                    allModelsMenu(isCompact: false)
+                    if layout.showsFastMode {
+                        Spacer(minLength: 8)
+                        fastModeToggle(isCompact: false)
+                    }
+                }
             }
         }
         .frame(minHeight: ModelReasoningGridMetrics.headerHeight)
+    }
+
+    private func allModelsMenu(isCompact: Bool) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return Menu {
+            if let defaultOption {
+                modelMenu(option: defaultOption, preservesServerDefault: true)
+            }
+            ForEach(options) { option in
+                modelMenu(option: option, preservesServerDefault: false)
+            }
+            Divider()
+            Button(action: onRefresh) {
+                Label(
+                    isRefreshing ? L10n.text("ui.refreshing") : L10n.text("ui.refresh_model_list"),
+                    systemImage: "arrow.clockwise"
+                )
+            }
+            .disabled(isRefreshing)
+        } label: {
+            Group {
+                if isCompact {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 3) {
+                            Text(L10n.text("ui.all_models"))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(themeStore.uiFont(size: 8, weight: .bold))
+                        }
+                        Image(systemName: "square.grid.2x2")
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        Text(L10n.text("ui.all_models"))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(themeStore.uiFont(size: 9, weight: .bold))
+                    }
+                }
+            }
+            .lineLimit(1)
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .foregroundStyle(tokens.accent)
+            .padding(.horizontal, isCompact ? 0 : 10)
+            .frame(width: isCompact ? (layout.showsFastMode ? 64 : 96) : nil)
+            .frame(minHeight: 44)
+            .background(tokens.elevatedSurface.opacity(0.72), in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(tokens.border.opacity(0.58), lineWidth: 0.75)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.all_models"))
+    }
+
+    private func fastModeToggle(isCompact: Bool) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let fastTitle = L10n.text("ui.fast")
+        let fastImage = isFastMode ? "bolt.fill" : "bolt"
+        return Toggle(isOn: fastModeBinding) {
+            Group {
+                if isCompact {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 3) {
+                            Image(systemName: fastImage)
+                            Text(fastTitle)
+                        }
+                        Text(fastTitle)
+                        Image(systemName: fastImage)
+                    }
+                } else {
+                    HStack(spacing: 5) {
+                        Image(systemName: fastImage)
+                        Text(fastTitle)
+                    }
+                }
+            }
+            .lineLimit(1)
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .foregroundStyle(isFastMode ? Color.white : tokens.accent)
+            .padding(.horizontal, isCompact ? 0 : 11)
+            .frame(width: isCompact ? 44 : nil)
+            .frame(minHeight: 44)
+            .background(
+                isFastMode ? tokens.accent : tokens.elevatedSurface.opacity(0.72),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        isFastMode ? tokens.accent.opacity(0.88) : tokens.border.opacity(0.58),
+                        lineWidth: 0.75
+                    )
+            }
+            .contentShape(Rectangle())
+        }
+        .toggleStyle(.button)
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.quick_mode"))
+        .accessibilityValue(isFastMode ? L10n.text("ui.already_turned_on") : L10n.text("ui.closed"))
+        .accessibilityHint(L10n.text("ui.after_turning_it_on_the_priority_service_speed"))
     }
 
     @ViewBuilder
@@ -565,7 +624,7 @@ private struct ModelReasoningPickerHeader: View {
     }
 }
 
-private struct ModelReasoningStandardGrid: View {
+private struct ModelReasoningStandardGrid<CornerContent: View>: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -574,6 +633,7 @@ private struct ModelReasoningStandardGrid: View {
     let layout: ModelReasoningGridLayout
     let selection: ModelReasoningGridSelection
     let onSelect: (CodexAppServerModelOption, CodexAppServerReasoningEffort) -> Void
+    let cornerContent: CornerContent
 
     @State private var dragPoint: CGPoint?
     @State private var previewSelection: ModelReasoningGridSelection?
@@ -581,14 +641,13 @@ private struct ModelReasoningStandardGrid: View {
     @State private var isDragging = false
     @State private var gestureRevision = 0
 
-    private let modelLabelWidth: CGFloat = 84
     private let dragCancellationMargin: CGFloat = 12
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         VStack(alignment: .leading, spacing: 0) {
             effortHeaders(tokens: tokens)
-            HStack(spacing: 8) {
+            HStack(spacing: ModelReasoningGridMetrics.gridSpacing) {
                 modelLabels(tokens: tokens)
                 grid(tokens: tokens)
             }
@@ -600,15 +659,20 @@ private struct ModelReasoningStandardGrid: View {
     }
 
     private func effortHeaders(tokens: ThemeTokens) -> some View {
-        HStack(spacing: 8) {
-            Color.clear
-                .frame(width: modelLabelWidth, height: ModelReasoningGridMetrics.effortHeaderHeight)
+        HStack(spacing: ModelReasoningGridMetrics.gridSpacing) {
+            cornerContent
+                .frame(
+                    width: ModelReasoningGridMetrics.modelLabelWidth,
+                    height: ModelReasoningGridMetrics.effortHeaderHeight
+                )
             HStack(spacing: 0) {
                 ForEach(layout.efforts) { effort in
                     Text(ModelReasoningGridCatalog.effortTitle(effort))
                         .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(activeSelection.effort == effort ? tokens.accent : tokens.primaryText)
-                        .lineLimit(2)
+                        .lineLimit(effort == .xhigh ? 2 : 1)
+                        .minimumScaleFactor(0.8)
+                        .allowsTightening(true)
                         .multilineTextAlignment(.center)
                         .frame(
                             maxWidth: .infinity,
@@ -627,7 +691,7 @@ private struct ModelReasoningStandardGrid: View {
                     .foregroundStyle(activeSelection.modelID == option.model ? tokens.accent : tokens.secondaryText)
                     .lineLimit(2)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: modelLabelWidth, alignment: .trailing)
+                    .frame(width: ModelReasoningGridMetrics.modelLabelWidth, alignment: .trailing)
                     .frame(minHeight: ModelReasoningGridMetrics.modelRowHeight)
             }
         }
