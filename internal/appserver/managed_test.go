@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,9 @@ func TestManagedWebSocketProcessFailsWhenProcessExitsEarly(t *testing.T) {
 
 func writeFakeCodexAppServer(t *testing.T, dir, body string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake app-server shell scripts are Unix-only")
+	}
 	path := filepath.Join(dir, "codex")
 	script := "#!/bin/sh\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

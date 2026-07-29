@@ -611,13 +611,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Add Mac"
+            "value" : "Add computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加 Mac"
+            "value" : "添加电脑"
           }
         }
       }
@@ -628,13 +628,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Add Mac manually"
+            "value" : "Add computer manually"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "手动添加 Mac"
+            "value" : "手动添加电脑"
           }
         }
       }
@@ -764,13 +764,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Added and switched to this Mac"
+            "value" : "Added and switched to this computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已添加并切换到这台 Mac"
+            "value" : "已添加并切换到这台电脑"
           }
         }
       }
@@ -1588,13 +1588,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Another Mac connection operation is still in progress, please try again later"
+            "value" : "Another computer connection operation is still in progress. Please try again later."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "另一项 Mac 连接操作仍在进行，请稍后再试"
+            "value" : "另一项电脑连接操作仍在进行，请稍后再试"
           }
         }
       }
@@ -6340,13 +6340,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Current Mac"
+            "value" : "Current computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前 Mac"
+            "value" : "当前电脑"
           }
         }
       }
@@ -8717,13 +8717,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Example: Studio Mac"
+            "value" : "Example: Studio computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "例如：工作室 Mac"
+            "value" : "例如：工作室电脑"
           }
         }
       }
@@ -10169,13 +10169,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Forget this Mac"
+            "value" : "Forget this computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "忘记这台 Mac"
+            "value" : "忘记这台电脑"
           }
         }
       }
@@ -10186,13 +10186,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Forgot your current Mac?"
+            "value" : "Forget your current computer?"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "忘记当前 Mac？"
+            "value" : "忘记当前电脑？"
           }
         }
       }
@@ -11822,6 +11822,57 @@
         }
       }
     },
+    "ui.install_mimi_remote_windows" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install Mimi Remote for Windows"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安装 Windows 版 Mimi Remote"
+          }
+        }
+      }
+    },
+    "ui.computer_platform" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Computer platform"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "电脑平台"
+          }
+        }
+      }
+    },
+    "ui.windows_installer_requirements_and_instructions" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Requires Windows 10 or 11 on x64. Open GitHub Releases on your PC, download the latest Mimi-Remote-Setup executable, then run the installer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要 x64 版 Windows 10 或 11。在电脑上打开 GitHub Releases，下载最新的 Mimi-Remote-Setup 安装程序并运行。"
+          }
+        }
+      }
+    },
     "ui.instructions" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -13437,13 +13488,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac name can be up to %@ characters long"
+            "value" : "Computer name can be up to %@ characters long"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac 名称最多 %@ 个字符"
+            "value" : "电脑名称最多 %@ 个字符"
           }
         }
       }
@@ -13454,13 +13505,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac name cannot be empty"
+            "value" : "Computer name cannot be empty"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac 名称不能为空"
+            "value" : "电脑名称不能为空"
           }
         }
       }
@@ -13523,13 +13574,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac upstream dialing"
+            "value" : "Host upstream dialing"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mac 上游拨号"
+            "value" : "主机上游拨号"
           }
         }
       }
@@ -13711,13 +13762,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Manually update your current Mac"
+            "value" : "Manually update your current computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "手动更新当前 Mac"
+            "value" : "手动更新当前电脑"
           }
         }
       }
@@ -14703,13 +14754,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "My Mac"
+            "value" : "My computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "我的 Mac"
+            "value" : "我的电脑"
           }
         }
       }
@@ -16034,13 +16085,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Only one Mac is connected at a time. The connection will be verified before switching, and the access code is saved in the system keychain."
+            "value" : "Only one computer is connected at a time. The connection will be verified before switching, and the access code is saved in the system keychain."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "同一时间只连接一台 Mac。切换前会先验证连接，访问码保存在系统钥匙串。"
+            "value" : "同一时间只连接一台电脑。切换前会先验证连接，访问码保存在系统钥匙串。"
           }
         }
       }
@@ -17352,13 +17403,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Please switch to another Mac before deleting this file"
+            "value" : "Please switch to another computer before deleting this profile"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先切换到其它 Mac，再删除这个档案"
+            "value" : "请先切换到其它电脑，再删除这个档案"
           }
         }
       }
@@ -18547,13 +18598,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Read Mac side gateway configuration"
+            "value" : "Read host gateway configuration"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "读取 Mac 端 gateway 配置"
+            "value" : "读取主机端 gateway 配置"
           }
         }
       }
@@ -21042,13 +21093,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Saved Mac"
+            "value" : "Saved computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已保存的 Mac"
+            "value" : "已保存的电脑"
           }
         }
       }
@@ -21173,6 +21224,23 @@
         }
       }
     },
+    "ui.scan_qr_code_on_computer" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan the QR code on your computer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扫描电脑上的二维码"
+          }
+        }
+      }
+    },
     "ui.scan_qr_code_on_mac" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -21196,13 +21264,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Scan QR code to add Mac"
+            "value" : "Scan QR code to add computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "扫描二维码添加 Mac"
+            "value" : "扫描二维码添加电脑"
           }
         }
       }
@@ -21545,6 +21613,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "选择 Base"
+          }
+        }
+      }
+    },
+    "ui.select_code_directory_then_computer_shows_qr" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a code directory, then your computer will show a pairing QR code."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择代码目录后，电脑会显示配对二维码。"
           }
         }
       }
@@ -21904,6 +21989,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "发送下载链接到 Mac"
+          }
+        }
+      }
+    },
+    "ui.send_download_link_to_windows" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send Windows download page"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送 Windows 下载页面"
           }
         }
       }
@@ -25536,13 +25638,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The access code for this Mac does not exist. Please pair again."
+            "value" : "The access code for this computer does not exist. Please pair again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这台 Mac 的访问码不存在，请重新配对"
+            "value" : "这台电脑的访问码不存在，请重新配对"
           }
         }
       }
@@ -26029,13 +26131,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The current device cannot find this Mac at the moment. Please confirm that Mimi Mac Assistant is running and that the current device is connected to Tailscale."
+            "value" : "The current device cannot find this computer. Confirm that Mimi Remote is running on it and that this device is connected to Tailscale."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前设备暂时找不到这台 Mac。请确认 Mimi Mac 助手正在运行，并且当前设备已连接 Tailscale。"
+            "value" : "当前设备暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行，并且当前设备已连接 Tailscale。"
           }
         }
       }
@@ -26080,13 +26182,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The current Mac has changed, please try again."
+            "value" : "The current computer has changed. Please try again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前 Mac 已发生变化，请重新操作。"
+            "value" : "当前电脑已发生变化，请重新操作。"
           }
         }
       }
@@ -27773,13 +27875,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This device has not been verified by Mimi Mac Assistant. Please scan the QR code to connect again."
+            "value" : "This device has not been verified by Mimi Remote on the computer. Please scan the QR code to connect again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这台设备没有通过 Mimi Mac 助手验证，请重新扫码连接。"
+            "value" : "这台设备没有通过电脑上的 Mimi Remote 验证，请重新扫码连接。"
           }
         }
       }
@@ -27841,13 +27943,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This Mac"
+            "value" : "This computer"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这台 Mac"
+            "value" : "这台电脑"
           }
         }
       }
@@ -27858,13 +27960,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This Mac is connected"
+            "value" : "This computer is connected"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已连接这台 Mac"
+            "value" : "已连接这台电脑"
           }
         }
       }
@@ -32926,13 +33028,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This Mac is running an older agentd version that cannot securely verify multiple Mac identities. Update and restart agentd."
+            "value" : "This computer is running an older agentd version that cannot securely verify multiple computer identities. Update and restart agentd."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这台 Mac 的 agentd 版本过旧，尚不支持安全的多 Mac 身份校验。请先升级并重启 agentd。"
+            "value" : "这台电脑的 agentd 版本过旧，尚不支持安全的多电脑身份校验。请先升级并重启 agentd。"
           }
         }
       }
@@ -32960,13 +33062,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This Mac is already saved as “%@”. Update the existing connection address instead of adding a duplicate."
+            "value" : "This computer is already saved as “%@”. Update the existing connection address instead of adding a duplicate."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这台 Mac 已保存为“%@”。请更新已有连接地址，不要重复添加。"
+            "value" : "这台电脑已保存为“%@”。请更新已有连接地址，不要重复添加。"
           }
         }
       }
@@ -32977,13 +33079,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "“%@” returned a different installation identity. To prevent data from being mixed, pair it again as a new Mac."
+            "value" : "“%@” returned a different installation identity. To prevent data from being mixed, pair it again as a new computer."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "“%@”返回了不同的安装身份。为防止串数据，请将它作为一台新 Mac 重新配对。"
+            "value" : "“%@”返回了不同的安装身份。为防止串数据，请将它作为一台新电脑重新配对。"
           }
         }
       }

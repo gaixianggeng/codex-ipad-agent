@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,9 @@ func TestMigrateLegacyDefaultConfigRejectsUnsafeLegacyPath(t *testing.T) {
 				target := filepath.Join(t.TempDir(), "target.json")
 				writeLegacyMigrationFile(t, target, []byte("secret"), 0o600)
 				if err := os.Symlink(target, source); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skip("Windows symlink creation requires Developer Mode or elevation")
+					}
 					t.Fatal(err)
 				}
 			case "directory":
@@ -183,6 +187,8 @@ func legacyDefaultMigrationPaths(t *testing.T) (string, string) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("AGENTD_CONFIG", "")
 	return PlatformDefaultPath(), LegacyDefaultPath()
 }
@@ -213,7 +219,7 @@ func assertLegacyMigrationFile(t *testing.T, path string, want []byte, mode os.F
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != mode {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != mode) {
 		t.Fatalf("文件 mode 异常：path=%s mode=%v", path, info.Mode())
 	}
 }

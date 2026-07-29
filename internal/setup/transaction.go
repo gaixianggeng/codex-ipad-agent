@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 type setupFileTransactionOps struct {
@@ -144,6 +145,11 @@ func restoreSetupTarget(path string, backup string, existed bool, ops setupFileT
 }
 
 func syncDirectory(dir string) error {
+	if runtime.GOOS == "windows" {
+		// Windows cannot open a directory as a syncable file. Rename remains the
+		// atomic commit operation; file contents were already flushed before it.
+		return nil
+	}
 	file, err := os.Open(dir)
 	if err != nil {
 		return err

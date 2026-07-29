@@ -7,6 +7,7 @@ final class AppExternalLinksTests: XCTestCase {
             AppExternalLinks.marketing,
             AppExternalLinks.macRelease,
             AppExternalLinks.macInstaller,
+            AppExternalLinks.windowsRelease,
             AppExternalLinks.privacyPolicy,
             AppExternalLinks.termsOfUse,
             AppExternalLinks.support
@@ -30,6 +31,18 @@ final class AppExternalLinksTests: XCTestCase {
     func testMacInstallerLinksRemainVersionIndependent() {
         XCTAssertEqual(AppExternalLinks.macRelease.path, "/gaixianggeng/codex-ipad-agent/releases/latest")
         XCTAssertTrue(AppExternalLinks.macInstaller.path.hasSuffix("/releases/latest/download/Mimi-Remote-Mac.dmg"))
+    }
+
+    func testWindowsInstallerUsesStableLatestReleasePage() {
+        XCTAssertEqual(AppExternalLinks.windowsRelease.path, "/gaixianggeng/codex-ipad-agent/releases/latest")
+    }
+
+    func testHostInstallationPlatformsSelectMatchingDownloadEntry() {
+        XCTAssertEqual(HostInstallationPlatform.allCases, [.mac, .windows])
+        XCTAssertEqual(HostInstallationPlatform.mac.installerURL, AppExternalLinks.macInstaller)
+        XCTAssertEqual(HostInstallationPlatform.mac.releaseURL, AppExternalLinks.macRelease)
+        XCTAssertEqual(HostInstallationPlatform.windows.installerURL, AppExternalLinks.windowsRelease)
+        XCTAssertEqual(HostInstallationPlatform.windows.releaseURL, AppExternalLinks.windowsRelease)
     }
 
     func testLegalDocumentsAreBundledForOfflineAccess() {

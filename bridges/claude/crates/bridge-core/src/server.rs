@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixListener;
+use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tracing::debug;
 use tracing::warn;
@@ -143,6 +145,95 @@ pub struct ServerOptions {
     /// Agent half of the session key. One socket server serves one agent.
     pub agent: AgentId,
     pub registry: SessionRegistryConfig,
+}
+
+/// Options for a loopback-only TCP bridge server.
+///
+/// TCP is used by the Windows service host, where Unix domain sockets are not
+/// available. Restricting the listener to a loopback address is intentional:
+/// the JSONL transport has no network authentication layer.
+#[derive(Debug, Clone)]
+pub struct TcpServerOptions {
+    pub listen_addr: SocketAddr,
+    /// Agent half of the session key. One TCP server serves one agent.
+    pub agent: AgentId,
+    pub registry: SessionRegistryConfig,
+}
+
+/// Bind a TCP listener after enforcing that it cannot be exposed off-host.
+pub async fn bind_loopback_tcp(addr: SocketAddr) -> anyhow::Result<TcpListener> {
+    anyhow::ensure!(
+        addr.ip().is_loopback(),
+        "TCP bridge listener must use a loopback address, got {addr}"
+    );
+    Ok(TcpListener::bind(addr).await?)
+}
+
+/// Serve a loopback TCP listener for the lifetime of the process.
+///
+/// Accepted streams use the same JSONL framing, attach handshake, session
+/// registry, replay ring, and request dispatch path as the Unix socket
+/// transport.
+pub async fn serve_tcp<B>(bridge: Arc<B>, options: TcpServerOptions) -> anyhow::Result<()>
+where
+    B: Bridge + ?Sized,
+{
+    let listener = bind_loopback_tcp(options.listen_addr).await?;
+    serve_tcp_listener(
+        bridge,
+        listener,
+        options.agent,
+        SessionRegistry::new(options.registry),
+    )
+    .await
+}
+
+/// Serve an already-bound loopback listener.
+///
+/// Exposed primarily for service supervisors and integration tests that bind
+/// port `0` and need to inspect the selected local port before accepting.
+pub async fn serve_tcp_listener<B>(
+    bridge: Arc<B>,
+    listener: TcpListener,
+    agent: AgentId,
+    registry: Arc<SessionRegistry>,
+) -> anyhow::Result<()>
+where
+    B: Bridge + ?Sized,
+{
+    let local_addr = listener.local_addr()?;
+    anyhow::ensure!(
+        local_addr.ip().is_loopback(),
+        "TCP bridge listener must use a loopback address, got {local_addr}"
+    );
+    let _reaper = registry.spawn_reaper();
+    loop {
+        let (stream, peer_addr) = listener.accept().await?;
+        if !peer_addr.ip().is_loopback() {
+            warn!(%peer_addr, "rejecting non-loopback TCP bridge client");
+            drop(stream);
+            continue;
+        }
+        if let Err(error) = stream.set_nodelay(true) {
+            warn!(%peer_addr, %error, "failed to enable TCP_NODELAY");
+        }
+        spawn_attached_connection(Arc::clone(&bridge), stream, Arc::clone(&registry), agent);
+    }
+}
+
+fn spawn_attached_connection<B>(
+    bridge: Arc<B>,
+    stream: TcpStream,
+    registry: Arc<SessionRegistry>,
+    agent: AgentId,
+) where
+    B: Bridge + ?Sized,
+{
+    tokio::spawn(async move {
+        if let Err(error) = serve_stream_attached(bridge, stream, &registry, agent).await {
+            tracing::debug!("bridge connection ended: {error:#}");
+        }
+    });
 }
 
 /// Serve a Unix socket for the lifetime of the process, with sessions that

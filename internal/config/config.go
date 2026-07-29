@@ -469,6 +469,9 @@ func (c Config) Validate() error {
 	if c.Listen == "" {
 		return fmt.Errorf("listen 不能为空")
 	}
+	if err := validateAgentListen(c.Listen, c.Network.AllowLAN); err != nil {
+		return err
+	}
 	if c.Auth.Token == "" && !c.DevInsecure {
 		return fmt.Errorf("AGENTD_TOKEN 或 auth.token 不能为空；开发临时绕过请设置 AGENTD_DEV_INSECURE=true")
 	}
@@ -605,4 +608,37 @@ func isLoopbackListen(raw string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func validateAgentListen(raw string, allowLAN bool) error {
+	value := strings.TrimSpace(raw)
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("listen 必须是 host:port，实际为 %q", raw)
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("listen 只允许 loopback、Tailscale 或私有局域网 IP，不能使用主机名或公网地址：%q", host)
+	}
+	if ip.IsLoopback() || isTailscaleListenIP(ip) {
+		return nil
+	}
+	if ip.IsUnspecified() || ip.IsPrivate() {
+		if !allowLAN {
+			return fmt.Errorf("listen %q 会暴露到局域网，必须同时设置 network.allow_lan=true", raw)
+		}
+		return nil
+	}
+	return fmt.Errorf("listen 不能绑定公网或非私有地址：%q", host)
+}
+
+func isTailscaleListenIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		return v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127
+	}
+	return false
 }

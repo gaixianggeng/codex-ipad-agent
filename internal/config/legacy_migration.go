@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -171,8 +172,10 @@ func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLeg
 			_ = os.Remove(result.path)
 		}
 	}()
-	if err := file.Chmod(0o600); err != nil {
-		return result, err
+	if runtime.GOOS != "windows" {
+		if err := file.Chmod(0o600); err != nil {
+			return result, err
+		}
 	}
 	if _, err := io.Copy(file, bytes.NewReader(raw)); err != nil {
 		return result, err
@@ -256,6 +259,9 @@ func removeMigrationDestinationIfOwned(path string, staged os.FileInfo, ops lega
 }
 
 func syncLegacyMigrationDirectory(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	file, err := os.Open(dir)
 	if err != nil {
 		return err

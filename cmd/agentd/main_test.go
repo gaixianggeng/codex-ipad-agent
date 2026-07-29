@@ -12,9 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -32,6 +32,9 @@ func TestVersionDoesNotRequireConfig(t *testing.T) {
 func TestLoadInstallationIDForServeIsStableAndFailsClosed(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 
 	first, err := loadInstallationIDForServe()
@@ -75,12 +78,31 @@ func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart --no-pair 失败：%v stderr=%s", err, stderr)
 	}
-	if !strings.Contains(stdout, "正在重启 Mimi Mac 助手") {
+	if !strings.Contains(stdout, "正在重启 Mimi Remote 助手") {
 		t.Fatalf("安全重启仍应输出进度：%q", stdout)
 	}
 	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
 		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
 			t.Fatalf("restart --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
+		}
+	}
+}
+
+func TestStartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
+	fixture := prepareMainLegacyConfigFixture(t)
+	prepareBrewSideEffectProbe(t)
+	stdout, stderr, err := captureMainCommandOutput(t, func() error {
+		return run([]string{"agentd", "start", "--wait", "0", "--no-pair"})
+	})
+	if err != nil {
+		t.Fatalf("start --no-pair 失败：%v stderr=%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "正在启动 Mimi Remote 后台服务") {
+		t.Fatalf("安全启动仍应输出进度：%q", stdout)
+	}
+	for _, forbidden := range []string{fixture.token, "Token：", "访问码：", "用 iPad 扫这个二维码"} {
+		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+			t.Fatalf("start --no-pair 泄漏长期凭据或二维码 %q：stdout=%q stderr=%q", forbidden, stdout, stderr)
 		}
 	}
 }
@@ -94,7 +116,7 @@ func TestUpNoPairDoesNotPrintConnectionCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up --no-pair 失败：%v stderr=%s", err, stderr)
 	}
-	if !strings.Contains(stdout, "正在准备 Mimi Mac 助手") || !strings.Contains(stdout, "常用命令") {
+	if !strings.Contains(stdout, "正在准备 Mimi Remote 助手") || !strings.Contains(stdout, "常用命令") {
 		t.Fatalf("安全启动仍应输出进度和后续命令：%q", stdout)
 	}
 	for _, forbidden := range []string{
@@ -312,6 +334,9 @@ func TestBrewServiceConfigGuardAllowsPlatformDefault(t *testing.T) {
 }
 
 func TestManagedServiceAdapterUsesPlatformCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX service command shims are exercised on their native CI runners")
+	}
 	tests := []struct {
 		name        string
 		goos        string
@@ -374,6 +399,9 @@ func TestManagedServiceAdapterUsesPlatformCommands(t *testing.T) {
 }
 
 func TestDarwinRestartFallsBackToBrewStartWhenServiceIsNotLoaded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX launchctl shim is exercised on macOS")
+	}
 	binDir := t.TempDir()
 	launchctlMarker := filepath.Join(t.TempDir(), "launchctl-called")
 	brewMarker := filepath.Join(t.TempDir(), "brew-called")
@@ -413,6 +441,9 @@ func TestDarwinRestartFallsBackToBrewStartWhenServiceIsNotLoaded(t *testing.T) {
 }
 
 func TestDarwinRestartDoesNotHideAtomicKickstartFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX launchctl shim is exercised on macOS")
+	}
 	binDir := t.TempDir()
 	brewMarker := filepath.Join(t.TempDir(), "brew-called")
 	launchctlBody := "#!/bin/sh\nprintf '%s\\n' 'Operation not permitted' >&2\nexit 1\n"
@@ -434,6 +465,9 @@ func TestDarwinRestartDoesNotHideAtomicKickstartFailure(t *testing.T) {
 }
 
 func TestManagedLogsLinuxUsesJournalctlAndFollow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX journalctl shim is exercised on Linux")
+	}
 	for _, testCase := range []struct {
 		name      string
 		lineCount int
@@ -481,6 +515,9 @@ func TestManagedLogsLinuxUsesJournalctlAndFollow(t *testing.T) {
 }
 
 func TestManagedLogsDarwinUsesNormalizedDefaultWithFollow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX tail shim is exercised on macOS")
+	}
 	marker, logPath := prepareDarwinLogCommandProbe(t)
 	var stdout, stderr strings.Builder
 	if err := runManagedLogsForPlatform("darwin", 0, true, &stdout, &stderr); err != nil {
@@ -525,8 +562,8 @@ func TestManagedServiceLinuxMissingUnitExplainsInstaller(t *testing.T) {
 func TestManagedServiceRejectsUnsupportedPlatform(t *testing.T) {
 	var stdout, stderr strings.Builder
 	for _, action := range []func() error{
-		func() error { return runManagedServiceForPlatform("windows", "start", &stdout, &stderr) },
-		func() error { return runManagedLogsForPlatform("windows", 10, false, &stdout, &stderr) },
+		func() error { return runManagedServiceForPlatform("freebsd", "start", &stdout, &stderr) },
+		func() error { return runManagedLogsForPlatform("freebsd", 10, false, &stdout, &stderr) },
 	} {
 		err := action()
 		if err == nil || !strings.Contains(err.Error(), "不支持后台服务命令") || !strings.Contains(err.Error(), "agentd serve") {
@@ -536,6 +573,9 @@ func TestManagedServiceRejectsUnsupportedPlatform(t *testing.T) {
 }
 
 func TestStopDispatchUsesDarwinServiceWithNeutralOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX brew shim is exercised on macOS")
+	}
 	clearAgentdEnvForMainTest(t)
 	useManagedServicePlatform(t, "darwin")
 	marker := prepareManagedCommandProbe(t, "brew")
@@ -552,7 +592,7 @@ func TestStopDispatchUsesDarwinServiceWithNeutralOutput(t *testing.T) {
 	if got := strings.TrimSpace(string(raw)); got != "services stop mimi-remote" {
 		t.Fatalf("Darwin stop 参数错误：%q", got)
 	}
-	for _, want := range []string{"正在停止 Mimi Mac 助手", "Mimi Mac 助手已停止"} {
+	for _, want := range []string{"正在停止 Mimi Remote 助手", "Mimi Remote 助手已停止"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stop 输出缺少 %q：%q", want, stdout)
 		}
@@ -567,6 +607,9 @@ func TestStopDispatchUsesDarwinServiceWithNeutralOutput(t *testing.T) {
 }
 
 func TestStopLinuxUsesSystemdService(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX systemctl shim is exercised on Linux")
+	}
 	marker := prepareManagedCommandProbe(t, "systemctl")
 	writeMainTestLinuxUnit(t)
 	var stdout, stderr strings.Builder
@@ -667,6 +710,9 @@ func TestDefaultPathCommandsReuseLegacyConfigWithoutRotatingToken(t *testing.T) 
 			return run([]string{"agentd", "restart", "--wait", "0"})
 		}},
 		{name: "status", run: func(t *testing.T, _ mainLegacyConfigFixture) error {
+			if runtime.GOOS == "windows" {
+				installFakeWindowsCommands(t)
+			}
 			return run([]string{"agentd", "status", "--json"})
 		}},
 		{name: "pair", run: func(t *testing.T, _ mainLegacyConfigFixture) error {
@@ -804,7 +850,7 @@ func TestWaitForServeExitPreservesCauseAndAlwaysCleansUp(t *testing.T) {
 		serveErr  error
 		wantCause error
 	}{
-		{name: "signal", signal: syscall.SIGTERM},
+		{name: "signal", signal: os.Interrupt},
 		{name: "http closed", serveErr: http.ErrServerClosed},
 		{name: "managed upstream error", serveErr: upstreamErr, wantCause: upstreamErr},
 	}
@@ -972,7 +1018,17 @@ func TestStatusRuntimeEnrichmentRequiresJSON(t *testing.T) {
 	}
 }
 
+func TestStatusNetworkPolicyInspectionRequiresJSON(t *testing.T) {
+	err := runStatus([]string{"status", "--network-policy"})
+	if err == nil || !strings.Contains(err.Error(), "--json") {
+		t.Fatalf("status --network-policy 必须拒绝无 JSON 的调用：%v", err)
+	}
+}
+
 func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		installFakeWindowsCommands(t)
+	}
 	clearAgentdEnvForMainTest(t)
 	const token = "status-runtime-opt-in-token-0123456789"
 	var runtimeRequests atomic.Int32
@@ -1040,13 +1096,25 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := captureMainCommandOutput(t, func() error {
+	statusOutput, _, err := captureMainCommandOutput(t, func() error {
 		return runStatus([]string{"status", "--config", configPath, "--json"})
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("core status 失败：%v", err)
 	}
 	if runtimeRequests.Load() != 0 {
 		t.Fatalf("默认 status --json 不得触发额度探测：requests=%d", runtimeRequests.Load())
+	}
+	var statusPayload struct {
+		NetworkStatus agentNetworkStatus `json:"network_status"`
+	}
+	if err := json.Unmarshal([]byte(statusOutput), &statusPayload); err != nil {
+		t.Fatalf("status JSON 无法解析：%v\n%s", err, statusOutput)
+	}
+	if statusPayload.NetworkStatus.Mode != "loopback" ||
+		statusPayload.NetworkStatus.AllowLAN ||
+		statusPayload.NetworkStatus.PolicyChecked {
+		t.Fatalf("默认 status 应快速返回配置网络模式且不做昂贵策略检查：%+v", statusPayload.NetworkStatus)
 	}
 
 	if _, _, err := captureMainCommandOutput(t, func() error {
@@ -1366,7 +1434,7 @@ func TestRunDoctorFixOnlyTightensSensitiveFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor --fix 收紧权限失败：%v", err)
 	}
-	if len(fixes) != 2 {
+	if runtime.GOOS != "windows" && len(fixes) != 2 {
 		t.Fatalf("应分别修复配置与 token file 权限：%v", fixes)
 	}
 	for _, path := range []string{configPath, tokenPath} {
@@ -1374,7 +1442,7 @@ func TestRunDoctorFixOnlyTightensSensitiveFilePermissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s 权限应为 0600，实际 %04o", path, info.Mode().Perm())
 		}
 	}
@@ -1400,7 +1468,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 		}
 	}
 	codexPath := filepath.Join(dir, "codex")
-	writeMainTestCodex(t, codexPath)
+	codexPath = writeMainTestCodex(t, codexPath)
 	const authToken = "0123456789abcdef0123456789abcdef"
 
 	// 这是旧版 pty + stdio 配置；Doctor 只能补 upstream token，不能用 setup --force 覆盖用户定制项。
@@ -1480,7 +1548,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !configInfo.Mode().IsRegular() || configInfo.Mode().Perm() != 0o600 {
+	if !configInfo.Mode().IsRegular() || (runtime.GOOS != "windows" && configInfo.Mode().Perm() != 0o600) {
 		t.Fatalf("原子更新后的配置必须是 0600 regular file：%v", configInfo.Mode())
 	}
 	assertMainTestPrivateToken(t, tokenPath, authToken)
@@ -1533,7 +1601,7 @@ func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T)
 	dir := t.TempDir()
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
-	writeMainTestCodex(t, codexPath)
+	codexPath = writeMainTestCodex(t, codexPath)
 	t.Setenv("PATH", binDir)
 	configPath := filepath.Join(dir, "config.json")
 	const authToken = "0123456789abcdef0123456789abcdef"
@@ -1594,12 +1662,21 @@ func useManagedServicePlatform(t *testing.T, goos string) {
 	t.Cleanup(func() { managedServicePlatform = previous })
 }
 
-func writeMainTestCodex(t *testing.T, path string) {
+func writeMainTestCodex(t *testing.T, path string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		path += ".cmd"
+		body := "@echo off\r\nif \"%~1\"==\"app-server\" if \"%~2\"==\"--help\" echo --listen --ws-auth --ws-token-file\r\nexit /b 0\r\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 	body := "#!/bin/sh\nif [ \"$1\" = \"app-server\" ] && [ \"$2\" = \"--help\" ]; then\n  printf '%s\\n' '--listen --ws-auth --ws-token-file'\nfi\nexit 0\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return path
 }
 
 func assertMainTestPrivateToken(t *testing.T, path string, outerToken string) {
@@ -1608,7 +1685,7 @@ func assertMainTestPrivateToken(t *testing.T, path string, outerToken string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("upstream token 必须是 0600 regular file：%v", info.Mode())
 	}
 	raw, err := os.ReadFile(path)
@@ -1623,6 +1700,10 @@ func assertMainTestPrivateToken(t *testing.T, path string, outerToken string) {
 
 func prepareBrewSideEffectProbe(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		installFakeWindowsCommands(t)
+		return filepath.Join(t.TempDir(), "windows-task-called")
+	}
 	useManagedServicePlatform(t, "darwin")
 	binDir := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "brew-called")
@@ -1636,7 +1717,7 @@ func prepareBrewSideEffectProbe(t *testing.T) string {
 	if err := os.WriteFile(launchctlPath, []byte(launchctlBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeMainTestCodex(t, filepath.Join(binDir, "codex"))
+	_ = writeMainTestCodex(t, filepath.Join(binDir, "codex"))
 	t.Setenv("PATH", binDir)
 	t.Setenv("BREW_MARKER", marker)
 	return marker
@@ -1730,13 +1811,18 @@ func prepareMainLegacyConfigFixture(t *testing.T) mainLegacyConfigFixture {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// os.UserConfigDir uses APPDATA on Windows rather than HOME/XDG_CONFIG_HOME.
+	// Isolate both platform defaults so tests never migrate a real user config.
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("USERPROFILE", home)
 	projectPath := filepath.Join(home, "code", "legacy-project")
 	if err := os.MkdirAll(projectPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")
-	writeMainTestCodex(t, codexPath)
+	codexPath = writeMainTestCodex(t, codexPath)
 
 	source := config.LegacyDefaultPath()
 	destination := config.PlatformDefaultPath()
@@ -1795,7 +1881,7 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("新版配置必须是 0600 普通文件：%v", info.Mode())
 	}
 	result, err := agentsetup.Pair(context.Background(), fixture.destination)

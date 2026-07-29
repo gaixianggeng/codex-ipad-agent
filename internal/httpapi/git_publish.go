@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -340,7 +341,18 @@ func gitTestFlightExecutable(repoRoot string) (string, bool) {
 
 func executableFile(path string) bool {
 	stat, err := os.Stat(path)
-	return err == nil && stat.Mode().IsRegular() && stat.Mode().Perm()&0o111 != 0
+	if err != nil || !stat.Mode().IsRegular() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".exe", ".com", ".bat", ".cmd":
+			return true
+		default:
+			return false
+		}
+	}
+	return stat.Mode().Perm()&0o111 != 0
 }
 
 func displayTestFlightCommand(executable string, repoRoot string) string {

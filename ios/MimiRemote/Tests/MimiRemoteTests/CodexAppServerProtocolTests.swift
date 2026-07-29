@@ -296,6 +296,48 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)
     }
 
+    func testThreadListBuilderPreservesWindowsCWDAsRemoteHostPath() throws {
+        let windowsPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let project = AgentProject(id: "repo", name: "Repo", path: "  \(windowsPath)  ")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = try builder.threadList(cwd: "\n\(windowsPath)\t")
+        let params = try XCTUnwrap(request.params?.objectValue)
+
+        XCTAssertEqual(request.method, "thread/list")
+        XCTAssertEqual(params["cwd"]?.stringValue, windowsPath)
+    }
+
+    func testRequestBuilderValidatesWindowsChildPathWithoutRewritingIt() throws {
+        let projectPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let imagePath = projectPath + #"\screens\preview.png"#
+        let project = AgentProject(id: "repo", name: "Repo", path: projectPath)
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(input: [.localImage(path: imagePath)])
+        )
+        let input = try XCTUnwrap(request.params?.objectValue?["input"]?.arrayValue)
+        XCTAssertEqual(input.first?.objectValue?["path"]?.stringValue, imagePath)
+
+        XCTAssertThrowsError(try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(input: [
+                .localImage(path: projectPath + #"\..\other\preview.png"#)
+            ])
+        ))
+        XCTAssertThrowsError(try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(input: [
+                .localImage(path: projectPath + #"\screens/../other/preview.png"#)
+            ])
+        ))
+    }
+
     func testThreadSearchBuilderUsesCodexSchemaWithoutCWD() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])

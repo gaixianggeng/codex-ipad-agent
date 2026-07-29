@@ -677,12 +677,12 @@ func (s *Session) Stop() error {
 	}
 	if cmd != nil && cmd.Process != nil {
 		// 先温和退出，2 秒后仍未退出再强杀进程组。
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		terminateSessionProcessTree(cmd, false)
 		select {
 		case <-s.done:
 			return nil
 		case <-time.After(2 * time.Second):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			terminateSessionProcessTree(cmd, true)
 		}
 	}
 	return nil

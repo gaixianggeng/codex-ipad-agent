@@ -225,6 +225,40 @@ func TestValidateRejectsDevInsecureOnNonLoopbackListen(t *testing.T) {
 	}
 }
 
+func TestValidateRestrictsAgentListenToExplicitPrivateScopes(t *testing.T) {
+	tests := []struct {
+		name     string
+		listen   string
+		allowLAN bool
+		wantErr  bool
+	}{
+		{name: "loopback", listen: "127.0.0.1:8787"},
+		{name: "tailscale", listen: "100.100.20.30:8787"},
+		{name: "private LAN opt in", listen: "192.168.1.20:8787", allowLAN: true},
+		{name: "wildcard opt in", listen: "0.0.0.0:8787", allowLAN: true},
+		{name: "private LAN missing opt in", listen: "192.168.1.20:8787", wantErr: true},
+		{name: "wildcard missing opt in", listen: "0.0.0.0:8787", wantErr: true},
+		{name: "public IP", listen: "8.8.8.8:8787", allowLAN: true, wantErr: true},
+		{name: "hostname", listen: "example.com:8787", allowLAN: true, wantErr: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := defaults()
+			cfg.Listen = testCase.listen
+			cfg.Network.AllowLAN = testCase.allowLAN
+			cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+			cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
+			err := cfg.Validate()
+			if testCase.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !testCase.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsShortToken(t *testing.T) {
 	cfg := defaults()
 	cfg.Auth.Token = "short"

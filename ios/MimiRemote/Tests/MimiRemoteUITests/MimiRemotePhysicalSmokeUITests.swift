@@ -301,7 +301,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         // 扫码页关闭后会回到连接管理页。优先复用当前页面的入口，避免为了第二次
         // 拉起扫码器又退回工作台并重新进入设置，降低实体机导航差异带来的误报。
         let currentConnectionScan = app.descendant(identifier: "settings.connection.scanQRCode")
-        let firstSetupScan = app.descendant(identifier: "settings.macInstaller.scan")
+        let firstSetupScan = app.descendant(identifier: "settings.hostInstaller.scan")
         if currentConnectionScan.exists, currentConnectionScan.isHittable {
             currentConnectionScan.tap()
         } else if firstSetupScan.exists, firstSetupScan.isHittable {
@@ -313,7 +313,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
             connection.tap()
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
-            let setupScan = app.descendant(identifier: "settings.macInstaller.scan")
+            let setupScan = app.descendant(identifier: "settings.hostInstaller.scan")
             if scrollUntilHittable(scan, maximumSwipes: 4) {
                 scan.tap()
             } else {

@@ -35,10 +35,11 @@ var (
 var appServerHistoryMediaMinRawBase64Chars = 16 << 10
 
 type appServerHistoryMediaStore struct {
-	mu         sync.Mutex
-	entries    map[string]appServerHistoryMediaEntry
-	idByHash   map[[32]byte]string
-	totalBytes int64
+	mu             sync.Mutex
+	entries        map[string]appServerHistoryMediaEntry
+	idByHash       map[[32]byte]string
+	totalBytes     int64
+	accessSequence uint64
 }
 
 type appServerHistoryMediaEntry struct {
@@ -49,6 +50,7 @@ type appServerHistoryMediaEntry struct {
 	derived     map[string]appServerHistoryMediaVariant
 	createdAt   time.Time
 	lastAccess  time.Time
+	accessOrder uint64
 }
 
 type appServerHistoryMediaVariant struct {
@@ -78,7 +80,7 @@ func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (strin
 	}
 	if existingID := s.idByHash[hash]; existingID != "" {
 		if entry, ok := s.entries[existingID]; ok {
-			entry.lastAccess = now
+			s.touchEntryLocked(&entry, now)
 			s.entries[existingID] = entry
 			return existingID, true
 		}
@@ -96,6 +98,7 @@ func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (strin
 		createdAt:   now,
 		lastAccess:  now,
 	}
+	s.touchEntryLocked(&entry, now)
 	s.entries[id] = entry
 	s.idByHash[hash] = id
 	s.totalBytes += entry.totalBytes()
@@ -119,7 +122,7 @@ func (s *appServerHistoryMediaStore) get(id string) (appServerHistoryMediaEntry,
 	if !ok {
 		return appServerHistoryMediaEntry{}, false
 	}
-	entry.lastAccess = now
+	s.touchEntryLocked(&entry, now)
 	s.entries[id] = entry
 	return entry, true
 }
@@ -141,7 +144,7 @@ func (s *appServerHistoryMediaStore) getDerived(id string, key string) (appServe
 	if !ok {
 		return appServerHistoryMediaEntry{}, appServerHistoryMediaVariant{}, false
 	}
-	entry.lastAccess = now
+	s.touchEntryLocked(&entry, now)
 	s.entries[id] = entry
 	variant, ok := entry.derived[key]
 	if !ok {
@@ -167,7 +170,7 @@ func (s *appServerHistoryMediaStore) storeDerived(id string, key string, variant
 		entry.derived = map[string]appServerHistoryMediaVariant{}
 	}
 	if existing, ok := entry.derived[key]; ok {
-		entry.lastAccess = now
+		s.touchEntryLocked(&entry, now)
 		s.entries[id] = entry
 		existing.data = append([]byte(nil), existing.data...)
 		return entry, existing, true
@@ -177,7 +180,7 @@ func (s *appServerHistoryMediaStore) storeDerived(id string, key string, variant
 		data:        append([]byte(nil), variant.data...),
 	}
 	entry.derived[key] = copied
-	entry.lastAccess = now
+	s.touchEntryLocked(&entry, now)
 	s.entries[id] = entry
 	s.totalBytes += int64(len(copied.data))
 	s.enforceLimitsLocked(now)
@@ -212,11 +215,11 @@ func (s *appServerHistoryMediaStore) enforceLimitsLocked(now time.Time) {
 	for (appServerHistoryMediaMaxEntries > 0 && len(s.entries) > appServerHistoryMediaMaxEntries) ||
 		(appServerHistoryMediaMaxBytes > 0 && s.totalBytes > appServerHistoryMediaMaxBytes) {
 		oldestID := ""
-		oldestAt := now
+		var oldestOrder uint64
 		for id, entry := range s.entries {
-			if oldestID == "" || entry.lastAccess.Before(oldestAt) {
+			if oldestID == "" || entry.accessOrder < oldestOrder {
 				oldestID = id
-				oldestAt = entry.lastAccess
+				oldestOrder = entry.accessOrder
 			}
 		}
 		if oldestID == "" {
@@ -228,6 +231,12 @@ func (s *appServerHistoryMediaStore) enforceLimitsLocked(now time.Time) {
 	if s.totalBytes < 0 {
 		s.totalBytes = 0
 	}
+}
+
+func (s *appServerHistoryMediaStore) touchEntryLocked(entry *appServerHistoryMediaEntry, now time.Time) {
+	s.accessSequence++
+	entry.lastAccess = now
+	entry.accessOrder = s.accessSequence
 }
 
 func (s *appServerHistoryMediaStore) deleteEntryLocked(id string, entry appServerHistoryMediaEntry) {

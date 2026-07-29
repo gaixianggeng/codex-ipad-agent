@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -147,6 +148,9 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 		writeFileWithMode(t, target, original, 0o600)
 		configPath := filepath.Join(dir, "config.json")
 		if err := os.Symlink(target, configPath); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skip("Windows symlink creation requires Developer Mode or elevation")
+			}
 			t.Fatal(err)
 		}
 
@@ -187,6 +191,9 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 				target := filepath.Join(dir, "real-token")
 				writeFileWithMode(t, target, []byte("do-not-touch-token\n"), 0o600)
 				if err := os.Symlink(target, tokenPath); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skip("Windows symlink creation requires Developer Mode or elevation")
+					}
 					t.Fatal(err)
 				}
 				defer assertFileBytesAndMode(t, target, []byte("do-not-touch-token\n"), 0o600)
@@ -291,7 +298,7 @@ func assertFileBytesAndMode(t *testing.T, path string, want []byte, wantMode os.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != wantMode.Perm() {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != wantMode.Perm()) {
 		t.Fatalf("%s 权限被意外修改：got=%04o want=%04o", path, info.Mode().Perm(), wantMode.Perm())
 	}
 }
@@ -302,7 +309,7 @@ func assertPrivateRegularFile(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("%s 必须是 0600 regular file：%v", path, info.Mode())
 	}
 }
