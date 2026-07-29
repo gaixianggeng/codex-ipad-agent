@@ -1,0 +1,289 @@
+name: Nightly Validation
+
+on:
+  schedule:
+    # 每天北京时间 02:30 运行一次；重任务不进入普通 PR Gate。
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      run_controlled_runtime_smoke:
+        description: "在受控自托管 runner 上运行只读 Codex/Claude smoke"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-race-and-release-snapshot:
+    name: Go race, fixtures, and release snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Codex CLI
+        run: npm install --global "@openai/codex@$(cat internal/httpapi/testdata/codex-protocol/codex-version.txt)"
+
+      - name: Check protocol and workflow contracts
+        run: |
+          bash ./scripts/check-codex-protocol.sh
+          bash ./scripts/check-mimi-protocol-contract.sh
+          bash ./scripts/check-validation-workflows.sh
+
+      - name: Run full Go suite with race detector
+        run: go test -race ./... -count=1
+
+      - name: Replay Linux install, upgrade, and rollback fixtures
+        run: bash ./scripts/test-install-linux.sh
+
+      - name: Build and inspect four-platform GoReleaser snapshot
+        run: bash ./scripts/verify-release.sh verify
+
+      - name: Upload GoReleaser snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-goreleaser-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  rust-cross-platform:
+    name: Rust bridge (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Show pinned runner toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Run complete bridge workspace
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked \
+            -p alleycat-codex-proto \
+            -p alleycat-bridge-core \
+            -p alleycat-claude-bridge
+
+  mac-and-ios-full:
+    name: Mac App and full iOS suite
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install universal macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Test Mimi Remote Mac
+        run: |
+          xcodebuild \
+            -project macos/MimiRemoteMac/MimiRemoteMac.xcodeproj \
+            -scheme MimiRemoteMac \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/MimiRemoteMacTests" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Run complete iOS unit and snapshot suite
+        run: bash ./scripts/ios-dev.sh test
+
+      - name: Build and inspect universal Mac DMG snapshot
+        run: |
+          bash ./scripts/build-macos-installer.sh \
+            --snapshot \
+            --version 0.0.0 \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --output-dir dist-macos
+          bash ./scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
+
+      - name: Upload Mac DMG snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-macos-snapshot-${{ github.run_id }}
+          path: dist-macos/
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-installer-snapshot:
+    name: Windows installer snapshot
+    runs-on: windows-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build and inspect unsigned installer
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-installer.ps1 `
+            -Version 0.0.0 `
+            -OutputDirectory dist-windows `
+            -Snapshot
+          $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
+          ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+          ./scripts/test-windows-install.ps1
+
+      - name: Upload Windows installer snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-windows-snapshot-${{ github.run_id }}
+          path: dist-windows/
+          if-no-files-found: error
+          retention-days: 7
+
+  controlled-runtime-smoke:
+    name: Controlled Codex and Claude smoke
+    if: >-
+      (github.event_name == 'schedule' && vars.MIMI_NIGHTLY_RUNTIME_SMOKE_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_controlled_runtime_smoke)
+    runs-on:
+      - self-hosted
+      - mimi-runtime-smoke
+    environment: nightly-runtime-smoke
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Require isolated runtime credentials
+        shell: bash
+        env:
+          MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
+          AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
+          CONTROLLED_RUNTIME_CANDIDATE_SHA: ${{ vars.MIMI_NIGHTLY_RUNTIME_CANDIDATE_SHA }}
+          EXPECTED_CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          [[ "$MIMI_RUNTIME_ENDPOINT" == https://* || "$MIMI_RUNTIME_ENDPOINT" == http://127.0.0.1:* ]] \
+            || { echo "受控 Endpoint 必须是 HTTPS 或 runner loopback。" >&2; exit 1; }
+          [[ -n "$AGENTD_TOKEN" ]] \
+            || { echo "缺少受控、可撤销的 Nightly Token。" >&2; exit 1; }
+          [[ "$CONTROLLED_RUNTIME_CANDIDATE_SHA" == "$EXPECTED_CANDIDATE_SHA" ]] \
+            || { echo "受控 Runtime 未声明运行当前 Nightly commit。" >&2; exit 1; }
+
+      - name: Run read-only Codex history smoke
+        shell: bash
+        env:
+          MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
+          AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
+        run: |
+          bash ./scripts/history-sync-regression.sh \
+            --endpoint "controlled=$MIMI_RUNTIME_ENDPOINT" \
+            --rounds 10 \
+            --limit 20 \
+            --require-all-successful
+
+      - name: Run explicitly enabled Claude model smoke
+        shell: bash
+        env:
+          MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
+          AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
+          MIMI_CLAUDE_SMOKE_ENABLED: ${{ vars.MIMI_NIGHTLY_CLAUDE_SMOKE_ENABLED }}
+        run: |
+          if [[ "$MIMI_CLAUDE_SMOKE_ENABLED" != "true" ]]; then
+            echo "Claude smoke: SKIPPED（受控环境未显式启用）。" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          go run ./scripts/ipad-ws-probe.go \
+            -endpoint "$MIMI_RUNTIME_ENDPOINT" \
+            -runtime claude \
+            -models-only
+          echo "Claude smoke: PASS（只读 models/list，不启动 turn）。" >>"$GITHUB_STEP_SUMMARY"
+
+  nightly-result:
+    name: Nightly Validation
+    if: always()
+    needs:
+      - go-race-and-release-snapshot
+      - rust-cross-platform
+      - mac-and-ios-full
+      - windows-installer-snapshot
+      - controlled-runtime-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Summarize required results
+        shell: bash
+        env:
+          GO_RESULT: ${{ needs.go-race-and-release-snapshot.result }}
+          RUST_RESULT: ${{ needs.rust-cross-platform.result }}
+          MAC_IOS_RESULT: ${{ needs.mac-and-ios-full.result }}
+          WINDOWS_RESULT: ${{ needs.windows-installer-snapshot.result }}
+          RUNTIME_RESULT: ${{ needs.controlled-runtime-smoke.result }}
+          RUNTIME_REQUESTED: ${{ (github.event_name == 'schedule' && vars.MIMI_NIGHTLY_RUNTIME_SMOKE_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.run_controlled_runtime_smoke) }}
+        run: |
+          {
+            echo "## Nightly Validation"
+            echo
+            echo "| 层 | 结果 |"
+            echo "| --- | --- |"
+            echo "| Go race / fixtures / release snapshot | \`$GO_RESULT\` |"
+            echo "| Rust bridge cross-platform | \`$RUST_RESULT\` |"
+            echo "| Mac App / full iOS | \`$MAC_IOS_RESULT\` |"
+            echo "| Windows installer snapshot | \`$WINDOWS_RESULT\` |"
+            echo "| Controlled Runtime | \`$RUNTIME_RESULT\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          [[ "$GO_RESULT" == "success" ]]
+          [[ "$RUST_RESULT" == "success" ]]
+          [[ "$MAC_IOS_RESULT" == "success" ]]
+          [[ "$WINDOWS_RESULT" == "success" ]]
+          if [[ "$RUNTIME_REQUESTED" == "true" ]]; then
+            [[ "$RUNTIME_RESULT" == "success" ]]
+          else
+            [[ "$RUNTIME_RESULT" == "skipped" ]]
+          fi

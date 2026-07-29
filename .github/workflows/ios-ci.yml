@@ -2,6 +2,22 @@ name: iOS CI
 
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        description: "要验证的 immutable commit；为空时使用触发事件 SHA"
+        required: false
+        default: ""
+        type: string
+      validate_app_store:
+        description: "仅归档并调用 App Store 服务端验证，不上传 TestFlight"
+        required: false
+        default: false
+        type: boolean
+      what_to_test:
+        description: "验证报告说明；validate 模式不写入 TestFlight"
+        required: false
+        default: "Release validation only."
+        type: string
   push:
     branches:
       - main
@@ -54,6 +70,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -118,15 +136,17 @@ jobs:
         run: bash ./scripts/test-ios-localization-smoke.sh
 
   app-store-release:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
+      (github.event_name == 'workflow_call' && inputs.validate_app_store)
     runs-on: macos-26
     timeout-minutes: 45
     env:
       IOS_BUNDLE_ID: com.gaixianggeng.mimi
       DEVELOPMENT_TEAM: 9HZ89R58PZ
       TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
-      IOS_TESTFLIGHT_UPLOAD: "1"
-      IOS_TESTFLIGHT_VALIDATE: "0"
+      IOS_TESTFLIGHT_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_app_store && '1' || '0' }}
+      IOS_TESTFLIGHT_VALIDATE: ${{ github.event_name == 'workflow_call' && inputs.validate_app_store && '1' || '0' }}
       IOS_RELEASE_EXPECTED_MACOS_MAJOR: "26"
       IOS_RELEASE_EXPECTED_XCODE_VERSION: "26.6"
       IOS_RELEASE_EXPECTED_XCODE_BUILD: 17F113
@@ -137,6 +157,7 @@ jobs:
       - name: Checkout clean release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           clean: true
 
@@ -273,3 +294,12 @@ jobs:
       - name: Archive, audit, upload, and distribute build
         shell: bash
         run: bash ./scripts/ios_testflight_ci.sh
+
+      - name: Upload validated IPA without publishing
+        if: github.event_name == 'workflow_call' && inputs.validate_app_store
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-ios-validated-${{ inputs.source_ref || github.sha }}
+          path: ${{ runner.temp }}/mimi-testflight/**/*.ipa
+          if-no-files-found: error
+          retention-days: 30

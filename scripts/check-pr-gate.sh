@@ -17,9 +17,12 @@ done
 bash -n \
   scripts/ci-pr-scope.sh \
   scripts/check-critical-regressions.sh \
+  scripts/check-rollback-readiness.sh \
+  scripts/check-validation-workflows.sh \
   scripts/check-pr-gate.sh
 
 bash ./scripts/check-critical-regressions.sh
+bash ./scripts/check-validation-workflows.sh
 
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-pr-gate-check.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
@@ -56,6 +59,11 @@ assert_scope critical_runner true true false scripts/test-conversation-regressio
 assert_scope critical_checker true true false scripts/check-critical-regressions.sh
 assert_scope docs_only false false false CONTRIBUTING.md
 assert_scope workflow true true true .github/workflows/pr-gate.yml
+assert_scope nightly_workflow true true true .github/workflows/nightly.yml
+assert_scope release_validation_workflow true true true .github/workflows/release-validation.yml
+assert_scope validation_checker true true true scripts/check-validation-workflows.sh
+assert_scope rollback_checker true true true scripts/check-rollback-readiness.sh
+assert_scope runtime_smoke true false false scripts/history-sync-regression.sh
 assert_scope mixed true true true \
   cmd/agentd/main.go \
   ios/MimiRemote/project.yml \
