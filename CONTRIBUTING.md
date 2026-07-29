@@ -19,6 +19,8 @@ Bug 请尽量包含：
 2. 保留现有架构与安全策略，不引入无必要的云服务、遥测或重型依赖。
 3. 核心逻辑添加中文注释，说明为什么这样实现。
 4. PR 描述中写清目标、实现、验证结果和已知风险。
+5. 新增或改变可选能力时，PR 必须写明 capability 名称/版本、启用依赖、安全旧路径、
+   本地 kill switch、回滚步骤，以及旧服务端、未知状态和多 Host 验证结果。
 
 ## 本地验证
 
@@ -74,6 +76,8 @@ bash ./scripts/test-conversation-regressions.sh
 
 字段演进、跨版本矩阵、失败语义和风险边界见
 [Mimi iOS / agentd 版本化契约](docs/mimi-protocol-contracts.md)。
+可选能力的声明、状态机、本地禁用和恢复步骤见
+[Capability 声明与本地降级](docs/capability-rollout.md)。
 
 关键用户链路的风险、测试层和 PR Gate selector 映射见
 [关键用户链路分层回归](docs/critical-user-journey-regressions.md)。修改配对、Host

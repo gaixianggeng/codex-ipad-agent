@@ -245,6 +245,7 @@ struct PreparedConnectionSettings: Equatable {
     let validatedAt: Date
     let installationID: String?
     let hostContext: PreparedHostContext?
+    let capabilityNegotiation: HostCapabilityNegotiation
 
     init(
         endpoint: String,
@@ -252,7 +253,8 @@ struct PreparedConnectionSettings: Equatable {
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         validatedAt: Date = Date(),
         installationID: String? = nil,
-        hostContext: PreparedHostContext? = nil
+        hostContext: PreparedHostContext? = nil,
+        capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated
     ) {
         self.endpoint = endpoint
         self.token = token
@@ -260,6 +262,7 @@ struct PreparedConnectionSettings: Equatable {
         self.validatedAt = validatedAt
         self.installationID = installationID
         self.hostContext = hostContext
+        self.capabilityNegotiation = capabilityNegotiation
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -268,6 +271,7 @@ struct PreparedConnectionSettings: Equatable {
             lhs.profileTarget == rhs.profileTarget &&
             lhs.validatedAt == rhs.validatedAt &&
             lhs.installationID == rhs.installationID &&
-            lhs.hostContext === rhs.hostContext
+            lhs.hostContext === rhs.hostContext &&
+            lhs.capabilityNegotiation == rhs.capabilityNegotiation
     }
 }

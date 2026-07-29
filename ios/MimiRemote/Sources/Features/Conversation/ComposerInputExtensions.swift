@@ -1179,20 +1179,24 @@ extension ComposerView {
             )
         case .files(let targetScope):
             Task {
-                do {
-                    try await sessionStore.fileUploadStore.ensureServerSupportsFileUpload(
-                        endpoint: sessionStore.appStore.connectionEndpoint,
-                        token: sessionStore.appStore.token
-                    )
-                    guard !Task.isCancelled else {
-                        return
-                    }
-                    fileImporterPresentation.present(
-                        FileImporterRequest(targetScope: targetScope)
-                    )
-                } catch {
-                    attachmentErrorMessage = error.localizedDescription
+                let decision = await sessionStore.appStore.refreshCapabilityNegotiationForCurrentHost(
+                    capability: "file_upload_v1"
+                )
+                guard !Task.isCancelled else {
+                    return
                 }
+                guard let capabilityLease = sessionStore.appStore.capabilityLease(
+                    for: "file_upload_v1"
+                ) else {
+                    attachmentErrorMessage = MobileFileUploadError(decision: decision).localizedDescription
+                    return
+                }
+                fileImporterPresentation.present(
+                    FileImporterRequest(
+                        targetScope: targetScope,
+                        capabilityLease: capabilityLease
+                    )
+                )
             }
         }
     }
@@ -1345,7 +1349,7 @@ extension ComposerView {
 
     func handleSelectedFile(
         _ result: Result<[URL], Error>,
-        targetScope: ComposerDraftScopeKey
+        request: FileImporterRequest
     ) {
         switch result {
         case .failure(let error):
@@ -1355,6 +1359,10 @@ extension ComposerView {
             }
             attachmentErrorMessage = error.localizedDescription
         case .success(let urls):
+            guard sessionStore.appStore.isCurrentCapabilityLease(request.capabilityLease) else {
+                attachmentErrorMessage = MobileFileUploadError.hostChanged.localizedDescription
+                return
+            }
             guard let url = urls.first else {
                 return
             }
@@ -1365,7 +1373,7 @@ extension ComposerView {
             attachmentErrorMessage = nil
             sessionStore.fileUploadStore.start(
                 selectedURL: url,
-                targetScope: targetScope,
+                targetScope: request.targetScope,
                 endpoint: sessionStore.appStore.connectionEndpoint,
                 token: sessionStore.appStore.token
             ) { [weak sessionStore] attachment, scope in

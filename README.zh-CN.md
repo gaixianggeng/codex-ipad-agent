@@ -459,6 +459,7 @@ bridges/claude/          Rust Claude Code 协议 bridge
 - [安装、升级与回滚](docs/install-upgrade-rollback.md)
 - [Tailscale 与 Peer Relay 运维](docs/tailscale-peer-relay-ops.md)
 - [Codex 协议支持边界](docs/codex-protocol-support.md)
+- [Capability 声明与本地降级](docs/capability-rollout.md)
 - [Claude bridge 架构](docs/claude-bridge-architecture.md)
 - [与 Litter 的能力对照](docs/litter-comparison.md)
 - [隐私政策](docs/privacy-policy.md)

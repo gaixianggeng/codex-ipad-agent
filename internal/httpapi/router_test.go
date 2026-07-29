@@ -55,6 +55,9 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	t.Helper()
 
 	projectDir := t.TempDir()
+	if os.Getenv("AGENTD_FILE_UPLOAD_CACHE_DIR") == "" {
+		t.Setenv("AGENTD_FILE_UPLOAD_CACHE_DIR", filepath.Join(t.TempDir(), "file-uploads"))
+	}
 	cfg := config.Config{
 		Listen: "127.0.0.1:0",
 		Auth:   config.AuthConfig{Token: testToken},

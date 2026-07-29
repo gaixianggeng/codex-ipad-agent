@@ -4,7 +4,15 @@ import XCTest
 final class FileAttachmentModelsTests: XCTestCase {
     func testFileImporterKeepsRequestUntilResultCallbackAfterDismissal() {
         let request = FileImporterRequest(
-            targetScope: .session("session-1")
+            targetScope: .session("session-1"),
+            capabilityLease: HostCapabilityLease(
+                capability: "file_upload_v1",
+                hostScope: HostScope(
+                    profileID: "mac-a",
+                    installationID: "installation-a",
+                    generation: 1
+                )
+            )
         )
         var presentation = FileImporterPresentationState()
 
@@ -104,6 +112,87 @@ final class FileAttachmentModelsTests: XCTestCase {
         )
         XCTAssertEqual(current.installationID, "mac-installation")
         XCTAssertEqual(current.capabilities, ["file_upload_v1"])
+    }
+
+    func testFileUploadCapabilityDecisionMatrixFailsClosed() {
+        let enabled = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: ["file_upload_v1"],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "enabled",
+                    reason: "available"
+                )
+            ]
+        )
+        XCTAssertEqual(enabled.decision(for: "file_upload_v1"), .enabled)
+
+        let unsupported = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: [],
+            statuses: []
+        )
+        XCTAssertEqual(unsupported.decision(for: "file_upload_v1"), .serverUnsupported)
+
+        let locallyDisabled = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: [],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "locally_disabled",
+                    reason: "disabled_by_local_config"
+                )
+            ]
+        )
+        XCTAssertEqual(locallyDisabled.decision(for: "file_upload_v1"), .locallyDisabled)
+
+        let dependencyUnavailable = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: [],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "dependency_unavailable",
+                    reason: "storage_unavailable"
+                )
+            ]
+        )
+        XCTAssertEqual(
+            dependencyUnavailable.decision(for: "file_upload_v1"),
+            .dependencyUnavailable
+        )
+
+        XCTAssertEqual(
+            HostCapabilityNegotiation.notNegotiated.decision(for: "file_upload_v1"),
+            .negotiationFailed
+        )
+        let inconsistent = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: [],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "enabled",
+                    reason: "available"
+                )
+            ]
+        )
+        XCTAssertEqual(inconsistent.decision(for: "file_upload_v1"), .negotiationFailed)
+
+        let conflicting = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: ["file_upload_v1"],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "locally_disabled",
+                    reason: "disabled_by_local_config"
+                )
+            ]
+        )
+        XCTAssertEqual(conflicting.decision(for: "file_upload_v1"), .negotiationFailed)
     }
 
     func testTextFilePreparationUsesBoundedUTF8PreviewAndPrivateStagingCopy() async throws {

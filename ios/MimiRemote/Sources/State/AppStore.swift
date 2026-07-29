@@ -281,6 +281,7 @@ final class AppStore: ObservableObject {
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
     private var credentialLifecycleGeneration: UInt64 = 0
+    private var capabilityNegotiationGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
     private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
@@ -389,7 +390,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: initialEndpoint,
             displayName: initialProfile?.displayName ?? Self.defaultProfileDisplayName(endpoint: initialEndpoint),
-            committedAt: Date()
+            committedAt: Date(),
+            capabilityNegotiation: .notNegotiated
         )
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
@@ -667,6 +669,85 @@ final class AppStore: ObservableObject {
         return MultiRuntimeSessionWebSocketClient(bundle: bundle)
     }
 
+    func capabilityDecision(for capability: String) -> HostCapabilityDecision {
+        let decision = activeHostState.capabilityNegotiation.decision(for: capability)
+        CapabilityNegotiationLog.record(capability: capability, decision: decision)
+        return decision
+    }
+
+    func refreshCapabilityNegotiationForCurrentHost(
+        capability: String
+    ) async -> HostCapabilityDecision {
+        capabilityNegotiationGeneration &+= 1
+        let refreshGeneration = capabilityNegotiationGeneration
+        let capturedState = activeHostState
+        let capturedEndpoint = AgentAPIClient.normalizedEndpoint(connectionEndpoint)
+        let capturedToken = token
+        let capturedFingerprint = Self.tokenFingerprint(capturedToken)
+
+        do {
+            let version = try await AgentAPIClient(
+                endpoint: capturedEndpoint,
+                token: capturedToken
+            ).version()
+            try version.requireCompatible()
+            if let profile = activeConnectionProfile {
+                try Self.validateInstallationIdentity(
+                    actual: version.installationID,
+                    expected: profile.installationID,
+                    profileName: profile.displayName
+                )
+            }
+            guard refreshGeneration == capabilityNegotiationGeneration,
+                  capturedState.scope == activeHostState.scope,
+                  capturedEndpoint == AgentAPIClient.normalizedEndpoint(connectionEndpoint),
+                  capturedFingerprint == Self.tokenFingerprint(token) else {
+                CapabilityNegotiationLog.record(capability: capability, decision: .negotiationFailed)
+                return .negotiationFailed
+            }
+            activeHostState = ActiveHostState(
+                scope: capturedState.scope,
+                endpoint: capturedState.endpoint,
+                displayName: capturedState.displayName,
+                committedAt: capturedState.committedAt,
+                capabilityNegotiation: version.capabilityNegotiation
+            )
+            return capabilityDecision(for: capability)
+        } catch {
+            // 网络、兼容窗口或安装身份校验失败时只撤销 capability 授权，
+            // 不清理当前 Host 的凭据、草稿或基础会话连接。
+            if refreshGeneration == capabilityNegotiationGeneration,
+               capturedState.scope == activeHostState.scope,
+               capturedEndpoint == AgentAPIClient.normalizedEndpoint(connectionEndpoint),
+               capturedFingerprint == Self.tokenFingerprint(token) {
+                activeHostState = ActiveHostState(
+                    scope: capturedState.scope,
+                    endpoint: capturedState.endpoint,
+                    displayName: capturedState.displayName,
+                    committedAt: capturedState.committedAt,
+                    capabilityNegotiation: .notNegotiated
+                )
+            }
+            CapabilityNegotiationLog.record(capability: capability, decision: .negotiationFailed)
+            return .negotiationFailed
+        }
+    }
+
+    func capabilityLease(for capability: String) -> HostCapabilityLease? {
+        guard capabilityDecision(for: capability) == .enabled else {
+            return nil
+        }
+        return HostCapabilityLease(capability: capability, hostScope: activeHostState.scope)
+    }
+
+    func isCurrentCapabilityLease(_ lease: HostCapabilityLease) -> Bool {
+        guard lease.hostScope == activeHostState.scope else {
+            CapabilityNegotiationLog.record(capability: lease.capability, decision: .negotiationFailed)
+            return false
+        }
+        return capabilityDecision(for: lease.capability) == .enabled
+    }
+
     func prepareConnectionSettings(
         endpoint: String,
         token: String,
@@ -926,7 +1007,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: normalizedEndpoint,
             displayName: targetProfile.displayName,
-            committedAt: prepared.validatedAt
+            committedAt: prepared.validatedAt,
+            capabilityNegotiation: prepared.capabilityNegotiation
         )
         lastError = nil
         HostSwitchSignpost.event("host_commit")
@@ -993,7 +1075,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: defaultEndpoint,
             displayName: Self.defaultProfileDisplayName(endpoint: defaultEndpoint),
-            committedAt: Date()
+            committedAt: Date(),
+            capabilityNegotiation: .notNegotiated
         )
         connectionTermination = nil
         connectionStatus = .idle
@@ -1049,7 +1132,8 @@ final class AppStore: ObservableObject {
                 scope: activeHostState.scope,
                 endpoint: activeHostState.endpoint,
                 displayName: displayName,
-                committedAt: activeHostState.committedAt
+                committedAt: activeHostState.committedAt,
+                capabilityNegotiation: activeHostState.capabilityNegotiation
             )
         }
         return true
@@ -1649,7 +1733,8 @@ final class AppStore: ObservableObject {
                         ),
                         runtimeBundle: bundle,
                         expiresAt: deadline
-                    )
+                    ),
+                    capabilityNegotiation: version.capabilityNegotiation
                 )
             } catch {
                 // 每次失败都先完整退役 candidate；重试时始终只有一条候选业务 WS。

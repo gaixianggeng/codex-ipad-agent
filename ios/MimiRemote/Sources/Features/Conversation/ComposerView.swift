@@ -184,7 +184,7 @@ struct ComposerView: View {
             guard let request = fileImporterPresentation.consumeRequest() else {
                 return
             }
-            handleSelectedFile(result, targetScope: request.targetScope)
+            handleSelectedFile(result, request: request)
         }
         .confirmationDialog(
             cameraAttachmentAccessIssue?.title ?? "",
