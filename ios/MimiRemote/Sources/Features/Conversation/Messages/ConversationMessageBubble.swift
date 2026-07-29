@@ -214,6 +214,7 @@ struct ConversationMessageContent: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
             ForEach(userImageSources) { source in
+                // 单图保留等比缩放后的自然宽度，让圆角与描边贴合实际图片尺寸。
                 ConversationImagePreview(
                     source: source,
                     title: nil,
@@ -221,7 +222,7 @@ struct ConversationMessageContent: View {
                     statusStyle: statusStyle,
                     maxHeight: 320,
                     showsCaption: false,
-                    fillsAvailableWidth: true
+                    contentAlignment: .trailing
                 )
             }
             .frame(maxWidth: .infinity, alignment: .trailing)

@@ -355,6 +355,7 @@ struct ConversationImagePreview: View {
     var maxHeight: CGFloat = 280
     var showsCaption = true
     var fillsAvailableWidth = false
+    var contentAlignment: Alignment = .leading
 
     init(
         source: ConversationImageSource,
@@ -363,7 +364,8 @@ struct ConversationImagePreview: View {
         statusStyle: MarkdownStyle? = nil,
         maxHeight: CGFloat = 280,
         showsCaption: Bool = true,
-        fillsAvailableWidth: Bool = false
+        fillsAvailableWidth: Bool = false,
+        contentAlignment: Alignment = .leading
     ) {
         self.source = source
         self.title = title
@@ -372,6 +374,7 @@ struct ConversationImagePreview: View {
         self.maxHeight = maxHeight
         self.showsCaption = showsCaption
         self.fillsAvailableWidth = fillsAvailableWidth
+        self.contentAlignment = contentAlignment
     }
 
     var body: some View {
@@ -389,7 +392,8 @@ struct ConversationImagePreview: View {
             statusStyle: statusStyle,
             maxHeight: maxHeight,
             showsCaption: showsCaption,
-            fillsAvailableWidth: fillsAvailableWidth
+            fillsAvailableWidth: fillsAvailableWidth,
+            contentAlignment: contentAlignment
         )
         // Profile 改变时重建媒体叶子状态，旧 Mac 的 UIImage/QuickLook URL 不会闪现在新 Mac。
         .id(identity)
@@ -413,6 +417,7 @@ private struct ConversationImagePreviewContent: View {
     var maxHeight: CGFloat = 280
     var showsCaption = true
     var fillsAvailableWidth = false
+    var contentAlignment: Alignment = .leading
 
     init(
         profileID: String,
@@ -422,7 +427,8 @@ private struct ConversationImagePreviewContent: View {
         statusStyle: MarkdownStyle? = nil,
         maxHeight: CGFloat = 280,
         showsCaption: Bool = true,
-        fillsAvailableWidth: Bool = false
+        fillsAvailableWidth: Bool = false,
+        contentAlignment: Alignment = .leading
     ) {
         self.profileID = profileID
         self.source = source
@@ -432,6 +438,7 @@ private struct ConversationImagePreviewContent: View {
         self.maxHeight = maxHeight
         self.showsCaption = showsCaption
         self.fillsAvailableWidth = fillsAvailableWidth
+        self.contentAlignment = contentAlignment
         _embeddedImage = State(
             initialValue: DataURLImageDecoder.cachedImage(
                 cacheKey: source.id,
@@ -452,7 +459,7 @@ private struct ConversationImagePreviewContent: View {
                     .truncationMode(.middle)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: contentAlignment)
         .quickLookPreview($quickLookURL)
         .task(id: mediaRequestIdentity) {
             await loadSourceIfNeeded()
