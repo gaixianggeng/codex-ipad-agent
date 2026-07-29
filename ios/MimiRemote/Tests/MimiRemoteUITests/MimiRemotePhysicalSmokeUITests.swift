@@ -254,6 +254,47 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "连续选择和取消 Skill 后 App 应保持前台运行")
     }
 
+    func testWorkspaceCharacterIconsRenderAndPickerCanOpen() throws {
+        // 角色图测试直接进入目标页，避免真机上恢复路由与底部栏布局差异造成误报。
+        app.terminate()
+        app.launchArguments.append("--debug-open-workspaces")
+        app.launch()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 25),
+            "MimiRemote 应能直接进入工作区"
+        )
+
+        let iconButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        XCTAssertTrue(
+            iconButtons.firstMatch.waitForExistence(timeout: 15),
+            "工作区卡片应展示可更换的《西游记》角色头像"
+        )
+        assertMinimumTouchTarget(iconButtons.firstMatch, named: "工作区角色头像")
+
+        let workspaceScreenshot = XCTAttachment(screenshot: app.screenshot())
+        workspaceScreenshot.name = "workspace-character-cards"
+        workspaceScreenshot.lifetime = .keepAlways
+        add(workspaceScreenshot)
+
+        iconButtons.firstMatch.tap()
+        let picker = app.descendant(identifier: "workspace.characterPicker")
+        XCTAssertTrue(
+            picker.waitForExistence(timeout: 10),
+            "点击头像后应打开角色选择器"
+        )
+
+        let characterButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.character."))
+        XCTAssertEqual(characterButtons.count, 20, "角色选择器应完整展示 20 个角色")
+        assertMinimumTouchTarget(characterButtons.firstMatch, named: "角色选择按钮")
+
+        let pickerScreenshot = XCTAttachment(screenshot: app.screenshot())
+        pickerScreenshot.name = "workspace-character-picker"
+        pickerScreenshot.lifetime = .keepAlways
+        add(pickerScreenshot)
+    }
+
     private func presentQRScanner() throws {
         installCameraPermissionMonitor()
 

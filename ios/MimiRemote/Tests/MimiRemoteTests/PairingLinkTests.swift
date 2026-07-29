@@ -124,6 +124,71 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(keychain.accounts, ["agentd-profile.mac-a", "agentd-profile.mac-b"])
     }
 
+    func testLoopbackConnectionUsesMemoryWhenCatalystKeychainEntitlementIsMissing() async throws {
+        let suiteName = "PairingLinkTests.EphemeralLocalCredential.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://127.0.0.1:8787",
+            token: "local-token"
+        ))
+
+        XCTAssertTrue(store.isConfigured)
+        XCTAssertEqual(store.token, "local-token")
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://127.0.0.1:8787")
+        XCTAssertNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertNil(defaults.string(forKey: "agentd.activeConnectionProfileID.v1"))
+        XCTAssertNil(defaults.string(forKey: "agentd.endpoint"))
+
+        let profileID = try XCTUnwrap(store.activeConnectionProfileID)
+        XCTAssertTrue(try store.renameConnectionProfile(id: profileID, displayName: "本机调试"))
+        XCTAssertNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+
+        store.suspendCredentialsForBackground()
+        XCTAssertEqual(store.token, "local-token")
+        XCTAssertTrue(store.isConfigured)
+
+        try await store.clearPairing()
+        XCTAssertFalse(store.isConfigured)
+        XCTAssertTrue(store.connectionProfiles.isEmpty)
+        let persistedProfiles = try XCTUnwrap(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertTrue(try JSONDecoder().decode([ConnectionProfile].self, from: persistedProfiles).isEmpty)
+    }
+
+    func testMissingKeychainEntitlementNeverFallsBackForRemoteEndpoint() async throws {
+        let suiteName = "PairingLinkTests.RemoteCredential.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        do {
+            _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+                endpoint: "http://192.168.1.20:8787",
+                token: "remote-token"
+            ))
+            XCTFail("远端地址不得降级为进程内凭据")
+        } catch let error as TokenStoreError {
+            XCTAssertTrue(error.isMissingEntitlement)
+        }
+
+        XCTAssertFalse(store.isConfigured)
+        XCTAssertTrue(store.connectionProfiles.isEmpty)
+    }
+
     func testLegacySingleConnectionMigratesWithoutWritingTokenToDefaults() throws {
         let suiteName = "PairingLinkTests.ProfileMigration.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

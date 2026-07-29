@@ -427,6 +427,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var presentedSheet: AppSheetDestination?
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
+    @State private var didApplyDebugLaunchRoute = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -468,6 +469,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .onAppear {
                 synchronizeNavigation(for: layout)
+                applyDebugLaunchRouteIfNeeded(layout: layout)
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
                 handleLayoutModeChange(
@@ -1047,6 +1049,18 @@ struct UnifiedWorkbenchShell: View {
 
     private func synchronizeNavigation(for layout: WorkbenchLayout) {
         applyNavigation(.synchronize(restorationRoute), layout: layout)
+    }
+
+    private func applyDebugLaunchRouteIfNeeded(layout: WorkbenchLayout) {
+#if DEBUG
+        guard !didApplyDebugLaunchRoute,
+              ProcessInfo.processInfo.arguments.contains("--debug-open-workspaces") else {
+            return
+        }
+        didApplyDebugLaunchRoute = true
+        // 真机视觉验证可直接抵达目标页；仅 Debug 生效，不改变正常或 Release 启动路径。
+        open(.workspaces, layout: layout)
+#endif
     }
 
     private func handleLayoutModeChange(

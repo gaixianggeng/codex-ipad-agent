@@ -31,6 +31,13 @@ enum TokenStoreError: LocalizedError {
     case saveFailed(OSStatus)
     case deleteFailed(OSStatus)
 
+    var isMissingEntitlement: Bool {
+        switch self {
+        case .loadFailed(let status), .saveFailed(let status), .deleteFailed(let status):
+            return status == errSecMissingEntitlement
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .loadFailed(let status):

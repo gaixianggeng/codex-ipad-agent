@@ -35,15 +35,21 @@ actor HostCredentialVault {
 
     /// Keychain 写入与内存缓存必须由同一个 actor 串行提交，避免切换成功后
     /// 一个迟到的 remember/remove Task 把另一台 Mac 的凭据缓存覆盖掉。
-    func save(_ token: String, for profileID: String) throws -> HostCredentialWriteReceipt {
-        if memoryTokens[profileID] == token {
+    func save(
+        _ token: String,
+        for profileID: String,
+        forcePersistence: Bool = false
+    ) throws -> HostCredentialWriteReceipt {
+        if !forcePersistence, memoryTokens[profileID] == token {
             // 快速切换读取过目标 Profile 的 Token；未变化时无需再次触发 Keychain I/O。
             return .unchanged
         }
         let previousToken: String
-        if let cached = memoryTokens[profileID] {
+        if !forcePersistence, let cached = memoryTokens[profileID] {
             previousToken = cached
         } else {
+            // 临时 loopback 档案转为远端连接时必须重新读取 Keychain，
+            // 不能把仅存在于内存的 Token 误判为已经持久化。
             previousToken = try tokenStore.load(profileID: profileID)
         }
         if previousToken == token {
@@ -53,6 +59,30 @@ actor HostCredentialVault {
         try tokenStore.save(token, profileID: profileID)
         memoryTokens[profileID] = token
         return previousToken.isEmpty ? .inserted : .replaced(previousToken: previousToken)
+    }
+
+    /// 未签入 Catalyst provisioning profile 的本地 Debug 包无法访问数据保护 Keychain。
+    /// loopback 自动配对可以安全地只保留进程内凭据，重启后再向同机 agentd 领取。
+    func rememberInMemory(_ token: String, for profileID: String) -> HostCredentialWriteReceipt {
+        guard let previousToken = memoryTokens.updateValue(token, forKey: profileID) else {
+            return .inserted
+        }
+        return previousToken == token ? .unchanged : .replaced(previousToken: previousToken)
+    }
+
+    func rollbackMemory(_ receipt: HostCredentialWriteReceipt, profileID: String) {
+        switch receipt {
+        case .unchanged:
+            return
+        case .inserted:
+            memoryTokens.removeValue(forKey: profileID)
+        case .replaced(let previousToken):
+            memoryTokens[profileID] = previousToken
+        }
+    }
+
+    func forgetMemory(profileID: String) {
+        memoryTokens.removeValue(forKey: profileID)
     }
 
     func rollback(_ receipt: HostCredentialWriteReceipt, profileID: String) throws {
