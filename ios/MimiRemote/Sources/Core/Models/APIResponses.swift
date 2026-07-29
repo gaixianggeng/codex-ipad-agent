@@ -41,6 +41,7 @@ struct VersionResponse: Codable {
     let installationID: String?
     let protocolRevision: Int
     let minimumClientProtocolRevision: Int
+    let platform: String?
     let capabilities: [String]
 
     init(
@@ -49,6 +50,7 @@ struct VersionResponse: Codable {
         installationID: String? = nil,
         protocolRevision: Int = MimiProtocolContract.currentRevision,
         minimumClientProtocolRevision: Int = MimiProtocolContract.minimumSupportedClientRevision,
+        platform: String? = nil,
         capabilities: [String] = []
     ) {
         self.name = name
@@ -56,6 +58,7 @@ struct VersionResponse: Codable {
         self.installationID = installationID
         self.protocolRevision = protocolRevision
         self.minimumClientProtocolRevision = minimumClientProtocolRevision
+        self.platform = platform
         self.capabilities = capabilities
     }
 
@@ -65,6 +68,7 @@ struct VersionResponse: Codable {
         case installationID = "installation_id"
         case protocolRevision = "protocol_revision"
         case minimumClientProtocolRevision = "minimum_client_protocol_revision"
+        case platform
         case capabilities
     }
 
@@ -81,6 +85,8 @@ struct VersionResponse: Codable {
             Int.self,
             forKey: .minimumClientProtocolRevision
         ) ?? MimiProtocolContract.minimumSupportedClientRevision
+        // 平台字段是纯加法能力；旧服务端缺失时由 HostPlatform 安全降级为通用电脑。
+        self.platform = try container.decodeIfPresent(String.self, forKey: .platform)
         // 旧 agentd 没有 capabilities。解码为空集合后由具体功能入口安全隐藏或给出升级提示。
         self.capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
     }

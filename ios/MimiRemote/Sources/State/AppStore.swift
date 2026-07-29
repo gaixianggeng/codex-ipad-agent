@@ -373,6 +373,30 @@ final class AppStore: ObservableObject {
         if debugLaunchConfiguration.endpoint != nil || debugLaunchConfiguration.token != nil {
             initialActiveProfileID = nil
         }
+        if let previewPlatform = debugLaunchConfiguration.hostPlatformPreview {
+            let previewProfile = ConnectionProfile(
+                id: "debug-platform-preview",
+                displayName: "\(previewPlatform.displayName ?? "Unknown") 主机",
+                endpoint: "http://127.0.0.1:8787",
+                lastSuccessfulAt: Date(),
+                installationID: "debug-platform-preview",
+                hostPlatform: previewPlatform
+            )
+            initialProfiles = [
+                previewProfile,
+                ConnectionProfile(
+                    id: "debug-platform-companion",
+                    displayName: "另一台主机",
+                    endpoint: "http://127.0.0.1:8788",
+                    lastSuccessfulAt: nil,
+                    installationID: "debug-platform-companion",
+                    hostPlatform: .unknown
+                )
+            ]
+            initialActiveProfileID = previewProfile.id
+            initialEndpoint = previewProfile.endpoint
+            initialToken = ""
+        }
 #endif
         initialEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
         self.endpoint = initialEndpoint
@@ -792,6 +816,7 @@ final class AppStore: ObservableObject {
                     endpoint: normalizedEndpoint,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID ?? current.installationID,
+                    hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: current.hostPlatform),
                     revision: current.revision &+ 1
                 )
             } else {
@@ -801,7 +826,8 @@ final class AppStore: ObservableObject {
                     displayName: Self.normalizedProfileDisplayName(displayName ?? "", endpoint: normalizedEndpoint),
                     endpoint: normalizedEndpoint,
                     lastSuccessfulAt: prepared.validatedAt,
-                    installationID: installationID
+                    installationID: installationID,
+                    hostPlatform: prepared.hostPlatform
                 )
             }
         case .newProfile(let id, let displayName):
@@ -811,7 +837,8 @@ final class AppStore: ObservableObject {
                 displayName: Self.normalizedProfileDisplayName(displayName, endpoint: normalizedEndpoint),
                 endpoint: normalizedEndpoint,
                 lastSuccessfulAt: prepared.validatedAt,
-                installationID: installationID
+                installationID: installationID,
+                hostPlatform: prepared.hostPlatform
             )
         case .existingProfile(let id):
             guard let existing = connectionProfiles.first(where: { $0.id == id }) else {
@@ -832,6 +859,7 @@ final class AppStore: ObservableObject {
                 endpoint: normalizedEndpoint,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID ?? existing.installationID,
+                hostPlatform: resolvedHostPlatform(prepared.hostPlatform, fallback: existing.hostPlatform),
                 revision: existing.revision &+ 1
             )
         }
@@ -842,7 +870,8 @@ final class AppStore: ObservableObject {
         let didChange = normalizedEndpoint != endpoint ||
             prepared.token != token ||
             targetProfile.id != activeConnectionProfileID ||
-            targetProfile.installationID != activeConnectionProfile?.installationID
+            targetProfile.installationID != activeConnectionProfile?.installationID ||
+            targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform
 
         // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
         // 未签入 provisioning profile 的 Catalyst 本机 Debug 包只在 loopback + -34018 时使用进程内凭据。
@@ -1053,6 +1082,34 @@ final class AppStore: ObservableObject {
             )
         }
         return true
+    }
+
+    /// 主机探活可在不切换连接的情况下补齐平台元数据。
+    ///
+    /// 平台不参与凭据或路由身份，因此不递增 revision；但仍核对探测开始时的 revision，
+    /// 防止旧请求在用户编辑连接地址后覆盖新档案。
+    func rememberHostPlatform(
+        _ hostPlatform: HostPlatform,
+        profileID: String,
+        expectedRevision: UInt64
+    ) {
+        guard hostPlatform != .unknown,
+              let profileIndex = connectionProfiles.firstIndex(where: {
+                  $0.id == profileID && $0.revision == expectedRevision
+              }),
+              connectionProfiles[profileIndex].hostPlatform != hostPlatform else {
+            return
+        }
+
+        var nextProfiles = connectionProfiles
+        nextProfiles[profileIndex].hostPlatform = hostPlatform
+        if profileID != ephemeralLocalProfileID {
+            guard let encodedProfiles = try? JSONEncoder().encode(nextProfiles) else {
+                return
+            }
+            persistProfiles(encodedProfiles)
+        }
+        connectionProfiles = nextProfiles
     }
 
     @discardableResult
@@ -1558,6 +1615,7 @@ final class AppStore: ObservableObject {
                 endpoint: normalizedEndpoint,
                 lastSuccessfulAt: profile.lastSuccessfulAt,
                 installationID: normalizedInstallationID(profile.installationID),
+                hostPlatform: profile.hostPlatform,
                 revision: profile.revision
             )
         }
@@ -1639,6 +1697,7 @@ final class AppStore: ObservableObject {
                     token: token,
                     profileTarget: profileTarget,
                     installationID: installationID,
+                    hostPlatform: HostPlatform(serverValue: version.platform),
                     hostContext: PreparedHostContext(
                         lease: PreparedHostLease(
                             endpoint: endpoint,
@@ -1802,6 +1861,13 @@ final class AppStore: ObservableObject {
         return normalized.isEmpty ? nil : normalized
     }
 
+    private func resolvedHostPlatform(
+        _ candidate: HostPlatform,
+        fallback: HostPlatform
+    ) -> HostPlatform {
+        candidate == .unknown ? fallback : candidate
+    }
+
     private static func unboundInstallationID(profileID: String) -> String {
         "unbound:\(profileID)"
     }
@@ -1922,6 +1988,7 @@ private struct DebugLaunchConfiguration {
     let seedsWorkbenchUI: Bool
     let seedsQueuedTurnsUI: Bool
     let seedsMCPApprovalUI: Bool
+    let hostPlatformPreview: HostPlatform?
     let endpoint: String?
     let token: String?
 
@@ -1932,15 +1999,19 @@ private struct DebugLaunchConfiguration {
             || boolValue(environment["MIMI_DEBUG_SEED_QUEUE_UI"])
         let seedsMCPApprovalUI = arguments.contains("--debug-seed-mcp-approval-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_MCP_APPROVAL_UI"])
+        let hostPlatformPreview = argumentValue(named: "--debug-host-platform", in: arguments)
+            .map { HostPlatform(serverValue: $0) }
         return DebugLaunchConfiguration(
             opensWorkbenchWithoutPairing: arguments.contains("--debug-skip-pairing")
-                || boolValue(environment["MIMI_DEBUG_SKIP_PAIRING"]),
+                || boolValue(environment["MIMI_DEBUG_SKIP_PAIRING"])
+                || hostPlatformPreview != nil,
             seedsWorkbenchUI: arguments.contains("--debug-seed-ui")
                 || boolValue(environment["MIMI_DEBUG_SEED_UI"])
                 || seedsQueuedTurnsUI
                 || seedsMCPApprovalUI,
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
             seedsMCPApprovalUI: seedsMCPApprovalUI,
+            hostPlatformPreview: hostPlatformPreview,
             endpoint: argumentValue(named: "--debug-endpoint", in: arguments)
                 ?? environment["MIMI_DEBUG_ENDPOINT"],
             token: argumentValue(named: "--debug-token", in: arguments)

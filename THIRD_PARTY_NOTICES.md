@@ -48,6 +48,7 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `swift-snapshot-testing` | `1.19.2` | iOS 测试 |
 | `swift-custom-dump` | `1.6.0` | iOS 测试 |
 | `xctest-dynamic-overlay` | `1.9.0` | iOS 测试 |
+| `Simple Icons Linux / Tux SVG` | `16.27.0` | iOS 运行时资源 |
 
 ## 许可证正文
 
@@ -2395,6 +2396,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+### Simple Icons Linux / Tux SVG
+
+使用范围：iOS 多设备主机平台图标
+
+来源：<https://cdn.jsdelivr.net/npm/simple-icons@16.27.0/icons/linux.svg>
+
+Simple Icons 项目以 CC0 1.0 Universal 发布：
+<https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md>
+
+Tux 原始设计由 Larry Ewing 使用 GIMP 创作。本项目仅将该 Linux 标志作为已连接服务端
+操作系统的识别图标，不表示 Linux、Larry Ewing 或 Simple Icons 对本项目的背书。
 
 ## 更新要求
 

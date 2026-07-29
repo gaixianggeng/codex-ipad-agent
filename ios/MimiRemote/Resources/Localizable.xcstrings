@@ -33468,6 +33468,23 @@
         }
       }
     },
+    "ui.check_host_status" : {
+      "comment" : "Menu action that refreshes the cached availability status of saved hosts across macOS, Windows, and Linux.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Host Status"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查主机状态"
+          }
+        }
+      }
+    },
     "ui.mac_already_saved_as_value" : {
       "comment" : "Shown when the stable installation identity already belongs to another saved Mac profile. The placeholder is the existing profile name.",
       "localizations" : {
