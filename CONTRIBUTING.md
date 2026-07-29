@@ -37,14 +37,10 @@ xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
 
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
+
+日常 `build` / `run` 优先使用 available、paired、USB 连接的真机，没有可用真机时回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test` 与 CI 固定使用 Simulator；兼容性测试通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
 
 Claude bridge 改动至少运行：
 

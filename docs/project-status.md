@@ -96,13 +96,7 @@ xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
 
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
 
 Mimi TestFlight 使用本机 `git testflight-push`：先推送并核对远端 commit，再在干净 worktree 中归档、上传和内部组分发，不依赖 GitHub Actions。其他 CI 与公开 Release workflows 保持不变。

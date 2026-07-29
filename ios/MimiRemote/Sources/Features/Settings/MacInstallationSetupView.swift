@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// 首次连接的普通用户路径。安装、首次设置和扫码按真实任务顺序排列，
-/// Homebrew 与手动输入仍由外层设置页保留为高级恢复入口。
+/// 首次连接只保留两个用户阶段：先在 Mac 上准备，再在当前设备扫码。
+/// 命令行和手动输入由外层单独收进“其他连接方式”，避免恢复路径干扰主任务。
 struct MacInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
+    let connectionFooter: String
     let isScanDisabled: Bool
     let onScan: () -> Void
     let onPasteConnectionInfo: () -> Void
@@ -13,79 +14,74 @@ struct MacInstallationSetupView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 18) {
-            setupStep(
-                number: 1,
-                title: L10n.text("ui.install_mimi_remote_mac"),
-                detail: L10n.text("ui.mac_installer_requirements_and_instructions")
-            ) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ShareLink(item: AppExternalLinks.macInstaller) {
-                        GloballyCenteredActionLabel(
-                            title: L10n.text("ui.send_download_link_to_mac"),
-                            systemImage: "square.and.arrow.up"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(tokens.primaryAction)
-                    .controlSize(.large)
-                    .accessibilityIdentifier("settings.macInstaller.share")
+        Group {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L10n.text("ui.install_mimi_remote_mac"))
+                        .font(themeStore.uiFont(.body, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
 
-                    Link(destination: AppExternalLinks.macRelease) {
-                        HStack(spacing: 10) {
-                            // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
-                            Image("GitHubInvertocat")
-                                .renderingMode(.original)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 28, height: 28)
-                                .accessibilityHidden(true)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(L10n.text("ui.view_releases_on_github"))
-                                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryText)
-                                Text(AppExternalLinks.macRelease.absoluteString)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(tokens.secondaryText)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 8)
-
-                            Image(systemName: "arrow.up.right")
-                                .font(themeStore.uiFont(.caption, weight: .semibold))
-                                .foregroundStyle(tokens.secondaryText)
-                                .accessibilityHidden(true)
-                        }
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(L10n.text("ui.view_releases_on_github"))
-                    .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
-                    .accessibilityIdentifier("settings.macInstaller.githubRelease")
+                    Text(L10n.text("ui.mac_installer_requirements_and_instructions"))
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .padding(.vertical, 4)
+                .accessibilityElement(children: .combine)
+
+                Link(destination: AppExternalLinks.macRelease) {
+                    HStack(spacing: 12) {
+                        // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
+                        Image("GitHubInvertocat")
+                            .renderingMode(.original)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 24, height: 24)
+                            .accessibilityHidden(true)
+
+                        Text(L10n.text("ui.view_releases_on_github"))
+                            .font(themeStore.uiFont(.body))
+                            .foregroundStyle(tokens.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "arrow.up.right")
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .foregroundStyle(tokens.secondaryText)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.text("ui.view_releases_on_github"))
+                .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
+                .accessibilityIdentifier("settings.macInstaller.githubRelease")
+
+                ShareLink(item: AppExternalLinks.macInstaller) {
+                    GloballyCenteredActionLabel(
+                        title: L10n.text("ui.send_download_link_to_mac"),
+                        systemImage: "square.and.arrow.up"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(tokens.primaryAction)
+                .controlSize(.large)
+                .accessibilityIdentifier("settings.macInstaller.share")
+            } header: {
+                Text(L10n.text("ui.prepare_on_mac"))
+            } footer: {
+                Text(L10n.text("ui.select_code_directory_then_mac_shows_qr"))
             }
 
-            Divider()
+            Section {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(L10n.text("ui.scan_qr_code_after_mac_setup"))
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
 
-            setupStep(
-                number: 2,
-                title: L10n.text("ui.open_and_finish_initial_setup"),
-                detail: L10n.text("ui.select_code_directory_then_mac_shows_qr")
-            ) {
-                EmptyView()
-            }
-
-            Divider()
-
-            setupStep(
-                number: 3,
-                title: L10n.text("ui.scan_qr_code_to_connect"),
-                detail: nil
-            ) {
-                VStack(spacing: 10) {
                     Button(action: onScan) {
                         GloballyCenteredActionLabel(
                             title: L10n.text("ui.scan_qr_code_on_mac"),
@@ -111,44 +107,14 @@ struct MacInstallationSetupView: View {
                     .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
                     .accessibilityIdentifier("settings.macInstaller.pasteConnectionInfo")
                 }
+                .padding(.vertical, 4)
+            } header: {
+                Text(L10n.text("ui.connect_on_this_device"))
+            } footer: {
+                Text(connectionFooter)
             }
         }
-        .padding(.vertical, 6)
-    }
-
-    private func setupStep<Actions: View>(
-        number: Int,
-        title: String,
-        detail: String?,
-        @ViewBuilder actions: () -> Actions
-    ) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        return HStack(alignment: .top, spacing: 12) {
-            Text(number.formatted())
-                .font(themeStore.uiFont(.caption, weight: .bold))
-                .foregroundStyle(tokens.primaryActionForeground)
-                .frame(width: 26, height: 26)
-                .background(tokens.primaryAction, in: Circle())
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(themeStore.uiFont(.body, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-
-                if let detail {
-                    Text(detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                actions()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .accessibilityElement(children: .contain)
+        .listRowBackground(tokens.elevatedSurface)
     }
 }
 
@@ -168,6 +134,8 @@ private struct GloballyCenteredActionLabel: View {
 
             Text(title)
                 .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
 
             Color.clear
