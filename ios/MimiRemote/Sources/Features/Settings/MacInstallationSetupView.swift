@@ -124,29 +124,34 @@ struct MacInstallationSetupView: View {
     ) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        return HStack(alignment: .top, spacing: 12) {
-            Text(number.formatted())
-                .font(themeStore.uiFont(.caption, weight: .bold))
-                .foregroundStyle(tokens.primaryActionForeground)
-                .frame(width: 26, height: 26)
-                .background(tokens.primaryAction, in: Circle())
-                .accessibilityHidden(true)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(number.formatted())
+                    .font(themeStore.uiFont(.caption, weight: .bold))
+                    .foregroundStyle(tokens.primaryActionForeground)
+                    .frame(width: 26, height: 26)
+                    .background(tokens.primaryAction, in: Circle())
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(themeStore.uiFont(.body, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(title)
+                        .font(themeStore.uiFont(.body, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
 
-                if let detail {
-                    Text(detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let detail {
+                        Text(detail)
+                            .font(themeStore.uiFont(.footnote))
+                            .foregroundStyle(tokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-
-                actions()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // 步骤编号只负责标题层级，操作区独占完整内容宽度，
+            // 避免按钮和链接被编号列挤向屏幕右侧。
+            actions()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
     }
