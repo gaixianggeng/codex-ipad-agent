@@ -213,8 +213,12 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.startReview(threadID: threadID, target: target, delivery: delivery)
     }
 
-    func forkSession(threadID: String, workspace: AgentWorkspace) async throws -> AgentSession {
-        try await runtime.forkSession(threadID: threadID, workspace: workspace)
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
+        try await runtime.forkSession(threadID: threadID, workspace: workspace, reason: reason)
     }
 
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
@@ -509,8 +513,16 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         return response
     }
 
-    func forkSession(threadID: String, workspace: AgentWorkspace) async throws -> AgentSession {
-        let session = try await bundle.runtime(forSessionID: threadID).forkSession(threadID: threadID, workspace: workspace)
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
+        let session = try await bundle.runtime(forSessionID: threadID).forkSession(
+            threadID: threadID,
+            workspace: workspace,
+            reason: reason
+        )
         bundle.routes.remember(session)
         return session
     }

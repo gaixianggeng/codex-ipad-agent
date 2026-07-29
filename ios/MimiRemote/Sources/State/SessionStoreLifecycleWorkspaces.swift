@@ -715,6 +715,102 @@ extension SessionStore {
     }
 
     @discardableResult
+    func duplicateSessionInCurrentWorkspace(_ session: AgentSession) async -> Bool {
+        guard supportsCodexThreadManagement(session) else {
+            setStatusMessage(L10n.text("ui.the_current_running_channel_does_not_support_manual"))
+            return false
+        }
+        guard !session.isRunning else {
+            setStatusMessage(L10n.text("ui.please_wait_for_the_current_turn_to_complete"))
+            return false
+        }
+        guard !duplicatingSessionIDs.contains(session.id) else {
+            return false
+        }
+
+        let hostScope = appStore.activeHostScope
+        let duplicateIntent = reserveSelectionIntent()
+        duplicatingSessionIDs.insert(session.id)
+        defer { duplicatingSessionIDs.remove(session.id) }
+
+        do {
+            let client = try clientFactory()
+            // resolveWorkspace 重新经过 Mac 端 allowlist 校验，不能仅凭 iPad 缓存的 cwd 发起 fork。
+            let workspace = try await client.resolveWorkspace(path: session.dir)
+            guard appStore.activeHostScope == hostScope else { return false }
+
+            let sourceThreadID = normalizedOptional(session.resumeID) ?? session.id
+            let forked = try await client.forkSession(
+                threadID: sourceThreadID,
+                workspace: workspace,
+                reason: .duplicate
+            )
+            guard appStore.activeHostScope == hostScope else { return false }
+
+            let duplicateTitle = duplicatedSessionTitle(from: session.title)
+            var responseSession = self.session(forked, in: workspace)
+            var renameFailure: Error?
+            do {
+                try await client.setThreadName(threadID: forked.id, name: duplicateTitle)
+                responseSession.title = duplicateTitle
+            } catch {
+                // fork 已成功时不因附加的命名失败回滚；新会话仍然可打开，并明确提示部分成功。
+                renameFailure = error
+            }
+            guard appStore.activeHostScope == hostScope else { return false }
+
+            rememberWorkspace(workspace)
+            clearWorkspaceUnavailable(workspace.id)
+            upsert(responseSession)
+            insertExpandedProjectID(responseSession.projectID)
+
+            let selectionLease = commitSelection(
+                projectID: responseSession.projectID,
+                sessionID: responseSession.id,
+                reason: .userOpen,
+                ifCurrent: duplicateIntent
+            )
+            if let selectionLease {
+                await loadHistoryIfNeeded(for: responseSession)
+                if isSelectionLeaseCurrent(selectionLease) {
+                    if responseSession.isRunning {
+                        connectWebSocket(responseSession)
+                    } else {
+                        disconnectWebSocket()
+                    }
+                }
+            }
+
+            if let renameFailure {
+                setStatusMessage(
+                    L10n.format(
+                        "ui.session_duplicated_but_rename_failed_value",
+                        renameFailure.localizedDescription
+                    )
+                )
+            } else {
+                setStatusMessage(L10n.format("ui.session_duplicated_as_value", duplicateTitle))
+            }
+            return true
+        } catch {
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
+            setStatusMessage(L10n.format("ui.duplicate_session_failed_value", error.localizedDescription))
+            return false
+        }
+    }
+
+    func duplicatedSessionTitle(from sourceTitle: String) -> String {
+        let normalized = sourceTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = normalized.isEmpty ? L10n.text("ui.unnamed_session") : normalized
+        let suffix = " · \(L10n.text("ui.copy"))"
+        var truncatedBase = base
+        while (truncatedBase + suffix).utf8.count > 256, !truncatedBase.isEmpty {
+            truncatedBase.removeLast()
+        }
+        return truncatedBase + suffix
+    }
+
+    @discardableResult
     func handoffSessionToWorktree(_ session: AgentSession, name: String? = nil, base: String? = nil, branch: String? = nil) async -> Bool {
         guard !session.isRunning else {
             setErrorMessage(L10n.text("ui.running_sessions_cannot_go_directly_to_worktree_please"))
@@ -762,7 +858,11 @@ extension SessionStore {
 
             let sourceThreadID = normalizedOptional(session.resumeID) ?? session.id
             do {
-                let forked = try await clientFactory().forkSession(threadID: sourceThreadID, workspace: workspace)
+                let forked = try await clientFactory().forkSession(
+                    threadID: sourceThreadID,
+                    workspace: workspace,
+                    reason: .worktreeHandoff
+                )
                 let responseSession = self.session(forked, in: workspace)
                 upsert(responseSession)
                 insertExpandedProjectID(responseSession.projectID)

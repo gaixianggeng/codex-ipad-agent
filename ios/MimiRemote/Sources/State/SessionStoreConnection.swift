@@ -675,6 +675,10 @@ extension SessionStore {
                     hostScope: lease.hostScope
                 )
             }
+            scheduleGitRefreshAfterTurnCompletion(
+                sessionID: id,
+                hostScope: lease.hostScope
+            )
             if let completedTurnID = metadata.turnID {
                 let hasPersistedAcceptedTurnBarrier = queuedRunningTurnsBySessionID[id]?.contains(where: {
                     $0.dispatchState == .waiting
@@ -1800,6 +1804,7 @@ extension SessionStore {
         managedWorktrees = []
         worktreeErrorMessage = nil
         isCreatingWorktree = false
+        duplicatingSessionIDs = []
         isRefreshingWorktreeBranches = false
         isRefreshingWorktrees = false
         isDeletingWorktree = false
@@ -1809,6 +1814,9 @@ extension SessionStore {
         workspaceGitSummaryByPath = [:]
         workspaceGitSummaryUpdatedAtByPath = [:]
         refreshingWorkspaceGitSummaryPaths = []
+        gitRefreshTasksByPath.values.forEach { $0.cancel() }
+        gitRefreshTasksByPath = [:]
+        gitRefreshRevisionByPath = [:]
         isRefreshingGitStatus = false
         gitActionErrorByPath = [:]
         commandActionsByPath = [:]

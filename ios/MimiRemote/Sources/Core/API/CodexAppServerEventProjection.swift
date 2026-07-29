@@ -181,6 +181,23 @@ extension CodexAppServerSessionRuntime {
                 ),
                 metadata(threadID: threadID, turnID: nil)
             ))
+        case "thread/name/updated":
+            guard let threadID = params["threadId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !threadID.isEmpty
+            else {
+                return
+            }
+            let name = params["threadName"]?.stringValue
+                ?? params["name"]?.stringValue
+                ?? ""
+            let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = withUpdatedSession(threadID) { item in
+                // 标题是远端 thread 元数据。直接更新 Session 投影后，详情标题、会话列表和
+                // 项目侧栏会共用同一份状态，不需要等待下一次 thread/read/list。
+                item.title = normalizedName.isEmpty
+                    ? L10n.text("ui.unnamed_session")
+                    : normalizedName
+            }
         case "thread/goal/updated":
             guard let goal = threadGoal(from: .object(params)) else {
                 return

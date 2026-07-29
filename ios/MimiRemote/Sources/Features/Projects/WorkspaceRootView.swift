@@ -121,6 +121,18 @@ enum WorkspaceSessionAgeBoundary {
     }
 }
 
+private struct WorkspaceGitInspectionTarget: Identifiable {
+    let id: String
+    let name: String
+    let path: String
+
+    init(project: AgentProject) {
+        id = project.id
+        name = project.name
+        path = project.path
+    }
+}
+
 /// 工作区只维护本地浏览选择。只有用户明确进入会话或新建会话时，才交给 SessionStore 改变活动上下文。
 struct WorkspaceRootView: View {
     @EnvironmentObject private var appStore: AppStore
@@ -139,6 +151,7 @@ struct WorkspaceRootView: View {
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var pendingWorkspaceRemoval: AgentProject?
+    @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
 
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
@@ -217,6 +230,21 @@ struct WorkspaceRootView: View {
                 selectedWorkspaceID = workspaceID
             }
         }
+        .sheet(item: $gitInspectionTarget) { target in
+            NavigationStack {
+                DiffPanelView(workspacePath: target.path)
+                    .navigationTitle(target.name)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(L10n.text("ui.complete")) {
+                                gitInspectionTarget = nil
+                            }
+                        }
+                    }
+            }
+            .presentationDetents([.large])
+        }
         .confirmationDialog(
             L10n.text("ui.remove_directory"),
             isPresented: Binding(
@@ -256,6 +284,18 @@ struct WorkspaceRootView: View {
             .navigationTitle(L10n.text("ui.workspace"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if let selectedProject {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            gitInspectionTarget = WorkspaceGitInspectionTarget(project: selectedProject)
+                        } label: {
+                            Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
+                        }
+                        .disabled(
+                            sessionStore.workspaceGitSummaryByPath[selectedProject.path]?.isRepository == false
+                        )
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isPresentingOpenWorkspace = true
@@ -398,6 +438,7 @@ struct WorkspaceRootView: View {
                                     allowsCustomization: false,
                                     tokens: tokens,
                                     action: {},
+                                    onOpenGitChanges: {},
                                     onRemove: {}
                                 )
                                 .frame(width: WorkspaceStripLayout.cardWidth)
@@ -422,6 +463,8 @@ struct WorkspaceRootView: View {
                                 ) {
                                     // 工作区页面只更新本地浏览选择，避免切换卡片时意外改变当前会话上下文。
                                     selectedWorkspaceID = project.id
+                                } onOpenGitChanges: {
+                                    gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
                                 } onRemove: {
                                     // 当前浏览中的卡片不允许移除；用户需先切到正确工作区，再处理误开的目录。
                                     guard selectedWorkspaceID != project.id else { return }
@@ -647,6 +690,7 @@ private struct WorkspaceLibraryCard: View {
     let allowsCustomization: Bool
     let tokens: ThemeTokens
     let action: () -> Void
+    let onOpenGitChanges: () -> Void
     let onRemove: () -> Void
     @State private var isPresentingEmojiPicker = false
 
@@ -658,36 +702,36 @@ private struct WorkspaceLibraryCard: View {
             .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(accessibilitySummary)
 
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.secondaryText)
-                    .frame(width: 32, height: 32)
-                    .padding(.top, 10)
-                    .padding(.trailing, 8)
-                    .accessibilityHidden(true)
-            } else {
-                Menu {
+            Menu {
+                Button(action: onOpenGitChanges) {
+                    Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(gitSummary?.isRepository == false)
+
+                if allowsCustomization {
                     Button {
                         isPresentingEmojiPicker = true
                     } label: {
                         Label(L10n.text("ui.workspace_icon"), systemImage: "face.smiling")
                     }
+                }
+
+                if !isSelected {
                     Button(role: .destructive, action: onRemove) {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
                     }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(themeStore.uiFont(.caption, weight: .semibold))
-                        .foregroundStyle(tokens.tertiaryText)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
                 }
-                .menuStyle(.button)
-                .accessibilityLabel(L10n.text("ui.remove_directory"))
-                .padding(.top, 10)
-                .padding(.trailing, 8)
+            } label: {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "ellipsis.circle")
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(isSelected ? tokens.secondaryText : tokens.tertiaryText)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .menuStyle(.button)
+            .accessibilityLabel(L10n.text("ui.workspace_actions"))
+            .padding(.top, 4)
+            .padding(.trailing, 2)
 
             if allowsCustomization {
                 VStack(spacing: 0) {

@@ -730,8 +730,8 @@ actor CodexAppServerSessionRuntime {
         _ = try await sendRecoveringFromStaleInitialization(
             try builder.threadSetName(threadID: threadID, name: name)
         )
-        // title 是 AgentSession 的不可变快照；等 thread/name/updated 通知后由投影层告知 UI，
-        // 下次 thread/list/read 会拉取权威名称，避免本地与 app-server 状态分叉。
+        // thread/name/updated 会实时更新 Runtime 的 Session 投影；调用方仍可在弱网或
+        // 通知丢失时通过 thread/read 拉取权威名称，不维护第二份本地标题。
     }
 
     func compactThread(threadID: SessionID) async throws {
@@ -772,12 +772,16 @@ actor CodexAppServerSessionRuntime {
         return CodexAppServerReviewStartResult(reviewThreadID: reviewThreadID, turnID: turnID)
     }
 
-    func forkSession(threadID: SessionID, workspace: AgentWorkspace) async throws -> AgentSession {
+    func forkSession(
+        threadID: SessionID,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
         let baseProjects = try await projects()
         let project = AgentProject(id: workspace.id, name: workspace.name, path: workspace.path)
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
         var options = CodexAppServerTurnOptions.default
-        options.threadSource = "worktree_handoff"
+        options.threadSource = reason.rawValue
         let result = try await sendRecoveringFromStaleInitialization(
             try CodexAppServerRequestBuilder(allowlistedProjects: projects).threadFork(
                 threadID: threadID,

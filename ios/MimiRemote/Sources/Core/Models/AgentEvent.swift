@@ -659,13 +659,9 @@ struct CodexAppServerEventProjector {
             // replacement_history 到达时制造重复或错序。token/context 状态由各自通知更新。
             return nil
         case "thread/name/updated":
-            let name = firstString(in: params, keys: ["threadName", "name"])
-            return systemNoticeEvent(
-                text: name.map { L10n.format("ui.the_session_has_been_named_value", $0) } ?? L10n.text("ui.session_name_cleared"),
-                itemID: "thread-name",
-                kind: .message,
-                metadata: metadata
-            )
+            // 标题属于导航元数据，由 Runtime 的 Session 投影实时更新；不再向对话正文
+            // 插入系统消息，避免自动标题和手动改名污染 transcript。
+            return nil
         case "item/mcpToolCall/progress":
             return mcpProgressContextEvent(params: params, metadata: metadata)
         case "mcpServer/startupStatus/updated":
