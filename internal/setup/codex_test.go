@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -27,7 +28,8 @@ func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != "/Applications/ChatGPT.app/Contents/Resources/codex" {
+	want, _ := filepath.Abs("/Applications/ChatGPT.app/Contents/Resources/codex")
+	if resolved != filepath.Clean(want) {
 		t.Fatalf("应从 PATH 恢复 Codex：%s", resolved)
 	}
 	if !reflect.DeepEqual(lookups, []string{"/opt/homebrew/bin/codex", "codex"}) {
@@ -48,7 +50,8 @@ func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != embedded {
+	want, _ := filepath.Abs(embedded)
+	if resolved != filepath.Clean(want) {
 		t.Fatalf("应恢复桌面 App 内置 Codex：%s", resolved)
 	}
 }
@@ -115,7 +118,7 @@ func TestRepairCodexBinPreservesUserConfigAndSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("修复后的配置必须保持 0600 regular file：%v", info.Mode())
 	}
 }

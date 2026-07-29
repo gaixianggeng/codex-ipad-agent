@@ -160,10 +160,10 @@ struct InitialConnectionSettingsSections: View {
             }
 
             if !appStore.isConfigured && !appStore.localAgentDetected {
-                MacInstallationSetupView(
+                HostInstallationSetupView(
                     connectionFooter: connectionSectionFooter,
                     isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
-                    onScan: beginScanningMac,
+                    onScan: beginScanningHost,
                     onPasteConnectionInfo: pasteConnectionInfo
                 )
 
@@ -196,7 +196,7 @@ struct InitialConnectionSettingsSections: View {
 #endif
                     VStack(spacing: 10) {
                         Button {
-                            beginScanningMac()
+                            beginScanningHost()
                         } label: {
                             Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
                                 .frame(maxWidth: .infinity)
@@ -1017,7 +1017,7 @@ struct InitialConnectionSettingsSections: View {
         localError = nil
     }
 
-    private func beginScanningMac() {
+    private func beginScanningHost() {
         let intent: ConnectionQRCodeScanIntent = appStore.activeConnectionProfile == nil
             ? .initialConnection
             : .addConnectionProfile

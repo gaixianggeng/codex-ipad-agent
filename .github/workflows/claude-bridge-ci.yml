@@ -26,7 +26,13 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -41,6 +47,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Test Claude bridge workspace
+        shell: bash
         run: |
           cargo test --locked \
             -p alleycat-codex-proto \

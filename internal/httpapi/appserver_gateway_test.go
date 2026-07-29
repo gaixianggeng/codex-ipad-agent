@@ -13,11 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -161,10 +161,7 @@ func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testin
 }
 
 func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
-	bridgePath := filepath.Join(t.TempDir(), "old-claude-bridge")
-	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.1.9\\n'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.1.9")
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
@@ -203,10 +200,7 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 }
 
 func TestClaudeBridgeProbeRejectsMissingStandardVersion(t *testing.T) {
-	bridgePath := filepath.Join(t.TempDir(), "unversioned-claude-bridge")
-	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nprintf 'bridge starting\\n'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bridgePath := writeTestBridgeWithVersion(t, "")
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
 	probe := router.refreshClaudeBridgeProbe(true)
 	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.1") {
@@ -419,8 +413,8 @@ while IFS= read -r line; do :; done
 	// Give a would-be teardown time to land, then confirm the process is still
 	// there and a second client reuses it rather than spawning a replacement.
 	time.Sleep(300 * time.Millisecond)
-	if err := syscall.Kill(bridgePID, 0); err != nil {
-		t.Fatalf("断开 WS 后 Claude bridge 不应退出：pid=%d err=%v", bridgePID, err)
+	if !testProcessRunning(bridgePID) {
+		t.Fatalf("Claude bridge should remain running after websocket disconnect: pid=%d", bridgePID)
 	}
 	second := dialAuthedGatewayRuntime(t, server.URL, "claude")
 	defer second.Close()
@@ -457,10 +451,7 @@ func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
 	}
 
 	// 显式配置了一个能用的 bridge 时必须原样使用它，不能被随包的顶掉。
-	configured := filepath.Join(t.TempDir(), "my-bridge")
-	if err := os.WriteFile(configured, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	configured := writeTestBridge(t, "#!/bin/sh\nexit 0\n")
 	if got, ok := resolveClaudeBridgePath(configured); !ok || got != configured {
 		t.Fatalf("显式配置应优先：got=%q ok=%v want=%q", got, ok, configured)
 	}
@@ -477,8 +468,8 @@ func TestClaudeBridgeStartTimeoutDoesNotWedgeSupervisor(t *testing.T) {
 
 	// 这里不能使用 writeTestBridge：它会通过 fakebridge helper 主动监听 socket，
 	// 在较快的 CI runner 上反而让 ensure 成功，掩盖真正要验证的启动超时路径。
-	silent := filepath.Join(t.TempDir(), "silent-bridge")
-	if err := os.WriteFile(silent, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+	silent := copyFakeBridge(t, t.TempDir(), "silent-bridge")
+	if err := os.WriteFile(silent+".silent", nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	supervisor := newClaudeBridgeSupervisor()
@@ -530,7 +521,7 @@ while IFS= read -r line; do sleep 30; done
 	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
 	defer conn.Close()
 	childPID := parseTestPID(t, string(readTestFileEventually(t, childPIDPath)))
-	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
+	t.Cleanup(func() { killTestProcessTree(childPID) })
 
 	router.claudeBridge.shutdown()
 	waitForProcessExit(t, childPID)
@@ -952,7 +943,7 @@ func TestClaudeGatewaySanitizersForceClaudeWorkspaceWrite(t *testing.T) {
 }
 
 func TestClaudeBridgeProbeRefreshesCheapResultWhenStale(t *testing.T) {
-	bridgePath := filepath.Join(t.TempDir(), "fake-claude-bridge")
+	bridgePath := filepath.Join(t.TempDir(), executableTestName("fake-claude-bridge"))
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{
 		Enabled:   true,
 		BridgeBin: bridgePath,
@@ -961,9 +952,7 @@ func TestClaudeBridgeProbeRefreshesCheapResultWhenStale(t *testing.T) {
 	if first.Healthy || first.Status != "missing_command" {
 		t.Fatalf("缺失 bridge 应标记为不可用：%+v", first)
 	}
-	if err := os.WriteFile(bridgePath, []byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.2.1\\n'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	copyFakeBridgeTo(t, bridgePath)
 	router.refreshClaudeBridgeProbeIfStale()
 	if got := router.claudeBridgeProbe(); got.Healthy {
 		t.Fatalf("未过期 probe 不应被 config cheap path 立即刷新：%+v", got)
@@ -2654,29 +2643,53 @@ func dialAuthedGatewayRuntime(t *testing.T, serverURL string, runtimeID string) 
 // writeTestBridge produces a stand-in for alleycat-claude-bridge. `body` is a
 // line-oriented shell script describing how the bridge answers one connection,
 // exactly as when the bridge spoke stdio; the wrapper hands it to the
-// fakebridge helper, which owns the Unix socket agentd now dials.
+// fakebridge helper, which owns the Unix socket or loopback TCP endpoint
+// agentd now dials.
 func writeTestBridge(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	const shebang = "#!/bin/sh\n"
 	body = shebang + strings.TrimPrefix(body, shebang)
-	bodyPath := filepath.Join(dir, "connection.sh")
+	path := copyFakeBridge(t, dir, "fake-claude-bridge")
+	bodyPath := path + ".body"
 	if err := os.WriteFile(bodyPath, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
 
-	path := filepath.Join(dir, "fake-claude-bridge")
-	wrapper := fmt.Sprintf(`#!/bin/sh
-if [ "${1:-}" = "--version" ]; then
-  printf 'alleycat-claude-bridge 0.2.1\n'
-  exit 0
-fi
-exec %q -body %q "$@"
-`, fakeBridgeHelper(t), bodyPath)
-	if err := os.WriteFile(path, []byte(wrapper), 0o755); err != nil {
+func writeTestBridgeWithVersion(t *testing.T, version string) string {
+	t.Helper()
+	path := copyFakeBridge(t, t.TempDir(), "fake-claude-bridge")
+	if err := os.WriteFile(path+".version", []byte(version), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func copyFakeBridge(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, executableTestName(name))
+	copyFakeBridgeTo(t, path)
+	return path
+}
+
+func copyFakeBridgeTo(t *testing.T, path string) {
+	t.Helper()
+	content, err := os.ReadFile(fakeBridgeHelper(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func executableTestName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
 
 var (
@@ -2695,7 +2708,7 @@ func fakeBridgeHelper(t *testing.T) string {
 			fakeBridgeErr = err
 			return
 		}
-		out := filepath.Join(dir, "fakebridge")
+		out := filepath.Join(dir, executableTestName("fakebridge"))
 		cmd := exec.Command("go", "build", "-o", out, "./testdata/fakebridge")
 		if output, err := cmd.CombinedOutput(); err != nil {
 			fakeBridgeErr = fmt.Errorf("building fakebridge: %v\n%s", err, output)
@@ -2791,8 +2804,7 @@ func waitForProcessExit(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		err := syscall.Kill(pid, 0)
-		if err == syscall.ESRCH {
+		if !testProcessRunning(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

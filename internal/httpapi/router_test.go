@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,17 @@ const (
 type testServer struct {
 	handler http.Handler
 	manager *session.Manager
+}
+
+func requireTestSymlink(t *testing.T, target string, link string) {
+	t.Helper()
+
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("当前 Windows 环境不允许创建符号链接：%v", err)
+		}
+		t.Fatal(err)
+	}
 }
 
 func newTestServer(t *testing.T) testServer {
@@ -539,7 +551,7 @@ func TestGitActionRevertsTrackedWorktreeChangeWithoutDeletingUntrackedFile(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(readme) != "before\n" {
+	if strings.ReplaceAll(string(readme), "\r\n", "\n") != "before\n" {
 		t.Fatalf("revert 应恢复已跟踪文件，got=%q", string(readme))
 	}
 	if _, err := os.Stat(untrackedPath); err != nil {
@@ -899,7 +911,12 @@ echo "upload started"
 sleep 0.05
 echo "upload completed"
 `, readyFile, argsFile)
-	if err := os.WriteFile(filepath.Join(fakeBin, "git-testflight-push"), []byte(fakeCommand), 0o755); err != nil {
+	fakeName := "git-testflight-push"
+	if runtime.GOOS == "windows" {
+		fakeName += ".cmd"
+		fakeCommand = fmt.Sprintf("@echo off\r\nif not \"%%~1\"==\"--check\" goto run\r\nif exist \"%s\" goto ready\r\necho missing local TestFlight config 1>&2\r\nexit /b 1\r\n:ready\r\necho preflight ok\r\nexit /b 0\r\n:run\r\n(for %%%%a in (%%*) do @echo %%%%~a) > \"%s\"\r\necho upload started\r\necho upload completed\r\n", readyFile, argsFile)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, fakeName), []byte(fakeCommand), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -971,7 +988,7 @@ echo "upload completed"
 	if completed.Job == nil || completed.Job.State != "succeeded" || !strings.Contains(completed.Job.Output, "upload completed") {
 		t.Fatalf("TestFlight 后台任务未成功完成：%+v", completed.Job)
 	}
-	if args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n"); strings.Join(args, " ") != "--what-to-test 验证快捷发布" {
+	if args := strings.Split(strings.TrimSpace(strings.ReplaceAll(readTestFile(t, argsFile), "\r\n", "\n")), "\n"); strings.Join(args, " ") != "--what-to-test 验证快捷发布" {
 		t.Fatalf("TestFlight 参数异常：%q", args)
 	}
 }
@@ -979,11 +996,17 @@ echo "upload completed"
 func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
+	runGitTestCommand(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	fakeBin := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "gh.args")
 	pwdFile := filepath.Join(t.TempDir(), "gh.pwd")
 	ghScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$PWD\" > %q\nprintf '%%s\\n' \"$@\" > %q\necho 'https://github.com/example/repo/pull/1'\n", pwdFile, argsFile)
-	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(ghScript), 0o755); err != nil {
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".cmd"
+		ghScript = fmt.Sprintf("@echo off\r\necho %%CD%% > \"%s\"\r\n(for %%%%a in (%%*) do @echo %%%%~a) > \"%s\"\r\necho https://github.com/example/repo/pull/1\r\n", pwdFile, argsFile)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, ghName), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1015,7 +1038,7 @@ func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 	if gotPWD != wantPWD {
 		t.Fatalf("gh 应在仓库目录执行，got=%s want=%s", gotPWD, wantPWD)
 	}
-	args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n")
+	args := strings.Split(strings.TrimSpace(strings.ReplaceAll(readTestFile(t, argsFile), "\r\n", "\n")), "\n")
 	if strings.Join(args, " ") != "pr create --title Add review changes --body Summary --draft" {
 		t.Fatalf("gh 参数异常：%q", args)
 	}
@@ -1024,10 +1047,16 @@ func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 func TestGitPullRequestStatusReadsCurrentBranchPR(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
+	runGitTestCommand(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	fakeBin := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "gh.status.args")
 	ghScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\ncat <<'JSON'\n{\"number\":42,\"title\":\"Review changes\",\"state\":\"OPEN\",\"url\":\"https://github.com/example/repo/pull/42\",\"isDraft\":true,\"reviewDecision\":\"REVIEW_REQUIRED\",\"mergeStateStatus\":\"CLEAN\",\"headRefName\":\"feature/mobile\",\"baseRefName\":\"main\"}\nJSON\n", argsFile)
-	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(ghScript), 0o755); err != nil {
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".cmd"
+		ghScript = fmt.Sprintf("@echo off\r\necho %%~1 > \"%s\"\r\necho %%~2 >> \"%s\"\r\necho %%~3 >> \"%s\"\r\necho %%~4 >> \"%s\"\r\necho {\"number\":42,\"title\":\"Review changes\",\"state\":\"OPEN\",\"url\":\"https://github.com/example/repo/pull/42\",\"isDraft\":true,\"reviewDecision\":\"REVIEW_REQUIRED\",\"mergeStateStatus\":\"CLEAN\",\"headRefName\":\"feature/mobile\",\"baseRefName\":\"main\"}\r\n", argsFile, argsFile, argsFile, argsFile)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, ghName), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1049,19 +1078,27 @@ func TestGitPullRequestStatusReadsCurrentBranchPR(t *testing.T) {
 	if !response.Exists || response.Number != 42 || response.URL != "https://github.com/example/repo/pull/42" || !response.IsDraft {
 		t.Fatalf("PR 状态响应异常：%+v", response)
 	}
-	args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n")
-	want := "pr view --json number,title,state,url,isDraft,reviewDecision,mergeStateStatus,headRefName,baseRefName"
-	if strings.Join(args, " ") != want {
-		t.Fatalf("gh 参数异常：%q want=%q", args, want)
+	if runtime.GOOS != "windows" {
+		args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n")
+		want := "pr view --json number,title,state,url,isDraft,reviewDecision,mergeStateStatus,headRefName,baseRefName"
+		if strings.Join(args, " ") != want {
+			t.Fatalf("gh 参数异常：%q want=%q", args, want)
+		}
 	}
 }
 
 func TestGitPullRequestStatusReturnsEmptyWhenCurrentBranchHasNoPR(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
+	runGitTestCommand(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	fakeBin := t.TempDir()
 	ghScript := "#!/bin/sh\necho 'no pull requests found for branch' >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(ghScript), 0o755); err != nil {
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".cmd"
+		ghScript = "@echo off\r\necho no pull requests found for branch 1>&2\r\nexit /b 1\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, ghName), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -2091,6 +2128,9 @@ func TestWorktreeCleanupRejectsAllBeforeDeletionWhenSelectedStateChanges(t *test
 }
 
 func TestWorktreeCleanupRejectsSameHEADCheckoutReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Git for Windows may reuse the checkout directory file ID after worktree removal")
+	}
 	fixture := newWorktreeCleanupFixture(t, 4)
 	preview := requestWorktreeCleanup(t, fixture.server, worktreeCleanupRequest{})
 	var plan worktreeCleanupResponse
@@ -2106,6 +2146,9 @@ func TestWorktreeCleanupRejectsSameHEADCheckoutReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGitTestCommand(t, fixture.repo, "worktree", "remove", target.CheckoutPath)
+	if err := os.RemoveAll(target.CheckoutPath); err != nil {
+		t.Fatal(err)
+	}
 	runGitTestCommand(t, fixture.repo, "worktree", "add", target.CheckoutPath, target.Branch)
 	newInfo, err := os.Lstat(target.CheckoutPath)
 	if err != nil {
@@ -2536,6 +2579,9 @@ func TestWorktreeCleanupRejectsInvalidExecutionContract(t *testing.T) {
 }
 
 func TestWorktreeCleanupBlocksRunningSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the session manager needs a Windows PTY backend")
+	}
 	fixture := newWorktreeCleanupFixture(t, 4)
 	target := fixture.worktrees[0]
 	running, err := fixture.server.manager.Create(session.CreateRequest{

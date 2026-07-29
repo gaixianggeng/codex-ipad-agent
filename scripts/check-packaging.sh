@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-for command_name in awk bash cmp grep mktemp ruby shasum; do
+for command_name in awk bash cmp grep mktemp shasum; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Packaging 门禁失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -26,8 +26,13 @@ for required_file in \
   packaging/skill/install-mimi-remote/SKILL.md \
   packaging/skill/install-mimi-remote/agents/openai.yaml \
   packaging/systemd/mimi-remote.service \
+  packaging/windows/mimi-remote.iss \
+  packaging/windows/register-service.ps1 \
   scripts/build-macos-installer.sh \
   scripts/check-macos-installer.sh \
+  scripts/build-windows-installer.ps1 \
+  scripts/check-windows-installer.ps1 \
+  scripts/test-windows-install.ps1 \
   scripts/install-linux.sh \
   scripts/test-install-linux.sh \
   scripts/check-release-prerequisites.sh \
@@ -158,6 +163,16 @@ grep -Fq 'scripts/package-skill.sh' .github/workflows/release.yml \
   || fail "Release workflow 没有构建 Codex Skill 发布包。"
 grep -Fq 'dist-skill/install-mimi-remote.zip' .github/workflows/release.yml \
   || fail "Release workflow 没有上传 Codex Skill 发布包。"
+grep -Fq 'runs-on: windows-latest' .github/workflows/release.yml \
+  || fail "Release workflow 没有 Windows runner。"
+grep -Fq 'scripts/build-windows-installer.ps1' .github/workflows/release.yml \
+  || fail "Release workflow 没有构建 Windows 安装器。"
+grep -Fq 'scripts/check-windows-installer.ps1' .github/workflows/release.yml \
+  || fail "Release workflow 没有校验 Windows 安装器。"
+grep -Fq 'WINDOWS_SIGN_PFX' .github/workflows/release.yml \
+  || fail "Release workflow 没有接入 Windows Authenticode 凭据。"
+grep -Fq 'Mimi-Remote-Setup-' .github/workflows/release.yml \
+  || fail "Release workflow 没有发布 Windows 安装器。"
 
 if [[ -f scripts/export-public-backend.sh ]]; then
   grep -Fq 'packaging/skill/install-mimi-remote' scripts/export-public-backend.sh \

@@ -606,12 +606,13 @@ struct SkillCapability: Codable, Hashable, Identifiable {
         guard let entries = result?.objectValue?["data"]?.arrayValue else {
             return []
         }
-        let normalizedCWD = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        let normalizedCWD = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingEntries = entries.filter { entry in
             guard let entryCWD = entry.objectValue?["cwd"]?.stringValue else {
                 return false
             }
-            return URL(fileURLWithPath: entryCWD).standardizedFileURL.path == normalizedCWD
+            // cwd 属于远端宿主；只比较清理空白后的原始字符串，不能让 iOS 改写 Windows 路径。
+            return entryCWD.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCWD
         }
         let sourceEntries = matchingEntries.isEmpty ? entries : matchingEntries
         var seenPaths: Set<String> = []

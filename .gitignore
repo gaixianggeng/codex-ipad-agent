@@ -16,6 +16,8 @@ bin/
 /dist/
 /dist-macos/
 /dist-skill/
+/dist-windows/
+/dist-windows-snapshot/
 
 # Rust / Claude bridge build output
 /target/

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestRotatingLogWriterCapsAndProtectsLogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("日志权限必须是 0600，实际 %o", got)
 	}
 }
@@ -46,6 +47,9 @@ func TestRotatingLogWriterCapsAndProtectsLogs(t *testing.T) {
 func TestRotatingLogWriterExpandsHomeAndRejectsSymlink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 	writer, err := newRotatingLogWriter("~/Library/Logs/mimi-remote/agentd.log", 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +67,9 @@ func TestRotatingLogWriterExpandsHomeAndRejectsSymlink(t *testing.T) {
 	}
 	symlink := filepath.Join(home, "linked.log")
 	if err := os.Symlink(target, symlink); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("Windows symlink creation requires Developer Mode or SeCreateSymbolicLinkPrivilege: %v", err)
+		}
 		t.Fatal(err)
 	}
 	_, err = newRotatingLogWriter(symlink, 1024)

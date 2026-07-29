@@ -16,16 +16,22 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+#[cfg(target_os = "macos")]
 use tokio::time::Instant;
 use tokio::time::timeout;
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
+#[cfg(target_os = "macos")]
 const DELEGATED_REFRESH_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(target_os = "macos")]
 const DELEGATED_REFRESH_START_DELAY: Duration = Duration::from_millis(800);
+#[cfg(target_os = "macos")]
 const DELEGATED_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(200);
+#[cfg(target_os = "macos")]
 static DELEGATED_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, thiserror::Error)]
@@ -40,8 +46,10 @@ pub(crate) enum OAuthUsageError {
     CredentialReadFailed,
     #[error("Claude CLI 凭据刷新不可用")]
     CredentialRefreshUnavailable,
+    #[cfg(target_os = "macos")]
     #[error("Claude CLI 凭据刷新超时")]
     CredentialRefreshTimedOut,
+    #[cfg(target_os = "macos")]
     #[error("Claude CLI 凭据刷新失败")]
     CredentialRefreshFailed,
     #[error("Claude OAuth usage 查询工具不可用")]
@@ -286,6 +294,7 @@ async fn refresh_credentials_via_claude_cli(
     Err(OAuthUsageError::CredentialRefreshUnavailable)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn credentials_changed(previous: &OAuthCredentials, latest: &OAuthCredentials) -> bool {
     previous.access_token != latest.access_token
         || latest.expires_at_ms.unwrap_or_default() > previous.expires_at_ms.unwrap_or_default()

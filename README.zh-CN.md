@@ -192,9 +192,32 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 
 ## 快速开始
 
-推荐使用已经 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。它把 `agentd`、配对、状态、Doctor 和 Homebrew 迁移集中到一个原生界面；Homebrew 保留给命令行、服务器、自动化和故障恢复。
+推荐使用平台正式安装包：Windows 使用 Authenticode 签名的一键安装器，macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
 
-### 1. Mac 安装
+### Windows 安装
+
+要求 Windows 10/11 x64，并已在当前 Windows 用户下安装和登录 Codex CLI。普通用户从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`，先在 PowerShell 验证 SHA-256 与 Authenticode：
+
+```powershell
+$setup = Get-Item .\Mimi-Remote-Setup-*.exe
+(Get-FileHash $setup -Algorithm SHA256).Hash
+(Get-AuthenticodeSignature $setup).Status
+```
+
+签名状态必须为 `Valid`。安装器按当前用户安装，已经内置 `agentd.exe`、`alleycat-claude-bridge.exe` 与原生 `mimi-remote-tray.exe`，不要求 Go 或 Rust；它会注册 limited 权限的登录任务、启动服务、等待真实就绪并启动通知区域托盘。托盘可查看 Endpoint 与 Codex/Claude 状态，并提供启动、停止、重启、配对、Doctor 和日志入口。配置与 Token 位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`，覆盖升级或普通卸载不会删除它们。
+
+局域网访问默认关闭；没有 Tailscale 且没有明确勾选 LAN 时，新安装只监听 loopback。勾选后，安装器先要求默认 Windows 网络配置文件为“专用网络”，清理 Windows 弹窗可能为 `agentd.exe` 自动创建的额外入站规则，再创建唯一的 Private profile、LocalSubnet 受限规则，最后扩大到 LAN 监听。运行时会拒绝 Public/Any 或其它非托管入站 Allow 规则。Public 网络不会触发放宽防火墙边界；只应把可信的 Wi-Fi 或以太网改为“专用网络”。配对地址优先使用系统默认路由对应的物理网卡，并排除 Hyper-V、WSL、容器和仅 VPN 可见的虚拟网卡。也可以使用以下命令：
+
+```powershell
+$agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
+& $agentd status
+& $agentd pair --qr-only
+& $agentd doctor --fix
+& $agentd logs -n 200
+& $agentd restart --no-pair
+```
+
+### Mac 安装
 
 要求：
 
@@ -235,7 +258,7 @@ agentd stop
 `agentd restart` 在 macOS 上使用 launchd 原子重启，允许从当前服务托管的远程任务安全触发；不要在这类任务中直接运行 `brew services restart mimi-remote`。
 Agent、自动化或远程日志场景使用 `agentd up --no-pair` / `agentd restart --no-pair`，避免把二维码、Endpoint 和长期访问码写入任务输出。`agentd up --no-pair --json` 只返回版本、就绪状态和安全警告，不包含完整 setup 结果；需要配对时再由用户在本机终端运行 `agentd pair --qr-only`。
 
-Linux 使用 Release 归档中的 user-systemd 安装脚本，完整步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
+Windows、macOS 与 Linux 的完整升级和恢复步骤见 [安装、升级与回滚](docs/install-upgrade-rollback.md)。
 
 如果希望由 Codex 按同一套权限最小化、可恢复流程完成安装、升级和诊断，可以让 `$skill-installer` 安装下面的 GitHub Skill 路径：
 
@@ -263,7 +286,7 @@ Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd
 
 ## Claude Code 实验通道
 
-Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Mac DMG 已经内置经过签名的兼容 bridge，不要为该安装方式重复执行 `cargo install`。
+Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Windows 安装器和 Mac DMG 都已经内置经过签名的兼容 bridge，不要为这些安装方式重复执行 `cargo install`。
 
 只有 Homebrew、Linux 或独立开发环境需要从源码安装外置 bridge：
 
@@ -290,7 +313,7 @@ command -v alleycat-claude-bridge
 }
 ```
 
-空 `bridge_bin` 表示使用 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持 `0600`，不要把完整文件打印到日志或聊天中。
+空 `bridge_bin` 表示使用 Windows 安装器或 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持平台对应的用户私有权限，不要把完整文件打印到日志或聊天中。
 
 然后验证：
 

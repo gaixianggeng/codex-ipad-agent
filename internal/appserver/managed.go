@@ -75,6 +75,7 @@ func StartManaged(ctx context.Context, options ManagedOptions) (*ManagedProcess,
 	// 传入的 ctx 只约束 initialize 握手；子进程寿命由 Shutdown 统一管理。
 	// 否则 startAppServerRuntime 返回时取消握手 ctx，会把托管 app-server 一起杀掉。
 	cmd := exec.CommandContext(context.Background(), bin, "app-server", "--listen", "stdio://")
+	configureManagedCommand(cmd)
 	cmd.Env = buildManagedEnv(options.Env)
 
 	stdin, err := cmd.StdinPipe()
@@ -135,6 +136,7 @@ func StartManagedWebSocket(ctx context.Context, options ManagedWebSocketOptions)
 	}
 	// WebSocket 模式只需要 agentd 负责进程寿命；JSON-RPC initialize 仍由 iPad direct 客户端完成。
 	cmd := exec.CommandContext(context.Background(), bin, args...)
+	configureManagedCommand(cmd)
 	cmd.Env = buildManagedEnv(options.Env)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -258,7 +260,7 @@ func (p *ManagedProcess) Shutdown(ctx context.Context) error {
 		case <-time.After(300 * time.Millisecond):
 		}
 		if p.cmd != nil && p.cmd.Process != nil {
-			_ = p.cmd.Process.Kill()
+			terminateManagedProcess(p.cmd)
 		}
 		select {
 		case err := <-p.waitCh:
@@ -286,7 +288,7 @@ func (p *ManagedWebSocketProcess) Shutdown(ctx context.Context) error {
 		case <-time.After(300 * time.Millisecond):
 		}
 		if p.cmd != nil && p.cmd.Process != nil {
-			_ = p.cmd.Process.Kill()
+			terminateManagedProcess(p.cmd)
 		}
 		select {
 		case err := <-p.waitCh:

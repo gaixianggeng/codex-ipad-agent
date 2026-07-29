@@ -76,7 +76,7 @@ func publishInstallationID(path string, installationID string) error {
 		_ = os.Remove(stagedPath)
 	}()
 
-	if err := staged.Chmod(installationIDFileMode); err != nil {
+	if err := prepareInstallationIDFile(staged); err != nil {
 		return fmt.Errorf("设置安装身份暂存文件权限失败：%w", err)
 	}
 	if _, err := io.WriteString(staged, installationID+"\n"); err != nil {
@@ -118,7 +118,6 @@ func readInstallationID(path string) (string, error) {
 	if !pathInfo.Mode().IsRegular() {
 		return "", fmt.Errorf("安装身份必须是普通文件，不能是目录或符号链接：%s", path)
 	}
-
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("读取安装身份失败：%w", err)
@@ -131,20 +130,19 @@ func readInstallationID(path string) (string, error) {
 	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
 		return "", fmt.Errorf("安装身份文件在读取期间发生变化，拒绝继续启动")
 	}
-
 	// 只接受固定 36 字节 UUID 和一个换行，限制读取长度也避免异常文件造成无界分配。
 	installationID, err := readCanonicalInstallationID(file, path)
 	if err != nil {
 		return "", err
 	}
 
-	if openedInfo.Mode().Perm() != installationIDFileMode {
+	if permissionErr := validateInstallationIDFilePermissions(openedInfo); permissionErr != nil {
 		// 只在内容已经验证为现有合法身份后修复权限；直接操作已核验的文件描述符，
 		// 避免对路径二次 chmod 时被符号链接或并发替换劫持。
-		if err := file.Chmod(installationIDFileMode); err != nil {
+		if err := prepareInstallationIDFile(file); err != nil {
 			return "", fmt.Errorf(
-				"收紧安装身份文件权限失败（实际为 %04o）：%s：%w",
-				openedInfo.Mode().Perm(),
+				"收紧安装身份文件权限失败（%v）：%s：%w",
+				permissionErr,
 				path,
 				err,
 			)
@@ -171,10 +169,14 @@ func readInstallationID(path string) (string, error) {
 	}
 	if !finalPathInfo.Mode().IsRegular() ||
 		!finalOpenedInfo.Mode().IsRegular() ||
-		finalOpenedInfo.Mode().Perm() != installationIDFileMode ||
-		finalPathInfo.Mode().Perm() != installationIDFileMode ||
 		!os.SameFile(finalPathInfo, finalOpenedInfo) {
 		return "", fmt.Errorf("安装身份文件在读取期间发生变化，拒绝继续启动")
+	}
+	if err := validateInstallationIDFilePermissions(finalOpenedInfo); err != nil {
+		return "", fmt.Errorf("安装身份文件在读取期间权限发生变化：%w", err)
+	}
+	if err := validateInstallationIDFilePermissions(finalPathInfo); err != nil {
+		return "", fmt.Errorf("安装身份文件路径权限异常：%w", err)
 	}
 	return installationID, nil
 }
@@ -234,13 +236,4 @@ func isCanonicalInstallationID(value string) bool {
 	default:
 		return false
 	}
-}
-
-func syncInstallationIDDirectory(dir string) error {
-	file, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
 }

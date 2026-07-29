@@ -25,8 +25,8 @@ pub use launcher::{
 };
 pub use notify::NotificationSender;
 pub use server::{
-    ATTACH_METHOD, ATTACHED_METHOD, Bridge, Conn, serve_stdio, serve_stream, serve_stream_attached,
-    serve_stream_with_session,
+    ATTACH_METHOD, ATTACHED_METHOD, Bridge, Conn, TcpServerOptions, bind_loopback_tcp, serve_stdio,
+    serve_stream, serve_stream_attached, serve_stream_with_session, serve_tcp, serve_tcp_listener,
 };
 #[cfg(unix)]
 pub use server::{ServerOptions, serve_unix};
