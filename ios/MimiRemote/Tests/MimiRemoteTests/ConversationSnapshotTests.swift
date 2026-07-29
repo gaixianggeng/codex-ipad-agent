@@ -653,14 +653,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testConversationBubbleAlignment() {
         assertSnapshot(
             of: makeSeededConversation(),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
     func testDefaultDarkConversationPalette() {
         assertSnapshot(
             of: makeSeededConversation(colorScheme: .dark),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 

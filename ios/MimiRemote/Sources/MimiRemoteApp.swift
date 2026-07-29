@@ -161,6 +161,13 @@ struct MimiRemoteApp: App {
         let contextStore = SessionContextStore()
         let themeStore = ThemeStore()
         let workspaceAppearanceStore = WorkspaceAppearanceStore()
+        // 冷启动先把唯一 endpoint 下的旧偏好归入当前 Profile，避免用户直接打开
+        // “个性化”时短暂看到默认风格，并在修改设置后覆盖原来的 Emoji 选择。
+        workspaceAppearanceStore.migrateLegacyValueIfNeeded(
+            profileID: appStore.activeHostScope.profileID,
+            endpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)

@@ -79,6 +79,39 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertEqual(store.customEmoji(profileID: "mac-a", projectID: "project-2"), "🤖")
     }
 
+    func testLegacyEndpointEmojiMigrationRestoresStyleBeforeWorkspaceOpens() throws {
+        let endpoint = "http://mac-a.local:8787"
+        let legacy = [
+            "byEndpoint": [
+                endpoint: [
+                    "project-1": "🦧"
+                ]
+            ]
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: legacy),
+            forKey: "agentd.workspaceAppearancePreferences.v1"
+        )
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+
+        XCTAssertEqual(store.style(profileID: profile.id), .journey)
+
+        store.migrateLegacyValueIfNeeded(
+            profileID: profile.id,
+            endpoint: profile.endpoint,
+            profiles: [profile]
+        )
+
+        XCTAssertEqual(store.style(profileID: profile.id), .emoji)
+        XCTAssertEqual(store.customEmoji(profileID: profile.id, projectID: "project-1"), "🦧")
+    }
+
     func testStyleAndTwoKindsOfProjectChoicesPersistIndependently() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         store.setCustomEmoji("🌈", profileID: "mac-a", projectID: "project-1")
