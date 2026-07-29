@@ -542,13 +542,16 @@ extension ComposerView {
 
     @ViewBuilder
     func sendButton(showLabels: Bool) -> some View {
-        if showsTurnStopButton {
-            stopCurrentReplyButton
-                .transition(.scale(scale: 0.88).combined(with: .opacity))
-        } else {
-            submitDraftButton(showLabels: showLabels)
-                .transition(.scale(scale: 0.88).combined(with: .opacity))
+        Group {
+            if primaryComposerAction == .stopCurrentReply {
+                stopCurrentReplyButton
+                    .transition(.scale(scale: 0.88).combined(with: .opacity))
+            } else {
+                submitDraftButton(showLabels: showLabels)
+                    .transition(.scale(scale: 0.88).combined(with: .opacity))
+            }
         }
+        .animation(composerMotionAnimation, value: primaryComposerAction)
     }
 
     func submitDraftButton(showLabels: Bool) -> some View {

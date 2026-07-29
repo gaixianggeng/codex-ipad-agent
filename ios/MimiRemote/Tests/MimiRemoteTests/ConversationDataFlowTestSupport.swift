@@ -79,6 +79,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
     private(set) var sentCtrlCCount = 0
+    private(set) var sentCtrlCTurnIDs: [TurnID] = []
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
     private(set) var sentUserInputResponses: [(requestID: String, answers: [String: [String]])] = []
     private(set) var disconnectCallCount = 0
@@ -123,8 +124,9 @@ final class MockWebSocketClient: SessionWebSocketClient {
         return sendGuidanceResult
     }
 
-    func sendCtrlC() -> Bool {
+    func sendCtrlC(expectedTurnID: TurnID) -> Bool {
         sentCtrlCCount += 1
+        sentCtrlCTurnIDs.append(expectedTurnID)
         return sendCtrlCResult
     }
 

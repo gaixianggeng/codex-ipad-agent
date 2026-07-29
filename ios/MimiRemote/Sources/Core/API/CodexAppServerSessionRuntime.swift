@@ -1911,8 +1911,26 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    func interruptActiveTurn(sessionID: SessionID) async throws {
-        guard let turnID = contextsBySessionID[sessionID]?.activeTurnID else {
+    func interruptActiveTurn(
+        sessionID: SessionID,
+        expectedTurnID: TurnID? = nil
+    ) async throws {
+        let cachedTurnID = contextsBySessionID[sessionID]?.activeTurnID
+        if let expectedTurnID,
+           let cachedTurnID,
+           cachedTurnID != expectedTurnID,
+           let session = contextsBySessionID[sessionID]?.session {
+            // Store 与 runtime 已观察到不同的 active turn 时，宁可拒绝旧控制命令，
+            // 也不能误停用户刚开始的新一轮。
+            throw CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: session,
+                activeTurnID: cachedTurnID
+            )
+        }
+        // SessionStore 是当前 Composer 的交互事实来源。列表/历史刷新可能先把 runtime
+        // 的局部缓存清空，但 Store 仍握有用户实际看到的 turn ID；把它作为安全回退，
+        // 避免控制命令尚未发出就误报 missingActiveTurn。
+        guard let turnID = cachedTurnID ?? expectedTurnID else {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: sessionID, turnID: turnID)

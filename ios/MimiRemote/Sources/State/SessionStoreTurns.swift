@@ -1433,14 +1433,14 @@ extension SessionStore {
         guard let session = selectedSession, session.isRunning, canControlSession(session) else {
             return
         }
-        guard session.activeTurnID != nil else {
+        guard let activeTurnID = session.activeTurnID else {
             setStatusMessage(L10n.text("ui.there_are_currently_no_active_rounds_to_interrupt"))
             return
         }
         guard let socket = readyWebSocket(for: session) else {
             return
         }
-        if !socket.sendCtrlC() {
+        if !socket.sendCtrlC(expectedTurnID: activeTurnID) {
             setErrorMessage(L10n.text("ui.failed_to_stop_current_reply_websocket_not_connected"))
             return
         }

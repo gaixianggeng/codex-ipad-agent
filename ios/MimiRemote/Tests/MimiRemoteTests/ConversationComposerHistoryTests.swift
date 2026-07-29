@@ -68,6 +68,33 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testComposerPrimaryActionKeepsRunningTurnSubmissionReachable() {
+        XCTAssertEqual(
+            ComposerPrimaryAction.resolve(
+                hasDraftContent: false,
+                canStopCurrentReply: true
+            ),
+            .stopCurrentReply,
+            "运行中且没有可提交草稿时，主操作应是停止当前回复"
+        )
+        XCTAssertEqual(
+            ComposerPrimaryAction.resolve(
+                hasDraftContent: true,
+                canStopCurrentReply: true
+            ),
+            .submit,
+            "用户输入下一条消息后，发送/排队必须重新成为主操作"
+        )
+        XCTAssertEqual(
+            ComposerPrimaryAction.resolve(
+                hasDraftContent: false,
+                canStopCurrentReply: false
+            ),
+            .submit,
+            "非运行状态仍保留普通发送按钮，并由按钮自身表达禁用状态"
+        )
+    }
+
     func testComposerStateCanSubmitWithStandardModeSanitizedOptions() throws {
         var composerState = ComposerState()
         composerState.draft = "用标准模式提交"

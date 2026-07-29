@@ -839,6 +839,13 @@ struct ComposerView: View {
             sessionStore.canControlSession(session)
     }
 
+    var primaryComposerAction: ComposerPrimaryAction {
+        ComposerPrimaryAction.resolve(
+            hasDraftContent: hasComposerContentForSubmit,
+            canStopCurrentReply: showsTurnStopButton
+        )
+    }
+
     var canInterruptSelectedSession: Bool {
         guard showsTurnStopButton else {
             return false

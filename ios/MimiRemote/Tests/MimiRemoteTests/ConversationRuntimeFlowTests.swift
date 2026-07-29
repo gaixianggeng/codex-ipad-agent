@@ -614,10 +614,12 @@ extension ConversationDataFlowTests {
             resumeID: running.id
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
+        let appStore = AppStore()
+        appStore.token = "test-token"
         var sockets: [MockWebSocketClient] = []
         let conversationStore = ConversationStore()
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },

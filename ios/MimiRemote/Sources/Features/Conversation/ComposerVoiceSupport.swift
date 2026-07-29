@@ -44,7 +44,8 @@ struct VoiceMicButton: View {
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .disabled(isPreparing || isTranscribing)
+        // 准备音频会话可能耗时，必须允许用户再次点击取消；否则准备卡住时按钮会永久无响应。
+        .disabled(isTranscribing)
         .accessibilityLabel(accessibilityTitle)
         .accessibilityValue(accessibilityValue)
         .accessibilityHint(accessibilityHint)
@@ -55,7 +56,7 @@ struct VoiceMicButton: View {
             return L10n.text("ui.stop_recording")
         }
         if isPreparing {
-            return L10n.text("ui.preparing_microphone")
+            return L10n.text("ui.end_voice_input")
         }
         return isTranscribing ? L10n.text("ui.transcribing_speech") : L10n.text("ui.start_voice_input")
     }

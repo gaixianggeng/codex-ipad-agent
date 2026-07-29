@@ -674,8 +674,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     @discardableResult
-    func sendCtrlC() -> Bool {
-        activeClient?.sendCtrlC() ?? false
+    func sendCtrlC(expectedTurnID: TurnID) -> Bool {
+        activeClient?.sendCtrlC(expectedTurnID: expectedTurnID) ?? false
     }
 
     @discardableResult
@@ -955,7 +955,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     @discardableResult
-    func sendCtrlC() -> Bool {
+    func sendCtrlC(expectedTurnID: TurnID) -> Bool {
         guard let sessionID else {
             onControlFailure?(L10n.text("ui.direct_websocket_not_connected"))
             return false
@@ -963,7 +963,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let failureHandler = onControlFailure
         Task { [runtime] in
             do {
-                try await runtime.interruptActiveTurn(sessionID: sessionID)
+                try await runtime.interruptActiveTurn(
+                    sessionID: sessionID,
+                    expectedTurnID: expectedTurnID
+                )
             } catch {
                 await MainActor.run {
                     failureHandler?(error.localizedDescription)
