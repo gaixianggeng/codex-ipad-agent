@@ -628,6 +628,7 @@ struct ComposerView: View {
         let turns = sessionStore.selectedQueuedTurns
         if !turns.isEmpty || sessionStore.queuedTurnStorageErrorMessage != nil {
             let tokens = themeStore.tokens(for: colorScheme)
+            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "tray.full")
@@ -660,10 +661,13 @@ struct ComposerView: View {
                 }
             }
             .padding(10)
-            .background(tokens.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            // 待发送内容悬浮在正文上方，复用输入框的模糊材质，避免高对比文字穿透后叠字。
+            // 圆角略小于主输入框，保留二级浮层层级，不与主要输入操作争夺注意力。
+            .background {
+                composerContainerBackground(shape: shape, tokens: tokens)
+            }
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(tokens.accent.opacity(0.22))
+                shape.strokeBorder(tokens.border.opacity(0.58), lineWidth: 0.75)
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .accessibilityElement(children: .contain)
@@ -807,23 +811,15 @@ struct ComposerView: View {
         sessionStore.selectedThreadGoal
     }
 
-    // 输入框上方只保留瞬时状态和必要控制。模型、权限、seq/usage 已有其他入口，
-    // 常驻展示只会增加工程噪音，因此收进“会话选项”或顶部状态区。
+    // 输入框上方只保留瞬时语音状态。当前回复的停止操作已经收敛到发送按钮原位，
+    // 不再额外悬浮一组 Ctrl-C / 停止会话控件。
     @ViewBuilder
     var composerStatusRow: some View {
-        let showWave = isVoiceActive
-        let showControls = canShowRunningControls
-        if showWave || showControls {
+        if isVoiceActive {
             HStack(spacing: 10) {
-                if showWave {
-                    voiceWaveformContent
-                        .layoutPriority(1)
-                }
+                voiceWaveformContent
+                    .layoutPriority(1)
                 Spacer(minLength: 0)
-                if showControls {
-                    runningControls
-                        .layoutPriority(1)
-                }
             }
         }
     }
@@ -832,18 +828,22 @@ struct ComposerView: View {
         voiceInput.isRecording || voiceInput.isPreparing || isVoicePressActive || isVoiceTranscribing
     }
 
-    var canShowRunningControls: Bool {
-        sessionStore.selectedSession?.isRunning == true && sessionStore.canControlSession(sessionStore.selectedSession)
-    }
-
-    var canInterruptSelectedSession: Bool {
+    var showsTurnStopButton: Bool {
         guard let session = sessionStore.selectedSession else {
             return false
         }
+        // 显示状态只跟 active turn 绑定。短暂断线时保持“停止”外观但禁用，
+        // 避免错误切回发送按钮，让用户误以为当前回复已经结束。
         return session.isRunning &&
             session.activeTurnID != nil &&
-            sessionStore.canControlSession(session) &&
-            sessionStore.webSocketStatus == .connected
+            sessionStore.canControlSession(session)
+    }
+
+    var canInterruptSelectedSession: Bool {
+        guard showsTurnStopButton else {
+            return false
+        }
+        return sessionStore.webSocketStatus == .connected
     }
 
     func syncGoalStatusBarExpansion(from previousGoal: ThreadGoal?, to goal: ThreadGoal?) {
@@ -1844,16 +1844,26 @@ struct ComposerView: View {
         emphasized: Bool = false,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        HStack(spacing: 8) {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let shape = Capsule(style: .continuous)
+
+        return HStack(spacing: 8) {
             content()
         }
         .font(themeStore.uiFont(.caption, weight: .medium))
         .foregroundStyle(tint)
         .padding(.horizontal, 12)
         .frame(height: emphasized ? 40 : 36)
-        .background(tint.opacity(emphasized ? 0.12 : 0.1), in: Capsule())
+        .background {
+            // 语音状态悬浮在正文之上：先用输入框同款材质模糊底层文字，
+            // 再轻覆状态色，既保留录音反馈，也避免半透明胶囊出现叠字。
+            composerFloatingControlBackground(tokens: tokens)
+                .overlay {
+                    shape.fill(tint.opacity(emphasized ? 0.10 : 0.07))
+                }
+        }
         .overlay {
-            Capsule().strokeBorder(tint.opacity(emphasized ? 0.4 : 0.32))
+            shape.strokeBorder(tint.opacity(emphasized ? 0.4 : 0.32), lineWidth: 0.75)
         }
         .fixedSize(horizontal: true, vertical: false)
         .transition(.scale(scale: 0.9).combined(with: .opacity))

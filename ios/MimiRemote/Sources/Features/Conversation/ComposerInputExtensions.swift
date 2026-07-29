@@ -184,49 +184,8 @@ extension ComposerView {
 #endif
     }
 
-    var runningControls: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return HStack(spacing: 8) {
-            if canInterruptSelectedSession {
-                Button {
-                    sessionStore.sendCtrlC()
-                } label: {
-                    Label("Ctrl-C", systemImage: "stop.circle")
-                }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
-                .accessibilityLabel(L10n.text("ui.send_ctrl_c"))
-            }
-
-            Button {
-                Task { await sessionStore.stopSelectedSession() }
-            } label: {
-                Label(L10n.text("ui.stop"), systemImage: "xmark.circle")
-            }
-            .buttonStyle(.bordered)
-            .tint(tokens.primaryAction)
-            .accessibilityLabel(L10n.text("ui.stop_current_session"))
-        }
-        .controlSize(.small)
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        // 运行控制悬浮在消息流之上。没有底衬时，最后一条消息右下角的
-        // “已送达，等待回复”会透过按钮间隙与之叠字，因此沿用输入面板同款材质，
-        // 让它像语音胶囊一样成为一枚独立的悬浮控件，遮住身后的消息。
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
-        .background {
-            composerFloatingControlBackground(tokens: tokens)
-        }
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-        .layoutPriority(1)
-    }
-
     // 悬浮控件底衬：与 composerContainerBackground 同源，只是换成胶囊轮廓，
-    // 保证运行控制与底部输入面板属于同一层材质语言。
+    // 保证语音状态与底部输入面板属于同一层材质语言。
     @ViewBuilder
     func composerFloatingControlBackground(tokens: ThemeTokens) -> some View {
         let shape = Capsule(style: .continuous)
@@ -581,7 +540,18 @@ extension ComposerView {
         presentedPendingUserInput = presentation
     }
 
+    @ViewBuilder
     func sendButton(showLabels: Bool) -> some View {
+        if showsTurnStopButton {
+            stopCurrentReplyButton
+                .transition(.scale(scale: 0.88).combined(with: .opacity))
+        } else {
+            submitDraftButton(showLabels: showLabels)
+                .transition(.scale(scale: 0.88).combined(with: .opacity))
+        }
+    }
+
+    func submitDraftButton(showLabels: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let isGoalMode = composerState.isGoalModeSelected
         let isPlanMode = composerState.isPlanModeSelected
@@ -632,6 +602,32 @@ extension ComposerView {
         .disabled(!enabled)
         .accessibilityLabel(isGoalMode ? L10n.text("ui.send_target_task") : (composerState.voiceDraftNeedsReview ? L10n.text("ui.confirm_sending_voice_draft") : L10n.text("ui.send")))
         .accessibilityIdentifier("composer.send")
+    }
+
+    var stopCurrentReplyButton: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        return Button {
+            sessionStore.interruptSelectedTurn()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(tokens.primaryText)
+                    .frame(width: 36, height: 36)
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(tokens.inputBackground)
+                    .frame(width: 11, height: 11)
+            }
+            // 视觉尺寸与 Mac Codex 接近，同时保留 Apple 平台要求的 44pt 触控区域。
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .disabled(!canInterruptSelectedSession)
+        .opacity(canInterruptSelectedSession ? 1 : 0.52)
+        .accessibilityLabel(L10n.text("ui.stop_current_reply"))
+        .accessibilityHint(L10n.text("ui.stop_current_reply_hint"))
+        .accessibilityIdentifier("composer.stopCurrentReply")
     }
 
     var permissionTitle: String {

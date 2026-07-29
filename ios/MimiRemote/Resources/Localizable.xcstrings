@@ -9309,6 +9309,23 @@
         }
       }
     },
+    "ui.failed_to_stop_current_reply_websocket_not_connected" : {
+      "comment" : "Shown when the user tries to stop the active response but the live connection is unavailable.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t stop the current response because the connection is unavailable."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法停止当前回复：实时连接不可用。"
+          }
+        }
+      }
+    },
     "ui.failed_to_send_supplementary_information_value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -24118,6 +24135,40 @@
         }
       }
     },
+    "ui.stop_current_reply" : {
+      "comment" : "Accessibility label for the composer button that interrupts only the active response.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop current response"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止当前回复"
+          }
+        }
+      }
+    },
+    "ui.stop_current_reply_hint" : {
+      "comment" : "Accessibility hint explaining that stopping a response keeps the conversation available.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stops the active response without ending this conversation."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅停止正在生成的回复，不会结束当前会话。"
+          }
+        }
+      }
+    },
     "ui.stop_recording" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -24131,6 +24182,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "停止录音"
+          }
+        }
+      }
+    },
+    "ui.stopping_current_reply" : {
+      "comment" : "Status shown immediately after requesting interruption of the active response.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stopping the current response…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在停止当前回复…"
           }
         }
       }

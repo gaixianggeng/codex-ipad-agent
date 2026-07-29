@@ -1416,7 +1416,7 @@ extension SessionStore {
         }
     }
 
-    func sendCtrlC() {
+    func interruptSelectedTurn() {
         guard let session = selectedSession, session.isRunning, canControlSession(session) else {
             return
         }
@@ -1428,8 +1428,12 @@ extension SessionStore {
             return
         }
         if !socket.sendCtrlC() {
-            setErrorMessage(L10n.text("ui.sending_ctrl_c_failed_websocket_not_connected"))
+            setErrorMessage(L10n.text("ui.failed_to_stop_current_reply_websocket_not_connected"))
+            return
         }
+        // 中断只停止当前 turn，不关闭 thread；等待匹配的 turn/completed 后，
+        // 原会话仍可继续发送下一条消息。
+        setStatusMessage(L10n.text("ui.stopping_current_reply"))
     }
 
     func decideApproval(_ approval: ApprovalSummary, accept: Bool) {

@@ -159,7 +159,7 @@ extension ConversationDataFlowTests {
 
         store.takeOverSession(external)
         store.connectWebSocket(external, allowNonRunning: true)
-        store.sendCtrlC()
+        store.interruptSelectedTurn()
         let didSend = await store.sendTurn(CodexAppServerTurnPayload(prompt: "不要发送"))
         let didGuide = await store.sendTurn(
             CodexAppServerTurnPayload(prompt: "不要引导"),

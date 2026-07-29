@@ -257,6 +257,136 @@ extension ConversationDataFlowTests {
         })
     }
 
+    func testTurnInterruptAcknowledgementPollsUntilAuthoritativeTerminalTurn() async throws {
+        let project = AgentProject(
+            id: "proj_interrupt_recovery",
+            name: "Interrupt Recovery",
+            path: "/tmp/interrupt-recovery"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let allowedMethods = [
+            "initialize",
+            "initialized",
+            "thread/list",
+            "thread/start",
+            "thread/read",
+            "thread/turns/list",
+            "turn/start",
+            "turn/interrupt"
+        ]
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            turnInterruptRecoveryDelaysNanoseconds: [1, 100_000_000],
+            configProvider: {
+                makeDirectAppServerConfig(project: project, allowedMethods: allowedMethods)
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let listTask = Task {
+            try await client.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let listRequest = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(
+            transport,
+            id: listRequest.id,
+            result: #"{"data":[{"id":"thr_interrupt_recovery","sessionId":"thr_interrupt_recovery","preview":"中断恢复","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"active"},"path":null,"cwd":"/tmp/interrupt-recovery","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"中断恢复","turns":[{"id":"turn_interrupt_recovery","status":"inProgress","items":[]}]}],"nextCursor":null,"backwardsCursor":null}"#
+        )
+        let sessions = try await listTask.value
+        XCTAssertEqual(sessions.sessions.first?.activeTurnID, "turn_interrupt_recovery")
+
+        let events = await runtime.attachEvents(sessionID: "thr_interrupt_recovery")
+        var recoveredMetadata: AgentEventMetadata?
+        let recovered = expectation(description: "中断后权威快照补回 turn/completed")
+        let eventTask = Task { @MainActor in
+            for await event in events {
+                guard case .turnCompleted(let metadata) = event else {
+                    continue
+                }
+                recoveredMetadata = metadata
+                recovered.fulfill()
+                return
+            }
+        }
+
+        let interruptTask = Task {
+            try await runtime.interruptActiveTurn(sessionID: "thr_interrupt_recovery")
+        }
+        let interruptRequest = try await waitForFakeAppServerRequest(transport, method: "turn/interrupt")
+        XCTAssertEqual(interruptRequest.params?.objectValue?["threadId"]?.stringValue, "thr_interrupt_recovery")
+        XCTAssertEqual(interruptRequest.params?.objectValue?["turnId"]?.stringValue, "turn_interrupt_recovery")
+        transportResponse(transport, id: interruptRequest.id, result: #"{}"#)
+        try await interruptTask.value
+
+        let activeSnapshotRequest = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        let sentThroughActiveSnapshot = await transport.sentMessages().count
+        transportResponse(
+            transport,
+            id: activeSnapshotRequest.id,
+            result: #"{"data":[{"id":"turn_interrupt_recovery","status":"inProgress","items":[]}],"nextCursor":null}"#
+        )
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertNil(recoveredMetadata, "权威快照仍为 inProgress 时不能乐观结束当前 turn")
+
+        let terminalSnapshotRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: sentThroughActiveSnapshot
+        )
+        transportResponse(
+            transport,
+            id: terminalSnapshotRequest.id,
+            result: #"{"data":[{"id":"turn_interrupt_recovery","status":"interrupted","startedAt":1780490300,"completedAt":1780490302,"items":[]}],"nextCursor":null}"#
+        )
+        await fulfillment(of: [recovered], timeout: 1)
+        eventTask.cancel()
+
+        XCTAssertEqual(recoveredMetadata?.sessionID, "thr_interrupt_recovery")
+        XCTAssertEqual(recoveredMetadata?.turnID, "turn_interrupt_recovery")
+        XCTAssertEqual(recoveredMetadata?.turnLifecycle, .interrupted)
+        let sent = await transport.sentMessages()
+        let requests = sent.compactMap { try? decodeAppServerRequest($0) }
+        XCTAssertEqual(requests.filter { $0.method == "thread/turns/list" }.count, 2)
+    }
+
+    func testTargetedInterruptRecoveryWorksWithoutCachedActiveTurnAndProtectsNewerTurn() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token"
+        )
+        let interruptedTurn: [String: CodexAppServerJSONValue] = [
+            "id": .string("turn_interrupted"),
+            "status": .string("interrupted")
+        ]
+
+        let recovered = await runtime.recoverCompletedActiveTurnFromLatestTurnsPage(
+            sessionID: "thr_targeted_recovery",
+            turns: [interruptedTurn],
+            recoveringInterruptedTurnID: "turn_interrupted"
+        )
+        XCTAssertEqual(recovered?.turnID, "turn_interrupted")
+        XCTAssertEqual(recovered?.lifecycle, .interrupted)
+
+        let newerActiveTurn: [String: CodexAppServerJSONValue] = [
+            "id": .string("turn_newer"),
+            "status": .string("inProgress")
+        ]
+        let mustNotRecover = await runtime.recoverCompletedActiveTurnFromLatestTurnsPage(
+            sessionID: "thr_targeted_recovery",
+            turns: [interruptedTurn, newerActiveTurn],
+            recoveringInterruptedTurnID: "turn_interrupted"
+        )
+        XCTAssertNil(mustNotRecover, "新 turn 已开始时，旧中断完成不能把当前执行误判为空闲")
+    }
+
     func testDirectRuntimeEconomyHistoryUsesSummaryTurnPagesAndNotice() async throws {
         let project = AgentProject(id: "proj_turn_pages_economy", name: "Turn Pages Economy", path: "/tmp/turn-pages-economy")
         let transport = FakeCodexAppServerTransport()

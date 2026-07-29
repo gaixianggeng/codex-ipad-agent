@@ -194,6 +194,9 @@ extension SessionStore {
                 ) == true else {
                     return
                 }
+                if self?.statusMessage == L10n.text("ui.stopping_current_reply") {
+                    self?.setStatusMessage(nil)
+                }
                 self?.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", message))
             }
         }
@@ -637,6 +640,10 @@ extension SessionStore {
         }
         if case .turnCompleted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
+            if id == selectedSessionID,
+               statusMessage == L10n.text("ui.stopping_current_reply") {
+                setStatusMessage(nil)
+            }
             if let projectID = sessionsByID[id]?.projectID {
                 scheduleSessionListReconciliation(
                     projectID: projectID,

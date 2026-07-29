@@ -873,7 +873,7 @@ extension ConversationDataFlowTests {
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
-        store.sendCtrlC()
+        store.interruptSelectedTurn()
 
         XCTAssertEqual(sockets[0].sentCtrlCCount, 0)
         XCTAssertEqual(store.statusMessage, L10n.text("ui.there_are_currently_no_active_rounds_to_interrupt"))
@@ -912,10 +912,32 @@ extension ConversationDataFlowTests {
         sockets[0].emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
-        store.sendCtrlC()
+        store.interruptSelectedTurn()
 
         XCTAssertEqual(sockets[0].sentCtrlCCount, 1)
+        XCTAssertEqual(store.statusMessage, L10n.text("ui.stopping_current_reply"))
         XCTAssertNil(store.errorMessage)
+
+        let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "中断后继续发送"))
+        XCTAssertTrue(didQueue)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn_ctrl_c")
+        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn_ctrl_c",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil,
+            turnLifecycle: .interrupted
+        )))
+        try await waitForSentTurnCount(1, socket: sockets[0])
+
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "中断后继续发送")
+        XCTAssertNil(store.selectedSession?.activeTurnID)
     }
 
     func testRunningSessionGuidedDeliveryUsesTurnStartedActiveTurn() async throws {

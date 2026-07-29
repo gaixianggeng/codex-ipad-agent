@@ -66,6 +66,12 @@ struct CodexAppServerThreadResumeTask {
     let task: Task<Void, Error>
 }
 
+struct CodexAppServerTurnInterruptRecoveryTask {
+    let turnID: TurnID
+    let token: UUID
+    let task: Task<Void, Never>
+}
+
 enum CodexAppServerBufferedEventReplayPolicy {
     case all
     case stateOnly
@@ -116,8 +122,13 @@ actor CodexAppServerSessionRuntime {
     var stateDBOnlyScanRequiredCWDs: Set<String> = []
     var recencySortUnavailable = false
     var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
+    // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
+    // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
+    // 只在权威 turns 快照确认终态后补发完成事件。
+    var turnInterruptRecoveryTasksBySessionID: [SessionID: CodexAppServerTurnInterruptRecoveryTask] = [:]
     let requestTimeout: TimeInterval
     let longRunningRequestTimeout: TimeInterval
+    let turnInterruptRecoveryDelaysNanoseconds: [UInt64]
     let gatewayDefaults: UserDefaults
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
@@ -138,6 +149,7 @@ actor CodexAppServerSessionRuntime {
         requestTimeout: TimeInterval = 20,
         longRunningRequestTimeout: TimeInterval = 60,
         gatewayDefaults: UserDefaults = .standard,
+        turnInterruptRecoveryDelaysNanoseconds: [UInt64] = [400_000_000, 1_000_000_000, 2_000_000_000],
         configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
         let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
@@ -147,6 +159,7 @@ actor CodexAppServerSessionRuntime {
         self.transportFactory = transportFactory
         self.requestTimeout = requestTimeout
         self.longRunningRequestTimeout = longRunningRequestTimeout
+        self.turnInterruptRecoveryDelaysNanoseconds = turnInterruptRecoveryDelaysNanoseconds
         self.gatewayDefaults = gatewayDefaults
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
@@ -159,6 +172,7 @@ actor CodexAppServerSessionRuntime {
         serverRequestPumpTask?.cancel()
         rateLimitRefreshTask?.cancel()
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
+        turnInterruptRecoveryTasksBySessionID.values.forEach { $0.task.cancel() }
     }
 
     func projects() async throws -> [AgentProject] {
@@ -261,6 +275,7 @@ actor CodexAppServerSessionRuntime {
         await cancelConnectionAttempt()
         rateLimitRefreshTask?.cancel()
         rateLimitRefreshTask = nil
+        cancelAllTurnInterruptRecoveryTasks()
         guard let activeConnection = connection else {
             notificationPumpTask?.cancel()
             notificationPumpTask = nil
@@ -791,7 +806,8 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         before: String?,
         limit: Int?,
-        loadMode: HistoryMessagesPage.LoadMode = .full
+        loadMode: HistoryMessagesPage.LoadMode = .full,
+        recoveringInterruptedTurnID: TurnID? = nil
     ) async throws -> HistoryMessagesPage {
         let config = try await ensureConfig()
         if shouldUseThreadTurnsList(config: config) {
@@ -801,7 +817,8 @@ actor CodexAppServerSessionRuntime {
                     before: before,
                     limit: limit,
                     loadMode: loadMode,
-                    projects: config.projects
+                    projects: config.projects,
+                    recoveringInterruptedTurnID: recoveringInterruptedTurnID
                 )
             } catch {
                 if shouldFallbackFromThreadTurnsList(error) {
@@ -815,7 +832,8 @@ actor CodexAppServerSessionRuntime {
             sessionID: sessionID,
             before: before,
             limit: limit,
-            projects: config.projects
+            projects: config.projects,
+            recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
 
@@ -823,7 +841,8 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         before: String?,
         limit: Int?,
-        projects: [AgentProject]
+        projects: [AgentProject],
+        recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         // 翻看更早历史：老 turn 不会变，直接用上次整段读取的缓存切窗口，不再重复拉整段 thread。
         if before != nil, let cached = threadHistoryCacheBySessionID[sessionID] {
@@ -847,13 +866,21 @@ actor CodexAppServerSessionRuntime {
         let authoritativeCompletedTurnItems = Self.authoritativeCompletedTurnItems(fromTurns: turns)
         var context: SessionContextSnapshot?
         if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
-            let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(session, thread: thread)
+            let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(
+                session,
+                thread: thread,
+                recoveringInterruptedTurnID: recoveringInterruptedTurnID
+            )
             context = session.context
             if let recoveredTerminalTurn {
                 emit(.turnCompleted(
                     metadata(threadID: session.id, turnID: recoveredTerminalTurn.turnID)
                         .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
                 ))
+                finishTurnInterruptRecoveryIfMatching(
+                    sessionID: session.id,
+                    turnID: recoveredTerminalTurn.turnID
+                )
             }
         }
         threadHistoryCacheBySessionID[sessionID] = messages
@@ -872,7 +899,8 @@ actor CodexAppServerSessionRuntime {
         before: String?,
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode,
-        projects: [AgentProject]
+        projects: [AgentProject],
+        recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let cursor = Self.decodeThreadTurnsCursor(before)
@@ -901,7 +929,8 @@ actor CodexAppServerSessionRuntime {
         let recoveredTerminalTurn = cursor == nil
             ? recoverCompletedActiveTurnFromLatestTurnsPage(
                 sessionID: sessionID,
-                turns: chronologicalTurns
+                turns: chronologicalTurns,
+                recoveringInterruptedTurnID: recoveringInterruptedTurnID
             )
             : nil
         var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
@@ -920,6 +949,10 @@ actor CodexAppServerSessionRuntime {
                 metadata(threadID: sessionID, turnID: recoveredTerminalTurn.turnID)
                     .withTurnLifecycle(recoveredTerminalTurn.lifecycle)
             ))
+            finishTurnInterruptRecoveryIfMatching(
+                sessionID: sessionID,
+                turnID: recoveredTerminalTurn.turnID
+            )
         }
         let nextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
         return HistoryMessagesPage(
@@ -935,10 +968,12 @@ actor CodexAppServerSessionRuntime {
 
     func recoverCompletedActiveTurnFromLatestTurnsPage(
         sessionID: SessionID,
-        turns: [[String: CodexAppServerJSONValue]]
+        turns: [[String: CodexAppServerJSONValue]],
+        recoveringInterruptedTurnID: TurnID? = nil
     ) -> (turnID: TurnID, lifecycle: ConversationTurnLifecycle)? {
-        guard var context = contextsBySessionID[sessionID],
-              let activeTurnID = context.activeTurnID,
+        let context = contextsBySessionID[sessionID]
+        guard let activeTurnID = recoveringInterruptedTurnID ?? context?.activeTurnID,
+              context?.activeTurnID == nil || context?.activeTurnID == activeTurnID,
               let activeTurnIndex = turns.lastIndex(where: { $0["id"]?.stringValue == activeTurnID })
         else {
             return nil
@@ -960,12 +995,14 @@ actor CodexAppServerSessionRuntime {
             return nil
         }
 
-        context.activeTurnID = nil
-        context.session.activeTurnID = nil
-        context.session.status = SessionStatus.history.rawValue
-        context.session.pendingApproval = nil
-        context.session.pendingUserInput = nil
-        contextsBySessionID[sessionID] = context
+        if var context, context.activeTurnID == activeTurnID {
+            context.activeTurnID = nil
+            context.session.activeTurnID = nil
+            context.session.status = SessionStatus.history.rawValue
+            context.session.pendingApproval = nil
+            context.session.pendingUserInput = nil
+            contextsBySessionID[sessionID] = context
+        }
         return (
             activeTurnID,
             historyTurnLifecycle(
@@ -1797,9 +1834,11 @@ actor CodexAppServerSessionRuntime {
 
     func storeAuthoritativeTurnsSnapshot(
         _ session: AgentSession,
-        thread: [String: CodexAppServerJSONValue]
+        thread: [String: CodexAppServerJSONValue],
+        recoveringInterruptedTurnID: TurnID? = nil
     ) -> (turnID: TurnID, lifecycle: ConversationTurnLifecycle)? {
-        let previouslyActiveTurnID = contextsBySessionID[session.id]?.activeTurnID
+        let previouslyActiveTurnID = recoveringInterruptedTurnID
+            ?? contextsBySessionID[session.id]?.activeTurnID
         let recoveredTerminalTurn = completedTurnConfirmedByAuthoritativeSnapshot(
             thread,
             previouslyActiveTurnID: previouslyActiveTurnID,
@@ -1878,6 +1917,90 @@ actor CodexAppServerSessionRuntime {
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: sessionID, turnID: turnID)
         _ = try await sendRecoveringFromStaleInitialization(spec)
+        scheduleTurnInterruptRecovery(sessionID: sessionID, turnID: turnID)
+    }
+
+    func scheduleTurnInterruptRecovery(sessionID: SessionID, turnID: TurnID) {
+        turnInterruptRecoveryTasksBySessionID.removeValue(forKey: sessionID)?.task.cancel()
+        guard !turnInterruptRecoveryDelaysNanoseconds.isEmpty else {
+            return
+        }
+        let token = UUID()
+        let delays = turnInterruptRecoveryDelaysNanoseconds
+        let task = Task { [weak self] in
+            for delay in delays {
+                guard !Task.isCancelled else { return }
+                if delay > 0 {
+                    do {
+                        try await Task.sleep(nanoseconds: delay)
+                    } catch {
+                        return
+                    }
+                }
+                guard let self,
+                      await self.isCurrentTurnInterruptRecovery(
+                        sessionID: sessionID,
+                        turnID: turnID,
+                        token: token
+                      ) else {
+                    return
+                }
+                do {
+                    // economy 只取最新的 summary turn，足以确认目标 turn 是否进入终态；
+                    // 两种历史后端都会复用既有的权威完成恢复逻辑。
+                    _ = try await self.messagesPage(
+                        sessionID: sessionID,
+                        before: nil,
+                        limit: 80,
+                        loadMode: .economy,
+                        recoveringInterruptedTurnID: turnID
+                    )
+                } catch {
+                    // 短暂网络或 app-server 高负载不应把本地 turn 乐观清空；
+                    // 保留后续有界重试，最终仍由实时事件或重新连接的 resume 快照收敛。
+                }
+            }
+            await self?.clearTurnInterruptRecovery(sessionID: sessionID, token: token)
+        }
+        turnInterruptRecoveryTasksBySessionID[sessionID] = CodexAppServerTurnInterruptRecoveryTask(
+            turnID: turnID,
+            token: token,
+            task: task
+        )
+    }
+
+    func isCurrentTurnInterruptRecovery(
+        sessionID: SessionID,
+        turnID: TurnID,
+        token: UUID
+    ) -> Bool {
+        guard let current = turnInterruptRecoveryTasksBySessionID[sessionID] else {
+            return false
+        }
+        return current.turnID == turnID && current.token == token
+    }
+
+    func finishTurnInterruptRecoveryIfMatching(sessionID: SessionID, turnID: TurnID) {
+        guard let current = turnInterruptRecoveryTasksBySessionID[sessionID],
+              current.turnID == turnID else {
+            return
+        }
+        turnInterruptRecoveryTasksBySessionID.removeValue(forKey: sessionID)
+        current.task.cancel()
+    }
+
+    func clearTurnInterruptRecovery(sessionID: SessionID, token: UUID) {
+        guard let current = turnInterruptRecoveryTasksBySessionID[sessionID],
+              current.token == token else {
+            return
+        }
+        turnInterruptRecoveryTasksBySessionID.removeValue(forKey: sessionID)
+    }
+
+    func cancelAllTurnInterruptRecoveryTasks() {
+        let tasks = turnInterruptRecoveryTasksBySessionID.values.map(\.task)
+        turnInterruptRecoveryTasksBySessionID.removeAll(keepingCapacity: false)
+        tasks.forEach { $0.cancel() }
     }
 
     func respondToApproval(sessionID: SessionID? = nil, approvalID: String, decision: String) async throws {
@@ -2162,6 +2285,7 @@ actor CodexAppServerSessionRuntime {
     func installConnection(_ prepared: CodexAppServerPreparedConnection) {
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
+        cancelAllTurnInterruptRecoveryTasks()
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
         threadResumeTasksBySessionID.removeAll(keepingCapacity: true)
         // 新连接还没在 app-server 上 resume 任何 thread，清空记录，逼迫下一次发送先补 resume。

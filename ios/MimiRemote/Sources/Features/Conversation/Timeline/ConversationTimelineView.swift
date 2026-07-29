@@ -324,7 +324,7 @@ struct ConversationTimelineView: View {
                     Task { await sessionStore.retryFailedUserMessage(message) }
                 },
                 stop: {
-                    sessionStore.sendCtrlC()
+                    sessionStore.interruptSelectedTurn()
                 },
                 previewFile: { path in
                     try await sessionStore.previewFile(path: path)
@@ -422,7 +422,7 @@ struct ConversationTimelineView: View {
                     Task { await sessionStore.retryFailedUserMessage(message) }
                 },
                 stop: {
-                    sessionStore.sendCtrlC()
+                    sessionStore.interruptSelectedTurn()
                 },
                 previewFile: { path in
                     try await sessionStore.previewFile(path: path)
