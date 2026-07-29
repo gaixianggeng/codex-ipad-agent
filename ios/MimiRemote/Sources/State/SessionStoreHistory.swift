@@ -146,6 +146,15 @@ extension SessionStore {
             }
             upsert(responseSession)
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
+            if !payload.isEmpty, let activeTurnID = responseSession.activeTurnID {
+                // create/resume 内部的 turn/start 已由 app-server 接受；在历史补拉前登记，
+                // 防止同一 Desktop-origin rollout 的轮询快照把本轮误判成 Mac 接管。
+                recordLocallyStartedTurn(
+                    sessionID: responseSession.id,
+                    turnID: activeTurnID,
+                    restoreSelectedConnection: false
+                )
+            }
             insertExpandedProjectID(responseSession.projectID)
 
             let responseSelectionLease: SessionSelectionLease?
@@ -2279,6 +2288,9 @@ extension SessionStore {
         let runtimeActivities = runtimeActivityBySessionID.filter { validSessionIDs.contains($0.key) }
         if runtimeActivities != runtimeActivityBySessionID {
             runtimeActivityBySessionID = runtimeActivities
+        }
+        locallyStartedTurnIDBySessionID = locallyStartedTurnIDBySessionID.filter {
+            validSessionIDs.contains($0.key)
         }
     }
 

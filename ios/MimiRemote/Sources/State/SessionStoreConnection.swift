@@ -145,12 +145,23 @@ extension SessionStore {
         }
         socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
             Task { @MainActor in
-                guard let self,
-                      self.isCurrentWebSocketConnection(
-                          sessionID: session.id,
-                          generation: connectionGeneration,
-                          hostScope: hostScope
-                      ) else {
+                guard let self else {
+                    return
+                }
+                let isCurrentConnection = self.isCurrentWebSocketConnection(
+                    sessionID: session.id,
+                    generation: connectionGeneration,
+                    hostScope: hostScope
+                )
+                // external-activity 可能在 turn/start ACK 前先误断开 socket。仅当迟到 ACK 的
+                // turnID 与被标成 Mac 活动的 turn 精确一致时，允许旧连接完成这次对账；
+                // Host 已切换、turnID 不同或普通旧回调仍全部丢弃。
+                guard isCurrentConnection ||
+                        self.canReconcileAcceptedTurnFromRetiredSocket(
+                            sessionID: session.id,
+                            outcome: outcome,
+                            hostScope: hostScope
+                        ) else {
                     return
                 }
                 self.handleTurnSendOutcome(
@@ -1896,6 +1907,7 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         externalActivityBySessionID = [:]
         externalReadOnlySessionIDs = []
+        locallyStartedTurnIDBySessionID = [:]
         isRefreshingExternalActivity = false
         externalActivityCapabilityUnavailable = false
         runtimeActivityBySessionID = [:]
