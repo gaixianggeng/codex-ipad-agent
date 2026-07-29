@@ -87,6 +87,36 @@ struct SessionRuntimeBadge: View {
     }
 }
 
+/// 置顶属于用户主动设置的稳定状态，用品牌紫实底与白色钉子提升扫读辨识度。
+/// 组件统一服务规划 Tab、工作区最近规划和侧栏，避免三个入口各自使用不同强调方式。
+struct SessionPinnedBadge: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var compact = false
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let side: CGFloat = compact ? 17 : 20
+
+        Image(systemName: "pin.fill")
+            .font(themeStore.uiFont(size: compact ? 8 : 10, weight: .bold))
+            .foregroundStyle(tokens.primaryActionForeground)
+            .frame(width: side, height: side)
+            .background(
+                tokens.primaryAction,
+                in: RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                    .stroke(tokens.primaryActionForeground.opacity(0.18), lineWidth: 0.5)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(L10n.text("ui.pinned"))
+            .fixedSize()
+    }
+}
+
 enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -448,7 +478,9 @@ struct SessionIndexRow: View {
             }
 
             HStack(spacing: 6) {
-                if isPinned { Image(systemName: "pin.fill") }
+                if isPinned {
+                    SessionPinnedBadge(compact: style == .sidebar)
+                }
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 

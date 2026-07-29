@@ -1088,7 +1088,10 @@ final class SessionStore: ObservableObject {
 
     /// 会话库不跟随 selectedProjectID 过滤；根侧栏和会话页始终看到同一份跨工作区轻量索引。
     var sessionLibrarySessions: [AgentSession] {
-        sessionsMatchingSearch(sessionsIncludingRemoteSearch(Self.sortedSessions(sessions.filter(isListableSession))))
+        let merged = sessionsIncludingRemoteSearch(sessions.filter(isListableSession))
+        // 规划 Tab 必须直接依赖当前 pinnedSessionIDs 生成顺序，避免只有切换 Tab
+        // 触发整页重建后才看到置顶结果；搜索补入的远端会话也使用同一排序口径。
+        return sessionsMatchingSearch(sortedSessionsForList(merged))
     }
 
     /// 最近列表严格按活动时间排序，置顶只影响完整会话库，不改变“最近”的时间语义。
