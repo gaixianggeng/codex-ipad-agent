@@ -2,6 +2,8 @@ import Foundation
 
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
 extension CodexAppServerSessionRuntime {
+    private var terminalInteractionTombstoneLimit: Int { 512 }
+
     func releaseStaleApprovalRequest(_ request: CodexAppServerServerRequest) {
         removePendingApprovalRequest(request)
         guard let connection else {
@@ -1410,6 +1412,145 @@ extension CodexAppServerSessionRuntime {
             ?? request.id.description
     }
 
+    func isTerminalInteractionNotification(_ notification: CodexAppServerNotification) -> Bool {
+        switch notification.method {
+        case "turn/completed", "thread/closed", "error":
+            return true
+        default:
+            return false
+        }
+    }
+
+    func clearPendingServerRequestsForTerminalNotification(_ notification: CodexAppServerNotification) {
+        let params = notification.params?.objectValue ?? [:]
+        guard let sessionID = approvalSessionID(from: params) else {
+            return
+        }
+        let turnID = notification.method == "thread/closed"
+            ? nil
+            : firstString(in: params, keys: ["turnId", "turnID", "turn_id"])
+                ?? params["turn"]?.objectValue?["id"]?.stringValue
+
+        for request in Set(pendingApprovalRequestsByID.values)
+        where terminalNotificationMatches(request: request, sessionID: sessionID, turnID: turnID) {
+            removePendingApprovalRequest(request)
+        }
+        for request in Set(pendingUserInputRequestsByID.values)
+        where terminalNotificationMatches(request: request, sessionID: sessionID, turnID: turnID) {
+            removePendingUserInputRequest(request)
+        }
+        discardBufferedInteractionRequests(sessionID: sessionID, turnID: turnID)
+    }
+
+    func terminalNotificationMatches(
+        request: CodexAppServerServerRequest,
+        sessionID: SessionID,
+        turnID: TurnID?
+    ) -> Bool {
+        guard approvalSessionID(for: request) == sessionID else {
+            return false
+        }
+        guard let turnID else {
+            return true
+        }
+        // MCP elicitation 的 turnId 在协议中可省略；一旦所属 thread 的 turn 已 terminal，
+        // 这类无 turnId 请求也必须随该边界淘汰，不能在 reattach 时复活。
+        guard let requestTurnID = approvalTurnID(for: request) else {
+            return true
+        }
+        return requestTurnID == turnID
+    }
+
+    func discardBufferedInteractionRequests(sessionID: SessionID, turnID: TurnID?) {
+        guard var events = bufferedEventsBySessionID[sessionID] else {
+            return
+        }
+        events.removeAll { event in
+            switch event {
+            case .approvalRequest(_, let metadata),
+                 .userInputRequest(_, let metadata):
+                guard let turnID else {
+                    return true
+                }
+                return metadata.turnID == nil || metadata.turnID == turnID
+            default:
+                return false
+            }
+        }
+        if events.isEmpty {
+            bufferedEventsBySessionID.removeValue(forKey: sessionID)
+        } else {
+            bufferedEventsBySessionID[sessionID] = events
+        }
+    }
+
+    func isResolvedServerRequestTombstoned(_ request: CodexAppServerServerRequest) -> Bool {
+        let sessionID = approvalSessionID(for: request)
+        let ids = uniqueStrings([
+            approvalID(for: request),
+            userInputRequestID(for: request),
+            request.id.description
+        ].compactMap { $0 })
+        return ids.contains { id in
+            if let sessionID,
+               resolvedServerRequestTombstonesByKey[resolvedRequestTombstoneKey(sessionID: sessionID, requestID: id)] != nil {
+                return true
+            }
+            return resolvedServerRequestTombstonesByKey[resolvedRequestTombstoneKey(sessionID: nil, requestID: id)] != nil
+        }
+    }
+
+    func isTerminallyStaleServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
+        guard let sessionID = approvalSessionID(for: request) else {
+            return false
+        }
+        if let turnID = approvalTurnID(for: request),
+           terminalTurnTombstonesByKey[terminalTurnTombstoneKey(sessionID: sessionID, turnID: turnID)] != nil {
+            return true
+        }
+        guard approvalTurnID(for: request) == nil,
+              terminalSessionBarriers[sessionID] != nil else {
+            return false
+        }
+        // 新 turn 的 RPC 与 turn/started 通知也可能跨 pump 乱序；本地已经明确在启动或持有
+        // 非 terminal active turn 时，无 turnId MCP 请求属于新一轮，不能被上一轮 barrier 误杀。
+        if sessionsStartingTurn.contains(sessionID)
+            || contextsBySessionID[sessionID]?.activeTurnID != nil {
+            return false
+        }
+        return true
+    }
+
+    func resolvedRequestTombstoneKey(sessionID: SessionID?, requestID: String) -> String {
+        "\(sessionID ?? "*")#\(requestID)"
+    }
+
+    func terminalTurnTombstoneKey(sessionID: SessionID, turnID: TurnID) -> String {
+        "\(sessionID)#\(turnID)"
+    }
+
+    func pruneInteractionTombstones() {
+        for key in oldestTombstoneKeysToRemove(resolvedServerRequestTombstonesByKey) {
+            resolvedServerRequestTombstonesByKey.removeValue(forKey: key)
+        }
+        for key in oldestTombstoneKeysToRemove(terminalTurnTombstonesByKey) {
+            terminalTurnTombstonesByKey.removeValue(forKey: key)
+        }
+        for key in oldestTombstoneKeysToRemove(terminalSessionBarriers) {
+            terminalSessionBarriers.removeValue(forKey: key)
+        }
+    }
+
+    func oldestTombstoneKeysToRemove<Key: Hashable>(_ entries: [Key: Date]) -> [Key] {
+        guard entries.count > terminalInteractionTombstoneLimit else {
+            return []
+        }
+        return entries
+            .sorted(by: { $0.value < $1.value })
+            .prefix(entries.count - terminalInteractionTombstoneLimit)
+            .map(\.key)
+    }
+
     func rememberPendingApprovalRequest(_ request: CodexAppServerServerRequest) {
         guard isApprovalLikeServerRequest(request) else {
             return
@@ -1454,6 +1595,13 @@ extension CodexAppServerSessionRuntime {
             params["itemId"]?.stringValue,
             params["item_id"]?.stringValue
         ].compactMap { $0 })
+        let tombstoneTime = Date()
+        for id in ids {
+            resolvedServerRequestTombstonesByKey[
+                resolvedRequestTombstoneKey(sessionID: sessionID, requestID: id)
+            ] = tombstoneTime
+        }
+        pruneInteractionTombstones()
 
         var resolved = CodexAppServerResolvedServerRequests()
         for id in ids {
@@ -1476,10 +1624,44 @@ extension CodexAppServerSessionRuntime {
         }
         if let sessionID,
            !resolved.approvalSessionIDs.contains(sessionID),
-           !resolved.userInputSessionIDs.contains(sessionID) {
+           !resolved.userInputSessionIDs.contains(sessionID),
+           terminalSessionBarriers[sessionID] == nil {
             resolved.approvalSessionIDs.append(sessionID)
         }
+        discardBufferedResolvedInteractionRequests(sessionID: sessionID, requestIDs: Set(ids))
         return resolved
+    }
+
+    func discardBufferedResolvedInteractionRequests(
+        sessionID: SessionID?,
+        requestIDs: Set<String>
+    ) {
+        guard !requestIDs.isEmpty else {
+            return
+        }
+        let sessionIDs = sessionID.map { [$0] } ?? Array(bufferedEventsBySessionID.keys)
+        for candidateSessionID in sessionIDs {
+            guard var events = bufferedEventsBySessionID[candidateSessionID] else {
+                continue
+            }
+            events.removeAll { event in
+                switch event {
+                case .approvalRequest(let request, let metadata):
+                    return requestIDs.contains(request.id)
+                        || metadata.itemID.map(requestIDs.contains) == true
+                case .userInputRequest(let request, let metadata):
+                    return requestIDs.contains(request.id)
+                        || metadata.itemID.map(requestIDs.contains) == true
+                default:
+                    return false
+                }
+            }
+            if events.isEmpty {
+                bufferedEventsBySessionID.removeValue(forKey: candidateSessionID)
+            } else {
+                bufferedEventsBySessionID[candidateSessionID] = events
+            }
+        }
     }
 
     func clearAllPendingServerRequests() -> CodexAppServerResolvedServerRequests {
@@ -1587,19 +1769,29 @@ extension CodexAppServerSessionRuntime {
         if lower.contains("approval") {
             return true
         }
-        // URL 型 MCP elicitation 没有表单内容，复用明确的批准/拒绝交互更安全。
+        // URL 以及空/不可完整渲染的已知 MCP form 都使用明确的一次性允许/拒绝交互。
         return request.method == "mcpServer/elicitation/request"
-            && request.params?.objectValue?["mode"]?.stringValue == "url"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .confirmation
     }
 
     func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
         if request.method == "item/tool/requestUserInput" {
             return true
         }
-        // form/openai-form 都投影到现有补充信息卡；未知 mode 也走此路径，
-        // 用户没有填入时回 decline，不会误接受无法理解的 MCP 请求。
+        // 只有能被当前 UI 完整表达的 form 才进入补充信息卡。
         return request.method == "mcpServer/elicitation/request"
-            && request.params?.objectValue?["mode"]?.stringValue != "url"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .form
+    }
+
+    func isUnsupportedMCPElicitation(_ request: CodexAppServerServerRequest) -> Bool {
+        request.method == "mcpServer/elicitation/request"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .unsupported
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {

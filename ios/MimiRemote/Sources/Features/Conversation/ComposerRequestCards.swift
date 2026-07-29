@@ -362,7 +362,10 @@ struct PendingApprovalActionCard: View {
         return Button {
             onDecision("accept")
         } label: {
-            Label(L10n.text("ui.approve_once"), systemImage: "checkmark.circle.fill")
+            Label(
+                L10n.text(approval.kind == "mcp_elicitation" ? "ui.allow_once" : "ui.approve_once"),
+                systemImage: "checkmark.circle.fill"
+            )
                 .font(themeStore.uiFont(.callout, weight: .semibold))
                 .foregroundStyle(isEnabled ? tokens.primaryActionForeground : tokens.tertiaryText)
                 .frame(maxWidth: .infinity, minHeight: 52)

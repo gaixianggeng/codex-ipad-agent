@@ -313,6 +313,157 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(state.draft, PendingUserInputDraft())
     }
 
+    func testTerminalTurnClearsMcpFormAndReattachDoesNotReplayIt() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-terminal-form"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thr_terminal_form"),
+                "turnId": .string("turn_terminal_form"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string("请选择目标状态"),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "state": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("Todo"), .string("Done")])
+                        ])
+                    ])
+                ])
+            ])
+        )
+
+        await runtime.handle(request)
+        let livePending = await runtime.pendingInteractionEvents(sessionID: "thr_terminal_form")
+        XCTAssertTrue(livePending.contains {
+            if case .userInputRequest(let input, _) = $0 {
+                return input.id == "mcp-terminal-form"
+            }
+            return false
+        })
+
+        await runtime.handle(CodexAppServerNotification(
+            method: "turn/completed",
+            params: .object([
+                "threadId": .string("thr_terminal_form"),
+                "turnId": .string("turn_terminal_form")
+            ])
+        ))
+        // terminal 之后迟到的 resolved 也不能再投影“恢复为 running”。
+        await runtime.handle(CodexAppServerNotification(
+            method: "serverRequest/resolved",
+            params: .object([
+                "threadId": .string("thr_terminal_form"),
+                "turnId": .string("turn_terminal_form"),
+                "requestId": .string("mcp-terminal-form")
+            ])
+        ))
+
+        let pendingAfterTerminal = await runtime.pendingInteractionEvents(sessionID: "thr_terminal_form")
+        XCTAssertTrue(pendingAfterTerminal.isEmpty)
+
+        // 模拟切页后重新订阅：backlog 只应包含终态，不得重新投递旧 MCP form。
+        let reattached = await runtime.attachEvents(
+            sessionID: "thr_terminal_form",
+            replayPolicy: .stateOnly
+        )
+        var iterator = reattached.makeAsyncIterator()
+        var replayed: [AgentEvent] = []
+        for _ in 0..<2 {
+            if let event = await iterator.next() {
+                replayed.append(event)
+            }
+        }
+        reattached.cancel()
+        XCTAssertFalse(replayed.contains {
+            if case .userInputRequest = $0 {
+                return true
+            }
+            return false
+        })
+        XCTAssertTrue(replayed.contains {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.sessionID == "thr_terminal_form"
+            }
+            return false
+        })
+    }
+
+    func testResolvedBeforeServerRequestDoesNotCreateOrphanUserInput() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        await runtime.handle(CodexAppServerNotification(
+            method: "serverRequest/resolved",
+            params: .object([
+                "threadId": .string("thr_resolved_first"),
+                "requestId": .string("mcp-resolved-first")
+            ])
+        ))
+        await runtime.handle(CodexAppServerServerRequest(
+            id: .string("mcp-resolved-first"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thr_resolved_first"),
+                "turnId": .string("turn_resolved_first"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string("请选择操作"),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "choice": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("one"), .string("two")])
+                        ])
+                    ])
+                ])
+            ])
+        ))
+
+        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_resolved_first")
+        XCTAssertTrue(pending.isEmpty)
+        let buffered = await runtime.bufferedEvents(
+            sessionID: "thr_resolved_first",
+            replayPolicy: .stateOnly
+        )
+        XCTAssertFalse(buffered.contains {
+            if case .userInputRequest = $0 {
+                return true
+            }
+            return false
+        })
+    }
+
+    func testTerminalBeforeNoTurnMcpConfirmationDoesNotCreateOrphanApproval() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        await runtime.handle(CodexAppServerNotification(
+            method: "turn/completed",
+            params: .object([
+                "threadId": .string("thr_terminal_first"),
+                "turnId": .string("turn_terminal_first")
+            ])
+        ))
+        await runtime.handle(CodexAppServerServerRequest(
+            id: .string("mcp-terminal-first"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thr_terminal_first"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string("Allow the linear MCP server to run tool \"save_issue\"?"),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([:])
+                ])
+            ])
+        ))
+
+        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_terminal_first")
+        XCTAssertTrue(pending.isEmpty)
+    }
+
     private func makeComposerTextView(
         text: Binding<String>,
         focusRequestID: Binding<UUID?>,

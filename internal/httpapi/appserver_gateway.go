@@ -249,6 +249,9 @@ type appServerGatewayPendingClientRequest struct {
 
 type appServerGatewayPendingServerRequest struct {
 	method    string
+	threadID  string
+	turnID    string
+	itemID    string
 	createdAt time.Time
 }
 

@@ -1664,6 +1664,69 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "environment" })?.options.map(\.label), ["staging", "production"])
     }
 
+    func testEmptyOrUnrenderableMcpSchemaProjectsToExplicitConfirmation() {
+        let requests = [
+            CodexAppServerServerRequest(
+                id: .string("mcp-empty"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow the linear MCP server to run tool \"save_issue\"?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([:])
+                    ])
+                ])
+            ),
+            CodexAppServerServerRequest(
+                id: .string("mcp-object"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow this MCP request?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "nested": .object(["type": .string("object")])
+                        ])
+                    ])
+                ])
+            )
+        ]
+
+        for request in requests {
+            var projector = CodexAppServerEventProjector()
+            guard case .approvalRequest(let approval, let metadata) = projector.project(request) else {
+                return XCTFail("empty/unsupported MCP form must use explicit confirmation")
+            }
+            XCTAssertEqual(metadata.sessionID, "thread-1")
+            XCTAssertEqual(approval.kind, "mcp_elicitation")
+            XCTAssertEqual(approval.availableDecisions, ["accept", "decline"])
+            XCTAssertFalse(approval.body?.isEmpty ?? true)
+        }
+    }
+
+    func testUnknownMcpElicitationModeDoesNotExposeApproval() {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-future"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "serverName": .string("unknown"),
+                "mode": .string("future-destructive-mode"),
+                "message": .string("Approve everything")
+            ])
+        )
+        var projector = CodexAppServerEventProjector()
+        XCTAssertNil(projector.project(request))
+    }
+
     func testMcpURLelicitationProjectsToExplicitApproval() {
         let request = CodexAppServerServerRequest(
             id: .int(17),

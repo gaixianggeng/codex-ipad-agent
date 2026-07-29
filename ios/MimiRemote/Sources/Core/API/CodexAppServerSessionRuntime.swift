@@ -102,6 +102,11 @@ actor CodexAppServerSessionRuntime {
     ] = [:]
     var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
+    // notification 与 reverse server request 由两条 pump 投递。resolved/terminal 可能先落到 actor，
+    // 因此保留有界 tombstone，拒绝随后迟到的旧请求，避免重新生成孤儿待输入状态。
+    var resolvedServerRequestTombstonesByKey: [String: Date] = [:]
+    var terminalTurnTombstonesByKey: [String: Date] = [:]
+    var terminalSessionBarriers: [SessionID: Date] = [:]
     var accountRateLimit: RateLimitSummary?
     var rateLimitRefreshTask: Task<RateLimitSummary?, Never>?
     var lastRateLimitRefreshAt: Date?
@@ -2532,11 +2537,11 @@ actor CodexAppServerSessionRuntime {
             )
             return
         }
+        updateTerminalInteractionBarrier(from: notification)
         recordLiveSignal(from: notification)
         updateContext(from: notification)
         let resolved = clearResolvedServerRequest(from: notification)
-        if notification.method == "serverRequest/resolved",
-           !resolved.approvalSessionIDs.isEmpty || !resolved.userInputSessionIDs.isEmpty {
+        if notification.method == "serverRequest/resolved" {
             // resolved 通知本身不区分 approval 和 requestUserInput/MCP form。必须根据本地挂起表
             // 投影对应的 resolved 事件，否则 MCP 表单已回答后补充信息卡仍会留在 UI。
             for sessionID in resolved.approvalSessionIDs {
@@ -2546,6 +2551,11 @@ actor CodexAppServerSessionRuntime {
                 emitUserInputResolved(sessionID: sessionID, skipped: false)
             }
             return
+        }
+        if isTerminalInteractionNotification(notification) {
+            // terminal 本身会让 Store/Conversation 投影收敛，不再补发 resolved 事件；
+            // 否则 resolved 的“恢复为 running”语义会覆盖刚落地的 completed/failed/closed。
+            clearPendingServerRequestsForTerminalNotification(notification)
         }
         if notification.method == "serverRequest/replay" {
             redeliverReplayedServerRequests(notification)
@@ -2610,7 +2620,60 @@ actor CodexAppServerSessionRuntime {
         )
     }
 
+    func updateTerminalInteractionBarrier(from notification: CodexAppServerNotification) {
+        let params = notification.params?.objectValue ?? [:]
+        guard let sessionID = approvalSessionID(from: params) else {
+            return
+        }
+        if notification.method == "turn/started" {
+            // 新 turn 是 thread 重新进入活动态的明确边界；无 turnId 的新 MCP 请求可以继续显示。
+            terminalSessionBarriers.removeValue(forKey: sessionID)
+            return
+        }
+        guard isTerminalInteractionNotification(notification) else {
+            return
+        }
+        let now = Date()
+        terminalSessionBarriers[sessionID] = now
+        if let turnID = firstString(in: params, keys: ["turnId", "turnID", "turn_id"])
+            ?? params["turn"]?.objectValue?["id"]?.stringValue {
+            terminalTurnTombstonesByKey[terminalTurnTombstoneKey(sessionID: sessionID, turnID: turnID)] = now
+        }
+        pruneInteractionTombstones()
+    }
+
+    func declineServerRequestWithoutProjection(_ request: CodexAppServerServerRequest) {
+        removePendingApprovalRequest(request)
+        removePendingUserInputRequest(request)
+        guard let connection else {
+            return
+        }
+        let result = isUserInputServerRequest(request)
+            ? userInputResponse(for: request, answers: [:])
+            : approvalResponse(
+                method: request.method,
+                params: request.params?.objectValue ?? [:],
+                decision: "decline"
+            )
+        Task { [connection] in
+            // 终态之后的迟到请求或未知 MCP mode 不得进入 UI，也不能被批准。
+            // 回一个 fail-closed 结果只负责释放上游，不再投影 resolved 去覆盖 terminal 状态。
+            try? await connection.respond(to: request, result: result)
+        }
+    }
+
     func handle(_ request: CodexAppServerServerRequest) {
+        if isResolvedServerRequestTombstoned(request) {
+            return
+        }
+        if isUnsupportedMCPElicitation(request) {
+            declineServerRequestWithoutProjection(request)
+            return
+        }
+        if isTerminallyStaleServerRequest(request) {
+            declineServerRequestWithoutProjection(request)
+            return
+        }
         if isUserInputServerRequest(request) {
             handleUserInputRequest(request)
             return
@@ -2652,6 +2715,13 @@ actor CodexAppServerSessionRuntime {
                 continue
             }
             let request = CodexAppServerServerRequest(id: id, method: method, params: entry["params"])
+            if isResolvedServerRequestTombstoned(request) {
+                continue
+            }
+            if isUnsupportedMCPElicitation(request) || isTerminallyStaleServerRequest(request) {
+                declineServerRequestWithoutProjection(request)
+                continue
+            }
             if isUserInputServerRequest(request) {
                 handleUserInputRequest(request)
                 continue
