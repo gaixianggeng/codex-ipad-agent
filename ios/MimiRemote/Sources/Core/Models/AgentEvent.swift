@@ -1,5 +1,38 @@
 import Foundation
 
+// Codex 0.146+ 会把 MCP 工具审批编码成一个空 schema 的 form elicitation。
+// 必须依赖私有元数据精确识别，不能把所有空表单都当成审批，否则第三方 MCP 的普通表单会被误授权。
+enum CodexMCPToolApprovalProtocol {
+    static let kind = "mcp_tool"
+
+    static func isToolCall(_ params: [String: CodexAppServerJSONValue]) -> Bool {
+        params["_meta"]?.objectValue?["codex_approval_kind"]?.stringValue == "mcp_tool_call"
+    }
+
+    static func persistenceModes(_ params: [String: CodexAppServerJSONValue]) -> Set<String> {
+        guard let value = params["_meta"]?.objectValue?["persist"] else {
+            return []
+        }
+        if let mode = value.stringValue {
+            return [mode]
+        }
+        return Set(value.arrayValue?.compactMap(\.stringValue) ?? [])
+    }
+
+    static func availableDecisions(_ params: [String: CodexAppServerJSONValue]) -> [String] {
+        let modes = persistenceModes(params)
+        var decisions = ["accept"]
+        if modes.contains("session") {
+            decisions.append("acceptForSession")
+        }
+        if modes.contains("always") {
+            decisions.append("acceptAlways")
+        }
+        decisions.append("decline")
+        return decisions
+    }
+}
+
 enum AgentEvent {
     case session(AgentSession)
     case sessionRow(DataFlowSessionRow, AgentEventMetadata)
@@ -732,7 +765,8 @@ struct CodexAppServerEventProjector {
             return .userInputRequest(request, metadata)
         }
         if request.method == "mcpServer/elicitation/request",
-           params["mode"]?.stringValue != "url" {
+           params["mode"]?.stringValue != "url",
+           !CodexMCPToolApprovalProtocol.isToolCall(params) {
             let metadata = makeMetadata(from: params)
             guard let userInput = mcpElicitationUserInputRequest(
                 from: params,
@@ -747,7 +781,7 @@ struct CodexAppServerEventProjector {
             return nil
         }
         let metadata = makeMetadata(from: params)
-        let kind = approvalKind(method: request.method)
+        let kind = approvalKind(method: request.method, params: params)
         let itemID = metadata.itemID ?? request.id.description
         return .approvalRequest(
             AgentApprovalRequest(
@@ -756,7 +790,9 @@ struct CodexAppServerEventProjector {
                 body: approvalBody(kind: kind, params: params),
                 kind: kind,
                 risk: firstString(in: params, keys: ["risk"]) ?? "high",
-                availableDecisions: params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue),
+                availableDecisions: kind == CodexMCPToolApprovalProtocol.kind
+                    ? CodexMCPToolApprovalProtocol.availableDecisions(params)
+                    : params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue),
                 persistentPermissionRules: eligiblePersistentPermissionRules(from: params)
             ),
             metadata
@@ -1501,16 +1537,25 @@ struct CodexAppServerEventProjector {
     ) -> Bool {
         let lower = method.lowercased()
         return lower.contains("approval")
-            || (method == "mcpServer/elicitation/request" && params["mode"]?.stringValue == "url")
+            || (method == "mcpServer/elicitation/request"
+                && (params["mode"]?.stringValue == "url"
+                    || CodexMCPToolApprovalProtocol.isToolCall(params)))
     }
 
-    private func approvalKind(method: String) -> String {
+    private func approvalKind(
+        method: String,
+        params: [String: CodexAppServerJSONValue]
+    ) -> String {
         let lower = method.lowercased()
         if lower.contains("filechange") || lower.contains("applypatch") {
             return "file_change"
         }
         if lower.contains("permission") {
             return "permission"
+        }
+        if lower.contains("mcpserver/elicitation"),
+           CodexMCPToolApprovalProtocol.isToolCall(params) {
+            return CodexMCPToolApprovalProtocol.kind
         }
         if lower.contains("mcpserver/elicitation") {
             return "mcp_elicitation"
@@ -1526,7 +1571,7 @@ struct CodexAppServerEventProjector {
             return L10n.text("ui.agent_requests_elevated_privileges")
         case "user_input":
             return L10n.text("ui.agent_requests_additional_input")
-        case "mcp_elicitation":
+        case "mcp_elicitation", CodexMCPToolApprovalProtocol.kind:
             let server = firstString(in: params, keys: ["serverName"]) ?? L10n.text("ui.mcp_service")
             return L10n.format("ui.value_requests_user_confirmation", server)
         default:
@@ -1548,7 +1593,7 @@ struct CodexAppServerEventProjector {
             let reason = firstString(in: params, keys: ["reason", "message"])
             return [command, toolName, inputSummary, reason].compactMap { $0 }.joined(separator: "\n\n").nilIfEmpty
         }
-        if kind == "mcp_elicitation" {
+        if kind == "mcp_elicitation" || kind == CodexMCPToolApprovalProtocol.kind {
             return [
                 firstString(in: params, keys: ["message"]),
                 firstString(in: params, keys: ["url"])
