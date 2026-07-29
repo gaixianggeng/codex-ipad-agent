@@ -30,6 +30,171 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertFalse((payload?["version"] as? String ?? "").isEmpty)
     }
 
+    @MainActor
+    func testLivePersistedWindowsConnectionFromPhysicalDevice() async throws {
+        guard let expectedPath = ProcessInfo.processInfo.environment["MIMI_LIVE_WINDOWS_EXPECTED_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedPath.isEmpty
+        else {
+            throw XCTSkip("仅在显式提供 Windows 工作区原始路径时验证真机持久化配对")
+        }
+
+        // 直接从 App 的 UserDefaults 与 Keychain 恢复现有配对，验证冷启动不是只显示
+        // 缓存的“已连接”，同时避免把 Token、配对码或二维码写入测试输出。
+        let appStore = AppStore()
+        XCTAssertNotNil(appStore.activeConnectionProfile)
+        XCTAssertFalse(appStore.token.isEmpty, "冷启动应从 Keychain 恢复当前 Windows 凭据")
+        XCTAssertTrue(appStore.isConfigured)
+
+        let client = try appStore.makeSessionStoreAPIClient()
+        let projects = try await client.projects()
+        let project = try XCTUnwrap(
+            projects.first(where: { $0.path == expectedPath }),
+            "项目发现应返回并原样保留 Windows 路径：\(expectedPath)"
+        )
+        let page = try await client.sessionsPage(
+            projectID: project.id,
+            cursor: nil,
+            limit: 20,
+            consistency: .authoritative
+        )
+        XCTAssertFalse(page.sessions.isEmpty, "Windows thread/list 应返回至少一个会话")
+        XCTAssertTrue(
+            page.sessions.allSatisfy { $0.dir == expectedPath },
+            "thread/list cwd 必须保留原始 Windows 路径"
+        )
+    }
+
+    @MainActor
+    func testLivePersistedWindowsCreateResumeAndSendFromPhysicalDevice() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let expectedPath = environment["MIMI_LIVE_WINDOWS_EXPECTED_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedPath.isEmpty,
+            let prompt = environment["MIMI_LIVE_WINDOWS_MESSAGE"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !prompt.isEmpty,
+            let expectedReply = environment["MIMI_LIVE_WINDOWS_EXPECTED_REPLY"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedReply.isEmpty
+        else {
+            throw XCTSkip("仅在显式提供 Windows 路径、测试消息和预期回复时运行端到端真机验证")
+        }
+
+        let appStore = AppStore()
+        let client = try appStore.makeSessionStoreAPIClient()
+        let projects = try await client.projects()
+        let project = try XCTUnwrap(projects.first(where: { $0.path == expectedPath }))
+        let modelOptions = try await client.modelOptions()
+        let model = try XCTUnwrap(
+            modelOptions.first(where: {
+                $0.isDefault && $0.runtimeProvider?.lowercased() != "claude"
+            }) ?? modelOptions.first(where: {
+                !$0.hidden && $0.runtimeProvider?.lowercased() != "claude"
+            }),
+            "Windows Codex 应返回至少一个可用模型"
+        )
+        let turnOptions = CodexAppServerTurnOptions(
+            runtimeProvider: model.runtimeProvider,
+            model: model.model,
+            modelProvider: model.provider,
+            reasoningEffort: model.defaultReasoningEffort
+                .flatMap(CodexAppServerReasoningEffort.init(rawValue:)) ?? .xhigh
+        )
+        let existingPage = try await client.sessionsPage(
+            projectID: project.id,
+            cursor: nil,
+            limit: 50,
+            consistency: .authoritative
+        )
+        let existingSession = existingPage.sessions.first {
+            $0.dir == expectedPath &&
+                ($0.preview?.contains(prompt) == true || $0.title.contains(prompt))
+        }
+        let sessionID: String
+        if let existingSession {
+            // 真机验证可能因设备连接或服务端限流而重跑。复用同一验收会话，避免每次
+            // 都向用户的 Windows thread store 写入一条重复记录。
+            sessionID = existingSession.id
+        } else {
+            // createSession 会经同一 app-server runtime 依次发送 thread/start 与首个
+            // turn/start；使用独立会话避免把验收消息写入用户已有上下文。
+            let created = try await client.createSession(
+                CreateSessionRequest(
+                    projectID: project.id,
+                    projectPath: project.path,
+                    projectName: project.name,
+                    prompt: prompt,
+                    turnOptions: turnOptions,
+                    resumeID: "",
+                    clientMessageID: "mim13-\(UUID().uuidString)"
+                )
+            )
+            XCTAssertEqual(created.session.dir, expectedPath)
+            XCTAssertFalse(created.session.id.isEmpty)
+            sessionID = created.session.id
+        }
+
+        var observedMessages: [CodexHistoryMessage] = []
+        var lastHistoryError: Error?
+        for _ in 0..<36 {
+            do {
+                // economy 使用 summary itemsView；5 秒间隔既覆盖异步回复，又不会触发
+                // Windows app-server 对 thread/turns/list full 查询的临时限流。
+                observedMessages = try await client.messagesPage(
+                    sessionID: sessionID,
+                    before: nil,
+                    limit: 20,
+                    loadMode: .economy
+                ).messages
+                lastHistoryError = nil
+            } catch {
+                // Windows 上 thread/start 先创建 rollout 文件，再异步写入首条元数据；
+                // 文件存在但仍为空的极短窗口不能让端到端验收提前失败。
+                lastHistoryError = error
+                try await Task.sleep(for: .seconds(5))
+                continue
+            }
+            let sentMessageExists = observedMessages.contains {
+                $0.role == MessageRole.user.rawValue && $0.content.contains(prompt)
+            }
+            let replyExists = observedMessages.contains {
+                $0.role == MessageRole.assistant.rawValue && $0.content.contains(expectedReply)
+            }
+            if sentMessageExists && replyExists {
+                break
+            }
+            try await Task.sleep(for: .seconds(5))
+        }
+        XCTAssertTrue(
+            observedMessages.contains {
+                $0.role == MessageRole.user.rawValue && $0.content.contains(prompt)
+            },
+            "新建会话应持久化 iPad 发出的测试消息，最后错误：\(lastHistoryError?.localizedDescription ?? "无")"
+        )
+        XCTAssertTrue(
+            observedMessages.contains {
+                $0.role == MessageRole.assistant.rawValue && $0.content.contains(expectedReply)
+            },
+            "Windows Codex 应返回预期验收回复，最后错误：\(lastHistoryError?.localizedDescription ?? "无")"
+        )
+
+        let resumed = try await client.session(id: sessionID, afterSeq: nil)
+        XCTAssertEqual(resumed.session.id, sessionID)
+        XCTAssertEqual(resumed.session.dir, expectedPath)
+
+        let page = try await client.sessionsPage(
+            projectID: project.id,
+            cursor: nil,
+            limit: 50,
+            consistency: .authoritative
+        )
+        XCTAssertTrue(
+            page.sessions.contains(where: { $0.id == sessionID && $0.dir == expectedPath }),
+            "新会话应能通过 Windows thread/list 恢复"
+        )
+    }
+
     func testWorktreeDeleteResponseDecodesLegacyAndRegistryCleanupWarning() throws {
         let legacyJSON = #"{"deleted_path":"/tmp/worktree-a","worktrees":[]}"#
         let legacy = try AgentAPIClient.decoder.decode(WorktreeDeleteResponse.self, from: Data(legacyJSON.utf8))
