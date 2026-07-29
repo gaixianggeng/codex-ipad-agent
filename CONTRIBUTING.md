@@ -40,7 +40,7 @@ xcodegen generate \
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-本地默认固定使用 `iPad Pro 13-inch (M5)` Simulator。只有明确的兼容性测试才通过 `IOS_SIMULATOR_NAME` 切换 iPhone；真机部署使用独立的 `scripts/deploy-ipad.sh`。
+日常 `build` / `run` 优先使用 available、paired、USB 连接的真机，没有可用真机时回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test` 与 CI 固定使用 Simulator；兼容性测试通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
 
 Claude bridge 改动至少运行：
 

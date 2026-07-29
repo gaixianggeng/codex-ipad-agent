@@ -78,26 +78,31 @@
 
 ### 默认链路
 
-- 日常开发、编译、单测和 UI 调试固定使用 `iPad Pro 13-inch (M5)` Simulator、`MimiRemote` Scheme 和 `Debug` 配置。
+- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接的 iOS/iPadOS 真机；没有可用 USB 真机时使用 `iPad Pro 13-inch (M5)` Simulator。
+- 同时连接多台 USB 真机时优先名为 `iPad Pro` 的设备；仍无法唯一确定时明确失败并要求设置 `IOS_DEVICE_ID`，不得随机选择。
+- `build-for-testing`、`test` 和 CI 固定使用 `iPad Pro 13-inch (M5)` Simulator，避免真机签名、设备数据和快照环境干扰测试。
+- 所有入口固定使用 `MimiRemote` Scheme 和 `Debug` 配置。
 - 命令行统一通过 `bash ./scripts/ios-dev.sh` 执行：
+  - 查看本次目标：`bash ./scripts/ios-dev.sh target`
   - 编译：`bash ./scripts/ios-dev.sh build`
   - 编译测试产物：`bash ./scripts/ios-dev.sh build-for-testing`
   - 运行单测：`bash ./scripts/ios-dev.sh test`
   - 构建、安装并启动：`bash ./scripts/ios-dev.sh run`
-- 默认 DerivedData 固定为 `ios/MimiRemote/build/dev-simulator-derived`，避免不同入口重复创建缓存。
-- 目标 Simulator 不存在或不可用时必须明确失败，不得静默回退到任意已启动设备、列表第一台设备或实体机。
+- Simulator DerivedData 固定为 `ios/MimiRemote/build/dev-simulator-derived`，真机 DerivedData 固定为 `ios/MimiRemote/build/dev-device-derived`。
+- 显式设置 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID` 时，显式选择优先于自动规则。
 
 ### XcodeBuildMCP
 
-- 第一次构建、运行或测试前先读取 session defaults；仓库的 `.xcodebuildmcp/config.yaml` 已固定 project、scheme、configuration、simulator name 和 DerivedData。
-- 日常任务只使用 Simulator workflow，不调用实体机构建、安装或启动工具。
-- 不把本机 Simulator UDID 写入仓库；通过固定设备名和最新可用 OS 解析本机 UDID。
+- 第一次构建、运行或测试前先执行 `bash ./scripts/ios-dev.sh target` 并读取 session defaults。
+- 仓库的 `.xcodebuildmcp/config.yaml` 固定的是 Simulator fallback 和测试默认值；自动规则选中真机时，使用 device workflow 或统一脚本，不得继续沿用 Simulator defaults。
+- 不把本机真机或 Simulator UDID 写入仓库；每次从当前连接状态解析，显式覆盖只通过本机环境变量传入。
 
 ### 设备用途
 
-- `iPad Pro 13-inch (M5)` 是唯一日常默认目标。
+- available、paired、USB 连接的真机是日常 `build` / `run` 第一优先级；仅通过本地网络可见或历史配对的设备不算“连接到电脑”。
+- 没有可用 USB 真机时，`iPad Pro 13-inch (M5)` 是唯一 Simulator fallback。
 - `iPhone 17 Pro` 只用于明确的 iPhone 布局验收，`iPhone 17e` 只用于小屏兼容验收。切换时显式设置 `IOS_SIMULATOR_NAME`，完成后恢复默认 iPad。
-- 实体机只用于相机、通知、Keychain、Tailscale/弱网、性能以及发布前验证；使用 Xcode 或 `bash ./scripts/deploy-ipad.sh` 显式执行，不参与普通代码编译。
+- 相机、通知、Keychain、Tailscale/弱网、性能以及发布前验证仍必须使用真机；自动 fallback 到 Simulator 时不得把这些专项验证标记为完成。
 - Simulator 通过不代表真机专项验收完成，真机结果也不替代日常 Simulator 回归。
 
 ### 运行约束
@@ -105,8 +110,8 @@
 - Xcode、Codex、XcodeBuildMCP 的构建与测试串行执行，同一时间只运行一条 `xcodebuild` 链路。
 - 日常只保留一台已启动 Simulator；统一脚本在切换前关闭其他已启动 Simulator，但不会创建、擦除或删除设备。
 - 只执行 `build` 或 `build-for-testing` 时不要求预先启动 Simulator；不要为了纯编译主动开机。
-- 连续开发、调试 UI 或运行测试期间保持默认 iPad Simulator 开启，避免在同一开发时段反复启动和关闭。
-- 预计一小时内还会继续开发时可以保持开启；长时间不用、当天开发结束、准备让 Mac 合盖过夜前关闭 Simulator。
+- 使用 Simulator 连续开发、调试 UI 或运行测试期间保持默认 iPad 开启，避免在同一开发时段反复启动和关闭。
+- 使用 Simulator 且预计一小时内还会继续开发时可以保持开启；长时间不用、当天开发结束、准备让 Mac 合盖过夜前关闭。
 - 切换到兼容性设备前先关闭当前 Simulator；iPhone 验收结束后关闭 iPhone，后续开发再恢复默认 iPad。
 - 创建新设备前先检查现有设备并优先复用；不得为每次任务创建临时 Simulator。
 - 遇到高 CPU、安装卡住、Mac 睡眠恢复后状态异常或 CoreSimulator 阻塞时，先停止构建，关闭并重新启动现有 Simulator；不擦除主力设备，也不通过继续创建设备绕过。
