@@ -147,6 +147,14 @@ IOS_SIMULATOR_NAME="iPhone 17e" bash ./scripts/ios-dev.sh run
 
 XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取同一套 project、scheme、Simulator 和 DerivedData 默认值，不需要把本机 Simulator UDID 写入仓库。
 
+Simulator 开关采用“开发时保持一台、结束后关闭”的标准：
+
+- 只运行 `build` 或 `build-for-testing` 时无需预先启动 Simulator。
+- 连续开发、调试 UI 或运行测试期间保持默认 iPad 开启，不在同一开发时段反复开关。
+- 预计一小时内还会继续时可以保持开启；长时间不用、当天开发结束或准备让 Mac 合盖过夜前关闭。
+- 切换 iPhone 兼容性目标前先关闭 iPad；验收结束后关闭 iPhone，后续开发恢复默认 iPad。
+- 出现高 CPU、安装卡住或睡眠恢复异常时，关闭并重新启动现有 Simulator；不要擦除主力设备或创建新设备绕过问题。
+
 Mac Catalyst 使用同一套 SwiftUI 源码和 iPad 缩放界面，不增加 Mac 专用功能。生成工程后，可在 Apple Silicon Mac 上验证独立 Catalyst 构建：
 
 ```bash

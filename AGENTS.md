@@ -104,5 +104,9 @@
 
 - Xcode、Codex、XcodeBuildMCP 的构建与测试串行执行，同一时间只运行一条 `xcodebuild` 链路。
 - 日常只保留一台已启动 Simulator；统一脚本在切换前关闭其他已启动 Simulator，但不会创建、擦除或删除设备。
+- 只执行 `build` 或 `build-for-testing` 时不要求预先启动 Simulator；不要为了纯编译主动开机。
+- 连续开发、调试 UI 或运行测试期间保持默认 iPad Simulator 开启，避免在同一开发时段反复启动和关闭。
+- 预计一小时内还会继续开发时可以保持开启；长时间不用、当天开发结束、准备让 Mac 合盖过夜前关闭 Simulator。
+- 切换到兼容性设备前先关闭当前 Simulator；iPhone 验收结束后关闭 iPhone，后续开发再恢复默认 iPad。
 - 创建新设备前先检查现有设备并优先复用；不得为每次任务创建临时 Simulator。
-- 测试结束后关闭不再使用的设备。遇到 CoreSimulator 阻塞时，先停止构建并重启现有 Simulator 服务，不通过继续创建设备绕过。
+- 遇到高 CPU、安装卡住、Mac 睡眠恢复后状态异常或 CoreSimulator 阻塞时，先停止构建，关闭并重新启动现有 Simulator；不擦除主力设备，也不通过继续创建设备绕过。
