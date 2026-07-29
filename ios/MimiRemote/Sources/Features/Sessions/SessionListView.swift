@@ -87,6 +87,103 @@ struct SessionRuntimeBadge: View {
     }
 }
 
+/// 会话索引只用品牌图标表达运行时身份，避免名称胶囊和标题争夺横向空间。
+/// 尺寸由使用方传入，以便与同一行的 Git 图标保持一致；运行态保留品牌色，
+/// 历史态统一降为灰色，让颜色只承担“仍在进行”的状态提示。
+struct SessionRuntimeIcon: View {
+    let presentation: SessionRuntimePresentation
+    let size: CGFloat
+    let isActive: Bool
+
+    init(session: AgentSession, size: CGFloat, isActive: Bool) {
+        presentation = SessionRuntimePresentation(session: session)
+        self.size = size
+        self.isActive = isActive
+    }
+
+    var body: some View {
+        Image(presentation.brandAssetName)
+            .resizable()
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(width: renderedSize, height: renderedSize)
+            .frame(width: size, height: size)
+            .grayscale(isActive ? 0 : 1)
+            .opacity(isActive ? 0.92 : 0.46)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(presentation.title)
+            .fixedSize()
+    }
+
+    private var renderedSize: CGFloat {
+        switch presentation.kind {
+        case .codex:
+            // ChatGPT 位图自带透明内边距；只放大图形，不扩大元数据行的布局占位。
+            return size * 1.35
+        case .claude:
+            return size
+        }
+    }
+}
+
+/// 使用 Codex 与 Claude Code 桌面端都采用的经典三节点分支拓扑。
+/// 自绘可以避免 SF Symbol 的三角轮廓，同时维持小尺寸下的圆角描边与清晰度。
+struct SessionBranchIcon: View {
+    let size: CGFloat
+
+    var body: some View {
+        SessionBranchGlyph()
+            .stroke(
+                style: StrokeStyle(
+                    lineWidth: max(0.75, size * 0.08125),
+                    lineCap: .round,
+                    lineJoin: .round
+                )
+            )
+            .frame(width: size, height: size)
+            .fixedSize()
+    }
+}
+
+private struct SessionBranchGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let origin = CGPoint(
+            x: rect.midX - side / 2,
+            y: rect.midY - side / 2
+        )
+        let point: (CGFloat, CGFloat) -> CGPoint = { x, y in
+            CGPoint(x: origin.x + side * x, y: origin.y + side * y)
+        }
+        let nodeRadius = side * 0.11875
+        let upperNode = point(0.296875, 0.234375)
+        let lowerNode = point(0.296875, 0.765625)
+        let branchNode = point(0.75, 0.65625)
+
+        var path = Path()
+        for center in [upperNode, lowerNode, branchNode] {
+            path.addEllipse(
+                in: CGRect(
+                    x: center.x - nodeRadius,
+                    y: center.y - nodeRadius,
+                    width: nodeRadius * 2,
+                    height: nodeRadius * 2
+                )
+            )
+        }
+
+        path.move(to: point(0.296875, 0.353125))
+        path.addLine(to: point(0.296875, 0.646875))
+        path.move(to: point(0.296875, 0.40625))
+        path.addCurve(
+            to: point(0.63125, 0.65625),
+            control1: point(0.296875, 0.5875),
+            control2: point(0.44375, 0.65625)
+        )
+        return path
+    }
+}
+
 enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -424,12 +521,6 @@ struct SessionIndexRow: View {
 
         VStack(alignment: .leading, spacing: style == .sidebar ? 3 : 7) {
             HStack(alignment: .center, spacing: 7) {
-                if style == .library {
-                    Circle()
-                        .fill(statusColor(tokens: tokens))
-                        .frame(width: 7, height: 7)
-                }
-
                 Text(session.title)
                     .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(tokens.primaryText)
@@ -452,7 +543,11 @@ struct SessionIndexRow: View {
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
-                SessionRuntimeBadge(session: session, compact: style == .sidebar)
+                SessionRuntimeIcon(
+                    session: session,
+                    size: style == .sidebar ? 8 : 10,
+                    isActive: session.isRunning
+                )
 
                 if isExternalReadOnly {
                     Text(L10n.text("ui.mac_observe_only"))
@@ -463,10 +558,9 @@ struct SessionIndexRow: View {
 
                 if let branch = session.gitBranchName {
                     HStack(spacing: 3) {
-                        // 紫色只用于节点图标，既保留 Git 识别度，也不抢标题和运行状态的层级。
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                            .font(themeStore.uiFont(size: style == .sidebar ? 8 : 10, weight: .semibold))
-                            .foregroundStyle(tokens.primaryAction)
+                        // Git 是会话元数据而非身份标识，使用中性色避免和 AI 品牌图标竞争。
+                        SessionBranchIcon(size: style == .sidebar ? 8 : 10)
+                            .foregroundStyle(tokens.tertiaryText)
                             .accessibilityHidden(true)
 
                         Text(branch)
@@ -479,11 +573,10 @@ struct SessionIndexRow: View {
                     .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
                 }
 
-                Text(session.project.isEmpty ? session.dir : session.project)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                statusLabel(tokens: tokens)
+                // “历史”已经由列表分区表达；只有实时、异常或其他有区分度的状态才进入行内。
+                if shouldShowStatusLabel {
+                    statusLabel(tokens: tokens)
+                }
 
                 if isObserving {
                     Image(systemName: "eye")
@@ -491,10 +584,22 @@ struct SessionIndexRow: View {
                         .accessibilityLabel(L10n.text("ui.just_observe"))
                 }
 
-                if style == .sidebar {
-                    Text("·")
-                    Text(timestampText)
+                Spacer(minLength: style == .sidebar ? 4 : 10)
+
+                // 项目归属固定在尾部，长分支只压缩自身，不再带着项目名左右漂移。
+                HStack(spacing: style == .sidebar ? 4 : 6) {
+                    Text(session.project.isEmpty ? session.dir : session.project)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: style == .sidebar ? 88 : 160, alignment: .trailing)
+
+                    if style == .sidebar {
+                        Text("·")
+                        Text(timestampText)
+                    }
                 }
+                .layoutPriority(1)
             }
             .font(themeStore.uiFont(size: style == .sidebar ? 10 : 12, weight: .regular))
             .foregroundStyle(tokens.tertiaryText)
@@ -532,6 +637,10 @@ struct SessionIndexRow: View {
 
     private var status: AgentSessionDisplayStatus {
         return session.displayStatus(foregroundActivity: foregroundActivity)
+    }
+
+    private var shouldShowStatusLabel: Bool {
+        !(session.status == SessionStatus.history.rawValue && status.tone == .neutral)
     }
 
     @ViewBuilder
