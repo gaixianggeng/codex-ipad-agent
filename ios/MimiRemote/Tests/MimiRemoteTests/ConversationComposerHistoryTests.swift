@@ -370,6 +370,83 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(accumulator.text, "检查项目并补测试")
     }
 
+    func testVoiceInputToggleStateMachineCancelsPreparingAndIgnoresTranscribing() {
+        let scenarios: [
+            (
+                isPressActive: Bool,
+                isPreparing: Bool,
+                isRecording: Bool,
+                isTranscribing: Bool,
+                expected: VoiceInputToggleAction
+            )
+        ] = [
+            (false, false, false, false, .start),
+            (true, false, false, false, .end),
+            (false, true, false, false, .end),
+            (false, false, true, false, .end),
+            (true, true, false, false, .end),
+            (true, true, true, true, .ignore)
+        ]
+
+        for scenario in scenarios {
+            XCTAssertEqual(
+                VoiceInputToggleAction.resolve(
+                    isPressActive: scenario.isPressActive,
+                    isPreparing: scenario.isPreparing,
+                    isRecording: scenario.isRecording,
+                    isTranscribing: scenario.isTranscribing
+                ),
+                scenario.expected,
+                "state=\(scenario)"
+            )
+        }
+    }
+
+    func testPreparingVoiceMicButtonStateRemainsEnabledAndDescribesCancel() {
+        let state = VoiceMicButtonState(
+            isPreparing: true,
+            isRecording: false,
+            isTranscribing: false
+        )
+        let host = hostVoiceMicButton(
+            isPreparing: true,
+            isRecording: false,
+            isTranscribing: false
+        )
+        let fittedSize = host.sizeThatFits(in: CGSize(width: 200, height: 200))
+
+        XCTAssertTrue(state.isEnabled)
+        XCTAssertEqual(state.accessibilityTitle, L10n.text("ui.end_voice_input"))
+        XCTAssertEqual(state.accessibilityValue, L10n.text("ui.preparing"))
+        XCTAssertEqual(
+            state.accessibilityHint(usesRealtimeTranscription: false),
+            L10n.text("ui.tap_to_cancel_voice_input_preparation")
+        )
+        XCTAssertGreaterThanOrEqual(fittedSize.width, 44)
+        XCTAssertGreaterThanOrEqual(fittedSize.height, 44)
+    }
+
+    func testTranscribingVoiceMicButtonStateStaysDisabledAndHasNoActionHint() {
+        let state = VoiceMicButtonState(
+            isPreparing: false,
+            isRecording: false,
+            isTranscribing: true
+        )
+        let host = hostVoiceMicButton(
+            isPreparing: false,
+            isRecording: false,
+            isTranscribing: true
+        )
+        let fittedSize = host.sizeThatFits(in: CGSize(width: 200, height: 200))
+
+        XCTAssertFalse(state.isEnabled)
+        XCTAssertEqual(state.accessibilityTitle, L10n.text("ui.transcribing_speech"))
+        XCTAssertEqual(state.accessibilityValue, L10n.text("ui.transcribing"))
+        XCTAssertTrue(state.accessibilityHint(usesRealtimeTranscription: false).isEmpty)
+        XCTAssertGreaterThanOrEqual(fittedSize.width, 44)
+        XCTAssertGreaterThanOrEqual(fittedSize.height, 44)
+    }
+
     func testVoiceAudioSessionCoordinatorSerializesLifecycleAndIgnoresStaleCleanup() async throws {
         let backend = RecordingVoiceAudioSessionBackend()
         let coordinator = VoiceAudioSessionCoordinator(backend: backend)
@@ -2948,4 +3025,24 @@ private final class RecordingVoiceAudioSessionBackend: VoiceAudioSessionBackend,
             }
         }
     }
+}
+
+@MainActor
+private func hostVoiceMicButton(
+    isPreparing: Bool,
+    isRecording: Bool,
+    isTranscribing: Bool
+) -> UIHostingController<AnyView> {
+    let themeStore = ThemeStore()
+    let view = VoiceMicButton(
+        isPreparing: isPreparing,
+        isRecording: isRecording,
+        isTranscribing: isTranscribing,
+        usesRealtimeTranscription: false,
+        onTap: {}
+    )
+    .environmentObject(themeStore)
+    .frame(width: 44, height: 44)
+
+    return UIHostingController(rootView: AnyView(view))
 }
