@@ -1365,11 +1365,16 @@ private struct WorkspaceDetailView: View {
         let statusTone = recentSessionStatusColor(for: status.tone, tokens: tokens)
 
         return HStack(spacing: 12) {
-            Image(systemName: session.isRunning ? "waveform.circle.fill" : "bubble.left.fill")
-                .font(themeStore.uiFont(size: 17, weight: .semibold))
-                .foregroundStyle(statusTone)
+            SessionRuntimeIcon(
+                session: session,
+                size: 18,
+                isActive: session.isRunning
+            )
                 .frame(width: 34, height: 34)
-                .background(statusTone.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .background(
+                    tokens.elevatedSurface.opacity(session.isRunning ? 0.82 : 0.54),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.title)
@@ -1378,12 +1383,30 @@ private struct WorkspaceDetailView: View {
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    SessionRuntimeBadge(session: session)
-                    Text(status.title)
-                        .foregroundStyle(statusTone)
+                    if let branch = session.gitBranchName {
+                        HStack(spacing: 4) {
+                            SessionBranchIcon(size: 10)
+                                .foregroundStyle(tokens.tertiaryText)
+                                .accessibilityHidden(true)
+
+                            Text(branch)
+                                .foregroundStyle(tokens.tertiaryText)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
+                    }
+
+                    if shouldShowRecentSessionStatus(session, status: status) {
+                        Text(status.title)
+                            .foregroundStyle(statusTone)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                 }
                 .font(themeStore.uiFont(.caption2))
                 .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
             }
 
             Spacer(minLength: 8)
@@ -1400,6 +1423,13 @@ private struct WorkspaceDetailView: View {
         .padding(.horizontal, 14)
         .frame(minHeight: 62)
         .contentShape(Rectangle())
+    }
+
+    private func shouldShowRecentSessionStatus(
+        _ session: AgentSession,
+        status: AgentSessionDisplayStatus
+    ) -> Bool {
+        session.isRunning || status.tone == .warning || status.tone == .danger
     }
 
     private func recentSessionStatusColor(

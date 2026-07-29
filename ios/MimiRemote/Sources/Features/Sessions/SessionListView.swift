@@ -88,14 +88,17 @@ struct SessionRuntimeBadge: View {
 }
 
 /// 会话索引只用品牌图标表达运行时身份，避免名称胶囊和标题争夺横向空间。
-/// 尺寸由使用方传入，以便与同一行的 Git 图标保持一致。
-private struct SessionRuntimeIcon: View {
+/// 尺寸由使用方传入，以便与同一行的 Git 图标保持一致；运行态保留品牌色，
+/// 历史态统一降为灰色，让颜色只承担“仍在进行”的状态提示。
+struct SessionRuntimeIcon: View {
     let presentation: SessionRuntimePresentation
     let size: CGFloat
+    let isActive: Bool
 
-    init(session: AgentSession, size: CGFloat) {
+    init(session: AgentSession, size: CGFloat, isActive: Bool) {
         presentation = SessionRuntimePresentation(session: session)
         self.size = size
+        self.isActive = isActive
     }
 
     var body: some View {
@@ -105,7 +108,8 @@ private struct SessionRuntimeIcon: View {
             .scaledToFit()
             .frame(width: renderedSize, height: renderedSize)
             .frame(width: size, height: size)
-            .opacity(0.82)
+            .grayscale(isActive ? 0 : 1)
+            .opacity(isActive ? 0.92 : 0.46)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(presentation.title)
             .fixedSize()
@@ -124,7 +128,7 @@ private struct SessionRuntimeIcon: View {
 
 /// 使用 Codex 与 Claude Code 桌面端都采用的经典三节点分支拓扑。
 /// 自绘可以避免 SF Symbol 的三角轮廓，同时维持小尺寸下的圆角描边与清晰度。
-private struct SessionBranchIcon: View {
+struct SessionBranchIcon: View {
     let size: CGFloat
 
     var body: some View {
@@ -539,7 +543,11 @@ struct SessionIndexRow: View {
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
-                SessionRuntimeIcon(session: session, size: style == .sidebar ? 8 : 10)
+                SessionRuntimeIcon(
+                    session: session,
+                    size: style == .sidebar ? 8 : 10,
+                    isActive: session.isRunning
+                )
 
                 if isExternalReadOnly {
                     Text(L10n.text("ui.mac_observe_only"))
