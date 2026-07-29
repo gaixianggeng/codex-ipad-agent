@@ -1399,9 +1399,21 @@ private struct WorkspaceDetailView: View {
                     }
 
                     if shouldShowRecentSessionStatus(session, status: status) {
-                        Text(status.title)
-                            .foregroundStyle(statusTone)
-                            .fixedSize(horizontal: true, vertical: false)
+                        HStack(spacing: 4) {
+                            if shouldShowRecentSessionSpinner(session, status: status) {
+                                // 只用系统小菊花表达持续执行；待处理和失败状态依靠文字与颜色，
+                                // 避免把“需要用户动作”误读为仍在自动运行。
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(statusTone)
+                            }
+
+                            Text(status.title)
+                        }
+                        .foregroundStyle(statusTone)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(status.title)
                     }
                 }
                 .font(themeStore.uiFont(.caption2))
@@ -1430,6 +1442,13 @@ private struct WorkspaceDetailView: View {
         status: AgentSessionDisplayStatus
     ) -> Bool {
         session.isRunning || status.tone == .warning || status.tone == .danger
+    }
+
+    private func shouldShowRecentSessionSpinner(
+        _ session: AgentSession,
+        status: AgentSessionDisplayStatus
+    ) -> Bool {
+        session.isRunning && status.tone == .active
     }
 
     private func recentSessionStatusColor(
