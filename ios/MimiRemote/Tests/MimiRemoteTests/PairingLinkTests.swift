@@ -226,6 +226,10 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertFalse(store.isConfigured)
         XCTAssertTrue(store.isCredentialMemorySuspended)
         XCTAssertTrue(store.canEnterWorkbench, "后台缩略图应保留离开前的工作台或会话")
+        XCTAssertNil(store.authenticatedCredentialFingerprint)
+        XCTAssertThrowsError(try store.makeSessionStoreAPIClient()) { error in
+            XCTAssertTrue(error is CancellationError, "凭据挂起期间应取消认证请求，而不是创建空 Token Runtime")
+        }
 
         try await store.restoreCredentialsForForeground()
 
@@ -233,6 +237,15 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertFalse(store.isCredentialMemorySuspended)
         XCTAssertTrue(store.isConfigured)
         XCTAssertTrue(store.canEnterWorkbench)
+        XCTAssertEqual(store.authenticatedCredentialFingerprint, connectionCredentialFingerprint("token-a"))
+        XCTAssertFalse(store.acceptsCredentialInvalidation(AgentAPIError.credentialsInvalid(
+            status: 401,
+            credentialFingerprint: connectionCredentialFingerprint("")
+        )))
+        XCTAssertTrue(store.acceptsCredentialInvalidation(AgentAPIError.credentialsInvalid(
+            status: 401,
+            credentialFingerprint: connectionCredentialFingerprint("token-a")
+        )))
     }
 
     func testCommittingNewProfileKeepsPreviousTokenAndPersistsMetadataOnly() async throws {
@@ -1115,10 +1128,11 @@ final class PairingLinkTests: XCTestCase {
                 _ = try await client.version()
                 XCTFail("HTTP \(expectedStatus) 鉴权拒绝应进入访问码失效终态")
             } catch let error as AgentAPIError {
-                guard case .credentialsInvalid(let status) = error else {
+                guard case .credentialsInvalid(let status, let fingerprint) = error else {
                     return XCTFail("应保留鉴权失败类型，实际为：\(error)")
                 }
                 XCTAssertEqual(status, expectedStatus)
+                XCTAssertEqual(fingerprint, connectionCredentialFingerprint(token))
                 XCTAssertTrue(error.invalidatesCredentials)
             } catch {
                 XCTFail("应返回 AgentAPIError.credentialsInvalid，实际为：\(error)")
@@ -1162,14 +1176,17 @@ final class PairingLinkTests: XCTestCase {
                 httpVersion: "HTTP/1.1",
                 headerFields: nil
             ))
+            let fingerprint = connectionCredentialFingerprint("ws-token")
             let mapped = URLSessionCodexAppServerTransport.mappedTaskError(
                 URLError(.badServerResponse),
-                response: response
+                response: response,
+                credentialFingerprint: fingerprint
             )
-            guard case AgentAPIError.credentialsInvalid(let actualStatus) = mapped else {
+            guard case AgentAPIError.credentialsInvalid(let actualStatus, let actualFingerprint) = mapped else {
                 return XCTFail("WebSocket 握手 \(status) 应保留访问码失效类型：\(mapped)")
             }
             XCTAssertEqual(actualStatus, status)
+            XCTAssertEqual(actualFingerprint, fingerprint)
             XCTAssertTrue(isCredentialInvalidatingError(mapped))
         }
     }

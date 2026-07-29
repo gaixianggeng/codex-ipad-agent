@@ -291,7 +291,10 @@ private struct FileUploadTransport {
                             message: message,
                             authenticationChallenge: http.value(forHTTPHeaderField: "WWW-Authenticate")
                         ) {
-                            continuation.resume(throwing: AgentAPIError.credentialsInvalid(status: http.statusCode))
+                            continuation.resume(throwing: AgentAPIError.credentialsInvalid(
+                                status: http.statusCode,
+                                credentialFingerprint: connectionCredentialFingerprint(token)
+                            ))
                         } else {
                             continuation.resume(throwing: AgentAPIError.server(status: http.statusCode, message: message))
                         }

@@ -9,15 +9,20 @@ import UIKit
 // 冷启动重试用的客户端：前 N 次 projects() 抛错模拟隧道未就绪，之后成功返回。
 final class CredentialRejectingBootstrapClient: SessionStoreAPIClient {
     private let status: Int
+    private let credentialFingerprint: String?
     private(set) var projectsCallCount = 0
 
-    init(status: Int) {
+    init(status: Int, credentialFingerprint: String? = nil) {
         self.status = status
+        self.credentialFingerprint = credentialFingerprint
     }
 
     func projects() async throws -> [AgentProject] {
         projectsCallCount += 1
-        throw AgentAPIError.credentialsInvalid(status: status)
+        throw AgentAPIError.credentialsInvalid(
+            status: status,
+            credentialFingerprint: credentialFingerprint
+        )
     }
 
     func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {

@@ -409,6 +409,35 @@ final class AppStore: ObservableObject {
         return connectionProfiles.isEmpty || activeConnectionProfile != nil
     }
 
+    /// 认证请求只能在前台凭据完整恢复后创建。后台缩略图虽然仍保留工作台，
+    /// 但不能让任何旧任务拿空 Token 创建 REST 或 WebSocket Runtime。
+    var authenticatedCredentialFingerprint: String? {
+        guard !isCredentialMemorySuspended, isConfigured else {
+            return nil
+        }
+        return connectionCredentialFingerprint(token)
+    }
+
+    func acceptsCredentialInvalidation(_ error: Error) -> Bool {
+        guard isCredentialInvalidatingError(error),
+              let currentFingerprint = authenticatedCredentialFingerprint else {
+            return false
+        }
+        guard let rejectedFingerprint = credentialFingerprintRejectedByError(error) else {
+            // 兼容测试替身和旧的进程内错误；生产 REST/WS 传输都会携带指纹。
+            return true
+        }
+        return rejectedFingerprint == currentFingerprint
+    }
+
+    func isCurrentCredentialFingerprint(_ fingerprint: String?) -> Bool {
+        guard let currentFingerprint = authenticatedCredentialFingerprint else {
+            return false
+        }
+        // nil 仅兼容不携带传输上下文的测试 WebSocket。
+        return fingerprint == nil || fingerprint == currentFingerprint
+    }
+
     var activeConnectionProfile: ConnectionProfile? {
         guard let activeConnectionProfileID else { return nil }
         return connectionProfiles.first { $0.id == activeConnectionProfileID }
@@ -593,11 +622,17 @@ final class AppStore: ObservableObject {
 #endif
 
     func client() throws -> AgentAPIClient {
+        guard authenticatedCredentialFingerprint != nil else {
+            throw CancellationError()
+        }
         let endpoint = try Self.validatedEndpoint(connectionEndpoint)
         return AgentAPIClient(endpoint: endpoint, token: token)
     }
 
     func makeSessionStoreAPIClient() throws -> any SessionStoreAPIClient {
+        guard authenticatedCredentialFingerprint != nil else {
+            throw CancellationError()
+        }
         let endpoint = try Self.validatedEndpoint(connectionEndpoint)
         return CodexAppServerRuntimeRoutingSessionAPIClient(bundle: runtimeBundle(endpoint: endpoint, token: token))
     }
@@ -1244,7 +1279,7 @@ final class AppStore: ObservableObject {
 
         resetConnectionRoute()
         let finalError = configuredRouteError ?? URLError(.cannotConnectToHost)
-        if isCredentialInvalidatingError(finalError) {
+        if acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
         }
@@ -1667,9 +1702,7 @@ final class AppStore: ObservableObject {
     }
 
     private static func tokenFingerprint(_ token: String) -> String {
-        SHA256.hash(data: Data(token.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        connectionCredentialFingerprint(token)
     }
 
     private func rejectDuplicateInstallation(

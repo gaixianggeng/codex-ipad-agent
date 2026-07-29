@@ -953,6 +953,9 @@ extension SessionStore {
         guard queuedSessionSockets[sessionID] == nil else {
             return
         }
+        guard let credentialFingerprint = appStore.authenticatedCredentialFingerprint else {
+            return
+        }
 
         let generation = (queuedSessionSocketGenerationByID[sessionID] ?? 0) + 1
         queuedSessionSocketGenerationByID[sessionID] = generation
@@ -975,8 +978,15 @@ extension SessionStore {
                     self?.setStatusMessage(L10n.format("ui.failed_to_connect_to_queue_to_be_sent", message))
                     self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
                 case .terminated(let reason):
-                    self?.queuedSessionReadyIDs.remove(sessionID)
-                    self?.terminateConnection(reason)
+                    guard let self else { return }
+                    self.queuedSessionReadyIDs.remove(sessionID)
+                    let socketFingerprint = self.queuedSessionCredentialFingerprintByID[sessionID]
+                    if reason == .credentialsInvalid,
+                       !self.appStore.isCurrentCredentialFingerprint(socketFingerprint) {
+                        self.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
+                        return
+                    }
+                    self.terminateConnection(reason)
                 case .disconnected:
                     self?.queuedSessionReadyIDs.remove(sessionID)
                     self?.scheduleQueuedSessionReconnect(sessionID: sessionID, generation: generation)
@@ -1027,6 +1037,7 @@ extension SessionStore {
         socket.onUserInputResponseFailure = { _, _ in }
         socket.onControlFailure = { _ in }
         queuedSessionSockets[sessionID] = socket
+        queuedSessionCredentialFingerprintByID[sessionID] = credentialFingerprint
         socket.connect(sessionID: sessionID, replayBufferedEvents: true)
     }
 
@@ -1057,6 +1068,7 @@ extension SessionStore {
         queuedSessionSocketGenerationByID[sessionID, default: 0] += 1
         queuedSessionReconnectTasks.removeValue(forKey: sessionID)?.cancel()
         queuedSessionReadyIDs.remove(sessionID)
+        queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
         let socket = queuedSessionSockets.removeValue(forKey: sessionID)
         socket?.disconnect()
     }
@@ -1069,6 +1081,7 @@ extension SessionStore {
             message: L10n.text("ui.the_connection_has_been_interrupted_sending_results_requires")
         )
         let socket = queuedSessionSockets.removeValue(forKey: sessionID)
+        queuedSessionCredentialFingerprintByID.removeValue(forKey: sessionID)
         queuedSessionSocketGenerationByID[sessionID, default: generation] += 1
         socket?.onStatus = nil
         socket?.disconnect()
@@ -1633,6 +1646,7 @@ extension SessionStore {
         webSocket = nil
         connectedSessionID = nil
         connectedHostScope = nil
+        connectedCredentialFingerprint = nil
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
         runtimeEventFlushTasks.removeAll(keepingCapacity: false)
         terminalStreamStore.removeAll(profileID: appStore.activeHostScope.profileID)

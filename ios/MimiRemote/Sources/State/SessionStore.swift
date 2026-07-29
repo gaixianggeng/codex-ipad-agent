@@ -215,6 +215,7 @@ final class SessionStore: ObservableObject {
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
     var connectedHostScope: HostScope?
+    var connectedCredentialFingerprint: String?
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     var webSocketReconnectTask: Task<Void, Never>?
@@ -253,6 +254,7 @@ final class SessionStore: ObservableObject {
     // 队列订阅不依赖当前页面；用户切到其他会话后，原 thread 仍能在完成时继续 FIFO 派发。
     var queuedSessionSockets: [SessionID: any SessionWebSocketClient] = [:]
     var queuedSessionSocketGenerationByID: [SessionID: Int] = [:]
+    var queuedSessionCredentialFingerprintByID: [SessionID: String] = [:]
     var queuedSessionReadyIDs: Set<SessionID> = []
     var queuedSessionReconnectTasks: [SessionID: Task<Void, Never>] = [:]
     var queuedTurnStartedIDBySessionID: [SessionID: TurnID] = [:]
