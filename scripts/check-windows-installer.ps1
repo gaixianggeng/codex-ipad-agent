@@ -23,8 +23,8 @@ if (-not (Test-Path -LiteralPath $checksumPath)) { throw "Missing SHA-256 file: 
 $checksumLine = (Get-Content -LiteralPath $checksumPath -Raw).Trim()
 if ($checksumLine -ne "$actualHash  $([IO.Path]::GetFileName($installer))") { throw 'SHA-256 sidecar does not match installer.' }
 $signature = Get-AuthenticodeSignature -LiteralPath $installer
-if ($metadata.signing -eq 'unsigned-snapshot') {
-    if ($signature.Status -ne 'NotSigned') { throw "Snapshot installer must be unsigned, got $($signature.Status)." }
+if ($metadata.signing -in @('unsigned-snapshot', 'unsigned-release')) {
+    if ($signature.Status -ne 'NotSigned') { throw "Unsigned installer must report NotSigned, got $($signature.Status)." }
 } elseif ($metadata.signing -eq 'authenticode-pfx') {
     if ($signature.Status -ne 'Valid') { throw "Signed installer signature is not valid: $($signature.Status)." }
 } else { throw "Unknown signing mode: $($metadata.signing)" }
