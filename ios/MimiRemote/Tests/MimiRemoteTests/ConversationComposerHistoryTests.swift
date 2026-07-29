@@ -68,26 +68,26 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testComposerPrimaryActionKeepsRunningTurnSubmissionReachable() {
+    func testComposerPrimaryActionKeepsRunningTurnSubmissionAndStopReachable() {
         XCTAssertEqual(
             ComposerPrimaryAction.resolve(
-                hasDraftContent: false,
+                canSubmitDraft: false,
                 canStopCurrentReply: true
             ),
             .stopCurrentReply,
-            "运行中且没有可提交草稿时，主操作应是停止当前回复"
+            "运行中且草稿为空或暂时不可提交时，停止当前回复必须保持可达"
         )
         XCTAssertEqual(
             ComposerPrimaryAction.resolve(
-                hasDraftContent: true,
+                canSubmitDraft: true,
                 canStopCurrentReply: true
             ),
             .submit,
-            "用户输入下一条消息后，发送/排队必须重新成为主操作"
+            "用户准备好可提交的下一条消息后，发送/排队必须重新成为主操作"
         )
         XCTAssertEqual(
             ComposerPrimaryAction.resolve(
-                hasDraftContent: false,
+                canSubmitDraft: false,
                 canStopCurrentReply: false
             ),
             .submit,

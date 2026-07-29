@@ -4,10 +4,10 @@ enum ComposerPrimaryAction: Equatable {
     case submit
     case stopCurrentReply
 
-    static func resolve(hasDraftContent: Bool, canStopCurrentReply: Bool) -> ComposerPrimaryAction {
-        // 运行中只有空草稿才把主操作让给“停止”。一旦用户已经准备好下一条消息，
-        // 发送/排队必须优先可达，提交清空草稿后按钮会自然恢复为停止。
-        canStopCurrentReply && !hasDraftContent ? .stopCurrentReply : .submit
+    static func resolve(canSubmitDraft: Bool, canStopCurrentReply: Bool) -> ComposerPrimaryAction {
+        // 运行中只有草稿此刻确实可提交时，发送/排队才抢占主按钮。
+        // 上传、加载或额度限制暂时阻塞提交时保留“停止”，同时不丢弃用户草稿。
+        canStopCurrentReply && !canSubmitDraft ? .stopCurrentReply : .submit
     }
 }
 

@@ -841,7 +841,7 @@ struct ComposerView: View {
 
     var primaryComposerAction: ComposerPrimaryAction {
         ComposerPrimaryAction.resolve(
-            hasDraftContent: hasComposerContentForSubmit,
+            canSubmitDraft: canSubmitDraft,
             canStopCurrentReply: showsTurnStopButton
         )
     }
