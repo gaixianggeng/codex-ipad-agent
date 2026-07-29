@@ -8,6 +8,20 @@ final class LocalizationTests: XCTestCase {
             "需使用 xcodebuild -testLanguage en 运行英文目录冒烟测试"
         )
 
+        // 核心回归与英文 smoke 复用同一 App 容器。这里临时回到“跟随系统”，
+        // 避免前序快照测试残留的显式语言偏好覆盖 -testLanguage en。
+        let defaults = UserDefaults.standard
+        let hadStoredLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
+        let previousLanguage = defaults.string(forKey: AppLanguage.preferenceKey)
+        defaults.removeObject(forKey: AppLanguage.preferenceKey)
+        defer {
+            if hadStoredLanguage {
+                defaults.set(previousLanguage, forKey: AppLanguage.preferenceKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+
         XCTAssertEqual(L10n.text("ui.settings"), "settings")
         XCTAssertEqual(
             L10n.format("ui.awaiting_approval_value_value", "Review diff", " · Low risk"),
