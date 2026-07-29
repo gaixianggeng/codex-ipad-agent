@@ -739,14 +739,29 @@ final class VoiceInputController: NSObject, ObservableObject {
                 try await session.start(
                     locale: locale,
                     onTranscript: { [weak self] transcript in
-                        guard self?.activeProvider == .apple else { return }
+                        guard self?.activeProvider == .apple,
+                              self?.startRequestID == requestID else {
+                            return
+                        }
                         onTranscript(transcript)
                     },
                     onLevel: { [weak self] level in
+                        guard self?.activeProvider == .apple,
+                              self?.startRequestID == requestID else {
+                            return
+                        }
                         self?.levelMeter.push(level)
                     },
                     onFailure: { [weak self, weak session] error in
-                        guard let self, let session, activeProvider == .apple else { return }
+                        guard let self,
+                              let session,
+                              activeProvider == .apple,
+                              startRequestID == requestID else {
+                            return
+                        }
+                        // 结果流可能在 session.start() 返回前就失败；先让本次请求失效，
+                        // 防止外层启动任务随后又把已经失败的会话标成录音中。
+                        startRequestID = nil
                         errorMessage = userFacingAppleSpeechError(error)
                         isPreparing = false
                         isRecording = false
