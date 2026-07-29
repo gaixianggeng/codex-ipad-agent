@@ -281,7 +281,8 @@ final class AppStore: ObservableObject {
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
     private var credentialLifecycleGeneration: UInt64 = 0
-    private var capabilityNegotiationGeneration: UInt64 = 0
+    // 仅由 AppStoreCapabilities extension 使用，用 generation 拒绝迟到的协商响应。
+    var capabilityNegotiationGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
     private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
@@ -669,83 +670,17 @@ final class AppStore: ObservableObject {
         return MultiRuntimeSessionWebSocketClient(bundle: bundle)
     }
 
-    func capabilityDecision(for capability: String) -> HostCapabilityDecision {
-        let decision = activeHostState.capabilityNegotiation.decision(for: capability)
-        CapabilityNegotiationLog.record(capability: capability, decision: decision)
-        return decision
-    }
-
-    func refreshCapabilityNegotiationForCurrentHost(
-        capability: String
-    ) async -> HostCapabilityDecision {
-        capabilityNegotiationGeneration &+= 1
-        let refreshGeneration = capabilityNegotiationGeneration
-        let capturedState = activeHostState
-        let capturedEndpoint = AgentAPIClient.normalizedEndpoint(connectionEndpoint)
-        let capturedToken = token
-        let capturedFingerprint = Self.tokenFingerprint(capturedToken)
-
-        do {
-            let version = try await AgentAPIClient(
-                endpoint: capturedEndpoint,
-                token: capturedToken
-            ).version()
-            try version.requireCompatible()
-            if let profile = activeConnectionProfile {
-                try Self.validateInstallationIdentity(
-                    actual: version.installationID,
-                    expected: profile.installationID,
-                    profileName: profile.displayName
-                )
-            }
-            guard refreshGeneration == capabilityNegotiationGeneration,
-                  capturedState.scope == activeHostState.scope,
-                  capturedEndpoint == AgentAPIClient.normalizedEndpoint(connectionEndpoint),
-                  capturedFingerprint == Self.tokenFingerprint(token) else {
-                CapabilityNegotiationLog.record(capability: capability, decision: .negotiationFailed)
-                return .negotiationFailed
-            }
-            activeHostState = ActiveHostState(
-                scope: capturedState.scope,
-                endpoint: capturedState.endpoint,
-                displayName: capturedState.displayName,
-                committedAt: capturedState.committedAt,
-                capabilityNegotiation: version.capabilityNegotiation
-            )
-            return capabilityDecision(for: capability)
-        } catch {
-            // 网络、兼容窗口或安装身份校验失败时只撤销 capability 授权，
-            // 不清理当前 Host 的凭据、草稿或基础会话连接。
-            if refreshGeneration == capabilityNegotiationGeneration,
-               capturedState.scope == activeHostState.scope,
-               capturedEndpoint == AgentAPIClient.normalizedEndpoint(connectionEndpoint),
-               capturedFingerprint == Self.tokenFingerprint(token) {
-                activeHostState = ActiveHostState(
-                    scope: capturedState.scope,
-                    endpoint: capturedState.endpoint,
-                    displayName: capturedState.displayName,
-                    committedAt: capturedState.committedAt,
-                    capabilityNegotiation: .notNegotiated
-                )
-            }
-            CapabilityNegotiationLog.record(capability: capability, decision: .negotiationFailed)
-            return .negotiationFailed
-        }
-    }
-
-    func capabilityLease(for capability: String) -> HostCapabilityLease? {
-        guard capabilityDecision(for: capability) == .enabled else {
-            return nil
-        }
-        return HostCapabilityLease(capability: capability, hostScope: activeHostState.scope)
-    }
-
-    func isCurrentCapabilityLease(_ lease: HostCapabilityLease) -> Bool {
-        guard lease.hostScope == activeHostState.scope else {
-            CapabilityNegotiationLog.record(capability: lease.capability, decision: .negotiationFailed)
-            return false
-        }
-        return capabilityDecision(for: lease.capability) == .enabled
+    func replaceCapabilityNegotiation(
+        _ negotiation: HostCapabilityNegotiation,
+        preserving state: ActiveHostState
+    ) {
+        activeHostState = ActiveHostState(
+            scope: state.scope,
+            endpoint: state.endpoint,
+            displayName: state.displayName,
+            committedAt: state.committedAt,
+            capabilityNegotiation: negotiation
+        )
     }
 
     func prepareConnectionSettings(
@@ -1868,7 +1803,7 @@ final class AppStore: ObservableObject {
         throw ConnectionProfileError.duplicateInstallation(profileName: duplicate.displayName)
     }
 
-    private static func validateInstallationIdentity(
+    static func validateInstallationIdentity(
         actual: String?,
         expected: String?,
         profileName: String
