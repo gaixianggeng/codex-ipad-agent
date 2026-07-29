@@ -124,7 +124,7 @@ struct PendingApprovalActionCard: View {
             return L10n.text("ui.file_changes")
         case "permission":
             return L10n.text("ui.permissions_request_approval")
-        case "mcp_elicitation":
+        case "mcp_elicitation", CodexMCPToolApprovalProtocol.kind:
             return L10n.text("ui.mcp_service")
         default:
             return approval.kind.replacingOccurrences(of: "_", with: " ")
@@ -333,6 +333,59 @@ struct PendingApprovalActionCard: View {
             .accessibilityIdentifier("approval.alwaysAllow")
             .accessibilityHint(L10n.text("ui.after_confirmation_write_the_precise_rules_suggested_by"))
         }
+
+        if approval.canAcceptMCPToolForSession {
+            mcpTrustButton(
+                title: L10n.text("ui.allow_for_this_session"),
+                systemImage: "clock.badge.checkmark",
+                decision: "acceptForSession",
+                identifier: "approval.allowMCPForSession",
+                tokens: tokens
+            )
+        }
+
+        if approval.canAlwaysAllowMCPTool {
+            mcpTrustButton(
+                title: L10n.text("ui.always_allow_this_tool"),
+                systemImage: "checkmark.shield",
+                decision: "acceptAlways",
+                identifier: "approval.alwaysAllowMCPTool",
+                tokens: tokens
+            )
+        }
+
+        if approval.canAcceptMCPToolForSession || approval.canAlwaysAllowMCPTool {
+            Label(
+                L10n.text("ui.codex_saves_this_choice_on_the_mac"),
+                systemImage: "macbook.and.iphone"
+            )
+            .font(themeStore.uiFont(.footnote))
+            .foregroundStyle(tokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func mcpTrustButton(
+        title: String,
+        systemImage: String,
+        decision: String,
+        identifier: String,
+        tokens: ThemeTokens
+    ) -> some View {
+        Button {
+            onDecision(decision)
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .foregroundStyle(tokens.accent)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .disabled(isSendingDecision || !approval.hasDecisionContext)
+        .accessibilityIdentifier(identifier)
+        .accessibilityHint(L10n.text("ui.codex_saves_this_choice_on_the_mac"))
     }
 
     private func rejectButton(tokens: ThemeTokens) -> some View {
@@ -359,10 +412,13 @@ struct PendingApprovalActionCard: View {
 
     private func approveButton(tokens: ThemeTokens) -> some View {
         let isEnabled = !isSendingDecision && approval.hasDecisionContext
+        let title = approval.kind == CodexMCPToolApprovalProtocol.kind
+            ? L10n.text("ui.allow_once")
+            : L10n.text("ui.approve_once")
         return Button {
             onDecision("accept")
         } label: {
-            Label(L10n.text("ui.approve_once"), systemImage: "checkmark.circle.fill")
+            Label(title, systemImage: "checkmark.circle.fill")
                 .font(themeStore.uiFont(.callout, weight: .semibold))
                 .foregroundStyle(isEnabled ? tokens.primaryActionForeground : tokens.tertiaryText)
                 .frame(maxWidth: .infinity, minHeight: 52)

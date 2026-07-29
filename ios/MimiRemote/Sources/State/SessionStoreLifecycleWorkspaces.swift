@@ -98,6 +98,18 @@ extension SessionStore {
         )
         let selectedSessionID = "debug-session-layout"
         let runningSessionID = "debug-session-running"
+        // MCP 审批样例只在显式 Debug 参数下出现，用于真机检查 Codex 声明的
+        // 一次、会话和永久信任入口；不连接真实 MCP，也不会写入用户授权配置。
+        let mcpApproval = appStore.shouldSeedDebugMCPApprovalUI
+            ? ApprovalSummary(
+                id: "debug-mcp-tool-approval",
+                title: L10n.text("ui.mcp_tool_call"),
+                body: #"Allow the linear MCP server to run tool "save_issue"?"#,
+                kind: CodexMCPToolApprovalProtocol.kind,
+                count: 1,
+                availableDecisions: ["accept", "acceptForSession", "acceptAlways", "decline"]
+            )
+            : nil
         let sessions = [
             AgentSession(
                 id: selectedSessionID,
@@ -105,14 +117,17 @@ extension SessionStore {
                 project: mimiDemo.name,
                 dir: mimiDemo.path,
                 title: L10n.text("ui.organize_open_source_release_notes"),
-                status: SessionStatus.completed.rawValue,
+                status: mcpApproval == nil
+                    ? SessionStatus.completed.rawValue
+                    : SessionStatus.waitingForApproval.rawValue,
                 source: "debug",
                 runtimeProvider: "codex",
                 resumeID: selectedSessionID,
                 createdAt: now.addingTimeInterval(-60 * 40),
                 updatedAt: now.addingTimeInterval(-60 * 3),
                 preview: L10n.text("ui.review_installation_steps_architecture_diagrams_privacy_boundaries_and"),
-                rateLimit: debugRateLimit
+                rateLimit: debugRateLimit,
+                pendingApproval: mcpApproval
             ),
             AgentSession(
                 id: runningSessionID,
@@ -201,6 +216,9 @@ extension SessionStore {
             // 队列样例需要处于可控的运行中会话，才能同时验收“排队（默认）/引导”切换；
             // 普通 Debug 工作台仍保留原来的观察态样例，不改变其接管流程覆盖。
             setSessionControlState(.takenOver, sessionID: runningSessionID)
+        } else if appStore.shouldSeedDebugMCPApprovalUI {
+            // 审批按钮只属于已接管会话；真机 UI 样例必须进入可操作态，才能覆盖完整决策入口。
+            setSessionControlState(.takenOver, sessionID: selectedSessionID)
         }
         webSocketStatus = .disconnected
         disconnectWebSocket()

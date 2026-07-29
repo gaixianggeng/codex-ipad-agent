@@ -1945,6 +1945,86 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "environment" })?.options.map(\.label), ["staging", "production"])
     }
 
+    func testCodexMcpToolElicitationProjectsToApprovalWithDeclaredTrustChoices() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-tool-approval-1"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "turnId": .string("turn-1"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string(#"Allow the linear MCP server to run tool "save_issue"?"#),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([:])
+                ]),
+                "_meta": .object([
+                    "codex_approval_kind": .string("mcp_tool_call"),
+                    "persist": .array([.string("session"), .string("always")])
+                ])
+            ])
+        )
+
+        var projector = CodexAppServerEventProjector()
+        guard case .approvalRequest(let approval, let metadata) = projector.project(request) else {
+            return XCTFail("Codex MCP 工具调用应投影为审批，而不是空表单")
+        }
+        XCTAssertEqual(metadata.sessionID, "thread-1")
+        XCTAssertEqual(approval.kind, CodexMCPToolApprovalProtocol.kind)
+        XCTAssertTrue(approval.body?.contains("save_issue") == true)
+        XCTAssertEqual(
+            approval.availableDecisions,
+            ["accept", "acceptForSession", "acceptAlways", "decline"]
+        )
+        let summary = ApprovalSummary(
+            id: approval.id,
+            title: approval.title,
+            body: approval.body,
+            kind: approval.kind,
+            count: 1,
+            availableDecisions: approval.availableDecisions
+        )
+        XCTAssertTrue(summary.canAcceptMCPToolForSession)
+        XCTAssertTrue(summary.canAlwaysAllowMCPTool)
+    }
+
+    func testCodexMcpToolElicitationDoesNotInventPersistentTrustChoices() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-tool-destructive"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string("Allow destructive tool call?"),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([:])
+                ]),
+                "_meta": .object([
+                    "codex_approval_kind": .string("mcp_tool_call")
+                ])
+            ])
+        )
+
+        var projector = CodexAppServerEventProjector()
+        guard case .approvalRequest(let approval, _) = projector.project(request) else {
+            return XCTFail("expected MCP tool approval")
+        }
+        XCTAssertEqual(approval.availableDecisions, ["accept", "decline"])
+        let summary = ApprovalSummary(
+            id: approval.id,
+            title: approval.title,
+            body: approval.body,
+            kind: approval.kind,
+            count: 1,
+            availableDecisions: approval.availableDecisions
+        )
+        XCTAssertFalse(summary.canAcceptMCPToolForSession)
+        XCTAssertFalse(summary.canAlwaysAllowMCPTool)
+    }
+
     func testMcpURLelicitationProjectsToExplicitApproval() {
         let request = CodexAppServerServerRequest(
             id: .int(17),
@@ -2039,6 +2119,53 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let urlAccepted = await runtime.approvalResponse(method: url.method, params: url.params?.objectValue ?? [:], decision: "accept")
         XCTAssertEqual(urlAccepted["action"]?.stringValue, "accept")
         XCTAssertEqual(urlAccepted["content"], .null)
+    }
+
+    func testRuntimeBuildsScopedCodexMcpToolApprovalResponsesAndFailsClosed() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let params: [String: CodexAppServerJSONValue] = [
+            "mode": .string("form"),
+            "_meta": .object([
+                "codex_approval_kind": .string("mcp_tool_call"),
+                "persist": .array([.string("session"), .string("always")])
+            ])
+        ]
+
+        let once = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: params,
+            decision: "accept"
+        )
+        XCTAssertEqual(once["action"]?.stringValue, "accept")
+        XCTAssertEqual(once["_meta"], .null)
+
+        let session = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: params,
+            decision: "acceptForSession"
+        )
+        XCTAssertEqual(session["action"]?.stringValue, "accept")
+        XCTAssertEqual(session["_meta"]?.objectValue?["persist"]?.stringValue, "session")
+
+        let always = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: params,
+            decision: "acceptAlways"
+        )
+        XCTAssertEqual(always["action"]?.stringValue, "accept")
+        XCTAssertEqual(always["_meta"]?.objectValue?["persist"]?.stringValue, "always")
+
+        let oneTimeOnlyParams: [String: CodexAppServerJSONValue] = [
+            "mode": .string("form"),
+            "_meta": .object(["codex_approval_kind": .string("mcp_tool_call")])
+        ]
+        let forgedAlways = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: oneTimeOnlyParams,
+            decision: "acceptAlways"
+        )
+        XCTAssertEqual(forgedAlways["action"]?.stringValue, "decline")
+        XCTAssertEqual(forgedAlways["_meta"], .null)
     }
 
     func testProjectorMapsPlanReasoningUsageCompactionNameMCPAndDeprecationNotifications() throws {

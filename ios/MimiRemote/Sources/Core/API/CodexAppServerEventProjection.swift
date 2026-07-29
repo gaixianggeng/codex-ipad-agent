@@ -1618,19 +1618,23 @@ extension CodexAppServerSessionRuntime {
         if lower.contains("approval") {
             return true
         }
-        // URL 型 MCP elicitation 没有表单内容，复用明确的批准/拒绝交互更安全。
+        let params = request.params?.objectValue ?? [:]
+        // URL 型 elicitation 和 Codex 明确标记的工具调用都走审批；普通 form 仍是补充信息。
         return request.method == "mcpServer/elicitation/request"
-            && request.params?.objectValue?["mode"]?.stringValue == "url"
+            && (params["mode"]?.stringValue == "url"
+                || CodexMCPToolApprovalProtocol.isToolCall(params))
     }
 
     func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
         if request.method == "item/tool/requestUserInput" {
             return true
         }
-        // form/openai-form 都投影到现有补充信息卡；未知 mode 也走此路径，
-        // 用户没有填入时回 decline，不会误接受无法理解的 MCP 请求。
+        let params = request.params?.objectValue ?? [:]
+        // form/openai-form 都投影到现有补充信息卡；Codex 工具审批例外，避免空 schema
+        // 被渲染成虚假的“补充信息”输入框。
         return request.method == "mcpServer/elicitation/request"
-            && request.params?.objectValue?["mode"]?.stringValue != "url"
+            && params["mode"]?.stringValue != "url"
+            && !CodexMCPToolApprovalProtocol.isToolCall(params)
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {
@@ -1655,6 +1659,9 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         if method == "mcpServer/elicitation/request" {
+            if CodexMCPToolApprovalProtocol.isToolCall(params) {
+                return mcpToolApprovalResponse(params: params, decision: decision)
+            }
             return .object([
                 "action": .string(decision == "accept" ? "accept" : decision == "cancel" ? "cancel" : "decline"),
                 "content": .null,
@@ -1662,6 +1669,33 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         return .object(["decision": .string(decision)])
+    }
+
+    func mcpToolApprovalResponse(
+        params: [String: CodexAppServerJSONValue],
+        decision: String
+    ) -> CodexAppServerJSONValue {
+        let persistenceModes = CodexMCPToolApprovalProtocol.persistenceModes(params)
+        let normalized = normalizeApprovalDecision(decision)
+        let persist: String?
+        switch normalized {
+        case "accept":
+            persist = nil
+        case "acceptForSession" where persistenceModes.contains("session"):
+            persist = "session"
+        case "acceptAlways" where persistenceModes.contains("always"):
+            persist = "always"
+        case "cancel":
+            return .object(["action": .string("cancel"), "content": .null, "_meta": .null])
+        default:
+            // 客户端不能扩大上游声明的权限范围；未知或未提供的持久化选项一律拒绝。
+            return .object(["action": .string("decline"), "content": .null, "_meta": .null])
+        }
+        return .object([
+            "action": .string("accept"),
+            "content": .null,
+            "_meta": persist.map { .object(["persist": .string($0)]) } ?? .null
+        ])
     }
 
     func userInputResponse(
@@ -1740,6 +1774,8 @@ extension CodexAppServerSessionRuntime {
             return "accept"
         case "acceptforsession", "accept_for_session":
             return "acceptForSession"
+        case "acceptalways", "accept_always", "acceptandremember", "accept_and_remember":
+            return "acceptAlways"
         case "acceptwithpermissionupdate", "accept_with_permission_update":
             return "acceptWithPermissionUpdate"
         case "cancel":

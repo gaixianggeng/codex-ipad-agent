@@ -1559,13 +1559,47 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Allow access to entire file system"
+            "value" : "Access all files; MCP tools may still ask for approval"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "允许访问整个文件系统"
+            "value" : "可访问所有文件；MCP 工具仍可能请求审批"
+          }
+        }
+      }
+    },
+    "ui.allow_for_this_session" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow for This Session"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本会话允许"
+          }
+        }
+      }
+    },
+    "ui.allow_once" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Once"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅允许一次"
           }
         }
       }
@@ -1635,6 +1669,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已开启"
+          }
+        }
+      }
+    },
+    "ui.always_allow_this_tool" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Always Allow This Tool"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "始终允许此工具"
           }
         }
       }
@@ -4632,6 +4683,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codex 剩余用量"
+          }
+        }
+      }
+    },
+    "ui.codex_saves_this_choice_on_the_mac" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex saves this choice on the Mac; no MCP credentials are stored on this device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex 会在 Mac 端保存此选择；本设备不保存 MCP 凭据。"
           }
         }
       }
@@ -10430,13 +10498,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Full Access"
+            "value" : "Full File Access"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "完全访问"
+            "value" : "完全文件访问"
           }
         }
       }
@@ -17136,13 +17204,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Permissions · Full Access"
+            "value" : "Permissions · Full File Access"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "权限 · 完全访问"
+            "value" : "权限 · 完全文件访问"
           }
         }
       }
