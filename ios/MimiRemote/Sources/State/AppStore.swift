@@ -257,6 +257,7 @@ final class AppStore: ObservableObject {
     private static let profilesKey = "agentd.connectionProfiles.v2"
     private static let legacyProfilesKey = "agentd.connectionProfiles.v1"
     private static let activeProfileIDKey = "agentd.activeConnectionProfileID.v1"
+    private static let hostConnectionTimingPolicy = HostConnectionTimingPolicy()
     private let retiredFallbackEndpointKey = "agentd.fallbackEndpoint"
     private let retiredConnectionModeKey = "agentd.connectionMode"
     private let defaultEndpoint = "http://127.0.0.1:8787"
@@ -1275,7 +1276,10 @@ final class AppStore: ObservableObject {
                     connectionStatus = .idle
                     return false
                 }
-                let message = L10n.text("ui.the_native_assistant_was_detected_but_the_automatic")
+                // Keychain 与冷启动超时必须保留原始错误；旧 agentd 等兼容错误继续提示扫码升级。
+                let message = error is TokenStoreError || error is URLError
+                    ? error.localizedDescription
+                    : L10n.text("ui.the_native_assistant_was_detected_but_the_automatic")
                 connectionStatus = .failed(message)
                 lastError = message
                 return false
@@ -1590,7 +1594,11 @@ final class AppStore: ObservableObject {
         token: String,
         profileTarget: PreparedConnectionProfileTarget
     ) async throws -> PreparedConnectionSettings {
-        let deadline = Date().addingTimeInterval(8)
+        let preparationTimeout = Self.hostConnectionTimingPolicy.preparationTimeout(
+            hasActiveProfile: activeConnectionProfile != nil,
+            profileTarget: profileTarget
+        )
+        let deadline = Date().addingTimeInterval(preparationTimeout)
         let client = AgentAPIClient(endpoint: endpoint, token: token)
         HostSwitchSignpost.begin("switch_prepare")
         defer { HostSwitchSignpost.end("switch_prepare") }
@@ -1622,7 +1630,7 @@ final class AppStore: ObservableObject {
             let bundle = AppServerRuntimeBundle(
                 endpoint: endpoint,
                 token: token,
-                // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
+                // 不给 initialize 人为增加最小超时，保证整个候选初始化不会突破当前 deadline。
                 requestTimeout: remaining,
                 preparedConfig: config
             )
@@ -1648,7 +1656,10 @@ final class AppStore: ObservableObject {
                             tokenFingerprint: Self.tokenFingerprint(token)
                         ),
                         runtimeBundle: bundle,
-                        expiresAt: deadline
+                        // 初始化成功后重新给提交阶段完整窗口，避免冷启动刚结束就让候选 Runtime 过期。
+                        expiresAt: Self.hostConnectionTimingPolicy.preparedRuntimeExpirationDate(
+                            runtimeReadyAt: Date()
+                        )
                     )
                 )
             } catch {

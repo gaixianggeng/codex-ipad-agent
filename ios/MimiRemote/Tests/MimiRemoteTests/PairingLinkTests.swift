@@ -111,6 +111,27 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(keychain.deleteCallCount, 0)
     }
 
+    func testTokenStoreOnlyTrustsTemplateGeneratedUserFacingDiagnostics() throws {
+        let safeDescription = TokenStoreError
+            .saveFailed(errSecMissingEntitlement)
+            .localizedDescription
+
+        XCTAssertEqual(
+            TokenStoreError.validatedUserFacingDescription(safeDescription),
+            safeDescription
+        )
+        XCTAssertNil(
+            TokenStoreError.validatedUserFacingDescription(
+                "\(safeDescription) token=test-only-placeholder"
+            )
+        )
+        XCTAssertNil(
+            TokenStoreError.validatedUserFacingDescription(
+                "Keychain token=test-only-placeholder (-34018)"
+            )
+        )
+    }
+
     func testTokenStoreKeepsProfileTokensInIndependentAccounts() throws {
         let keychain = TestKeychainOperations()
         let store = TokenStore(keychain: keychain)
@@ -584,6 +605,72 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertThrowsError(try context.validatedRuntimeBundle(matching: mismatchedLease)) { error in
             XCTAssertEqual(error as? ConnectionProfileError, .preparedContextMismatch)
         }
+        await context.discard()
+    }
+
+    func testHostConnectionTimingSeparatesFirstConnectionAndExistingProfileSwitch() async throws {
+        let policy = HostConnectionTimingPolicy()
+
+        XCTAssertEqual(
+            policy.preparationTimeout(
+                hasActiveProfile: false,
+                profileTarget: .currentOrNew(displayName: nil)
+            ),
+            20
+        )
+        XCTAssertEqual(
+            policy.preparationTimeout(
+                hasActiveProfile: false,
+                profileTarget: .existingProfile(id: "saved-mac")
+            ),
+            8,
+            "已有档案切换不能因 active profile 尚未恢复而退化成首次连接超时"
+        )
+        XCTAssertEqual(
+            policy.preparationTimeout(
+                hasActiveProfile: true,
+                profileTarget: .newProfile(id: "new-mac", displayName: "New Mac")
+            ),
+            8
+        )
+    }
+
+    func testPreparedRuntimeSuccessRefreshesCommitExpiration() async throws {
+        let policy = HostConnectionTimingPolicy()
+        let preparationStartedAt = Date()
+        let preparationDeadline = preparationStartedAt.addingTimeInterval(
+            policy.initialConnectionPreparationTimeout
+        )
+        let runtimeReadyAt = preparationDeadline.addingTimeInterval(-0.1)
+        let target = PreparedConnectionProfileTarget.currentOrNew(displayName: nil)
+        let lease = PreparedHostLease(
+            endpoint: "http://127.0.0.1:8787",
+            installationID: "installation-local",
+            profileTarget: target,
+            profileRevision: nil,
+            tokenFingerprint: "test-fingerprint"
+        )
+        let context = PreparedHostContext(
+            lease: lease,
+            runtimeBundle: AppServerRuntimeBundle(
+                endpoint: lease.endpoint,
+                token: "test-only-placeholder"
+            ),
+            expiresAt: policy.preparedRuntimeExpirationDate(runtimeReadyAt: runtimeReadyAt)
+        )
+
+        XCTAssertEqual(
+            context.expiresAt.timeIntervalSince(runtimeReadyAt),
+            policy.preparedRuntimeCommitLifetime,
+            accuracy: 0.001
+        )
+        XCTAssertNoThrow(
+            try context.validatedRuntimeBundle(
+                matching: lease,
+                now: preparationDeadline.addingTimeInterval(7)
+            ),
+            "Runtime 在准备 deadline 前刚成功时，提交窗口应从成功时重新计算"
+        )
         await context.discard()
     }
 
@@ -1573,6 +1660,37 @@ final class PairingLinkTests: XCTestCase {
             probedEndpoints,
             ["http://127.0.0.1:8787", "http://127.0.0.1:8787"]
         )
+    }
+
+    func testMacCatalystPreflightPreservesSafeKeychainDiagnosticWithoutToken() async throws {
+        let suiteName = "PairingLinkTests.LocalAgentKeychainDiagnostic.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let claimedToken = "test-only-placeholder-token"
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: true,
+            localAgentProbe: { _, _ in },
+            localAgentPairingClaim: { _, _ in claimedToken },
+            routeProbe: { _, _, _ in },
+            allowsEphemeralLocalCredentialFallback: false
+        )
+        let expected = TokenStoreError
+            .loadFailed(errSecMissingEntitlement)
+            .localizedDescription
+
+        let connected = await store.preflightConnection()
+
+        XCTAssertFalse(connected)
+        XCTAssertEqual(store.lastError, expected)
+        XCTAssertFalse(store.lastError?.contains(claimedToken) ?? true)
+        guard case .failed(let message) = store.connectionStatus else {
+            return XCTFail("Keychain 失败应发布可诊断的失败状态")
+        }
+        XCTAssertEqual(message, expected)
     }
 
     func testMacCatalystPreflightKeepsManualPairingFallbackForOldLocalAgent() async throws {
