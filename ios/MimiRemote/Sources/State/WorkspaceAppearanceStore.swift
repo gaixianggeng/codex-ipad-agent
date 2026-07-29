@@ -5,33 +5,38 @@ import Foundation
 struct WorkspaceCharacterIcon: Identifiable, Equatable, Sendable {
     let id: String
     let assetName: String
-    let name: String
+    let nameKey: String
+
+    /// 角色 ID 和资源名需要保持稳定，展示名则跟随 App 当前语言动态解析。
+    var name: String {
+        L10n.text(nameKey)
+    }
 }
 
 /// 工作区角色图标是当前设备的展示偏好，不属于远端项目配置，也不参与会话状态同步。
 @MainActor
 final class WorkspaceAppearanceStore: ObservableObject {
     static let builtInCharacters = [
-        WorkspaceCharacterIcon(id: "sun-wukong", assetName: "WorkspaceCharacterSunWukong", name: "孙悟空"),
-        WorkspaceCharacterIcon(id: "tang-sanzang", assetName: "WorkspaceCharacterTangSanzang", name: "唐僧"),
-        WorkspaceCharacterIcon(id: "zhu-bajie", assetName: "WorkspaceCharacterZhuBajie", name: "猪八戒"),
-        WorkspaceCharacterIcon(id: "sha-wujing", assetName: "WorkspaceCharacterShaWujing", name: "沙悟净"),
-        WorkspaceCharacterIcon(id: "white-dragon-horse", assetName: "WorkspaceCharacterWhiteDragonHorse", name: "白龙马"),
-        WorkspaceCharacterIcon(id: "guanyin", assetName: "WorkspaceCharacterGuanyin", name: "观音菩萨"),
-        WorkspaceCharacterIcon(id: "tathagata", assetName: "WorkspaceCharacterTathagata", name: "如来佛祖"),
-        WorkspaceCharacterIcon(id: "jade-emperor", assetName: "WorkspaceCharacterJadeEmperor", name: "玉皇大帝"),
-        WorkspaceCharacterIcon(id: "taishang-laojun", assetName: "WorkspaceCharacterTaishangLaojun", name: "太上老君"),
-        WorkspaceCharacterIcon(id: "nezha", assetName: "WorkspaceCharacterNezha", name: "哪吒"),
-        WorkspaceCharacterIcon(id: "erlang-shen", assetName: "WorkspaceCharacterErlangShen", name: "二郎神"),
-        WorkspaceCharacterIcon(id: "bull-demon-king", assetName: "WorkspaceCharacterBullDemonKing", name: "牛魔王"),
-        WorkspaceCharacterIcon(id: "princess-iron-fan", assetName: "WorkspaceCharacterPrincessIronFan", name: "铁扇公主"),
-        WorkspaceCharacterIcon(id: "red-boy", assetName: "WorkspaceCharacterRedBoy", name: "红孩儿"),
-        WorkspaceCharacterIcon(id: "white-bone-demon", assetName: "WorkspaceCharacterWhiteBoneDemon", name: "白骨精"),
-        WorkspaceCharacterIcon(id: "spider-demon", assetName: "WorkspaceCharacterSpiderDemon", name: "蜘蛛精"),
-        WorkspaceCharacterIcon(id: "yellow-robed-demon", assetName: "WorkspaceCharacterYellowRobedDemon", name: "黄袍怪"),
-        WorkspaceCharacterIcon(id: "golden-horn-king", assetName: "WorkspaceCharacterGoldenHornKing", name: "金角大王"),
-        WorkspaceCharacterIcon(id: "silver-horn-king", assetName: "WorkspaceCharacterSilverHornKing", name: "银角大王"),
-        WorkspaceCharacterIcon(id: "queen-womens-kingdom", assetName: "WorkspaceCharacterQueenWomensKingdom", name: "女儿国国王")
+        WorkspaceCharacterIcon(id: "sun-wukong", assetName: "WorkspaceCharacterSunWukong", nameKey: "ui.workspace_character_sun_wukong"),
+        WorkspaceCharacterIcon(id: "tang-sanzang", assetName: "WorkspaceCharacterTangSanzang", nameKey: "ui.workspace_character_tang_sanzang"),
+        WorkspaceCharacterIcon(id: "zhu-bajie", assetName: "WorkspaceCharacterZhuBajie", nameKey: "ui.workspace_character_zhu_bajie"),
+        WorkspaceCharacterIcon(id: "sha-wujing", assetName: "WorkspaceCharacterShaWujing", nameKey: "ui.workspace_character_sha_wujing"),
+        WorkspaceCharacterIcon(id: "white-dragon-horse", assetName: "WorkspaceCharacterWhiteDragonHorse", nameKey: "ui.workspace_character_white_dragon_horse"),
+        WorkspaceCharacterIcon(id: "guanyin", assetName: "WorkspaceCharacterGuanyin", nameKey: "ui.workspace_character_guanyin"),
+        WorkspaceCharacterIcon(id: "tathagata", assetName: "WorkspaceCharacterTathagata", nameKey: "ui.workspace_character_tathagata"),
+        WorkspaceCharacterIcon(id: "jade-emperor", assetName: "WorkspaceCharacterJadeEmperor", nameKey: "ui.workspace_character_jade_emperor"),
+        WorkspaceCharacterIcon(id: "taishang-laojun", assetName: "WorkspaceCharacterTaishangLaojun", nameKey: "ui.workspace_character_taishang_laojun"),
+        WorkspaceCharacterIcon(id: "nezha", assetName: "WorkspaceCharacterNezha", nameKey: "ui.workspace_character_nezha"),
+        WorkspaceCharacterIcon(id: "erlang-shen", assetName: "WorkspaceCharacterErlangShen", nameKey: "ui.workspace_character_erlang_shen"),
+        WorkspaceCharacterIcon(id: "bull-demon-king", assetName: "WorkspaceCharacterBullDemonKing", nameKey: "ui.workspace_character_bull_demon_king"),
+        WorkspaceCharacterIcon(id: "princess-iron-fan", assetName: "WorkspaceCharacterPrincessIronFan", nameKey: "ui.workspace_character_princess_iron_fan"),
+        WorkspaceCharacterIcon(id: "red-boy", assetName: "WorkspaceCharacterRedBoy", nameKey: "ui.workspace_character_red_boy"),
+        WorkspaceCharacterIcon(id: "white-bone-demon", assetName: "WorkspaceCharacterWhiteBoneDemon", nameKey: "ui.workspace_character_white_bone_demon"),
+        WorkspaceCharacterIcon(id: "spider-demon", assetName: "WorkspaceCharacterSpiderDemon", nameKey: "ui.workspace_character_spider_demon"),
+        WorkspaceCharacterIcon(id: "yellow-robed-demon", assetName: "WorkspaceCharacterYellowRobedDemon", nameKey: "ui.workspace_character_yellow_robed_demon"),
+        WorkspaceCharacterIcon(id: "golden-horn-king", assetName: "WorkspaceCharacterGoldenHornKing", nameKey: "ui.workspace_character_golden_horn_king"),
+        WorkspaceCharacterIcon(id: "silver-horn-king", assetName: "WorkspaceCharacterSilverHornKing", nameKey: "ui.workspace_character_silver_horn_king"),
+        WorkspaceCharacterIcon(id: "queen-womens-kingdom", assetName: "WorkspaceCharacterQueenWomensKingdom", nameKey: "ui.workspace_character_queen_womens_kingdom")
     ]
 
     private typealias Storage = ProfileScopedStorage<[String: String]>

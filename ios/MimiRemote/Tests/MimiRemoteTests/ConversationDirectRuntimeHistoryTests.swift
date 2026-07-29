@@ -1487,6 +1487,7 @@ extension ConversationDataFlowTests {
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
         let appStore = AppStore()
+        appStore.token = "test-token"
         let conversationStore = ConversationStore()
         let logStore = LogStore()
         let contextStore = SessionContextStore()
@@ -1599,8 +1600,10 @@ extension ConversationDataFlowTests {
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
         let conversationStore = ConversationStore()
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },

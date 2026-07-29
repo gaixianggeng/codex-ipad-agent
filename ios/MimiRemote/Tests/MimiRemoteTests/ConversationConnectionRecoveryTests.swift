@@ -686,8 +686,10 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [first, second])
         )
         let socket = MockWebSocketClient()
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -730,8 +732,10 @@ extension ConversationDataFlowTests {
             projects: [firstProject, secondProject],
             page: SessionsPage(sessions: [first])
         )
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },

@@ -1546,8 +1546,10 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -2119,8 +2121,10 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -2135,7 +2139,8 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         let didSend = await store.sendPrompt("iPad 继续下一步")
@@ -2159,8 +2164,10 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -2175,7 +2182,8 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
         let didSend = await store.sendPrompt("iPad 新输入")
         XCTAssertTrue(didSend)
@@ -2210,8 +2218,10 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -2226,7 +2236,8 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
         let didSend = await store.sendPrompt("iPad 新输入")
         XCTAssertTrue(didSend)
@@ -2263,8 +2274,10 @@ extension ConversationDataFlowTests {
         )
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -2280,7 +2293,8 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         let didSend = await store.sendPrompt("会失败的新输入")
@@ -2300,12 +2314,19 @@ extension ConversationDataFlowTests {
             source: "codex",
             preview: "旧摘要"
         )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [running])
+        )
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        // 显式配置认证，保证该测试可独立运行，不读取前序测试留下的 Keychain 状态。
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
-            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
+            clientFactory: { client },
             webSocketFactory: {
                 let socket = MockWebSocketClient()
                 sockets.append(socket)
@@ -2317,9 +2338,10 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
-        sockets[0].emitEvent(.messageCompleted(
+        socket.emitEvent(.messageCompleted(
             AgentMessage(id: "assistant-final", sessionID: running.id, role: .assistant, content: "助手最终回复摘要", revision: 1),
             AgentEventMetadata(seq: 1, sessionID: running.id, turnID: "turn-1", itemID: "item-1", messageID: "assistant-final", clientMessageID: nil, revision: 1, createdAt: nil)
         ))
@@ -2362,8 +2384,10 @@ extension ConversationDataFlowTests {
         let project = makeProject(id: "proj_takeover")
         let running = makeSession(id: "sess_takeover", projectID: project.id, title: "接管运行中", status: "running", source: "codex")
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
@@ -2378,12 +2402,13 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         let didSend = await store.sendPrompt("接管后发送")
         XCTAssertTrue(didSend)
-        XCTAssertEqual(sockets[0].sentTurns.map { $0.payload.previewText }, ["接管后发送"])
+        XCTAssertEqual(socket.sentTurns.map { $0.payload.previewText }, ["接管后发送"])
     }
 
     func testHistorySessionContinueMarksTakenOver() async throws {
@@ -2463,8 +2488,10 @@ extension ConversationDataFlowTests {
         )
         var sockets: [MockWebSocketClient] = []
         let conversationStore = ConversationStore()
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -2502,8 +2529,10 @@ extension ConversationDataFlowTests {
             preview: "用户可见摘要"
         )
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: []) },
@@ -2518,9 +2547,10 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
-        sockets[0].emitEvent(.logDelta(
+        socket.emitEvent(.logDelta(
             LogDelta(text: "tool output should stay in log", stream: "stdout"),
             AgentEventMetadata(seq: 1, sessionID: running.id, turnID: "turn-1", itemID: "cmd-1", messageID: nil, clientMessageID: nil, revision: 1, createdAt: nil)
         ))
@@ -2784,8 +2814,10 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [first, second])
         )
         let socket = MockWebSocketClient()
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },

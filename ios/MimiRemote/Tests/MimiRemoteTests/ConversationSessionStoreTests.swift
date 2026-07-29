@@ -515,6 +515,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -966,6 +967,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1394,8 +1396,10 @@ extension ConversationDataFlowTests {
             )
         ], sessionID: running.id)
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -1412,7 +1416,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedMessageSessionIDs, [running.id])
         XCTAssertEqual(client.requestedMessageCursors, [nil])
         XCTAssertEqual(sockets.count, 1)
-        XCTAssertEqual(sockets[0].replayBufferedEventsByConnect, [false])
+        XCTAssertEqual(try XCTUnwrap(sockets.first).replayBufferedEventsByConnect, [false])
         XCTAssertEqual(conversationStore.messages(for: running.id).suffix(refreshedHistory.count).map(\.content), refreshedHistory.map(\.content))
     }
 
@@ -1449,6 +1453,7 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [running])
         let appStore = AppStore()
+        appStore.token = "test-token"
         let conversationStore = ConversationStore()
         conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         conversationStore.appendSystem("等待补充信息：\(request.title)", sessionID: running.id, kind: .userInput)
@@ -1471,15 +1476,16 @@ extension ConversationDataFlowTests {
         for _ in 0..<50 where sockets.isEmpty {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
+        let socket = try XCTUnwrap(sockets.first)
         XCTAssertEqual(sockets.count, 1)
-        sockets[0].emitStatus(.connected)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         store.respondToUserInput(request, answers: ["scope": ["后端", "只做最小闭环"]])
 
-        XCTAssertEqual(sockets[0].sentUserInputResponses.count, 1)
-        XCTAssertEqual(sockets[0].sentUserInputResponses.first?.requestID, "input-1")
-        XCTAssertEqual(sockets[0].sentUserInputResponses.first?.answers["scope"], ["后端", "只做最小闭环"])
+        XCTAssertEqual(socket.sentUserInputResponses.count, 1)
+        XCTAssertEqual(socket.sentUserInputResponses.first?.requestID, "input-1")
+        XCTAssertEqual(socket.sentUserInputResponses.first?.answers["scope"], ["后端", "只做最小闭环"])
         XCTAssertTrue(store.isUserInputResponsePending(request))
         XCTAssertEqual(store.selectedSession?.status, "running")
         XCTAssertNil(store.selectedSession?.pendingUserInput)
@@ -1490,7 +1496,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedSession?.status, "running")
         XCTAssertNil(store.selectedSession?.pendingUserInput)
 
-        sockets[0].onUserInputResponseFailure?("input-1", "request expired")
+        socket.onUserInputResponseFailure?("input-1", "request expired")
         try await waitForSelectedSessionStatus("waiting_for_input", store: store)
 
         XCTAssertEqual(store.selectedSession?.pendingUserInput, request)
@@ -1527,8 +1533,10 @@ extension ConversationDataFlowTests {
             CodexHistoryMessage(id: "rollout:1", role: "assistant", content: "已加载", createdAt: Date(timeIntervalSince1970: 1))
         ], sessionID: history.id)
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [project], sessions: [history]) },
@@ -1738,6 +1746,7 @@ extension ConversationDataFlowTests {
             resumeID: "browsed-session"
         )
         let appStore = AppStore()
+        appStore.token = "test-token"
         let recentStore = makeRecentWorkspaceStore(
             workspaces: [],
             endpoint: appStore.endpoint

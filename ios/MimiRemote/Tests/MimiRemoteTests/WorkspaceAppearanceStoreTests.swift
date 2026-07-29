@@ -34,6 +34,17 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
     }
 
+    func testBuiltInCharacterNamesHaveEnglishAndChineseLocalizations() {
+        for character in WorkspaceAppearanceStore.builtInCharacters {
+            let englishName = L10n.text(character.nameKey, language: .english)
+            let chineseName = L10n.text(character.nameKey, language: .simplifiedChinese)
+
+            XCTAssertNotEqual(englishName, character.nameKey, "缺少英文角色名：\(character.id)")
+            XCTAssertNotEqual(chineseName, character.nameKey, "缺少中文角色名：\(character.id)")
+            XCTAssertNotEqual(englishName, chineseName, "中英文角色名不应共用未翻译文案：\(character.id)")
+        }
+    }
+
     func testDefaultCharacterIsStableForProfileAndProject() {
         let first = WorkspaceAppearanceStore(defaults: defaults)
         let value = first.defaultCharacterID(profileID: "mac-a", projectID: "project-1")

@@ -31973,6 +31973,366 @@
         }
       }
     },
+    "ui.workspace_character_bull_demon_king" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bull Demon King"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "牛魔王"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_erlang_shen" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erlang Shen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "二郎神"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_golden_horn_king" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Golden Horn King"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "金角大王"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_guanyin" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guanyin"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "观音菩萨"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_jade_emperor" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jade Emperor"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "玉皇大帝"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_nezha" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nezha"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "哪吒"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_princess_iron_fan" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Princess Iron Fan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "铁扇公主"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_queen_womens_kingdom" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Queen of the Women's Kingdom"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "女儿国国王"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_red_boy" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Red Boy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "红孩儿"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_sha_wujing" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sha Wujing"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "沙悟净"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_silver_horn_king" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silver Horn King"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "银角大王"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_spider_demon" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spider Demon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "蜘蛛精"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_sun_wukong" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sun Wukong"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "孙悟空"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_taishang_laojun" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Taishang Laojun"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "太上老君"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_tang_sanzang" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tang Sanzang"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "唐僧"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_tathagata" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tathagata"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "如来佛祖"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_white_bone_demon" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "White Bone Demon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "白骨精"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_white_dragon_horse" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "White Dragon Horse"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "白龙马"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_yellow_robed_demon" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Yellow-Robed Demon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "黄袍怪"
+          }
+        }
+      }
+    },
+    "ui.workspace_character_zhu_bajie" : {
+      "comment" : "Display name for a built-in Journey to the West workspace character.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zhu Bajie"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "猪八戒"
+          }
+        }
+      }
+    },
     "ui.workspace_changes" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

@@ -616,8 +616,11 @@ extension ConversationDataFlowTests {
         let client = MutableSessionPageClient(projects: [project], page: SessionsPage(sessions: [running]))
         var sockets: [MockWebSocketClient] = []
         let conversationStore = ConversationStore()
+        let appStore = AppStore()
+        // 测试必须自行建立认证前置条件，不能依赖其他用例残留在 Keychain 的令牌。
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -632,8 +635,9 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
         XCTAssertEqual(sockets.count, 1)
-        sockets[0].emitStatus(.connected)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         client.page = SessionsPage(sessions: [staleHistory])
@@ -646,10 +650,10 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(sent)
         XCTAssertEqual(sockets.count, 1)
-        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+        XCTAssertTrue(socket.sentTurns.isEmpty)
         XCTAssertFalse(conversationStore.messages(for: running.id).contains { $0.content == "已继续这个历史会话。" })
 
-        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+        socket.emitEvent(.turnCompleted(AgentEventMetadata(
             seq: 1,
             sessionID: running.id,
             turnID: "turn-long-running",
@@ -659,8 +663,8 @@ extension ConversationDataFlowTests {
             revision: nil,
             createdAt: nil
         )))
-        try await waitForSentTurnCount(1, socket: sockets[0])
-        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "继续当前长任务")
+        try await waitForSentTurnCount(1, socket: socket)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, "继续当前长任务")
     }
 
     func testWebSocketReconnectKeepsSubscriptionWhenSnapshotIsNoLongerRunning() async throws {
@@ -1011,8 +1015,10 @@ extension ConversationDataFlowTests {
         let running = makeSession(id: "sess_goal_running", projectID: project.id, title: "运行中", status: "running", source: "codex")
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -1026,14 +1032,15 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         let payload = CodexAppServerTurnPayload(prompt: "修复 iPad 目标入口")
         let accepted = await store.startGoalTurn(payload: payload, objective: "  修复 iPad 目标入口  ")
 
         XCTAssertTrue(accepted)
-        try await waitForSentTurnCount(1, socket: sockets[0])
+        try await waitForSentTurnCount(1, socket: socket)
         XCTAssertEqual(client.requestedThreadGoalSets, [
             RequestedThreadGoalSet(
                 threadID: running.id,
@@ -1042,8 +1049,8 @@ extension ConversationDataFlowTests {
                 tokenBudget: nil
             )
         ])
-        XCTAssertEqual(sockets[0].sentTurns.count, 1)
-        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "修复 iPad 目标入口")
+        XCTAssertEqual(socket.sentTurns.count, 1)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, "修复 iPad 目标入口")
     }
 
     func testQueuedGoalRemainsActiveAfterItsTurnCompletes() async throws {
@@ -1058,8 +1065,10 @@ extension ConversationDataFlowTests {
         )
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -1073,7 +1082,8 @@ extension ConversationDataFlowTests {
         await store.refreshAll(autoAttach: false)
         store.takeOverSession(running)
         await store.selectSession(running)
-        sockets[0].emitStatus(.connected)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
 
         let accepted = await store.startGoalTurn(
@@ -1081,10 +1091,10 @@ extension ConversationDataFlowTests {
             objective: "执行排队目标"
         )
         XCTAssertTrue(accepted)
-        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+        XCTAssertTrue(socket.sentTurns.isEmpty)
         XCTAssertNil(store.selectedThreadGoal, "排队目标在前一 turn 完成前不能提前改写 thread goal")
 
-        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+        socket.emitEvent(.turnCompleted(AgentEventMetadata(
             seq: 1,
             sessionID: running.id,
             turnID: "turn_before_goal",
@@ -1094,13 +1104,13 @@ extension ConversationDataFlowTests {
             revision: nil,
             createdAt: nil
         )))
-        try await waitForSentTurnCount(1, socket: sockets[0])
+        try await waitForSentTurnCount(1, socket: socket)
         try await waitForSelectedThreadGoalStatus(.active, store: store)
         XCTAssertEqual(store.selectedThreadGoal?.status, .active)
-        sockets[0].onSendAccepted?(sockets[0].sentTurns[0].clientMessageID)
+        socket.onSendAccepted?(try XCTUnwrap(socket.sentTurns.first).clientMessageID)
         try await Task.sleep(nanoseconds: 60_000_000)
 
-        sockets[0].emitEvent(.turnStarted(AgentEventMetadata(
+        socket.emitEvent(.turnStarted(AgentEventMetadata(
             seq: 2,
             sessionID: running.id,
             turnID: "turn_goal",
@@ -1111,7 +1121,7 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )))
         try await waitForSelectedActiveTurnID("turn_goal", store: store)
-        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+        socket.emitEvent(.turnCompleted(AgentEventMetadata(
             seq: 3,
             sessionID: running.id,
             turnID: "turn_goal",
@@ -1942,8 +1952,10 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [second])
         let conversationStore = ConversationStore()
         let socket = MockWebSocketClient()
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -2006,8 +2018,10 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [history, second])
         let conversationStore = ConversationStore()
         let socket = MockWebSocketClient()
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
@@ -2103,8 +2117,10 @@ extension ConversationDataFlowTests {
         let client = DelayedCreateSessionClient(projects: [project], sessions: [history])
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
+        let appStore = AppStore()
+        appStore.token = "test-token"
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore(),
             clientFactory: { client },
