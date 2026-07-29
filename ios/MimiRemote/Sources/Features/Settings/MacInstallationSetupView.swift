@@ -29,17 +29,6 @@ struct MacInstallationSetupView: View {
                 .padding(.vertical, 4)
                 .accessibilityElement(children: .combine)
 
-                ShareLink(item: AppExternalLinks.macInstaller) {
-                    GloballyCenteredActionLabel(
-                        title: L10n.text("ui.send_download_link_to_mac"),
-                        systemImage: "square.and.arrow.up"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .tint(tokens.primaryAction)
-                .controlSize(.large)
-                .accessibilityIdentifier("settings.macInstaller.share")
-
                 Link(destination: AppExternalLinks.macRelease) {
                     HStack(spacing: 12) {
                         // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
@@ -69,6 +58,17 @@ struct MacInstallationSetupView: View {
                 .accessibilityLabel(L10n.text("ui.view_releases_on_github"))
                 .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
                 .accessibilityIdentifier("settings.macInstaller.githubRelease")
+
+                ShareLink(item: AppExternalLinks.macInstaller) {
+                    GloballyCenteredActionLabel(
+                        title: L10n.text("ui.send_download_link_to_mac"),
+                        systemImage: "square.and.arrow.up"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(tokens.primaryAction)
+                .controlSize(.large)
+                .accessibilityIdentifier("settings.macInstaller.share")
             } header: {
                 Text(L10n.text("ui.prepare_on_mac"))
             } footer: {
