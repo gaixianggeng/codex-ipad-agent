@@ -122,6 +122,64 @@ private struct SessionRuntimeIcon: View {
     }
 }
 
+/// 使用 Codex 与 Claude Code 桌面端都采用的经典三节点分支拓扑。
+/// 自绘可以避免 SF Symbol 的三角轮廓，同时维持小尺寸下的圆角描边与清晰度。
+private struct SessionBranchIcon: View {
+    let size: CGFloat
+
+    var body: some View {
+        SessionBranchGlyph()
+            .stroke(
+                style: StrokeStyle(
+                    lineWidth: max(0.75, size * 0.08125),
+                    lineCap: .round,
+                    lineJoin: .round
+                )
+            )
+            .frame(width: size, height: size)
+            .fixedSize()
+    }
+}
+
+private struct SessionBranchGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let origin = CGPoint(
+            x: rect.midX - side / 2,
+            y: rect.midY - side / 2
+        )
+        let point: (CGFloat, CGFloat) -> CGPoint = { x, y in
+            CGPoint(x: origin.x + side * x, y: origin.y + side * y)
+        }
+        let nodeRadius = side * 0.11875
+        let upperNode = point(0.296875, 0.234375)
+        let lowerNode = point(0.296875, 0.765625)
+        let branchNode = point(0.75, 0.65625)
+
+        var path = Path()
+        for center in [upperNode, lowerNode, branchNode] {
+            path.addEllipse(
+                in: CGRect(
+                    x: center.x - nodeRadius,
+                    y: center.y - nodeRadius,
+                    width: nodeRadius * 2,
+                    height: nodeRadius * 2
+                )
+            )
+        }
+
+        path.move(to: point(0.296875, 0.353125))
+        path.addLine(to: point(0.296875, 0.646875))
+        path.move(to: point(0.296875, 0.40625))
+        path.addCurve(
+            to: point(0.63125, 0.65625),
+            control1: point(0.296875, 0.5875),
+            control2: point(0.44375, 0.65625)
+        )
+        return path
+    }
+}
+
 enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -492,10 +550,9 @@ struct SessionIndexRow: View {
 
                 if let branch = session.gitBranchName {
                     HStack(spacing: 3) {
-                        // 紫色只用于节点图标，既保留 Git 识别度，也不抢标题和运行状态的层级。
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                            .font(themeStore.uiFont(size: style == .sidebar ? 8 : 10, weight: .semibold))
-                            .foregroundStyle(tokens.primaryAction)
+                        // Git 是会话元数据而非身份标识，使用中性色避免和 AI 品牌图标竞争。
+                        SessionBranchIcon(size: style == .sidebar ? 8 : 10)
+                            .foregroundStyle(tokens.tertiaryText)
                             .accessibilityHidden(true)
 
                         Text(branch)
