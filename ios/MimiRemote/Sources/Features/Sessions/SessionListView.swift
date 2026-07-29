@@ -565,10 +565,6 @@ struct SessionIndexRow: View {
                     .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
                 }
 
-                Text(session.project.isEmpty ? session.dir : session.project)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
                 // “历史”已经由列表分区表达；只有实时、异常或其他有区分度的状态才进入行内。
                 if shouldShowStatusLabel {
                     statusLabel(tokens: tokens)
@@ -580,10 +576,22 @@ struct SessionIndexRow: View {
                         .accessibilityLabel(L10n.text("ui.just_observe"))
                 }
 
-                if style == .sidebar {
-                    Text("·")
-                    Text(timestampText)
+                Spacer(minLength: style == .sidebar ? 4 : 10)
+
+                // 项目归属固定在尾部，长分支只压缩自身，不再带着项目名左右漂移。
+                HStack(spacing: style == .sidebar ? 4 : 6) {
+                    Text(session.project.isEmpty ? session.dir : session.project)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: style == .sidebar ? 88 : 160, alignment: .trailing)
+
+                    if style == .sidebar {
+                        Text("·")
+                        Text(timestampText)
+                    }
                 }
+                .layoutPriority(1)
             }
             .font(themeStore.uiFont(size: style == .sidebar ? 10 : 12, weight: .regular))
             .foregroundStyle(tokens.tertiaryText)
