@@ -355,6 +355,32 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(params["cwd"], "thread/search 不应由 iOS 注入任意 cwd")
     }
 
+    func testThreadSearchPreservesAndMapsWindowsHostPaths() async throws {
+        let projectPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let worktreePath = projectPath + #"\.codex\worktrees\mim-13"#
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let page = try await runtime.threadSearchPage(
+            from: .object([
+                "data": .array([
+                    .object([
+                        "snippet": .string("Windows result"),
+                        "thread": .object([
+                            "id": .string("thread-windows"),
+                            "cwd": .string(worktreePath),
+                            "name": .string("Windows thread")
+                        ])
+                    ])
+                ])
+            ]),
+            projects: [AgentProject(id: "repo", name: "Repo", path: projectPath)]
+        )
+
+        let result = try XCTUnwrap(page.results.first)
+        XCTAssertEqual(page.results.count, 1)
+        XCTAssertEqual(result.session.dir, worktreePath)
+        XCTAssertEqual(result.session.projectID, "repo")
+    }
+
     func testThreadResumeBuilderRequestsBoundedRecentTurns() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
@@ -768,6 +794,26 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(skill.presentationDescription, "Find risky changes")
         XCTAssertEqual(skill.scope, "system")
         XCTAssertEqual(skill.brandColor, "#43A7A8")
+    }
+
+    func testSkillsListParserMatchesWindowsCWDWithoutRewritingIt() throws {
+        let windowsPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let parsed = SkillCapability.parseAppServerListResult(.object([
+            "data": .array([
+                .object([
+                    "cwd": .string("  \(windowsPath)  "),
+                    "skills": .array([
+                        .object([
+                            "name": .string("review"),
+                            "path": .string(#"C:\Users\gaixg\.codex\skills\review\SKILL.md"#),
+                            "enabled": .bool(true)
+                        ])
+                    ])
+                ])
+            ])
+        ]), cwd: windowsPath)
+
+        XCTAssertEqual(parsed.map(\.name), ["review"])
     }
 
     func testInstalledPluginListBuilderAndComposerMetadataParser() throws {

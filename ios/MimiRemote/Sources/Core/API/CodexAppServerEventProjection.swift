@@ -325,7 +325,7 @@ extension CodexAppServerSessionRuntime {
             // thread/search 的最终权限边界在 agentd gateway：它会按 projects/browse_roots 裁剪响应。
             // iOS 不发送 cwd，只拒绝不可能作为会话目录的空值/相对路径；合法 managed worktree
             // 未必已进入 config.projects，不能在这里误删 gateway 已授权的结果。
-            guard !cwd.isEmpty, (cwd as NSString).isAbsolutePath else {
+            guard !cwd.isEmpty, isAbsoluteRemoteHostPath(cwd) else {
                 continue
             }
             let session = try agentSession(from: thread, projects: projects, fallbackProject: nil)
@@ -534,11 +534,42 @@ extension CodexAppServerSessionRuntime {
         return projects
             .filter { project in
                 let projectPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
-                return path == projectPath || path.hasPrefix(projectPath + "/")
+                return remoteHostPath(path, isWithin: projectPath)
             }
             .max { lhs, rhs in
-                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+                remoteHostPathDepth(lhs.path) < remoteHostPathDepth(rhs.path)
             }
+    }
+
+    /// `cwd` 属于远端宿主，不能用 iOS Foundation 的本机 Unix 路径判断。
+    /// 这里只识别网关允许返回的 Unix、Windows 盘符和 UNC 绝对路径。
+    func isAbsoluteRemoteHostPath(_ path: String) -> Bool {
+        if path.hasPrefix("/") || path.hasPrefix(#"\\"#) {
+            return true
+        }
+        guard path.count >= 3 else {
+            return false
+        }
+        let characters = Array(path.prefix(3))
+        return characters[0].isLetter
+            && characters[1] == ":"
+            && (characters[2] == "\\" || characters[2] == "/")
+    }
+
+    func remoteHostPath(_ path: String, isWithin root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else {
+            return false
+        }
+        guard path != root else {
+            return true
+        }
+        let separator: Character = root.contains("\\") ? "\\" : "/"
+        let prefix = root.last == separator ? root : root + String(separator)
+        return path.hasPrefix(prefix)
+    }
+
+    func remoteHostPathDepth(_ path: String) -> Int {
+        path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).count
     }
 
     func projectsIncludingWorkspace(_ projects: [AgentProject], workspace: AgentWorkspace) -> [AgentProject] {
