@@ -1400,6 +1400,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testAppearancePreview() {
         let defaults = UserDefaults(suiteName: "ConversationSnapshotTests.Appearance.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)
+        let workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: defaults)
         themeStore.mode = .dark
         themeStore.preset = .gruvbox
         themeStore.uiFontPreset = .rounded
@@ -1407,9 +1408,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         themeStore.setFontScale(1.1)
 
         let view = NavigationStack {
-            AppearanceView()
+            AppearanceView(profileID: "snapshot-profile")
         }
         .environmentObject(themeStore)
+        .environmentObject(workspaceAppearanceStore)
         .environment(\.colorScheme, .dark)
         .frame(width: 560, height: 1180)
 
