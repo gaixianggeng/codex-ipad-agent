@@ -10,6 +10,7 @@ DEVICE_ID="${DEVICE_ID:-}"
 BUNDLE_ID="${BUNDLE_ID:-com.gaixianggeng.mimi}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/ios/MimiRemote/build/deploy-derived}"
+SKIP_INSTALL="${SKIP_INSTALL:-0}"
 SKIP_LAUNCH="${SKIP_LAUNCH:-0}"
 REFRESH_INSTALL="${REFRESH_INSTALL:-0}"
 ALLOW_PROVISIONING_UPDATES="${ALLOW_PROVISIONING_UPDATES:-1}"
@@ -66,6 +67,9 @@ fi
 if [[ ${#SIGNING_ARGS[@]} -gt 0 ]]; then
   XCODEBUILD_ARGS+=("${SIGNING_ARGS[@]}")
 fi
+if [[ $# -gt 0 ]]; then
+  XCODEBUILD_ARGS+=("$@")
+fi
 XCODEBUILD_ARGS+=(build)
 
 xcodebuild "${XCODEBUILD_ARGS[@]}"
@@ -73,6 +77,11 @@ xcodebuild "${XCODEBUILD_ARGS[@]}"
 if [[ ! -d "$APP_PATH" ]]; then
   echo "构建成功但找不到产物：$APP_PATH" >&2
   exit 1
+fi
+
+if [[ "$SKIP_INSTALL" == "1" ]]; then
+  echo "==> 已跳过安装，真机构建产物：$APP_PATH"
+  exit 0
 fi
 
 if [[ "$REFRESH_INSTALL" == "1" ]]; then

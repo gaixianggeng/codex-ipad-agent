@@ -347,16 +347,10 @@ xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
 
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-iOS 工程结构、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
+日常 `build` / `run` 优先使用 available、paired、USB 连接的真机，没有可用真机时才使用固定 iPad Simulator；测试与 CI 始终使用 Simulator。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
 
 ### Claude bridge
 

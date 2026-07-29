@@ -1,0 +1,9 @@
+schemaVersion: 1
+sessionDefaults:
+  projectPath: ./ios/MimiRemote/MimiRemote.xcodeproj
+  scheme: MimiRemote
+  configuration: Debug
+  simulatorName: iPad Pro 13-inch (M5)
+  useLatestOS: true
+  derivedDataPath: ./ios/MimiRemote/build/dev-simulator-derived
+  bundleId: com.gaixianggeng.mimi
