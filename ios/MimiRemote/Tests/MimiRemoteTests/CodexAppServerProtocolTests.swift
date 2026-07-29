@@ -2,6 +2,34 @@ import XCTest
 @testable import MimiRemote
 
 final class CodexAppServerProtocolTests: XCTestCase {
+    func testLiveWindowsHostHealthFromPhysicalDevice() async throws {
+        guard let rawEndpoint = ProcessInfo.processInfo.environment["MIMI_LIVE_WINDOWS_ENDPOINT"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !rawEndpoint.isEmpty
+        else {
+            throw XCTSkip("仅在显式提供 Windows 宿主 Endpoint 时运行真机网络验证")
+        }
+        let endpoint = try EndpointTransportPolicy.validatedEndpoint(rawEndpoint)
+        guard var components = URLComponents(string: endpoint) else {
+            return XCTFail("Windows 宿主 Endpoint 无法解析")
+        }
+        components.path = "/healthz"
+        components.query = nil
+        components.fragment = nil
+        guard let healthURL = components.url else {
+            return XCTFail("Windows 宿主 health URL 无法构造")
+        }
+
+        var request = URLRequest(url: healthURL)
+        request.timeoutInterval = 12
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(httpResponse.statusCode, 200)
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(payload?["ok"] as? Bool, true)
+        XCTAssertFalse((payload?["version"] as? String ?? "").isEmpty)
+    }
+
     func testWorktreeDeleteResponseDecodesLegacyAndRegistryCleanupWarning() throws {
         let legacyJSON = #"{"deleted_path":"/tmp/worktree-a","worktrees":[]}"#
         let legacy = try AgentAPIClient.decoder.decode(WorktreeDeleteResponse.self, from: Data(legacyJSON.utf8))
