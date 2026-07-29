@@ -11,6 +11,7 @@ on:
       - "internal/protocolcontract/**"
       - "scripts/ios-dev.sh"
       - "scripts/test-conversation-regressions.sh"
+      - "scripts/check-critical-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
       - "scripts/check-ios-network-security.sh"

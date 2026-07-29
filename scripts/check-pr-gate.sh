@@ -14,7 +14,12 @@ for command_name in bash grep mktemp ruby; do
     || fail "缺少命令 ${command_name}。"
 done
 
-bash -n scripts/ci-pr-scope.sh scripts/check-pr-gate.sh
+bash -n \
+  scripts/ci-pr-scope.sh \
+  scripts/check-critical-regressions.sh \
+  scripts/check-pr-gate.sh
+
+bash ./scripts/check-critical-regressions.sh
 
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-pr-gate-check.XXXXXX")"
 trap 'rm -rf "$test_root"' EXIT
@@ -47,6 +52,8 @@ assert_scope windows_release true false false scripts/build-windows-installer.ps
 assert_scope ios_release false true false scripts/ios_testflight_ci.sh
 assert_scope mimi_contract true true false contracts/mimi-protocol/contract.json
 assert_scope mimi_contract_generator true true false internal/protocolcontract/cmd/generate/main.go
+assert_scope critical_runner true true false scripts/test-conversation-regressions.sh
+assert_scope critical_checker true true false scripts/check-critical-regressions.sh
 assert_scope docs_only false false false CONTRIBUTING.md
 assert_scope workflow true true true .github/workflows/pr-gate.yml
 assert_scope mixed true true true \

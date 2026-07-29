@@ -19,6 +19,7 @@ final class AgentAPIClientRequestTests: XCTestCase {
             session: session
         )
         let workspacePath = "/Users/demo/project"
+        let criticalJourney = try criticalJourneyContractFixture()
 
         let contracts: [RESTRequestContract] = [
             .init("health", path: "/healthz", method: "GET", requiresAuth: false) { client in
@@ -26,9 +27,9 @@ final class AgentAPIClientRequestTests: XCTestCase {
             },
             .init(
                 "pair claim",
-                path: "/api/pair/claim",
-                method: "POST",
-                requiresAuth: false,
+                path: criticalJourney.rest.pairClaim.path,
+                method: criticalJourney.rest.pairClaim.method,
+                requiresAuth: criticalJourney.rest.pairClaim.requiresAuth,
                 json: [
                     "endpoint": "http://100.64.0.8:8787",
                     "issued_at": "2026-07-23T10:00:00Z",

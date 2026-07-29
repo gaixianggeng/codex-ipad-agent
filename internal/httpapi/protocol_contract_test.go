@@ -20,6 +20,24 @@ type clientCompatibilityFixture struct {
 	ExpectedCode                  string `json:"expected_code"`
 }
 
+type criticalJourneyFixture struct {
+	SchemaVersion int `json:"schema_version"`
+	REST          struct {
+		PairClaim struct {
+			Method       string `json:"method"`
+			Path         string `json:"path"`
+			RequiresAuth bool   `json:"requires_auth"`
+		} `json:"pair_claim"`
+	} `json:"rest"`
+	WebSocket struct {
+		Path                   string   `json:"path"`
+		RequiresAuth           bool     `json:"requires_auth"`
+		ClientMethods          []string `json:"client_methods"`
+		ServerRequestMethods   []string `json:"server_request_methods"`
+		ResolutionNotification string   `json:"resolution_notification"`
+	} `json:"websocket"`
+}
+
 func TestVersionResponseMatchesSharedCurrentGoldenFixture(t *testing.T) {
 	server := newTestServer(t)
 	rec := httptest.NewRecorder()
@@ -146,6 +164,52 @@ func TestProtocolMetadataDoesNotBypassAuthentication(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("未认证请求必须先被鉴权拒绝，实际 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCriticalJourneyFixtureMatchesAgentDGateway(t *testing.T) {
+	var fixture criticalJourneyFixture
+	if err := json.Unmarshal(readProtocolFixture(t, "critical-journey.json"), &fixture); err != nil {
+		t.Fatalf("关键链路 fixture 不是合法 JSON：%v", err)
+	}
+	if fixture.SchemaVersion != 1 {
+		t.Fatalf("关键链路 fixture schema 不受支持：%d", fixture.SchemaVersion)
+	}
+	if fixture.REST.PairClaim.Method != http.MethodPost || fixture.REST.PairClaim.RequiresAuth {
+		t.Fatalf("pair claim 必须保持免 Bearer 的 POST：%+v", fixture.REST.PairClaim)
+	}
+
+	// 用真实 mux 验证共享路径已注册；无效 body 可以被 handler 拒绝，但不能落到 404。
+	server := newTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		fixture.REST.PairClaim.Method,
+		fixture.REST.PairClaim.Path,
+		http.NoBody,
+	)
+	server.handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound || rec.Code == http.StatusUnauthorized {
+		t.Fatalf("pair claim 共享路径或免认证边界漂移：status=%d", rec.Code)
+	}
+
+	if fixture.WebSocket.Path != appServerGatewayPath || !fixture.WebSocket.RequiresAuth {
+		t.Fatalf("app-server WebSocket 路径或鉴权边界漂移：%+v", fixture.WebSocket)
+	}
+	for _, method := range fixture.WebSocket.ClientMethods {
+		if _, ok := appServerAllowedMethods[method]; !ok {
+			t.Errorf("共享关键链路方法未被 agentd gateway 允许：%s", method)
+		}
+	}
+	for _, method := range fixture.WebSocket.ServerRequestMethods {
+		if _, ok := appServerAllowedServerRequestMethods[method]; !ok {
+			t.Errorf("共享反向请求未被 agentd gateway 允许：%s", method)
+		}
+	}
+	if fixture.WebSocket.ResolutionNotification != "serverRequest/resolved" {
+		t.Fatalf(
+			"审批/补充输入的收敛通知漂移：%s",
+			fixture.WebSocket.ResolutionNotification,
+		)
 	}
 }
 
