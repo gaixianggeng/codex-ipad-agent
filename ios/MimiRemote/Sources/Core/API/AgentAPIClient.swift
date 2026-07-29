@@ -1,18 +1,36 @@
 import Foundation
+import CryptoKit
 
 protocol CredentialInvalidatingError {
     var invalidatesCredentials: Bool { get }
+    /// 发出被拒请求时使用的凭据指纹；nil 仅用于无法提供上下文的旧实现或测试替身。
+    var rejectedCredentialFingerprint: String? { get }
+}
+
+extension CredentialInvalidatingError {
+    var rejectedCredentialFingerprint: String? { nil }
 }
 
 func isCredentialInvalidatingError(_ error: Error) -> Bool {
     (error as? any CredentialInvalidatingError)?.invalidatesCredentials == true
 }
 
+func credentialFingerprintRejectedByError(_ error: Error) -> String? {
+    (error as? any CredentialInvalidatingError)?.rejectedCredentialFingerprint
+}
+
+/// 只比较不可逆摘要，既能淘汰旧请求，又不会把长期访问码带进错误、日志或诊断状态。
+func connectionCredentialFingerprint(_ token: String) -> String {
+    SHA256.hash(data: Data(token.utf8))
+        .map { String(format: "%02x", $0) }
+        .joined()
+}
+
 enum AgentAPIError: LocalizedError, CredentialInvalidatingError {
     case invalidEndpoint
     case insecurePublicHTTPEndpoint(host: String)
     case invalidResponse
-    case credentialsInvalid(status: Int)
+    case credentialsInvalid(status: Int, credentialFingerprint: String? = nil)
     case server(status: Int, message: String)
     case decoding(Error)
 
@@ -25,6 +43,13 @@ enum AgentAPIError: LocalizedError, CredentialInvalidatingError {
         case .invalidEndpoint, .insecurePublicHTTPEndpoint, .invalidResponse, .decoding:
             return false
         }
+    }
+
+    var rejectedCredentialFingerprint: String? {
+        if case .credentialsInvalid(_, let credentialFingerprint) = self {
+            return credentialFingerprint
+        }
+        return nil
     }
 
     var errorDescription: String? {
@@ -507,7 +532,10 @@ struct AgentAPIClient {
                 message: message,
                 authenticationChallenge: http.value(forHTTPHeaderField: "WWW-Authenticate")
             ) {
-                throw AgentAPIError.credentialsInvalid(status: http.statusCode)
+                throw AgentAPIError.credentialsInvalid(
+                    status: http.statusCode,
+                    credentialFingerprint: connectionCredentialFingerprint(token)
+                )
             }
             throw AgentAPIError.server(status: http.statusCode, message: message)
         }

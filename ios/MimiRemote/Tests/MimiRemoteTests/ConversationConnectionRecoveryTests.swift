@@ -162,6 +162,30 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.errorMessage, ConnectionTerminationStatus.credentialsInvalid.message)
     }
 
+    func testStaleCredentialRejectionAfterForegroundRestoreDoesNotTerminateConnection() async {
+        let staleToken = ""
+        let activeToken = "restored-token"
+        let client = CredentialRejectingBootstrapClient(
+            status: 401,
+            credentialFingerprint: connectionCredentialFingerprint(staleToken)
+        )
+        let appStore = AppStore()
+        appStore.token = activeToken
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll()
+
+        XCTAssertEqual(client.projectsCallCount, 1)
+        XCTAssertNil(store.connectionTermination)
+        XCTAssertFalse(appStore.requiresRePairing)
+        XCTAssertNotEqual(store.webSocketStatus, .terminated(.credentialsInvalid))
+    }
+
     func testWebSocketClientPublishesCredentialTerminalStatusForHandshakeRejection() async throws {
         let project = makeProject(id: "proj_ws_auth_rejected")
 

@@ -56,6 +56,7 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
     private let session: URLSession
     private let maximumMessageSize: Int
     private var task: URLSessionWebSocketTask?
+    private var credentialFingerprint: String?
 
     init(
         session: URLSession = .shared,
@@ -69,6 +70,7 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        credentialFingerprint = connectionCredentialFingerprint(token)
         let nextTask = session.webSocketTask(with: request)
         WebSocketMessageLimits.apply(to: nextTask, maximumMessageSize: maximumMessageSize)
         task = nextTask
@@ -82,7 +84,11 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
         do {
             try await task.send(.string(text))
         } catch {
-            throw Self.mappedTaskError(error, response: task.response)
+            throw Self.mappedTaskError(
+                error,
+                response: task.response,
+                credentialFingerprint: credentialFingerprint
+            )
         }
     }
 
@@ -94,7 +100,11 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
         do {
             message = try await task.receive()
         } catch {
-            throw Self.mappedTaskError(error, response: task.response)
+            throw Self.mappedTaskError(
+                error,
+                response: task.response,
+                credentialFingerprint: credentialFingerprint
+            )
         }
         switch message {
         case .string(let text):
@@ -109,14 +119,22 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
     func close() async {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        credentialFingerprint = nil
     }
 
-    static func mappedTaskError(_ error: Error, response: URLResponse?) -> Error {
+    static func mappedTaskError(
+        _ error: Error,
+        response: URLResponse?,
+        credentialFingerprint: String? = nil
+    ) -> Error {
         // URLSessionWebSocketTask.resume() 不等待 HTTP Upgrade 完成；401/403 通常在首个
         // send/receive 才抛出。此时必须读取握手响应并保留类型，不能只上传输层字符串。
         if let status = (response as? HTTPURLResponse)?.statusCode,
            status == 401 || status == 403 {
-            return AgentAPIError.credentialsInvalid(status: status)
+            return AgentAPIError.credentialsInvalid(
+                status: status,
+                credentialFingerprint: credentialFingerprint
+            )
         }
         return error
     }
@@ -136,6 +154,13 @@ enum CodexAppServerConnectionError: LocalizedError, CredentialInvalidatingError 
             return isCredentialInvalidatingError(error)
         }
         return false
+    }
+
+    var rejectedCredentialFingerprint: String? {
+        if case .transport(let error) = self {
+            return credentialFingerprintRejectedByError(error)
+        }
+        return nil
     }
 
     var errorDescription: String? {

@@ -1348,6 +1348,7 @@ extension SessionStore {
         webSocket = nil
         connectedSessionID = nil
         connectedHostScope = nil
+        connectedCredentialFingerprint = nil
         socket?.disconnect()
         if let reconnectSessionID {
             markDispatchingQueuedTurnsNeedsConfirmation(
