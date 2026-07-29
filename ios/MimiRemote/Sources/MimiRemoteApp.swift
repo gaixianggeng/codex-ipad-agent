@@ -150,6 +150,7 @@ struct MimiRemoteApp: App {
     @StateObject private var contextStore: SessionContextStore
     @StateObject private var sessionStore: SessionStore
     @StateObject private var themeStore: ThemeStore
+    @StateObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @StateObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @StateObject private var hostStatusStore: HostStatusStore
 
@@ -159,12 +160,21 @@ struct MimiRemoteApp: App {
         let logStore = LogStore()
         let contextStore = SessionContextStore()
         let themeStore = ThemeStore()
+        let workspaceAppearanceStore = WorkspaceAppearanceStore()
+        // 冷启动先把唯一 endpoint 下的旧偏好归入当前 Profile，避免用户直接打开
+        // “个性化”时短暂看到默认风格，并在修改设置后覆盖原来的 Emoji 选择。
+        workspaceAppearanceStore.migrateLegacyValueIfNeeded(
+            profileID: appStore.activeHostScope.profileID,
+            endpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
         _logStore = StateObject(wrappedValue: logStore)
         _contextStore = StateObject(wrappedValue: contextStore)
         _themeStore = StateObject(wrappedValue: themeStore)
+        _workspaceAppearanceStore = StateObject(wrappedValue: workspaceAppearanceStore)
         _notificationResponseAdapter = StateObject(wrappedValue: notificationResponseAdapter)
         _hostStatusStore = StateObject(wrappedValue: HostStatusStore())
         _sessionStore = StateObject(wrappedValue: SessionStore(
@@ -188,6 +198,7 @@ struct MimiRemoteApp: App {
                 .environmentObject(logStore)
                 .environmentObject(contextStore)
                 .environmentObject(themeStore)
+                .environmentObject(workspaceAppearanceStore)
                 .environmentObject(notificationResponseAdapter)
                 .environmentObject(hostStatusStore)
                 .onOpenURL { url in

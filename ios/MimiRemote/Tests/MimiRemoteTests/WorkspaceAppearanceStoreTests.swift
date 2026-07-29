@@ -45,6 +45,105 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         }
     }
 
+    func testBuiltInEmojiPoolKeepsPreviousProductChoices() {
+        XCTAssertEqual(
+            WorkspaceAppearanceStore.builtInEmoji,
+            ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
+        )
+    }
+
+    func testNewProfileDefaultsToJourneyStyle() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+
+        XCTAssertEqual(store.style(profileID: "mac-a"), .journey)
+    }
+
+    func testLegacyEmojiSelectionRestoresEmojiStyleAndChoice() throws {
+        let legacy = [
+            "byProfileID": [
+                "mac-a": [
+                    "project-1": "🌻",
+                    "project-2": "🤖"
+                ]
+            ]
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: legacy),
+            forKey: "agentd.workspaceAppearancePreferences.v1"
+        )
+
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+
+        XCTAssertEqual(store.style(profileID: "mac-a"), .emoji)
+        XCTAssertEqual(store.customEmoji(profileID: "mac-a", projectID: "project-1"), "🌻")
+        XCTAssertEqual(store.customEmoji(profileID: "mac-a", projectID: "project-2"), "🤖")
+    }
+
+    func testLegacyEndpointEmojiMigrationRestoresStyleBeforeWorkspaceOpens() throws {
+        let endpoint = "http://mac-a.local:8787"
+        let legacy = [
+            "byEndpoint": [
+                endpoint: [
+                    "project-1": "🦧"
+                ]
+            ]
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: legacy),
+            forKey: "agentd.workspaceAppearancePreferences.v1"
+        )
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+
+        XCTAssertEqual(store.style(profileID: profile.id), .journey)
+
+        store.migrateLegacyValueIfNeeded(
+            profileID: profile.id,
+            endpoint: profile.endpoint,
+            profiles: [profile]
+        )
+
+        XCTAssertEqual(store.style(profileID: profile.id), .emoji)
+        XCTAssertEqual(store.customEmoji(profileID: profile.id, projectID: "project-1"), "🦧")
+    }
+
+    func testStyleAndTwoKindsOfProjectChoicesPersistIndependently() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        store.setCustomEmoji("🌈", profileID: "mac-a", projectID: "project-1")
+        store.setCustomCharacterID("red-boy", profileID: "mac-a", projectID: "project-1")
+        store.setStyle(.emoji, profileID: "mac-a")
+
+        let restored = WorkspaceAppearanceStore(defaults: defaults)
+        XCTAssertEqual(restored.style(profileID: "mac-a"), .emoji)
+        XCTAssertEqual(restored.customEmoji(profileID: "mac-a", projectID: "project-1"), "🌈")
+        XCTAssertEqual(
+            restored.customCharacterID(profileID: "mac-a", projectID: "project-1"),
+            "red-boy"
+        )
+
+        restored.setStyle(.journey, profileID: "mac-a")
+        let switchedBack = WorkspaceAppearanceStore(defaults: defaults)
+        XCTAssertEqual(switchedBack.style(profileID: "mac-a"), .journey)
+        XCTAssertEqual(switchedBack.customEmoji(profileID: "mac-a", projectID: "project-1"), "🌈")
+        XCTAssertEqual(
+            switchedBack.customCharacterID(profileID: "mac-a", projectID: "project-1"),
+            "red-boy"
+        )
+    }
+
+    func testStylePreferenceStaysScopedToConnectionProfile() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        store.setStyle(.emoji, profileID: "mac-a")
+
+        XCTAssertEqual(store.style(profileID: "mac-a"), .emoji)
+        XCTAssertEqual(store.style(profileID: "mac-b"), .journey)
+    }
+
     func testDefaultCharacterIsStableForProfileAndProject() {
         let first = WorkspaceAppearanceStore(defaults: defaults)
         let value = first.defaultCharacterID(profileID: "mac-a", projectID: "project-1")
@@ -127,6 +226,28 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertEqual(
             Set(assignments.values.map(\.id)).count,
             WorkspaceAppearanceStore.builtInCharacters.count
+        )
+    }
+
+    func testEmojiAssignmentsStayUniqueWhilePoolHasCapacity() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        let projectIDs = (0..<WorkspaceAppearanceStore.builtInEmoji.count)
+            .map { "project-\($0)" }
+
+        let assignments = store.emojiAssignments(
+            profileID: "mac-a",
+            projectIDs: projectIDs
+        )
+
+        XCTAssertEqual(assignments.count, projectIDs.count)
+        XCTAssertEqual(
+            Set(assignments.values).count,
+            WorkspaceAppearanceStore.builtInEmoji.count
+        )
+        XCTAssertEqual(
+            store.emojiAssignments(profileID: "mac-a", projectIDs: Array(projectIDs.reversed())),
+            assignments,
+            "项目输入顺序变化不应导致 Emoji 重新洗牌"
         )
     }
 

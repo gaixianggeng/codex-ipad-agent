@@ -2,6 +2,22 @@ import Combine
 import CryptoKit
 import Foundation
 
+enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
+    case journey
+    case emoji
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .journey:
+            return L10n.text("ui.journey_to_the_west")
+        case .emoji:
+            return L10n.text("ui.emoji")
+        }
+    }
+}
+
 struct WorkspaceCharacterIcon: Identifiable, Equatable, Sendable {
     let id: String
     let assetName: String
@@ -13,9 +29,34 @@ struct WorkspaceCharacterIcon: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 工作区角色图标是当前设备的展示偏好，不属于远端项目配置，也不参与会话状态同步。
+private struct WorkspaceAppearancePreferences: Codable {
+    var style: WorkspaceIconStyle?
+    var characterIDsByProject: [String: String] = [:]
+    var emojiByProject: [String: String] = [:]
+
+    var isEmpty: Bool {
+        style == nil && characterIDsByProject.isEmpty && emojiByProject.isEmpty
+    }
+
+    mutating func mergeMissingValues(from legacy: Self) {
+        if style == nil {
+            style = legacy.style
+        }
+        for (projectID, characterID) in legacy.characterIDsByProject
+            where characterIDsByProject[projectID] == nil {
+            characterIDsByProject[projectID] = characterID
+        }
+        for (projectID, emoji) in legacy.emojiByProject where emojiByProject[projectID] == nil {
+            emojiByProject[projectID] = emoji
+        }
+    }
+}
+
+/// 工作区图标是当前设备的展示偏好，不属于远端项目配置，也不参与会话状态同步。
 @MainActor
 final class WorkspaceAppearanceStore: ObservableObject {
+    static let builtInEmoji = ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
+
     static let builtInCharacters = [
         WorkspaceCharacterIcon(id: "sun-wukong", assetName: "WorkspaceCharacterSunWukong", nameKey: "ui.workspace_character_sun_wukong"),
         WorkspaceCharacterIcon(id: "tang-sanzang", assetName: "WorkspaceCharacterTangSanzang", nameKey: "ui.workspace_character_tang_sanzang"),
@@ -39,7 +80,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "queen-womens-kingdom", assetName: "WorkspaceCharacterQueenWomensKingdom", nameKey: "ui.workspace_character_queen_womens_kingdom")
     ]
 
-    private typealias Storage = ProfileScopedStorage<[String: String]>
+    private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>
+    private typealias LegacyStorage = ProfileScopedStorage<[String: String]>
 
     @Published private var storage: Storage
 
@@ -48,13 +90,24 @@ final class WorkspaceAppearanceStore: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        key: String = "agentd.workspaceAppearancePreferences.v1"
+        key: String = "agentd.workspaceAppearancePreferences.v2",
+        legacyKey: String = "agentd.workspaceAppearancePreferences.v1"
     ) {
         self.defaults = defaults
         self.key = key
+
         if let data = defaults.data(forKey: key),
            let decoded = try? JSONDecoder().decode(Storage.self, from: data) {
             storage = decoded
+        } else if let legacyData = defaults.data(forKey: legacyKey),
+                  let legacy = try? JSONDecoder().decode(LegacyStorage.self, from: legacyData) {
+            // v1 的单一字典可能同时残留 Emoji 和新版角色 ID。首次读取时分类复制到 v2，
+            // 旧键保持只读，确保升级失败也不会破坏用户原来的选择。
+            let migrated = Self.migratedStorage(from: legacy)
+            storage = migrated
+            if let data = try? JSONEncoder().encode(migrated) {
+                defaults.set(data, forKey: key)
+            }
         } else {
             storage = Storage()
         }
@@ -66,13 +119,40 @@ final class WorkspaceAppearanceStore: ObservableObject {
         endpoint: String,
         profiles: [ConnectionProfile]
     ) {
-        guard storage.migrateLegacyValueIfUnique(
-            profileID: profileID,
-            endpoint: endpoint,
-            profiles: profiles
-        ) else {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
+        let endpointKey = AgentAPIClient.normalizedEndpoint(endpoint)
+        guard !storage.migratedLegacyEndpoints.contains(endpointKey),
+              ProfileScopedPersistence.isUniqueEndpointMatch(
+                  profileID: profileKey,
+                  normalizedEndpoint: endpointKey,
+                  profiles: profiles
+              ),
+              let legacyPreferences = storage.byEndpoint[endpointKey]
+        else {
+            return
+        }
+
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        preferences.mergeMissingValues(from: legacyPreferences)
+        storage.byProfileID[profileKey] = preferences
+        storage.migratedLegacyEndpoints.insert(endpointKey)
+        persist()
+    }
+
+    func style(profileID: String) -> WorkspaceIconStyle {
+        preferences(profileID: profileID)?.style ?? .journey
+    }
+
+    func setStyle(_ style: WorkspaceIconStyle, profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        guard preferences.style != style else { return }
+        preferences.style = style
+        storage.byProfileID[profileKey] = preferences
         persist()
     }
 
@@ -99,7 +179,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
         var assignments: [String: WorkspaceCharacterIcon] = [:]
         var usedCharacterIDs = Set<String>()
 
-        // 手动选择优先占位；历史数据若已经重复，只保留首个占位，其余项目回到空位分配。
         for projectID in uniqueProjectIDs {
             guard let customID = customCharacterID(profileID: profileID, projectID: projectID),
                   let character = Self.character(id: customID),
@@ -117,7 +196,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
                 .map { Self.builtInCharacters[(startIndex + $0) % Self.builtInCharacters.count] }
                 .first { !usedCharacterIDs.contains($0.id) }
 
-            // 超过角色池容量时不存在空位；退回项目自己的稳定哈希结果，让复用仍然可预测。
             let character = availableCharacter ?? Self.builtInCharacters[startIndex]
             assignments[projectID] = character
             usedCharacterIDs.insert(character.id)
@@ -127,12 +205,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     func customCharacterID(profileID: String, projectID: String) -> String? {
-        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
-            return nil
-        }
-        guard let storedValue = storage.byProfileID[profileKey]?[projectID],
+        guard let storedValue = preferences(profileID: profileID)?.characterIDsByProject[projectID],
               Self.character(id: storedValue) != nil else {
-            // v1 曾保存 Emoji；无法识别的旧值直接回退到新的稳定默认角色。
             return nil
         }
         return storedValue
@@ -142,29 +216,81 @@ final class WorkspaceAppearanceStore: ObservableObject {
         Self.builtInCharacters[defaultCharacterIndex(profileID: profileID, projectID: projectID)].id
     }
 
-    private func defaultCharacterIndex(profileID: String, projectID: String) -> Int {
-        let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
-        let identity = "\(profileKey)\n\(projectID)"
-        return Self.stableIndex(for: identity, count: Self.builtInCharacters.count)
-    }
-
     func setCustomCharacterID(_ characterID: String?, profileID: String, projectID: String) {
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
-        var projectValues = storage.byProfileID[profileKey] ?? [:]
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
         if let characterID {
             guard Self.character(id: characterID) != nil else { return }
-            projectValues[projectID] = characterID
+            preferences.characterIDsByProject[projectID] = characterID
         } else {
-            projectValues.removeValue(forKey: projectID)
+            preferences.characterIDsByProject.removeValue(forKey: projectID)
         }
-        if projectValues.isEmpty {
-            storage.byProfileID.removeValue(forKey: profileKey)
+        save(preferences, profileKey: profileKey)
+    }
+
+    func emoji(profileID: String, projectID: String) -> String {
+        customEmoji(profileID: profileID, projectID: projectID)
+            ?? defaultEmoji(profileID: profileID, projectID: projectID)
+    }
+
+    func emojiAssignments(profileID: String, projectIDs: [String]) -> [String: String] {
+        let uniqueProjectIDs = Array(Set(projectIDs)).sorted()
+        guard !uniqueProjectIDs.isEmpty, !Self.builtInEmoji.isEmpty else {
+            return [:]
+        }
+
+        var assignments: [String: String] = [:]
+        var usedEmoji = Set<String>()
+
+        // 保留不冲突的历史手动选择；旧数据里已经重复的项目回到稳定自动分配。
+        for projectID in uniqueProjectIDs {
+            guard let custom = customEmoji(profileID: profileID, projectID: projectID),
+                  !usedEmoji.contains(custom) else {
+                continue
+            }
+            assignments[projectID] = custom
+            usedEmoji.insert(custom)
+        }
+
+        for projectID in uniqueProjectIDs where assignments[projectID] == nil {
+            let startIndex = defaultEmojiIndex(profileID: profileID, projectID: projectID)
+            let availableEmoji = (0..<Self.builtInEmoji.count)
+                .lazy
+                .map { Self.builtInEmoji[(startIndex + $0) % Self.builtInEmoji.count] }
+                .first { !usedEmoji.contains($0) }
+            let emoji = availableEmoji ?? Self.builtInEmoji[startIndex]
+            assignments[projectID] = emoji
+            usedEmoji.insert(emoji)
+        }
+
+        return assignments
+    }
+
+    func customEmoji(profileID: String, projectID: String) -> String? {
+        guard let storedValue = preferences(profileID: profileID)?.emojiByProject[projectID] else {
+            return nil
+        }
+        return Self.normalizedEmoji(storedValue)
+    }
+
+    func defaultEmoji(profileID: String, projectID: String) -> String {
+        Self.builtInEmoji[defaultEmojiIndex(profileID: profileID, projectID: projectID)]
+    }
+
+    func setCustomEmoji(_ emoji: String?, profileID: String, projectID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        if let emoji {
+            guard let normalized = Self.normalizedEmoji(emoji) else { return }
+            preferences.emojiByProject[projectID] = normalized
         } else {
-            storage.byProfileID[profileKey] = projectValues
+            preferences.emojiByProject.removeValue(forKey: projectID)
         }
-        persist()
+        save(preferences, profileKey: profileKey)
     }
 
     func remove(profileID: String) {
@@ -177,6 +303,89 @@ final class WorkspaceAppearanceStore: ObservableObject {
 
     static func character(id: String) -> WorkspaceCharacterIcon? {
         builtInCharacters.first { $0.id == id }
+    }
+
+    static func normalizedEmoji(_ input: String) -> String? {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count == 1 else { return nil }
+
+        let scalars = Array(value.unicodeScalars)
+        let hasPresentationEmoji = scalars.contains { $0.properties.isEmojiPresentation }
+        let hasEmojiWithPresentationSelector = scalars.contains { $0.properties.isEmoji }
+            && scalars.contains { $0.value == 0xFE0F }
+        guard hasPresentationEmoji || hasEmojiWithPresentationSelector else {
+            return nil
+        }
+        return value
+    }
+
+    static func tintIndex(for emoji: String, count: Int) -> Int {
+        stableIndex(for: emoji, count: count)
+    }
+
+    private func preferences(profileID: String) -> WorkspaceAppearancePreferences? {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return nil
+        }
+        return storage.byProfileID[profileKey]
+    }
+
+    private func defaultCharacterIndex(profileID: String, projectID: String) -> Int {
+        Self.stableIndex(
+            for: stableIdentity(profileID: profileID, projectID: projectID),
+            count: Self.builtInCharacters.count
+        )
+    }
+
+    private func defaultEmojiIndex(profileID: String, projectID: String) -> Int {
+        Self.stableIndex(
+            for: stableIdentity(profileID: profileID, projectID: projectID),
+            count: Self.builtInEmoji.count
+        )
+    }
+
+    private func stableIdentity(profileID: String, projectID: String) -> String {
+        let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
+        return "\(profileKey)\n\(projectID)"
+    }
+
+    private func save(_ preferences: WorkspaceAppearancePreferences, profileKey: String) {
+        if preferences.isEmpty {
+            storage.byProfileID.removeValue(forKey: profileKey)
+        } else {
+            storage.byProfileID[profileKey] = preferences
+        }
+        persist()
+    }
+
+    private static func migratedStorage(from legacy: LegacyStorage) -> Storage {
+        var migrated = Storage()
+        migrated.byEndpoint = legacy.byEndpoint.mapValues(migratedPreferences)
+        migrated.byProfileID = legacy.byProfileID.mapValues(migratedPreferences)
+        migrated.migratedLegacyEndpoints = legacy.migratedLegacyEndpoints
+        return migrated
+    }
+
+    private static func migratedPreferences(
+        from legacyValues: [String: String]
+    ) -> WorkspaceAppearancePreferences {
+        var preferences = WorkspaceAppearancePreferences()
+        for (projectID, value) in legacyValues {
+            if character(id: value) != nil {
+                preferences.characterIDsByProject[projectID] = value
+            } else if let emoji = normalizedEmoji(value) {
+                preferences.emojiByProject[projectID] = emoji
+            }
+        }
+
+        // 兼容老用户优先：只要存在历史 Emoji 就继续展示 Emoji；完全没有历史选择时
+        // style 保持 nil，由读取逻辑使用《西游记》作为新用户默认值。
+        if !preferences.emojiByProject.isEmpty {
+            preferences.style = .emoji
+        } else if !preferences.characterIDsByProject.isEmpty {
+            preferences.style = .journey
+        }
+        return preferences
     }
 
     private static func stableIndex(for value: String, count: Int) -> Int {

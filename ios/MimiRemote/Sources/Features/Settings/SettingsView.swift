@@ -176,10 +176,11 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("settings.language")
                 NavigationLink {
-                    AppearanceView()
+                    AppearanceView(profileID: appStore.activeHostScope.profileID)
                 } label: {
-                    Label(L10n.text("ui.appearance"), systemImage: "paintpalette")
+                    Label(L10n.text("ui.personalization"), systemImage: "paintpalette")
                 }
+                .accessibilityIdentifier("settings.appearance")
                 NavigationLink {
                     DefaultPermissionView()
                 } label: {
