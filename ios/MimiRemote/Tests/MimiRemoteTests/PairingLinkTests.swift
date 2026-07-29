@@ -460,6 +460,60 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertNil(keychain.data(account: "agentd-profile.mac-b"))
     }
 
+    func testNewPairingURLCarriesNewProfileTargetThroughPreparationAndCommit() async throws {
+        let suiteName = "PairingLinkTests.NewPairingTarget.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let currentProfile = ConnectionProfile(
+            id: "windows-a",
+            displayName: "Windows",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil,
+            installationID: "installation-windows"
+        )
+        defaults.set(try JSONEncoder().encode([currentProfile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(currentProfile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(currentProfile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("windows-token".utf8), account: "agentd-profile.windows-a")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            routeProbe: { _, _, _ in }
+        )
+        let url = try XCTUnwrap(URL(
+            string: "mimiremote://connect?endpoint=http%3A%2F%2F100.94.18.120%3A8787&token=mac-token"
+        ))
+
+        let prepared = try await store.prepareNewPairingURL(url, displayName: "本机 Mac")
+        guard case .newProfile(let newProfileID, let displayName) = prepared.profileTarget else {
+            return XCTFail("新增二维码必须在连接准备前携带 newProfile 目标")
+        }
+        XCTAssertFalse(newProfileID.isEmpty)
+        XCTAssertEqual(displayName, "本机 Mac")
+
+        // 注入候选 Mac 在 /api/version 返回的稳定安装身份，验证它不会与当前 Windows
+        // 档案做“必须相等”校验，而是按独立档案提交。
+        let preparedWithInstallationIdentity = PreparedConnectionSettings(
+            endpoint: prepared.endpoint,
+            token: prepared.token,
+            profileTarget: prepared.profileTarget,
+            validatedAt: prepared.validatedAt,
+            installationID: "installation-mac"
+        )
+        _ = try await store.commitConnectionSettings(preparedWithInstallationIdentity)
+
+        XCTAssertEqual(store.connectionProfiles.count, 2)
+        XCTAssertEqual(store.activeConnectionProfileID, newProfileID)
+        XCTAssertEqual(store.activeConnectionProfile?.displayName, "本机 Mac")
+        XCTAssertEqual(store.activeConnectionProfile?.installationID, "installation-mac")
+        XCTAssertEqual(
+            keychain.data(account: "agentd-profile.\(newProfileID)"),
+            Data("mac-token".utf8)
+        )
+    }
+
     func testUnboundV1ProfileCannotBindToAnotherSavedMacInstallation() async throws {
         let suiteName = "PairingLinkTests.DuplicateV1Binding.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
