@@ -28289,13 +28289,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This will delete the connection profile and system keychain access code for \"%@\" from the current device. You need to scan the QR code to pair again when connecting again; the current Mac connection will not be affected."
+            "value" : "This will delete the connection profile and system keychain access code for \"%@\" from the current device. You need to scan the QR code to pair again when connecting again; the current computer connection will not be affected."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这会从当前设备删除“%@”的连接档案和系统钥匙串（Keychain）访问码。再次连接时需要重新扫码配对；当前 Mac 连接不会受影响。"
+            "value" : "这会从当前设备删除“%@”的连接档案和系统钥匙串（Keychain）访问码。再次连接时需要重新扫码配对；当前电脑连接不会受影响。"
           }
         }
       }

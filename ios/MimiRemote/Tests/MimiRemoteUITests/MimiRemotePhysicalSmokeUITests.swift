@@ -34,6 +34,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     func testLaunchAndQRScannerCanBePresentedRepeatedly() throws {
         XCTAssertGreaterThan(app.windows.count, 0, "启动后应存在可交互窗口")
 
+        try openHostInstaller()
+        assertHostInstallerSupportsMacAndWindows()
+
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
@@ -45,6 +48,55 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
+    }
+
+    private func openHostInstaller() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let connection = app.descendant(identifier: "settings.connectionManagement")
+        XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供电脑连接管理入口")
+        connection.tap()
+
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.hostInstaller.platform").waitForExistence(timeout: 8),
+            "未配对时连接管理页应展示电脑平台选择器"
+        )
+    }
+
+    private func assertHostInstallerSupportsMacAndWindows() {
+        let platformPicker = app.descendant(identifier: "settings.hostInstaller.platform")
+        let mac = platformPicker.buttons["Mac"]
+        let windows = platformPicker.buttons["Windows"]
+
+        XCTAssertTrue(mac.waitForExistence(timeout: 4), "安装入口应提供 Mac 选项")
+        XCTAssertTrue(windows.waitForExistence(timeout: 4), "安装入口应提供 Windows 选项")
+
+        windows.tap()
+        XCTAssertTrue(
+            waitUntilLabelContains(
+                app.descendant(identifier: "settings.hostInstaller.installationDetail"),
+                text: "Windows"
+            ),
+            "切换后应展示 Windows 安装说明"
+        )
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.hostInstaller.githubRelease").exists,
+            "Windows 安装入口应继续提供 GitHub Releases"
+        )
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.hostInstaller.share").exists,
+            "Windows 安装入口应支持分享下载链接"
+        )
+
+        mac.tap()
+        XCTAssertTrue(
+            waitUntilLabelContains(
+                app.descendant(identifier: "settings.hostInstaller.installationDetail"),
+                text: "Mac"
+            ),
+            "切回后应展示 Mac 安装说明"
+        )
     }
 
     func testVoiceProviderCopyAndSelectionSurviveRotation() throws {
@@ -608,6 +660,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                     return candidate.exists && !self.isSelected(candidate)
                 }
             ),
+            object: element
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed
+    }
+
+    private func waitUntilLabelContains(_ element: XCUIElement, text: String) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label CONTAINS[c] %@", text),
             object: element
         )
         return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed

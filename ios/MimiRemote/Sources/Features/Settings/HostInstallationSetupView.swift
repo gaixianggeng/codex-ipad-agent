@@ -98,6 +98,7 @@ struct HostInstallationSetupView: View {
                 }
                 .padding(.vertical, 4)
                 .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("settings.hostInstaller.installationDetail")
 
                 Link(destination: selectedPlatform.releaseURL) {
                     HStack(spacing: 12) {
