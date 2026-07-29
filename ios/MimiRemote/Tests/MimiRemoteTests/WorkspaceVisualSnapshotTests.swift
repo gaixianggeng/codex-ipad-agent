@@ -66,7 +66,10 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 createdAt: referenceDate.addingTimeInterval(-3_600),
                 updatedAt: referenceDate.addingTimeInterval(-90),
                 preview: "调整项目卡片、Emoji 和 Git 摘要层级。",
-                activeTurnID: "turn-workspace-running"
+                activeTurnID: "turn-workspace-running",
+                context: SessionContextSnapshot(
+                    git: SessionContextGitInfo(branch: "feature/workspace-recent-session-layout")
+                )
             ),
             AgentSession(
                 id: "workspace-history",
@@ -80,7 +83,10 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 resumeID: "workspace-history",
                 createdAt: referenceDate.addingTimeInterval(-7_200),
                 updatedAt: referenceDate.addingTimeInterval(-3_000),
-                preview: "运行时与会话列表继续保持独立。"
+                preview: "运行时与会话列表继续保持独立。",
+                context: SessionContextSnapshot(
+                    git: SessionContextGitInfo(branch: "main")
+                )
             ),
             AgentSession(
                 id: "workspace-review",
@@ -94,7 +100,10 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                 resumeID: "workspace-review",
                 createdAt: referenceDate.addingTimeInterval(-10_800),
                 updatedAt: referenceDate.addingTimeInterval(-6_000),
-                preview: "卡片请求不再下载完整 diff。"
+                preview: "卡片请求不再下载完整 diff。",
+                context: SessionContextSnapshot(
+                    git: SessionContextGitInfo(branch: "codex/git-summary-protocol")
+                )
             )
         ]
         let workspaces = projects.enumerated().map { index, project in
