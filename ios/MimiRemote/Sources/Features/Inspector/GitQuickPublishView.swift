@@ -81,6 +81,11 @@ struct GitQuickPublishBox: View {
         VStack(alignment: .leading, spacing: 10) {
             header(tokens: tokens)
             repositoryState(tokens: tokens)
+            if let synchronizationWarning {
+                Label(synchronizationWarning, systemImage: "exclamationmark.triangle.fill")
+                    .font(themeStore.uiFont(.caption2, weight: .semibold))
+                    .foregroundStyle(tokens.warning)
+            }
 
             if status.hasChanges {
                 commitMessageField(tokens: tokens)
@@ -141,6 +146,7 @@ struct GitQuickPublishBox: View {
             && !releaseIsRunning
             && !(status.branch?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             && (!status.hasChanges || !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            && (status.behind ?? 0) == 0
     }
 
     private var shouldShowTestFlight: Bool {
@@ -189,18 +195,48 @@ struct GitQuickPublishBox: View {
     @ViewBuilder
     private func repositoryState(tokens: ThemeTokens) -> some View {
         HStack(spacing: 9) {
-            Image(systemName: status.hasChanges ? "checkmark.circle" : "checkmark.circle.fill")
+            Image(
+                systemName: (status.behind ?? 0) > 0
+                    ? "exclamationmark.triangle.fill"
+                    : (status.hasChanges ? "checkmark.circle" : "checkmark.circle.fill")
+            )
                 .font(themeStore.uiFont(size: 18, weight: .semibold))
-                .foregroundStyle(status.hasChanges ? tokens.accent : tokens.success)
+                .foregroundStyle(
+                    (status.behind ?? 0) > 0
+                        ? tokens.warning
+                        : (status.hasChanges ? tokens.accent : tokens.success)
+                )
             VStack(alignment: .leading, spacing: 2) {
                 Text(status.hasChanges ? L10n.plural("ui.files_to_commit_count", count: status.files.count) : L10n.text("ui.workspace_submitted"))
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
-                Text("\(status.branch ?? L10n.text("ui.current_branch")) → origin/\(status.branch ?? L10n.text("ui.current_branch"))")
+                Text("\(displayBranch) → \(publishTarget)")
                     .font(themeStore.codeFont(.caption2))
                     .foregroundStyle(tokens.secondaryText)
             }
         }
+    }
+
+    private var displayBranch: String {
+        let branch = status.branch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return branch.isEmpty ? L10n.text("ui.current_branch") : branch
+    }
+
+    private var publishTarget: String {
+        let upstream = status.upstream?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return upstream.isEmpty ? "origin/\(displayBranch)" : upstream
+    }
+
+    private var synchronizationWarning: String? {
+        let ahead = status.ahead ?? 0
+        let behind = status.behind ?? 0
+        if ahead > 0, behind > 0 {
+            return L10n.text("ui.git_branch_diverged")
+        }
+        if behind > 0 {
+            return L10n.format("ui.behind_value", behind)
+        }
+        return nil
     }
 
     @ViewBuilder
