@@ -87,6 +87,41 @@ struct SessionRuntimeBadge: View {
     }
 }
 
+/// 会话索引只用品牌图标表达运行时身份，避免名称胶囊和标题争夺横向空间。
+/// 尺寸由使用方传入，以便与同一行的 Git 图标保持一致。
+private struct SessionRuntimeIcon: View {
+    let presentation: SessionRuntimePresentation
+    let size: CGFloat
+
+    init(session: AgentSession, size: CGFloat) {
+        presentation = SessionRuntimePresentation(session: session)
+        self.size = size
+    }
+
+    var body: some View {
+        Image(presentation.brandAssetName)
+            .resizable()
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(width: renderedSize, height: renderedSize)
+            .frame(width: size, height: size)
+            .opacity(0.82)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(presentation.title)
+            .fixedSize()
+    }
+
+    private var renderedSize: CGFloat {
+        switch presentation.kind {
+        case .codex:
+            // ChatGPT 位图自带透明内边距；只放大图形，不扩大元数据行的布局占位。
+            return size * 1.35
+        case .claude:
+            return size
+        }
+    }
+}
+
 enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -424,12 +459,6 @@ struct SessionIndexRow: View {
 
         VStack(alignment: .leading, spacing: style == .sidebar ? 3 : 7) {
             HStack(alignment: .center, spacing: 7) {
-                if style == .library {
-                    Circle()
-                        .fill(statusColor(tokens: tokens))
-                        .frame(width: 7, height: 7)
-                }
-
                 Text(session.title)
                     .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(tokens.primaryText)
@@ -452,7 +481,7 @@ struct SessionIndexRow: View {
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
-                SessionRuntimeBadge(session: session, compact: style == .sidebar)
+                SessionRuntimeIcon(session: session, size: style == .sidebar ? 8 : 10)
 
                 if isExternalReadOnly {
                     Text(L10n.text("ui.mac_observe_only"))
@@ -483,7 +512,10 @@ struct SessionIndexRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                statusLabel(tokens: tokens)
+                // “历史”已经由列表分区表达；只有实时、异常或其他有区分度的状态才进入行内。
+                if shouldShowStatusLabel {
+                    statusLabel(tokens: tokens)
+                }
 
                 if isObserving {
                     Image(systemName: "eye")
@@ -532,6 +564,10 @@ struct SessionIndexRow: View {
 
     private var status: AgentSessionDisplayStatus {
         return session.displayStatus(foregroundActivity: foregroundActivity)
+    }
+
+    private var shouldShowStatusLabel: Bool {
+        !(session.status == SessionStatus.history.rawValue && status.tone == .neutral)
     }
 
     @ViewBuilder

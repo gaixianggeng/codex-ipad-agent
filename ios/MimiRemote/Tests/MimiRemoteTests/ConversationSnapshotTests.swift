@@ -1302,7 +1302,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             id: "runtime-claude",
             project: project,
             title: "检查兼容性",
-            status: "completed",
+            status: "history",
             preview: "Claude Code 会话",
             runtimeProvider: "claude"
         )
