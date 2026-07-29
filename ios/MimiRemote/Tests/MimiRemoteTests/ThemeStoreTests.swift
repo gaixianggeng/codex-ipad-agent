@@ -82,6 +82,64 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(store.fontScale, ThemeStore.maximumFontScale)
     }
 
+    func testCompactIPadUsesLargerDefaultWhenNoPreferenceWasSaved() {
+        let store = ThemeStore(defaults: defaults)
+        let originalVersion = store.themeVersion
+
+        store.applyDeviceDefaultFontScale(
+            isPad: true,
+            screenSize: CGSize(width: 744, height: 1_133)
+        )
+
+        XCTAssertEqual(store.fontScale, ThemeStore.compactIPadDefaultFontScale, accuracy: 0.001)
+        XCTAssertNil(defaults.object(forKey: ThemeStore.fontScaleStorageKey))
+        XCTAssertGreaterThan(store.themeVersion, originalVersion)
+    }
+
+    func testDeviceDefaultOnlyAppliesToCompactPhysicalIPadScreen() {
+        XCTAssertEqual(
+            ThemeStore.defaultFontScale(isPad: true, screenSize: CGSize(width: 768, height: 1_024)),
+            ThemeStore.compactIPadDefaultFontScale,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ThemeStore.defaultFontScale(isPad: true, screenSize: CGSize(width: 820, height: 1_180)),
+            ThemeStore.defaultFontScale,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ThemeStore.defaultFontScale(isPad: false, screenSize: CGSize(width: 744, height: 1_133)),
+            ThemeStore.defaultFontScale,
+            accuracy: 0.001
+        )
+    }
+
+    func testSavedFontScaleWinsOverCompactIPadDefault() {
+        defaults.set(1.0, forKey: ThemeStore.fontScaleStorageKey)
+        let store = ThemeStore(defaults: defaults)
+
+        store.applyDeviceDefaultFontScale(
+            isPad: true,
+            screenSize: CGSize(width: 744, height: 1_133)
+        )
+
+        XCTAssertEqual(store.fontScale, 1.0, accuracy: 0.001)
+    }
+
+    func testResetReturnsToResolvedCompactIPadDefaultWithoutSavingAnOverride() {
+        let store = ThemeStore(defaults: defaults)
+        store.applyDeviceDefaultFontScale(
+            isPad: true,
+            screenSize: CGSize(width: 744, height: 1_133)
+        )
+        store.setFontScale(0.9)
+
+        store.reset()
+
+        XCTAssertEqual(store.fontScale, ThemeStore.compactIPadDefaultFontScale, accuracy: 0.001)
+        XCTAssertNil(defaults.object(forKey: ThemeStore.fontScaleStorageKey))
+    }
+
     func testResetPersistsDefaults() {
         let store = ThemeStore(defaults: defaults)
         store.mode = .dark

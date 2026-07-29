@@ -121,7 +121,9 @@ struct HostSwitcherMenu: View {
                         .offset(x: 2, y: 2)
                 }
             }
-            .foregroundStyle(.tint)
+            // 顶栏保留当前栏目这一处紫色导航提示；Mac 入口回归中性，
+            // 连接状态继续由右下角语义色圆点表达。
+            .foregroundStyle(.secondary)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
                 Text(

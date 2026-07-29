@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var appStore: AppStore
@@ -152,6 +153,13 @@ struct RootView: View {
         .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
         .tint(tokens.accent)
+        .background {
+            ThemeScreenContextReader { isPad, screenSize in
+                themeStore.applyDeviceDefaultFontScale(isPad: isPad, screenSize: screenSize)
+            }
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+        }
         .background(tokens.background.ignoresSafeArea())
         .alert(L10n.text("ui.can_t_open_notifications"), isPresented: notificationRouteAlertBinding) {
             Button(L10n.text("ui.got_it"), role: .cancel) {}
@@ -325,4 +333,47 @@ private struct HostRestorationRecord: Codable {
 private struct NotificationRouteTaskID: Equatable {
     let route: SessionNotificationRoute?
     let hasCompletedInitialBootstrap: Bool
+}
+
+/// SwiftUI 的容器宽度会随 Split View 改变；通过实际 Window Scene 读取物理屏幕，
+/// 才能让 iPad mini 的默认字号稳定，并避免大屏 iPad 窄窗口被误判。
+private struct ThemeScreenContextReader: UIViewRepresentable {
+    let onResolve: @MainActor (_ isPad: Bool, _ screenSize: CGSize) -> Void
+
+    func makeUIView(context: Context) -> ThemeScreenContextView {
+        ThemeScreenContextView(onResolve: onResolve)
+    }
+
+    func updateUIView(_ uiView: ThemeScreenContextView, context: Context) {
+        uiView.onResolve = onResolve
+    }
+}
+
+private final class ThemeScreenContextView: UIView {
+    var onResolve: @MainActor (_ isPad: Bool, _ screenSize: CGSize) -> Void
+
+    init(onResolve: @escaping @MainActor (_ isPad: Bool, _ screenSize: CGSize) -> Void) {
+        self.onResolve = onResolve
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard let screen = window?.windowScene?.screen else {
+            return
+        }
+#if targetEnvironment(macCatalyst)
+        let isPad = false
+#else
+        let isPad = traitCollection.userInterfaceIdiom == .pad
+#endif
+        onResolve(isPad, screen.bounds.size)
+    }
 }

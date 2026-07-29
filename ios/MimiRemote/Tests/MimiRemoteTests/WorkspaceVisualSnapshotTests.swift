@@ -144,11 +144,20 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         let appearanceDefaults = UserDefaults(suiteName: appearanceDefaultsSuite)!
         appearanceDefaults.removePersistentDomain(forName: appearanceDefaultsSuite)
         let appearanceStore = WorkspaceAppearanceStore(defaults: appearanceDefaults)
+        // 默认 Emoji 会混入安装身份；快照显式固定，避免隔离 AppStore 后生成的新身份让视觉基线抖动。
+        let appearanceProfileID = appStore.notificationRoutingProfileID
+        appearanceStore.setCustomEmoji("📮", profileID: appearanceProfileID, projectID: projects[0].id)
+        appearanceStore.setCustomEmoji("📮", profileID: appearanceProfileID, projectID: projects[1].id)
+        appearanceStore.setCustomEmoji("🌓", profileID: appearanceProfileID, projectID: projects[2].id)
 
         let themeDefaultsSuite = "WorkspaceVisualSnapshotTests.Theme.\(UUID().uuidString)"
         let themeDefaults = UserDefaults(suiteName: themeDefaultsSuite)!
         themeDefaults.removePersistentDomain(forName: themeDefaultsSuite)
         let themeStore = ThemeStore(defaults: themeDefaults)
+        themeStore.applyDeviceDefaultFontScale(
+            isPad: true,
+            screenSize: CGSize(width: 744, height: 1_133)
+        )
 
         let view = WorkspaceRootView(
             onStartSession: { _, _ in },

@@ -286,8 +286,9 @@ struct SessionListView: View {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 15, weight: .semibold))
         }
-        .foregroundStyle(isPrimary ? tokens.primaryAction : tokens.secondaryText)
-        .tint(isPrimary ? tokens.primaryAction : tokens.accent)
+        // 顶部导航保留品牌紫；工具栏仅靠明度区分主次，避免刷新与新建重复着色。
+        .foregroundStyle(isPrimary ? tokens.primaryText : tokens.secondaryText)
+        .tint(tokens.secondaryText)
         .accessibilityLabel(accessibilityLabel)
     }
 
@@ -585,7 +586,7 @@ struct SessionIndexRow: View {
 
     private func statusColor(tokens: ThemeTokens) -> Color {
         switch status.tone {
-        case .active: return tokens.primaryAction
+        case .active: return tokens.secondaryText
         case .warning: return tokens.warning
         case .danger: return .red
         case .complete, .neutral: return tokens.tertiaryText

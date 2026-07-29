@@ -364,6 +364,9 @@ final class ThemeStore: ObservableObject {
                 fontScale = clamped
                 return
             }
+            guard !isApplyingDeviceDefaultFontScale else {
+                return
+            }
             persistVisualState()
         }
     }
@@ -371,6 +374,9 @@ final class ThemeStore: ObservableObject {
     @Published private(set) var themeVersion: Int
 
     private let defaults: UserDefaults
+    private var hasStoredFontScale: Bool
+    private var deviceDefaultFontScale = ThemeStore.defaultFontScale
+    private var isApplyingDeviceDefaultFontScale = false
 
     private enum Keys {
         static let mode = "appearance.theme.mode"
@@ -385,6 +391,8 @@ final class ThemeStore: ObservableObject {
     static let minimumFontScale = 0.85
     static let maximumFontScale = 1.35
     static let defaultFontScale = 1.0
+    static let compactIPadDefaultFontScale = 1.10
+    static let compactIPadMaximumShortEdge: CGFloat = 768
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -392,14 +400,15 @@ final class ThemeStore: ObservableObject {
         let savedPreset = defaults.string(forKey: Keys.preset).flatMap(ThemePreset.init(rawValue:)) ?? .codex
         let savedUIFont = defaults.string(forKey: Keys.uiFont).flatMap(ThemeUIFontPreset.init(rawValue:)) ?? .system
         let savedCodeFont = defaults.string(forKey: Keys.codeFont).flatMap(ThemeCodeFontPreset.init(rawValue:)) ?? .systemMono
-        let savedFontScale = defaults.object(forKey: Keys.fontScale).flatMap { $0 as? Double } ?? Self.defaultFontScale
+        let savedFontScale = defaults.object(forKey: Keys.fontScale).flatMap { $0 as? Double }
 
         self.mode = savedMode
         self.preset = savedPreset
         self.uiFontPreset = savedUIFont
         self.codeFontPreset = savedCodeFont
-        self.fontScale = Self.clampedFontScale(savedFontScale)
+        self.fontScale = Self.clampedFontScale(savedFontScale ?? Self.defaultFontScale)
         self.themeVersion = defaults.integer(forKey: Keys.themeVersion)
+        self.hasStoredFontScale = savedFontScale != nil
     }
 
     var preferredColorScheme: ColorScheme? {
@@ -420,12 +429,34 @@ final class ThemeStore: ObservableObject {
         fontScale = Self.clampedFontScale(value)
     }
 
+    /// 设备默认只影响从未保存过字号的用户；窗口分屏不会改变物理屏幕，因此不会让字号来回跳变。
+    func applyDeviceDefaultFontScale(isPad: Bool, screenSize: CGSize) {
+        let resolvedDefault = Self.defaultFontScale(isPad: isPad, screenSize: screenSize)
+        deviceDefaultFontScale = resolvedDefault
+        guard !hasStoredFontScale, fontScale != resolvedDefault else {
+            return
+        }
+
+        isApplyingDeviceDefaultFontScale = true
+        fontScale = resolvedDefault
+        isApplyingDeviceDefaultFontScale = false
+        // 消息行使用 themeVersion 做等价判断；默认字号变化也必须推进内存版本才能立即重绘。
+        themeVersion += 1
+    }
+
     func reset() {
         mode = .system
         preset = .codex
         uiFontPreset = .system
         codeFontPreset = .systemMono
-        fontScale = Self.defaultFontScale
+        // “恢复默认”回到当前设备默认，而不是把紧凑 iPad 强制压回 100%。
+        hasStoredFontScale = false
+        defaults.removeObject(forKey: Keys.fontScale)
+        isApplyingDeviceDefaultFontScale = true
+        fontScale = deviceDefaultFontScale
+        isApplyingDeviceDefaultFontScale = false
+        themeVersion += 1
+        defaults.set(themeVersion, forKey: Keys.themeVersion)
     }
 
     func scaledFontSize(_ baseSize: CGFloat) -> CGFloat {
@@ -474,6 +505,17 @@ final class ThemeStore: ObservableObject {
 
     static func clampedFontScale(_ value: Double) -> Double {
         min(max(value, minimumFontScale), maximumFontScale)
+    }
+
+    static func defaultFontScale(isPad: Bool, screenSize: CGSize) -> Double {
+        guard isPad else {
+            return defaultFontScale
+        }
+        let shortEdge = min(screenSize.width, screenSize.height)
+        guard shortEdge > 0, shortEdge <= compactIPadMaximumShortEdge else {
+            return defaultFontScale
+        }
+        return compactIPadDefaultFontScale
     }
 
     private static func baseSize(for textStyle: Font.TextStyle) -> CGFloat {
@@ -767,6 +809,7 @@ final class ThemeStore: ObservableObject {
         defaults.set(uiFontPreset.rawValue, forKey: Keys.uiFont)
         defaults.set(codeFontPreset.rawValue, forKey: Keys.codeFont)
         defaults.set(fontScale, forKey: Keys.fontScale)
+        hasStoredFontScale = true
         themeVersion += 1
         defaults.set(themeVersion, forKey: Keys.themeVersion)
     }

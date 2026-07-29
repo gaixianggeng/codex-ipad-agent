@@ -863,7 +863,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     }
 
     func testComposerStatusTrayIPadMiniPortraitWidth() async {
-        let view = await makeComposerStatusTrayCrowdedView(width: 744, height: 1133)
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 744,
+            height: 1133,
+            usesCompactIPadDefault: true
+        )
 
         assertSnapshot(
             of: view,
@@ -883,7 +887,11 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         // 不允许被 safe area 提案算术把宽度算小而退化成紧凑布局。
         // NavigationSplitView 在快照宿主中的列宽提案与真机不一致，无法直接包装；
         // 这里固定为真实 detail 列宽，真机横屏行为仍需设备验收。
-        let view = await makeComposerStatusTrayCrowdedView(width: 832, height: 744)
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 832,
+            height: 744,
+            usesCompactIPadDefault: true
+        )
 
         assertSnapshot(
             of: view,
@@ -892,6 +900,25 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 on: .image(
                     precision: 0.98,
                     layout: .fixed(width: 832, height: 744)
+                )
+            )
+        )
+    }
+
+    func testComposerStatusTrayIPadMiniSplitViewWidth() async {
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 375,
+            height: 744,
+            usesCompactIPadDefault: true
+        )
+
+        assertSnapshot(
+            of: view,
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 375, height: 744)
                 )
             )
         )
@@ -962,6 +989,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let view = await makeComposerStatusTrayCrowdedView(
             width: 744,
             height: 768,
+            usesCompactIPadDefault: true,
             goalStatus: .complete,
             sessionStatus: SessionStatus.completed.rawValue
         )
@@ -1087,6 +1115,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         width: CGFloat,
         height: CGFloat,
         goalExpanded: Bool = false,
+        usesCompactIPadDefault: Bool = false,
         goalStatus: ThreadGoalStatus = .active,
         sessionStatus: String = "running"
     ) async -> some View {
@@ -1134,6 +1163,12 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             fallbackSessionID: sessionID
         )
         let themeStore = makeThemeStore()
+        if usesCompactIPadDefault {
+            themeStore.applyDeviceDefaultFontScale(
+                isPad: true,
+                screenSize: CGSize(width: 744, height: 1_133)
+            )
+        }
         let sessionStore = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,

@@ -262,8 +262,9 @@ struct WorkspaceRootView: View {
                     } label: {
                         Label(L10n.text("ui.open_directory"), systemImage: "folder.badge.plus")
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(tokens.primaryAction)
+                    // 顶栏的栏目选中态已经承担品牌识别；全局目录操作使用系统中性材质，
+                    // 避免与选中工作区的梅紫填充形成两个大面积焦点。
+                    .foregroundStyle(tokens.primaryText)
                 }
             }
     }
@@ -660,7 +661,7 @@ private struct WorkspaceLibraryCard: View {
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.accent)
+                    .foregroundStyle(tokens.secondaryText)
                     .frame(width: 32, height: 32)
                     .padding(.top, 10)
                     .padding(.trailing, 8)
@@ -802,7 +803,7 @@ private struct WorkspaceLibraryCard: View {
             .overlay(alignment: .bottomTrailing) {
                 if hasRunningSession {
                     Circle()
-                        .fill(tokens.primaryAction)
+                        .fill(tokens.secondaryText)
                         .frame(width: 11, height: 11)
                         .overlay {
                             Circle()
@@ -960,7 +961,8 @@ private struct WorkspaceCardStatus {
     func color(tokens: ThemeTokens) -> Color {
         switch tone {
         case .accent:
-            return tokens.accent
+            // 运行和领先状态在主页只需可识别，不再与导航选中态争夺紫色焦点。
+            return tokens.secondaryText
         case .success:
             return tokens.success
         case .warning:
@@ -1223,7 +1225,7 @@ private struct WorkspaceDetailView: View {
                         Text(sessionLoadState.isLoading ? L10n.text("ui.loading") : L10n.text("ui.refresh"))
                     }
                     .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.primaryAction)
+                    .foregroundStyle(tokens.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .disabled(sessionLoadState.isLoading)
@@ -1293,7 +1295,7 @@ private struct WorkspaceDetailView: View {
                                 Text(isLoadingMoreSessions ? L10n.text("ui.loading") : L10n.text("ui.show_more"))
                             }
                             .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .foregroundStyle(tokens.primaryAction)
+                            .foregroundStyle(tokens.secondaryText)
                             .frame(maxWidth: .infinity, minHeight: 46)
                             .contentShape(Rectangle())
                         }
@@ -1372,7 +1374,7 @@ private struct WorkspaceDetailView: View {
 
     private func recentSessionRow(_ session: AgentSession, tokens: ThemeTokens) -> some View {
         let status = session.displayStatus(foregroundActivity: nil)
-        let statusTone = tokens.tint(for: status.tone)
+        let statusTone = recentSessionStatusColor(for: status.tone, tokens: tokens)
 
         return HStack(spacing: 12) {
             Image(systemName: session.isRunning ? "waveform.circle.fill" : "bubble.left.fill")
@@ -1410,6 +1412,21 @@ private struct WorkspaceDetailView: View {
         .padding(.horizontal, 14)
         .frame(minHeight: 62)
         .contentShape(Rectangle())
+    }
+
+    private func recentSessionStatusColor(
+        for tone: AgentSessionStatusTone,
+        tokens: ThemeTokens
+    ) -> Color {
+        switch tone {
+        case .warning:
+            return tokens.warning
+        case .danger:
+            return .red
+        case .active, .complete, .neutral:
+            // 主页的运行/完成信息属于次级元数据；紫色只留给导航与当前工作区。
+            return tokens.secondaryText
+        }
     }
 
     private func sessionTimeText(for session: AgentSession) -> String {
