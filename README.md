@@ -78,6 +78,7 @@ On iPhone, the hierarchy stays compact and touch-first. On iPad, the same native
 ## More than a pocket terminal
 
 - Structured Codex output groups messages, reasoning, commands, tool calls, approvals, and work into a readable timeline.
+- New Codex sessions receive a concise model-generated title from the Mac host; title generation is asynchronous and never blocks the conversation.
 - Model, reasoning level, Skill, speed, permission mode, and queued turns stay next to the composer.
 - Markdown, images, file references, voice input, and safe Quick Look reads work as mobile-native content.
 - Worktree and Git actions expose previews, confirmations, timeouts, and bounded output instead of an unrestricted remote shell.

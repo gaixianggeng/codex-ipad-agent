@@ -106,6 +106,7 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	t.Setenv("AGENTD_APP_SERVER_TRANSPORT", "ws")
 	t.Setenv("AGENTD_APP_SERVER_MANAGED", "true")
 	t.Setenv("AGENTD_APP_SERVER_WS_TOKEN_FILE", "/tmp/codex-app-server-ws-token")
+	t.Setenv("AGENTD_APP_SERVER_AUTO_TITLE", "false")
 	t.Setenv("AGENTD_DEBUG_CODEX_HISTORY", "true")
 	t.Setenv("AGENTD_CODEX_TRANSCRIPTION_BASE_URL", "https://chatgpt.com/backend-api")
 	t.Setenv("AGENTD_CODEX_AUTH_FILE", filepath.Join(t.TempDir(), "auth.json"))
@@ -129,6 +130,9 @@ func TestLoadEnvListenPrecedenceAndSessionBuffer(t *testing.T) {
 	}
 	if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.WSTokenFile != "/tmp/codex-app-server-ws-token" {
 		t.Fatalf("app_server 环境变量解析异常：%+v", cfg.AppServer)
+	}
+	if cfg.AppServer.AutoTitle {
+		t.Fatal("AGENTD_APP_SERVER_AUTO_TITLE=false 应关闭自动标题")
 	}
 	if cfg.Voice.CodexTranscriptionBaseURL != "https://chatgpt.com/backend-api" || cfg.Voice.CodexAuthFile == "" {
 		t.Fatalf("voice 环境变量解析异常：%+v", cfg.Voice)
@@ -319,6 +323,7 @@ func clearAgentdEnv(t *testing.T) {
 		"AGENTD_APP_SERVER_LISTEN",
 		"AGENTD_APP_SERVER_WS_TOKEN_FILE",
 		"AGENTD_APP_SERVER_MANAGED",
+		"AGENTD_APP_SERVER_AUTO_TITLE",
 		"AGENTD_CODEX_TRANSCRIPTION_BASE_URL",
 		"AGENTD_CODEX_AUTH_FILE",
 		"AGENTD_DEBUG_CODEX_HISTORY",

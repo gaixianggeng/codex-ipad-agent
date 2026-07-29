@@ -30,6 +30,9 @@ func TestLoadWithEnvOverrides(t *testing.T) {
 	if cfg.Voice.CodexTranscriptionBaseURL != "https://chatgpt.com/backend-api" {
 		t.Fatalf("默认语音转写必须使用 Codex 登录态后端，实际 %q", cfg.Voice.CodexTranscriptionBaseURL)
 	}
+	if !cfg.AppServer.AutoTitle {
+		t.Fatal("新安装默认应启用 Mac 端会话标题生成")
+	}
 }
 
 func TestValidateRejectsEmptyToken(t *testing.T) {

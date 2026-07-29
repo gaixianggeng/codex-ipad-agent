@@ -747,19 +747,37 @@ func runtimeVersionFromUserAgent(raw string) string {
 }
 
 type runtimeWebSocketRPC struct {
-	conn   *websocket.Conn
-	nextID int64
+	conn          *websocket.Conn
+	nextID        int64
+	notifications []runtimeWebSocketNotification
+}
+
+type runtimeWebSocketFrame struct {
+	ID     json.RawMessage     `json:"id"`
+	Method string              `json:"method"`
+	Params json.RawMessage     `json:"params"`
+	Result json.RawMessage     `json:"result"`
+	Error  *appserver.RPCError `json:"error"`
+}
+
+type runtimeWebSocketNotification struct {
+	Method string
+	Params json.RawMessage
 }
 
 func (c *runtimeWebSocketRPC) initialize(ctx context.Context) (string, error) {
+	return c.initializeClient(ctx, "mimi_remote_mac_status", "Mimi Remote Mac", "0.1.0")
+}
+
+func (c *runtimeWebSocketRPC) initializeClient(ctx context.Context, name string, title string, version string) (string, error) {
 	var result struct {
 		UserAgent string `json:"userAgent"`
 	}
 	if err := c.call(ctx, "initialize", map[string]any{
 		"clientInfo": map[string]any{
-			"name":    "mimi_remote_mac_status",
-			"title":   "Mimi Remote Mac",
-			"version": "0.1.0",
+			"name":    name,
+			"title":   title,
+			"version": version,
 		},
 		"capabilities": map[string]any{},
 	}, &result); err != nil {
@@ -787,14 +805,12 @@ func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params an
 		}
 		_, payload, err := c.conn.ReadMessage()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
-		var frame struct {
-			ID     json.RawMessage     `json:"id"`
-			Method string              `json:"method"`
-			Result json.RawMessage     `json:"result"`
-			Error  *appserver.RPCError `json:"error"`
-		}
+		var frame runtimeWebSocketFrame
 		if json.Unmarshal(payload, &frame) != nil {
 			continue
 		}
@@ -812,6 +828,11 @@ func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params an
 				}); err != nil {
 					return err
 				}
+			} else {
+				c.notifications = append(c.notifications, runtimeWebSocketNotification{
+					Method: frame.Method,
+					Params: append(json.RawMessage(nil), frame.Params...),
+				})
 			}
 			continue
 		}
@@ -828,6 +849,43 @@ func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params an
 			return nil
 		}
 		return json.Unmarshal(frame.Result, result)
+	}
+}
+
+func (c *runtimeWebSocketRPC) nextNotification(ctx context.Context) (runtimeWebSocketNotification, error) {
+	for {
+		if len(c.notifications) > 0 {
+			notification := c.notifications[0]
+			c.notifications = c.notifications[1:]
+			return notification, nil
+		}
+		if err := setRuntimeWebSocketDeadline(ctx, c.conn.SetReadDeadline); err != nil {
+			return runtimeWebSocketNotification{}, err
+		}
+		_, payload, err := c.conn.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil {
+				return runtimeWebSocketNotification{}, ctx.Err()
+			}
+			return runtimeWebSocketNotification{}, err
+		}
+		var frame runtimeWebSocketFrame
+		if json.Unmarshal(payload, &frame) != nil || strings.TrimSpace(frame.Method) == "" {
+			continue
+		}
+		if runtimeRPCFrameHasID(frame.ID) {
+			if err := c.write(ctx, map[string]any{
+				"id": frame.ID,
+				"error": map[string]any{
+					"code":    -32601,
+					"message": "local runtime client does not support server requests",
+				},
+			}); err != nil {
+				return runtimeWebSocketNotification{}, err
+			}
+			continue
+		}
+		return runtimeWebSocketNotification{Method: frame.Method, Params: frame.Params}, nil
 	}
 }
 
