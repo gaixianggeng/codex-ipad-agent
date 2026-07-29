@@ -722,6 +722,20 @@ struct ApprovalSummary: Codable, Hashable {
         } == true
         return supportsDecision && persistentPermissionRules?.isEmpty == false
     }
+
+    var canAcceptMCPToolForSession: Bool {
+        kind == CodexMCPToolApprovalProtocol.kind && supportsDecision("acceptForSession")
+    }
+
+    var canAlwaysAllowMCPTool: Bool {
+        kind == CodexMCPToolApprovalProtocol.kind && supportsDecision("acceptAlways")
+    }
+
+    private func supportsDecision(_ expected: String) -> Bool {
+        availableDecisions?.contains {
+            $0.caseInsensitiveCompare(expected) == .orderedSame
+        } == true
+    }
 }
 
 struct AgentUserInputRequest: Identifiable, Codable, Hashable {
