@@ -45,6 +45,8 @@ assert_scope rust_only false false true bridges/claude/crates/claude-bridge/src/
 assert_scope release true false false scripts/check-release-artifacts.sh
 assert_scope windows_release true false false scripts/build-windows-installer.ps1
 assert_scope ios_release false true false scripts/ios_testflight_ci.sh
+assert_scope mimi_contract true true false contracts/mimi-protocol/contract.json
+assert_scope mimi_contract_generator true true false internal/protocolcontract/cmd/generate/main.go
 assert_scope docs_only false false false CONTRIBUTING.md
 assert_scope workflow true true true .github/workflows/pr-gate.yml
 assert_scope mixed true true true \

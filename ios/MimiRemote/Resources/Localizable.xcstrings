@@ -33283,6 +33283,57 @@
         }
       }
     },
+    "ui.agentd_protocol_client_too_old_values" : {
+      "comment" : "Protocol negotiation failed because agentd requires a newer Mimi Remote client. Placeholders are server revision, minimum client revision, and current client revision.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd protocol revision %@ requires client revision %@ or later; this app is revision %@. Update Mimi Remote."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd 协议修订为 %@，最低需要客户端修订 %@，当前 App 为 %@；请升级 Mimi Remote。"
+          }
+        }
+      }
+    },
+    "ui.agentd_protocol_metadata_invalid_values" : {
+      "comment" : "Protocol negotiation failed because agentd returned an invalid revision window. Placeholders are protocol revision and minimum client revision.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd returned invalid protocol metadata: protocol_revision=%@, minimum_client_protocol_revision=%@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd 返回了无效的协议元数据：protocol_revision=%@，minimum_client_protocol_revision=%@。"
+          }
+        }
+      }
+    },
+    "ui.agentd_protocol_server_too_old_values" : {
+      "comment" : "Protocol negotiation failed because agentd is too old. Placeholders are server revision and the minimum server revision required by the app.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd protocol revision is %@; this app requires revision %@ or later. Update agentd."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd 协议修订为 %@，当前 App 最低需要 %@；请升级 agentd。"
+          }
+        }
+      }
+    },
     "ui.agentd_version_too_old_for_multi_mac" : {
       "comment" : "Shown when a Mac cannot provide the stable installation identity required for safe multi-Mac switching.",
       "localizations" : {
@@ -33296,6 +33347,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这台电脑的 agentd 版本过旧，尚不支持安全的多电脑身份校验。请先升级并重启 agentd。"
+          }
+        }
+      }
+    },
+    "ui.agentd_websocket_protocol_incompatible_values" : {
+      "comment" : "WebSocket handshake failed due to protocol incompatibility. Placeholders are server revision, minimum client revision, and current app revision.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Protocol incompatible: agentd revision=%@, minimum client revision=%@, app revision=%@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "协议不兼容：agentd revision=%@，minimum client revision=%@，App revision=%@。"
           }
         }
       }

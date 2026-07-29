@@ -60,6 +60,21 @@ bash ./scripts/check-third-party-notices.sh
 bash ./scripts/check-ios-privacy-manifest.sh
 ```
 
+## Mimi iOS / agentd 契约
+
+iOS 与 `agentd` 的版本窗口、握手 header、capabilities 和共享 golden fixtures 以
+[`contracts/mimi-protocol/`](contracts/mimi-protocol/) 为权威来源。不要直接修改
+Go/Swift 生成文件。协议变化先更新 manifest 与 fixtures，再执行：
+
+```bash
+go run ./internal/protocolcontract/cmd/generate --write
+bash ./scripts/check-mimi-protocol-contract.sh
+bash ./scripts/test-conversation-regressions.sh
+```
+
+字段演进、跨版本矩阵、失败语义和风险边界见
+[Mimi iOS / agentd 版本化契约](docs/mimi-protocol-contracts.md)。
+
 ## 快速 PR Gate
 
 每个 Pull Request 都会产生名称固定的 `PR Gate` check。该 workflow 本身不使用

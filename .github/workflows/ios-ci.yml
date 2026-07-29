@@ -7,6 +7,8 @@ on:
       - main
     paths:
       - "ios/MimiRemote/**"
+      - "contracts/mimi-protocol/**"
+      - "internal/protocolcontract/**"
       - "scripts/ios-dev.sh"
       - "scripts/test-conversation-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
@@ -15,10 +17,12 @@ on:
       - "scripts/check-ios-privacy-manifest.sh"
       - "scripts/check-app-store-metadata.sh"
       - "scripts/check-source-size.sh"
+      - "scripts/check-mimi-protocol-contract.sh"
       - "docs/app-store/**"
       - "docs/privacy-policy.md"
       - "docs/support.md"
       - "docs/terms-of-use.md"
+      - "docs/mimi-protocol-contracts.md"
       - ".github/workflows/ios-ci.yml"
       - ".xcodebuildmcp/config.yaml"
   workflow_dispatch:
@@ -99,6 +103,9 @@ jobs:
 
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
+
+      - name: Check Mimi protocol contract
+        run: bash ./scripts/check-mimi-protocol-contract.sh
 
       - name: Run core regressions
         run: bash ./scripts/test-conversation-regressions.sh

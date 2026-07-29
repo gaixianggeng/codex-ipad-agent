@@ -1,0 +1,37 @@
+[
+  {
+    "name": "previous_client_current_server",
+    "protocol_revision": null,
+    "minimum_server_protocol_revision": null,
+    "expected_status": 200,
+    "expected_code": ""
+  },
+  {
+    "name": "current_client_current_server",
+    "protocol_revision": 2,
+    "minimum_server_protocol_revision": 1,
+    "expected_status": 200,
+    "expected_code": ""
+  },
+  {
+    "name": "newer_additive_client_current_server",
+    "protocol_revision": 3,
+    "minimum_server_protocol_revision": 1,
+    "expected_status": 200,
+    "expected_code": ""
+  },
+  {
+    "name": "newer_client_requires_newer_server",
+    "protocol_revision": 3,
+    "minimum_server_protocol_revision": 3,
+    "expected_status": 426,
+    "expected_code": "protocol_incompatible"
+  },
+  {
+    "name": "malformed_partial_client_metadata",
+    "protocol_revision": 2,
+    "minimum_server_protocol_revision": null,
+    "expected_status": 400,
+    "expected_code": "protocol_metadata_invalid"
+  }
+]

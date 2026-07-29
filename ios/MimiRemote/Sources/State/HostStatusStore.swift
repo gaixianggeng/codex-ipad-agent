@@ -252,6 +252,10 @@ final class HostStatusStore: ObservableObject {
             applyTerminal(.authenticationRequired, profile: profile)
             return
         }
+        if error is ProtocolCompatibilityError {
+            applyTerminal(.upgradeRequired, profile: profile)
+            return
+        }
         let previousFailures = statusesByProfileID[profile.id]?.failureCount ?? 0
         let nextFailureCount = previousFailures + 1
         let backoffSteps: [TimeInterval] = [15, 30, 60, 120, 300]
