@@ -10782,13 +10782,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Opens the public GitHub Release page in your browser."
+            "value" : "Opens the public GitHub release page in the GitHub app or your default browser."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在浏览器中打开公开的 GitHub Release 页面。"
+            "value" : "在 GitHub App 或默认浏览器中打开公开的 GitHub Release 页面。"
           }
         }
       }
@@ -31281,13 +31281,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "View releases on GitHub"
+            "value" : "View latest release on GitHub"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 GitHub 查看发布版本"
+            "value" : "在 GitHub 查看最新版本"
           }
         }
       }

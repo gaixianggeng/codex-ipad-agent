@@ -38,18 +38,13 @@ struct MacInstallationSetupView: View {
                                 .renderingMode(.original)
                                 .resizable()
                                 .scaledToFit()
-                                .frame(width: 28, height: 28)
+                                .frame(width: 24, height: 24)
                                 .accessibilityHidden(true)
 
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(L10n.text("ui.view_releases_on_github"))
-                                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryText)
-                                Text(AppExternalLinks.macRelease.absoluteString)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(tokens.secondaryText)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            Text(L10n.text("ui.view_releases_on_github"))
+                                .font(themeStore.uiFont(.callout, weight: .semibold))
+                                .foregroundStyle(tokens.primaryText)
+                                .fixedSize(horizontal: false, vertical: true)
 
                             Spacer(minLength: 8)
 
@@ -58,7 +53,7 @@ struct MacInstallationSetupView: View {
                                 .foregroundStyle(tokens.secondaryText)
                                 .accessibilityHidden(true)
                         }
-                        .padding(.vertical, 4)
+                        .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
