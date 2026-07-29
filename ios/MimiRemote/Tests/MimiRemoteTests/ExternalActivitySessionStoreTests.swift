@@ -190,6 +190,306 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(client.createPayloads.isEmpty)
     }
 
+    func testLocallyStartedTurnIgnoresMatchingDesktopOriginActivityButNotNewMacTurn() async throws {
+        let project = makeProject(id: "proj_local_turn_ownership")
+        let threadID = "thread-desktop-origin"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "由 Mac 创建、在 iPad 续写",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: "turn-ipad"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])]
+        )
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: history,
+            client: client,
+            socket: socket
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.sessionControlStateByID[threadID] = .takenOver
+        store.recordLocallyStartedTurn(
+            sessionID: threadID,
+            turnID: "turn-ipad",
+            restoreSelectedConnection: false
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-ipad",
+                revision: "rev-ipad"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        let ipadOwned = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.isExternalReadOnlySession(ipadOwned))
+        XCTAssertEqual(store.controlState(for: ipadOwned), .takenOver)
+        XCTAssertEqual(ipadOwned.activeTurnID, "turn-ipad")
+        XCTAssertEqual(socket.disconnectCallCount, 0)
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-mac-next",
+                revision: "rev-mac-next"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        let macOwned = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertEqual(store.externalActivityBySessionID[threadID]?.turnID, "turn-mac-next")
+        XCTAssertTrue(store.isExternalReadOnlySession(macOwned))
+        XCTAssertEqual(store.controlState(for: macOwned), .observing)
+        XCTAssertFalse(store.canControlSession(macOwned))
+    }
+
+    func testHistoricalResumeRecordsReturnedTurnBeforeExternalPolling() async throws {
+        let project = makeProject(id: "proj_desktop_history_resume")
+        let threadID = "thread-desktop-history-resume"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Mac 历史会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let resumed = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "Mac 历史会话",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: "turn-ipad-resume"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [resumed])],
+            createSessionResponse: CreateSessionResponse(
+                session: resumed,
+                row: nil,
+                wsURL: "/api/app-server/ws?thread_id=\(threadID)",
+                firstMessage: nil
+            )
+        )
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: history,
+            client: client,
+            socket: socket
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+
+        let didSend = await store.sendTurn(CodexAppServerTurnPayload(prompt: "从 iPad 继续"))
+
+        XCTAssertTrue(didSend)
+        XCTAssertEqual(client.createPayloads.first?.resumeID, threadID)
+        XCTAssertEqual(store.locallyStartedTurnIDBySessionID[threadID], "turn-ipad-resume")
+        XCTAssertEqual(store.controlState(for: try XCTUnwrap(store.sessionsByID[threadID])), .takenOver)
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-ipad-resume",
+                revision: "rev-ipad-resume"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        let controlled = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.isExternalReadOnlySession(controlled))
+        XCTAssertEqual(store.controlState(for: controlled), .takenOver)
+        XCTAssertEqual(socket.disconnectCallCount, 0)
+    }
+
+    func testLocalTurnAckReconcilesExternalSnapshotThatArrivedFirstAndReconnects() async throws {
+        let project = makeProject(id: "proj_external_ack_race")
+        let threadID = "thread-ack-race"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "轮询早于 ACK",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            workspacePages: [project.id: SessionsPage(sessions: [history])]
+        )
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: history,
+            client: client,
+            socket: socket
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.sessionControlStateByID[threadID] = .takenOver
+        store.connectWebSocket(history, allowNonRunning: true)
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
+
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-local-race",
+            revision: "rev-race"
+        )
+        await store.applyExternalActivitySnapshot(
+            [activity],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        XCTAssertTrue(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertNil(store.connectedSessionID)
+        XCTAssertGreaterThanOrEqual(socket.disconnectCallCount, 1)
+        XCTAssertTrue(store.canReconcileAcceptedTurnFromRetiredSocket(
+            sessionID: threadID,
+            outcome: .accepted(turnID: "turn-local-race"),
+            hostScope: store.appStore.activeHostScope
+        ))
+
+        socket.onTurnSendOutcome?(nil, .accepted(turnID: "turn-local-race"))
+        for _ in 0..<10 where store.externalActivityBySessionID[threadID] != nil {
+            await Task.yield()
+        }
+
+        let recovered = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.isExternalReadOnlySession(recovered))
+        XCTAssertEqual(recovered.activeTurnID, "turn-local-race")
+        XCTAssertEqual(store.controlState(for: recovered), .takenOver)
+        XCTAssertEqual(store.connectedSessionID, threadID)
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID, threadID])
+    }
+
+    func testLateAcceptedAckCompletesQueuedItemAfterExternalDisconnect() throws {
+        let project = makeProject(id: "proj_external_queue_ack")
+        let threadID = "thread-queue-ack"
+        let clientMessageID = "client-queue-ack"
+        let session = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "排队 ACK 竞态",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: "turn-queue-local"
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let store = makeExternalActivityStore(project: project, session: session, client: client)
+        let payload = CodexAppServerTurnPayload(prompt: "排队消息")
+        store.queuedRunningTurnsBySessionID[threadID] = [QueuedTurnEntry(
+            sessionID: threadID,
+            projectID: project.id,
+            payload: payload,
+            clientMessageID: clientMessageID,
+            intent: .standard,
+            dispatchState: .needsConfirmation
+        )]
+        store.conversationStore.appendLocalUser(
+            "排队消息",
+            sessionID: threadID,
+            clientMessageID: clientMessageID,
+            sendStatus: .sending,
+            turnPayload: payload,
+            userDelivery: .queued
+        )
+        let activity = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: "turn-queue-local",
+            revision: "rev-queue-local"
+        )
+        store.externalActivityBySessionID[threadID] = activity
+        store.externalReadOnlySessionIDs.insert(threadID)
+
+        store.handleTurnSendOutcome(
+            clientMessageID: clientMessageID,
+            sessionID: threadID,
+            outcome: .accepted(turnID: "turn-queue-local")
+        )
+
+        XCTAssertTrue(store.queuedRunningTurnsBySessionID[threadID]?.isEmpty != false)
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertEqual(store.locallyStartedTurnIDBySessionID[threadID], "turn-queue-local")
+        XCTAssertEqual(
+            store.conversationStore.messages(for: threadID)
+                .first(where: { $0.clientMessageID == clientMessageID })?
+                .sendStatus,
+            .sent
+        )
+    }
+
+    func testCompletedLocalTurnIgnoresLaggingSameTurnSnapshot() async throws {
+        let project = makeProject(id: "proj_external_terminal_lag")
+        let threadID = "thread-terminal-lag"
+        let history = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "本轮已完成",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [history])
+        let store = makeExternalActivityStore(project: project, session: history, client: client)
+        store.recordLocallyStartedTurn(
+            sessionID: threadID,
+            turnID: "turn-local-completed",
+            restoreSelectedConnection: false
+        )
+
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: "turn-local-completed",
+                revision: "rev-terminal-lag"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        let completed = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertEqual(completed.status, SessionStatus.history.rawValue)
+        XCTAssertNil(completed.activeTurnID)
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.isExternalReadOnlySession(completed))
+    }
+
     func testExternalActivityPollingStopsWhenOldAgentDDoesNotAdvertiseCapability() async {
         let project = makeProject(id: "proj_external_legacy")
         let history = makeSession(

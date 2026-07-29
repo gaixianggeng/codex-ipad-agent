@@ -3,6 +3,80 @@ import Foundation
 // Codex Desktop 与 Mimi 的 app-server 是两个独立进程，runtime status 不能跨进程复用。
 // 这里消费 agentd 从 rollout 提炼出的只读活动层；所有消息仍走现有历史读取，不建立控制连接。
 extension SessionStore {
+    func isLocallyStartedExternalActivity(_ activity: ExternalSessionActivity) -> Bool {
+        guard let turnID = activity.turnID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !turnID.isEmpty else {
+            return false
+        }
+        return locallyStartedTurnIDBySessionID[activity.threadID] == turnID
+    }
+
+    /// 记录由当前 iPad 明确启动成功的 turn，并撤销轮询先于 ACK 时造成的误判。
+    ///
+    /// 这里只接受精确的 session + turnID 证据。持久化控制状态、运行状态或 thread originator
+    /// 都不足以证明当前 turn 的所有权，不能用于清除真实的 Mac 只读边界。
+    @discardableResult
+    func recordLocallyStartedTurn(
+        sessionID: SessionID,
+        turnID rawTurnID: TurnID,
+        restoreSelectedConnection: Bool = true
+    ) -> Bool {
+        let turnID = rawTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !turnID.isEmpty else {
+            return false
+        }
+        locallyStartedTurnIDBySessionID[sessionID] = turnID
+
+        let externalTurnID = externalActivityBySessionID[sessionID]?.turnID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionTurnID = sessionsByID[sessionID]?.activeTurnID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchesMisclassifiedTurn = externalTurnID == turnID ||
+            (externalReadOnlySessionIDs.contains(sessionID) && sessionTurnID == turnID)
+        guard matchesMisclassifiedTurn else {
+            return false
+        }
+
+        externalActivityBySessionID.removeValue(forKey: sessionID)
+        externalReadOnlySessionIDs.remove(sessionID)
+        updateSession(sessionID) { session in
+            session.status = SessionStatus.running.rawValue
+            session.activeTurnID = turnID
+        }
+
+        if restoreSelectedConnection,
+           selectedSessionID == sessionID,
+           let session = sessionsByID[sessionID] {
+            // external snapshot 已退役旧 socket；精确 ACK 到达后恢复本轮事件流。
+            // 历史内容已在断线前或 create/resume 流程中对账，这里只回放状态边界。
+            connectWebSocket(session, replayBufferedEvents: false)
+        }
+        return true
+    }
+
+    func canReconcileAcceptedTurnFromRetiredSocket(
+        sessionID: SessionID,
+        outcome: TurnSendOutcome,
+        hostScope: HostScope
+    ) -> Bool {
+        guard appStore.activeHostScope == hostScope,
+              sessionsByID[sessionID] != nil,
+              case .accepted(let acceptedTurnID) = outcome,
+              let acceptedTurnID else {
+            return false
+        }
+        let normalizedTurnID = acceptedTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTurnID.isEmpty else {
+            return false
+        }
+        let externalTurnID = externalActivityBySessionID[sessionID]?.turnID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionTurnID = sessionsByID[sessionID]?.activeTurnID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return externalTurnID == normalizedTurnID ||
+            (externalReadOnlySessionIDs.contains(sessionID) && sessionTurnID == normalizedTurnID)
+    }
+
     func externalActivityPollingDelayNanoseconds() -> UInt64 {
         if let selectedSessionID,
            externalActivityBySessionID[selectedSessionID] != nil {
@@ -100,6 +174,11 @@ extension SessionStore {
         var nextByID: [SessionID: ExternalSessionActivity] = [:]
         for activity in activities where activity.state.lowercased() == "running" {
             guard workspacesByID[activity.projectID] != nil || projectsByID[activity.projectID] != nil else {
+                continue
+            }
+            // Desktop 创建的历史 thread 会永久保留 originator。若当前 rollout turn 与
+            // iPad 的 turn/start ACK 精确一致，它只是本轮的磁盘镜像，不是 Mac 接管。
+            guard !isLocallyStartedExternalActivity(activity) else {
                 continue
             }
             nextByID[activity.threadID] = activity
