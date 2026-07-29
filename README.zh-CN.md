@@ -347,16 +347,10 @@ xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
 
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-iOS 工程结构、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
+日常开发固定使用 `iPad Pro 13-inch (M5)` Simulator、Debug 配置和共享 DerivedData；iPhone 与真机只在明确的兼容性或硬件验收中使用。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
 
 ### Claude bridge
 

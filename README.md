@@ -245,16 +245,10 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The QR code is a short-lived, single-use pairing ticket, not a long-lived token. Manual connection is available as a fallback.
 
-Command-line build verification:
+Command-line build verification uses the repository's fixed `iPad Pro 13-inch (M5)` Simulator target:
 
 ```bash
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
 
 ### 3. Build the backend from source (optional)

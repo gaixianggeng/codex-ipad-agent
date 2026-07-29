@@ -14,16 +14,10 @@ xcodegen generate \
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-Select the `MimiRemote` scheme, your development team, and an iPhone/iPad target in Xcode. Build the Mac service first with Codex CLI signed in, run `agentd up`, then scan its short-lived pairing QR code in the app. For a command-line build check:
+Select the `MimiRemote` scheme in Xcode. Daily development uses the repository's fixed `iPad Pro 13-inch (M5)` Simulator target; physical devices are reserved for hardware and release validation. Build the Mac service first with Codex CLI signed in, run `agentd up`, then scan its short-lived pairing QR code in the app. For a command-line build check:
 
 ```bash
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
 
 The detailed engineering and operational reference below is currently in Chinese.
@@ -123,29 +117,35 @@ cd "$HOME/code/mimi-remote"
 xcodegen generate --spec ios/MimiRemote/project.yml --project ios/MimiRemote
 ```
 
+日常开发统一使用 `iPad Pro 13-inch (M5)` Simulator、`MimiRemote` Scheme 和 Debug 配置。脚本会复用 `ios/MimiRemote/build/dev-simulator-derived`，切换前关闭其他已启动 Simulator；默认目标不存在时直接失败，不会回退到实体机或其他设备。
+
 命令行验证 Swift 代码可编译：
 
 ```bash
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  clean build
+bash ./scripts/ios-dev.sh build
 ```
 
 测试 target 编译：
 
 ```bash
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  clean build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
+
+运行全部单测，或构建、安装并启动 App：
+
+```bash
+bash ./scripts/ios-dev.sh test
+bash ./scripts/ios-dev.sh run
+```
+
+只有明确验证 iPhone 布局时才覆盖目标；完成后恢复默认 iPad：
+
+```bash
+IOS_SIMULATOR_NAME="iPhone 17 Pro" bash ./scripts/ios-dev.sh run
+IOS_SIMULATOR_NAME="iPhone 17e" bash ./scripts/ios-dev.sh run
+```
+
+XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取同一套 project、scheme、Simulator 和 DerivedData 默认值，不需要把本机 Simulator UDID 写入仓库。
 
 Mac Catalyst 使用同一套 SwiftUI 源码和 iPad 缩放界面，不增加 Mac 专用功能。生成工程后，可在 Apple Silicon Mac 上验证独立 Catalyst 构建：
 
@@ -170,7 +170,7 @@ Catalyst 产物使用独立的 Mac `Info.plist`、App Sandbox 权限和标准 Ma
 
 同机连接有一条轻量优化链路：当 `agentd` 配置为具体的 Tailscale 或局域网 IP 时，服务端会同时监听相同端口的 `127.0.0.1`，不会扩大到 `0.0.0.0`。Catalyst 冷启动先探测 `http://127.0.0.1:8787/healthz`，再用当前 Mac 档案已经保存的 Token 验证本机链路；验证成功后本次运行优先走 loopback，但档案身份和缓存仍使用原 Tailscale Endpoint。首次配对仍需扫描二维码或输入访问码，本机健康检查不会返回 Token。手动填写私网 HTTP 地址时省略端口会自动补为 `8787`。
 
-真机运行：
+真机运行仅用于相机、通知、Keychain、Tailscale/弱网、性能和发布前验证：
 
 1. 用 Xcode 打开 `ios/MimiRemote/MimiRemote.xcodeproj`。
 2. 选择 `MimiRemote` scheme。
