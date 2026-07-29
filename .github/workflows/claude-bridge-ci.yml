@@ -1,12 +1,7 @@
 name: Claude Bridge CI
 
 on:
-  pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "bridges/claude/**"
-      - ".github/workflows/claude-bridge-ci.yml"
+  workflow_call:
   push:
     branches:
       - main
