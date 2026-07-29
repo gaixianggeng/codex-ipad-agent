@@ -131,3 +131,26 @@ bash ./scripts/ci-pr-scope.sh --base origin/main --head HEAD
 Issue 中记录原因、被绕过的失败 check、操作者、时间、回滚 commit，以及后续补验
 负责人和结果；补验完成前不得关闭关联 Issue。不要通过临时删除 required check、
 关闭 `enforce admins` 或修改 workflow 让 Gate 变绿。
+
+## Nightly 与发布候选验证
+
+普通 PR 继续以约 10–12 分钟为反馈目标。Go race、完整 iOS/Mac App、跨平台安装包、
+真实 Runtime 和签名发布证据归入 Nightly / Release validation，不应复制进 PR Gate。
+修改 `.github/workflows`、发布验证脚本或回滚规则时，本地先运行：
+
+```bash
+bash ./scripts/check-validation-workflows.sh
+bash ./scripts/check-pr-gate.sh
+```
+
+发布候选必须显式提供上一已知可用 commit/tag，并先做只读 dry-run：
+
+```bash
+bash ./scripts/check-rollback-readiness.sh \
+  --candidate-ref HEAD \
+  --previous-ref "<上一正式 tag 或 commit>" \
+  --output /tmp/mimi-rollback-readiness.md
+```
+
+完整触发方式、artifact、失败处理、Internal TestFlight 证据和 capability kill switch
+见 [Nightly、Release validation 与回滚检查](docs/nightly-release-rollback.md)。

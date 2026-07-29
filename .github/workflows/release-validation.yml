@@ -1,0 +1,507 @@
+name: Release Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: "待发布 commit、分支或 tag；只读取，不创建 tag"
+        required: true
+        default: "main"
+        type: string
+      previous_release_ref:
+        description: "上一已知可用的正式 commit 或 tag；必须是 candidate 祖先"
+        required: true
+        type: string
+      candidate_version:
+        description: "候选语义版本（不含 v）；dry-run 可用 0.0.0，publish-readiness 必须使用真实版本"
+        required: true
+        default: "0.0.0"
+        type: string
+      validation_mode:
+        description: "dry-run 不读取发布凭据；publish-readiness 验证签名/公证/ASC，但仍不发布"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - publish-readiness
+      run_controlled_runtime_smoke:
+        description: "在隔离 runner 上运行只读 Codex/Claude smoke；publish-readiness 必须启用"
+        required: true
+        default: false
+        type: boolean
+      internal_testflight_evidence:
+        description: "publish-readiness 必填：同一 candidate 的 Internal TestFlight 证据 URL"
+        required: false
+        type: string
+      rollback_drill_evidence:
+        description: "publish-readiness 必填：上一签名产物恢复演练证据 URL"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-validation-${{ inputs.candidate_ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve candidate and rollback window
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      candidate_sha: ${{ steps.refs.outputs.candidate_sha }}
+      previous_sha: ${{ steps.refs.outputs.previous_sha }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          fetch-depth: 0
+
+      - name: Resolve immutable commits
+        id: refs
+        shell: bash
+        env:
+          PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
+        run: |
+          candidate_sha="$(git rev-parse --verify 'HEAD^{commit}')"
+          previous_sha="$(git rev-parse --verify "${PREVIOUS_RELEASE_REF}^{commit}")"
+          echo "candidate_sha=$candidate_sha" >>"$GITHUB_OUTPUT"
+          echo "previous_sha=$previous_sha" >>"$GITHUB_OUTPUT"
+          echo "Candidate: \`$candidate_sha\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "Previous known-good: \`$previous_sha\`" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Validate candidate version metadata
+        shell: bash
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          VALIDATION_MODE: ${{ inputs.validation_mode }}
+        run: |
+          [[ "$CANDIDATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+            || { echo "candidate_version 必须是不含 v 的语义版本。" >&2; exit 1; }
+          if [[ "$VALIDATION_MODE" == "publish-readiness" && "$CANDIDATE_VERSION" == "0.0.0" ]]; then
+            echo "publish-readiness 必须提供真实 candidate_version，不能使用 0.0.0。" >&2
+            exit 1
+          fi
+          echo "Candidate version: \`$CANDIDATE_VERSION\`" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Check N/N-1 and rollback readiness
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.refs.outputs.candidate_sha }}
+          PREVIOUS_SHA: ${{ steps.refs.outputs.previous_sha }}
+        run: |
+          mkdir -p release-validation-report
+          bash ./scripts/check-rollback-readiness.sh \
+            --candidate-ref "$CANDIDATE_SHA" \
+            --previous-ref "$PREVIOUS_SHA" \
+            --output release-validation-report/rollback-readiness.md
+
+      - name: Upload rollback report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-rollback-report-${{ github.run_id }}
+          path: release-validation-report/
+          if-no-files-found: error
+          retention-days: 30
+
+  go-rust-and-packaging:
+    name: Protocol, Go, Rust, and cross-platform archives
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check contracts and critical regression map
+        run: |
+          bash ./scripts/check-mimi-protocol-contract.sh
+          bash ./scripts/check-critical-regressions.sh
+          bash ./scripts/check-validation-workflows.sh
+
+      - name: Vet and test Go
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Test complete Rust bridge workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked \
+            -p alleycat-codex-proto \
+            -p alleycat-bridge-core \
+            -p alleycat-claude-bridge
+
+      - name: Replay Linux install and rollback fixtures
+        run: bash ./scripts/test-install-linux.sh
+
+      - name: Build and inspect GoReleaser snapshot
+        run: bash ./scripts/verify-release.sh verify
+
+      - name: Upload four-platform archives
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-goreleaser-${{ needs.resolve.outputs.candidate_sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-candidate:
+    name: Mac tests and ${{ inputs.validation_mode }} DMG
+    needs: resolve
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install universal macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Test Mimi Remote Mac
+        run: |
+          xcodebuild \
+            -project macos/MimiRemoteMac/MimiRemoteMac.xcodeproj \
+            -scheme MimiRemoteMac \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/MimiRemoteMacTests" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Build ad-hoc DMG for dry-run
+        if: inputs.validation_mode == 'dry-run'
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+        run: |
+          bash ./scripts/build-macos-installer.sh \
+            --snapshot \
+            --version "$CANDIDATE_VERSION" \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --output-dir dist-macos
+          bash ./scripts/check-macos-installer.sh dist-macos/Mimi-Remote-Mac.dmg
+
+      - name: Build, sign, notarize, and inspect DMG without publishing
+        if: inputs.validation_mode == 'publish-readiness'
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          bash ./scripts/build-macos-installer.sh \
+            --version "$CANDIDATE_VERSION" \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --output-dir dist-macos
+          bash ./scripts/check-macos-installer.sh \
+            --require-notarization \
+            dist-macos/Mimi-Remote-Mac.dmg
+
+      - name: Upload audited Mac candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos-${{ needs.resolve.outputs.candidate_sha }}
+          path: dist-macos/
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-candidate:
+    name: Windows ${{ inputs.validation_mode }} installer
+    needs: resolve
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build and inspect Windows candidate
+        shell: pwsh
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          VALIDATION_MODE: ${{ inputs.validation_mode }}
+          WINDOWS_SIGN_PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+        run: |
+          if ($env:VALIDATION_MODE -eq 'publish-readiness') {
+            if (-not $env:WINDOWS_SIGN_PFX -or -not $env:WINDOWS_SIGN_PFX_PASSWORD) {
+              throw 'publish-readiness requires Windows signing secrets.'
+            }
+            $pfx = Join-Path $env:RUNNER_TEMP 'mimi-release-validation.pfx'
+            try {
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
+              ./scripts/build-windows-installer.ps1 `
+                -Version $env:CANDIDATE_VERSION `
+                -OutputDirectory dist-windows `
+                -PfxPath $pfx `
+                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+              $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
+              ./scripts/check-windows-installer.ps1 `
+                -InstallerPath $installer.FullName `
+                -RequireSignature
+            } finally {
+              Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            }
+          } else {
+            ./scripts/build-windows-installer.ps1 `
+              -Version $env:CANDIDATE_VERSION `
+              -OutputDirectory dist-windows `
+              -Snapshot
+            $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
+            ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+          }
+          ./scripts/test-windows-install.ps1
+
+      - name: Upload audited Windows candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-windows-${{ needs.resolve.outputs.candidate_sha }}
+          path: dist-windows/
+          if-no-files-found: error
+          retention-days: 30
+
+  ios-full:
+    name: Full iOS regression and unsigned archive
+    needs: resolve
+    runs-on: macos-26
+    timeout-minutes: 80
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run complete iOS test suite
+        run: bash ./scripts/ios-dev.sh test
+
+      - name: Create and inspect unsigned iOS archive
+        run: |
+          xcodebuild archive \
+            -project ios/MimiRemote/MimiRemote.xcodeproj \
+            -scheme MimiRemote \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/MimiRemote.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            -quiet
+          info="$RUNNER_TEMP/MimiRemote.xcarchive/Products/Applications/MimiRemote.app/Info.plist"
+          [[ -f "$info" ]]
+          plutil -extract CFBundleIdentifier raw -o - "$info"
+          plutil -extract CFBundleShortVersionString raw -o - "$info"
+          plutil -extract CFBundleVersion raw -o - "$info"
+
+      - name: Upload unsigned iOS archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-ios-unsigned-${{ needs.resolve.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/MimiRemote.xcarchive/
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-app-store-validation:
+    name: Signed iOS archive and App Store validation
+    if: inputs.validation_mode == 'publish-readiness'
+    needs: resolve
+    uses: ./.github/workflows/ios-ci.yml
+    with:
+      source_ref: ${{ needs.resolve.outputs.candidate_sha }}
+      validate_app_store: true
+      what_to_test: "Release validation only；不上传、不分发 Internal TestFlight。"
+    secrets: inherit
+
+  controlled-runtime-smoke:
+    name: Controlled Runtime release smoke
+    if: inputs.run_controlled_runtime_smoke
+    needs: resolve
+    runs-on:
+      - self-hosted
+      - mimi-runtime-smoke
+    environment: nightly-runtime-smoke
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run read-only Codex and explicitly enabled Claude smoke
+        shell: bash
+        env:
+          MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
+          AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+          CONTROLLED_RUNTIME_CANDIDATE_SHA: ${{ vars.MIMI_NIGHTLY_RUNTIME_CANDIDATE_SHA }}
+          MIMI_CLAUDE_SMOKE_ENABLED: ${{ vars.MIMI_NIGHTLY_CLAUDE_SMOKE_ENABLED }}
+        run: |
+          [[ "$MIMI_RUNTIME_ENDPOINT" == https://* || "$MIMI_RUNTIME_ENDPOINT" == http://127.0.0.1:* ]]
+          [[ -n "$AGENTD_TOKEN" ]]
+          [[ "$CONTROLLED_RUNTIME_CANDIDATE_SHA" == "$CANDIDATE_SHA" ]] || {
+            echo "受控 Runtime commit 不匹配：expected=$CANDIDATE_SHA actual=${CONTROLLED_RUNTIME_CANDIDATE_SHA:-missing}" >&2
+            exit 1
+          }
+          version_response="$(mktemp)"
+          trap 'rm -f "$version_response"' EXIT
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 15 \
+            --header "Authorization: Bearer $AGENTD_TOKEN" \
+            --output "$version_response" \
+            "${MIMI_RUNTIME_ENDPOINT%/}/api/version"
+          runtime_version="$(
+            ruby -rjson -e '
+              body = JSON.parse(File.read(ARGV.fetch(0)))
+              version = body["version"]
+              abort "Runtime /api/version 缺少 version" unless version.is_a?(String) && !version.empty?
+              print version
+            ' "$version_response"
+          )"
+          [[ "$runtime_version" == "$CANDIDATE_VERSION" ]] || {
+            echo "受控 Runtime 版本不匹配：expected=$CANDIDATE_VERSION actual=$runtime_version" >&2
+            exit 1
+          }
+          echo "Controlled Runtime version: \`$runtime_version\`" >>"$GITHUB_STEP_SUMMARY"
+          bash ./scripts/history-sync-regression.sh \
+            --endpoint "controlled=$MIMI_RUNTIME_ENDPOINT" \
+            --rounds 10 \
+            --limit 20 \
+            --require-all-successful
+          if [[ "$MIMI_CLAUDE_SMOKE_ENABLED" == "true" ]]; then
+            go run ./scripts/ipad-ws-probe.go \
+              -endpoint "$MIMI_RUNTIME_ENDPOINT" \
+              -runtime claude \
+              -models-only
+          else
+            echo "Claude smoke: SKIPPED（没有受控凭据或未显式启用）。" >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+  release-validation-result:
+    name: Release Validation
+    if: always()
+    needs:
+      - resolve
+      - go-rust-and-packaging
+      - macos-candidate
+      - windows-candidate
+      - ios-full
+      - ios-app-store-validation
+      - controlled-runtime-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail closed and summarize evidence
+        shell: bash
+        env:
+          VALIDATION_MODE: ${{ inputs.validation_mode }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          RUNTIME_REQUESTED: ${{ inputs.run_controlled_runtime_smoke }}
+          INTERNAL_TESTFLIGHT_EVIDENCE: ${{ inputs.internal_testflight_evidence }}
+          ROLLBACK_DRILL_EVIDENCE: ${{ inputs.rollback_drill_evidence }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          GO_RUST_RESULT: ${{ needs.go-rust-and-packaging.result }}
+          MACOS_RESULT: ${{ needs.macos-candidate.result }}
+          WINDOWS_RESULT: ${{ needs.windows-candidate.result }}
+          IOS_FULL_RESULT: ${{ needs.ios-full.result }}
+          IOS_SIGNED_RESULT: ${{ needs.ios-app-store-validation.result }}
+          RUNTIME_RESULT: ${{ needs.controlled-runtime-smoke.result }}
+        run: |
+          {
+            echo "## Release Validation"
+            echo
+            echo "- Mode: \`$VALIDATION_MODE\`"
+            echo "- Candidate version: \`$CANDIDATE_VERSION\`"
+            echo "- 该 workflow 不创建 tag/Release、不上传 TestFlight、不部署、不执行生产回滚。"
+            echo
+            echo "| 检查 | 结果 |"
+            echo "| --- | --- |"
+            echo "| Candidate / rollback window | \`$RESOLVE_RESULT\` |"
+            echo "| Protocol / Go / Rust / archives | \`$GO_RUST_RESULT\` |"
+            echo "| macOS candidate | \`$MACOS_RESULT\` |"
+            echo "| Windows candidate | \`$WINDOWS_RESULT\` |"
+            echo "| Full iOS / unsigned archive | \`$IOS_FULL_RESULT\` |"
+            echo "| Signed iOS / ASC validation | \`$IOS_SIGNED_RESULT\` |"
+            echo "| Controlled Runtime | \`$RUNTIME_RESULT\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          [[ "$RESOLVE_RESULT" == "success" ]]
+          [[ "$GO_RUST_RESULT" == "success" ]]
+          [[ "$MACOS_RESULT" == "success" ]]
+          [[ "$WINDOWS_RESULT" == "success" ]]
+          [[ "$IOS_FULL_RESULT" == "success" ]]
+
+          if [[ "$VALIDATION_MODE" == "dry-run" ]]; then
+            [[ "$IOS_SIGNED_RESULT" == "skipped" ]]
+            if [[ "$RUNTIME_REQUESTED" == "true" ]]; then
+              [[ "$RUNTIME_RESULT" == "success" ]]
+            else
+              [[ "$RUNTIME_RESULT" == "skipped" ]]
+            fi
+            echo "DRY-RUN 完成：只证明候选可构建和静态可回滚，不授权发布。" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          [[ "$VALIDATION_MODE" == "publish-readiness" ]]
+          [[ "$RUNTIME_REQUESTED" == "true" ]] \
+            || { echo "publish-readiness 必须运行受控 Runtime smoke。" >&2; exit 1; }
+          [[ "$RUNTIME_RESULT" == "success" ]]
+          [[ "$IOS_SIGNED_RESULT" == "success" ]]
+          [[ "$INTERNAL_TESTFLIGHT_EVIDENCE" == https://* ]] \
+            || { echo "缺少同一 candidate 的 Internal TestFlight 证据 URL。" >&2; exit 1; }
+          [[ "$ROLLBACK_DRILL_EVIDENCE" == https://* ]] \
+            || { echo "缺少上一签名产物恢复演练证据 URL。" >&2; exit 1; }
+          {
+            echo
+            echo "- Internal TestFlight evidence: $INTERNAL_TESTFLIGHT_EVIDENCE"
+            echo "- Signed rollback drill evidence: $ROLLBACK_DRILL_EVIDENCE"
+            echo
+            echo "PUBLISH-READINESS 通过：仍需由维护者按运行手册做最终人工确认；本 workflow 没有执行发布。"
+          } >>"$GITHUB_STEP_SUMMARY"
