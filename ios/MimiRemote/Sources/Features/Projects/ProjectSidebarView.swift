@@ -971,6 +971,7 @@ private struct ProjectSessionRows: View {
                 isArchived: isArchived,
                 reminder: reminder,
                 isObserving: sessionStore.isSessionObserving(session),
+                isUnread: sessionStore.isHistorySessionUnread(session),
                 searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
                 themeRenderKey: themeRenderKey
             )
@@ -1140,6 +1141,7 @@ private struct SessionRow: View, Equatable {
     let isArchived: Bool
     let reminder: SessionReminder?
     let isObserving: Bool
+    let isUnread: Bool
     let searchSnippet: String?
     let themeRenderKey: SidebarThemeRenderKey
 
@@ -1151,6 +1153,7 @@ private struct SessionRow: View, Equatable {
             && lhs.isArchived == rhs.isArchived
             && lhs.reminder == rhs.reminder
             && lhs.isObserving == rhs.isObserving
+            && lhs.isUnread == rhs.isUnread
             && lhs.searchSnippet == rhs.searchSnippet
             // 主题 key 让色彩/字体 token 变化能刷新，但仍避免流式状态更新重绘所有侧栏行。
             && lhs.themeRenderKey == rhs.themeRenderKey
@@ -1165,10 +1168,7 @@ private struct SessionRow: View, Equatable {
                     .fill(statusDotColor)
                     .frame(width: 6, height: 6)
                 if isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
-                        .foregroundStyle(isSelected ? tokens.secondaryText : tokens.tertiaryText)
-                        .accessibilityLabel(L10n.text("ui.pinned"))
+                    SessionPinnedBadge(compact: true)
                 }
                 if isArchived {
                     Image(systemName: "archivebox.fill")
@@ -1187,6 +1187,9 @@ private struct SessionRow: View, Equatable {
                     .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
                     .lineLimit(1)
                     .layoutPriority(1)
+                if isUnread {
+                    SessionUnreadIndicator()
+                }
                 Spacer(minLength: 8)
                 trailingMetadata
             }
@@ -1213,7 +1216,8 @@ private struct SessionRow: View, Equatable {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        // 内容密度不变，命中区域单独扩到 44pt，避免侧栏紧凑模式牺牲触控可用性。
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .background {
             SidebarSelectionBackground(
                 isSelected: isSelected,
@@ -1229,6 +1233,8 @@ private struct SessionRow: View, Equatable {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { isHovered = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(isUnread ? L10n.text("ui.unread_result") : "")
     }
 
     @ViewBuilder

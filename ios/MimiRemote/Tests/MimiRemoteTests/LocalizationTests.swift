@@ -55,6 +55,100 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
+    func testSettingsInformationArchitectureLabelsAreLocalized() {
+        let expectedValues: [(String, String, String)] = [
+            ("ui.me", "Me", "我的"),
+            ("ui.token_usage", "Token usage", "Token 使用量"),
+            ("ui.current_remaining", "Current Remaining", "当前剩余"),
+            ("ui.token_activity", "Token Activity", "Token 活动"),
+            ("ui.my_preferences", "My Preferences", "我的偏好设置"),
+            ("ui.more", "More", "更多"),
+            ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
+            ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
+            ("ui.about_and_legal", "About & Legal", "关于与法律")
+        ]
+
+        for (key, english, simplifiedChinese) in expectedValues {
+            XCTAssertEqual(L10n.text(key, language: .english), english)
+            XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
+    }
+
+    func testSettingsLayoutMetricsUseOneVisualSystem() {
+        XCTAssertEqual(SettingsLayoutMetrics.standardRowHeight, 52)
+        XCTAssertEqual(SettingsLayoutMetrics.accessibilityRowHeight, 76)
+        XCTAssertEqual(SettingsLayoutMetrics.iconSlot, 28)
+        XCTAssertEqual(SettingsLayoutMetrics.symbolPointSize, 18)
+        XCTAssertEqual(SettingsLayoutMetrics.statusModuleCornerRadius, 20)
+    }
+
+    func testTokenCountFormatterUsesProductCompactUnits() {
+        XCTAssertEqual(
+            TokenCountFormatter.string(50_160_000_000, language: .simplifiedChinese),
+            "501.6亿"
+        )
+        XCTAssertEqual(
+            TokenCountFormatter.string(50_160_000_000, language: .english),
+            "50.2B"
+        )
+        XCTAssertEqual(TokenCountFormatter.string(nil, language: .english), "—")
+    }
+
+    func testTokenActivityCalendarAggregatesAndRejectsInvalidDays() throws {
+        let calendar = TokenActivityCalendar.utcCalendar
+        let endingAt = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 30))
+        )
+        let weeks = TokenActivityCalendar.weeks(
+            buckets: [
+                AccountTokenUsageDailyBucket(startDate: "2026-07-30", tokens: 100),
+                AccountTokenUsageDailyBucket(startDate: "2026-07-30", tokens: 50),
+                AccountTokenUsageDailyBucket(startDate: "2026-07-29", tokens: -20),
+                AccountTokenUsageDailyBucket(startDate: "2026-02-30", tokens: 999),
+                AccountTokenUsageDailyBucket(startDate: "2026-08-01", tokens: 999)
+            ],
+            endingAt: endingAt
+        )
+
+        XCTAssertEqual(weeks.count, 53)
+        XCTAssertTrue(weeks.allSatisfy { $0.days.count == 7 })
+        let activeDay = try XCTUnwrap(
+            weeks.flatMap(\.days).first {
+                calendar.isDate($0.date, inSameDayAs: endingAt)
+            }
+        )
+        XCTAssertEqual(activeDay.tokens, 150)
+        XCTAssertGreaterThan(activeDay.intensity, 0)
+        XCTAssertNil(TokenActivityCalendar.date(from: "2026-02-30"))
+        XCTAssertEqual(
+            weeks.flatMap(\.days).filter { $0.tokens > 0 }.count,
+            1,
+            "未来日、非法日期与负数都不能进入活动统计"
+        )
+    }
+
+    func testTokenActivityCalendarSaturatesDuplicateBucketOverflow() throws {
+        let calendar = TokenActivityCalendar.utcCalendar
+        let endingAt = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 30))
+        )
+        let weeks = TokenActivityCalendar.weeks(
+            buckets: [
+                AccountTokenUsageDailyBucket(startDate: "2026-07-30", tokens: .max),
+                AccountTokenUsageDailyBucket(startDate: "2026-07-30", tokens: 1)
+            ],
+            endingAt: endingAt
+        )
+        let activeDay = try XCTUnwrap(
+            weeks.flatMap(\.days).first {
+                calendar.isDate($0.date, inSameDayAs: endingAt)
+            }
+        )
+
+        XCTAssertEqual(activeDay.tokens, .max)
+        XCTAssertEqual(activeDay.intensity, 4)
+    }
+
     func testStoredLanguageFallsBackToSystemForUnknownValue() {
         let suiteName = "LocalizationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

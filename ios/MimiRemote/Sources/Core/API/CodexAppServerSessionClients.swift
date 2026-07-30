@@ -169,6 +169,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         await runtime.refreshRateLimit()
     }
 
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+        await runtime.refreshAccountTokenUsage()
+    }
+
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
         try await runtime.threadGoal(threadID: threadID)
     }
@@ -492,6 +496,11 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         await bundle.runtime(for: runtimeProvider).refreshRateLimit()
+    }
+
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+        // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
+        await bundle.codex.refreshAccountTokenUsage()
     }
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
@@ -845,10 +854,14 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let outcomeHandler = onTurnSendOutcome
         Task { [runtime] in
             do {
-                let turnID = try await runtime.startTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
+                let startOutcome = try await runtime.startTurnOutcome(
+                    sessionID: sessionID,
+                    payload: payload,
+                    clientMessageID: clientMessageID
+                )
                 await MainActor.run {
                     if let outcomeHandler {
-                        outcomeHandler(clientMessageID, .accepted(turnID: turnID))
+                        outcomeHandler(clientMessageID, Self.turnSendOutcome(for: startOutcome))
                     } else {
                         acceptedHandler?(clientMessageID)
                     }
@@ -876,6 +889,24 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                 sequence,
                 epoch: metadata.replayCursorEpoch
             )
+        }
+    }
+
+    static func turnSendOutcome(
+        for startOutcome: CodexAppServerTurnStartOutcome
+    ) -> TurnSendOutcome {
+        switch startOutcome {
+        case .active(let turnID):
+            return .accepted(turnID: turnID)
+        case .terminal(let turnID):
+            return .acceptedTerminal(turnID: turnID)
+        case .superseded(let turnID, let activeTurnID):
+            return .acceptedSuperseded(
+                turnID: turnID,
+                activeTurnID: activeTurnID
+            )
+        case .threadClosed(let turnID):
+            return .acceptedThreadClosed(turnID: turnID)
         }
     }
 

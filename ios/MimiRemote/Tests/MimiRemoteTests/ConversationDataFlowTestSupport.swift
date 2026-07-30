@@ -458,6 +458,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let runtimeChannelAvailability: [String: Bool]
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
+    let accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let externalActivityResponses: [ExternalActivityResponse?]
     var requestedProjectIDs: [String?] {
@@ -557,6 +558,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         runtimeChannelAvailability: [String: Bool] = [:],
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
+        accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
         externalActivityResponses: [ExternalActivityResponse?] = []
     ) {
@@ -608,6 +610,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.runtimeChannelAvailability = runtimeChannelAvailability
         self.rateLimitsByRuntime = rateLimitsByRuntime
         self.rateLimitHandler = rateLimitHandler
+        self.accountTokenUsageHandler = accountTokenUsageHandler
         self.threadSearchHandler = threadSearchHandler
         self.externalActivityResponses = externalActivityResponses
     }
@@ -643,6 +646,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
             return try await rateLimitHandler(runtimeProvider)
         }
         return rateLimitsByRuntime[runtimeProvider]
+    }
+
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+        try await accountTokenUsageHandler?()
     }
 
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {

@@ -1,6 +1,9 @@
 package protocolcontract
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 // VersionResponse 是 agentd /api/version 的稳定线协议。
 // 新字段只能以向后兼容方式增加；现有 JSON 名称和语义由共享 golden fixture 锁定。
@@ -8,6 +11,7 @@ type VersionResponse struct {
 	Name                          string   `json:"name"`
 	Version                       string   `json:"version"`
 	InstallationID                string   `json:"installation_id"`
+	Platform                      string   `json:"platform"`
 	ProtocolRevision              int      `json:"protocol_revision"`
 	MinimumClientProtocolRevision int      `json:"minimum_client_protocol_revision"`
 	Capabilities                  []string `json:"capabilities"`
@@ -18,6 +22,7 @@ func CurrentVersionResponse(version string, installationID string) VersionRespon
 		Name:                          "agentd",
 		Version:                       version,
 		InstallationID:                installationID,
+		Platform:                      runtime.GOOS,
 		ProtocolRevision:              CurrentRevision,
 		MinimumClientProtocolRevision: MinimumSupportedClientRevision,
 		Capabilities:                  Capabilities(),

@@ -78,6 +78,7 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 	for _, method := range []string{
 		"thread/turns/list", "thread/name/set", "thread/compact/start", "thread/unsubscribe",
 		"thread/goal/get", "thread/goal/set", "thread/goal/clear", "review/start", "turn/steer", "skills/list", "plugin/installed",
+		"account/usage/read",
 	} {
 		if !containsAnyString(allowedMethods, method) {
 			t.Fatalf("allowed_methods 应包含 %s：%v", method, allowedMethods)
@@ -133,6 +134,9 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 	if !containsAnyString(methods, "account/rateLimits/read") {
 		t.Fatalf("兼容 bridge 应开放 Claude 额度读取：%v", methods)
 	}
+	if containsAnyString(methods, "account/usage/read") {
+		t.Fatalf("Claude bridge 不应开放 Codex 账号 Token 活动：%v", methods)
+	}
 }
 
 func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testing.T) {
@@ -184,6 +188,9 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	}
 	if containsAnyString(claude["methods"].([]any), "account/rateLimits/read") {
 		t.Fatalf("旧 bridge 不应声明 Claude 额度方法：%v", claude["methods"])
+	}
+	if containsAnyString(claude["methods"].([]any), "account/usage/read") {
+		t.Fatalf("旧 bridge 不应声明 Codex 账号 Token 活动：%v", claude["methods"])
 	}
 
 	server := httptest.NewServer(handler)
@@ -1707,6 +1714,31 @@ func TestGatewayThreadResumeRejectsUnsafeInitialTurnsPage(t *testing.T) {
 				t.Fatalf("thread/resume 非法最近页应被拒绝并包含 %q，got=%v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestAppServerGatewayHistoryResponseCapDefaultsToFiveMiB(t *testing.T) {
+	if got, want := appServerGatewayHistoryResponseCapBytes, 5<<20; got != want {
+		t.Fatalf("单次 full 历史响应 cap 应为 5 MiB，got=%d want=%d", got, want)
+	}
+	if got, want := appServerGatewayHistoryBudgetWindow, 15*time.Second; got != want {
+		t.Fatalf("单连接历史预算窗口应保持 15 秒，got=%s want=%s", got, want)
+	}
+	if got, want := appServerGatewayHistoryBudgetMaxResponseBytes, int64(8<<20); got != want {
+		t.Fatalf("单连接历史响应总预算应保持 8 MiB，got=%d want=%d", got, want)
+	}
+	if got, want := appServerGatewayHistoryGlobalWindow, 15*time.Second; got != want {
+		t.Fatalf("全局历史预算窗口应保持 15 秒，got=%s want=%s", got, want)
+	}
+	if got, want := appServerGatewayHistoryGlobalMaxResponseBytes, int64(8<<20); got != want {
+		t.Fatalf("全局历史响应总预算应保持 8 MiB，got=%d want=%d", got, want)
+	}
+	if int64(appServerGatewayHistoryResponseCapBytes) > appServerGatewayHistoryGlobalMaxResponseBytes {
+		t.Fatalf(
+			"单次历史响应 cap 不应超过 15 秒全局预算，cap=%d budget=%d",
+			appServerGatewayHistoryResponseCapBytes,
+			appServerGatewayHistoryGlobalMaxResponseBytes,
+		)
 	}
 }
 
