@@ -422,6 +422,7 @@ struct WorkspaceRootView: View {
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
         let iconStyle = appearanceStore.style(profileID: profileID)
         let characterAssignments = appearanceStore.characterAssignments(
+            style: iconStyle,
             profileID: profileID,
             projectIDs: projectIDs
         )
@@ -442,6 +443,7 @@ struct WorkspaceRootView: View {
                                     appearanceStore: appearanceStore,
                                     iconStyle: iconStyle,
                                     displayedCharacter: appearanceStore.character(
+                                        style: iconStyle,
                                         profileID: profileID,
                                         projectID: "loading-\(index)"
                                     ),
@@ -471,11 +473,16 @@ struct WorkspaceRootView: View {
                             ForEach(sessionStore.sidebarProjects) { project in
                                 let projectSessions = sessionStore.sessions(forProjectID: project.id)
                                 let displayedCharacter = characterAssignments[project.id]
-                                    ?? appearanceStore.character(profileID: profileID, projectID: project.id)
+                                    ?? appearanceStore.character(
+                                        style: iconStyle,
+                                        profileID: profileID,
+                                        projectID: project.id
+                                    )
                                 let displayedEmoji = emojiAssignments[project.id]
                                     ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
                                 let unavailableCharacterIDs: Set<String> =
-                                    projectIDs.count <= WorkspaceAppearanceStore.builtInCharacters.count
+                                    projectIDs.count
+                                        <= WorkspaceAppearanceStore.characters(for: iconStyle).count
                                     ? Set(
                                         characterAssignments.compactMap { otherProjectID, character in
                                             otherProjectID == project.id ? nil : character.id
@@ -873,8 +880,7 @@ private struct WorkspaceLibraryCard: View {
 
     @ViewBuilder
     private var iconTile: some View {
-        switch iconStyle {
-        case .journey:
+        if iconStyle.usesCharacters {
             Image(displayedCharacter.assetName)
                 .resizable()
                 .scaledToFill()
@@ -890,7 +896,7 @@ private struct WorkspaceLibraryCard: View {
                 }
                 .opacity(isUnavailable ? 0.62 : 1)
                 .accessibilityHidden(true)
-        case .emoji:
+        } else {
             let palette: [Color] = [
                 Color(red: 0.91, green: 0.63, blue: 0.48),
                 Color(red: 0.47, green: 0.67, blue: 0.78),
@@ -940,17 +946,17 @@ private struct WorkspaceLibraryCard: View {
 
     @ViewBuilder
     private var iconPicker: some View {
-        switch iconStyle {
-        case .journey:
+        if iconStyle.usesCharacters {
             WorkspaceCharacterPicker(
                 project: project,
                 profileID: profileID,
                 appearanceStore: appearanceStore,
+                style: iconStyle,
                 currentCharacterID: displayedCharacter.id,
                 unavailableCharacterIDs: unavailableCharacterIDs,
                 tokens: tokens
             )
-        case .emoji:
+        } else {
             WorkspaceEmojiPicker(
                 project: project,
                 profileID: profileID,
@@ -963,12 +969,7 @@ private struct WorkspaceLibraryCard: View {
     }
 
     private var currentIconName: String {
-        switch iconStyle {
-        case .journey:
-            return displayedCharacter.name
-        case .emoji:
-            return displayedEmoji
-        }
+        iconStyle.usesCharacters ? displayedCharacter.name : displayedEmoji
     }
 
     private func metadataRow(now: Date) -> some View {
@@ -1131,6 +1132,7 @@ private struct WorkspaceCharacterPicker: View {
     let project: AgentProject
     let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
+    let style: WorkspaceIconStyle
     let currentCharacterID: String
     let unavailableCharacterIDs: Set<String>
     let tokens: ThemeTokens
@@ -1149,11 +1151,12 @@ private struct WorkspaceCharacterPicker: View {
             }
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(WorkspaceAppearanceStore.builtInCharacters) { character in
+                ForEach(WorkspaceAppearanceStore.characters(for: style)) { character in
                     let isUnavailable = unavailableCharacterIDs.contains(character.id)
                     Button {
                         appearanceStore.setCustomCharacterID(
                             character.id,
+                            style: style,
                             profileID: profileID,
                             projectID: project.id
                         )

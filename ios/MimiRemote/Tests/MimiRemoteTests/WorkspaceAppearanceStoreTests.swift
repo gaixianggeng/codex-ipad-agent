@@ -35,13 +35,85 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
     }
 
     func testBuiltInCharacterNamesHaveEnglishAndChineseLocalizations() {
-        for character in WorkspaceAppearanceStore.builtInCharacters {
+        let allCharacters = WorkspaceIconStyle.allCases
+            .filter(\.usesCharacters)
+            .flatMap { WorkspaceAppearanceStore.characters(for: $0) }
+
+        for character in allCharacters {
             let englishName = L10n.text(character.nameKey, language: .english)
             let chineseName = L10n.text(character.nameKey, language: .simplifiedChinese)
 
             XCTAssertNotEqual(englishName, character.nameKey, "缺少英文角色名：\(character.id)")
             XCTAssertNotEqual(chineseName, character.nameKey, "缺少中文角色名：\(character.id)")
             XCTAssertNotEqual(englishName, chineseName, "中英文角色名不应共用未翻译文案：\(character.id)")
+        }
+    }
+
+    func testEveryNewCharacterStyleContainsTenUniqueCharacters() {
+        let newStyles: [WorkspaceIconStyle] = [
+            .threeKingdoms,
+            .waterMargin,
+            .redChamber,
+            .greekMythology,
+            .sherlockHolmes,
+            .aliceWonderland
+        ]
+        let newCharacters = newStyles.flatMap {
+            WorkspaceAppearanceStore.characters(for: $0)
+        }
+
+        for style in newStyles {
+            XCTAssertEqual(
+                WorkspaceAppearanceStore.characters(for: style).count,
+                10,
+                "\(style.rawValue) 应提供 10 个角色"
+            )
+        }
+        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 60)
+        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 60)
+        XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
+    }
+
+    func testEveryNewCharacterStyleAssignsTenProjectsUniquelyAndStably() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        let projectIDs = (0..<10).map { "project-\($0)" }
+        let newStyles: [WorkspaceIconStyle] = [
+            .threeKingdoms,
+            .waterMargin,
+            .redChamber,
+            .greekMythology,
+            .sherlockHolmes,
+            .aliceWonderland
+        ]
+
+        for style in newStyles {
+            let assignments = store.characterAssignments(
+                style: style,
+                profileID: "mac-a",
+                projectIDs: projectIDs
+            )
+
+            XCTAssertEqual(assignments.count, 10)
+            XCTAssertEqual(Set(assignments.values.map(\.id)).count, 10)
+            XCTAssertEqual(
+                store.characterAssignments(
+                    style: style,
+                    profileID: "mac-a",
+                    projectIDs: Array(projectIDs.reversed())
+                ),
+                assignments,
+                "\(style.rawValue) 不应因项目输入顺序变化重新洗牌"
+            )
+        }
+    }
+
+    func testAllWorkspaceIconStyleNamesHaveEnglishAndChineseLocalizations() {
+        for style in WorkspaceIconStyle.allCases {
+            let englishName = L10n.text(style.titleKey, language: .english)
+            let chineseName = L10n.text(style.titleKey, language: .simplifiedChinese)
+
+            XCTAssertNotEqual(englishName, style.titleKey)
+            XCTAssertNotEqual(chineseName, style.titleKey)
         }
     }
 
@@ -134,6 +206,72 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             switchedBack.customCharacterID(profileID: "mac-a", projectID: "project-1"),
             "red-boy"
         )
+    }
+
+    func testCharacterChoicesPersistIndependentlyForEachStyle() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        store.setCustomCharacterID(
+            "three-guan-yu",
+            style: .threeKingdoms,
+            profileID: "mac-a",
+            projectID: "project-1"
+        )
+        store.setCustomCharacterID(
+            "water-wu-song",
+            style: .waterMargin,
+            profileID: "mac-a",
+            projectID: "project-1"
+        )
+
+        let restored = WorkspaceAppearanceStore(defaults: defaults)
+        XCTAssertEqual(
+            restored.customCharacterID(
+                style: .threeKingdoms,
+                profileID: "mac-a",
+                projectID: "project-1"
+            ),
+            "three-guan-yu"
+        )
+        XCTAssertEqual(
+            restored.customCharacterID(
+                style: .waterMargin,
+                profileID: "mac-a",
+                projectID: "project-1"
+            ),
+            "water-wu-song"
+        )
+        XCTAssertNil(
+            restored.customCharacterID(
+                style: .redChamber,
+                profileID: "mac-a",
+                projectID: "project-1"
+            )
+        )
+    }
+
+    func testPreviouslyPersistedV2PreferencesDecodeWithoutNewStyleMap() throws {
+        let previousV2: [String: Any] = [
+            "byProfileID": [
+                "mac-a": [
+                    "style": "journey",
+                    "characterIDsByProject": ["project-1": "red-boy"],
+                    "emojiByProject": ["project-1": "🌈"]
+                ]
+            ]
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: previousV2),
+            forKey: "agentd.workspaceAppearancePreferences.v2"
+        )
+
+        let restored = WorkspaceAppearanceStore(defaults: defaults)
+
+        XCTAssertEqual(restored.style(profileID: "mac-a"), .journey)
+        XCTAssertEqual(
+            restored.customCharacterID(profileID: "mac-a", projectID: "project-1"),
+            "red-boy"
+        )
+        XCTAssertEqual(restored.customEmoji(profileID: "mac-a", projectID: "project-1"), "🌈")
     }
 
     func testStylePreferenceStaysScopedToConnectionProfile() {
