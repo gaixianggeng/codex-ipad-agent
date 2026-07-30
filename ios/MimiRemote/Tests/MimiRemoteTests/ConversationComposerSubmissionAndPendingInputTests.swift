@@ -392,6 +392,101 @@ extension ConversationDataFlowTests {
         })
     }
 
+    func testRetryableErrorKeepsPendingMcpFormsUntilTerminalError() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        func request(_ id: String) -> CodexAppServerServerRequest {
+            CodexAppServerServerRequest(
+                id: .string(id),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thr_retryable_error"),
+                    "turnId": .string("turn_retryable_error"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("请选择重试后的操作"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "choice": .object([
+                                "type": .string("string"),
+                                "enum": .array([.string("one"), .string("two")])
+                            ])
+                        ])
+                    ])
+                ])
+            )
+        }
+
+        await runtime.handle(request("mcp-before-retry"))
+        await runtime.handle(CodexAppServerNotification(
+            method: "error",
+            params: .object([
+                "threadId": .string("thr_retryable_error"),
+                "turnId": .string("turn_retryable_error"),
+                "willRetry": .bool(true),
+                "error": .object(["message": .string("temporary failure")])
+            ])
+        ))
+        await runtime.handle(request("mcp-after-retry"))
+
+        let pendingAfterRetry = await runtime.pendingInteractionEvents(sessionID: "thr_retryable_error")
+        let retryIDs = Set(pendingAfterRetry.compactMap { event -> String? in
+            guard case .userInputRequest(let input, _) = event else {
+                return nil
+            }
+            return input.id
+        })
+        XCTAssertEqual(retryIDs, ["mcp-before-retry", "mcp-after-retry"])
+
+        await runtime.handle(CodexAppServerNotification(
+            method: "error",
+            params: .object([
+                "threadId": .string("thr_retryable_error"),
+                "turnId": .string("turn_retryable_error"),
+                "willRetry": .bool(false),
+                "error": .object(["message": .string("terminal failure")])
+            ])
+        ))
+        let pendingAfterTerminalError = await runtime.pendingInteractionEvents(sessionID: "thr_retryable_error")
+        XCTAssertTrue(pendingAfterTerminalError.isEmpty)
+    }
+
+    func testTerminalBarrierKeepsTurnIndependentMcpURLRequests() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        func request(_ id: String) -> CodexAppServerServerRequest {
+            CodexAppServerServerRequest(
+                id: .string(id),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thr_independent_url"),
+                    "serverName": .string("calendar"),
+                    "mode": .string("url"),
+                    "message": .string("请完成授权"),
+                    "url": .string("https://example.test/oauth")
+                ])
+            )
+        }
+
+        await runtime.handle(request("mcp-url-before-terminal"))
+        await runtime.handle(CodexAppServerNotification(
+            method: "turn/completed",
+            params: .object([
+                "threadId": .string("thr_independent_url"),
+                "turnId": .string("turn_completed")
+            ])
+        ))
+        await runtime.handle(request("mcp-url-after-terminal"))
+
+        let pending = await runtime.pendingInteractionEvents(sessionID: "thr_independent_url")
+        let approvalIDs = Set(pending.compactMap { event -> String? in
+            guard case .approvalRequest(let approval, _) = event else {
+                return nil
+            }
+            return approval.id
+        })
+        XCTAssertEqual(approvalIDs, ["mcp-url-before-terminal", "mcp-url-after-terminal"])
+    }
+
     func testResolvedBeforeServerRequestDoesNotCreateOrphanUserInput() async {
         let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
         await runtime.handle(CodexAppServerNotification(

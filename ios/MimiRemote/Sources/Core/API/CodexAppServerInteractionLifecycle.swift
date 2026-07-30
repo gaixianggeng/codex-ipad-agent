@@ -6,8 +6,12 @@ extension CodexAppServerSessionRuntime {
 
     func isTerminalInteractionNotification(_ notification: CodexAppServerNotification) -> Bool {
         switch notification.method {
-        case "turn/completed", "thread/closed", "error":
+        case "turn/completed", "thread/closed":
             return true
+        case "error":
+            // app-server 会在同一 turn 内重试部分错误；willRetry 为 true 时仍会继续发送
+            // 审批或补充信息请求，不能提前写 tombstone 或清空 pending request。
+            return notification.params?.objectValue?["willRetry"]?.boolValue != true
         default:
             return false
         }
@@ -45,10 +49,10 @@ extension CodexAppServerSessionRuntime {
         guard let turnID else {
             return true
         }
-        // MCP elicitation 的 turnId 在协议中可省略；一旦所属 thread 的 turn 已 terminal，
-        // 这类无 turnId 请求也必须随该边界淘汰，不能在 reattach 时复活。
+        // URL 型 MCP elicitation 是协议允许的 thread 级独立请求，不属于刚结束的 turn。
+        // 其它无 turnId 交互仍按当前 turn 处理，避免旧 form 在 reattach 时复活。
         guard let requestTurnID = approvalTurnID(for: request) else {
-            return true
+            return !isTurnIndependentMCPElicitation(request)
         }
         return requestTurnID == turnID
     }
@@ -110,6 +114,11 @@ extension CodexAppServerSessionRuntime {
               terminalSessionBarriers[sessionID] != nil else {
             return false
         }
+        // URL 型 MCP elicitation 可以在 thread 空闲时独立到达，不能被上一轮的 session
+        // barrier 当作迟到请求拒绝；form 和工具授权仍保留原有 fail-closed 防护。
+        if isTurnIndependentMCPElicitation(request) {
+            return false
+        }
         // 新 turn 的 RPC 与 turn/started 通知也可能跨 pump 乱序；本地已经明确在启动或持有
         // 非 terminal active turn 时，无 turnId MCP 请求属于新一轮，不能被上一轮 barrier 误杀。
         if sessionsStartingTurn.contains(sessionID)
@@ -117,6 +126,15 @@ extension CodexAppServerSessionRuntime {
             return false
         }
         return true
+    }
+
+    func isTurnIndependentMCPElicitation(_ request: CodexAppServerServerRequest) -> Bool {
+        guard request.method == "mcpServer/elicitation/request" else {
+            return false
+        }
+        return request.params?.objectValue?["mode"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "url"
     }
 
     func resolvedRequestTombstoneKey(sessionID: SessionID?, requestID: String) -> String {
