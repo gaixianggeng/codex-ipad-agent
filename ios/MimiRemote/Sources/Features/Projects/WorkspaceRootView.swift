@@ -561,6 +561,7 @@ struct WorkspaceRootView: View {
         return WorkspaceDetailView(
             // 工作区详情承担完整历史浏览，展示所有已加载页；项目侧栏才保留 5 条预览窗口。
             recentSessions: sessionStore.sessions(forProjectID: project.id),
+            unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
             canLoadMoreSessions: sessionStore.canLoadMoreSessions(projectID: project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
@@ -1372,6 +1373,7 @@ private struct WorkspaceDetailView: View {
     @State private var isLoadingMoreSessions = false
 
     let recentSessions: [AgentSession]
+    let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
     let canLoadMoreSessions: Bool
     let claudeChannelAvailable: Bool
@@ -1666,10 +1668,17 @@ private struct WorkspaceDetailView: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.title)
-                    .font(themeStore.uiFont(.callout, weight: .medium))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(session.title)
+                        .font(themeStore.uiFont(.callout, weight: .medium))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+
+                    if unreadHistorySessionIDs.contains(session.id) {
+                        SessionUnreadIndicator()
+                    }
+                }
 
                 HStack(spacing: 6) {
                     if let branch = session.gitBranchName {
@@ -1724,6 +1733,12 @@ private struct WorkspaceDetailView: View {
         .padding(.horizontal, 14)
         .frame(minHeight: 62)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(
+            unreadHistorySessionIDs.contains(session.id)
+                ? L10n.text("ui.unread_result")
+                : ""
+        )
     }
 
     private func shouldShowRecentSessionStatus(

@@ -9,6 +9,7 @@ struct DebugLaunchConfiguration {
     let seedsWorkbenchUI: Bool
     let seedsQueuedTurnsUI: Bool
     let seedsMCPApprovalUI: Bool
+    let seedsHistoryUnreadUI: Bool
     let hostPlatformPreview: HostPlatform?
     let endpoint: String?
     let token: String?
@@ -20,6 +21,8 @@ struct DebugLaunchConfiguration {
             || boolValue(environment["MIMI_DEBUG_SEED_QUEUE_UI"])
         let seedsMCPApprovalUI = arguments.contains("--debug-seed-mcp-approval-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_MCP_APPROVAL_UI"])
+        let seedsHistoryUnreadUI = arguments.contains("--debug-seed-history-unread-ui")
+            || boolValue(environment["MIMI_DEBUG_SEED_HISTORY_UNREAD_UI"])
         let hostPlatformPreview = argumentValue(named: "--debug-host-platform", in: arguments)
             .map { HostPlatform(serverValue: $0) }
         return DebugLaunchConfiguration(
@@ -29,9 +32,11 @@ struct DebugLaunchConfiguration {
             seedsWorkbenchUI: arguments.contains("--debug-seed-ui")
                 || boolValue(environment["MIMI_DEBUG_SEED_UI"])
                 || seedsQueuedTurnsUI
-                || seedsMCPApprovalUI,
+                || seedsMCPApprovalUI
+                || seedsHistoryUnreadUI,
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
             seedsMCPApprovalUI: seedsMCPApprovalUI,
+            seedsHistoryUnreadUI: seedsHistoryUnreadUI,
             hostPlatformPreview: hostPlatformPreview,
             endpoint: argumentValue(named: "--debug-endpoint", in: arguments)
                 ?? environment["MIMI_DEBUG_ENDPOINT"],

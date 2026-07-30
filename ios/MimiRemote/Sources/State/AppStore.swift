@@ -660,6 +660,10 @@ final class AppStore: ObservableObject {
     var shouldSeedDebugMCPApprovalUI: Bool {
         debugLaunchConfiguration.seedsMCPApprovalUI
     }
+
+    var shouldSeedDebugHistoryUnreadUI: Bool {
+        debugLaunchConfiguration.seedsHistoryUnreadUI
+    }
 #endif
 
     func client() throws -> AgentAPIClient {

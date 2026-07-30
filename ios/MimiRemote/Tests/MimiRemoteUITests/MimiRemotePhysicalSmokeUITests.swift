@@ -102,58 +102,137 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
-    func testVoiceProviderCopyAndSelectionSurviveRotation() throws {
+    func testVoiceProviderInlineSelectionSurvivesRotation() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
 
-        let codex = app.descendant(identifier: "settings.voiceInputProvider.codex")
-        let apple = app.descendant(identifier: "settings.voiceInputProvider.apple")
-        XCTAssertTrue(scrollUntilHittable(codex), "设置页应展示 Codex 语音输入选项")
-        XCTAssertTrue(apple.waitForExistence(timeout: 4), "设置页应展示设备端语音输入选项")
+        let voiceInput = app.descendant(identifier: "settings.voiceInput")
+        XCTAssertTrue(scrollUntilHittable(voiceInput), "设置页应提供语音输入入口")
+        let originalValue = "\(voiceInput.value ?? "")"
+        let originalProviderWasOnDevice =
+            originalValue.contains("On-device") || originalValue.contains("设备端")
 
-        let originalProviderWasApple = isSelected(apple)
+        voiceInput.tap()
+
+        guard let codex = firstExistingButton(labels: ["Codex"], timeout: 5) else {
+            XCTFail("语音输入行应直接弹出提供方选择菜单")
+            return
+        }
         codex.tap()
-        XCTAssertTrue(waitUntilSelected(codex), "选择 Codex 后应立即保存设备级偏好")
-
-        let description = app.descendant(identifier: "settings.voiceInputProvider.codex.description")
-        XCTAssertTrue(description.waitForExistence(timeout: 4), "Codex 选项应展示录音结束后转写的说明")
-        let descriptionLabel = description.label
-        let hasEnglishExplanation =
-            descriptionLabel.contains("Codex built-in voice") &&
-            descriptionLabel.contains("Transcribes after recording")
-        let hasChineseExplanation =
-            descriptionLabel.contains("Codex 内置语音") &&
-            descriptionLabel.contains("录音结束后转写")
         XCTAssertTrue(
-            hasEnglishExplanation || hasChineseExplanation,
-            "Codex 语音说明必须明确内置语音能力和录音结束后转写"
+            waitForControlValue(voiceInput, containing: ["Codex"]),
+            "在弹出菜单选择 Codex 后应立即保存设备级偏好"
         )
 
         rotate(to: .landscapeLeft)
+        let landscapeVoiceInput = app.descendant(identifier: "settings.voiceInput")
         XCTAssertTrue(
-            scrollUntilHittable(app.descendant(identifier: "settings.voiceInputProvider.codex")),
-            "横屏后应仍能找到 Codex 语音选项"
+            scrollUntilHittable(landscapeVoiceInput),
+            "横屏后应仍能找到语音输入选择组件"
         )
         XCTAssertTrue(
-            waitUntilSelected(app.descendant(identifier: "settings.voiceInputProvider.codex")),
-            "横屏后 Codex 选择不应丢失"
-        )
-        rotate(to: .portrait)
-        XCTAssertTrue(
-            scrollUntilHittable(app.descendant(identifier: "settings.voiceInputProvider.codex")),
-            "竖屏后应仍能找到 Codex 语音选项"
-        )
-        XCTAssertTrue(
-            waitUntilSelected(app.descendant(identifier: "settings.voiceInputProvider.codex")),
-            "竖屏后 Codex 选择不应丢失"
+            waitForControlValue(landscapeVoiceInput, containing: ["Codex"]),
+            "横屏后语音输入选择不应丢失"
         )
 
-        if originalProviderWasApple {
-            let currentApple = app.descendant(identifier: "settings.voiceInputProvider.apple")
-            XCTAssertTrue(scrollUntilHittable(currentApple), "旋转后设备端选项仍应可操作")
-            currentApple.tap()
-            XCTAssertTrue(waitUntilSelected(currentApple), "测试结束时应恢复原语音提供方")
+        rotate(to: .portrait)
+        let portraitVoiceInput = app.descendant(identifier: "settings.voiceInput")
+        XCTAssertTrue(
+            scrollUntilHittable(portraitVoiceInput),
+            "竖屏后应仍能找到语音输入选择组件"
+        )
+        XCTAssertTrue(
+            waitForControlValue(portraitVoiceInput, containing: ["Codex"]),
+            "竖屏后语音输入选择不应丢失"
+        )
+
+        if originalProviderWasOnDevice {
+            portraitVoiceInput.tap()
+            guard let onDevice = firstExistingButton(
+                labels: ["On-device", "设备端"],
+                timeout: 5
+            ) else {
+                XCTFail("测试结束时应能从同一弹出菜单恢复设备端语音")
+                return
+            }
+            onDevice.tap()
+            XCTAssertTrue(
+                waitForControlValue(
+                    portraitVoiceInput,
+                    containing: ["On-device", "设备端"]
+                ),
+                "测试结束时应恢复原语音提供方"
+            )
         }
+    }
+
+    func testMePageCombinesQuotaActivityPreferencesAndMore() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let tokenUsage = app.descendant(identifier: "settings.tokenUsage")
+        let activityGrid = app.descendant(identifier: "settings.tokenActivity.grid")
+        let activityUnavailable = app.descendant(identifier: "settings.tokenActivity.unavailable")
+        let macDevices = app.descendant(identifier: "settings.connectionManagement")
+        let appearance = app.descendant(identifier: "settings.appearance")
+        let language = app.descendant(identifier: "settings.language")
+        let voiceInput = app.descendant(identifier: "settings.voiceInput")
+        let defaultPermissions = app.descendant(identifier: "settings.defaultPermissions")
+        let diagnostics = app.descendant(identifier: "settings.diagnostics")
+        let advanced = app.descendant(identifier: "settings.advancedDevelopment")
+        let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
+
+        XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
+        XCTAssertTrue(
+            activityGrid.waitForExistence(timeout: 4)
+                || activityUnavailable.waitForExistence(timeout: 1),
+            "Token 模块应展示真实点格数据或诚实的不可用状态"
+        )
+        XCTAssertTrue(macDevices.waitForExistence(timeout: 4), "设置页应展示 Mac 多设备入口")
+        XCTAssertTrue(appearance.waitForExistence(timeout: 4), "设置页应展示偏好设置")
+
+        XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
+        XCTAssertGreaterThan(tokenUsage.frame.width, 250, "Token 模块应使用完整分组宽度")
+        XCTAssertEqual(macDevices.frame.height, 52, accuracy: 1, "Mac 与设备应保持标准行高")
+        XCTAssertEqual(appearance.frame.height, 52, accuracy: 1, "偏好项应保持标准行高")
+
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "me-token-usage-overview"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        XCTAssertTrue(
+            scrollUntilHittable(language, maximumSwipes: 4),
+            "我的页面应能滚动到语言入口"
+        )
+        XCTAssertEqual(language.frame.height, 52, accuracy: 1, "语言行应保持标准行高")
+
+        XCTAssertTrue(
+            scrollUntilHittable(defaultPermissions, maximumSwipes: 6),
+            "设置页应能滚动到默认权限行内选择器"
+        )
+        XCTAssertTrue(voiceInput.exists, "设置页应展示语音行内选择器")
+        XCTAssertEqual(voiceInput.frame.height, 52, accuracy: 1, "语音输入行应保持标准行高")
+        XCTAssertEqual(defaultPermissions.frame.height, 52, accuracy: 1, "默认权限行应保持标准行高")
+
+        XCTAssertTrue(scrollUntilHittable(aboutLegal), "我的页面应能滚动到“更多”分区")
+        // “Mac 与设备”已在页面顶部验证；滚到底部后它可能被 List 懒加载卸载，
+        // 这里只检查当前可见的“更多”入口，避免把视口状态误判为功能缺失。
+        let bottomRows = [diagnostics, advanced, aboutLegal]
+        for row in bottomRows {
+            XCTAssertTrue(row.waitForExistence(timeout: 4), "“更多”分区入口应存在")
+            XCTAssertEqual(
+                row.frame.height,
+                52,
+                accuracy: 1,
+                "“更多”分区应统一使用标准行高"
+            )
+        }
+
+        let bottomScreenshot = XCTAttachment(screenshot: app.screenshot())
+        bottomScreenshot.name = "me-preferences-and-more"
+        bottomScreenshot.lifetime = .keepAlways
+        add(bottomScreenshot)
     }
 
     func testComposerPlanGoalAndModelMenusSurviveRotationWithoutCrash() throws {
@@ -666,7 +745,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private func openSettings() throws {
-        if app.descendant(identifier: "settings.voiceInputProvider.codex").exists {
+        if app.descendant(identifier: "settings.connectionManagement").exists {
             return
         }
         if !workbenchSettingsEntry.exists,
@@ -767,8 +846,21 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if element.waitForExistence(timeout: 3), element.isHittable {
             return true
         }
+        // 设置页使用 Form。手势只交给当前列表，避免在 iPad Sheet 边缘对整个
+        // Application 滑动时被系统解释为模态交互手势。
+        let settingsList = app.collectionViews.firstMatch
         for _ in 0..<maximumSwipes {
-            app.swipeUp()
+            if settingsList.exists {
+                let start = settingsList.coordinate(
+                    withNormalizedOffset: CGVector(dx: 0.5, dy: 0.74)
+                )
+                let end = settingsList.coordinate(
+                    withNormalizedOffset: CGVector(dx: 0.5, dy: 0.48)
+                )
+                start.press(forDuration: 0.05, thenDragTo: end)
+            } else {
+                app.swipeUp()
+            }
             if element.exists, element.isHittable {
                 return true
             }
@@ -817,6 +909,26 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed
     }
 
+    private func waitForControlValue(
+        _ element: XCUIElement,
+        containing expectedValues: [String],
+        timeout: TimeInterval = 6
+    ) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                block: { object, _ in
+                    guard let candidate = object as? XCUIElement, candidate.exists else {
+                        return false
+                    }
+                    let visibleValue = "\(candidate.value ?? "") \(candidate.label)"
+                    return expectedValues.contains { visibleValue.contains($0) }
+                }
+            ),
+            object: element
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
     private func dismissPresentedMenuOrPopover() {
         app.windows.firstMatch
             .coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.08))
@@ -840,11 +952,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private var workbenchSettingsEntry: XCUIElement {
-        let compact = app.descendant(identifier: "compactTab.settings")
+        let compact = app.descendant(identifier: "compactTab.me")
         if compact.exists {
             return compact
         }
-        return app.descendant(identifier: "sidebar.settings")
+        return app.descendant(identifier: "sidebar.me")
     }
 }
 

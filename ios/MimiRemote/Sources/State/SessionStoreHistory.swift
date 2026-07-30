@@ -1941,6 +1941,7 @@ extension SessionStore {
         }
         sessionsByID = byID
         sessionIndexByID = indexByID
+        synchronizeHistoryReadStates()
         pruneSessionScopedState(validSessionIDs: Set(byID.keys))
 
         // 和 Codex/Litter 的 snapshot 思路一致：Store 在数据变更时生成排序/分组投影，
