@@ -598,7 +598,30 @@ extension SessionStore {
             // thread/resume 的权威状态能立即纠正误判，之后的 turn 事件也能直接推进来，
             // 不再要求手动刷新。
             let didRefreshHistory: Bool
-            if conversationStore.hasLoadedHistory(sessionID: session.id) {
+            let hasUnreconciledForegroundActivity: Bool
+            switch foregroundActivityBySessionID[session.id] {
+            case .waitingForAssistant, .receivingAssistant:
+                hasUnreconciledForegroundActivity = true
+            case .refreshing, .none:
+                hasUnreconciledForegroundActivity = false
+            }
+            let needsAuthoritativeReconciliation = hasUnreconciledForegroundActivity
+                || conversationStore.hasLocallyUnreconciledUserDelivery(sessionID: session.id)
+            if needsAuthoritativeReconciliation {
+                // 列表已经把 thread 判为终态、正文却仍停在本地等待态时，updatedAt/revision/seq
+                // 可能与离开前完全相同，普通 quiet refresh 会误复用局部缓存。显式重新打开只
+                // 做一次无感权威读取，让正文、状态和列表分组在建立新监听前先收敛。
+                didRefreshHistory = await loadHistory(
+                    for: session,
+                    quiet: true,
+                    force: true,
+                    reason: .authoritativeReopen
+                )
+                if didRefreshHistory {
+                    clearForegroundActivity(sessionID: session.id)
+                    clearRuntimeActivity(sessionID: session.id)
+                }
+            } else if conversationStore.hasLoadedHistory(sessionID: session.id) {
                 scheduleQuietHistoryRefresh(for: session)
                 didRefreshHistory = true
             } else {

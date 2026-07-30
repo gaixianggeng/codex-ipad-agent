@@ -66,6 +66,11 @@ struct CodexAppServerThreadResumeTask {
     let task: Task<Void, Error>
 }
 
+struct CodexAppServerThreadSubscriptionLease: Equatable {
+    let generation: UInt64
+    let wantsEvents: Bool
+}
+
 struct CodexAppServerTurnInterruptRecoveryTask {
     let turnID: TurnID
     let token: UUID
@@ -121,6 +126,9 @@ actor CodexAppServerSessionRuntime {
     // actor 会在 await thread/resume 时重入；同一连接、同一 thread 的并发监听和发送必须等待同一任务，
     // 否则 gateway 会拒绝重复历史请求，进一步放大上游高负载。
     var threadResumeTasksBySessionID: [SessionID: CodexAppServerThreadResumeTask] = [:]
+    // unsubscribe 是后台 best-effort RPC，响应可能晚于同一 thread 的新 connectForEvents。
+    // 每次订阅意图都换代；迟到退订只能作用于自己的 lease，不能覆盖更新一代的监听。
+    var threadSubscriptionLeaseBySessionID: [SessionID: CodexAppServerThreadSubscriptionLease] = [:]
     var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
@@ -762,6 +770,7 @@ actor CodexAppServerSessionRuntime {
         if archived {
             contextsBySessionID.removeValue(forKey: id)
             pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
+            threadSubscriptionLeaseBySessionID.removeValue(forKey: id)
             threadHistoryCacheBySessionID.removeValue(forKey: id)
             threadAuthoritativeCompletedTurnItemsBySessionID.removeValue(forKey: id)
         }
@@ -783,10 +792,41 @@ actor CodexAppServerSessionRuntime {
 
     @discardableResult
     func unsubscribeThread(threadID: SessionID) async throws -> CodexAppServerThreadUnsubscribeStatus? {
+        let lease = replaceThreadSubscriptionLease(sessionID: threadID, wantsEvents: false)
         cancelThreadResumeTask(sessionID: threadID)
-        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
-        let result = try await sendRecoveringFromStaleInitialization(builder.threadUnsubscribe(threadID: threadID))
+        // 在 RPC 发出前先清本地标记。若用户随即重新打开，新的 connectForEvents 必须真的
+        // 发送 thread/resume，而不能被旧的“已 resume”缓存短路。
         threadsResumedOnConnection.remove(threadID)
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
+        guard threadSubscriptionLeaseBySessionID[threadID] == lease else {
+            return nil
+        }
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(
+                builder.threadUnsubscribe(threadID: threadID)
+            )
+        } catch {
+            // timeout 可能表示服务端已经执行退订、只是 ACK 丢失；若这时已经有更新一代
+            // 订阅，仍需 best-effort 恢复，不能把不确定结果留成静默断流。
+            if threadSubscriptionLeaseBySessionID[threadID] != lease {
+                try? await reassertThreadSubscriptionIfNeeded(
+                    sessionID: threadID,
+                    supersededLease: lease
+                )
+            }
+            throw error
+        }
+        if threadSubscriptionLeaseBySessionID[threadID] == lease {
+            threadsResumedOnConnection.remove(threadID)
+        } else {
+            // 退订等待响应期间若已有更新一代订阅，旧 RPC 可能在新 resume 之后才完成。
+            // 响应回来后再确认一次当前期望状态，确保服务端最终仍监听最新页面。
+            try await reassertThreadSubscriptionIfNeeded(
+                sessionID: threadID,
+                supersededLease: lease
+            )
+        }
         return result?.objectValue?["status"]?.stringValue.flatMap(CodexAppServerThreadUnsubscribeStatus.init(rawValue:))
     }
 
@@ -1542,6 +1582,7 @@ actor CodexAppServerSessionRuntime {
         }
         let connection = try await ensureConnection()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
+        _ = replaceThreadSubscriptionLease(sessionID: sessionID, wantsEvents: true)
         if needsPendingInteractionRecovery(for: context.session) {
             // App 进后台时只取消页面事件泵，底层 gateway 连接可能仍存活，所以这个
             // thread 仍被记为已 resume。若列表已是等待态、runtime 却没有对应 server request，
@@ -1573,6 +1614,58 @@ actor CodexAppServerSessionRuntime {
         default:
             return false
         }
+    }
+
+    func replaceThreadSubscriptionLease(
+        sessionID: SessionID,
+        wantsEvents: Bool
+    ) -> CodexAppServerThreadSubscriptionLease {
+        let generation = (threadSubscriptionLeaseBySessionID[sessionID]?.generation ?? 0) &+ 1
+        let lease = CodexAppServerThreadSubscriptionLease(
+            generation: generation,
+            wantsEvents: wantsEvents
+        )
+        threadSubscriptionLeaseBySessionID[sessionID] = lease
+        return lease
+    }
+
+    func reassertThreadSubscriptionIfNeeded(
+        sessionID: SessionID,
+        supersededLease: CodexAppServerThreadSubscriptionLease
+    ) async throws {
+        guard let desiredLease = threadSubscriptionLeaseBySessionID[sessionID],
+              desiredLease.generation != supersededLease.generation,
+              desiredLease.wantsEvents,
+              let context = contextsBySessionID[sessionID]
+        else {
+            return
+        }
+        let connection = try await ensureConnection()
+        let builder = CodexAppServerRequestBuilder(
+            allowlistedProjects: projectsIncludingSessionContext(
+                try await projects(),
+                context: context
+            )
+        )
+        guard threadSubscriptionLeaseBySessionID[sessionID] == desiredLease else {
+            return
+        }
+        // 新订阅可能已经完成；旧 unsubscribe 的响应仍晚于它，所以必须从本地标记中
+        // 移除后再 resume 一次。若新 resume 仍在执行，先等待 single-flight 收口。
+        if let pendingResume = threadResumeTasksBySessionID[sessionID],
+           pendingResume.connection === connection {
+            _ = try? await pendingResume.task.value
+        }
+        guard threadSubscriptionLeaseBySessionID[sessionID] == desiredLease else {
+            return
+        }
+        threadsResumedOnConnection.remove(sessionID)
+        try await ensureThreadResumedOnConnection(
+            sessionID: sessionID,
+            cwd: context.cwd,
+            builder: builder,
+            connection: connection
+        )
     }
 
     @discardableResult
