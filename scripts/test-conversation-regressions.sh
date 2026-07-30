@@ -4,10 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# 本地固定到项目默认 iPad；CI 在任务开始时只解析一次 UDID，再由两个测试脚本复用。
-resolved_destination="$(bash "$ROOT_DIR/scripts/ios-dev.sh" prepare)"
-derived_data_path="$(bash "$ROOT_DIR/scripts/ios-dev.sh" derived-data-path)"
-
 echo "==> Go gateway conversation regressions"
 if command -v go >/dev/null 2>&1; then
   go_bin="$(command -v go)"
@@ -32,12 +28,9 @@ echo "==> iOS conversation regressions"
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 对应的 HTTP/HTTPS 传输策略。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
-xcodebuild test -quiet \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -destination "$resolved_destination" \
-  -derivedDataPath "$derived_data_path" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" test \
+  -quiet \
+  -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \

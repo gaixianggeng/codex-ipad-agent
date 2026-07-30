@@ -4,6 +4,25 @@ import UIKit
 import SnapshotTesting
 @testable import MimiRemote
 
+enum SnapshotTestEnvironment {
+    static let requiredSimulatorName = "iPad Pro 13-inch (M5)"
+
+    static func requireFixedSimulator() throws {
+        let actualName = ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"]
+            ?? UIDevice.current.name
+        guard actualName == requiredSimulatorName else {
+            throw NSError(
+                domain: "MimiRemoteSnapshotEnvironment",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "视觉快照必须在 \(requiredSimulatorName) 运行；当前目标是 \(actualName)。"
+                ]
+            )
+        }
+    }
+}
+
 @MainActor
 class SimplifiedChineseSnapshotTestCase: XCTestCase {
     private var hadStoredAppLanguage = false
@@ -12,6 +31,7 @@ class SimplifiedChineseSnapshotTestCase: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
+        try SnapshotTestEnvironment.requireFixedSimulator()
         let defaults = UserDefaults.standard
         hadStoredAppLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
         previousAppLanguageRawValue = defaults.string(forKey: AppLanguage.preferenceKey)
@@ -40,8 +60,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        // 现有参考图按 iPad 渲染环境录制；Universal 后 iPhone 会使用不同 trait，
-        // 容易产生设备差异误报。iPhone 适配用模拟器 smoke 和后续专属基线覆盖。
+        // 目标名称已固定到 M5 iPad；这里再保护 iPad trait，避免 Universal
+        // 目标从 Xcode 直接运行时把 iPhone 结果当成快照基线。
         try XCTSkipUnless(
             UIDevice.current.userInterfaceIdiom == .pad,
             "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
