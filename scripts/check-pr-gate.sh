@@ -54,6 +54,9 @@ assert_scope mimi_contract true true false contracts/mimi-protocol/contract.json
 assert_scope mimi_contract_generator true true false internal/protocolcontract/cmd/generate/main.go
 assert_scope critical_runner true true false scripts/test-conversation-regressions.sh
 assert_scope critical_checker true true false scripts/check-critical-regressions.sh
+assert_scope ios_device_lease false true false scripts/ios-device-lease.sh
+assert_scope ios_device_management false true false scripts/test-ios-device-management.sh
+assert_scope ios_device_fixture false true false scripts/testdata/ios-device-management/simulators.json
 assert_scope docs_only false false false CONTRIBUTING.md
 assert_scope workflow true true true .github/workflows/pr-gate.yml
 assert_scope mixed true true true \

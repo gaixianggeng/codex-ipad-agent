@@ -1,0 +1,18 @@
+{
+  "devices": {
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
+      {
+        "name": "iPad mini (A17 Pro)",
+        "udid": "MINI-27-UDID",
+        "state": "Shutdown",
+        "isAvailable": true
+      },
+      {
+        "name": "iPhone 17 Pro",
+        "udid": "IPHONE-27-UDID",
+        "state": "Shutdown",
+        "isAvailable": true
+      }
+    ]
+  }
+}

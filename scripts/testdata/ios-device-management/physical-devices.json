@@ -1,0 +1,57 @@
+{
+  "result": {
+    "devices": [
+      {
+        "properties": {
+          "connection": {
+            "transportType": "wired",
+            "state": "connected",
+            "pairingState": "paired"
+          },
+          "hardware": {
+            "platform": "iOS",
+            "reality": "physical",
+            "udid": "PHYSICAL-PRO-UDID"
+          },
+          "state": {
+            "name": "iPad Pro"
+          }
+        }
+      },
+      {
+        "properties": {
+          "connection": {
+            "transportType": "wired",
+            "state": "connected",
+            "pairingState": "paired"
+          },
+          "hardware": {
+            "platform": "iOS",
+            "reality": "physical",
+            "udid": "PHYSICAL-MINI-UDID"
+          },
+          "state": {
+            "name": "iPad mini"
+          }
+        }
+      },
+      {
+        "properties": {
+          "connection": {
+            "transportType": "localNetwork",
+            "state": "connected",
+            "pairingState": "paired"
+          },
+          "hardware": {
+            "platform": "iOS",
+            "reality": "physical",
+            "udid": "NETWORK-ONLY-UDID"
+          },
+          "state": {
+            "name": "Network iPhone"
+          }
+        }
+      }
+    ]
+  }
+}

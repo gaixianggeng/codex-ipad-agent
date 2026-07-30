@@ -7,6 +7,7 @@ param(
     [switch]$Snapshot,
     [string]$PfxPath,
     [string]$PfxPassword,
+    [switch]$AllowUnsignedRelease,
     [ValidateSet('x86_64-pc-windows-msvc', 'x86_64-pc-windows-gnullvm', 'x86_64-pc-windows-gnu')]
     [string]$RustTarget = 'x86_64-pc-windows-msvc',
     [string]$BridgeBinary
@@ -16,8 +17,13 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $OutputDirectory = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $root 'dist-windows' }
 $Version = $Version.TrimStart('v')
+# 无证书发布必须显式传入开关，避免凭据遗漏时静默降级为未签名安装包。
 if ($Snapshot -and $PfxPath) { throw '-Snapshot and -PfxPath cannot be used together.' }
-if (-not $Snapshot -and -not $PfxPath) { throw 'Release builds require -PfxPath. Use -Snapshot only for unsigned local builds.' }
+if ($Snapshot -and $AllowUnsignedRelease) { throw '-Snapshot and -AllowUnsignedRelease cannot be used together.' }
+if ($PfxPath -and $AllowUnsignedRelease) { throw '-PfxPath and -AllowUnsignedRelease cannot be used together.' }
+if (-not $Snapshot -and -not $PfxPath -and -not $AllowUnsignedRelease) {
+    throw 'Release builds require -PfxPath or the explicit -AllowUnsignedRelease switch.'
+}
 if ($BridgeBinary -and -not $Snapshot) { throw '-BridgeBinary is accepted only for local snapshot builds; release builds must compile the bridge from source.' }
 if ($BridgeBinary) { $BridgeBinary = (Resolve-Path -LiteralPath $BridgeBinary).Path }
 if ($PfxPath -and -not (Test-Path -LiteralPath $PfxPath -PathType Leaf)) { throw "PFX file not found: $PfxPath" }
@@ -85,10 +91,12 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "Signing failed: $($file.Name)" }
         }
     }
+    $outputBaseName = if ($AllowUnsignedRelease) { "Mimi-Remote-Setup-$Version-unsigned" } else { "Mimi-Remote-Setup-$Version" }
     $isccArgs = @(
         "/DMyAppVersion=$Version",
         "/DSourceDir=$stage",
-        "/DOutputDir=$output"
+        "/DOutputDir=$output",
+        "/DMyOutputBaseFilename=$outputBaseName"
     )
     if ($PfxPath) {
         $powershell = (Get-Command 'powershell.exe' -ErrorAction Stop).Source
@@ -102,14 +110,15 @@ try {
     $isccArgs += (Join-Path $root 'packaging\windows\mimi-remote.iss')
     & $iscc @isccArgs
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
-    $setup = Join-Path $output "Mimi-Remote-Setup-$Version.exe"
+    $setup = Join-Path $output "$outputBaseName.exe"
     if (-not (Test-Path -LiteralPath $setup)) { throw "Expected installer was not produced: $setup" }
     $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     $payloadHashes = [ordered]@{}
     foreach ($payloadName in @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
         $payloadHashes[$payloadName] = (Get-FileHash -LiteralPath (Join-Path $stage $payloadName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $(if ($Snapshot) { 'unsigned-snapshot' } else { 'authenticode-pfx' }); rust_target = $RustTarget; rust_crt = 'static'; binaries = @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe'); assets = @('mimi-remote.ico'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
+    $signingMode = if ($Snapshot) { 'unsigned-snapshot' } elseif ($PfxPath) { 'authenticode-pfx' } else { 'unsigned-release' }
+    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; binaries = @('agentd.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe'); assets = @('mimi-remote.ico'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
     "$hash  $([IO.Path]::GetFileName($setup))" | Set-Content -LiteralPath "$setup.sha256" -Encoding ascii
     Write-Host "Created $setup"
 } finally {

@@ -779,13 +779,18 @@ extension ComposerView {
     }
 
     func toggleVoiceInput() {
-        guard !isVoiceTranscribing else {
-            return
-        }
-        if isVoicePressActive || voiceInput.isRecording {
-            endHoldToTalk()
-        } else {
+        switch VoiceInputToggleAction.resolve(
+            isPressActive: isVoicePressActive,
+            isPreparing: voiceInput.isPreparing,
+            isRecording: voiceInput.isRecording,
+            isTranscribing: isVoiceTranscribing
+        ) {
+        case .start:
             beginHoldToTalk()
+        case .end:
+            endHoldToTalk()
+        case .ignore:
+            break
         }
     }
 
@@ -1550,5 +1555,26 @@ extension ComposerView {
         case .text:
             return "text.alignleft"
         }
+    }
+}
+
+enum VoiceInputToggleAction: Equatable {
+    case start
+    case end
+    case ignore
+
+    static func resolve(
+        isPressActive: Bool,
+        isPreparing: Bool,
+        isRecording: Bool,
+        isTranscribing: Bool
+    ) -> Self {
+        if isTranscribing {
+            return .ignore
+        }
+        if isPressActive || isPreparing || isRecording {
+            return .end
+        }
+        return .start
     }
 }

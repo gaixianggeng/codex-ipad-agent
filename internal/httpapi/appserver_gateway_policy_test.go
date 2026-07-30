@@ -915,6 +915,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		`{"method":"initialized","params":{` + dangerousTail + `}}`,
 		`{"id":61,"method":"model/list","params":{` + dangerousTail + `}}`,
 		`{"id":62,"method":"account/rateLimits/read","params":{` + dangerousTail + `}}`,
+		`{"id":63,"method":"account/usage/read","params":{` + dangerousTail + `}}`,
 	}
 	for _, frame := range emptyParamFrames {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {

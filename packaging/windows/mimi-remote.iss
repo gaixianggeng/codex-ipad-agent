@@ -8,6 +8,9 @@
 #ifndef OutputDir
   #error OutputDir must be supplied by the build script
 #endif
+#ifndef MyOutputBaseFilename
+  #error MyOutputBaseFilename must be supplied by the build script
+#endif
 
 #define MyAppName "Mimi Remote"
 #define MyAppId "{{7D413E71-19C5-4F02-8AFC-437E1B8019FD}"
@@ -22,7 +25,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir={#OutputDir}
-OutputBaseFilename=Mimi-Remote-Setup-{#MyAppVersion}
+OutputBaseFilename={#MyOutputBaseFilename}
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
