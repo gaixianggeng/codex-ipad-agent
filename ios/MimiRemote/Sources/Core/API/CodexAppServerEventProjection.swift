@@ -955,9 +955,12 @@ extension CodexAppServerSessionRuntime {
         for turn in turns.reversed() {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             for item in items.reversed() where item["type"]?.stringValue == "collabAgentToolCall" {
-                let receiverThreadIDs = item["receiverThreadIds"]?.arrayValue?
+                let receiverThreadIDs: [String] = item["receiverThreadIds"]?.arrayValue?
                     .compactMap(\.stringValue)
-                    .compactMap { nonEmpty($0) }
+                    .compactMap { rawID in
+                        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return !trimmed.isEmpty && trimmed == rawID ? rawID : nil
+                    }
                     ?? []
                 let legacyThreadID = nonEmpty(
                     item["childThreadId"]?.stringValue,
@@ -965,9 +968,12 @@ extension CodexAppServerSessionRuntime {
                     item["subagentThreadId"]?.stringValue,
                     item["threadId"]?.stringValue
                 )
-                let childThreadIDs = receiverThreadIDs.isEmpty
-                    ? legacyThreadID.map { [$0] } ?? []
-                    : receiverThreadIDs
+                let childThreadIDs: [String]
+                if receiverThreadIDs.isEmpty {
+                    childThreadIDs = legacyThreadID.map { [$0] } ?? []
+                } else {
+                    childThreadIDs = receiverThreadIDs
+                }
                 let agentStates = item["agentsStates"]?.objectValue ?? [:]
                 for childThreadID in childThreadIDs where seenThreadIDs.insert(childThreadID).inserted {
                     let agentState = agentStates[childThreadID]?.objectValue

@@ -26,6 +26,120 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(client.requestedProjectIDs.isEmpty)
     }
 
+    func testSessionLibraryControlledGlobalDiscoveryPaginatesAndMergesExternalWorktrees() async {
+        let project = makeProject(id: "proj_global")
+        var first = makeSession(
+            id: "child-global-a",
+            projectID: project.id,
+            title: "External A",
+            status: "history",
+            source: "codex",
+            resumeID: "child-global-a"
+        )
+        first.parentThreadID = "parent-global"
+        first.canAcceptDirectInput = false
+        var second = makeSession(
+            id: "child-global-b",
+            projectID: project.id,
+            title: "External B",
+            status: "history",
+            source: "codex",
+            resumeID: "child-global-b"
+        )
+        second.parentThreadID = "parent-global"
+        second.canAcceptDirectInput = false
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { cursor, limit in
+                XCTAssertEqual(limit, 50)
+                if cursor == nil {
+                    return SessionsPage(
+                        sessions: [first],
+                        nextCursor: "mimi_next",
+                        hasMore: true
+                    )
+                }
+                XCTAssertEqual(cursor, "mimi_next")
+                return SessionsPage(sessions: [second])
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertEqual(client.requestedControlledGlobalCursors.count, 2)
+        XCTAssertNil(client.requestedControlledGlobalCursors[0])
+        XCTAssertEqual(client.requestedControlledGlobalCursors[1], "mimi_next")
+        XCTAssertEqual(Set(store.sessions.map(\.id)), ["child-global-a", "child-global-b"])
+        XCTAssertTrue(store.sessions.allSatisfy { !$0.allowsDirectInput })
+    }
+
+    func testSessionLibraryFallsBackAfterControlledGlobalCapabilityRejection() async {
+        let project = makeProject(id: "proj_fallback")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                throw AgentAPIError.server(
+                    status: 400,
+                    message: "thread/list.cwd 必须来自已授权工作区"
+                )
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertTrue(store.controlledGlobalDiscoveryUnavailable)
+        XCTAssertEqual(
+            client.requestedControlledGlobalCursors.count,
+            1,
+            "旧 agentd 的能力拒绝只探测一次，之后继续使用精确 workspace 列表"
+        )
+    }
+
+    func testProtocolReadOnlySessionRejectsPromptBeforeClientCall() async {
+        let project = makeProject(id: "proj_read_only")
+        var child = makeSession(
+            id: "child-read-only",
+            projectID: project.id,
+            title: "Read Only Child",
+            status: "history",
+            source: "codex",
+            resumeID: "child-read-only"
+        )
+        child.parentThreadID = "parent-thread"
+        child.canAcceptDirectInput = false
+        let client = MockSessionStoreClient(projects: [project], sessions: [])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [child]
+        store.selectedSessionID = child.id
+
+        let sent = await store.sendPrompt("must not be sent")
+
+        XCTAssertFalse(sent)
+        XCTAssertTrue(client.createPayloads.isEmpty)
+        XCTAssertEqual(store.controlState(for: child), .observing)
+        XCTAssertFalse(store.canControlSession(child))
+    }
+
     func testWorkspaceRecentMapsRootProjectSessionsToWorkspaceID() async {
         let rootProject = makeProject(id: "proj_root")
         let workspace = AgentWorkspace(

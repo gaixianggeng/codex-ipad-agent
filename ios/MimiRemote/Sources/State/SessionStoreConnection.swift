@@ -9,13 +9,6 @@ extension SessionStore {
         let hostScope = appStore.activeHostScope
         guard !relation.id.isEmpty else { return nil }
 
-#if DEBUG
-        // 离线 UI 种子复用真实父子导航与独立 timeline，但不访问不存在的调试后端。
-        if isDebugWorkbenchUISeedActive {
-            return sessionsByID[relation.id]
-        }
-#endif
-
         // gateway 重启后连接级 receiver 授权会丢失。先刷新父历史，现代
         // thread/turns/list 与旧版 thread/read 都会重新登记 receiverThreadIds。
         if let parent = sessionsByID[parentSessionID] {

@@ -534,16 +534,34 @@ func mergeContextSources(base []session.ContextSource, update []session.ContextS
 
 func mergeContextSubagents(base []session.ContextSubagent, update []session.ContextSubagent) []session.ContextSubagent {
 	out := make([]session.ContextSubagent, 0, len(base)+len(update))
-	seen := map[string]struct{}{}
+	indexByKey := map[string]int{}
 	for _, subagent := range append(append([]session.ContextSubagent(nil), update...), base...) {
 		key := firstNonEmpty(subagent.ID, subagent.Nickname+":"+subagent.Role)
 		if key == "" {
 			continue
 		}
-		if _, ok := seen[key]; ok {
+		if index, ok := indexByKey[key]; ok {
+			current := out[index]
+			current.ID = firstNonEmpty(current.ID, subagent.ID)
+			current.ParentThreadID = firstNonEmpty(current.ParentThreadID, subagent.ParentThreadID)
+			current.SessionID = firstNonEmpty(current.SessionID, subagent.SessionID)
+			current.Nickname = firstNonEmpty(current.Nickname, subagent.Nickname)
+			current.Role = firstNonEmpty(current.Role, subagent.Role)
+			current.Status = firstNonEmpty(current.Status, subagent.Status)
+			current.StatusMessage = firstNonEmpty(current.StatusMessage, subagent.StatusMessage)
+			if current.CanAcceptDirectInput == nil {
+				current.CanAcceptDirectInput = subagent.CanAcceptDirectInput
+			} else if subagent.CanAcceptDirectInput != nil &&
+				(!*current.CanAcceptDirectInput || !*subagent.CanAcceptDirectInput) {
+				// 任一已知来源明确只读时取更严格结果，避免后到的稀疏
+				// 状态事件把已有权限边界升级为可写。
+				denied := false
+				current.CanAcceptDirectInput = &denied
+			}
+			out[index] = current
 			continue
 		}
-		seen[key] = struct{}{}
+		indexByKey[key] = len(out)
 		out = append(out, subagent)
 	}
 	return out

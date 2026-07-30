@@ -538,11 +538,8 @@ struct UnifiedWorkbenchShell: View {
                     layout: layout
                 )
             }
-            .onChange(of: layout.usesAttachedInspector) { _, usesAttachedInspector in
-                handleRelatedPresentationChange(
-                    usesAttachedInspector: usesAttachedInspector,
-                    layout: layout
-                )
+            .onChange(of: layout.usesAttachedInspector) { _, _ in
+                handleRelatedPresentationChange(layout: layout)
             }
             .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
                 guard let commit else { return }
@@ -583,8 +580,7 @@ struct UnifiedWorkbenchShell: View {
               let visibleSessionID = navigationState.visibleSessionID(
                   usesCompactNavigation: layout.usesCompactNavigation
               ),
-              let session = sessionStore.selectedSession,
-              session.id == visibleSessionID
+              let session = sessionStore.sessionsByID[visibleSessionID]
         else {
             return nil
         }
@@ -1197,23 +1193,6 @@ struct UnifiedWorkbenchShell: View {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--debug-open-subagent") {
-            didApplyDebugLaunchRoute = true
-            Task { @MainActor in
-                // 紧凑布局可能先出现、Debug 内存种子稍后才完成注入；短暂等待
-                // 父会话和系统第一层 push 落稳，再完整复用生产路由进入子会话。
-                for _ in 0..<20 {
-                    if let parentID = sessionStore.selectedSessionID,
-                       let relation = sessionStore.contextStore.context(for: parentID)?.subagents.first {
-                        try? await Task.sleep(nanoseconds: 700_000_000)
-                        openRelatedSubagent(relation, layout: layout)
-                        return
-                    }
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                }
-            }
-            return
-        }
         guard arguments.contains("--debug-open-workspaces") else { return }
         didApplyDebugLaunchRoute = true
         // 真机视觉验证可直接抵达目标页；仅 Debug 生效，不改变正常或 Release 启动路径。
@@ -1260,12 +1239,8 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func handleRelatedPresentationChange(
-        usesAttachedInspector: Bool,
-        layout: WorkbenchLayout
-    ) {
+    private func handleRelatedPresentationChange(layout: WorkbenchLayout) {
         guard selectedRelatedSubagent != nil, !layout.usesCompactNavigation else { return }
-        _ = usesAttachedInspector
         showingInspector = true
     }
 
@@ -1295,11 +1270,9 @@ struct UnifiedWorkbenchShell: View {
                     layout: layout
                 )
             }
-        } else if layout.usesAttachedInspector {
-            showingInspector = true
         } else {
-            // 中等宽度继续复用当前系统 sheet，只替换其中的详情内容。
-            // 这同时保留父会话上下文，并避免两个 sheet 交接时的呈现竞态。
+            // 宽屏替换附着检查器；中等宽度复用当前系统 sheet 并在其中 push，
+            // 两种形态都保留父会话上下文。
             showingInspector = true
         }
     }

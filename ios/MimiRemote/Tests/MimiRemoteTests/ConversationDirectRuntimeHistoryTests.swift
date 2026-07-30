@@ -2038,9 +2038,26 @@ extension ConversationDataFlowTests {
                     SessionContextSubagent(
                         id: "thr_child",
                         parentThreadID: "thr_parent",
+                        sessionID: "session_child",
                         nickname: "Noether",
                         role: "review",
-                        status: "running"
+                        status: "running",
+                        canAcceptDirectInput: false
+                    )
+                ]
+            ),
+            fallbackSessionID: nil
+        )
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: "thr_child",
+                threadID: "thr_child",
+                subagents: [
+                    SessionContextSubagent(
+                        id: "thr_child",
+                        status: "completed",
+                        statusMessage: "done",
+                        canAcceptDirectInput: true
                     )
                 ]
             ),
@@ -2052,6 +2069,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(parent?.environment?.cwd, "/tmp/parent")
         XCTAssertEqual(parent?.tasks.first?.title, "go test ./...")
         XCTAssertEqual(parent?.subagents.first?.displayName, "Noether")
+        XCTAssertEqual(parent?.subagents.first?.sessionID, "session_child")
+        XCTAssertEqual(parent?.subagents.first?.status, "completed")
+        XCTAssertEqual(parent?.subagents.first?.statusMessage, "done")
+        XCTAssertEqual(parent?.subagents.first?.canAcceptDirectInput, false)
         XCTAssertEqual(store.context(for: "codex_thr_parent")?.subagents.first?.id, "thr_child")
     }
 

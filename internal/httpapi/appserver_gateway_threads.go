@@ -955,8 +955,7 @@ func receiverThreadIDsFromAny(value any) []string {
 				if rawIDs, ok := typed["receiverThreadIds"].([]any); ok {
 					for _, rawID := range rawIDs {
 						id, ok := rawID.(string)
-						id = strings.TrimSpace(id)
-						if ok && id != "" {
+						if ok && id != "" && id == strings.TrimSpace(id) {
 							ids = append(ids, id)
 						}
 					}
@@ -994,6 +993,9 @@ func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID
 			scopeID:              scopeID,
 			canAcceptDirectInput: false,
 			directInputKnown:     true,
+			// MIM-24 Phase 1 只允许从父会话查看子 Thread。即使后续
+			// thread/read 返回 true，也不能把父侧派生出的权限升级成可写。
+			readOnly: true,
 		})
 	}
 	return out

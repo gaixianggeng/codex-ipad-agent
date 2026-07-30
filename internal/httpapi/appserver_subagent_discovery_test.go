@@ -14,12 +14,14 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
 func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t *testing.T) {
 	browseRoot := t.TempDir()
 	var projectDir string
 	var externalWorktree string
+	var secondExternalWorktree string
 	var symlinkedWorktree string
 	var otherRepo string
 	var deletedWorktree string
@@ -55,6 +57,9 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 							},
 							map[string]any{
 								"id": "thread-symlink", "cwd": symlinkedWorktree, "name": "Symlink",
+							},
+							map[string]any{
+								"id": "thread-second-worktree", "cwd": secondExternalWorktree, "name": "Second",
 							},
 							map[string]any{"id": "thread-other", "cwd": otherRepo, "name": "Other repo"},
 							map[string]any{"id": "thread-deleted", "cwd": deletedWorktree, "name": "Deleted"},
@@ -113,6 +118,11 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	if err := os.Symlink(externalWorktree, symlinkedWorktree); err != nil {
 		t.Fatal(err)
 	}
+	secondExternalWorktree = filepath.Join(browseRoot, "codex-second-worktree")
+	runGitTestCommand(t, projectDir, "worktree", "add", "-b", "mim24-second", secondExternalWorktree)
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", projectDir, "worktree", "remove", "--force", secondExternalWorktree).Run()
+	})
 
 	deletedWorktree = filepath.Join(browseRoot, "deleted-worktree")
 	runGitTestCommand(t, projectDir, "worktree", "add", "-b", "mim24-deleted", deletedWorktree)
@@ -166,8 +176,8 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	if err := json.Unmarshal(firstResponse, &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Result.Data) != 3 {
-		t.Fatalf("仅应保留项目根与同仓库外部 Worktree（含 symlink），got=%s", firstResponse)
+	if len(response.Result.Data) != 4 {
+		t.Fatalf("仅应保留项目根与同仓库多个外部 Worktree（含 symlink），got=%s", firstResponse)
 	}
 	byID := map[string]struct {
 		readOnly bool
@@ -197,6 +207,19 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	if !strings.HasPrefix(response.Result.NextCursor, "mimi_") {
 		t.Fatalf("分页 cursor 必须是当前连接生成的 opaque token：%q", response.Result.NextCursor)
 	}
+
+	foreignConn := dialAuthedGateway(t, server.URL)
+	defer foreignConn.Close()
+	if err := foreignConn.WriteJSON(map[string]any{
+		"id": 708, "method": "thread/list",
+		"params": map[string]any{"limit": 50, "cursor": response.Result.NextCursor},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, foreignConn); !strings.Contains(errFrame.message, "不属于当前授权连接") {
+		t.Fatalf("连接级 opaque cursor 不得跨连接复用：%+v", errFrame)
+	}
+	assertNoUpstreamFrame(t, received)
 
 	if err := conn.WriteJSON(map[string]any{
 		"id": 701, "method": "thread/read",
@@ -288,7 +311,7 @@ func TestReceiverThreadIDsOnlyComeFromCollabAgentToolCalls(t *testing.T) {
 					{
 						"id": "tool-item-is-not-a-thread",
 						"type": "collabAgentToolCall",
-						"receiverThreadIds": ["child-a", "child-b", "child-a"],
+						"receiverThreadIds": ["child-a", "child-b", "child-a", " padded-child "],
 						"agentsStates": {
 							"child-a": {"status": "running"},
 							"child-b": {"status": "completed"}
@@ -313,11 +336,61 @@ func TestReceiverThreadIDsOnlyComeFromCollabAgentToolCalls(t *testing.T) {
 		t.Fatalf("receiverThreadIds 应支持多 receiver 并去重，got=%+v", related)
 	}
 	for _, thread := range related {
-		if thread.id == "tool-item-is-not-a-thread" || thread.id == "must-not-be-authorized" {
+		if thread.id == "tool-item-is-not-a-thread" || thread.id == "must-not-be-authorized" ||
+			thread.id == "padded-child" || thread.id == " padded-child " {
 			t.Fatalf("tool item id 或非 collab item receiver 不得成为 Thread ID：%+v", related)
 		}
-		if !thread.directInputKnown || thread.canAcceptDirectInput {
+		if !thread.directInputKnown || thread.canAcceptDirectInput || !thread.readOnly {
 			t.Fatalf("receiver 子 Thread 未返回 capability 时必须只读：%+v", thread)
 		}
+	}
+}
+
+func TestReceiverReadOnlyAuthorizationCannotBeUpgradedByThreadRead(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		runtimeID: "codex",
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"child-a": {
+				id: "child-a", runtimeID: "codex", cwd: "/repo", scopeID: "repo",
+				directInputKnown: true, canAcceptDirectInput: false, readOnly: true,
+			},
+		},
+	}
+	normalized, ok := policy.normalizeAllowedThread(appServerGatewayAllowedThread{
+		id: "child-a", runtimeID: "codex", cwd: "/repo", scopeID: "repo",
+		directInputKnown: true, canAcceptDirectInput: true,
+	})
+	if !ok || !normalized.readOnly || !normalized.directInputKnown || normalized.canAcceptDirectInput {
+		t.Fatalf("thread/read 不得升级父侧 receiver 的只读授权：%+v", normalized)
+	}
+}
+
+func TestContextSubagentMergeKeepsStableIdentityAcrossStatusUpdates(t *testing.T) {
+	canAccept := false
+	merged := mergeContextSubagents(
+		[]session.ContextSubagent{{
+			ID:                   "child-a",
+			ParentThreadID:       "parent-a",
+			SessionID:            "session-a",
+			Nickname:             "Noether",
+			Role:                 "review",
+			Status:               "running",
+			CanAcceptDirectInput: &canAccept,
+		}},
+		[]session.ContextSubagent{{
+			ID:            "child-a",
+			Status:        "completed",
+			StatusMessage: "done",
+		}},
+	)
+	if len(merged) != 1 {
+		t.Fatalf("同一子 Thread 应合并为一条：%+v", merged)
+	}
+	got := merged[0]
+	if got.ParentThreadID != "parent-a" || got.SessionID != "session-a" ||
+		got.Nickname != "Noether" || got.Role != "review" ||
+		got.Status != "completed" || got.StatusMessage != "done" ||
+		got.CanAcceptDirectInput == nil || *got.CanAcceptDirectInput {
+		t.Fatalf("状态更新必须保留稳定身份与只读 capability：%+v", got)
 	}
 }

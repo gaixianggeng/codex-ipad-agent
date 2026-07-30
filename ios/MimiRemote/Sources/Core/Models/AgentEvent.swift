@@ -717,6 +717,9 @@ struct CodexAppServerEventProjector {
         case "item/completed":
             let event = completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
+                // collabAgentToolCall 的 receiverThreadIds 是子会话关系的唯一可信来源。
+                // 必须先于通用工具活动投影处理，否则它会被 processItemCompleted 吞掉。
+                ?? collabSubagentContextEvent(params: params, metadata: metadata)
                 ?? completedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
             if let itemID = metadata.itemID {
@@ -1243,6 +1246,28 @@ struct CodexAppServerEventProjector {
         )
     }
 
+    private func collabSubagentContextEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue else {
+            return nil
+        }
+        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
+        guard !subagents.isEmpty else {
+            return nil
+        }
+        return .sessionContext(
+            SessionContextSnapshot(
+                sessionID: metadata.sessionID,
+                threadID: metadata.sessionID,
+                subagents: subagents,
+                updatedAt: Date()
+            ),
+            metadata
+        )
+    }
+
     private func contextSubagents(
         from item: [String: CodexAppServerJSONValue],
         parentThreadID: SessionID?
@@ -1255,8 +1280,10 @@ struct CodexAppServerEventProjector {
         }
         let receiverThreadIDs = item["receiverThreadIds"]?.arrayValue?
             .compactMap(\.stringValue)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { rawID in
+                !rawID.isEmpty
+                    && rawID == rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             ?? []
         let agentStates = item["agentsStates"]?.objectValue ?? [:]
         return Array(Set(receiverThreadIDs)).sorted().map { childThreadID in
