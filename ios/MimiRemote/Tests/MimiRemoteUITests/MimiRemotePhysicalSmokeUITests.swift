@@ -393,8 +393,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "waterMargin",
             "redChamber",
             "greekMythology",
-            "sherlockHolmes",
-            "aliceWonderland",
+            "onePiece",
+            "naruto",
             "emoji"
         ]
         var optionFrames: [CGRect] = []

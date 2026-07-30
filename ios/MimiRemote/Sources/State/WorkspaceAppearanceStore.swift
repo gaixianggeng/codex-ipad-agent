@@ -10,9 +10,31 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     case greekMythology
     case sherlockHolmes
     case aliceWonderland
+    case onePiece
+    case naruto
     case emoji
 
     var id: String { rawValue }
+
+    /// 默认只展示当前主推风格；已下架风格继续保留枚举与数据，避免破坏历史选择。
+    static let visibleStyles: [WorkspaceIconStyle] = [
+        .journey,
+        .threeKingdoms,
+        .waterMargin,
+        .redChamber,
+        .greekMythology,
+        .onePiece,
+        .naruto,
+        .emoji
+    ]
+
+    static func selectableStyles(currentStyle: WorkspaceIconStyle) -> [WorkspaceIconStyle] {
+        guard !visibleStyles.contains(currentStyle) else {
+            return visibleStyles
+        }
+        // 历史用户仍能看到当前已选风格；切换后，下架风格自然从选择器消失。
+        return visibleStyles + [currentStyle]
+    }
 
     var usesCharacters: Bool {
         self != .emoji
@@ -34,6 +56,10 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_sherlock_holmes"
         case .aliceWonderland:
             return "ui.workspace_icon_style_alice_wonderland"
+        case .onePiece:
+            return "ui.workspace_icon_style_one_piece"
+        case .naruto:
+            return "ui.workspace_icon_style_naruto"
         case .emoji:
             return "ui.emoji"
         }
@@ -59,6 +85,10 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_compact_sherlock_holmes"
         case .aliceWonderland:
             return "ui.workspace_icon_style_compact_alice_wonderland"
+        case .onePiece:
+            return "ui.workspace_icon_style_compact_one_piece"
+        case .naruto:
+            return "ui.workspace_icon_style_compact_naruto"
         case .emoji:
             return "ui.workspace_icon_style_compact_emoji"
         }
@@ -85,6 +115,10 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "WorkspaceCharacterSherlockHolmes"
         case .aliceWonderland:
             return "WorkspaceCharacterAliceAlice"
+        case .onePiece:
+            return "WorkspaceCharacterOnePieceLuffy"
+        case .naruto:
+            return "WorkspaceCharacterNarutoNaruto"
         case .emoji:
             return nil
         }
@@ -290,6 +324,32 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "alice-duchess", assetName: "WorkspaceCharacterAliceDuchess", nameKey: "ui.workspace_character_alice_duchess")
     ]
 
+    static let onePieceCharacters = [
+        WorkspaceCharacterIcon(id: "one-piece-luffy", assetName: "WorkspaceCharacterOnePieceLuffy", nameKey: "ui.workspace_character_one_piece_luffy"),
+        WorkspaceCharacterIcon(id: "one-piece-zoro", assetName: "WorkspaceCharacterOnePieceZoro", nameKey: "ui.workspace_character_one_piece_zoro"),
+        WorkspaceCharacterIcon(id: "one-piece-nami", assetName: "WorkspaceCharacterOnePieceNami", nameKey: "ui.workspace_character_one_piece_nami"),
+        WorkspaceCharacterIcon(id: "one-piece-usopp", assetName: "WorkspaceCharacterOnePieceUsopp", nameKey: "ui.workspace_character_one_piece_usopp"),
+        WorkspaceCharacterIcon(id: "one-piece-sanji", assetName: "WorkspaceCharacterOnePieceSanji", nameKey: "ui.workspace_character_one_piece_sanji"),
+        WorkspaceCharacterIcon(id: "one-piece-chopper", assetName: "WorkspaceCharacterOnePieceChopper", nameKey: "ui.workspace_character_one_piece_chopper"),
+        WorkspaceCharacterIcon(id: "one-piece-robin", assetName: "WorkspaceCharacterOnePieceRobin", nameKey: "ui.workspace_character_one_piece_robin"),
+        WorkspaceCharacterIcon(id: "one-piece-franky", assetName: "WorkspaceCharacterOnePieceFranky", nameKey: "ui.workspace_character_one_piece_franky"),
+        WorkspaceCharacterIcon(id: "one-piece-brook", assetName: "WorkspaceCharacterOnePieceBrook", nameKey: "ui.workspace_character_one_piece_brook"),
+        WorkspaceCharacterIcon(id: "one-piece-jinbe", assetName: "WorkspaceCharacterOnePieceJinbe", nameKey: "ui.workspace_character_one_piece_jinbe")
+    ]
+
+    static let narutoCharacters = [
+        WorkspaceCharacterIcon(id: "naruto-naruto", assetName: "WorkspaceCharacterNarutoNaruto", nameKey: "ui.workspace_character_naruto_naruto"),
+        WorkspaceCharacterIcon(id: "naruto-sasuke", assetName: "WorkspaceCharacterNarutoSasuke", nameKey: "ui.workspace_character_naruto_sasuke"),
+        WorkspaceCharacterIcon(id: "naruto-sakura", assetName: "WorkspaceCharacterNarutoSakura", nameKey: "ui.workspace_character_naruto_sakura"),
+        WorkspaceCharacterIcon(id: "naruto-kakashi", assetName: "WorkspaceCharacterNarutoKakashi", nameKey: "ui.workspace_character_naruto_kakashi"),
+        WorkspaceCharacterIcon(id: "naruto-hinata", assetName: "WorkspaceCharacterNarutoHinata", nameKey: "ui.workspace_character_naruto_hinata"),
+        WorkspaceCharacterIcon(id: "naruto-gaara", assetName: "WorkspaceCharacterNarutoGaara", nameKey: "ui.workspace_character_naruto_gaara"),
+        WorkspaceCharacterIcon(id: "naruto-itachi", assetName: "WorkspaceCharacterNarutoItachi", nameKey: "ui.workspace_character_naruto_itachi"),
+        WorkspaceCharacterIcon(id: "naruto-jiraiya", assetName: "WorkspaceCharacterNarutoJiraiya", nameKey: "ui.workspace_character_naruto_jiraiya"),
+        WorkspaceCharacterIcon(id: "naruto-shikamaru", assetName: "WorkspaceCharacterNarutoShikamaru", nameKey: "ui.workspace_character_naruto_shikamaru"),
+        WorkspaceCharacterIcon(id: "naruto-tsunade", assetName: "WorkspaceCharacterNarutoTsunade", nameKey: "ui.workspace_character_naruto_tsunade")
+    ]
+
     static let builtInCharactersByStyle: [WorkspaceIconStyle: [WorkspaceCharacterIcon]] = [
         .journey: builtInCharacters,
         .threeKingdoms: threeKingdomsCharacters,
@@ -297,7 +357,9 @@ final class WorkspaceAppearanceStore: ObservableObject {
         .redChamber: redChamberCharacters,
         .greekMythology: greekMythologyCharacters,
         .sherlockHolmes: sherlockHolmesCharacters,
-        .aliceWonderland: aliceWonderlandCharacters
+        .aliceWonderland: aliceWonderlandCharacters,
+        .onePiece: onePieceCharacters,
+        .naruto: narutoCharacters
     ]
 
     private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>

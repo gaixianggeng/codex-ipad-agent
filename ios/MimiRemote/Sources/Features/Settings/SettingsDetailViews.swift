@@ -452,7 +452,7 @@ struct AppearanceView: View {
                     alignment: .center,
                     spacing: dynamicTypeSize.isAccessibilitySize ? 14 : 10
                 ) {
-                    ForEach(WorkspaceIconStyle.allCases) { style in
+                    ForEach(selectableWorkspaceIconStyles) { style in
                         let isSelected =
                             workspaceAppearanceStore.style(profileID: profileID) == style
                         Button {
@@ -587,6 +587,12 @@ struct AppearanceView: View {
         return Array(
             repeating: GridItem(.flexible(minimum: 44, maximum: 160), spacing: spacing),
             count: columnCount
+        )
+    }
+
+    private var selectableWorkspaceIconStyles: [WorkspaceIconStyle] {
+        WorkspaceIconStyle.selectableStyles(
+            currentStyle: workspaceAppearanceStore.style(profileID: profileID)
         )
     }
 

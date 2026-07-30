@@ -56,7 +56,9 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .redChamber,
             .greekMythology,
             .sherlockHolmes,
-            .aliceWonderland
+            .aliceWonderland,
+            .onePiece,
+            .naruto
         ]
         let newCharacters = newStyles.flatMap {
             WorkspaceAppearanceStore.characters(for: $0)
@@ -69,8 +71,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 "\(style.rawValue) 应提供 10 个角色"
             )
         }
-        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 60)
-        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 60)
+        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 80)
+        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 80)
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
     }
 
@@ -83,7 +85,9 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .redChamber,
             .greekMythology,
             .sherlockHolmes,
-            .aliceWonderland
+            .aliceWonderland,
+            .onePiece,
+            .naruto
         ]
 
         for style in newStyles {
@@ -124,6 +128,34 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             XCTAssertFalse(compactEnglishName.isEmpty)
             XCTAssertFalse(compactChineseName.isEmpty)
         }
+    }
+
+    func testHiddenStylesStayAvailableOnlyWhileCurrentlySelected() {
+        XCTAssertEqual(
+            WorkspaceIconStyle.visibleStyles,
+            [
+                .journey,
+                .threeKingdoms,
+                .waterMargin,
+                .redChamber,
+                .greekMythology,
+                .onePiece,
+                .naruto,
+                .emoji
+            ]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .journey),
+            WorkspaceIconStyle.visibleStyles
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .sherlockHolmes),
+            WorkspaceIconStyle.visibleStyles + [.sherlockHolmes]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .aliceWonderland),
+            WorkspaceIconStyle.visibleStyles + [.aliceWonderland]
+        )
     }
 
     func testBuiltInEmojiPoolKeepsPreviousProductChoices() {
