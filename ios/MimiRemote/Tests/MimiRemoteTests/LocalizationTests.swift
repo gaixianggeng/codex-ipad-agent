@@ -55,6 +55,40 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
+    func testSettingsInformationArchitectureLabelsAreLocalized() {
+        let expectedValues: [(String, String, String)] = [
+            ("ui.status", "Status", "状态"),
+            ("ui.token_quota", "Token quota", "Token 额度"),
+            ("ui.connection", "Connection", "连接"),
+            ("ui.mac_devices", "Mac Devices", "Mac 设备"),
+            ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
+            ("ui.advanced", "Diagnostics & Development", "诊断与开发"),
+            ("ui.legal_and_support", "About & Support", "关于与支持")
+        ]
+
+        for (key, english, simplifiedChinese) in expectedValues {
+            XCTAssertEqual(L10n.text(key, language: .english), english)
+            XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
+    }
+
+    func testSettingsLayoutMetricsUseOneVisualSystem() {
+        XCTAssertEqual(SettingsLayoutMetrics.standardRowHeight, 52)
+        XCTAssertEqual(SettingsLayoutMetrics.accessibilityRowHeight, 76)
+        XCTAssertEqual(SettingsLayoutMetrics.iconSlot, 28)
+        XCTAssertEqual(SettingsLayoutMetrics.symbolPointSize, 18)
+        XCTAssertEqual(SettingsLayoutMetrics.statusModuleCornerRadius, 20)
+        XCTAssertEqual(SettingsLayoutMetrics.quotaSummaryMinimumHeight, 104)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.wide.candidateWidth, 420)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.wide.ringDiameter, 82)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.wide.ringLineWidth, 5.5)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.wide.informationWidth, 230)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.compact.candidateWidth, 290)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.compact.ringDiameter, 68)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.compact.ringLineWidth, 5)
+        XCTAssertEqual(SettingsQuotaLayoutMetrics.compact.informationWidth, 210)
+    }
+
     func testStoredLanguageFallsBackToSystemForUnknownValue() {
         let suiteName = "LocalizationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
