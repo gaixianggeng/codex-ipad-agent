@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 func TestPairingClaimConsumesOnlyValidatedTicketAndRejectsReplay(t *testing.T) {
@@ -52,6 +54,49 @@ func TestPairingClaimConsumesOnlyValidatedTicketAndRejectsReplay(t *testing.T) {
 	}
 	if strings.Contains(replayResponse.Body.String(), testToken) {
 		t.Fatal("重复兑换响应不能泄漏长期 Token")
+	}
+}
+
+func TestPairingClaimAddsCurrentMagicDNSMetadataOnlyForTailscaleTicket(t *testing.T) {
+	server := newTestServer(t)
+	server.router.tailscaleHostLookup = func(context.Context) tailscaleinfo.Host {
+		return tailscaleinfo.Host{
+			DNSName:    "studio-mac.tailnet.ts.net",
+			DeviceName: "studio-mac",
+		}
+	}
+	claim := func(endpoint string) pairingClaimResponse {
+		t.Helper()
+		now := time.Now().UTC()
+		ticket := auth.NewPairingTicket(endpoint, testToken, now.Add(-time.Minute), now.Add(time.Minute))
+		request := httptest.NewRequest(http.MethodPost, "/api/pair/claim", strings.NewReader(fmt.Sprintf(
+			`{"endpoint":%q,"issued_at":%q,"expires_at":%q,"pair_sig":%q}`,
+			ticket.Endpoint,
+			ticket.IssuedAt,
+			ticket.ExpiresAt,
+			ticket.Signature,
+		)))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("配对失败：status=%d body=%s", response.Code, response.Body.String())
+		}
+		var decoded pairingClaimResponse
+		if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+
+	tailscale := claim("http://100.64.0.10:8787")
+	if tailscale.TailscaleDNSName != "studio-mac.tailnet.ts.net" ||
+		tailscale.TailscaleDeviceName != "studio-mac" {
+		t.Fatalf("Tailscale 配对应返回当前名称：%+v", tailscale)
+	}
+	lan := claim("http://192.168.1.10:8787")
+	if lan.TailscaleDNSName != "" || lan.TailscaleDeviceName != "" {
+		t.Fatalf("LAN 配对不应增加不可达的 Tailscale 路由：%+v", lan)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 const (
@@ -29,8 +30,10 @@ type pairingClaimRequest struct {
 }
 
 type pairingClaimResponse struct {
-	Endpoint string `json:"endpoint"`
-	Token    string `json:"token"`
+	Endpoint            string `json:"endpoint"`
+	Token               string `json:"token"`
+	TailscaleDNSName    string `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName string `json:"tailscale_device_name,omitempty"`
 }
 
 func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Request) {
@@ -108,10 +111,18 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, pairingClaimResponse{
+	response := pairingClaimResponse{
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
-	})
+	}
+	// 票据仍只签名短期 IP Endpoint；名称来自当前本机 CLI，避免把可变 DNSName
+	// 放进二维码或当作信任依据。LAN/loopback 票据不会附带 Tailscale 路由。
+	if tailscaleinfo.IsTailscaleEndpoint(response.Endpoint) && r.tailscaleHostLookup != nil {
+		host := r.tailscaleHostLookup(req.Context())
+		response.TailscaleDNSName = host.DNSName
+		response.TailscaleDeviceName = host.DeviceName
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (r *Router) consumePairingTicket(ticket auth.PairingTicket, now time.Time) error {

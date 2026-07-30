@@ -11,6 +11,8 @@ type VersionResponse struct {
 	ProtocolRevision              int      `json:"protocol_revision"`
 	MinimumClientProtocolRevision int      `json:"minimum_client_protocol_revision"`
 	Capabilities                  []string `json:"capabilities"`
+	TailscaleDNSName              string   `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName           string   `json:"tailscale_device_name,omitempty"`
 }
 
 func CurrentVersionResponse(version string, installationID string) VersionResponse {
@@ -22,6 +24,18 @@ func CurrentVersionResponse(version string, installationID string) VersionRespon
 		MinimumClientProtocolRevision: MinimumSupportedClientRevision,
 		Capabilities:                  Capabilities(),
 	}
+}
+
+func CurrentVersionResponseWithTailscale(
+	version string,
+	installationID string,
+	dnsName string,
+	deviceName string,
+) VersionResponse {
+	response := CurrentVersionResponse(version, installationID)
+	response.TailscaleDNSName = dnsName
+	response.TailscaleDeviceName = deviceName
+	return response
 }
 
 type ClientMetadata struct {

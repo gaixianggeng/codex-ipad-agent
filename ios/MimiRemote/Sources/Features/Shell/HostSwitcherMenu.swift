@@ -103,7 +103,7 @@ struct HostSwitcherMenu: View {
             }
             .frame(maxWidth: 150, alignment: .leading)
         case .toolbar:
-            // 顶栏只表达“当前 Mac 可切换”，完整名称/IP 和连接操作留在菜单内，
+            // 顶栏只表达“当前 Mac 可切换”，完整名称和连接操作留在菜单与设置内，
             // 避免全局连接信息占据第二行并与当前页面争夺视觉中心。
             ZStack(alignment: .bottomTrailing) {
                 Image(systemName: "desktopcomputer")

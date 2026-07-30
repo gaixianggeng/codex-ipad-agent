@@ -32,6 +32,7 @@ const (
 
 type testServer struct {
 	handler http.Handler
+	router  *Router
 	manager *session.Manager
 }
 
@@ -85,8 +86,18 @@ func newTestServerWithConfig(t *testing.T, customize func(*config.Config)) testS
 	t.Cleanup(manager.Shutdown)
 
 	checker := doctor.NewChecker("test", cfg, registry)
+	handler, router := NewRouterWithRuntimeAndInstallationID(
+		cfg,
+		registry,
+		manager,
+		checker,
+		"test",
+		testInstallationID,
+		nil,
+	)
 	return testServer{
-		handler: NewRouterWithInstallationID(cfg, registry, manager, checker, "test", testInstallationID),
+		handler: handler,
+		router:  router,
 		manager: manager,
 	}
 }

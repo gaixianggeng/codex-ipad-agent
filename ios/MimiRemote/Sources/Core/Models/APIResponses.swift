@@ -39,6 +39,8 @@ struct VersionResponse: Codable {
     let name: String
     let version: String
     let installationID: String?
+    let tailscaleDNSName: String?
+    let tailscaleDeviceName: String?
     let protocolRevision: Int
     let minimumClientProtocolRevision: Int
     let capabilities: [String]
@@ -47,6 +49,8 @@ struct VersionResponse: Codable {
         name: String,
         version: String,
         installationID: String? = nil,
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil,
         protocolRevision: Int = MimiProtocolContract.currentRevision,
         minimumClientProtocolRevision: Int = MimiProtocolContract.minimumSupportedClientRevision,
         capabilities: [String] = []
@@ -54,6 +58,11 @@ struct VersionResponse: Codable {
         self.name = name
         self.version = version
         self.installationID = installationID
+        self.tailscaleDNSName = ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
+        self.tailscaleDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
+            tailscaleDeviceName,
+            dnsName: self.tailscaleDNSName
+        )
         self.protocolRevision = protocolRevision
         self.minimumClientProtocolRevision = minimumClientProtocolRevision
         self.capabilities = capabilities
@@ -63,6 +72,8 @@ struct VersionResponse: Codable {
         case name
         case version
         case installationID = "installation_id"
+        case tailscaleDNSName = "tailscale_dns_name"
+        case tailscaleDeviceName = "tailscale_device_name"
         case protocolRevision = "protocol_revision"
         case minimumClientProtocolRevision = "minimum_client_protocol_revision"
         case capabilities
@@ -73,6 +84,13 @@ struct VersionResponse: Codable {
         self.name = try container.decode(String.self, forKey: .name)
         self.version = try container.decode(String.self, forKey: .version)
         self.installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
+        self.tailscaleDNSName = ConnectionProfile.normalizedTailscaleDNSName(
+            try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
+        )
+        self.tailscaleDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
+            try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName),
+            dnsName: self.tailscaleDNSName
+        )
         // revision 1 的旧 agentd 没有版本化字段。按明确记录的上一版窗口解码，
         // 再由 requireCompatible() 判断；不能因纯加法字段缺失让整条连接直接解析失败。
         self.protocolRevision = try container.decodeIfPresent(Int.self, forKey: .protocolRevision)
@@ -1242,6 +1260,15 @@ struct PairingClaimRequest: Encodable, Equatable {
 struct PairingClaimResponse: Decodable, Equatable {
     let endpoint: String
     let token: String
+    let tailscaleDNSName: String?
+    let tailscaleDeviceName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case endpoint
+        case token
+        case tailscaleDNSName = "tailscale_dns_name"
+        case tailscaleDeviceName = "tailscale_device_name"
+    }
 }
 
 struct CommandActionListResponse: Codable, Hashable {

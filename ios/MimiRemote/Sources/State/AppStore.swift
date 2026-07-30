@@ -24,6 +24,27 @@ enum PairingLinkError: LocalizedError, Equatable {
 struct PairingCredentials: Equatable {
     let endpoint: String
     let token: String
+    let tailscaleDNSName: String?
+    let tailscaleDeviceName: String?
+
+    init(
+        endpoint: String,
+        token: String,
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil
+    ) {
+        self.endpoint = endpoint
+        self.token = token
+        self.tailscaleDNSName = ConnectionProfile.isTailscaleIPEndpoint(endpoint)
+            ? ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
+            : nil
+        self.tailscaleDeviceName = ConnectionProfile.isTailscaleIPEndpoint(endpoint)
+            ? ConnectionProfile.normalizedTailscaleDeviceName(
+                tailscaleDeviceName,
+                dnsName: self.tailscaleDNSName
+            )
+            : nil
+    }
 }
 
 struct PairingTicket: Equatable {
@@ -451,7 +472,7 @@ final class AppStore: ObservableObject {
     /// `endpoint` 始终保留档案里的规范地址，用于通知、缓存和跨设备身份；真实网络请求在
     /// Catalyst 检测到同机 agentd 后临时走 loopback，避免把同一台 Mac 拆成两套本地数据。
     var connectionEndpoint: String {
-        activeRouteEndpoint ?? endpoint
+        activeRouteEndpoint ?? activeConnectionProfile?.preferredEndpoint ?? endpoint
     }
 
     var isUsingLocalConnection: Bool {
@@ -500,7 +521,7 @@ final class AppStore: ObservableObject {
         return HostProbeDescriptor(
             profileID: profile.id,
             profileRevision: profile.revision,
-            endpoint: profile.endpoint,
+            endpoints: profile.connectionCandidates,
             token: token,
             expectedInstallationID: profile.installationID
         )
@@ -670,21 +691,52 @@ final class AppStore: ObservableObject {
     func prepareConnectionSettings(
         endpoint: String,
         token: String,
-        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
+        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil
     ) async throws -> PreparedConnectionSettings {
         let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
-        if usesDefaultRouteProbe {
-            return try await prepareFastHostContext(
-                endpoint: normalizedEndpoint,
-                token: token,
-                profileTarget: profileTarget
-            )
-        }
+        let normalizedDNSName = ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
+        let normalizedDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
+            tailscaleDeviceName,
+            dnsName: normalizedDNSName
+        )
+        let candidates = ConnectionProfile.connectionCandidates(
+            endpoint: normalizedEndpoint,
+            tailscaleDNSName: normalizedDNSName
+        )
+        var finalError: Error?
+        for candidate in candidates {
+            do {
+                if usesDefaultRouteProbe {
+                    return try await prepareFastHostContext(
+                        activeEndpoint: candidate,
+                        fallbackEndpoint: normalizedEndpoint,
+                        token: token,
+                        profileTarget: profileTarget,
+                        tailscaleDNSName: normalizedDNSName,
+                        tailscaleDeviceName: normalizedDeviceName
+                    )
+                }
 
-        // 测试和兼容注入仍保留原 routeProbe seam，但不再在快速入口后重复执行完整 diagnostics。
-        // 设置页“连接测速”继续显式调用 validateConnection。
-        try await routeProbe(normalizedEndpoint, token, routeProbeTimeout)
-        return PreparedConnectionSettings(endpoint: normalizedEndpoint, token: token, profileTarget: profileTarget)
+                // 测试和兼容注入仍保留原 routeProbe seam，但候选顺序与生产路径一致。
+                try await routeProbe(candidate, token, routeProbeTimeout)
+                return PreparedConnectionSettings(
+                    endpoint: normalizedEndpoint,
+                    activeEndpoint: candidate,
+                    token: token,
+                    profileTarget: profileTarget,
+                    tailscaleDNSName: normalizedDNSName,
+                    tailscaleDeviceName: normalizedDeviceName
+                )
+            } catch {
+                if Task.isCancelled || error is CancellationError {
+                    throw error
+                }
+                finalError = error
+            }
+        }
+        throw finalError ?? URLError(.cannotConnectToHost)
     }
 
     func prepareNewConnectionProfile(
@@ -713,7 +765,9 @@ final class AppStore: ObservableObject {
         return try await prepareConnectionSettings(
             endpoint: profile.endpoint,
             token: profileToken,
-            profileTarget: .existingProfile(id: id)
+            profileTarget: .existingProfile(id: id),
+            tailscaleDNSName: profile.tailscaleDNSName,
+            tailscaleDeviceName: profile.tailscaleDeviceName
         )
     }
 
@@ -726,14 +780,18 @@ final class AppStore: ObservableObject {
             return try await prepareConnectionSettings(
                 endpoint: credentials.endpoint,
                 token: credentials.token,
-                profileTarget: profileTarget
+                profileTarget: profileTarget,
+                tailscaleDNSName: credentials.tailscaleDNSName,
+                tailscaleDeviceName: credentials.tailscaleDeviceName
             )
         }
         let credentials = try Self.pairingCredentials(from: url)
         return try await prepareConnectionSettings(
             endpoint: credentials.endpoint,
             token: credentials.token,
-            profileTarget: profileTarget
+            profileTarget: profileTarget,
+            tailscaleDNSName: credentials.tailscaleDNSName,
+            tailscaleDeviceName: credentials.tailscaleDeviceName
         )
     }
 
@@ -753,10 +811,11 @@ final class AppStore: ObservableObject {
     @discardableResult
     func commitConnectionSettings(_ prepared: PreparedConnectionSettings) async throws -> Bool {
         let normalizedEndpoint = try Self.validatedEndpoint(prepared.endpoint)
+        let normalizedActiveEndpoint = try Self.validatedEndpoint(prepared.activeEndpoint)
         let installationID = Self.normalizedInstallationID(prepared.installationID)
         let preparedLease = installationID.map {
             PreparedHostLease(
-                endpoint: normalizedEndpoint,
+                endpoint: normalizedActiveEndpoint,
                 installationID: $0,
                 profileTarget: prepared.profileTarget,
                 profileRevision: profileRevision(for: prepared.profileTarget),
@@ -786,30 +845,58 @@ final class AppStore: ObservableObject {
                     installationID,
                     excludingProfileID: current.id
                 )
+                let metadata = Self.resolvedTailscaleMetadata(prepared: prepared, existing: current)
+                let display = Self.resolvedProfileDisplay(
+                    existing: current,
+                    requested: displayName,
+                    endpoint: normalizedEndpoint,
+                    tailscaleDeviceName: metadata.deviceName
+                )
                 targetProfile = ConnectionProfile(
                     id: current.id,
-                    displayName: Self.normalizedProfileDisplayName(displayName ?? current.displayName, endpoint: normalizedEndpoint),
+                    displayName: display.name,
                     endpoint: normalizedEndpoint,
+                    tailscaleDNSName: metadata.dnsName,
+                    tailscaleDeviceName: metadata.deviceName,
+                    isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID ?? current.installationID,
                     revision: current.revision &+ 1
                 )
             } else {
                 try rejectDuplicateInstallation(installationID, excludingProfileID: nil)
+                let display = Self.resolvedProfileDisplay(
+                    existing: nil,
+                    requested: displayName,
+                    endpoint: normalizedEndpoint,
+                    tailscaleDeviceName: prepared.tailscaleDeviceName
+                )
                 targetProfile = ConnectionProfile(
                     id: UUID().uuidString,
-                    displayName: Self.normalizedProfileDisplayName(displayName ?? "", endpoint: normalizedEndpoint),
+                    displayName: display.name,
                     endpoint: normalizedEndpoint,
+                    tailscaleDNSName: prepared.tailscaleDNSName,
+                    tailscaleDeviceName: prepared.tailscaleDeviceName,
+                    isDisplayNameCustomized: display.customized,
                     lastSuccessfulAt: prepared.validatedAt,
                     installationID: installationID
                 )
             }
         case .newProfile(let id, let displayName):
             try rejectDuplicateInstallation(installationID, excludingProfileID: id)
+            let display = Self.resolvedProfileDisplay(
+                existing: nil,
+                requested: displayName,
+                endpoint: normalizedEndpoint,
+                tailscaleDeviceName: prepared.tailscaleDeviceName
+            )
             targetProfile = ConnectionProfile(
                 id: id,
-                displayName: Self.normalizedProfileDisplayName(displayName, endpoint: normalizedEndpoint),
+                displayName: display.name,
                 endpoint: normalizedEndpoint,
+                tailscaleDNSName: prepared.tailscaleDNSName,
+                tailscaleDeviceName: prepared.tailscaleDeviceName,
+                isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID
             )
@@ -826,10 +913,20 @@ final class AppStore: ObservableObject {
                 installationID,
                 excludingProfileID: existing.id
             )
+            let metadata = Self.resolvedTailscaleMetadata(prepared: prepared, existing: existing)
+            let display = Self.resolvedProfileDisplay(
+                existing: existing,
+                requested: nil,
+                endpoint: normalizedEndpoint,
+                tailscaleDeviceName: metadata.deviceName
+            )
             targetProfile = ConnectionProfile(
                 id: existing.id,
-                displayName: existing.displayName,
+                displayName: display.name,
                 endpoint: normalizedEndpoint,
+                tailscaleDNSName: metadata.dnsName,
+                tailscaleDeviceName: metadata.deviceName,
+                isDisplayNameCustomized: display.customized,
                 lastSuccessfulAt: prepared.validatedAt,
                 installationID: installationID ?? existing.installationID,
                 revision: existing.revision &+ 1
@@ -842,7 +939,10 @@ final class AppStore: ObservableObject {
         let didChange = normalizedEndpoint != endpoint ||
             prepared.token != token ||
             targetProfile.id != activeConnectionProfileID ||
-            targetProfile.installationID != activeConnectionProfile?.installationID
+            targetProfile.installationID != activeConnectionProfile?.installationID ||
+            targetProfile.tailscaleDNSName != activeConnectionProfile?.tailscaleDNSName ||
+            targetProfile.tailscaleDeviceName != activeConnectionProfile?.tailscaleDeviceName ||
+            targetProfile.displayName != activeConnectionProfile?.displayName
 
         // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
         // 未签入 provisioning profile 的 Catalyst 本机 Debug 包只在 loopback + -34018 时使用进程内凭据。
@@ -908,11 +1008,11 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
-        activeRouteEndpoint = nil
+        activeRouteEndpoint = normalizedActiveEndpoint
         activeConnectionRoute = .configured
         if let candidateRuntime {
             prepared.hostContext?.markConsumed()
-            activeRuntimeIdentity = runtimeIdentity(endpoint: normalizedEndpoint, token: prepared.token)
+            activeRuntimeIdentity = runtimeIdentity(endpoint: normalizedActiveEndpoint, token: prepared.token)
             activeRuntimeBundle = candidateRuntime
         } else {
             activeRuntimeIdentity = nil
@@ -944,7 +1044,12 @@ final class AppStore: ObservableObject {
         if let ticket = try Self.pairingTicket(from: url) {
             let credentials = try await claimPairing(ticket)
             let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
-            return PairingCredentials(endpoint: normalized, token: credentials.token)
+            return PairingCredentials(
+                endpoint: normalized,
+                token: credentials.token,
+                tailscaleDNSName: credentials.tailscaleDNSName,
+                tailscaleDeviceName: credentials.tailscaleDeviceName
+            )
         }
         let credentials = try Self.pairingCredentials(from: url)
         // 手动调用时只测试外侧 agentd 连接；首次扫码路径会直接保存，减少一次确认。
@@ -1032,12 +1137,14 @@ final class AppStore: ObservableObject {
         guard displayName.count <= Self.connectionProfileDisplayNameLimit else {
             throw ConnectionProfileError.displayNameTooLong(maximum: Self.connectionProfileDisplayNameLimit)
         }
-        guard displayName != connectionProfiles[profileIndex].displayName else {
+        guard displayName != connectionProfiles[profileIndex].displayName ||
+                !connectionProfiles[profileIndex].isDisplayNameCustomized else {
             return false
         }
 
         var nextProfiles = connectionProfiles
         nextProfiles[profileIndex].displayName = displayName
+        nextProfiles[profileIndex].isDisplayNameCustomized = true
         nextProfiles[profileIndex].revision &+= 1
         if id != ephemeralLocalProfileID {
             let encodedProfiles = try JSONEncoder().encode(nextProfiles)
@@ -1303,14 +1410,34 @@ final class AppStore: ObservableObject {
                 timeout: min(routeProbeTimeout, 1.5)
             ))
         }
-        let configuredRoute: ActiveConnectionRoute = Self.isLoopbackEndpoint(normalizedEndpoint) ? .local : .configured
-        candidates.append((endpoint: normalizedEndpoint, route: configuredRoute, timeout: routeProbeTimeout))
+        let configuredEndpoints: [String]
+        if let profile = activeConnectionProfile,
+           AgentAPIClient.normalizedEndpoint(profile.endpoint) ==
+            AgentAPIClient.normalizedEndpoint(normalizedEndpoint) {
+            configuredEndpoints = profile.connectionCandidates
+        } else {
+            configuredEndpoints = [normalizedEndpoint]
+        }
+        for configuredEndpoint in configuredEndpoints {
+            let route: ActiveConnectionRoute = Self.isLoopbackEndpoint(configuredEndpoint) ? .local : .configured
+            candidates.append((endpoint: configuredEndpoint, route: route, timeout: routeProbeTimeout))
+        }
 
         var configuredRouteError: Error?
         for candidate in candidates {
             do {
                 try await routeProbe(candidate.endpoint, token, candidate.timeout)
                 activateConnectionRoute(candidate.route, endpoint: candidate.endpoint)
+                if usesDefaultRouteProbe,
+                   candidate.route == .configured,
+                   let profile = activeConnectionProfile {
+                    await refreshConnectionProfileHostMetadata(
+                        from: candidate.endpoint,
+                        profileID: profile.id,
+                        expectedRevision: profile.revision,
+                        expectedInstallationID: profile.installationID
+                    )
+                }
                 connectionTermination = nil
                 connectionStatus = .connected(candidate.route.statusTitle)
                 lastError = nil
@@ -1322,7 +1449,9 @@ final class AppStore: ObservableObject {
                 }
                 // loopback 可能运行着另一个用户配置；本机 Token 不匹配时继续尝试档案地址，
                 // 不能提前把仍有效的 Tailscale 凭据标记为失效。
-                if candidate.endpoint == normalizedEndpoint {
+                if candidate.route == .configured ||
+                    AgentAPIClient.normalizedEndpoint(candidate.endpoint) ==
+                    AgentAPIClient.normalizedEndpoint(normalizedEndpoint) {
                     configuredRouteError = error
                 }
             }
@@ -1437,7 +1566,9 @@ final class AppStore: ObservableObject {
         let response = try await AgentAPIClient(endpoint: ticket.endpoint, token: "").claimPairing(ticket.claimRequest)
         return PairingCredentials(
             endpoint: try Self.validatedEndpoint(response.endpoint.isEmpty ? ticket.endpoint : response.endpoint),
-            token: response.token
+            token: response.token,
+            tailscaleDNSName: response.tailscaleDNSName,
+            tailscaleDeviceName: response.tailscaleDeviceName
         )
     }
 
@@ -1556,6 +1687,9 @@ final class AppStore: ObservableObject {
                 id: id,
                 displayName: normalizedProfileDisplayName(profile.displayName, endpoint: normalizedEndpoint),
                 endpoint: normalizedEndpoint,
+                tailscaleDNSName: profile.tailscaleDNSName,
+                tailscaleDeviceName: profile.tailscaleDeviceName,
+                isDisplayNameCustomized: profile.isDisplayNameCustomized,
                 lastSuccessfulAt: profile.lastSuccessfulAt,
                 installationID: normalizedInstallationID(profile.installationID),
                 revision: profile.revision
@@ -1575,23 +1709,48 @@ final class AppStore: ObservableObject {
     }
 
     private static func defaultProfileDisplayName(endpoint: String) -> String {
-        guard let host = URLComponents(string: endpoint)?.host,
-              !host.isEmpty else {
-            return L10n.text("ui.my_mac")
+        ConnectionProfile.fallbackDisplayName(endpoint: endpoint)
+    }
+
+    private static func resolvedTailscaleMetadata(
+        prepared: PreparedConnectionSettings,
+        existing: ConnectionProfile
+    ) -> (dnsName: String?, deviceName: String?) {
+        let dnsName = prepared.tailscaleDNSName ?? existing.tailscaleDNSName
+        let deviceName = ConnectionProfile.normalizedTailscaleDeviceName(
+            prepared.tailscaleDeviceName ?? existing.tailscaleDeviceName,
+            dnsName: dnsName
+        )
+        return (dnsName, deviceName)
+    }
+
+    private static func resolvedProfileDisplay(
+        existing: ConnectionProfile?,
+        requested: String?,
+        endpoint: String,
+        tailscaleDeviceName: String?
+    ) -> (name: String, customized: Bool) {
+        if let existing, existing.isDisplayNameCustomized {
+            return (existing.displayName, true)
         }
-        if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-            return L10n.text("ui.this_mac")
+        let fallback = defaultProfileDisplayName(endpoint: endpoint)
+        let normalizedRequested = requested?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedRequested.isEmpty, normalizedRequested != fallback {
+            return (normalizedRequested, true)
         }
-        return host
+        return (tailscaleDeviceName ?? fallback, false)
     }
 
     private func prepareFastHostContext(
-        endpoint: String,
+        activeEndpoint: String,
+        fallbackEndpoint: String,
         token: String,
-        profileTarget: PreparedConnectionProfileTarget
+        profileTarget: PreparedConnectionProfileTarget,
+        tailscaleDNSName: String?,
+        tailscaleDeviceName: String?
     ) async throws -> PreparedConnectionSettings {
         let deadline = Date().addingTimeInterval(8)
-        let client = AgentAPIClient(endpoint: endpoint, token: token)
+        let client = AgentAPIClient(endpoint: activeEndpoint, token: token)
         HostSwitchSignpost.begin("switch_prepare")
         defer { HostSwitchSignpost.end("switch_prepare") }
 
@@ -1608,6 +1767,7 @@ final class AppStore: ObservableObject {
 
         let (version, config) = try await (versionResponse, configResponse)
         try Task.checkCancellation()
+        try version.requireCompatible()
         guard let installationID = Self.normalizedInstallationID(version.installationID) else {
             throw ConnectionProfileError.installationIdentityRequired
         }
@@ -1620,7 +1780,7 @@ final class AppStore: ObservableObject {
                 throw URLError(.timedOut)
             }
             let bundle = AppServerRuntimeBundle(
-                endpoint: endpoint,
+                endpoint: activeEndpoint,
                 token: token,
                 // 不给 initialize 人为增加最小超时，保证整个快速链路不会突破 8 秒总 deadline。
                 requestTimeout: remaining,
@@ -1634,14 +1794,19 @@ final class AppStore: ObservableObject {
                 }
 
                 HostSwitchSignpost.event("gateway_initialized")
+                let refreshedDNSName = version.tailscaleDNSName ?? tailscaleDNSName
+                let refreshedDeviceName = version.tailscaleDeviceName ?? tailscaleDeviceName
                 return PreparedConnectionSettings(
-                    endpoint: endpoint,
+                    endpoint: fallbackEndpoint,
+                    activeEndpoint: activeEndpoint,
                     token: token,
                     profileTarget: profileTarget,
                     installationID: installationID,
+                    tailscaleDNSName: refreshedDNSName,
+                    tailscaleDeviceName: refreshedDeviceName,
                     hostContext: PreparedHostContext(
                         lease: PreparedHostLease(
-                            endpoint: endpoint,
+                            endpoint: activeEndpoint,
                             installationID: installationID,
                             profileTarget: profileTarget,
                             profileRevision: profileRevision(for: profileTarget),
@@ -1821,6 +1986,90 @@ final class AppStore: ObservableObject {
         )
         // 同时验证控制面和 WebSocket，避免 /healthz 可用但真实 Codex 通道不可用时误选该地址。
         try await runtime.validateDirectGateway()
+    }
+
+    private func refreshConnectionProfileHostMetadata(
+        from routeEndpoint: String,
+        profileID: String,
+        expectedRevision: UInt64,
+        expectedInstallationID: String?
+    ) async {
+        guard let expectedInstallationID = Self.normalizedInstallationID(expectedInstallationID) else {
+            return
+        }
+        do {
+            let version = try await AgentAPIClient(
+                endpoint: routeEndpoint,
+                token: token
+            ).version(timeout: min(routeProbeTimeout, 2))
+            try version.requireCompatible()
+            guard Self.normalizedInstallationID(version.installationID) == expectedInstallationID else {
+                return
+            }
+            _ = refreshConnectionProfileHostMetadata(
+                profileID: profileID,
+                expectedRevision: expectedRevision,
+                version: version
+            )
+        } catch {
+            // 路由已经完成真实 WebSocket 验证；元数据刷新失败不能把可用连接降级为失败。
+        }
+    }
+
+    /// 探测结果只有在 Profile revision 与 installation_id 都未变化时才能刷新可变名称。
+    /// DNSName 只改变下一次路由候选，不会合并档案，也不会改写稳定身份。
+    @discardableResult
+    func refreshConnectionProfileHostMetadata(
+        profileID: String,
+        expectedRevision: UInt64,
+        version: VersionResponse
+    ) -> ConnectionProfile? {
+        guard let index = connectionProfiles.firstIndex(where: { $0.id == profileID }),
+              connectionProfiles[index].revision == expectedRevision,
+              ConnectionProfile.isTailscaleIPEndpoint(connectionProfiles[index].endpoint),
+              let expectedInstallationID = Self.normalizedInstallationID(
+                  connectionProfiles[index].installationID
+              ),
+              Self.normalizedInstallationID(version.installationID) == expectedInstallationID,
+              let dnsName = version.tailscaleDNSName else {
+            return nil
+        }
+        let deviceName = ConnectionProfile.normalizedTailscaleDeviceName(
+            version.tailscaleDeviceName,
+            dnsName: dnsName
+        )
+        var updated = connectionProfiles[index]
+        let nextDisplayName = updated.isDisplayNameCustomized
+            ? updated.displayName
+            : (deviceName ?? Self.defaultProfileDisplayName(endpoint: updated.endpoint))
+        guard updated.tailscaleDNSName != dnsName ||
+                updated.tailscaleDeviceName != deviceName ||
+                updated.displayName != nextDisplayName else {
+            return updated
+        }
+        updated.tailscaleDNSName = dnsName
+        updated.tailscaleDeviceName = deviceName
+        updated.displayName = nextDisplayName
+        updated.revision &+= 1
+
+        var nextProfiles = connectionProfiles
+        nextProfiles[index] = updated
+        if profileID != ephemeralLocalProfileID {
+            guard let encoded = try? JSONEncoder().encode(nextProfiles) else {
+                return nil
+            }
+            persistProfiles(encoded)
+        }
+        connectionProfiles = nextProfiles
+        if profileID == activeConnectionProfileID {
+            activeHostState = ActiveHostState(
+                scope: activeHostState.scope,
+                endpoint: activeHostState.endpoint,
+                displayName: updated.displayName,
+                committedAt: activeHostState.committedAt
+            )
+        }
+        return updated
     }
 
     private static func defaultLocalAgentProbe(endpoint: String, timeout: TimeInterval) async throws {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 const defaultAgentDPort = "8787"
@@ -31,20 +32,22 @@ type Options struct {
 }
 
 type Result struct {
-	Created            bool           `json:"created"`
-	ConfigPath         string         `json:"config_path"`
-	Endpoint           string         `json:"endpoint"`
-	Network            PairingNetwork `json:"network,omitempty"`
-	Token              string         `json:"token"`
-	ConnectURL         string         `json:"connect_url"`
-	PairURL            string         `json:"pair_url"`
-	PairIssuedAt       string         `json:"pair_issued_at"`
-	PairExpiresAt      string         `json:"pair_expires_at"`
-	ScanRoot           string         `json:"scan_root"`
-	BrowseRoot         string         `json:"browse_root"`
-	AppServerListen    string         `json:"app_server_listen"`
-	AppServerTokenFile string         `json:"app_server_token_file"`
-	Warnings           []string       `json:"warnings"`
+	Created             bool           `json:"created"`
+	ConfigPath          string         `json:"config_path"`
+	Endpoint            string         `json:"endpoint"`
+	Network             PairingNetwork `json:"network,omitempty"`
+	TailscaleDNSName    string         `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName string         `json:"tailscale_device_name,omitempty"`
+	Token               string         `json:"token"`
+	ConnectURL          string         `json:"connect_url"`
+	PairURL             string         `json:"pair_url"`
+	PairIssuedAt        string         `json:"pair_issued_at"`
+	PairExpiresAt       string         `json:"pair_expires_at"`
+	ScanRoot            string         `json:"scan_root"`
+	BrowseRoot          string         `json:"browse_root"`
+	AppServerListen     string         `json:"app_server_listen"`
+	AppServerTokenFile  string         `json:"app_server_token_file"`
+	Warnings            []string       `json:"warnings"`
 }
 
 func Run(ctx context.Context, options Options) (Result, error) {
@@ -211,9 +214,23 @@ func ResultFromConfigForNetwork(
 	cfg config.Config,
 	network PairingNetwork,
 ) (Result, error) {
-	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, defaultPairingNetworkLookups())
+	return resultFromConfigForNetwork(ctx, configPath, cfg, network, defaultPairingNetworkLookups())
+}
+
+func resultFromConfigForNetwork(
+	ctx context.Context,
+	configPath string,
+	cfg config.Config,
+	network PairingNetwork,
+	lookups pairingNetworkLookups,
+) (Result, error) {
+	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {
 		return Result{}, err
+	}
+	host := tailscaleinfo.Host{}
+	if pairingNetworkForEndpoint(endpoint) == PairingNetworkTailscale && lookups.tailscaleHost != nil {
+		host = lookups.tailscaleHost(ctx)
 	}
 	token := strings.TrimSpace(cfg.Auth.Token)
 	if token == "" {
@@ -230,19 +247,21 @@ func ResultFromConfigForNetwork(
 	now := time.Now().UTC()
 	expiresAt := now.Add(defaultPairingURLTTL)
 	return Result{
-		ConfigPath:         configPath,
-		Endpoint:           endpoint,
-		Network:            pairingNetworkForEndpoint(endpoint),
-		Token:              token,
-		ConnectURL:         connectionURL("connect", endpoint, token, now, expiresAt),
-		PairURL:            pairingURL(endpoint, token, now, expiresAt),
-		PairIssuedAt:       now.Format(time.RFC3339),
-		PairExpiresAt:      expiresAt.Format(time.RFC3339),
-		ScanRoot:           scanRoot,
-		BrowseRoot:         browseRoot,
-		AppServerListen:    cfg.AppServer.Listen,
-		AppServerTokenFile: cfg.AppServer.WSTokenFile,
-		Warnings:           warnings,
+		ConfigPath:          configPath,
+		Endpoint:            endpoint,
+		Network:             pairingNetworkForEndpoint(endpoint),
+		TailscaleDNSName:    host.DNSName,
+		TailscaleDeviceName: host.DeviceName,
+		Token:               token,
+		ConnectURL:          connectionURL("connect", endpoint, token, now, expiresAt),
+		PairURL:             pairingURL(endpoint, token, now, expiresAt),
+		PairIssuedAt:        now.Format(time.RFC3339),
+		PairExpiresAt:       expiresAt.Format(time.RFC3339),
+		ScanRoot:            scanRoot,
+		BrowseRoot:          browseRoot,
+		AppServerListen:     cfg.AppServer.Listen,
+		AppServerTokenFile:  cfg.AppServer.WSTokenFile,
+		Warnings:            warnings,
 	}, nil
 }
 
@@ -419,7 +438,7 @@ func isLoopbackHost(host string) bool {
 }
 
 func firstTailscaleIP(ctx context.Context) string {
-	bin, err := exec.LookPath("tailscale")
+	bin, err := tailscaleinfo.FindCLI()
 	if err != nil {
 		return ""
 	}

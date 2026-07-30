@@ -171,16 +171,35 @@ final class HostStatusStore: ObservableObject {
             let results = await withTaskGroup(of: HostProbeResult.self, returning: [HostProbeResult].self) { group in
                 for descriptor in batch {
                     group.addTask { [session] in
-                        do {
-                            let version = try await AgentAPIClient(
-                                endpoint: descriptor.endpoint,
-                                token: descriptor.token,
-                                session: session
-                            ).version(timeout: 2)
-                            return HostProbeResult(descriptor: descriptor, version: version, error: nil)
-                        } catch {
-                            return HostProbeResult(descriptor: descriptor, version: nil, error: error)
+                        var finalError: Error?
+                        for endpoint in descriptor.endpoints {
+                            do {
+                                let version = try await AgentAPIClient(
+                                    endpoint: endpoint,
+                                    token: descriptor.token,
+                                    session: session
+                                ).version(timeout: 2)
+                                return HostProbeResult(
+                                    descriptor: descriptor,
+                                    version: version,
+                                    error: nil
+                                )
+                            } catch {
+                                if Task.isCancelled || error is CancellationError {
+                                    return HostProbeResult(
+                                        descriptor: descriptor,
+                                        version: nil,
+                                        error: error
+                                    )
+                                }
+                                finalError = error
+                            }
                         }
+                        return HostProbeResult(
+                            descriptor: descriptor,
+                            version: nil,
+                            error: finalError ?? URLError(.cannotConnectToHost)
+                        )
                     }
                 }
                 var values: [HostProbeResult] = []
@@ -229,10 +248,15 @@ final class HostStatusStore: ObservableObject {
             applyTerminal(.identityMismatch, profile: profile)
             return
         }
+        let refreshedProfile = appStore.refreshConnectionProfileHostMetadata(
+            profileID: profile.id,
+            expectedRevision: profile.revision,
+            version: version
+        ) ?? profile
         let date = now()
         statusesByProfileID[profile.id] = HostProbeStatus(
             state: .available,
-            profileRevision: profile.revision,
+            profileRevision: refreshedProfile.revision,
             checkedAt: date,
             nextEligibleAt: date.addingTimeInterval(60),
             failureCount: 0

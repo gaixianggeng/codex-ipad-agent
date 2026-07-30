@@ -553,10 +553,12 @@ struct InitialConnectionSettingsSections: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.profile.displayName)
                     .font(themeStore.uiFont(.body, weight: item.isCurrent ? .semibold : .regular))
-                Text(item.profile.endpoint)
+                // 档案名称保持首要层级；连接设置属于详情层，第二行才展示
+                // MagicDNS、IP 回退和当前实际路由，便于现场诊断改名后的回退行为。
+                Text(connectionProfileRouteDetail(item))
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
 
             Spacer(minLength: 8)
@@ -640,6 +642,19 @@ struct InitialConnectionSettingsSections: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
+    }
+
+    private func connectionProfileRouteDetail(_ item: ConnectionProfileSettingsItem) -> String {
+        var details: [String] = []
+        if let dnsName = item.profile.tailscaleDNSName {
+            details.append("MagicDNS \(dnsName)")
+        }
+        let fallbackHost = URLComponents(string: item.profile.endpoint)?.host ?? item.profile.endpoint
+        details.append("IP \(fallbackHost)")
+        if item.isCurrent {
+            details.append("\(L10n.text("ui.current_connection")) \(appStore.connectionEndpoint)")
+        }
+        return details.joined(separator: " · ")
     }
 
     private var endpointTransportAssessment: EndpointTransportAssessment {

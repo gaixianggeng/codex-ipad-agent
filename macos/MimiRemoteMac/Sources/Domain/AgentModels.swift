@@ -31,6 +31,8 @@ enum PairingNetwork: String, CaseIterable, Identifiable, Sendable, Codable {
 struct PairingInfo: Codable, Equatable, Sendable {
     let endpoint: String
     let network: PairingNetwork
+    let tailscaleDNSName: String?
+    let tailscaleDeviceName: String?
     let pairURL: String
     let expiresAt: String
     let warnings: [String]
@@ -38,6 +40,8 @@ struct PairingInfo: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case endpoint
         case network
+        case tailscaleDNSName = "tailscale_dns_name"
+        case tailscaleDeviceName = "tailscale_device_name"
         case pairURL = "pair_url"
         case expiresAt = "pair_expires_at"
         case warnings
@@ -46,12 +50,16 @@ struct PairingInfo: Codable, Equatable, Sendable {
     init(
         endpoint: String,
         network: PairingNetwork? = nil,
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil,
         pairURL: String,
         expiresAt: String,
         warnings: [String]
     ) {
         self.endpoint = endpoint
         self.network = network ?? PairingNetwork.inferred(from: endpoint)
+        self.tailscaleDNSName = tailscaleDNSName
+        self.tailscaleDeviceName = tailscaleDeviceName
         self.pairURL = pairURL
         self.expiresAt = expiresAt
         self.warnings = warnings
@@ -62,6 +70,8 @@ struct PairingInfo: Codable, Equatable, Sendable {
         endpoint = try container.decode(String.self, forKey: .endpoint)
         network = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
             ?? PairingNetwork.inferred(from: endpoint)
+        tailscaleDNSName = try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
+        tailscaleDeviceName = try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName)
         pairURL = try container.decode(String.self, forKey: .pairURL)
         expiresAt = try container.decode(String.self, forKey: .expiresAt)
         // agentd 会在没有警告时省略 warnings；客户端统一成空数组，简化视图状态。

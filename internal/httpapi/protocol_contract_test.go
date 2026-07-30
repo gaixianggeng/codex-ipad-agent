@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 type clientCompatibilityFixture struct {
@@ -62,6 +64,29 @@ func TestVersionResponseMatchesSharedCurrentGoldenFixture(t *testing.T) {
 	expectedJSON, _ := json.Marshal(expected)
 	if string(actualJSON) != string(expectedJSON) {
 		t.Fatalf("/api/version 与共享 golden fixture 漂移：\nactual=%s\nexpected=%s", actualJSON, expectedJSON)
+	}
+}
+
+func TestVersionResponseOptionallyAdvertisesCurrentMagicDNSMetadata(t *testing.T) {
+	server := newTestServer(t)
+	server.router.tailscaleHostLookup = func(context.Context) tailscaleinfo.Host {
+		return tailscaleinfo.Host{
+			DNSName:    "studio-mac.tailnet.ts.net",
+			DeviceName: "studio-mac",
+		}
+	}
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("version 请求失败：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response protocolcontract.VersionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.TailscaleDNSName != "studio-mac.tailnet.ts.net" ||
+		response.TailscaleDeviceName != "studio-mac" {
+		t.Fatalf("version 未宣告当前 Tailscale 名称：%+v", response)
 	}
 }
 

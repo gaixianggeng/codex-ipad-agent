@@ -182,9 +182,13 @@ final class PreparedHostContext {
 struct HostProbeDescriptor {
     let profileID: String
     let profileRevision: UInt64
-    let endpoint: String
+    let endpoints: [String]
     let token: String
     let expectedInstallationID: String?
+
+    var endpoint: String {
+        endpoints.first ?? ""
+    }
 }
 
 enum HostSwitchSignpost {
