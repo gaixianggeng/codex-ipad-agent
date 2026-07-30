@@ -370,6 +370,61 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         add(pickerScreenshot)
     }
 
+    func testWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "目录移除确认的 popover 锚点只在 iPad regular width 下验收。"
+        )
+        try relaunchDirectlyIntoWorkspaces()
+
+        let projectID = "debug-sample-app"
+        for (orientation, attachmentName) in [
+            (UIDeviceOrientation.landscapeLeft, "landscape-sidebar"),
+            (.portrait, "portrait")
+        ] {
+            rotate(to: orientation)
+
+            let source = app.descendant(identifier: "workspace.card.actions.\(projectID)")
+            XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区卡片操作入口应保持可见")
+            assertMinimumTouchTarget(source, named: "工作区卡片操作入口")
+            source.tap()
+
+            let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
+            XCTAssertTrue(request.waitForExistence(timeout: 6), "卡片菜单应提供移除目录入口")
+            request.tap()
+
+            let confirmation = app.descendant(identifier: "workspace.remove.confirm.\(projectID)")
+            XCTAssertTrue(confirmation.waitForExistence(timeout: 8), "移除目录后应展示系统确认弹窗")
+            assertPopover(confirmation, isAnchoredNear: source)
+
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "workspace-remove-confirmation-\(attachmentName)"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+
+            dismissPresentedMenuOrPopover()
+            XCTAssertTrue(
+                confirmation.waitForNonExistence(timeout: 6),
+                "点击弹窗外部应取消移除并关闭确认弹窗"
+            )
+            XCTAssertTrue(source.exists, "取消后工作区仍应保留在列表中")
+        }
+
+        let source = app.descendant(identifier: "workspace.card.actions.\(projectID)")
+        source.tap()
+        let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
+        XCTAssertTrue(request.waitForExistence(timeout: 6))
+        request.tap()
+        let confirmation = app.descendant(identifier: "workspace.remove.confirm.\(projectID)")
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 8))
+        confirmation.tap()
+
+        XCTAssertTrue(
+            source.waitForNonExistence(timeout: 8),
+            "确认后只应从当前工作区列表移除 Debug 样例目录"
+        )
+    }
+
     func testWorkspaceIconStyleSwitchesBetweenEmojiAndJourney() throws {
         try enterWorkbenchIfNeeded()
         try openWorkspaceAppearanceSettings()
@@ -529,6 +584,31 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         // 真机读取的是系统最终命中矩形，可同时覆盖 SwiftUI 内容形状和平台适配结果。
         XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name)宽度应至少为 44pt", file: file, line: line)
         XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name)高度应至少为 44pt", file: file, line: line)
+    }
+
+    private func assertPopover(
+        _ confirmation: XCUIElement,
+        isAnchoredNear source: XCUIElement,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let windowFrame = app.windows.firstMatch.frame
+        let confirmationFrame = confirmation.frame
+        let sourceFrame = source.frame
+
+        XCTAssertGreaterThanOrEqual(confirmationFrame.minX, windowFrame.minX, file: file, line: line)
+        XCTAssertLessThanOrEqual(confirmationFrame.maxX, windowFrame.maxX, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(confirmationFrame.minY, windowFrame.minY, file: file, line: line)
+        XCTAssertLessThanOrEqual(confirmationFrame.maxY, windowFrame.maxY, file: file, line: line)
+        // 系统确认按钮与 source rect 的中心应保持在一个 popover 宽度内；
+        // 旧实现挂在整页根视图时，两者会横跨主内容与左侧会话栏。
+        XCTAssertLessThanOrEqual(
+            abs(confirmationFrame.midX - sourceFrame.midX),
+            max(confirmationFrame.width, 360),
+            "确认弹窗必须锚定在对应卡片操作入口附近",
+            file: file,
+            line: line
+        )
     }
 
     private func openComposerIfNeeded() throws {

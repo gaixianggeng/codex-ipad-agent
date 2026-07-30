@@ -171,7 +171,6 @@ struct WorkspaceRootView: View {
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     @State private var isPresentingOpenWorkspace = false
-    @State private var pendingWorkspaceRemoval: AgentProject?
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
 
     init(
@@ -268,29 +267,6 @@ struct WorkspaceRootView: View {
                     }
             }
             .presentationDetents([.large])
-        }
-        .confirmationDialog(
-            L10n.text("ui.remove_directory"),
-            isPresented: Binding(
-                get: { pendingWorkspaceRemoval != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        pendingWorkspaceRemoval = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let project = pendingWorkspaceRemoval {
-                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
-                    removeWorkspace(project)
-                }
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingWorkspaceRemoval = nil
-            }
-        } message: {
-            Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
     }
@@ -488,7 +464,7 @@ struct WorkspaceRootView: View {
                                     tokens: tokens,
                                     action: {},
                                     onOpenGitChanges: {},
-                                    onRemove: {}
+                                    onConfirmRemove: {}
                                 )
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .redacted(reason: .placeholder)
@@ -544,10 +520,8 @@ struct WorkspaceRootView: View {
                                     selectedWorkspaceID = project.id
                                 } onOpenGitChanges: {
                                     gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
-                                } onRemove: {
-                                    // 当前浏览中的卡片不允许移除；用户需先切到正确工作区，再处理误开的目录。
-                                    guard selectedWorkspaceID != project.id else { return }
-                                    pendingWorkspaceRemoval = project
+                                } onConfirmRemove: {
+                                    removeWorkspace(project)
                                 }
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .id(project.id)
@@ -655,7 +629,6 @@ struct WorkspaceRootView: View {
     }
 
     private func removeWorkspace(_ project: AgentProject) {
-        pendingWorkspaceRemoval = nil
         guard selectedWorkspaceID != project.id else { return }
         sessionLoadStates.removeValue(forKey: project.id)
         sessionLoadInvocationTokens.remove(for: project.id)
@@ -787,8 +760,9 @@ private struct WorkspaceLibraryCard: View {
     let tokens: ThemeTokens
     let action: () -> Void
     let onOpenGitChanges: () -> Void
-    let onRemove: () -> Void
+    let onConfirmRemove: () -> Void
     @State private var isPresentingIconPicker = false
+    @State private var isPresentingRemoveConfirmation = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -813,9 +787,12 @@ private struct WorkspaceLibraryCard: View {
                 }
 
                 if !isSelected {
-                    Button(role: .destructive, action: onRemove) {
+                    Button(role: .destructive) {
+                        isPresentingRemoveConfirmation = true
+                    } label: {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
                     }
+                    .accessibilityIdentifier("workspace.remove.request.\(project.id)")
                 }
             } label: {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "ellipsis.circle")
@@ -826,6 +803,24 @@ private struct WorkspaceLibraryCard: View {
             }
             .menuStyle(.button)
             .accessibilityLabel(L10n.text("ui.workspace_actions"))
+            .accessibilityIdentifier("workspace.card.actions.\(project.id)")
+            // iPad 会把 confirmationDialog 适配成 popover；必须挂在真实的 44pt 操作源上，
+            // 让系统在旋转和分栏宽度变化时从当前卡片计算箭头与安全区域，而不是使用整页根视图。
+            .confirmationDialog(
+                L10n.text("ui.remove_directory"),
+                isPresented: $isPresentingRemoveConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
+                    onConfirmRemove()
+                }
+                .accessibilityIdentifier("workspace.remove.confirm.\(project.id)")
+                Button(L10n.text("ui.cancel"), role: .cancel) {
+                    isPresentingRemoveConfirmation = false
+                }
+            } message: {
+                Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
+            }
             .padding(.top, 4)
             .padding(.trailing, 2)
 
