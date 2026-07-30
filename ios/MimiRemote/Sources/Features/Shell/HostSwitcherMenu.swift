@@ -84,31 +84,46 @@ struct HostSwitcherMenu: View {
 
         switch presentation {
         case .sidebar:
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(profileName)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
+            HStack(spacing: 8) {
+                if appStore.connectionProfiles.count > 1 {
+                    // 宽布局侧栏与紧凑 Toolbar 复用同一平台语义；状态仍由文字行独立表达。
+                    HostPlatformGlyph(kind: currentHostIconKind)
+                        .frame(width: 18, height: 18)
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
-                HStack(spacing: 5) {
-                    if isSwitching {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Circle()
-                            .fill(currentConnectionColor)
-                            .frame(width: 6, height: 6)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(profileName)
+                            .font(.headline.weight(.semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
-                    Text(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        if isSwitching {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Circle()
+                                .fill(currentConnectionColor)
+                                .frame(width: 6, height: 6)
+                        }
+                        Text(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             .frame(maxWidth: 150, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(switcherAccessibilityLabel(
+                profileName: profileName,
+                connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
+            )))
         case .toolbar:
             // 多设备时用服务端真实平台增强辨识度；单设备和未知平台继续使用通用电脑，
             // 避免客户端根据名称或地址猜测系统。
@@ -131,7 +146,7 @@ struct HostSwitcherMenu: View {
             // 连接状态继续由右下角语义色圆点表达。
             .foregroundStyle(.secondary)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(Text(toolbarAccessibilityLabel(
+            .accessibilityLabel(Text(switcherAccessibilityLabel(
                 profileName: profileName,
                 connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
             )))
@@ -157,7 +172,7 @@ struct HostSwitcherMenu: View {
         ].joined(separator: ":")
     }
 
-    private func toolbarAccessibilityLabel(
+    private func switcherAccessibilityLabel(
         profileName: String,
         connectionText: String
     ) -> String {
