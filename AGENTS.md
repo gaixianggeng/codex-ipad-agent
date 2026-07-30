@@ -89,14 +89,15 @@
   - 编译测试产物：`bash ./scripts/ios-dev.sh build-for-testing`
   - 运行单测：`bash ./scripts/ios-dev.sh test`
   - 构建、安装并启动：`bash ./scripts/ios-dev.sh run`
-- 固定 M5 iPad 使用 `ios/MimiRemote/build/dev-simulator-derived/fixed-ipad-pro-13-m5`；其他 Simulator 和真机分别在各自 DerivedData 根目录下按 UDID 隔离。
+- 所有 Simulator 和真机分别在各自 DerivedData 根目录下按 UDID 隔离；不同 Runtime 下的同名 Simulator 也不得共用构建目录。
 - 显式设置 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID` 时，显式选择优先于自动规则。
 - 普通 `build` / `run` 必须先获取按 UDID 的跨 Worktree 原子租约；租约记录 PID、Codex Task、Worktree、命令、DerivedData 和开始时间，进程退出后释放，死 PID 租约在下次占用时清理。
 
 ### XcodeBuildMCP
 
 - 第一次构建、运行或测试前先执行 `bash ./scripts/ios-dev.sh target`、`bash ./scripts/ios-dev.sh leases` 并读取 session defaults。
-- 仓库的 `.xcodebuildmcp/config.yaml` 固定的是 Simulator fallback 和测试默认值；自动规则选中真机时，使用 device workflow 或统一脚本，不得继续沿用 Simulator defaults。
+- 仓库的 `.xcodebuildmcp/config.yaml` 只固定 project、scheme、Debug 和 Simulator fallback，不保存静态 DerivedData。Simulator 构建前必须用 `bash ./scripts/ios-dev.sh destination` 与 `bash ./scripts/ios-dev.sh derived-data-path` 解析同一目标，并通过 session defaults 同时设置 `simulatorId` 和对应的 `derivedDataPath`。
+- 自动规则选中真机时，使用 device workflow 或统一脚本，不得继续沿用 Simulator defaults。
 - 不把本机真机或 Simulator UDID 写入仓库；每次从当前连接状态解析，显式覆盖只通过本机环境变量传入。
 - 绕过统一脚本的 `xcodebuild` 若命令行包含 destination UDID、名称或 generic platform，视为外部占用；不得把对应设备误判为空闲。
 

@@ -204,12 +204,11 @@ observable_device_records() {
 
 simulator_derived_data_path() {
   local simulator_id="$1"
-  local simulator_name="$2"
   if [[ -n "${IOS_DERIVED_DATA_PATH:-}" ]]; then
     printf '%s\n' "$IOS_DERIVED_DATA_PATH"
-  elif [[ "$simulator_name" == "$DEFAULT_SIMULATOR_NAME" ]]; then
-    printf '%s/fixed-ipad-pro-13-m5\n' "$SIMULATOR_DERIVED_DATA_ROOT"
   else
+    # 租约按 UDID 隔离，DerivedData 必须使用相同粒度。否则两个 Runtime
+    # 下的同名 Simulator 会持有不同租约，却并发写入同一构建数据库。
     printf '%s/%s\n' "$SIMULATOR_DERIVED_DATA_ROOT" "$simulator_id"
   fi
 }
@@ -235,7 +234,7 @@ select_target() {
     SELECTED_DERIVED_DATA="$(device_derived_data_path "$device_id")"
   else
     SELECTED_DESTINATION="platform=iOS Simulator,id=$device_id"
-    SELECTED_DERIVED_DATA="$(simulator_derived_data_path "$device_id" "$device_name")"
+    SELECTED_DERIVED_DATA="$(simulator_derived_data_path "$device_id")"
   fi
 }
 

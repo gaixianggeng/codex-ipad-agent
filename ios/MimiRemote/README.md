@@ -159,9 +159,9 @@ IOS_TARGET_MODE=simulator IOS_SIMULATOR_NAME="iPhone 17e" bash ./scripts/ios-dev
 
 需要显式覆盖自动规则时，使用 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID`。普通 `build` / `run` 会按 UDID 原子获取跨 Worktree 租约，记录 PID、Codex Task、Worktree、命令、DerivedData 和开始时间；正常退出自动释放，死 PID 租约在下次获取时清理。固定快照设备忙时可以设置 `IOS_DEVICE_LEASE_WAIT_SECONDS` 等待，否则脚本明确失败。
 
-固定 M5 iPad 使用 `ios/MimiRemote/build/dev-simulator-derived/fixed-ipad-pro-13-m5`；其他 Simulator 和真机分别在对应根目录下按 UDID 隔离 DerivedData，避免不同设备并发写入同一构建数据库。
+所有 Simulator 和真机都在对应根目录下按 UDID 隔离 DerivedData；即使两个 Runtime 中存在同名 `iPad Pro 13-inch (M5)`，也会使用不同构建目录，避免不同设备并发写入同一构建数据库。显式设置 `IOS_DERIVED_DATA_PATH` 时，调用方必须保证该路径只供当前目标使用。
 
-XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取 Simulator fallback 和测试默认值。执行日常 `build` / `run` 前先运行 `bash ./scripts/ios-dev.sh target`；如果选中真机，应使用 device workflow 或统一脚本，不能继续沿用 Simulator defaults。
+XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取 project、scheme、Debug 和 Simulator fallback，但配置不保存静态 DerivedData。使用 Simulator workflow 前，先分别运行 `bash ./scripts/ios-dev.sh destination` 与 `bash ./scripts/ios-dev.sh derived-data-path`，再把同一目标的 `simulatorId` 和 `derivedDataPath` 一起写入本次 session defaults；不得把本机 UDID 持久化到仓库。如果日常 `build` / `run` 选中真机，应使用 device workflow 或统一脚本，不能继续沿用 Simulator defaults。
 
 Simulator 开关采用“开发时保持一台、结束后关闭”的标准：
 

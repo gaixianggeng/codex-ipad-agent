@@ -57,6 +57,25 @@ destination="$(bash "$ROOT_DIR/scripts/ios-dev.sh" destination)"
 assert_equal "platform=iOS Simulator,id=M5-27-UDID" "$destination" \
   "固定测试目标必须选择最新 Runtime 上的精确 M5 iPad"
 
+m5_26_target="$(
+  IOS_TARGET_MODE=simulator \
+  IOS_SIMULATOR_ID="M5-26-UDID" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" target
+)"
+m5_27_target="$(
+  IOS_TARGET_MODE=simulator \
+  IOS_SIMULATOR_ID="M5-27-UDID" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" target
+)"
+m5_26_derived="$(printf '%s\n' "$m5_26_target" | awk -F 'DerivedData: ' '/^DerivedData:/ { print $2 }')"
+m5_27_derived="$(printf '%s\n' "$m5_27_target" | awk -F 'DerivedData: ' '/^DerivedData:/ { print $2 }')"
+assert_contains "$m5_26_derived" "dev-simulator-derived/M5-26-UDID" \
+  "旧 Runtime 的同名 M5 必须使用自己的 DerivedData"
+assert_contains "$m5_27_derived" "dev-simulator-derived/M5-27-UDID" \
+  "新 Runtime 的同名 M5 必须使用自己的 DerivedData"
+[[ "$m5_26_derived" != "$m5_27_derived" ]] \
+  || fail "不同 Runtime 的同名 M5 不得共用 DerivedData"
+
 missing_output="$TEMP_DIR/missing-m5.log"
 if IOS_TEST_SIMULATORS_JSON="$FIXTURE_DIR/simulators-without-m5.json" \
   bash "$ROOT_DIR/scripts/ios-dev.sh" destination >"$missing_output" 2>&1; then
@@ -163,6 +182,46 @@ assert_contains "$(cat "$busy_output")" "未切换到其他测试设备" \
 
 wait "$holder_pid"
 [[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease" ]] || fail "进程正常结束后必须释放租约"
+
+m5_26_started="$TEMP_DIR/m5-26-started"
+m5_27_started="$TEMP_DIR/m5-27-started"
+IOS_TARGET_MODE=simulator \
+IOS_SIMULATOR_ID="M5-26-UDID" \
+IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/m5-26-xcodebuild.log" \
+IOS_TEST_XCODEBUILD_SLEEP_SECONDS=2 \
+IOS_TEST_XCODEBUILD_STARTED="$m5_26_started" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$TEMP_DIR/m5-26-build.log" 2>&1 &
+m5_26_pid=$!
+IOS_TARGET_MODE=simulator \
+IOS_SIMULATOR_ID="M5-27-UDID" \
+IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/m5-27-xcodebuild.log" \
+IOS_TEST_XCODEBUILD_SLEEP_SECONDS=2 \
+IOS_TEST_XCODEBUILD_STARTED="$m5_27_started" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" build >"$TEMP_DIR/m5-27-build.log" 2>&1 &
+m5_27_pid=$!
+
+for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [[ -f "$m5_26_started" && -f "$m5_27_started" ]] && break
+  sleep 0.1
+done
+[[ -f "$m5_26_started" && -f "$m5_27_started" ]] || {
+  wait "$m5_26_pid" || true
+  wait "$m5_27_pid" || true
+  fail "未观察到两个 Runtime 的同名 M5 并发持有独立租约"
+}
+
+multi_m5_status="$(bash "$ROOT_DIR/scripts/ios-dev.sh" leases)"
+assert_contains "$multi_m5_status" "dev-simulator-derived/M5-26-UDID" \
+  "M5-26 租约必须记录自己的 DerivedData"
+assert_contains "$multi_m5_status" "dev-simulator-derived/M5-27-UDID" \
+  "M5-27 租约必须记录自己的 DerivedData"
+assert_equal "2" "$(printf '%s\n' "$multi_m5_status" | awk '$1 == "leased" && index($0, "iPad Pro 13-inch (M5)") { count += 1 } END { print count + 0 }')" \
+  "两个 Runtime 的同名 M5 必须分别持有租约"
+
+wait "$m5_26_pid"
+wait "$m5_27_pid"
+[[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-26-UDID.lease" ]] || fail "M5-26 构建结束后必须释放租约"
+[[ ! -d "$IOS_DEVICE_LEASE_ROOT/M5-27-UDID.lease" ]] || fail "M5-27 构建结束后必须释放租约"
 
 simulator_target="$(
   IOS_TARGET_MODE=simulator \
