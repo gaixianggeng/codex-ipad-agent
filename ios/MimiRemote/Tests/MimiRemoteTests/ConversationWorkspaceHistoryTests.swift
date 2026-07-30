@@ -50,6 +50,70 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceSessionLoadInvocationTokensKeepOnlyLatestABAReturnEligible() {
+        var tokens = WorkspaceSessionLoadInvocationTokens()
+        let firstA = tokens.begin(for: "workspace-a")
+        let firstB = tokens.begin(for: "workspace-b")
+        let latestA = tokens.begin(for: "workspace-a")
+
+        XCTAssertFalse(
+            tokens.isCurrent(firstA, for: "workspace-a"),
+            "A → B → A 后，旧 A waiter 的取消或失败不能再回写"
+        )
+        XCTAssertTrue(tokens.isCurrent(firstB, for: "workspace-b"), "其他工作区的 invocation 必须彼此隔离")
+        XCTAssertTrue(tokens.isCurrent(latestA, for: "workspace-a"))
+
+        tokens.remove(for: "workspace-a")
+        XCTAssertFalse(tokens.isCurrent(latestA, for: "workspace-a"))
+        XCTAssertTrue(tokens.isCurrent(firstB, for: "workspace-b"))
+    }
+
+    func testCancelledWorkspaceSessionWaiterRejoinsSingleFlightAndAppliesResult() async throws {
+        let project = makeProject(id: "proj_workspace_cancelled_waiter")
+        let session = makeSession(
+            id: "thread_workspace_cancelled_waiter",
+            projectID: project.id,
+            title: "切回后可见",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [session]),
+            blockOnCall: 1
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        let firstA = Task { @MainActor in
+            try await store.refreshWorkspaceSessions(projectID: project.id)
+        }
+        await client.waitForBlockedSessionListRefresh()
+        firstA.cancel()
+
+        let latestA = Task { @MainActor in
+            try await store.refreshWorkspaceSessions(projectID: project.id)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(
+            client.sessionsPageCallCount,
+            1,
+            "取消旧 waiter 后重新加入同一工作区，仍只能产生一次底层 thread/list"
+        )
+
+        client.releaseBlockedSessionListRefresh()
+        _ = await firstA.result
+        try await latestA.value
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [session.id])
+    }
+
     func testRecentSessionSortUsesUserRecencyInsteadOfAgentUpdatedAt() {
         let project = makeProject(id: "proj_recency_sort")
         let first = makeSession(
