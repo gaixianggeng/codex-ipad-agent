@@ -67,13 +67,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Personalization"
+            "value" : "Appearance & Personalization"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "个性化"
+            "value" : "外观与个性化"
           }
         }
       }
@@ -1057,13 +1057,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Advanced"
+            "value" : "Diagnostics & Development"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "高级"
+            "value" : "诊断与开发"
           }
         }
       }
@@ -12997,13 +12997,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Legal & Support"
+            "value" : "About & Support"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "法律与支持"
+            "value" : "关于与支持"
           }
         }
       }
@@ -28873,6 +28873,42 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token 额度"
+          }
+        }
+      }
+    },
+    "ui.connection" : {
+      "comment" : "Settings section title for saved Mac devices and connection health.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接"
+          }
+        }
+      }
+    },
+    "ui.mac_devices" : {
+      "comment" : "Settings row title for managing the currently active and other saved Macs.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac Devices"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 设备"
           }
         }
       }

@@ -1,5 +1,81 @@
 import SwiftUI
 
+/// 设置首页只使用这一套尺寸基线，避免 NavigationLink、Picker、Toggle 和自定义摘要
+/// 各自决定行高与图标尺寸，导致真机滚动时出现不一致的视觉节奏。
+enum SettingsLayoutMetrics {
+    static let standardRowHeight: CGFloat = 52
+    static let accessibilityRowHeight: CGFloat = 76
+    static let rowHorizontalInset: CGFloat = 16
+    static let iconSlot: CGFloat = 28
+    static let symbolPointSize: CGFloat = 18
+    static let sectionSpacing: CGFloat = 24
+    static let statusModuleCornerRadius: CGFloat = 20
+    static let quotaSummaryMinimumHeight: CGFloat = 104
+}
+
+/// Token 摘要按真实可用宽度选择尺寸，而不是把 iPhone / iPad 名称写进布局。
+/// 固定候选宽度交给 ViewThatFits 判断，也能自然覆盖分屏和 Stage Manager。
+struct SettingsQuotaLayoutMetrics: Equatable {
+    let candidateWidth: CGFloat
+    let ringDiameter: CGFloat
+    let ringLineWidth: CGFloat
+    let informationWidth: CGFloat
+    let clusterSpacing: CGFloat
+    let rowHeight: CGFloat
+
+    static let wide = SettingsQuotaLayoutMetrics(
+        candidateWidth: 420,
+        ringDiameter: 82,
+        ringLineWidth: 5.5,
+        informationWidth: 230,
+        clusterSpacing: 18,
+        rowHeight: 22
+    )
+
+    static let compact = SettingsQuotaLayoutMetrics(
+        candidateWidth: 290,
+        ringDiameter: 68,
+        ringLineWidth: 5,
+        informationWidth: 210,
+        clusterSpacing: 12,
+        rowHeight: 22
+    )
+}
+
+private extension View {
+    func settingsStandardListRow() -> some View {
+        listRowInsets(
+            EdgeInsets(
+                top: 0,
+                leading: SettingsLayoutMetrics.rowHorizontalInset,
+                bottom: 0,
+                trailing: SettingsLayoutMetrics.rowHorizontalInset
+            )
+        )
+    }
+
+    func settingsInlinePickerStyle() -> some View {
+        modifier(SettingsInlinePickerStyleModifier())
+    }
+}
+
+private struct SettingsInlinePickerStyleModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    func body(content: Content) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        content
+            .pickerStyle(.menu)
+            // Picker 的选中值属于说明层级：与 NavigationLink 的右侧值使用同一
+            // subheadline 和 secondaryText，不能跟随页面强调色抢过左侧标题。
+            .font(themeStore.uiFont(.subheadline))
+            .foregroundStyle(tokens.secondaryText)
+            .tint(tokens.secondaryText)
+    }
+}
+
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -16,8 +92,8 @@ struct SettingsView: View {
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
-    @State private var connectionSettingsDestination: ConnectionSettingsDestination?
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -93,136 +169,113 @@ struct SettingsView: View {
 
         return Form {
             Section {
-                CombinedUsageSettingsCard(
-                    codexDisplay: codexUsage,
-                    claudeDisplay: claudeUsage,
-                    includesClaude: sessionStore.hasClaudeRuntimeChannel
+                settingsOverview(
+                    codexUsage: codexUsage,
+                    claudeUsage: claudeUsage,
+                    tokens: tokens
                 )
+                // 自定义状态卡直接占满 Form 分配给 Section 的行宽，外边界才能与
+                // 下方系统分组一致；卡片内部仍由 rowHorizontalInset 控制内容留白。
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             } header: {
-                HStack {
-                    Text(L10n.text("ui.token_quota"))
-                    Spacer()
-                    AIUsageRefreshButton(includesClaude: sessionStore.hasClaudeRuntimeChannel)
-                }
-                .textCase(nil)
-            }
-
-            Section(L10n.text("ui.mac_connection")) {
-                VStack(spacing: 8) {
-                    HStack(spacing: 10) {
-                        Button {
-                            connectionSettingsDestination = .management
-                        } label: {
-                            SettingsConnectionSummaryCell(
-                                title: L10n.plural(
-                                    "ui.saved_macs_count",
-                                    count: appStore.connectionProfileSettingsModel.savedCount
-                                ),
-                                value: L10n.format(
-                                    "ui.labeled_value",
-                                    L10n.text("ui.current_mac"),
-                                    compactConnectionStatusText
-                                ),
-                                tint: connectionStatusTone(tokens: tokens),
-                                systemImage: nil
-                            )
-                        }
-                        // Form 会把同一行里的默认 NavigationLink 合并为行级点击；
-                        // 使用独立 Button，并由单一路由状态 push，避免一次点击进入两个页面。
-                        .buttonStyle(.borderless)
-                        .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("settings.connectionManagement")
-
-                        Divider()
-                            .overlay(tokens.border.opacity(0.7))
-                            .frame(height: 32)
-
-                        Button {
-                            connectionSettingsDestination = .speedTest
-                        } label: {
-                            SettingsConnectionSummaryCell(
-                                title: L10n.text("ui.connection_speed_test"),
-                                value: connectionSpeedTestSummary,
-                                tint: connectionSpeedTestTone(tokens: tokens),
-                                systemImage: "bolt.horizontal.circle"
-                            )
-                        }
-                        .buttonStyle(.borderless)
-                        .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("settings.connectionSpeedTest")
-                    }
-
-                    if let warningText = connectionWarningText {
-                        Divider()
-                            .overlay(tokens.border.opacity(0.62))
-                        Label(warningText, systemImage: "exclamationmark.triangle")
-                            .font(themeStore.uiFont(.footnote))
-                            .foregroundStyle(tokens.warning)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .frame(minHeight: 32)
+                Text(L10n.text("ui.status"))
             }
 
             Section {
+                NavigationLink {
+                    AppearanceView(profileID: appStore.activeHostScope.profileID)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.personalization"),
+                        value: themeStore.mode.title,
+                        systemImage: "circle.lefthalf.filled",
+                        symbolPointSize: 16
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.appearance")
+
                 Picker(selection: appLanguageSelection) {
                     ForEach(AppLanguage.allCases) { language in
                         Text(language.displayName)
                             .tag(language)
                     }
                 } label: {
-                    Label(L10n.text("ui.language"), systemImage: "globe")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.language"),
+                        systemImage: "globe"
+                    )
                 }
-                .pickerStyle(.menu)
+                .settingsInlinePickerStyle()
+                .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
-                NavigationLink {
-                    AppearanceView(profileID: appStore.activeHostScope.profileID)
+
+                Picker(selection: voiceInputProviderSelection) {
+                    ForEach(VoiceInputProvider.allCases) { provider in
+                        Text(provider.title)
+                            .tag(provider)
+                    }
                 } label: {
-                    Label(L10n.text("ui.personalization"), systemImage: "paintpalette")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.voice_input"),
+                        systemImage: "waveform"
+                    )
                 }
-                .accessibilityIdentifier("settings.appearance")
-                NavigationLink {
-                    DefaultPermissionView()
+                .settingsInlinePickerStyle()
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.voiceInput")
+
+                Picker(selection: defaultPermissionModeSelection) {
+                    ForEach(ComposerPermissionMode.allCases) { mode in
+                        Text(mode.title)
+                            .tag(mode)
+                    }
                 } label: {
-                    Label(L10n.text("ui.default_permissions"), systemImage: "lock.shield")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.default_permissions"),
+                        systemImage: "lock.shield"
+                    )
                 }
+                .settingsInlinePickerStyle()
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
                 Text(L10n.text("ui.preference"))
             }
 
             Section {
-                ForEach(VoiceInputProvider.allCases) { provider in
-                    VoiceInputProviderRow(
-                        provider: provider,
-                        isSelected: voiceInputProviderSelection.wrappedValue == provider,
-                        tokens: tokens
-                    ) {
-                        voiceInputProviderSelection.wrappedValue = provider
-                    }
-                }
-            } header: {
-                Text(L10n.text("ui.voice_input"))
-            }
-
-            Section {
-                Toggle(isOn: $developerModeEnabled) {
-                    Label(L10n.text("ui.developer_mode"), systemImage: "hammer")
-                }
                 NavigationLink {
                     DoctorView(showsHistoryDiagnostics: developerModeEnabled)
                 } label: {
-                    Label(L10n.text("ui.diagnosis_and_support"), systemImage: "stethoscope")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.diagnosis_and_support"),
+                        systemImage: "stethoscope"
+                    )
                 }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.diagnostics")
+
                 NavigationLink {
                     CapabilitiesView()
                 } label: {
-                    Label(L10n.text("ui.competency_checklist"), systemImage: "wand.and.stars")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.competency_checklist"),
+                        systemImage: "wand.and.stars"
+                    )
                 }
-                NavigationLink {
-                    ThirdPartyNoticesView()
-                } label: {
-                    Label(L10n.text("ui.open_source_license"), systemImage: "doc.text")
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.capabilities")
+
+                Toggle(isOn: $developerModeEnabled) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.developer_mode"),
+                        systemImage: "hammer"
+                    )
                 }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.developerMode")
             } header: {
                 Text(L10n.text("ui.advanced"))
             } footer: {
@@ -231,40 +284,56 @@ struct SettingsView: View {
 
             Section {
                 NavigationLink {
+                    LegalDocumentView(document: .support)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.support_and_contact"),
+                        systemImage: "questionmark.circle"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.support")
+
+                NavigationLink {
                     LegalDocumentView(document: .privacyPolicy)
                 } label: {
-                    Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.privacy_policy"),
+                        systemImage: "hand.raised"
+                    )
                 }
+                .settingsStandardListRow()
                 .accessibilityIdentifier("settings.privacyPolicy")
 
                 NavigationLink {
                     LegalDocumentView(document: .termsOfUse)
                 } label: {
-                    Label(L10n.text("ui.terms_of_use"), systemImage: "doc.text")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.terms_of_use"),
+                        systemImage: "doc.text"
+                    )
                 }
+                .settingsStandardListRow()
                 .accessibilityIdentifier("settings.termsOfUse")
 
                 NavigationLink {
-                    LegalDocumentView(document: .support)
+                    ThirdPartyNoticesView()
                 } label: {
-                    Label(L10n.text("ui.support_and_contact"), systemImage: "questionmark.circle")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.open_source_license"),
+                        systemImage: "chevron.left.forwardslash.chevron.right"
+                    )
                 }
-                .accessibilityIdentifier("settings.support")
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.openSourceLicense")
             } header: {
                 Text(L10n.text("ui.legal_and_support"))
             } footer: {
                 Text(L10n.text("ui.legal_documents_are_included_in_the_app"))
             }
         }
+        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .themedSettingsForm(tokens: tokens)
-        .navigationDestination(item: $connectionSettingsDestination) { destination in
-            switch destination {
-            case .management:
-                ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
-            case .speedTest:
-                ConnectionSpeedTestView()
-            }
-        }
         .task {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
@@ -296,6 +365,86 @@ struct SettingsView: View {
             // 45 秒首配超时后凭据已经安全落盘；用户打开设置即用健康连接做一次短恢复，
             // 不要求重新扫码，也不在已有首屏数据的正常连接上额外刷新。
             _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
+        }
+    }
+
+    @ViewBuilder
+    private func settingsOverview(
+        codexUsage: CodexUsageWindowsDisplay,
+        claudeUsage: CodexUsageWindowsDisplay,
+        tokens: ThemeTokens
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // 额度、设备和连接健康属于同一个状态摘要。始终保持纵向阅读路径，
+            // 避免 iPad Sheet 只有约 548pt 时再次被拆成两张拥挤的仪表盘卡片。
+            VStack(spacing: 0) {
+                CombinedUsageSettingsCard(
+                    codexDisplay: codexUsage,
+                    claudeDisplay: claudeUsage,
+                    includesClaude: sessionStore.hasClaudeRuntimeChannel
+                )
+                .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+                .accessibilityIdentifier("settings.tokenQuota")
+
+                Divider()
+                    .overlay(tokens.border.opacity(0.72))
+                    .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+
+                NavigationLink {
+                    ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
+                } label: {
+                    SettingsMacDevicesSummaryLabel(
+                        currentDevice: currentMacDisplayName,
+                        status: compactConnectionStatusText,
+                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
+                        statusTint: connectionStatusTone(tokens: tokens)
+                    )
+                }
+                .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+                .accessibilityIdentifier("settings.connectionManagement")
+
+                Divider()
+                    .overlay(tokens.border.opacity(0.72))
+                    .padding(.leading, 56)
+                    .padding(.trailing, SettingsLayoutMetrics.rowHorizontalInset)
+
+                NavigationLink {
+                    ConnectionSpeedTestView()
+                } label: {
+                    SettingsStatusSummaryLabel(
+                        title: L10n.text("ui.connection_speed_test"),
+                        detail: connectionSpeedTestSummary,
+                        systemImage: "gauge.with.dots.needle.67percent",
+                        detailTint: connectionSpeedTestTone(tokens: tokens)
+                    )
+                }
+                .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+                .accessibilityIdentifier("settings.connectionSpeedTest")
+            }
+            .background(
+                tokens.surface,
+                in: RoundedRectangle(
+                    cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                    style: .continuous
+                )
+                    .stroke(tokens.border.opacity(0.42), lineWidth: 0.5)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("settings.statusModule")
+
+            if let warningText = connectionWarningText {
+                Label(warningText, systemImage: "exclamationmark.triangle")
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+            }
         }
     }
 
@@ -361,6 +510,11 @@ struct SettingsView: View {
         return appStore.lastConnectionTestDurationMillis == nil ? tokens.secondaryText : tokens.success
     }
 
+    private var currentMacDisplayName: String {
+        appStore.connectionProfileSettingsModel.current?.profile.displayName
+            ?? L10n.text("ui.current_mac")
+    }
+
     private var appLanguageSelection: Binding<AppLanguage> {
         Binding(
             get: { AppLanguage(rawValue: appLanguageRawValue) ?? .system },
@@ -371,139 +525,180 @@ struct SettingsView: View {
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
             get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
-            set: { provider in
-                voiceInputProviderRawValue = provider.rawValue
-            }
+            set: { voiceInputProviderRawValue = $0.rawValue }
+        )
+    }
+
+    private var defaultPermissionModeSelection: Binding<ComposerPermissionMode> {
+        Binding(
+            get: { ComposerPermissionMode.stored(defaultPermissionModeID) },
+            set: { defaultPermissionModeID = $0.rawValue }
         )
     }
 }
 
-private enum ConnectionSettingsDestination: Hashable {
-    case management
-    case speedTest
-}
-
-private struct VoiceInputProviderRow: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let provider: VoiceInputProvider
-    let isSelected: Bool
-    let tokens: ThemeTokens
-    let action: () -> Void
+private struct SettingsMacDevicesSummaryLabel: View {
+    let currentDevice: String
+    let status: String
+    let savedDeviceCount: Int
+    let statusTint: Color
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
-                    providerIcon
-                }
-                .frame(width: 42, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(provider.title)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(provider.subtitle)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue).description")
-                }
-
-                Spacer(minLength: 12)
-
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(isSelected ? tokens.accent : tokens.tertiaryText)
-                    .animation(
-                        reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
-                        value: isSelected
-                    )
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 4)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(provider.title)
-        .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
-        .accessibilityHint(provider.subtitle)
-        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue)")
+        SettingsStatusSummaryLabel(
+            title: L10n.text("ui.mac_devices"),
+            detail: "\(currentDevice) · \(status) · \(savedCount)",
+            systemImage: "desktopcomputer",
+            statusDotTint: statusTint,
+            symbolPointSize: 17
+        )
     }
 
-    @ViewBuilder
-    private var providerIcon: some View {
-        switch provider.icon {
-        case .asset(let name):
-            Image(name)
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                // 资源本身带透明安全边距，略微放大后才会真正填满 42pt 图标位。
-                .frame(width: 48, height: 48)
-                .accessibilityHidden(true)
-        case .system(let name):
-            Image(systemName: name)
-                .font(.system(size: 24, weight: .medium))
-                .symbolRenderingMode(.multicolor)
-                .foregroundStyle(tokens.accent)
-                .accessibilityHidden(true)
-        }
+    private var savedCount: String {
+        L10n.plural("ui.saved_macs_count", count: savedDeviceCount)
     }
 }
 
-private struct SettingsConnectionSummaryCell: View {
+/// 状态模块的两个入口共享同一套双行结构，避免设备行、测速行因内容不同
+/// 产生不一致的高度、图标大小和基线。
+private struct SettingsStatusSummaryLabel: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
 
     let title: String
-    let value: String
-    let tint: Color
-    let systemImage: String?
+    let detail: String
+    let systemImage: String
+    var detailTint: Color? = nil
+    var statusDotTint: Color? = nil
+    var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 8) {
-            Group {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 18, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                } else {
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 8, height: 8)
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.accent)
+                .frame(
+                    width: SettingsLayoutMetrics.iconSlot,
+                    height: SettingsLayoutMetrics.iconSlot
+                )
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+
+                HStack(spacing: 5) {
+                    if let statusDotTint {
+                        Circle()
+                            .fill(statusDotTint)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(detail)
+                        .font(themeStore.uiFont(.footnote))
+                        .monospacedDigit()
+                        .foregroundStyle(detailTint ?? tokens.secondaryText)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .minimumScaleFactor(0.82)
+                        .truncationMode(.tail)
                 }
             }
-            .foregroundStyle(tint)
-            .frame(width: 22, height: 22)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Text(value)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            Spacer(minLength: 3)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(tokens.tertiaryText)
         }
-        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: rowHeight,
+            maxHeight: rowHeight,
+            alignment: .leading
+        )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var rowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? SettingsLayoutMetrics.accessibilityRowHeight
+            : SettingsLayoutMetrics.standardRowHeight
+    }
+}
+
+private struct SettingsValueLabel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let title: String
+    var value: String? = nil
+    let systemImage: String
+    var valueTint: Color? = nil
+    var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.accent)
+                .frame(
+                    width: SettingsLayoutMetrics.iconSlot,
+                    height: SettingsLayoutMetrics.iconSlot
+                )
+                .accessibilityHidden(true)
+
+            if dynamicTypeSize.isAccessibilitySize, let value {
+                VStack(alignment: .leading, spacing: 2) {
+                    titleText(tokens: tokens)
+                    valueText(value, tokens: tokens)
+                }
+            } else if let value {
+                HStack(alignment: .center, spacing: 12) {
+                    titleText(tokens: tokens)
+                    Spacer(minLength: 12)
+                    valueText(value, tokens: tokens)
+                }
+            } else {
+                titleText(tokens: tokens)
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: rowHeight,
+            maxHeight: rowHeight,
+            alignment: .leading
+        )
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func titleText(tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(.body))
+            .foregroundStyle(tokens.primaryText)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            .layoutPriority(1)
+    }
+
+    private func valueText(_ value: String, tokens: ThemeTokens) -> some View {
+        Text(value)
+            .font(themeStore.uiFont(.subheadline))
+            .monospacedDigit()
+            .foregroundStyle(valueTint ?? tokens.secondaryText)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            .minimumScaleFactor(0.82)
+            .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
+    }
+
+    private var rowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? SettingsLayoutMetrics.accessibilityRowHeight
+            : SettingsLayoutMetrics.standardRowHeight
     }
 }
 
@@ -1038,8 +1233,8 @@ private struct AIUsageRefreshButton: View {
         .disabled(isRefreshing)
         .accessibilityLabel(
             isRefreshing
-                ? L10n.format("ui.refreshing_value_usage", "AI")
-                : L10n.format("ui.refresh_value_usage", "AI")
+                ? L10n.format("ui.refreshing_value_usage", L10n.text("ui.token_quota"))
+                : L10n.format("ui.refresh_value_usage", L10n.text("ui.token_quota"))
         )
         .accessibilityIdentifier("settings.aiUsage.refresh")
     }
@@ -1047,7 +1242,6 @@ private struct AIUsageRefreshButton: View {
 
 private struct CombinedUsageSettingsCard: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -1059,67 +1253,78 @@ private struct CombinedUsageSettingsCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Group {
-            // 标准字号下无论 iPhone 或 iPad 都保持“左圆环、右额度”；只有无障碍
-            // 超大字号才回退到上下结构，避免 compact size class 错误改变产品布局。
-            if usesHorizontalLayout {
-                horizontalLayout(tokens: tokens)
-            } else {
+            if dynamicTypeSize.isAccessibilitySize {
                 verticalLayout(tokens: tokens)
+            } else {
+                // 从宽到窄依次尝试：普通 iPad 使用 82pt，iPhone 与窄分屏
+                // 使用 68pt；再窄时才改为上下结构，避免文字被挤压。
+                ViewThatFits(in: .horizontal) {
+                    horizontalLayout(tokens: tokens, metrics: .wide)
+                        .frame(width: SettingsQuotaLayoutMetrics.wide.candidateWidth)
+
+                    horizontalLayout(tokens: tokens, metrics: .compact)
+                        .frame(width: SettingsQuotaLayoutMetrics.compact.candidateWidth)
+
+                    verticalLayout(tokens: tokens)
+                }
             }
         }
-        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
     }
 
-    private var usesHorizontalLayout: Bool {
-        !dynamicTypeSize.isAccessibilitySize
-    }
+    private func horizontalLayout(
+        tokens: ThemeTokens,
+        metrics: SettingsQuotaLayoutMetrics
+    ) -> some View {
+        HStack(alignment: .center, spacing: metrics.clusterSpacing) {
+            usageRings(
+                diameter: metrics.ringDiameter,
+                lineWidth: metrics.ringLineWidth
+            )
+            .frame(width: metrics.ringDiameter, height: metrics.ringDiameter)
 
-    @ViewBuilder
-    private func horizontalLayout(tokens: ThemeTokens) -> some View {
-        let isCompact = horizontalSizeClass == .compact
-
-        if isCompact {
-            // iPhone 的右栏完整容纳名称、百分比和重置时间；刷新入口位于分区标题，
-            // 圆环栏只承担视觉信息，保持三环在左栏中居中。
-            HStack(alignment: .center, spacing: 8) {
-                usageRings(diameter: 124, lineWidth: 10)
-                    .frame(width: 130)
-
-                Divider()
-                    .overlay(tokens.border.opacity(0.7))
-                    .frame(height: 150)
-
-                usageRows(rowVerticalPadding: 3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // 标题、刷新和三条额度共享一个固定宽度的信息组。这样刷新操作
+            // 靠近它影响的内容，百分比也只在组内贴右，不会漂到卡片边缘。
+            VStack(alignment: .leading, spacing: 0) {
+                quotaHeader(tokens: tokens)
+                usageRows(rowHeight: metrics.rowHeight)
             }
-            .frame(minHeight: 150)
-        } else {
-            HStack(alignment: .center, spacing: 18) {
-                usageRings(diameter: 154, lineWidth: 11)
-                    .frame(width: 300)
-
-                Divider()
-                    .overlay(tokens.border.opacity(0.7))
-                    .frame(height: 142)
-
-                usageRows(rowVerticalPadding: 7)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 154)
+            .frame(width: metrics.informationWidth)
         }
+        .padding(.vertical, 4)
+        .frame(minHeight: SettingsLayoutMetrics.quotaSummaryMinimumHeight)
     }
 
     private func verticalLayout(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            usageRings(diameter: 136, lineWidth: 10)
-                .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 10) {
+            quotaHeader(tokens: tokens)
 
-            Divider()
-                .overlay(tokens.border.opacity(0.7))
+            usageRings(
+                diameter: SettingsQuotaLayoutMetrics.compact.ringDiameter,
+                lineWidth: SettingsQuotaLayoutMetrics.compact.ringLineWidth
+            )
+            .frame(maxWidth: .infinity)
 
-            usageRows(rowVerticalPadding: 7)
+            usageRows(rowHeight: dynamicTypeSize.isAccessibilitySize ? 44 : 28)
         }
+        .padding(.vertical, 10)
+    }
+
+    private func quotaHeader(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 8) {
+            Text(L10n.text("ui.token_quota"))
+                .font(themeStore.uiFont(.subheadline, weight: .medium))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            AIUsageRefreshButton(includesClaude: includesClaude)
+        }
+        // 刷新按钮的视觉圆只有 34pt，但仍保留 44pt 点击区；让点击区轻微
+        // 溢出标题行，不增加整个 Token 模块的高度。
+        .frame(height: 34)
     }
 
     private func usageRings(diameter: CGFloat, lineWidth: CGFloat) -> some View {
@@ -1132,7 +1337,7 @@ private struct CombinedUsageSettingsCard: View {
     }
 
     @ViewBuilder
-    private func usageRows(rowVerticalPadding: CGFloat) -> some View {
+    private func usageRows(rowHeight: CGFloat) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let items = usageItems
 
@@ -1149,10 +1354,10 @@ private struct CombinedUsageSettingsCard: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(items) { item in
-                    CombinedUsageWindowRow(item: item)
-                        .padding(.vertical, rowVerticalPadding)
+                    CombinedUsageWindowRow(item: item, minimumHeight: rowHeight)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1173,21 +1378,21 @@ private struct CombinedUsageWindowRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let item: CombinedUsageItem
+    let minimumHeight: CGFloat
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .center, spacing: 8) {
-            // 左列统一从服务名称起始位置对齐，右列百分比固定贴右；
-            // HStack 的 center 对齐让百分比位于两行文字的垂直中心。
+        HStack(alignment: .center, spacing: 12) {
             HStack(alignment: .center, spacing: 6) {
                 Circle()
                     .fill(item.tint)
-                    .frame(width: 8, height: 8)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text("\(item.providerName) · \(item.window.label)")
-                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
@@ -1199,10 +1404,11 @@ private struct CombinedUsageWindowRow: View {
                         .minimumScaleFactor(0.76)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 12)
 
             Text(item.window.remainingPercentText ?? "—")
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(
                     item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
@@ -1210,7 +1416,7 @@ private struct CombinedUsageWindowRow: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
-        .frame(minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: minimumHeight)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
@@ -1254,84 +1460,6 @@ private struct InitialPairingView: View {
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .background(tokens.background.ignoresSafeArea())
-    }
-}
-
-private struct DefaultPermissionView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Form {
-            Section {
-                ForEach(ComposerPermissionMode.allCases) { mode in
-                    PermissionModeRow(
-                        mode: mode,
-                        isSelected: selectedMode == mode,
-                        tokens: tokens
-                    ) {
-                        defaultPermissionModeID = mode.rawValue
-                    }
-                }
-            } header: {
-                Text(L10n.text("ui.default_permissions_for_new_conversations"))
-            } footer: {
-                Text(L10n.text("ui.default_run_permissions_for_new_input_areas_and"))
-            }
-            .listRowBackground(tokens.elevatedSurface)
-        }
-        .themedSettingsForm(tokens: tokens)
-        .navigationTitle(L10n.text("ui.default_permissions"))
-        .tint(tokens.accent)
-    }
-
-    private var selectedMode: ComposerPermissionMode {
-        ComposerPermissionMode.stored(defaultPermissionModeID)
-    }
-}
-
-private struct PermissionModeRow: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    let mode: ComposerPermissionMode
-    let isSelected: Bool
-    let tokens: ThemeTokens
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
-                    Image(systemName: mode.systemImage)
-                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
-                }
-                .frame(width: 42, height: 42)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(mode.title)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(mode.detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(tokens.accent)
-                }
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 4)
-        }
-        .buttonStyle(.plain)
     }
 }
 
