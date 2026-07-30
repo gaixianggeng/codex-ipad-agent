@@ -1530,4 +1530,231 @@ extension ConversationDataFlowTests {
         let fullPage = try await fullTask.value
         XCTAssertEqual(fullPage.loadMode, .full)
     }
+
+    // 回归：Claude bridge 的 turn/completed 可能先于 turn/start ACK。终态通知必须胜出，
+    // 否则迟到 ACK 会复活旧 turn，后续输入只能等到刷新 thread 才能继续。
+    func testClaudeTerminalNotificationBeforeTurnStartACKDoesNotReviveCompletedTurn() async throws {
+        let project = AgentProject(id: "proj_claude_terminal_ack", name: "Claude Terminal ACK", path: "/tmp/claude-terminal-ack")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            turnInterruptRecoveryDelaysNanoseconds: [],
+            configProvider: {
+                makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()])
+            }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "快速完成",
+                resumeID: "",
+                clientMessageID: "client_claude_terminal_1"
+            ))
+        }
+
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-claude-bridge","platformFamily":"macos"}"#
+        )
+
+        let threadStart = try await waitForFakeAppServerRequest(transport, method: "thread/start", after: 1)
+        transportResponse(
+            transport,
+            id: threadStart.id,
+            result: #"{"thread":{"id":"thr_claude_terminal_ack","sessionId":"thr_claude_terminal_ack","preview":"快速完成","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"idle"},"path":null,"cwd":"/tmp/claude-terminal-ack","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Claude 快速完成","turns":[]}}"#
+        )
+
+        let firstTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: 2)
+        XCTAssertEqual(firstTurnStart.params?.objectValue?["threadId"]?.stringValue, "thr_claude_terminal_ack")
+
+        // bridge 使用嵌套 turn.id，且完成通知先于对应 RPC response 到达。
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack","turn":{"id":"turn_claude_terminal_1","status":"completed"}}}"#)
+        transportResponse(
+            transport,
+            id: firstTurnStart.id,
+            result: #"{"turn":{"id":"turn_claude_terminal_1","items":[],"itemsView":{"type":"complete"},"status":"completed","error":null,"startedAt":1780490902,"completedAt":1780490903,"durationMs":1}}"#
+        )
+
+        let created = try await createTask.value
+        XCTAssertNil(created.session.activeTurnID, "迟到 ACK 不得把已完成 turn 重新写回 activeTurnID")
+
+        // 第一轮已终态后应能立即发起下一轮，无需刷新 thread。
+        let messagesBeforeFollowUp = await transport.sentMessages()
+        let followUpTask = Task {
+            try await runtime.startTurn(
+                sessionID: "thr_claude_terminal_ack",
+                payload: CodexAppServerTurnPayload(prompt: "继续"),
+                clientMessageID: "client_claude_terminal_2"
+            )
+        }
+        let followUpStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeFollowUp.count
+        )
+        transportResponse(
+            transport,
+            id: followUpStart.id,
+            result: #"{"turn":{"id":"turn_claude_terminal_2","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490904,"completedAt":null,"durationMs":null}}"#
+        )
+        let followUpTurnID = try await followUpTask.value
+        XCTAssertEqual(followUpTurnID, "turn_claude_terminal_2")
+
+        // 若 ACK 等待期间已经观察到另一轮 turn/started，旧 ACK 同样不能覆盖较新的 active turn。
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack","turnId":"turn_claude_terminal_2"}}"#)
+        for _ in 0..<200 {
+            let activeTurnID = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+            if activeTurnID == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        // 即使 completion 通知丢失，ACK 自身已经是 completed 也必须直接收敛为终态。
+        let messagesBeforeTerminalACK = await transport.sentMessages()
+        let terminalACKTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: "thr_claude_terminal_ack",
+                payload: CodexAppServerTurnPayload(prompt: "ACK 已终态"),
+                clientMessageID: "client_claude_terminal_3"
+            )
+        }
+        let terminalACKStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeTerminalACK.count
+        )
+        transportResponse(
+            transport,
+            id: terminalACKStart.id,
+            result: #"{"turn":{"id":"turn_claude_terminal_3","items":[],"itemsView":{"type":"complete"},"status":"completed","error":null,"startedAt":1780490905,"completedAt":1780490906,"durationMs":1}}"#
+        )
+        let terminalACKOutcome = try await terminalACKTask.value
+        XCTAssertEqual(
+            terminalACKOutcome,
+            .terminal(turnID: "turn_claude_terminal_3")
+        )
+        let activeAfterTerminalACK = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+        XCTAssertNil(activeAfterTerminalACK)
+
+        // pending start 窗口里的无 ID completion 可能是连接重放，不能伪造新 turn 已完成。
+        let messagesBeforeUnidentifiedReplay = await transport.sentMessages()
+        let unidentifiedReplayTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: "thr_claude_terminal_ack",
+                payload: CodexAppServerTurnPayload(prompt: "忽略旧重放"),
+                clientMessageID: "client_claude_terminal_4"
+            )
+        }
+        let unidentifiedReplayStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeUnidentifiedReplay.count
+        )
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack"}}"#)
+        transportResponse(
+            transport,
+            id: unidentifiedReplayStart.id,
+            result: #"{"turn":{"id":"turn_claude_unidentified_replay","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490907,"completedAt":null,"durationMs":null}}"#
+        )
+        let unidentifiedReplayOutcome = try await unidentifiedReplayTask.value
+        XCTAssertEqual(
+            unidentifiedReplayOutcome,
+            .active(turnID: "turn_claude_unidentified_replay")
+        )
+        let activeAfterUnidentifiedReplay = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+        XCTAssertEqual(activeAfterUnidentifiedReplay, "turn_claude_unidentified_replay")
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack","turnId":"turn_claude_unidentified_replay"}}"#)
+        for _ in 0..<200 {
+            let current = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+            if current == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let messagesBeforeRacingTurn = await transport.sentMessages()
+        let racingTurnTask = Task {
+            try await runtime.startTurn(
+                sessionID: "thr_claude_terminal_ack",
+                payload: CodexAppServerTurnPayload(prompt: "第三轮"),
+                clientMessageID: "client_claude_terminal_5"
+            )
+        }
+        let racingTurnStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeRacingTurn.count
+        )
+        transport.enqueue(#"{"method":"turn/started","params":{"threadId":"thr_claude_terminal_ack","turn":{"id":"turn_claude_external_new","status":"inProgress"}}}"#)
+        transportResponse(
+            transport,
+            id: racingTurnStart.id,
+            result: #"{"turn":{"id":"turn_claude_terminal_5","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490908,"completedAt":null,"durationMs":null}}"#
+        )
+        let racingTurnID = try await racingTurnTask.value
+        XCTAssertNil(racingTurnID, "迟到 ACK 不应向上层暴露可复活旧状态的 turnID")
+
+        // 更旧 turn 的平铺 turnId 完成通知也不能清掉已经开始的新 turn。
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack","turnId":"turn_claude_older"}}"#)
+        for _ in 0..<200 {
+            let activeTurnID = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+            if activeTurnID == "turn_claude_external_new" {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        var activeTurnID = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+        XCTAssertEqual(activeTurnID, "turn_claude_external_new", "旧完成通知不得清掉当前新 turn")
+
+        // 无 turn ID 的旧协议 completion 也不能再猜测并清空当前新 turn。
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack"}}"#)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        activeTurnID = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+        XCTAssertEqual(activeTurnID, "turn_claude_external_new")
+
+        // thread/closed 是不可继续边界，迟到的 ACK 既不能复活 thread，也不能让 FIFO 自动续发。
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_claude_terminal_ack","turnId":"turn_claude_external_new"}}"#)
+        for _ in 0..<200 {
+            let current = await runtime.contextsBySessionID["thr_claude_terminal_ack"]?.activeTurnID
+            if current == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let messagesBeforeClosedTurn = await transport.sentMessages()
+        let closedTurnTask = Task {
+            try await runtime.startTurnOutcome(
+                sessionID: "thr_claude_terminal_ack",
+                payload: CodexAppServerTurnPayload(prompt: "关闭边界"),
+                clientMessageID: "client_claude_terminal_6"
+            )
+        }
+        let closedTurnStart = try await waitForFakeAppServerRequest(
+            transport,
+            method: "turn/start",
+            after: messagesBeforeClosedTurn.count
+        )
+        transport.enqueue(#"{"method":"thread/closed","params":{"threadId":"thr_claude_terminal_ack"}}"#)
+        transportResponse(
+            transport,
+            id: closedTurnStart.id,
+            result: #"{"turn":{"id":"turn_claude_terminal_6","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490909,"completedAt":null,"durationMs":null}}"#
+        )
+        let closedTurnOutcome = try await closedTurnTask.value
+        XCTAssertEqual(
+            closedTurnOutcome,
+            .threadClosed(turnID: "turn_claude_terminal_6")
+        )
+        let closedContext = await runtime.contextsBySessionID["thr_claude_terminal_ack"]
+        XCTAssertEqual(closedContext?.session.status, "closed")
+        XCTAssertNil(closedContext?.activeTurnID)
+    }
 }

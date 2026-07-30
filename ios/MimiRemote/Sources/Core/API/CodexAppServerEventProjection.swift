@@ -230,6 +230,17 @@ extension CodexAppServerSessionRuntime {
             guard let threadID = params["threadId"]?.stringValue else {
                 return
             }
+            let turnID = completedTurnID(from: params)
+            if runtimeProvider == "claude", turnID == nil {
+                // 无法关联 turn 的完成通知不能直接清理当前 active；handle() 会改走权威历史对账。
+                return
+            }
+            if let activeTurnID = contextsBySessionID[threadID]?.activeTurnID,
+               let turnID,
+               activeTurnID != turnID {
+                // 旧 turn 的完成通知可能晚于下一轮 turn/started；不能因此清掉当前新 turn。
+                return
+            }
             _ = withUpdatedSession(threadID) { item in
                 item.activeTurnID = nil
                 item.status = "running"

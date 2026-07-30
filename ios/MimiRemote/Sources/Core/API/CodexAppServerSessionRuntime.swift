@@ -72,6 +72,31 @@ struct CodexAppServerTurnInterruptRecoveryTask {
     let task: Task<Void, Never>
 }
 
+enum CodexAppServerTurnStartOutcome: Equatable {
+    // RPC 已接受，且当前仍是这一轮或尚在等待 turn/started。
+    case active(turnID: TurnID?)
+    // RPC 已接受，但 ACK 到达前已观察到终态；上层应完成发送，不再建立 start barrier。
+    case terminal(turnID: TurnID?)
+    // RPC 已接受，但实时事件已推进到另一轮；上层应绑定权威 active turn。
+    case superseded(turnID: TurnID?, activeTurnID: TurnID)
+    // thread 已关闭；本次发送已由 RPC 接受，但同一 thread 上不能继续自动派发。
+    case threadClosed(turnID: TurnID?)
+
+    var activeTurnID: TurnID? {
+        guard case .active(let turnID) = self else {
+            return nil
+        }
+        return turnID
+    }
+}
+
+struct CodexAppServerPendingTurnStartObservation {
+    let attemptID: UUID
+    var terminalTurnIDs: Set<TurnID> = []
+    var sawUnidentifiedTerminal = false
+    var threadClosed = false
+}
+
 enum CodexAppServerBufferedEventReplayPolicy {
     case all
     case stateOnly
@@ -116,6 +141,11 @@ actor CodexAppServerSessionRuntime {
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
     var sessionsStartingTurn: Set<SessionID> = []
+    // Claude bridge 可能先推送 turn/completed，随后才返回 turn/start ACK。只在对应 RPC 真正
+    // 等待回执的窗口记录终态，回执或错误到达后立即清理，避免历史重放污染下一次发送。
+    var pendingTurnStartObservationsBySessionID: [
+        SessionID: CodexAppServerPendingTurnStartObservation
+    ] = [:]
     // 本端这条 runtime 亲自发起过的 turn。app-server 在 resume 时会重放“仍未应答”的审批；只有属于这些
     // turn 的审批才是当前用户真正在等待的，其余（Desktop 发起、或历史里没 terminal 化的旧审批）需要按
     // 过期处理。即使本端的审批挂了很久也不能误杀，所以单列出来优先放行。
@@ -128,7 +158,9 @@ actor CodexAppServerSessionRuntime {
     var stateDBOnlyListUnavailable = false
     var stateDBOnlyScanRequiredCWDs: Set<String> = []
     var recencySortUnavailable = false
-    var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
+    var turnStartTasksBySessionID: [
+        SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
+    ] = [:]
     // turn/interrupt 的 RPC ACK 与 turn/completed 通知是两条独立链路。通知若落在连接切换窗口，
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
@@ -690,15 +722,14 @@ actor CodexAppServerSessionRuntime {
         }
 
         if !turnPayload.isEmpty {
-            let turnID = try await startTurn(
+            _ = try await startTurnOutcome(
                 sessionID: session.id,
                 payload: turnPayload,
                 clientMessageID: payload.clientMessageID
             )
-            session = withUpdatedSession(session.id) { item in
-                item.status = "running"
-                item.activeTurnID = turnID
-            } ?? session
+            // 通知可能在 turn/start ACK 前已经把会话推进到 terminal/closed/下一轮。
+            // 直接采用 Runtime 的最新投影，不能用 ACK 再无条件覆盖。
+            session = contextsBySessionID[session.id]?.session ?? session
         }
 
         return CreateSessionResponse(
@@ -730,6 +761,7 @@ actor CodexAppServerSessionRuntime {
         _ = try await sendRecoveringFromStaleInitialization(spec)
         if archived {
             contextsBySessionID.removeValue(forKey: id)
+            pendingTurnStartObservationsBySessionID.removeValue(forKey: id)
             threadHistoryCacheBySessionID.removeValue(forKey: id)
             threadAuthoritativeCompletedTurnItemsBySessionID.removeValue(forKey: id)
         }
@@ -1554,8 +1586,20 @@ actor CodexAppServerSessionRuntime {
 
     @discardableResult
     func startTurn(sessionID: SessionID, payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) async throws -> TurnID? {
+        try await startTurnOutcome(
+            sessionID: sessionID,
+            payload: payload,
+            clientMessageID: clientMessageID
+        ).activeTurnID
+    }
+
+    func startTurnOutcome(
+        sessionID: SessionID,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID?
+    ) async throws -> CodexAppServerTurnStartOutcome {
         guard !payload.isEmpty else {
-            return nil
+            return .active(turnID: nil)
         }
         let previous = turnStartTasksBySessionID[sessionID]?.task
         let token = UUID()
@@ -1577,7 +1621,11 @@ actor CodexAppServerSessionRuntime {
     }
 
     @discardableResult
-    func performStartTurn(sessionID: SessionID, payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) async throws -> TurnID? {
+    func performStartTurn(
+        sessionID: SessionID,
+        payload: CodexAppServerTurnPayload,
+        clientMessageID: ClientMessageID?
+    ) async throws -> CodexAppServerTurnStartOutcome {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
@@ -1593,9 +1641,11 @@ actor CodexAppServerSessionRuntime {
         }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
         let result: CodexAppServerJSONValue?
+        var responseObservation: CodexAppServerPendingTurnStartObservation?
         var didRetryAfterStaleInitialization = false
         while true {
             let connection = try await ensureConnection()
+            var activeAttemptID: UUID?
             do {
                 try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
                 if let activeTurnID = contextsBySessionID[sessionID]?.activeTurnID {
@@ -1605,14 +1655,26 @@ actor CodexAppServerSessionRuntime {
                         activeTurnID: activeTurnID
                     )
                 }
+                let attemptID = beginPendingTurnStartObservation(sessionID: sessionID)
+                activeAttemptID = attemptID
                 result = try await connection.send(try builder.turnStart(
                     threadID: sessionID,
                     cwd: context.cwd,
                     payload: payload,
                     clientMessageID: clientMessageID
                 ), timeout: longRunningRequestTimeout)
+                responseObservation = takePendingTurnStartObservation(
+                    sessionID: sessionID,
+                    attemptID: attemptID
+                )
                 break
             } catch {
+                if let activeAttemptID {
+                    _ = takePendingTurnStartObservation(
+                        sessionID: sessionID,
+                        attemptID: activeAttemptID
+                    )
+                }
                 if !didRetryAfterStaleInitialization,
                    await recoverConnectionAfterStaleInitialization(connection, error: error) {
                     didRetryAfterStaleInitialization = true
@@ -1633,15 +1695,87 @@ actor CodexAppServerSessionRuntime {
                 throw error
             }
         }
-        let turnID = result?["turn"]?.objectValue?["id"]?.stringValue
+        let responseTurn = result?["turn"]?.objectValue
+        let turnID = responseTurn?["id"]?.stringValue
         if let turnID {
             turnsStartedByThisRuntime.insert(turnID)
+        }
+        guard let latestContext = contextsBySessionID[sessionID] else {
+            return .threadClosed(turnID: turnID)
+        }
+        let currentActiveTurnID = latestContext.activeTurnID
+        if responseObservation?.threadClosed == true
+            || latestContext.session.status == "closed" {
+            return .threadClosed(turnID: turnID)
+        }
+        if let currentActiveTurnID,
+           turnID == nil || currentActiveTurnID != turnID {
+            // ACK 等待期间已经出现更新 turn；旧 ACK 只完成原消息的发送对账。
+            return .superseded(turnID: turnID, activeTurnID: currentActiveTurnID)
+        }
+        let terminalFromNotification = responseObservation.map {
+            turnStartObservationMatchesTerminal($0, turnID: turnID)
+        } ?? false
+        let terminalFromResponse = responseTurnIsTerminal(responseTurn)
+        if terminalFromNotification || terminalFromResponse {
+            if currentActiveTurnID == nil || currentActiveTurnID == turnID {
+                _ = withUpdatedSession(sessionID) { item in
+                    item.activeTurnID = nil
+                }
+            }
+            let knownTerminalWasAlreadyProjected = turnID.map {
+                responseObservation?.terminalTurnIDs.contains($0) == true
+            } ?? false
+            if !knownTerminalWasAlreadyProjected {
+                let lifecycle = responseTurn.map {
+                    historyTurnLifecycle(
+                        $0,
+                        isInProgress: false,
+                        completedAt: firstDate(in: $0, keys: ["completedAt", "completed_at"])
+                    )
+                } ?? .completed
+                // ACK 自身已终态或旧协议 completion 无 ID 时，补一条可精确关联的完成事件，
+                // 让消息状态与 FIFO 都能收敛，不依赖手动刷新。
+                emit(
+                    .turnCompleted(
+                        metadata(threadID: sessionID, turnID: turnID)
+                            .withTurnLifecycle(lifecycle)
+                    )
+                )
+            }
+            return .terminal(turnID: turnID)
         }
         _ = withUpdatedSession(sessionID) { item in
             item.status = "running"
             item.activeTurnID = turnID
         }
-        return turnID
+        if responseObservation?.sawUnidentifiedTerminal == true,
+           let turnID {
+            // 无 ID completion 可能是连接重放，不能据此宣告本次 turn 已完成。
+            // 先保留 ACK 的 active 状态，再以权威 turns 页有界确认真实终态。
+            scheduleTurnInterruptRecovery(sessionID: sessionID, turnID: turnID)
+        }
+        return .active(turnID: turnID)
+    }
+
+    func beginPendingTurnStartObservation(sessionID: SessionID) -> UUID {
+        let attemptID = UUID()
+        pendingTurnStartObservationsBySessionID[sessionID] = CodexAppServerPendingTurnStartObservation(
+            attemptID: attemptID
+        )
+        return attemptID
+    }
+
+    func takePendingTurnStartObservation(
+        sessionID: SessionID,
+        attemptID: UUID
+    ) -> CodexAppServerPendingTurnStartObservation? {
+        guard let observation = pendingTurnStartObservationsBySessionID[sessionID],
+              observation.attemptID == attemptID else {
+            return nil
+        }
+        pendingTurnStartObservationsBySessionID.removeValue(forKey: sessionID)
+        return observation
     }
 
     nonisolated static func activeTurnIDFromConflict(_ error: Error) -> TurnID? {
@@ -2544,6 +2678,29 @@ actor CodexAppServerSessionRuntime {
         }
         updateTerminalInteractionBarrier(from: notification)
         recordLiveSignal(from: notification)
+        recordPendingTurnStartBoundary(from: notification)
+        if runtimeProvider == "claude",
+           notification.method == "turn/completed" {
+            let params = notification.params?.objectValue ?? [:]
+            if let threadID = params["threadId"]?.stringValue,
+               completedTurnID(from: params) == nil {
+                // 无 ID completion 无法安全区分旧 turn 与当前新 turn。禁止猜测 activeTurnID，
+                // 以最新历史页做精确终态对账；若 ACK 仍挂起，则 ACK 还会补出带 ID 的完成事件。
+                if let activeTurnID = contextsBySessionID[threadID]?.activeTurnID {
+                    scheduleTurnInterruptRecovery(
+                        sessionID: threadID,
+                        turnID: activeTurnID
+                    )
+                }
+                if let replaySequence = notification.replaySequence {
+                    acknowledgeAppliedReplayBoundary(
+                        replaySequence,
+                        epoch: replayCursorEpoch
+                    )
+                }
+                return
+            }
+        }
         updateContext(from: notification)
         let resolved = clearResolvedServerRequest(from: notification)
         if notification.method == "serverRequest/resolved" {
