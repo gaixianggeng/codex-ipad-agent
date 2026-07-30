@@ -230,6 +230,17 @@ extension CodexAppServerSessionRuntime {
             guard let threadID = params["threadId"]?.stringValue else {
                 return
             }
+            let turnID = completedTurnID(from: params)
+            if runtimeProvider == "claude", turnID == nil {
+                // 无法关联 turn 的完成通知不能直接清理当前 active；handle() 会改走权威历史对账。
+                return
+            }
+            if let activeTurnID = contextsBySessionID[threadID]?.activeTurnID,
+               let turnID,
+               activeTurnID != turnID {
+                // 旧 turn 的完成通知可能晚于下一轮 turn/started；不能因此清掉当前新 turn。
+                return
+            }
             _ = withUpdatedSession(threadID) { item in
                 item.activeTurnID = nil
                 item.status = "running"
@@ -1616,6 +1627,13 @@ extension CodexAppServerSessionRuntime {
             params["itemId"]?.stringValue,
             params["item_id"]?.stringValue
         ].compactMap { $0 })
+        let tombstoneTime = Date()
+        for id in ids {
+            resolvedServerRequestTombstonesByKey[
+                resolvedRequestTombstoneKey(sessionID: sessionID, requestID: id)
+            ] = tombstoneTime
+        }
+        pruneInteractionTombstones()
 
         var resolved = CodexAppServerResolvedServerRequests()
         for id in ids {
@@ -1638,10 +1656,44 @@ extension CodexAppServerSessionRuntime {
         }
         if let sessionID,
            !resolved.approvalSessionIDs.contains(sessionID),
-           !resolved.userInputSessionIDs.contains(sessionID) {
+           !resolved.userInputSessionIDs.contains(sessionID),
+           terminalSessionBarriers[sessionID] == nil {
             resolved.approvalSessionIDs.append(sessionID)
         }
+        discardBufferedResolvedInteractionRequests(sessionID: sessionID, requestIDs: Set(ids))
         return resolved
+    }
+
+    func discardBufferedResolvedInteractionRequests(
+        sessionID: SessionID?,
+        requestIDs: Set<String>
+    ) {
+        guard !requestIDs.isEmpty else {
+            return
+        }
+        let sessionIDs = sessionID.map { [$0] } ?? Array(bufferedEventsBySessionID.keys)
+        for candidateSessionID in sessionIDs {
+            guard var events = bufferedEventsBySessionID[candidateSessionID] else {
+                continue
+            }
+            events.removeAll { event in
+                switch event {
+                case .approvalRequest(let request, let metadata):
+                    return requestIDs.contains(request.id)
+                        || metadata.itemID.map(requestIDs.contains) == true
+                case .userInputRequest(let request, let metadata):
+                    return requestIDs.contains(request.id)
+                        || metadata.itemID.map(requestIDs.contains) == true
+                default:
+                    return false
+                }
+            }
+            if events.isEmpty {
+                bufferedEventsBySessionID.removeValue(forKey: candidateSessionID)
+            } else {
+                bufferedEventsBySessionID[candidateSessionID] = events
+            }
+        }
     }
 
     func clearAllPendingServerRequests() -> CodexAppServerResolvedServerRequests {
@@ -1749,23 +1801,29 @@ extension CodexAppServerSessionRuntime {
         if lower.contains("approval") {
             return true
         }
-        let params = request.params?.objectValue ?? [:]
-        // URL 型 elicitation 和 Codex 明确标记的工具调用都走审批；普通 form 仍是补充信息。
+        // URL 与带精确协议标记的 Codex MCP 工具调用使用明确的授权交互。
         return request.method == "mcpServer/elicitation/request"
-            && (params["mode"]?.stringValue == "url"
-                || CodexMCPToolApprovalProtocol.isToolCall(params))
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .confirmation
     }
 
     func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
         if request.method == "item/tool/requestUserInput" {
             return true
         }
-        let params = request.params?.objectValue ?? [:]
-        // form/openai-form 都投影到现有补充信息卡；Codex 工具审批例外，避免空 schema
-        // 被渲染成虚假的“补充信息”输入框。
+        // 只有能被当前 UI 完整表达的 form 才进入补充信息卡。
         return request.method == "mcpServer/elicitation/request"
-            && params["mode"]?.stringValue != "url"
-            && !CodexMCPToolApprovalProtocol.isToolCall(params)
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .form
+    }
+
+    func isUnsupportedMCPElicitation(_ request: CodexAppServerServerRequest) -> Bool {
+        request.method == "mcpServer/elicitation/request"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .unsupported
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {

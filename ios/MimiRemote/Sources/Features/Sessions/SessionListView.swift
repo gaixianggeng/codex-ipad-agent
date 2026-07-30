@@ -108,6 +108,36 @@ struct SessionRuntimeBadge: View {
     }
 }
 
+/// 置顶属于用户主动设置的稳定状态，用品牌紫实底与白色钉子提升扫读辨识度。
+/// 组件统一服务规划 Tab、工作区最近规划和侧栏，避免三个入口各自使用不同强调方式。
+struct SessionPinnedBadge: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var compact = false
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let side: CGFloat = compact ? 17 : 20
+
+        Image(systemName: "pin.fill")
+            .font(themeStore.uiFont(size: compact ? 8 : 10, weight: .bold))
+            .foregroundStyle(tokens.primaryActionForeground)
+            .frame(width: side, height: side)
+            .background(
+                tokens.primaryAction,
+                in: RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                    .stroke(tokens.primaryActionForeground.opacity(0.18), lineWidth: 0.5)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(L10n.text("ui.pinned"))
+            .fixedSize()
+    }
+}
+
 /// 会话索引只用品牌图标表达运行时身份，避免名称胶囊和标题争夺横向空间。
 /// 尺寸由使用方传入，以便与同一行的 Git 图标保持一致；运行态保留品牌色，
 /// 历史态统一降为灰色，让颜色只承担“仍在进行”的状态提示。
@@ -574,7 +604,9 @@ struct SessionIndexRow: View {
             }
 
             HStack(spacing: 6) {
-                if isPinned { Image(systemName: "pin.fill") }
+                if isPinned {
+                    SessionPinnedBadge(compact: style == .sidebar)
+                }
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
@@ -651,7 +683,8 @@ struct SessionIndexRow: View {
         }
         .padding(.horizontal, style == .sidebar ? 10 : 14)
         .padding(.vertical, style == .sidebar ? 6 : 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // 视觉仍保持紧凑，但整个会话行至少保留 44pt，兼顾触控、指针和全键盘访问。
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .background(rowBackground(tokens: tokens), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(alignment: .leading) {
             if isSelected {

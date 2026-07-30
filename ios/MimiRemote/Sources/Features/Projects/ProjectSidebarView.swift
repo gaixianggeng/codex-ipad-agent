@@ -1168,10 +1168,7 @@ private struct SessionRow: View, Equatable {
                     .fill(statusDotColor)
                     .frame(width: 6, height: 6)
                 if isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(themeStore.uiFont(size: 11, weight: .semibold))
-                        .foregroundStyle(isSelected ? tokens.secondaryText : tokens.tertiaryText)
-                        .accessibilityLabel(L10n.text("ui.pinned"))
+                    SessionPinnedBadge(compact: true)
                 }
                 if isArchived {
                     Image(systemName: "archivebox.fill")
@@ -1219,7 +1216,8 @@ private struct SessionRow: View, Equatable {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        // 内容密度不变，命中区域单独扩到 44pt，避免侧栏紧凑模式牺牲触控可用性。
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .background {
             SidebarSelectionBackground(
                 isSelected: isSelected,

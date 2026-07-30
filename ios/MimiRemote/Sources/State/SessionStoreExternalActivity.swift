@@ -61,8 +61,7 @@ extension SessionStore {
     ) -> Bool {
         guard appStore.activeHostScope == hostScope,
               sessionsByID[sessionID] != nil,
-              case .accepted(let acceptedTurnID) = outcome,
-              let acceptedTurnID else {
+              let acceptedTurnID = acceptedTurnID(from: outcome) else {
             return false
         }
         let normalizedTurnID = acceptedTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -75,6 +74,21 @@ extension SessionStore {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return externalTurnID == normalizedTurnID ||
             (externalReadOnlySessionIDs.contains(sessionID) && sessionTurnID == normalizedTurnID)
+    }
+
+    func acceptedTurnID(from outcome: TurnSendOutcome) -> TurnID? {
+        switch outcome {
+        case .accepted(let turnID),
+             .acceptedTerminal(let turnID),
+             .acceptedThreadClosed(let turnID):
+            return turnID
+        case .acceptedSuperseded(let turnID, _):
+            return turnID
+        case .activeTurnConflict,
+             .rejected,
+             .uncertain:
+            return nil
+        }
     }
 
     func externalActivityPollingDelayNanoseconds() -> UInt64 {
@@ -298,6 +312,178 @@ extension SessionStore {
             clearWorkspaceUnavailable(projectID)
         } catch {
             // 活动 API 已给出可靠运行态；列表补拉失败时保留已有行，下一次轮询继续重试未知线程。
+        }
+    }
+
+    func handleTurnSendOutcome(
+        clientMessageID: ClientMessageID?,
+        sessionID: SessionID,
+        outcome: TurnSendOutcome
+    ) {
+        let recoveredExternalMisclassification: Bool
+        if let turnID = acceptedTurnID(from: outcome) {
+            // terminal / superseded 也可能在 ACK 回到 MainActor 前被外部活动轮询误判。
+            // 所有带精确 turnID 的 accepted outcome 都必须先撤销只读 tombstone。
+            let shouldRestoreSelectedConnection: Bool
+            switch outcome {
+            case .accepted, .acceptedSuperseded:
+                shouldRestoreSelectedConnection = true
+            case .acceptedTerminal, .acceptedThreadClosed,
+                 .activeTurnConflict, .rejected, .uncertain:
+                // 已终态或已关闭时不先复活旧连接；若仍有队列，finishAccepted 会按需建链。
+                shouldRestoreSelectedConnection = false
+            }
+            recoveredExternalMisclassification = recordLocallyStartedTurn(
+                sessionID: sessionID,
+                turnID: turnID,
+                restoreSelectedConnection: shouldRestoreSelectedConnection
+            )
+        } else {
+            recoveredExternalMisclassification = false
+        }
+        guard let clientMessageID else { return }
+
+        func finishAccepted(_ disposition: QueuedTurnAcceptedDisposition) {
+            let disposition = reconciledAcceptedDisposition(
+                sessionID: sessionID,
+                disposition: disposition
+            )
+            if !handleQueuedSendAccepted(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                disposition: disposition
+            ) {
+                conversationStore.updateSendStatus(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    status: .sent
+                )
+                conversationStore.compactTurnPayloadAfterSendAccepted(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID
+                )
+                // 非队列消息同样需要 compare-and-apply，防止 outcome 排队到 MainActor
+                // 期间覆盖已经到达的更新 turn。
+                switch disposition {
+                case .terminal(let turnID):
+                    let terminalStatus = turnID.flatMap {
+                        conversationStore.turnLifecycle(sessionID: sessionID, turnID: $0)
+                    } == .failed ? SessionStatus.failed : .completed
+                    updateSession(sessionID) { session in
+                        guard session.activeTurnID == nil
+                                || session.activeTurnID == turnID else {
+                            return
+                        }
+                        session.status = terminalStatus.rawValue
+                        session.activeTurnID = nil
+                    }
+                case .superseded(let turnID, let activeTurnID):
+                    updateSession(sessionID) { session in
+                        guard session.activeTurnID == nil
+                                || session.activeTurnID == turnID
+                                || session.activeTurnID == activeTurnID else {
+                            return
+                        }
+                        session.status = SessionStatus.running.rawValue
+                        session.activeTurnID = activeTurnID
+                    }
+                case .threadClosed(let turnID):
+                    updateSession(sessionID) { session in
+                        guard session.activeTurnID == nil
+                                || session.activeTurnID == turnID else {
+                            return
+                        }
+                        session.status = "closed"
+                        session.activeTurnID = nil
+                    }
+                case .awaitingStart, .guidance:
+                    break
+                }
+            }
+        }
+
+        switch outcome {
+        case .accepted(let turnID):
+            finishAccepted(.awaitingStart(turnID: turnID))
+            if recoveredExternalMisclassification,
+               selectedSessionID != sessionID,
+               queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
+                // external snapshot 会停止后台队列 socket。ACK 对账成功且仍有后续项时，
+                // 重新建立监听，让 FIFO 能在当前 turn 完成后继续派发。
+                ensureQueuedSessionMonitoring(sessionID: sessionID)
+            }
+        case .acceptedTerminal(let turnID):
+            finishAccepted(.terminal(turnID: turnID))
+        case .acceptedSuperseded(let turnID, let activeTurnID):
+            finishAccepted(.superseded(
+                turnID: turnID,
+                activeTurnID: activeTurnID
+            ))
+            if recoveredExternalMisclassification,
+               selectedSessionID != sessionID,
+               queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
+                // external snapshot 已停止后台队列 socket；当前权威 turn 完成前必须恢复监听。
+                ensureQueuedSessionMonitoring(sessionID: sessionID)
+            }
+        case .acceptedThreadClosed(let turnID):
+            finishAccepted(.threadClosed(turnID: turnID))
+        case .activeTurnConflict(let activeTurnID, let message):
+            // 这是“新消息未被接受”，不是原会话失败。恢复权威 active turn，
+            // 并保留已有审批/补充问题；排队项回到等待态，待原 turn 完成后再发。
+            updateSession(sessionID) { item in
+                item.activeTurnID = activeTurnID
+                if item.pendingUserInput != nil {
+                    item.status = "waiting_for_input"
+                } else if item.pendingApproval != nil {
+                    item.status = "waiting_for_approval"
+                } else {
+                    item.status = "running"
+                }
+            }
+            if handleQueuedActiveTurnConflict(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                activeTurnID: activeTurnID
+            ) {
+                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            setStatusMessage(message)
+        case .rejected(let message):
+            if handleQueuedSendRejected(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        case .uncertain(let message):
+            if handleQueuedSendFailure(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
         }
     }
 }

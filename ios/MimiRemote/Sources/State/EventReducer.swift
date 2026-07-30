@@ -74,9 +74,12 @@ actor EventReducer {
             output.statusUpdates.append((id, status))
             if shouldClearPendingApproval(for: status) {
                 output.pendingApprovalUpdates.append((id, nil))
+                output.pendingApprovalTaskClears.append(id)
+                output.messageMutations.append(.resolveLatestPendingApproval(id))
             }
             if shouldClearPendingUserInput(for: status) {
                 output.pendingUserInputUpdates.append((id, nil))
+                output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
             }
             if !isRunningStatus(status) {
                 output.activeTurnMutations.append(.clear(id, nil))
@@ -258,6 +261,7 @@ actor EventReducer {
             output.activeTurnMutations.append(.clear(id, metadata.turnID))
             output.pendingApprovalUpdates.append((id, nil))
             output.pendingUserInputUpdates.append((id, nil))
+            output.pendingApprovalTaskClears.append(id)
             output.contextUpdates.append((
                 SessionContextSnapshot(
                     sessionID: id,
@@ -273,6 +277,8 @@ actor EventReducer {
                 seq: nil
             ))
             output.messageMutations.append(.system(L10n.format("ui.run_error_value", payload.message), id, .error, metadata))
+            output.messageMutations.append(.resolveLatestPendingApproval(id))
+            output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
             output.messageMutations.append(.turnLifecycle(.failed, metadata, fallbackSessionID))
         case .unknown(let type):
             let eventType = type.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -625,6 +625,65 @@ extension AgentEventMetadata {
     )
 }
 
+enum CodexMCPElicitationPresentation: Equatable {
+    case form
+    case confirmation
+    case unsupported
+}
+
+/// MCP form 只有在当前客户端能完整表达每个字段时才进入补充信息表单。
+/// Codex 工具审批必须带精确的私有标记；空 schema、未知字段类型或未知 mode
+/// 都不能靠消息文案猜测授权意图，统一 fail closed。
+func codexMCPElicitationPresentation(
+    params: [String: CodexAppServerJSONValue]
+) -> CodexMCPElicitationPresentation {
+    let mode = params["mode"]?.stringValue?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    if mode == "url" {
+        return .confirmation
+    }
+    if let mode,
+       !mode.isEmpty,
+       !["form", "openai/form", "openai-form"].contains(mode) {
+        return .unsupported
+    }
+    if CodexMCPToolApprovalProtocol.isToolCall(params) {
+        return .confirmation
+    }
+
+    guard let properties = params["requestedSchema"]?
+        .objectValue?["properties"]?.objectValue,
+        !properties.isEmpty,
+        properties.values.allSatisfy(codexMCPFormPropertyIsRenderable)
+    else {
+        return .unsupported
+    }
+    return .form
+}
+
+private func codexMCPFormPropertyIsRenderable(_ value: CodexAppServerJSONValue) -> Bool {
+    guard let schema = value.objectValue else {
+        return false
+    }
+    switch schema["type"]?.stringValue?.lowercased() {
+    case "string", "boolean", "integer", "number":
+        return true
+    case "array":
+        guard let items = schema["items"]?.objectValue else {
+            return false
+        }
+        return items["type"]?.stringValue?.lowercased() == "string"
+            || items["enum"]?.arrayValue?.isEmpty == false
+            || items["anyOf"]?.arrayValue?.isEmpty == false
+    case nil:
+        return schema["enum"]?.arrayValue?.isEmpty == false
+            || schema["oneOf"]?.arrayValue?.isEmpty == false
+    default:
+        return false
+    }
+}
+
 struct CodexAppServerEventProjector {
     private struct StreamedTextKey: Hashable {
         let sessionID: SessionID?
@@ -767,18 +826,23 @@ struct CodexAppServerEventProjector {
             }
             return .userInputRequest(request, metadata)
         }
-        if request.method == "mcpServer/elicitation/request",
-           params["mode"]?.stringValue != "url",
-           !CodexMCPToolApprovalProtocol.isToolCall(params) {
-            let metadata = makeMetadata(from: params)
-            guard let userInput = mcpElicitationUserInputRequest(
-                from: params,
-                requestID: request.id.description,
-                metadata: metadata
-            ) else {
+        if request.method == "mcpServer/elicitation/request" {
+            switch codexMCPElicitationPresentation(params: params) {
+            case .form:
+                let metadata = makeMetadata(from: params)
+                guard let userInput = mcpElicitationUserInputRequest(
+                    from: params,
+                    requestID: request.id.description,
+                    metadata: metadata
+                ) else {
+                    return nil
+                }
+                return .userInputRequest(userInput, metadata)
+            case .confirmation:
+                break
+            case .unsupported:
                 return nil
             }
-            return .userInputRequest(userInput, metadata)
         }
         guard isApprovalLike(method: request.method, params: params) else {
             return nil
@@ -786,6 +850,14 @@ struct CodexAppServerEventProjector {
         let metadata = makeMetadata(from: params)
         let kind = approvalKind(method: request.method, params: params)
         let itemID = metadata.itemID ?? request.id.description
+        let availableDecisions: [String]?
+        if kind == CodexMCPToolApprovalProtocol.kind {
+            availableDecisions = CodexMCPToolApprovalProtocol.availableDecisions(params)
+        } else if kind == "mcp_elicitation" {
+            availableDecisions = ["accept", "decline"]
+        } else {
+            availableDecisions = params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue)
+        }
         return .approvalRequest(
             AgentApprovalRequest(
                 id: firstString(in: params, keys: ["approvalId"]) ?? itemID,
@@ -793,9 +865,7 @@ struct CodexAppServerEventProjector {
                 body: approvalBody(kind: kind, params: params),
                 kind: kind,
                 risk: firstString(in: params, keys: ["risk"]) ?? "high",
-                availableDecisions: kind == CodexMCPToolApprovalProtocol.kind
-                    ? CodexMCPToolApprovalProtocol.availableDecisions(params)
-                    : params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue),
+                availableDecisions: availableDecisions,
                 persistentPermissionRules: eligiblePersistentPermissionRules(from: params)
             ),
             metadata
@@ -1523,7 +1593,7 @@ struct CodexAppServerEventProjector {
             return nil
         }
         let properties = params["requestedSchema"]?.objectValue?["properties"]?.objectValue ?? [:]
-        var questions = properties.keys.sorted().compactMap { key -> AgentUserInputQuestion? in
+        let questions = properties.keys.sorted().compactMap { key -> AgentUserInputQuestion? in
             guard let schema = properties[key]?.objectValue else {
                 return nil
             }
@@ -1540,17 +1610,8 @@ struct CodexAppServerEventProjector {
                 options: options
             )
         }
-        if questions.isEmpty {
-            // openai/form 允许任意 schema。当前 UI 无法安全渲染时，保留一个显式文本回答入口；
-            // 若用户不提交任何内容，runtime 会回 decline 而不是误 accept。
-            questions = [AgentUserInputQuestion(
-                id: "response",
-                header: firstString(in: params, keys: ["serverName"]) ?? "MCP",
-                question: firstString(in: params, keys: ["message"]) ?? L10n.text("ui.mcp_service_request_supplementary_information"),
-                isOther: true,
-                isSecret: false,
-                options: []
-            )]
+        guard !questions.isEmpty else {
+            return nil
         }
         return AgentUserInputRequest(
             id: requestID,
@@ -1600,8 +1661,7 @@ struct CodexAppServerEventProjector {
         let lower = method.lowercased()
         return lower.contains("approval")
             || (method == "mcpServer/elicitation/request"
-                && (params["mode"]?.stringValue == "url"
-                    || CodexMCPToolApprovalProtocol.isToolCall(params)))
+                && codexMCPElicitationPresentation(params: params) == .confirmation)
     }
 
     private func approvalKind(

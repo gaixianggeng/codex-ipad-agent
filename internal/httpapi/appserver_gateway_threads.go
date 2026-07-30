@@ -140,7 +140,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				},
 			}
 		}
-		if err := p.rememberPendingServerRequest(frame.ID, frame.Method); err != nil {
+		if err := p.rememberPendingServerRequest(frame.ID, frame.Method, frame.Params); err != nil {
 			return payload, false, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
 		return payload, true, nil
@@ -149,6 +149,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		if p.runtimeID == "codex" && p.router.isAutoThreadTitleNotification(frame.Params) {
 			return payload, false, nil
 		}
+		p.clearPendingServerRequestsForNotification(&frame)
 		p.rememberReplayedServerRequests(&frame)
 		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
@@ -691,6 +692,7 @@ func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServer
 		Outstanding []struct {
 			ID     *json.RawMessage `json:"id"`
 			Method string           `json:"method"`
+			Params json.RawMessage  `json:"params"`
 		} `json:"outstanding"`
 	}
 	if err := json.Unmarshal(frame.Params, &params); err != nil {
@@ -706,18 +708,19 @@ func (p *appServerGatewayPolicy) rememberReplayedServerRequests(frame *appServer
 			// it unregistered keeps the pending table honest.
 			continue
 		}
-		if err := p.rememberPendingServerRequest(entry.ID, entry.Method); err != nil {
+		if err := p.rememberPendingServerRequest(entry.ID, entry.Method, entry.Params); err != nil {
 			log.Printf("claude bridge 重放 server request 登记失败 method=%s err=%v",
 				sanitizeGatewayDiagnostic(entry.Method), err)
 		}
 	}
 }
 
-func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessage, method string) error {
+func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessage, method string, rawParams json.RawMessage) error {
 	key := gatewayRequestIDKey(id)
 	if key == "" {
 		return fmt.Errorf("app-server request 缺少 id")
 	}
+	threadID, turnID, itemID := appServerGatewayServerRequestScope(rawParams)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -728,8 +731,103 @@ func (p *appServerGatewayPolicy) rememberPendingServerRequest(id *json.RawMessag
 	if _, exists := p.pendingServerRequests[key]; !exists && len(p.pendingServerRequests) >= appServerGatewayPendingServerRequestMax {
 		return fmt.Errorf("gateway pending server request 过多")
 	}
-	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{method: method, createdAt: now}
+	p.pendingServerRequests[key] = appServerGatewayPendingServerRequest{
+		method:    method,
+		threadID:  threadID,
+		turnID:    turnID,
+		itemID:    itemID,
+		createdAt: now,
+	}
 	return nil
+}
+
+func appServerGatewayServerRequestScope(rawParams json.RawMessage) (string, string, string) {
+	params, err := decodeGatewayParams(rawParams)
+	if err != nil {
+		return "", "", ""
+	}
+	threadID, _ := gatewayStringParam(params, "threadId")
+	if threadID == "" {
+		threadID, _ = gatewayStringParam(params, "sessionId")
+	}
+	turnID, _ := gatewayStringParam(params, "turnId")
+	if turnID == "" {
+		if turn, ok := params["turn"].(map[string]any); ok {
+			turnID, _ = gatewayStringParam(turn, "id")
+		}
+	}
+	itemID, _ := gatewayStringParam(params, "itemId")
+	if itemID == "" {
+		for _, key := range []string{"requestId", "approvalId", "callId"} {
+			if itemID, _ = gatewayStringParam(params, key); itemID != "" {
+				break
+			}
+		}
+	}
+	return threadID, turnID, itemID
+}
+
+func (p *appServerGatewayPolicy) clearPendingServerRequestsForNotification(frame *appServerGatewayFrame) {
+	method := strings.TrimSpace(frame.Method)
+	switch method {
+	case "serverRequest/resolved":
+		var params struct {
+			RequestID  json.RawMessage `json:"requestId"`
+			RequestID2 json.RawMessage `json:"request_id"`
+			ID         json.RawMessage `json:"id"`
+			ApprovalID json.RawMessage `json:"approvalId"`
+			ItemID     json.RawMessage `json:"itemId"`
+			ItemID2    json.RawMessage `json:"item_id"`
+		}
+		if err := json.Unmarshal(frame.Params, &params); err != nil {
+			return
+		}
+		p.mu.Lock()
+		for _, id := range []json.RawMessage{
+			params.RequestID,
+			params.RequestID2,
+			params.ID,
+			params.ApprovalID,
+			params.ItemID,
+			params.ItemID2,
+		} {
+			if key := gatewayRequestIDKey(rawMessagePointer(id)); key != "" {
+				delete(p.pendingServerRequests, key)
+			}
+		}
+		threadID, _, itemID := appServerGatewayServerRequestScope(frame.Params)
+		if threadID != "" && itemID != "" {
+			for id, pending := range p.pendingServerRequests {
+				if pending.threadID == threadID && pending.itemID == itemID {
+					delete(p.pendingServerRequests, id)
+				}
+			}
+		}
+		p.mu.Unlock()
+	case "turn/completed", "thread/closed", "error":
+		threadID, turnID, _ := appServerGatewayServerRequestScope(frame.Params)
+		if threadID == "" {
+			return
+		}
+		p.mu.Lock()
+		for id, pending := range p.pendingServerRequests {
+			if pending.threadID != threadID {
+				continue
+			}
+			if method != "thread/closed" && turnID != "" && pending.turnID != "" && pending.turnID != turnID {
+				continue
+			}
+			delete(p.pendingServerRequests, id)
+		}
+		p.mu.Unlock()
+	}
+}
+
+func rawMessagePointer(value json.RawMessage) *json.RawMessage {
+	if len(value) == 0 || string(value) == "null" {
+		return nil
+	}
+	return &value
 }
 
 func (p *appServerGatewayPolicy) consumePendingServerRequest(id *json.RawMessage) (appServerGatewayPendingServerRequest, bool) {

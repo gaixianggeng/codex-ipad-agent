@@ -112,10 +112,15 @@ enum WorkspaceStripLayout {
 enum WorkspaceSessionAgeBoundary {
     static let staleInterval: TimeInterval = 12 * 60 * 60
 
-    static func firstStaleIndex(in sessions: [AgentSession], now: Date = Date()) -> Int? {
+    static func firstStaleIndex(
+        in sessions: [AgentSession],
+        excludingSessionIDs: Set<SessionID> = [],
+        now: Date = Date()
+    ) -> Int? {
         // 工作区会话已经按 SessionIndexStore.orderingDate 倒序排列；
-        // 这里复用同一时间口径，避免列表顺序与 12 小时分组依据不一致。
+        // 置顶会话可以跨越时间分组，因此排除后再寻找普通会话的 12 小时边界。
         sessions.firstIndex { session in
+            !excludingSessionIDs.contains(session.id) &&
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
     }
@@ -1365,6 +1370,7 @@ private struct WorkspaceEmojiPicker: View {
 }
 
 private struct WorkspaceDetailView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -1531,6 +1537,7 @@ private struct WorkspaceDetailView: View {
                 VStack(spacing: 0) {
                     let firstStaleIndex = WorkspaceSessionAgeBoundary.firstStaleIndex(
                         in: recentSessions,
+                        excludingSessionIDs: sessionStore.pinnedSessionIDs,
                         now: currentDate()
                     )
 
@@ -1549,6 +1556,7 @@ private struct WorkspaceDetailView: View {
                             recentSessionRow(session, tokens: tokens)
                         }
                         .buttonStyle(.plain)
+                        .sessionRowActions(session)
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {
@@ -1669,6 +1677,10 @@ private struct WorkspaceDetailView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
+                    if sessionStore.isSessionPinned(session.id) {
+                        SessionPinnedBadge(compact: true)
+                    }
+
                     Text(session.title)
                         .font(themeStore.uiFont(.callout, weight: .medium))
                         .foregroundStyle(tokens.primaryText)

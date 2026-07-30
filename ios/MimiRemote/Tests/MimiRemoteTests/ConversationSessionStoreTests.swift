@@ -330,10 +330,12 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [newer.id, older.id])
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [newer.id, older.id])
 
         store.toggleSessionPinned(older)
         XCTAssertTrue(store.isSessionPinned(older.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [older.id, newer.id])
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [older.id, newer.id])
         XCTAssertEqual(
             preferences.load(profileID: appStore.notificationRoutingProfileID).pinnedSessionIDs,
             [older.id]

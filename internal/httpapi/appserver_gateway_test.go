@@ -1717,6 +1717,31 @@ func TestGatewayThreadResumeRejectsUnsafeInitialTurnsPage(t *testing.T) {
 	}
 }
 
+func TestAppServerGatewayHistoryResponseCapDefaultsToFiveMiB(t *testing.T) {
+	if got, want := appServerGatewayHistoryResponseCapBytes, 5<<20; got != want {
+		t.Fatalf("单次 full 历史响应 cap 应为 5 MiB，got=%d want=%d", got, want)
+	}
+	if got, want := appServerGatewayHistoryBudgetWindow, 15*time.Second; got != want {
+		t.Fatalf("单连接历史预算窗口应保持 15 秒，got=%s want=%s", got, want)
+	}
+	if got, want := appServerGatewayHistoryBudgetMaxResponseBytes, int64(8<<20); got != want {
+		t.Fatalf("单连接历史响应总预算应保持 8 MiB，got=%d want=%d", got, want)
+	}
+	if got, want := appServerGatewayHistoryGlobalWindow, 15*time.Second; got != want {
+		t.Fatalf("全局历史预算窗口应保持 15 秒，got=%s want=%s", got, want)
+	}
+	if got, want := appServerGatewayHistoryGlobalMaxResponseBytes, int64(8<<20); got != want {
+		t.Fatalf("全局历史响应总预算应保持 8 MiB，got=%d want=%d", got, want)
+	}
+	if int64(appServerGatewayHistoryResponseCapBytes) > appServerGatewayHistoryGlobalMaxResponseBytes {
+		t.Fatalf(
+			"单次历史响应 cap 不应超过 15 秒全局预算，cap=%d budget=%d",
+			appServerGatewayHistoryResponseCapBytes,
+			appServerGatewayHistoryGlobalMaxResponseBytes,
+		)
+	}
+}
+
 func TestAppServerGatewayCapsOversizedHistoryResponses(t *testing.T) {
 	oldCap := appServerGatewayHistoryResponseCapBytes
 	oldBudgetBytes := appServerGatewayHistoryBudgetMaxResponseBytes

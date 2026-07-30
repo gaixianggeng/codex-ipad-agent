@@ -865,10 +865,14 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let outcomeHandler = onTurnSendOutcome
         Task { [runtime] in
             do {
-                let turnID = try await runtime.startTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
+                let startOutcome = try await runtime.startTurnOutcome(
+                    sessionID: sessionID,
+                    payload: payload,
+                    clientMessageID: clientMessageID
+                )
                 await MainActor.run {
                     if let outcomeHandler {
-                        outcomeHandler(clientMessageID, .accepted(turnID: turnID))
+                        outcomeHandler(clientMessageID, Self.turnSendOutcome(for: startOutcome))
                     } else {
                         acceptedHandler?(clientMessageID)
                     }
@@ -896,6 +900,24 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                 sequence,
                 epoch: metadata.replayCursorEpoch
             )
+        }
+    }
+
+    static func turnSendOutcome(
+        for startOutcome: CodexAppServerTurnStartOutcome
+    ) -> TurnSendOutcome {
+        switch startOutcome {
+        case .active(let turnID):
+            return .accepted(turnID: turnID)
+        case .terminal(let turnID):
+            return .acceptedTerminal(turnID: turnID)
+        case .superseded(let turnID, let activeTurnID):
+            return .acceptedSuperseded(
+                turnID: turnID,
+                activeTurnID: activeTurnID
+            )
+        case .threadClosed(let turnID):
+            return .acceptedThreadClosed(turnID: turnID)
         }
     }
 
