@@ -125,7 +125,6 @@ struct WorkbenchSidebarFooter: View {
         .offset(y: safeAreaVisualOffset)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(tokens.sidebarBackground)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(tokens.border.opacity(0.55))

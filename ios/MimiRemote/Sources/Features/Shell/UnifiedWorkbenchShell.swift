@@ -491,7 +491,8 @@ struct UnifiedWorkbenchShell: View {
         GeometryReader { proxy in
             let layout = WorkbenchLayout(
                 containerWidth: proxy.size.width,
-                horizontalSizeClass: horizontalSizeClass
+                horizontalSizeClass: horizontalSizeClass,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad
             )
 
             Group {
@@ -729,10 +730,39 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("connection.networkUnavailable")
     }
 
-    private func sidebar(
-        tokens: ThemeTokens,
-        layout: WorkbenchLayout,
-        bottomSafeAreaInset: CGFloat
+    private func sidebar(tokens: ThemeTokens, layout: WorkbenchLayout, bottomSafeAreaInset: CGFloat) -> some View {
+        WorkbenchSidebarContainer(
+            tokens: tokens,
+            usesFloatingSurface: layout.usesFloatingSidebarSurface
+        ) {
+            sidebarContent(
+                tokens: tokens,
+                layout: layout,
+                bottomSafeAreaInset: layout.usesFloatingSidebarSurface
+                    ? 0
+                    : bottomSafeAreaInset
+            )
+        } floatingHeader: {
+            WorkbenchFloatingSidebarHeader(
+                tokens: tokens,
+                onCollapse: { columnVisibility = .detailOnly }
+            ) {
+                sidebarBrandHeader(
+                    tokens: tokens,
+                    layout: layout,
+                    constrainedWidth: nil
+                )
+            }
+        } toolbarHeader: {
+            sidebarBrandHeader(tokens: tokens, layout: layout)
+        }
+        .task {
+            await sessionStore.refreshSessionLibraryIndex()
+        }
+    }
+
+    private func sidebarContent(
+        tokens: ThemeTokens, layout: WorkbenchLayout, bottomSafeAreaInset: CGFloat
     ) -> some View {
         VStack(spacing: 0) {
             List(selection: selectionBinding(layout: layout)) {
@@ -791,27 +821,14 @@ struct UnifiedWorkbenchShell: View {
         // NavigationSplitView 在 iPad 竖屏以 overlay 展开侧栏时不会保证内容采用整列理想高度，
         // 根容器必须主动填满列高，Footer 才能稳定锚定到底部安全区。
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(tokens.sidebarBackground.ignoresSafeArea())
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                sidebarBrandHeader(tokens: tokens, layout: layout)
-            }
-            // iPadOS 26+ 会默认给 leading toolbar item 添加共享玻璃底板；
-            // 品牌标题不是独立按钮，隐藏底板后仍保留系统正确的 leading 对齐。
-            .sharedBackgroundVisibility(.hidden)
-        }
-        .task {
-            await sessionStore.refreshSessionLibraryIndex()
-        }
     }
 
     private func sidebarBrandHeader(
         tokens: ThemeTokens,
-        layout: WorkbenchLayout
+        layout: WorkbenchLayout,
+        constrainedWidth: CGFloat? = 190
     ) -> some View {
-        let headerWidth: CGFloat = 190
-
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             AIUsageRingsControl(
                 codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
                 claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
@@ -833,7 +850,7 @@ struct UnifiedWorkbenchShell: View {
             )
             .layoutPriority(1)
         }
-        .frame(width: headerWidth, alignment: .leading)
+        .frame(width: constrainedWidth, alignment: .leading)
     }
 
     private func sidebarSessionLink(_ session: AgentSession) -> some View {

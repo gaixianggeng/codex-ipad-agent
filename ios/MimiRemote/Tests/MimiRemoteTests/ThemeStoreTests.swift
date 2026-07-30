@@ -197,6 +197,7 @@ final class ThemeStoreTests: XCTestCase {
         let lightSuccess = rgba(lightTokens.success)
         let lightUserBubble = rgba(lightTokens.userBubble)
         let lightSidebarBackground = rgba(lightTokens.sidebarBackground)
+        let lightSidebarSurfaceBackground = rgba(lightTokens.sidebarSurfaceBackground)
         let lightSidebarHoverFill = rgba(lightTokens.sidebarHoverFill)
         let lightInputBackground = rgba(lightTokens.inputBackground)
         let lightPlanCardBackground = rgba(lightTokens.planCardBackground)
@@ -213,6 +214,7 @@ final class ThemeStoreTests: XCTestCase {
         let darkSuccess = rgba(darkTokens.success)
         let darkUserBubble = rgba(darkTokens.userBubble)
         let darkSidebarBackground = rgba(darkTokens.sidebarBackground)
+        let darkSidebarSurfaceBackground = rgba(darkTokens.sidebarSurfaceBackground)
         let darkSidebarHoverFill = rgba(darkTokens.sidebarHoverFill)
         let darkInputBackground = rgba(darkTokens.inputBackground)
         let darkPlanCardBackground = rgba(darkTokens.planCardBackground)
@@ -230,6 +232,7 @@ final class ThemeStoreTests: XCTestCase {
 
         assertRGB(lightBackground, red: 250, green: 247, blue: 241)
         assertRGB(lightSidebarBackground, red: 250, green: 247, blue: 241)
+        assertRGB(lightSidebarSurfaceBackground, red: 255, green: 255, blue: 255)
         assertRGB(lightSelectionFill, red: 239, green: 236, blue: 237)
         assertRGB(lightSidebarHoverFill, red: 240, green: 239, blue: 237)
         assertRGB(lightInputBackground, red: 255, green: 255, blue: 255)
@@ -269,6 +272,7 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(darkSurface, red: 31, green: 29, blue: 30)
         assertRGB(darkElevatedSurface, red: 42, green: 39, blue: 41)
         assertRGB(darkSidebarBackground, red: 23, green: 21, blue: 22)
+        assertRGB(darkSidebarSurfaceBackground, red: 33, green: 31, blue: 28)
         assertRGB(darkSidebarHoverFill, red: 42, green: 39, blue: 41)
         assertRGB(darkInputBackground, red: 35, green: 33, blue: 36)
         assertRGB(darkPlanCardBackground, red: 35, green: 33, blue: 36)
@@ -474,7 +478,11 @@ final class ThemeStoreTests: XCTestCase {
 @MainActor
 final class ResponsiveLayoutTests: XCTestCase {
     func testWorkbenchLayoutUsesCompactNavigationOnPhoneWidth() {
-        let layout = WorkbenchLayout(containerWidth: 390, horizontalSizeClass: .compact)
+        let layout = WorkbenchLayout(
+            containerWidth: 390,
+            horizontalSizeClass: .compact,
+            isPad: false
+        )
 
         XCTAssertTrue(layout.usesCompactNavigation)
         XCTAssertFalse(WorkspaceRootView.shouldEmbedNavigationStack(
@@ -482,12 +490,17 @@ final class ResponsiveLayoutTests: XCTestCase {
         ))
         XCTAssertTrue(layout.prefersDetailOnly)
         XCTAssertFalse(layout.usesAttachedInspector)
+        XCTAssertFalse(layout.usesFloatingSidebarSurface)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
 
     func testWorkbenchLayoutUsesCompactNavigationOnLegacyIPadMiniPortraitWidth() {
-        let layout = WorkbenchLayout(containerWidth: 768, horizontalSizeClass: .regular)
+        let layout = WorkbenchLayout(
+            containerWidth: 768,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
 
         XCTAssertTrue(layout.usesCompactNavigation)
         XCTAssertFalse(WorkspaceRootView.shouldEmbedNavigationStack(
@@ -495,10 +508,15 @@ final class ResponsiveLayoutTests: XCTestCase {
         ))
         XCTAssertTrue(layout.prefersDetailOnly)
         XCTAssertFalse(layout.usesAttachedInspector)
+        XCTAssertFalse(layout.usesFloatingSidebarSurface)
     }
 
     func testWorkbenchLayoutKeepsSplitNavigationOnWidePadWidth() {
-        let layout = WorkbenchLayout(containerWidth: 1180, horizontalSizeClass: .regular)
+        let layout = WorkbenchLayout(
+            containerWidth: 1180,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
 
         XCTAssertFalse(layout.usesCompactNavigation)
         XCTAssertTrue(WorkspaceRootView.shouldEmbedNavigationStack(
@@ -506,8 +524,31 @@ final class ResponsiveLayoutTests: XCTestCase {
         ))
         XCTAssertFalse(layout.prefersDetailOnly)
         XCTAssertTrue(layout.usesAttachedInspector)
+        XCTAssertTrue(layout.usesFloatingSidebarSurface)
         XCTAssertEqual(layout.projectColumn.ideal, 330)
         XCTAssertEqual(layout.titleMaxWidth, 340)
+    }
+
+    func testFloatingSidebarSurfaceStartsAtWideIPadBoundaryOnly() {
+        let narrowPad = WorkbenchLayout(
+            containerWidth: 859,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
+        let widePad = WorkbenchLayout(
+            containerWidth: 860,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
+        let widePhone = WorkbenchLayout(
+            containerWidth: 1_024,
+            horizontalSizeClass: .regular,
+            isPad: false
+        )
+
+        XCTAssertFalse(narrowPad.usesFloatingSidebarSurface)
+        XCTAssertTrue(widePad.usesFloatingSidebarSurface)
+        XCTAssertFalse(widePhone.usesFloatingSidebarSurface)
     }
 
     func testConversationLayoutFitsPhonePortraitWidth() {

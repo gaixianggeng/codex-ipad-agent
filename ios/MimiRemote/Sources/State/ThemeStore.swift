@@ -221,6 +221,24 @@ extension ThemeTokens {
         }
     }
 
+    /// iPad 宽屏侧栏是浮在工作区上的结构层，使用独立实色而不是通用毛玻璃。
+    /// 大表面保持安静、可读；毛玻璃继续留给按钮和输入区等功能性浮层。
+    var sidebarSurfaceBackground: Color {
+        guard preset == .codex else {
+            return surface
+        }
+        switch resolvedScheme {
+        case .light:
+            return .white
+        case .dark:
+            return Color(
+                red: 33.0 / 255.0,
+                green: 31.0 / 255.0,
+                blue: 28.0 / 255.0
+            )
+        }
+    }
+
     var sidebarHoverFill: Color {
         guard preset == .codex else {
             return elevatedSurface

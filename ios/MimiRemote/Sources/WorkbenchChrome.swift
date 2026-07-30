@@ -33,12 +33,18 @@ struct WorkbenchLayout: Equatable {
     let usesCompactNavigation: Bool
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
+    let usesFloatingSidebarSurface: Bool
 
-    init(containerWidth: CGFloat, horizontalSizeClass: UserInterfaceSizeClass?) {
+    init(
+        containerWidth: CGFloat,
+        horizontalSizeClass: UserInterfaceSizeClass?,
+        isPad: Bool
+    ) {
         let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
         // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
         // 这类宽度也必须使用真正的 push 导航，否则系统不会提供返回按钮和左缘返回手势。
-        let needsCompactNavigation = horizontalSizeClass == .compact || containerWidth < 860
+        let needsCompactNavigation = horizontalSizeClass == .compact
+            || containerWidth < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
         let isTightPadWidth = containerWidth < 980
 
         if usesCompactMetrics {
@@ -61,6 +67,140 @@ struct WorkbenchLayout: Equatable {
         usesAttachedInspector = horizontalSizeClass != .compact && containerWidth >= 1180
         usesCompactNavigation = needsCompactNavigation
         prefersDetailOnly = needsCompactNavigation
+        // 只在 iPad 的真实双栏宽度启用浮动表面。设备类型与实际容器宽度共同判定，
+        // 避免 iPhone 横屏、Stage Manager 紧凑窗口和 Mac Catalyst 被外观误伤。
+        usesFloatingSidebarSurface = isPad
+            && horizontalSizeClass == .regular
+            && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+    }
+}
+
+enum WorkbenchSidebarSurfaceMetrics {
+    static let minimumContainerWidth: CGFloat = 860
+    static let outerInset: CGFloat = 14
+    static let cornerRadius: CGFloat = 24
+    static let borderWidth: CGFloat = 0.5
+    static let shadowRadius: CGFloat = 26
+    static let shadowYOffset: CGFloat = 8
+}
+
+/// 把 iPad 浮动侧栏的纯视觉层级集中在 Chrome 层，业务 Shell 只负责提供内容和路由。
+struct WorkbenchSidebarContainer<
+    Content: View,
+    FloatingHeader: View,
+    ToolbarHeader: View
+>: View {
+    let tokens: ThemeTokens
+    let usesFloatingSurface: Bool
+    private let content: Content
+    private let floatingHeader: FloatingHeader
+    private let toolbarHeader: ToolbarHeader
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    init(
+        tokens: ThemeTokens,
+        usesFloatingSurface: Bool,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder floatingHeader: () -> FloatingHeader,
+        @ViewBuilder toolbarHeader: () -> ToolbarHeader
+    ) {
+        self.tokens = tokens
+        self.usesFloatingSurface = usesFloatingSurface
+        self.content = content()
+        self.floatingHeader = floatingHeader()
+        self.toolbarHeader = toolbarHeader()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if usesFloatingSurface {
+            content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    floatingHeader
+                }
+                .background(tokens.sidebarSurfaceBackground)
+                .clipShape(sidebarShape)
+                .overlay {
+                    sidebarShape.stroke(
+                        tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
+                        lineWidth: colorSchemeContrast == .increased
+                            ? 1
+                            : WorkbenchSidebarSurfaceMetrics.borderWidth
+                    )
+                }
+                .shadow(
+                    color: tokens.resolvedScheme == .light
+                        ? Color.black.opacity(0.075)
+                        : Color.clear,
+                    radius: WorkbenchSidebarSurfaceMetrics.shadowRadius,
+                    x: 0,
+                    y: WorkbenchSidebarSurfaceMetrics.shadowYOffset
+                )
+                .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
+                .background(tokens.background.ignoresSafeArea())
+                .toolbar(.hidden, for: .navigationBar)
+        } else {
+            content
+                .background(tokens.sidebarBackground.ignoresSafeArea())
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        toolbarHeader
+                    }
+                    // 品牌标题不是独立按钮；隐藏 iPadOS 26 自动添加的共享玻璃底板。
+                    .sharedBackgroundVisibility(.hidden)
+                }
+        }
+    }
+
+    private var sidebarShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: WorkbenchSidebarSurfaceMetrics.cornerRadius,
+            style: .continuous
+        )
+    }
+}
+
+/// 浮动表面隐藏系统侧栏导航栏后，补回同等可达的 44pt 收起入口。
+struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
+    let tokens: ThemeTokens
+    let onCollapse: () -> Void
+    private let brand: Brand
+
+    init(
+        tokens: ThemeTokens,
+        onCollapse: @escaping () -> Void,
+        @ViewBuilder brand: () -> Brand
+    ) {
+        self.tokens = tokens
+        self.onCollapse = onCollapse
+        self.brand = brand()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            brand
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onCollapse) {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(tokens.primaryText)
+            .background(tokens.elevatedSurface.opacity(0.74), in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(tokens.border.opacity(0.72), lineWidth: 0.5)
+            }
+            .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
     }
 }
 
