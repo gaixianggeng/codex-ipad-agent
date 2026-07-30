@@ -2004,6 +2004,66 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "environment" })?.options.map(\.label), ["staging", "production"])
     }
 
+    func testUnmarkedEmptyOrUnrenderableMcpSchemaFailsClosed() {
+        let requests = [
+            CodexAppServerServerRequest(
+                id: .string("mcp-empty"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow the linear MCP server to run tool \"save_issue\"?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([:])
+                    ])
+                ])
+            ),
+            CodexAppServerServerRequest(
+                id: .string("mcp-object"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow this MCP request?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "nested": .object(["type": .string("object")])
+                        ])
+                    ])
+                ])
+            )
+        ]
+
+        for request in requests {
+            var projector = CodexAppServerEventProjector()
+            XCTAssertNil(
+                projector.project(request),
+                "没有 Codex 工具审批标记的空或不可渲染表单不能暴露授权入口"
+            )
+        }
+    }
+
+    func testUnknownMcpElicitationModeDoesNotExposeApproval() {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-future"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "serverName": .string("unknown"),
+                "mode": .string("future-destructive-mode"),
+                "message": .string("Approve everything")
+            ])
+        )
+        var projector = CodexAppServerEventProjector()
+        XCTAssertNil(projector.project(request))
+    }
+
     func testCodexMcpToolElicitationProjectsToApprovalWithDeclaredTrustChoices() throws {
         let request = CodexAppServerServerRequest(
             id: .string("mcp-tool-approval-1"),
