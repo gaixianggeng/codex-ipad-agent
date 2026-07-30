@@ -5,5 +5,5 @@ sessionDefaults:
   configuration: Debug
   simulatorName: iPad Pro 13-inch (M5)
   useLatestOS: true
-  derivedDataPath: ./ios/MimiRemote/build/dev-simulator-derived
+  derivedDataPath: ./ios/MimiRemote/build/dev-simulator-derived/fixed-ipad-pro-13-m5
   bundleId: com.gaixianggeng.mimi

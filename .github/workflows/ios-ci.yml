@@ -8,6 +8,9 @@ on:
     paths:
       - "ios/MimiRemote/**"
       - "scripts/ios-dev.sh"
+      - "scripts/ios-device-lease.sh"
+      - "scripts/test-ios-device-management.sh"
+      - "scripts/testdata/ios-device-management/**"
       - "scripts/test-conversation-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
@@ -62,28 +65,16 @@ jobs:
           xcodebuild -version
           xcrun simctl list devices available
 
-      - name: Resolve one CI simulator
+      - name: Resolve fixed CI simulator
         shell: bash
         run: |
-          simulator_id="$(
-            xcrun simctl list devices available -j | ruby -rjson -e '
-              entries = JSON.parse(STDIN.read).fetch("devices").flat_map do |runtime, devices|
-                version = runtime.scan(/\d+/).map(&:to_i)
-                devices.map do |device|
-                  next unless device["isAvailable"] && device["name"].match?(/iPad|iPhone/)
-                  family_rank = device["name"].start_with?("iPad") ? 1 : 0
-                  [version, family_rank, device["name"], device["udid"]]
-                end.compact
-              end
-              chosen = entries.max_by { |version, family_rank, name, _udid| [version, family_rank, name] }
-              print chosen.last if chosen
-            '
-          )"
-          if [[ -z "$simulator_id" ]]; then
-            echo "No available iOS Simulator on the runner." >&2
-            exit 1
-          fi
-          echo "IOS_TEST_DESTINATION=platform=iOS Simulator,id=$simulator_id" >> "$GITHUB_ENV"
+          set -euo pipefail
+          destination="$(bash ./scripts/ios-dev.sh destination)"
+          echo "Resolved exact test target: $destination"
+          echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+
+      - name: Check iOS device selection and leases
+        run: bash ./scripts/test-ios-device-management.sh
 
       - name: Check network security policy
         run: bash ./scripts/check-ios-network-security.sh

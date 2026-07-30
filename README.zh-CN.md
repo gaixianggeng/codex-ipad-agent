@@ -373,7 +373,7 @@ xcodegen generate \
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-日常 `build` / `run` 优先使用 available、paired、USB 连接的真机，没有可用真机时才使用固定 iPad Simulator；测试与 CI 始终使用 Simulator。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
+日常 `build` / `run` 优先租用 available、paired、USB 连接的真机，跳过占用设备后才使用固定 iPad Simulator；测试、视觉快照与 CI 精确固定 `iPad Pro 13-inch (M5)`，不会回退 iPad mini。设备占用可通过 `bash ./scripts/ios-dev.sh leases` 查看。iOS 工程结构、运行命令、Catalyst 和真机验收见 [iOS 开发说明](ios/MimiRemote/README.md)。
 
 ### Claude bridge
 

@@ -78,24 +78,27 @@
 
 ### 默认链路
 
-- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接的 iOS/iPadOS 真机；没有可用 USB 真机时使用 `iPad Pro 13-inch (M5)` Simulator。
-- 同时连接多台 USB 真机时优先名为 `iPad Pro` 的设备；仍无法唯一确定时明确失败并要求设置 `IOS_DEVICE_ID`，不得随机选择。
-- `build-for-testing`、`test` 和 CI 固定使用 `iPad Pro 13-inch (M5)` Simulator，避免真机签名、设备数据和快照环境干扰测试。
+- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机；设备忙时按固定顺序跳过，最后使用未占用的 `iPad Pro 13-inch (M5)` Simulator。
+- 同时连接多台 USB 真机时先按名称 `iPad Pro`、再按设备名和 UDID 排序；不得依赖列表顺序或随机选择。
+- `build-for-testing`、`test`、视觉快照和 CI 精确固定 `iPad Pro 13-inch (M5)` Simulator；目标缺失或忙时等待或明确失败，禁止回退 iPad mini、其他 iPad 或 iPhone。
 - 所有入口固定使用 `MimiRemote` Scheme 和 `Debug` 配置。
 - 命令行统一通过 `bash ./scripts/ios-dev.sh` 执行：
   - 查看本次目标：`bash ./scripts/ios-dev.sh target`
+  - 查看设备占用：`bash ./scripts/ios-dev.sh leases`
   - 编译：`bash ./scripts/ios-dev.sh build`
   - 编译测试产物：`bash ./scripts/ios-dev.sh build-for-testing`
   - 运行单测：`bash ./scripts/ios-dev.sh test`
   - 构建、安装并启动：`bash ./scripts/ios-dev.sh run`
-- Simulator DerivedData 固定为 `ios/MimiRemote/build/dev-simulator-derived`，真机 DerivedData 固定为 `ios/MimiRemote/build/dev-device-derived`。
+- 固定 M5 iPad 使用 `ios/MimiRemote/build/dev-simulator-derived/fixed-ipad-pro-13-m5`；其他 Simulator 和真机分别在各自 DerivedData 根目录下按 UDID 隔离。
 - 显式设置 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID` 时，显式选择优先于自动规则。
+- 普通 `build` / `run` 必须先获取按 UDID 的跨 Worktree 原子租约；租约记录 PID、Codex Task、Worktree、命令、DerivedData 和开始时间，进程退出后释放，死 PID 租约在下次占用时清理。
 
 ### XcodeBuildMCP
 
-- 第一次构建、运行或测试前先执行 `bash ./scripts/ios-dev.sh target` 并读取 session defaults。
+- 第一次构建、运行或测试前先执行 `bash ./scripts/ios-dev.sh target`、`bash ./scripts/ios-dev.sh leases` 并读取 session defaults。
 - 仓库的 `.xcodebuildmcp/config.yaml` 固定的是 Simulator fallback 和测试默认值；自动规则选中真机时，使用 device workflow 或统一脚本，不得继续沿用 Simulator defaults。
 - 不把本机真机或 Simulator UDID 写入仓库；每次从当前连接状态解析，显式覆盖只通过本机环境变量传入。
+- 绕过统一脚本的 `xcodebuild` 若命令行包含 destination UDID、名称或 generic platform，视为外部占用；不得把对应设备误判为空闲。
 
 ### 设备用途
 
@@ -107,11 +110,12 @@
 
 ### 运行约束
 
-- Xcode、Codex、XcodeBuildMCP 的构建与测试串行执行，同一时间只运行一条 `xcodebuild` 链路。
-- 日常只保留一台已启动 Simulator；统一脚本在切换前关闭其他已启动 Simulator，但不会创建、擦除或删除设备。
+- 同一设备的 Xcode、Codex、XcodeBuildMCP 构建与测试必须串行；不同设备只有在各自持有租约并使用独立 DerivedData 时才允许并行。
+- 日常仍建议只保留一台已启动 Simulator；统一脚本不会关闭其他任务正在使用的设备，也不会创建、擦除或删除设备。
 - 只执行 `build` 或 `build-for-testing` 时不要求预先启动 Simulator；不要为了纯编译主动开机。
 - 使用 Simulator 连续开发、调试 UI 或运行测试期间保持默认 iPad 开启，避免在同一开发时段反复启动和关闭。
 - 使用 Simulator 且预计一小时内还会继续开发时可以保持开启；长时间不用、当天开发结束、准备让 Mac 合盖过夜前关闭。
 - 切换到兼容性设备前先关闭当前 Simulator；iPhone 验收结束后关闭 iPhone，后续开发再恢复默认 iPad。
 - 创建新设备前先检查现有设备并优先复用；不得为每次任务创建临时 Simulator。
+- 固定快照设备忙时先查看租约；需要等待可设置 `IOS_DEVICE_LEASE_WAIT_SECONDS`，不得通过切换机型绕过。
 - 遇到高 CPU、安装卡住、Mac 睡眠恢复后状态异常或 CoreSimulator 阻塞时，先停止构建，关闭并重新启动现有 Simulator；不擦除主力设备，也不通过继续创建设备绕过。

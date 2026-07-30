@@ -16,6 +16,8 @@ REFRESH_INSTALL="${REFRESH_INSTALL:-0}"
 ALLOW_PROVISIONING_UPDATES="${ALLOW_PROVISIONING_UPDATES:-1}"
 IOS_DEVELOPMENT_TEAM="${IOS_DEVELOPMENT_TEAM:-${DEVELOPMENT_TEAM:-}}"
 CODE_SIGN_STYLE="${CODE_SIGN_STYLE:-Automatic}"
+XCODEBUILD_BIN="${IOS_XCODEBUILD_BIN:-xcodebuild}"
+XCRUN_BIN="${IOS_XCRUN_BIN:-xcrun}"
 
 if [[ ! -d "$PROJECT_PATH" ]]; then
   echo "找不到 Xcode 工程：$PROJECT_PATH" >&2
@@ -72,7 +74,7 @@ if [[ $# -gt 0 ]]; then
 fi
 XCODEBUILD_ARGS+=(build)
 
-xcodebuild "${XCODEBUILD_ARGS[@]}"
+"$XCODEBUILD_BIN" "${XCODEBUILD_ARGS[@]}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "构建成功但找不到产物：$APP_PATH" >&2
@@ -86,14 +88,14 @@ fi
 
 if [[ "$REFRESH_INSTALL" == "1" ]]; then
   echo "==> 刷新安装：先卸载旧 App 以清理主屏图标缓存"
-  xcrun devicectl device uninstall app \
+  "$XCRUN_BIN" devicectl device uninstall app \
     --device "$DEVICE_REF" \
     "$BUNDLE_ID" \
     --timeout "$TIMEOUT_SECONDS" || true
 fi
 
 echo "==> 安装到设备：$DEVICE_REF"
-xcrun devicectl device install app \
+"$XCRUN_BIN" devicectl device install app \
   --device "$DEVICE_REF" \
   "$APP_PATH" \
   --timeout "$TIMEOUT_SECONDS"
@@ -104,7 +106,7 @@ if [[ "$SKIP_LAUNCH" == "1" ]]; then
 fi
 
 echo "==> 启动 App：$BUNDLE_ID"
-xcrun devicectl device process launch \
+"$XCRUN_BIN" devicectl device process launch \
   --device "$DEVICE_REF" \
   --terminate-existing \
   "$BUNDLE_ID" \

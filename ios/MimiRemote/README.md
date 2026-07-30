@@ -14,7 +14,7 @@ xcodegen generate \
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-Select the `MimiRemote` scheme in Xcode and configure your development team for physical-device builds. Daily `build` and `run` prefer an available, paired USB iOS device and fall back to the fixed `iPad Pro 13-inch (M5)` Simulator; tests and CI remain Simulator-only. Build the Mac service first with Codex CLI signed in, run `agentd up`, then scan its short-lived pairing QR code in the app. For a command-line test build check:
+Select the `MimiRemote` scheme in Xcode and configure your development team for physical-device builds. Daily `build` and `run` lease an available, paired USB iOS device, skip busy targets, and then fall back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests, snapshots, and CI require that exact Simulator and never switch to iPad mini. Build the Mac service first with Codex CLI signed in, run `agentd up`, then scan its short-lived pairing QR code in the app. For a command-line test build check:
 
 ```bash
 bash ./scripts/ios-dev.sh build-for-testing
@@ -117,12 +117,18 @@ cd "$HOME/code/mimi-remote"
 xcodegen generate --spec ios/MimiRemote/project.yml --project ios/MimiRemote
 ```
 
-日常 `build` / `run` 会先检测 available、paired、USB 连接的真机：只有一台时使用它；多台时优先名为 `iPad Pro` 的设备；仍无法唯一确定时明确失败。没有可用 USB 真机时才使用 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test` 和 CI 始终固定 Simulator。
+日常 `build` / `run` 会先检测 available、paired、USB 连接且未占用的真机：多台设备按 `iPad Pro`、设备名、UDID 的固定顺序选择；设备已有租约或被外部 `xcodebuild` 使用时跳过。没有空闲 USB 真机时才使用 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test`、视觉快照和 CI 始终精确固定这台 M5 iPad；设备缺失或忙时明确失败，不切换到 iPad mini。
 
 先查看本次实际目标：
 
 ```bash
 bash ./scripts/ios-dev.sh target
+```
+
+查看全部设备的租约和外部 `xcodebuild`：
+
+```bash
+bash ./scripts/ios-dev.sh leases
 ```
 
 命令行验证 Swift 代码可编译：
@@ -151,7 +157,9 @@ IOS_TARGET_MODE=simulator IOS_SIMULATOR_NAME="iPhone 17 Pro" bash ./scripts/ios-
 IOS_TARGET_MODE=simulator IOS_SIMULATOR_NAME="iPhone 17e" bash ./scripts/ios-dev.sh run
 ```
 
-需要显式覆盖自动规则时，使用 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID`。真机和 Simulator 分别复用 `ios/MimiRemote/build/dev-device-derived` 与 `ios/MimiRemote/build/dev-simulator-derived`。
+需要显式覆盖自动规则时，使用 `IOS_TARGET_MODE=device|simulator`、`IOS_DEVICE_ID` 或 `IOS_SIMULATOR_ID`。普通 `build` / `run` 会按 UDID 原子获取跨 Worktree 租约，记录 PID、Codex Task、Worktree、命令、DerivedData 和开始时间；正常退出自动释放，死 PID 租约在下次获取时清理。固定快照设备忙时可以设置 `IOS_DEVICE_LEASE_WAIT_SECONDS` 等待，否则脚本明确失败。
+
+固定 M5 iPad 使用 `ios/MimiRemote/build/dev-simulator-derived/fixed-ipad-pro-13-m5`；其他 Simulator 和真机分别在对应根目录下按 UDID 隔离 DerivedData，避免不同设备并发写入同一构建数据库。
 
 XcodeBuildMCP 会从仓库根目录的 `.xcodebuildmcp/config.yaml` 读取 Simulator fallback 和测试默认值。执行日常 `build` / `run` 前先运行 `bash ./scripts/ios-dev.sh target`；如果选中真机，应使用 device workflow 或统一脚本，不能继续沿用 Simulator defaults。
 
@@ -160,7 +168,7 @@ Simulator 开关采用“开发时保持一台、结束后关闭”的标准：
 - 只运行 `build` 或 `build-for-testing` 时无需预先启动 Simulator；USB 真机构建也不会为此启动 Simulator。
 - 使用 Simulator 连续开发、调试 UI 或运行测试期间保持默认 iPad 开启，不在同一开发时段反复开关。
 - 预计一小时内还会继续时可以保持开启；长时间不用、当天开发结束或准备让 Mac 合盖过夜前关闭。
-- 切换 iPhone 兼容性目标前先关闭 iPad；验收结束后关闭 iPhone，后续开发恢复默认 iPad。
+- 切换 iPhone 兼容性目标前先确认 `leases` 没有其他任务占用 iPad；统一脚本不会关闭其他任务正在使用的 Simulator。验收结束后关闭不用的 iPhone，后续开发恢复默认 iPad。
 - 出现高 CPU、安装卡住或睡眠恢复异常时，关闭并重新启动现有 Simulator；不要擦除主力设备或创建新设备绕过问题。
 
 Mac Catalyst 使用同一套 SwiftUI 源码和 iPad 缩放界面，不增加 Mac 专用功能。生成工程后，可在 Apple Silicon Mac 上验证独立 Catalyst 构建：
