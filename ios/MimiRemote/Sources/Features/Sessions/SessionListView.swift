@@ -44,6 +44,27 @@ struct SessionRuntimePresentation: Equatable {
     }
 }
 
+/// 未读只是一条历史结果的轻量提示，不承担进行状态，也不参与点击命中区域。
+/// 视觉点隐藏给 VoiceOver，完整语义由会话行的 accessibilityValue 提供。
+struct SessionUnreadIndicator: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Circle()
+            .fill(tokens.primaryAction)
+            .frame(width: 7, height: 7)
+            .overlay {
+                Circle()
+                    .stroke(tokens.background.opacity(0.72), lineWidth: 0.75)
+            }
+            .fixedSize()
+            .accessibilityHidden(true)
+    }
+}
+
 /// 会话列表里的运行时标识使用中性胶囊承载品牌图标和名称。
 /// 它需要比普通元数据更容易扫读，但不能抢过会话标题和需要处理的状态。
 struct SessionRuntimeBadge: View {
@@ -412,11 +433,20 @@ struct SessionListView: View {
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
                 isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+                isUnread: sessionStore.isHistorySessionUnread(session),
                 style: .library,
                 searchSnippet: sessionStore.sessionSearchSnippet(for: session.id)
             )
             .contentShape(Rectangle())
             .onTapGesture { select(session) }
+            .accessibilityElement(children: .combine)
+            .accessibilityValue(
+                sessionStore.isHistorySessionUnread(session)
+                    ? L10n.text("ui.unread_result")
+                    : ""
+            )
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { select(session) }
             .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
             .listRowInsets(.init(top: 4, leading: 20, bottom: 4, trailing: 20))
@@ -513,6 +543,7 @@ struct SessionIndexRow: View {
     let reminder: SessionReminder?
     let isObserving: Bool
     let isExternalReadOnly: Bool
+    var isUnread = false
     let style: SessionIndexRowStyle
     var searchSnippet: String? = nil
 
@@ -527,6 +558,10 @@ struct SessionIndexRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .layoutPriority(1)
+
+                if isUnread {
+                    SessionUnreadIndicator()
+                }
 
                 Spacer(minLength: 8)
 

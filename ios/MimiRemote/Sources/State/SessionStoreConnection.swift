@@ -1242,6 +1242,7 @@ extension SessionStore {
             )
         )
         reloadSessionListPreferences()
+        reloadHistoryReadStates()
         reloadSessionControlStates()
         reloadSessionReminders()
     }
@@ -1277,6 +1278,129 @@ extension SessionStore {
             ),
             profileID: appStore.notificationRoutingProfileID
         )
+    }
+
+    func reloadHistoryReadStates() {
+        let loaded = sessionHistoryReadStateStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
+        if historyReadStateBySessionID != loaded {
+            historyReadStateBySessionID = loaded
+        }
+        synchronizeHistoryReadStates()
+    }
+
+    /// 把会话快照归并到本机已读水位。初次见到的旧历史直接建立已读基线，避免升级后
+    /// 所有旧会话一起亮点；只有观察到运行结束或稳定完成版本变化时才产生未读。
+    func synchronizeHistoryReadStates() {
+        var next = historyReadStateBySessionID
+        var didChange = false
+
+        for session in sessions where !session.isLocalDraft {
+            var state = next[session.id] ?? SessionHistoryReadState()
+            let previousState = state
+
+            if session.isRunning {
+                state.observedRunning = true
+                if let activeTurnID = normalizedCompletionTurnID(session.activeTurnID) {
+                    state.pendingTurnID = activeTurnID
+                }
+            } else {
+                let version = SessionCompletionVersion(
+                    session: session,
+                    completedTurnID: state.observedRunning ? state.pendingTurnID : nil
+                )
+                guard version.hasStableSignal else {
+                    continue
+                }
+
+                if let latest = state.latestCompletion {
+                    if latest.representsSameCompletion(as: version) {
+                        let wasRead = state.readCompletion?.representsSameCompletion(as: latest) == true
+                        let merged = latest.merging(version)
+                        state.latestCompletion = merged
+                        if selectedSessionID == session.id || wasRead {
+                            state.readCompletion = merged
+                        }
+                    } else {
+                        state.latestCompletion = version
+                        if selectedSessionID == session.id {
+                            state.readCompletion = version
+                        }
+                    }
+                } else {
+                    state.latestCompletion = version
+                    // 旧历史首次进入索引时视为已读；从已观察运行态进入终态才是新结果。
+                    if !state.observedRunning || selectedSessionID == session.id {
+                        state.readCompletion = version
+                    }
+                }
+                state.observedRunning = false
+                state.pendingTurnID = nil
+            }
+
+            if state != previousState {
+                next[session.id] = state
+                didChange = true
+            }
+        }
+
+        if didChange {
+            historyReadStateBySessionID = next
+            sessionHistoryReadStateStore.save(
+                next,
+                profileID: appStore.notificationRoutingProfileID
+            )
+        }
+        publishUnreadHistorySessionIDs(from: next)
+    }
+
+    func isHistorySessionUnread(_ session: AgentSession) -> Bool {
+        !session.isRunning
+            && !session.isLocalDraft
+            && unreadHistorySessionIDs.contains(session.id)
+    }
+
+    func markHistorySessionRead(_ sessionID: SessionID) {
+        guard let session = sessionsByID[sessionID],
+              !session.isRunning,
+              !session.isLocalDraft else {
+            return
+        }
+        synchronizeHistoryReadStates()
+        guard var state = historyReadStateBySessionID[sessionID],
+              let latest = state.latestCompletion,
+              state.readCompletion?.representsSameCompletion(as: latest) != true else {
+            return
+        }
+        state.readCompletion = latest
+        historyReadStateBySessionID[sessionID] = state
+        sessionHistoryReadStateStore.save(
+            historyReadStateBySessionID,
+            profileID: appStore.notificationRoutingProfileID
+        )
+        publishUnreadHistorySessionIDs(from: historyReadStateBySessionID)
+    }
+
+    private func publishUnreadHistorySessionIDs(
+        from states: [SessionID: SessionHistoryReadState]
+    ) {
+        let visibleUnreadIDs = Set(sessions.lazy.compactMap { session -> SessionID? in
+            guard !session.isRunning,
+                  !session.isLocalDraft,
+                  states[session.id]?.isUnread == true else {
+                return nil
+            }
+            return session.id
+        })
+        setUnreadHistorySessionIDs(visibleUnreadIDs)
+    }
+
+    private func normalizedCompletionTurnID(_ value: TurnID?) -> TurnID? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized?.isEmpty == false ? normalized : nil
     }
 
     func setSessionWorkspaceIDs(_ value: Set<String>?) {
@@ -1914,6 +2038,7 @@ extension SessionStore {
         capabilityErrorMessage = nil
         isRefreshingCapabilities = false
         reloadSessionListPreferences()
+        reloadHistoryReadStates()
         reloadSessionControlStates()
         reloadSessionReminders()
         foregroundActivityBySessionID = [:]
