@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -103,9 +102,7 @@ type projectPathMatch struct {
 var (
 	homeDirFunc     = os.UserHomeDir
 	statFileFunc    = os.Stat
-	sqliteQueryFunc = func(db string, query string) ([]byte, error) {
-		return exec.Command("sqlite3", "-json", db, query).Output()
-	}
+	sqliteQueryFunc = querySQLiteJSON
 )
 
 const (
@@ -509,7 +506,7 @@ func storeRolloutDBPath(key string, signature dbSignature, path string) {
 	defer rolloutDBPathCache.Unlock()
 
 	// 打开历史消息时会反复按 thread id 查 rollout_path；用 DB/WAL 签名做失效条件，
-	// 可以避免重复 shell sqlite3，同时保证 Codex 状态库变化后自动重新查询。
+	// 可以避免重复查询 SQLite，同时保证 Codex 状态库变化后自动重新查询。
 	rolloutDBPathCache.items[key] = rolloutDBPathCacheEntry{signature: signature, path: path}
 	rolloutDBPathCache.access.touch(key)
 	trimCacheLRU(rolloutDBPathCache.items, &rolloutDBPathCache.access, maxRolloutDBCaches)
@@ -673,7 +670,7 @@ func queryRows(db string, project *projects.Project, limit int, includeSubagents
 		// cursor 使用 updated_at_ms + id 做 keyset 分页；SQL 排序也必须保持同一个全序，
 		// 否则同毫秒多条历史时，SQLite 的返回顺序会让下一页漏项或重复。
 		where + " order by updated_at_ms desc, id desc limit " + strconv.Itoa(limit)
-	out, err := exec.Command("sqlite3", "-json", db, sql).Output()
+	out, err := sqliteQueryFunc(db, sql)
 	if err != nil {
 		return nil, err
 	}
@@ -767,7 +764,7 @@ func storeHistorySnapshot(key string, signature dbSignature, rows []row, childTh
 	historyCache.Lock()
 	defer historyCache.Unlock()
 
-	// 会话列表刷新常常是 iOS 多个视图连续触发；缓存一个短快照，避免重复 shell 出 sqlite3。
+	// 会话列表刷新常常是 iOS 多个视图连续触发；缓存一个短快照，避免重复查询 SQLite。
 	historyCache.items[key] = historyCacheEntry{
 		signature:      signature,
 		loadedAt:       time.Now(),
@@ -784,7 +781,7 @@ func childThreadIDs(db string, columns map[string]bool) (map[string]bool, error)
 	if !columns["child_thread_id"] {
 		return ids, nil
 	}
-	out, err := exec.Command("sqlite3", "-json", db, "select child_thread_id from thread_spawn_edges").Output()
+	out, err := sqliteQueryFunc(db, "select child_thread_id from thread_spawn_edges")
 	if err != nil {
 		return nil, err
 	}

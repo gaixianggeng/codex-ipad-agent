@@ -2,6 +2,69 @@ import Combine
 import CryptoKit
 import Foundation
 
+enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
+    case journey
+    case threeKingdoms
+    case waterMargin
+    case redChamber
+    case greekMythology
+    case sherlockHolmes
+    case aliceWonderland
+    case emoji
+
+    var id: String { rawValue }
+
+    var usesCharacters: Bool {
+        self != .emoji
+    }
+
+    var titleKey: String {
+        switch self {
+        case .journey:
+            return "ui.journey_to_the_west"
+        case .threeKingdoms:
+            return "ui.workspace_icon_style_three_kingdoms"
+        case .waterMargin:
+            return "ui.workspace_icon_style_water_margin"
+        case .redChamber:
+            return "ui.workspace_icon_style_red_chamber"
+        case .greekMythology:
+            return "ui.workspace_icon_style_greek_mythology"
+        case .sherlockHolmes:
+            return "ui.workspace_icon_style_sherlock_holmes"
+        case .aliceWonderland:
+            return "ui.workspace_icon_style_alice_wonderland"
+        case .emoji:
+            return "ui.emoji"
+        }
+    }
+
+    var title: String {
+        L10n.text(titleKey)
+    }
+
+    var representativeAssetName: String? {
+        switch self {
+        case .journey:
+            return "WorkspaceCharacterSunWukong"
+        case .threeKingdoms:
+            return "WorkspaceCharacterThreeGuanYu"
+        case .waterMargin:
+            return "WorkspaceCharacterWaterLuZhishen"
+        case .redChamber:
+            return "WorkspaceCharacterRedLinDaiyu"
+        case .greekMythology:
+            return "WorkspaceCharacterGreekAthena"
+        case .sherlockHolmes:
+            return "WorkspaceCharacterSherlockHolmes"
+        case .aliceWonderland:
+            return "WorkspaceCharacterAliceAlice"
+        case .emoji:
+            return nil
+        }
+    }
+}
+
 struct WorkspaceCharacterIcon: Identifiable, Equatable, Sendable {
     let id: String
     let assetName: String
@@ -13,9 +76,93 @@ struct WorkspaceCharacterIcon: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 工作区角色图标是当前设备的展示偏好，不属于远端项目配置，也不参与会话状态同步。
+private struct WorkspaceAppearancePreferences: Codable {
+    var style: WorkspaceIconStyle?
+    var characterIDsByProject: [String: String] = [:]
+    var emojiByProject: [String: String] = [:]
+    var characterIDsByStyleAndProject: [String: [String: String]] = [:]
+
+    private enum CodingKeys: String, CodingKey {
+        case style
+        case characterIDsByProject
+        case emojiByProject
+        case characterIDsByStyleAndProject
+    }
+
+    init(
+        style: WorkspaceIconStyle? = nil,
+        characterIDsByProject: [String: String] = [:],
+        emojiByProject: [String: String] = [:],
+        characterIDsByStyleAndProject: [String: [String: String]] = [:]
+    ) {
+        self.style = style
+        self.characterIDsByProject = characterIDsByProject
+        self.emojiByProject = emojiByProject
+        self.characterIDsByStyleAndProject = characterIDsByStyleAndProject
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        style = try container.decodeIfPresent(WorkspaceIconStyle.self, forKey: .style)
+        characterIDsByProject = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .characterIDsByProject
+        ) ?? [:]
+        emojiByProject = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .emojiByProject
+        ) ?? [:]
+        // v2 已发布数据没有该字段；decodeIfPresent 可原地兼容，不需要更换 UserDefaults 键。
+        characterIDsByStyleAndProject = try container.decodeIfPresent(
+            [String: [String: String]].self,
+            forKey: .characterIDsByStyleAndProject
+        ) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(style, forKey: .style)
+        try container.encode(characterIDsByProject, forKey: .characterIDsByProject)
+        try container.encode(emojiByProject, forKey: .emojiByProject)
+        try container.encode(
+            characterIDsByStyleAndProject,
+            forKey: .characterIDsByStyleAndProject
+        )
+    }
+
+    var isEmpty: Bool {
+        style == nil
+            && characterIDsByProject.isEmpty
+            && emojiByProject.isEmpty
+            && characterIDsByStyleAndProject.values.allSatisfy(\.isEmpty)
+    }
+
+    mutating func mergeMissingValues(from legacy: Self) {
+        if style == nil {
+            style = legacy.style
+        }
+        for (projectID, characterID) in legacy.characterIDsByProject
+            where characterIDsByProject[projectID] == nil {
+            characterIDsByProject[projectID] = characterID
+        }
+        for (projectID, emoji) in legacy.emojiByProject where emojiByProject[projectID] == nil {
+            emojiByProject[projectID] = emoji
+        }
+        for (styleID, legacyChoices) in legacy.characterIDsByStyleAndProject {
+            var choices = characterIDsByStyleAndProject[styleID] ?? [:]
+            for (projectID, characterID) in legacyChoices where choices[projectID] == nil {
+                choices[projectID] = characterID
+            }
+            characterIDsByStyleAndProject[styleID] = choices
+        }
+    }
+}
+
+/// 工作区图标是当前设备的展示偏好，不属于远端项目配置，也不参与会话状态同步。
 @MainActor
 final class WorkspaceAppearanceStore: ObservableObject {
+    static let builtInEmoji = ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
+
     static let builtInCharacters = [
         WorkspaceCharacterIcon(id: "sun-wukong", assetName: "WorkspaceCharacterSunWukong", nameKey: "ui.workspace_character_sun_wukong"),
         WorkspaceCharacterIcon(id: "tang-sanzang", assetName: "WorkspaceCharacterTangSanzang", nameKey: "ui.workspace_character_tang_sanzang"),
@@ -39,7 +186,96 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "queen-womens-kingdom", assetName: "WorkspaceCharacterQueenWomensKingdom", nameKey: "ui.workspace_character_queen_womens_kingdom")
     ]
 
-    private typealias Storage = ProfileScopedStorage<[String: String]>
+    static let threeKingdomsCharacters = [
+        WorkspaceCharacterIcon(id: "three-liu-bei", assetName: "WorkspaceCharacterThreeLiuBei", nameKey: "ui.workspace_character_three_liu_bei"),
+        WorkspaceCharacterIcon(id: "three-guan-yu", assetName: "WorkspaceCharacterThreeGuanYu", nameKey: "ui.workspace_character_three_guan_yu"),
+        WorkspaceCharacterIcon(id: "three-zhang-fei", assetName: "WorkspaceCharacterThreeZhangFei", nameKey: "ui.workspace_character_three_zhang_fei"),
+        WorkspaceCharacterIcon(id: "three-zhuge-liang", assetName: "WorkspaceCharacterThreeZhugeLiang", nameKey: "ui.workspace_character_three_zhuge_liang"),
+        WorkspaceCharacterIcon(id: "three-cao-cao", assetName: "WorkspaceCharacterThreeCaoCao", nameKey: "ui.workspace_character_three_cao_cao"),
+        WorkspaceCharacterIcon(id: "three-sun-quan", assetName: "WorkspaceCharacterThreeSunQuan", nameKey: "ui.workspace_character_three_sun_quan"),
+        WorkspaceCharacterIcon(id: "three-zhao-yun", assetName: "WorkspaceCharacterThreeZhaoYun", nameKey: "ui.workspace_character_three_zhao_yun"),
+        WorkspaceCharacterIcon(id: "three-lu-bu", assetName: "WorkspaceCharacterThreeLuBu", nameKey: "ui.workspace_character_three_lu_bu"),
+        WorkspaceCharacterIcon(id: "three-diaochan", assetName: "WorkspaceCharacterThreeDiaochan", nameKey: "ui.workspace_character_three_diaochan"),
+        WorkspaceCharacterIcon(id: "three-sima-yi", assetName: "WorkspaceCharacterThreeSimaYi", nameKey: "ui.workspace_character_three_sima_yi")
+    ]
+
+    static let waterMarginCharacters = [
+        WorkspaceCharacterIcon(id: "water-song-jiang", assetName: "WorkspaceCharacterWaterSongJiang", nameKey: "ui.workspace_character_water_song_jiang"),
+        WorkspaceCharacterIcon(id: "water-lin-chong", assetName: "WorkspaceCharacterWaterLinChong", nameKey: "ui.workspace_character_water_lin_chong"),
+        WorkspaceCharacterIcon(id: "water-lu-zhishen", assetName: "WorkspaceCharacterWaterLuZhishen", nameKey: "ui.workspace_character_water_lu_zhishen"),
+        WorkspaceCharacterIcon(id: "water-wu-song", assetName: "WorkspaceCharacterWaterWuSong", nameKey: "ui.workspace_character_water_wu_song"),
+        WorkspaceCharacterIcon(id: "water-li-kui", assetName: "WorkspaceCharacterWaterLiKui", nameKey: "ui.workspace_character_water_li_kui"),
+        WorkspaceCharacterIcon(id: "water-wu-yong", assetName: "WorkspaceCharacterWaterWuYong", nameKey: "ui.workspace_character_water_wu_yong"),
+        WorkspaceCharacterIcon(id: "water-lu-junyi", assetName: "WorkspaceCharacterWaterLuJunyi", nameKey: "ui.workspace_character_water_lu_junyi"),
+        WorkspaceCharacterIcon(id: "water-yan-qing", assetName: "WorkspaceCharacterWaterYanQing", nameKey: "ui.workspace_character_water_yan_qing"),
+        WorkspaceCharacterIcon(id: "water-hu-sanniang", assetName: "WorkspaceCharacterWaterHuSanniang", nameKey: "ui.workspace_character_water_hu_sanniang"),
+        WorkspaceCharacterIcon(id: "water-sun-erniang", assetName: "WorkspaceCharacterWaterSunErniang", nameKey: "ui.workspace_character_water_sun_erniang")
+    ]
+
+    static let redChamberCharacters = [
+        WorkspaceCharacterIcon(id: "red-jia-baoyu", assetName: "WorkspaceCharacterRedJiaBaoyu", nameKey: "ui.workspace_character_red_jia_baoyu"),
+        WorkspaceCharacterIcon(id: "red-lin-daiyu", assetName: "WorkspaceCharacterRedLinDaiyu", nameKey: "ui.workspace_character_red_lin_daiyu"),
+        WorkspaceCharacterIcon(id: "red-xue-baochai", assetName: "WorkspaceCharacterRedXueBaochai", nameKey: "ui.workspace_character_red_xue_baochai"),
+        WorkspaceCharacterIcon(id: "red-wang-xifeng", assetName: "WorkspaceCharacterRedWangXifeng", nameKey: "ui.workspace_character_red_wang_xifeng"),
+        WorkspaceCharacterIcon(id: "red-shi-xiangyun", assetName: "WorkspaceCharacterRedShiXiangyun", nameKey: "ui.workspace_character_red_shi_xiangyun"),
+        WorkspaceCharacterIcon(id: "red-miaoyu", assetName: "WorkspaceCharacterRedMiaoyu", nameKey: "ui.workspace_character_red_miaoyu"),
+        WorkspaceCharacterIcon(id: "red-jia-tanchun", assetName: "WorkspaceCharacterRedJiaTanchun", nameKey: "ui.workspace_character_red_jia_tanchun"),
+        WorkspaceCharacterIcon(id: "red-qingwen", assetName: "WorkspaceCharacterRedQingwen", nameKey: "ui.workspace_character_red_qingwen"),
+        WorkspaceCharacterIcon(id: "red-xiangling", assetName: "WorkspaceCharacterRedXiangling", nameKey: "ui.workspace_character_red_xiangling"),
+        WorkspaceCharacterIcon(id: "red-grandmother-jia", assetName: "WorkspaceCharacterRedGrandmotherJia", nameKey: "ui.workspace_character_red_grandmother_jia")
+    ]
+
+    static let greekMythologyCharacters = [
+        WorkspaceCharacterIcon(id: "greek-zeus", assetName: "WorkspaceCharacterGreekZeus", nameKey: "ui.workspace_character_greek_zeus"),
+        WorkspaceCharacterIcon(id: "greek-hera", assetName: "WorkspaceCharacterGreekHera", nameKey: "ui.workspace_character_greek_hera"),
+        WorkspaceCharacterIcon(id: "greek-poseidon", assetName: "WorkspaceCharacterGreekPoseidon", nameKey: "ui.workspace_character_greek_poseidon"),
+        WorkspaceCharacterIcon(id: "greek-athena", assetName: "WorkspaceCharacterGreekAthena", nameKey: "ui.workspace_character_greek_athena"),
+        WorkspaceCharacterIcon(id: "greek-apollo", assetName: "WorkspaceCharacterGreekApollo", nameKey: "ui.workspace_character_greek_apollo"),
+        WorkspaceCharacterIcon(id: "greek-artemis", assetName: "WorkspaceCharacterGreekArtemis", nameKey: "ui.workspace_character_greek_artemis"),
+        WorkspaceCharacterIcon(id: "greek-hermes", assetName: "WorkspaceCharacterGreekHermes", nameKey: "ui.workspace_character_greek_hermes"),
+        WorkspaceCharacterIcon(id: "greek-aphrodite", assetName: "WorkspaceCharacterGreekAphrodite", nameKey: "ui.workspace_character_greek_aphrodite"),
+        WorkspaceCharacterIcon(id: "greek-ares", assetName: "WorkspaceCharacterGreekAres", nameKey: "ui.workspace_character_greek_ares"),
+        WorkspaceCharacterIcon(id: "greek-hades", assetName: "WorkspaceCharacterGreekHades", nameKey: "ui.workspace_character_greek_hades")
+    ]
+
+    static let sherlockHolmesCharacters = [
+        WorkspaceCharacterIcon(id: "sherlock-holmes", assetName: "WorkspaceCharacterSherlockHolmes", nameKey: "ui.workspace_character_sherlock_holmes"),
+        WorkspaceCharacterIcon(id: "sherlock-watson", assetName: "WorkspaceCharacterSherlockWatson", nameKey: "ui.workspace_character_sherlock_watson"),
+        WorkspaceCharacterIcon(id: "sherlock-irene-adler", assetName: "WorkspaceCharacterSherlockIreneAdler", nameKey: "ui.workspace_character_sherlock_irene_adler"),
+        WorkspaceCharacterIcon(id: "sherlock-moriarty", assetName: "WorkspaceCharacterSherlockMoriarty", nameKey: "ui.workspace_character_sherlock_moriarty"),
+        WorkspaceCharacterIcon(id: "sherlock-mycroft", assetName: "WorkspaceCharacterSherlockMycroft", nameKey: "ui.workspace_character_sherlock_mycroft"),
+        WorkspaceCharacterIcon(id: "sherlock-lestrade", assetName: "WorkspaceCharacterSherlockLestrade", nameKey: "ui.workspace_character_sherlock_lestrade"),
+        WorkspaceCharacterIcon(id: "sherlock-hudson", assetName: "WorkspaceCharacterSherlockHudson", nameKey: "ui.workspace_character_sherlock_hudson"),
+        WorkspaceCharacterIcon(id: "sherlock-morstan", assetName: "WorkspaceCharacterSherlockMorstan", nameKey: "ui.workspace_character_sherlock_morstan"),
+        WorkspaceCharacterIcon(id: "sherlock-gregson", assetName: "WorkspaceCharacterSherlockGregson", nameKey: "ui.workspace_character_sherlock_gregson"),
+        WorkspaceCharacterIcon(id: "sherlock-moran", assetName: "WorkspaceCharacterSherlockMoran", nameKey: "ui.workspace_character_sherlock_moran")
+    ]
+
+    static let aliceWonderlandCharacters = [
+        WorkspaceCharacterIcon(id: "alice-alice", assetName: "WorkspaceCharacterAliceAlice", nameKey: "ui.workspace_character_alice_alice"),
+        WorkspaceCharacterIcon(id: "alice-white-rabbit", assetName: "WorkspaceCharacterAliceWhiteRabbit", nameKey: "ui.workspace_character_alice_white_rabbit"),
+        WorkspaceCharacterIcon(id: "alice-mad-hatter", assetName: "WorkspaceCharacterAliceMadHatter", nameKey: "ui.workspace_character_alice_mad_hatter"),
+        WorkspaceCharacterIcon(id: "alice-cheshire-cat", assetName: "WorkspaceCharacterAliceCheshireCat", nameKey: "ui.workspace_character_alice_cheshire_cat"),
+        WorkspaceCharacterIcon(id: "alice-queen-of-hearts", assetName: "WorkspaceCharacterAliceQueenOfHearts", nameKey: "ui.workspace_character_alice_queen_of_hearts"),
+        WorkspaceCharacterIcon(id: "alice-king-of-hearts", assetName: "WorkspaceCharacterAliceKingOfHearts", nameKey: "ui.workspace_character_alice_king_of_hearts"),
+        WorkspaceCharacterIcon(id: "alice-march-hare", assetName: "WorkspaceCharacterAliceMarchHare", nameKey: "ui.workspace_character_alice_march_hare"),
+        WorkspaceCharacterIcon(id: "alice-dormouse", assetName: "WorkspaceCharacterAliceDormouse", nameKey: "ui.workspace_character_alice_dormouse"),
+        WorkspaceCharacterIcon(id: "alice-caterpillar", assetName: "WorkspaceCharacterAliceCaterpillar", nameKey: "ui.workspace_character_alice_caterpillar"),
+        WorkspaceCharacterIcon(id: "alice-duchess", assetName: "WorkspaceCharacterAliceDuchess", nameKey: "ui.workspace_character_alice_duchess")
+    ]
+
+    static let builtInCharactersByStyle: [WorkspaceIconStyle: [WorkspaceCharacterIcon]] = [
+        .journey: builtInCharacters,
+        .threeKingdoms: threeKingdomsCharacters,
+        .waterMargin: waterMarginCharacters,
+        .redChamber: redChamberCharacters,
+        .greekMythology: greekMythologyCharacters,
+        .sherlockHolmes: sherlockHolmesCharacters,
+        .aliceWonderland: aliceWonderlandCharacters
+    ]
+
+    private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>
+    private typealias LegacyStorage = ProfileScopedStorage<[String: String]>
 
     @Published private var storage: Storage
 
@@ -48,13 +284,24 @@ final class WorkspaceAppearanceStore: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        key: String = "agentd.workspaceAppearancePreferences.v1"
+        key: String = "agentd.workspaceAppearancePreferences.v2",
+        legacyKey: String = "agentd.workspaceAppearancePreferences.v1"
     ) {
         self.defaults = defaults
         self.key = key
+
         if let data = defaults.data(forKey: key),
            let decoded = try? JSONDecoder().decode(Storage.self, from: data) {
             storage = decoded
+        } else if let legacyData = defaults.data(forKey: legacyKey),
+                  let legacy = try? JSONDecoder().decode(LegacyStorage.self, from: legacyData) {
+            // v1 的单一字典可能同时残留 Emoji 和新版角色 ID。首次读取时分类复制到 v2，
+            // 旧键保持只读，确保升级失败也不会破坏用户原来的选择。
+            let migrated = Self.migratedStorage(from: legacy)
+            storage = migrated
+            if let data = try? JSONEncoder().encode(migrated) {
+                defaults.set(data, forKey: key)
+            }
         } else {
             storage = Storage()
         }
@@ -66,21 +313,67 @@ final class WorkspaceAppearanceStore: ObservableObject {
         endpoint: String,
         profiles: [ConnectionProfile]
     ) {
-        guard storage.migrateLegacyValueIfUnique(
-            profileID: profileID,
-            endpoint: endpoint,
-            profiles: profiles
-        ) else {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
+        let endpointKey = AgentAPIClient.normalizedEndpoint(endpoint)
+        guard !storage.migratedLegacyEndpoints.contains(endpointKey),
+              ProfileScopedPersistence.isUniqueEndpointMatch(
+                  profileID: profileKey,
+                  normalizedEndpoint: endpointKey,
+                  profiles: profiles
+              ),
+              let legacyPreferences = storage.byEndpoint[endpointKey]
+        else {
+            return
+        }
+
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        preferences.mergeMissingValues(from: legacyPreferences)
+        storage.byProfileID[profileKey] = preferences
+        storage.migratedLegacyEndpoints.insert(endpointKey)
+        persist()
+    }
+
+    func style(profileID: String) -> WorkspaceIconStyle {
+        preferences(profileID: profileID)?.style ?? .journey
+    }
+
+    func setStyle(_ style: WorkspaceIconStyle, profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        guard preferences.style != style else { return }
+        preferences.style = style
+        storage.byProfileID[profileKey] = preferences
         persist()
     }
 
     func character(profileID: String, projectID: String) -> WorkspaceCharacterIcon {
-        let characterID = customCharacterID(profileID: profileID, projectID: projectID)
-            ?? defaultCharacterID(profileID: profileID, projectID: projectID)
-        // defaultCharacterID 必定来自内置池；保留兜底，避免未来资源清单调整时出现空图。
-        return Self.character(id: characterID) ?? Self.builtInCharacters[0]
+        character(
+            style: effectiveCharacterStyle(profileID: profileID),
+            profileID: profileID,
+            projectID: projectID
+        )
+    }
+
+    func character(
+        style: WorkspaceIconStyle,
+        profileID: String,
+        projectID: String
+    ) -> WorkspaceCharacterIcon {
+        let pool = Self.characters(for: style)
+        guard let fallback = pool.first else {
+            return Self.builtInCharacters[0]
+        }
+        let characterID = customCharacterID(
+            style: style,
+            profileID: profileID,
+            projectID: projectID
+        ) ?? defaultCharacterID(style: style, profileID: profileID, projectID: projectID)
+        // 默认 ID 必定来自当前风格；仍保留兜底，避免以后调整资源清单造成空图。
+        return Self.character(id: characterID, style: style) ?? fallback
     }
 
     /// 为同一 Profile 下当前可见的整组项目统一分配角色。
@@ -91,18 +384,34 @@ final class WorkspaceAppearanceStore: ObservableObject {
         profileID: String,
         projectIDs: [String]
     ) -> [String: WorkspaceCharacterIcon] {
+        characterAssignments(
+            style: effectiveCharacterStyle(profileID: profileID),
+            profileID: profileID,
+            projectIDs: projectIDs
+        )
+    }
+
+    func characterAssignments(
+        style: WorkspaceIconStyle,
+        profileID: String,
+        projectIDs: [String]
+    ) -> [String: WorkspaceCharacterIcon] {
+        let pool = Self.characters(for: style)
         let uniqueProjectIDs = Array(Set(projectIDs)).sorted()
-        guard !uniqueProjectIDs.isEmpty, !Self.builtInCharacters.isEmpty else {
+        guard !uniqueProjectIDs.isEmpty, !pool.isEmpty else {
             return [:]
         }
 
         var assignments: [String: WorkspaceCharacterIcon] = [:]
         var usedCharacterIDs = Set<String>()
 
-        // 手动选择优先占位；历史数据若已经重复，只保留首个占位，其余项目回到空位分配。
         for projectID in uniqueProjectIDs {
-            guard let customID = customCharacterID(profileID: profileID, projectID: projectID),
-                  let character = Self.character(id: customID),
+            guard let customID = customCharacterID(
+                style: style,
+                profileID: profileID,
+                projectID: projectID
+            ),
+                  let character = Self.character(id: customID, style: style),
                   !usedCharacterIDs.contains(character.id) else {
                 continue
             }
@@ -111,14 +420,17 @@ final class WorkspaceAppearanceStore: ObservableObject {
         }
 
         for projectID in uniqueProjectIDs where assignments[projectID] == nil {
-            let startIndex = defaultCharacterIndex(profileID: profileID, projectID: projectID)
-            let availableCharacter = (0..<Self.builtInCharacters.count)
+            let startIndex = defaultCharacterIndex(
+                style: style,
+                profileID: profileID,
+                projectID: projectID
+            )
+            let availableCharacter = (0..<pool.count)
                 .lazy
-                .map { Self.builtInCharacters[(startIndex + $0) % Self.builtInCharacters.count] }
+                .map { pool[(startIndex + $0) % pool.count] }
                 .first { !usedCharacterIDs.contains($0.id) }
 
-            // 超过角色池容量时不存在空位；退回项目自己的稳定哈希结果，让复用仍然可预测。
-            let character = availableCharacter ?? Self.builtInCharacters[startIndex]
+            let character = availableCharacter ?? pool[startIndex]
             assignments[projectID] = character
             usedCharacterIDs.insert(character.id)
         }
@@ -127,44 +439,161 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     func customCharacterID(profileID: String, projectID: String) -> String? {
-        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+        customCharacterID(
+            style: effectiveCharacterStyle(profileID: profileID),
+            profileID: profileID,
+            projectID: projectID
+        )
+    }
+
+    func customCharacterID(
+        style: WorkspaceIconStyle,
+        profileID: String,
+        projectID: String
+    ) -> String? {
+        guard style.usesCharacters,
+              let preferences = preferences(profileID: profileID)
+        else {
             return nil
         }
-        guard let storedValue = storage.byProfileID[profileKey]?[projectID],
-              Self.character(id: storedValue) != nil else {
-            // v1 曾保存 Emoji；无法识别的旧值直接回退到新的稳定默认角色。
+        let storedValue: String?
+        if style == .journey {
+            storedValue = preferences.characterIDsByProject[projectID]
+        } else {
+            storedValue = preferences.characterIDsByStyleAndProject[style.rawValue]?[projectID]
+        }
+        guard let storedValue,
+              Self.character(id: storedValue, style: style) != nil else {
             return nil
         }
         return storedValue
     }
 
     func defaultCharacterID(profileID: String, projectID: String) -> String {
-        Self.builtInCharacters[defaultCharacterIndex(profileID: profileID, projectID: projectID)].id
+        defaultCharacterID(
+            style: effectiveCharacterStyle(profileID: profileID),
+            profileID: profileID,
+            projectID: projectID
+        )
     }
 
-    private func defaultCharacterIndex(profileID: String, projectID: String) -> Int {
-        let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
-        let identity = "\(profileKey)\n\(projectID)"
-        return Self.stableIndex(for: identity, count: Self.builtInCharacters.count)
+    func defaultCharacterID(
+        style: WorkspaceIconStyle,
+        profileID: String,
+        projectID: String
+    ) -> String {
+        let pool = Self.characters(for: style)
+        guard !pool.isEmpty else {
+            return Self.builtInCharacters[0].id
+        }
+        return pool[
+            defaultCharacterIndex(style: style, profileID: profileID, projectID: projectID)
+        ].id
     }
 
     func setCustomCharacterID(_ characterID: String?, profileID: String, projectID: String) {
+        setCustomCharacterID(
+            characterID,
+            style: effectiveCharacterStyle(profileID: profileID),
+            profileID: profileID,
+            projectID: projectID
+        )
+    }
+
+    func setCustomCharacterID(
+        _ characterID: String?,
+        style: WorkspaceIconStyle,
+        profileID: String,
+        projectID: String
+    ) {
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
-        var projectValues = storage.byProfileID[profileKey] ?? [:]
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        guard style.usesCharacters else { return }
         if let characterID {
-            guard Self.character(id: characterID) != nil else { return }
-            projectValues[projectID] = characterID
+            guard Self.character(id: characterID, style: style) != nil else { return }
+            if style == .journey {
+                preferences.characterIDsByProject[projectID] = characterID
+            } else {
+                var choices = preferences.characterIDsByStyleAndProject[style.rawValue] ?? [:]
+                choices[projectID] = characterID
+                preferences.characterIDsByStyleAndProject[style.rawValue] = choices
+            }
         } else {
-            projectValues.removeValue(forKey: projectID)
+            if style == .journey {
+                preferences.characterIDsByProject.removeValue(forKey: projectID)
+            } else {
+                var choices = preferences.characterIDsByStyleAndProject[style.rawValue] ?? [:]
+                choices.removeValue(forKey: projectID)
+                preferences.characterIDsByStyleAndProject[style.rawValue] =
+                    choices.isEmpty ? nil : choices
+            }
         }
-        if projectValues.isEmpty {
-            storage.byProfileID.removeValue(forKey: profileKey)
+        save(preferences, profileKey: profileKey)
+    }
+
+    func emoji(profileID: String, projectID: String) -> String {
+        customEmoji(profileID: profileID, projectID: projectID)
+            ?? defaultEmoji(profileID: profileID, projectID: projectID)
+    }
+
+    func emojiAssignments(profileID: String, projectIDs: [String]) -> [String: String] {
+        let uniqueProjectIDs = Array(Set(projectIDs)).sorted()
+        guard !uniqueProjectIDs.isEmpty, !Self.builtInEmoji.isEmpty else {
+            return [:]
+        }
+
+        var assignments: [String: String] = [:]
+        var usedEmoji = Set<String>()
+
+        // 保留不冲突的历史手动选择；旧数据里已经重复的项目回到稳定自动分配。
+        for projectID in uniqueProjectIDs {
+            guard let custom = customEmoji(profileID: profileID, projectID: projectID),
+                  !usedEmoji.contains(custom) else {
+                continue
+            }
+            assignments[projectID] = custom
+            usedEmoji.insert(custom)
+        }
+
+        for projectID in uniqueProjectIDs where assignments[projectID] == nil {
+            let startIndex = defaultEmojiIndex(profileID: profileID, projectID: projectID)
+            let availableEmoji = (0..<Self.builtInEmoji.count)
+                .lazy
+                .map { Self.builtInEmoji[(startIndex + $0) % Self.builtInEmoji.count] }
+                .first { !usedEmoji.contains($0) }
+            let emoji = availableEmoji ?? Self.builtInEmoji[startIndex]
+            assignments[projectID] = emoji
+            usedEmoji.insert(emoji)
+        }
+
+        return assignments
+    }
+
+    func customEmoji(profileID: String, projectID: String) -> String? {
+        guard let storedValue = preferences(profileID: profileID)?.emojiByProject[projectID] else {
+            return nil
+        }
+        return Self.normalizedEmoji(storedValue)
+    }
+
+    func defaultEmoji(profileID: String, projectID: String) -> String {
+        Self.builtInEmoji[defaultEmojiIndex(profileID: profileID, projectID: projectID)]
+    }
+
+    func setCustomEmoji(_ emoji: String?, profileID: String, projectID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var preferences = storage.byProfileID[profileKey] ?? WorkspaceAppearancePreferences()
+        if let emoji {
+            guard let normalized = Self.normalizedEmoji(emoji) else { return }
+            preferences.emojiByProject[projectID] = normalized
         } else {
-            storage.byProfileID[profileKey] = projectValues
+            preferences.emojiByProject.removeValue(forKey: projectID)
         }
-        persist()
+        save(preferences, profileKey: profileKey)
     }
 
     func remove(profileID: String) {
@@ -175,8 +604,110 @@ final class WorkspaceAppearanceStore: ObservableObject {
         persist()
     }
 
+    static func characters(for style: WorkspaceIconStyle) -> [WorkspaceCharacterIcon] {
+        builtInCharactersByStyle[style] ?? []
+    }
+
+    static func character(id: String, style: WorkspaceIconStyle) -> WorkspaceCharacterIcon? {
+        characters(for: style).first { $0.id == id }
+    }
+
     static func character(id: String) -> WorkspaceCharacterIcon? {
-        builtInCharacters.first { $0.id == id }
+        builtInCharactersByStyle.values.lazy
+            .flatMap { $0 }
+            .first { $0.id == id }
+    }
+
+    static func normalizedEmoji(_ input: String) -> String? {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count == 1 else { return nil }
+
+        let scalars = Array(value.unicodeScalars)
+        let hasPresentationEmoji = scalars.contains { $0.properties.isEmojiPresentation }
+        let hasEmojiWithPresentationSelector = scalars.contains { $0.properties.isEmoji }
+            && scalars.contains { $0.value == 0xFE0F }
+        guard hasPresentationEmoji || hasEmojiWithPresentationSelector else {
+            return nil
+        }
+        return value
+    }
+
+    static func tintIndex(for emoji: String, count: Int) -> Int {
+        stableIndex(for: emoji, count: count)
+    }
+
+    private func preferences(profileID: String) -> WorkspaceAppearancePreferences? {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return nil
+        }
+        return storage.byProfileID[profileKey]
+    }
+
+    private func effectiveCharacterStyle(profileID: String) -> WorkspaceIconStyle {
+        let selectedStyle = style(profileID: profileID)
+        return selectedStyle.usesCharacters ? selectedStyle : .journey
+    }
+
+    private func defaultCharacterIndex(
+        style: WorkspaceIconStyle,
+        profileID: String,
+        projectID: String
+    ) -> Int {
+        Self.stableIndex(
+            for: stableIdentity(profileID: profileID, projectID: projectID),
+            count: Self.characters(for: style).count
+        )
+    }
+
+    private func defaultEmojiIndex(profileID: String, projectID: String) -> Int {
+        Self.stableIndex(
+            for: stableIdentity(profileID: profileID, projectID: projectID),
+            count: Self.builtInEmoji.count
+        )
+    }
+
+    private func stableIdentity(profileID: String, projectID: String) -> String {
+        let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
+        return "\(profileKey)\n\(projectID)"
+    }
+
+    private func save(_ preferences: WorkspaceAppearancePreferences, profileKey: String) {
+        if preferences.isEmpty {
+            storage.byProfileID.removeValue(forKey: profileKey)
+        } else {
+            storage.byProfileID[profileKey] = preferences
+        }
+        persist()
+    }
+
+    private static func migratedStorage(from legacy: LegacyStorage) -> Storage {
+        var migrated = Storage()
+        migrated.byEndpoint = legacy.byEndpoint.mapValues(migratedPreferences)
+        migrated.byProfileID = legacy.byProfileID.mapValues(migratedPreferences)
+        migrated.migratedLegacyEndpoints = legacy.migratedLegacyEndpoints
+        return migrated
+    }
+
+    private static func migratedPreferences(
+        from legacyValues: [String: String]
+    ) -> WorkspaceAppearancePreferences {
+        var preferences = WorkspaceAppearancePreferences()
+        for (projectID, value) in legacyValues {
+            if character(id: value, style: .journey) != nil {
+                preferences.characterIDsByProject[projectID] = value
+            } else if let emoji = normalizedEmoji(value) {
+                preferences.emojiByProject[projectID] = emoji
+            }
+        }
+
+        // 兼容老用户优先：只要存在历史 Emoji 就继续展示 Emoji；完全没有历史选择时
+        // style 保持 nil，由读取逻辑使用《西游记》作为新用户默认值。
+        if !preferences.emojiByProject.isEmpty {
+            preferences.style = .emoji
+        } else if !preferences.characterIDsByProject.isEmpty {
+            preferences.style = .journey
+        }
+        return preferences
     }
 
     private static func stableIndex(for value: String, count: Int) -> Int {

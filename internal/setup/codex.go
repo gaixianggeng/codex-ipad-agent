@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,7 +16,7 @@ type executableLookup func(file string) (string, error)
 // 失效时才回退到当前 PATH 和桌面 App 内置二进制，避免 Homebrew service 因 PATH
 // 比交互式终端更窄而启动失败。
 func ResolveCodexBin(configured string) (string, error) {
-	return resolveCodexBin(configured, exec.LookPath, platformCodexCandidates())
+	return resolveCodexBin(configured, lookupUsableCodexExecutable, platformCodexCandidates())
 }
 
 func resolveCodexBin(configured string, lookPath executableLookup, platformCandidates []string) (string, error) {
@@ -48,7 +47,23 @@ func resolveCodexBin(configured string, lookPath executableLookup, platformCandi
 
 func platformCodexCandidates() []string {
 	if runtime.GOOS != "darwin" {
-		return nil
+		if runtime.GOOS != "windows" {
+			return nil
+		}
+		candidates := []string{}
+		if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+			candidates = append(candidates,
+				filepath.Join(localAppData, "Microsoft", "WindowsApps", "codex.exe"),
+				filepath.Join(localAppData, "Programs", "Codex", "codex.exe"),
+				filepath.Join(localAppData, "Codex", "codex.exe"))
+		}
+		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+			candidates = append(candidates,
+				filepath.Join(appData, "npm", "codex.cmd"),
+				filepath.Join(appData, "npm", "codex.exe"),
+				filepath.Join(appData, "Codex", "codex.exe"))
+		}
+		return candidates
 	}
 	candidates := []string{
 		"/Applications/ChatGPT.app/Contents/Resources/codex",

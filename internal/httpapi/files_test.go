@@ -109,6 +109,7 @@ func TestFileReadReportsPermissionDeniedWithActionableGuidance(t *testing.T) {
 func TestFileReadAllowsPhotosDerivativeImage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	server := newTestServer(t)
 	photoDir := filepath.Join(home, "Pictures", "Photos Library.photoslibrary", "resources", "derivatives", "2")
@@ -250,9 +251,7 @@ func TestAllowedCodexClipboardImagePathRejectsUnsafeVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	symlinkPath := filepath.Join(tempRoot, "codex-clipboard-15031bdc-111a-4669-b3e6-4ef5f2094829.png")
-	if err := os.Symlink(targetPath, symlinkPath); err != nil {
-		t.Fatal(err)
-	}
+	requireTestSymlink(t, targetPath, symlinkPath)
 	if _, ok := allowedCodexClipboardImagePath(symlinkPath, tempRoot); ok {
 		t.Fatal("符号链接伪装成剪贴板图片时不应放行")
 	}

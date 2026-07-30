@@ -14,11 +14,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
@@ -97,7 +95,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale，缺失时使用局域网")
+	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
@@ -135,11 +133,25 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 
 func runServe(args []string) error {
 	logFile := ""
+	managedService := false
 	cfg, registry, checker, err := loadRuntimeConfig(args, false, func(fs *flag.FlagSet) {
 		fs.StringVar(&logFile, "log-file", "", "同时把服务日志写入指定文件")
+		fs.BoolVar(&managedService, "managed-service", false, "由当前平台的用户级后台服务启动")
 	})
 	if err != nil {
 		return err
+	}
+	if cfg.Network.AllowLAN {
+		if err := ensurePlatformLANAccessAllowed(); err != nil {
+			return err
+		}
+	}
+	closeManagedRuntime, err := prepareManagedServeRuntime(managedService)
+	if err != nil {
+		return err
+	}
+	if closeManagedRuntime != nil {
+		defer closeManagedRuntime()
 	}
 	closeLog, err := configureServeFileLogging(logFile)
 	if err != nil {
@@ -156,7 +168,7 @@ func runUp(args []string) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "iPad 目录浏览/打开 workspace 的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale，缺失时使用局域网")
+	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
 	appServerListen := fs.String("app-server-listen", "", "本机 Codex app-server WebSocket 地址")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
@@ -175,7 +187,7 @@ func runUp(args []string) error {
 	}
 
 	if !*asJSON {
-		fmt.Fprintln(os.Stdout, "正在准备 Mimi Mac 助手...")
+		fmt.Fprintln(os.Stdout, "正在准备 Mimi Remote 助手...")
 	}
 	result, err := agentsetup.Run(context.Background(), agentsetup.Options{
 		ConfigPath:      *configPath,
@@ -215,12 +227,12 @@ func runUp(args []string) error {
 		if *asJSON {
 			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
 		}
-		return fmt.Errorf("Mimi Mac 助手还没有启动成功，暂时不要扫码。\n\n原因：%s\n下一步：\n  agentd doctor --fix\n  agentd logs", serviceError)
+		return fmt.Errorf("Mimi Remote 助手还没有启动成功，暂时不要扫码。\n\n原因：%s\n下一步：\n  agentd doctor --fix\n  agentd logs", serviceError)
 	} else if *waitTimeout > 0 {
 		if *asJSON {
 			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
 		}
-		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已准备好")
+		fmt.Fprintln(os.Stdout, "Mimi Remote 助手已准备好")
 	}
 	if *asJSON {
 		return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
@@ -285,6 +297,7 @@ func runStart(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码和长期访问码，适合托盘与自动化")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -306,11 +319,7 @@ func runStart(args []string) error {
 		return err
 	}
 
-	if managedServicePlatform == "darwin" {
-		fmt.Fprintln(os.Stdout, "正在启动 Homebrew 后台服务...")
-	} else {
-		fmt.Fprintln(os.Stdout, "正在启动 Linux user-systemd 后台服务...")
-	}
+	fmt.Fprintln(os.Stdout, "正在启动 Mimi Remote 后台服务...")
 	if err := runManagedServiceForPlatform(managedServicePlatform, "start", os.Stdout, os.Stderr); err != nil {
 		return err
 	}
@@ -320,7 +329,9 @@ func runStart(args []string) error {
 	} else if *waitTimeout > 0 {
 		fmt.Fprintln(os.Stdout, "agentd 后台服务已启动")
 	}
-	printServeConnection(os.Stdout, result)
+	if !*noPair {
+		printServeConnection(os.Stdout, result)
+	}
 	return nil
 }
 
@@ -349,14 +360,14 @@ func runRestart(args []string) error {
 	if err := ensureCodexCLIAvailable(*configPath); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "正在重启 Mimi Mac 助手...")
+	fmt.Fprintln(os.Stdout, "正在重启 Mimi Remote 助手...")
 	if err := runManagedServiceForPlatform(managedServicePlatform, "restart", os.Stdout, os.Stderr); err != nil {
 		return err
 	}
 	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
 		return fmt.Errorf("后台服务已重启，但就绪检查未通过，暂不展示配对二维码：%w", err)
 	} else if *waitTimeout > 0 {
-		fmt.Fprintln(os.Stdout, "Mimi Mac 助手已重新连接")
+		fmt.Fprintln(os.Stdout, "Mimi Remote 助手已重新连接")
 	}
 	if !*noPair {
 		printServeConnection(os.Stdout, result)
@@ -379,11 +390,11 @@ func runStop(args []string) error {
 		return err
 	}
 
-	fmt.Fprintln(os.Stdout, "正在停止 Mimi Mac 助手...")
+	fmt.Fprintln(os.Stdout, "正在停止 Mimi Remote 助手...")
 	if err := runManagedServiceForPlatform(managedServicePlatform, "stop", os.Stdout, os.Stderr); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, "Mimi Mac 助手已停止")
+	fmt.Fprintln(os.Stdout, "Mimi Remote 助手已停止")
 	return nil
 }
 
@@ -392,11 +403,22 @@ func runStatus(args []string) error {
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	includeRuntime := fs.Bool("runtime", false, "附加本机 Codex / Claude 运行时状态")
+	inspectNetworkPolicy := fs.Bool("network-policy", false, "附加 Windows 防火墙和默认网络类别检查")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if *includeRuntime && !*asJSON {
 		return errors.New("status --runtime 只能与 --json 一起使用")
+	}
+	if *inspectNetworkPolicy && !*asJSON {
+		return errors.New("status --network-policy 只能与 --json 一起使用")
+	}
+	if managedServicePlatform == "windows" {
+		// Task Scheduler 的 Query 是只读且幂等的。先确认安装器注册的任务仍存在，
+		// 再做 HTTP 健康检查，才能区分“尚未安装”和“任务已安装但服务离线”。
+		if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
+			return err
+		}
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
 		return err
@@ -411,6 +433,16 @@ func runStatus(args []string) error {
 	type runtimeStatusResult struct {
 		payload map[string]any
 		err     error
+	}
+	networkStatus := configuredAgentNetworkStatus(cfg)
+	var networkStatusCh chan agentNetworkStatus
+	if *inspectNetworkPolicy {
+		networkStatusCh = make(chan agentNetworkStatus, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			networkStatusCh <- inspectPlatformNetworkStatus(ctx, cfg)
+		}()
 	}
 	var runtimeStatusCh chan runtimeStatusResult
 	if *includeRuntime {
@@ -435,6 +467,9 @@ func runStatus(args []string) error {
 	var runtimeStatus runtimeStatusResult
 	if runtimeStatusCh != nil {
 		runtimeStatus = <-runtimeStatusCh
+	}
+	if networkStatusCh != nil {
+		networkStatus = <-networkStatusCh
 	}
 	doctorResults := doctor.Results{
 		OK:      false,
@@ -461,6 +496,10 @@ func runStatus(args []string) error {
 			Fix:     "运行 agentd logs 查看服务与 Codex app-server 状态",
 		})
 	}
+	if check := networkPolicyDoctorCheck(networkStatus); check.Name != "" {
+		doctorResults.OK = false
+		doctorResults.Checks = append(doctorResults.Checks, check)
+	}
 	status := serviceStatusFields(serviceStatus, result.Token)
 	status["version"] = version
 	status["endpoint"] = result.Endpoint
@@ -468,6 +507,7 @@ func runStatus(args []string) error {
 	status["projects"] = len(registry.List())
 	status["doctor_ok"] = doctorResults.OK
 	status["doctor"] = doctorResults
+	status["network_status"] = networkStatus
 	status["pair_expires"] = result.PairExpiresAt
 	// 旧版本 agentd 没有 runtime status endpoint。升级/接管过程中保持 status
 	// 兼容，只在成功拿到脱敏快照时附加字段，不让展示增强阻断服务状态。
@@ -478,7 +518,7 @@ func runStatus(args []string) error {
 		return printJSON(status)
 	}
 
-	fmt.Fprintln(os.Stdout, "Mimi Mac 助手状态")
+	fmt.Fprintln(os.Stdout, "Mimi Remote 助手状态")
 	fmt.Fprintf(os.Stdout, "\n版本：%s\n", version)
 	fmt.Fprintf(os.Stdout, "配置：%s\n", result.ConfigPath)
 	fmt.Fprintf(os.Stdout, "Endpoint：%s\n", result.Endpoint)
@@ -663,6 +703,11 @@ func runNetwork(args []string) error {
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
 		return err
+	}
+	if *lanEnabled {
+		if err := ensurePlatformLANAccessAllowed(); err != nil {
+			return err
+		}
 	}
 	changed, err := agentsetup.SetLANAccess(*configPath, *lanEnabled)
 	if err != nil {
@@ -1006,8 +1051,8 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	}
 
 	stopCh := make(chan os.Signal, 1)
-	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stopCh)
+	stopSignals := notifyServeSignals(stopCh)
+	defer stopSignals()
 	return waitForServeExit(stopCh, errCh, func() error {
 		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
 			return shutdownServeResources(manager, appServerWSProcess, apiRouter)
@@ -1224,6 +1269,8 @@ func runManagedServiceForPlatform(goos string, action string, stdout, stderr io.
 			return fmt.Errorf("执行 systemctl --user %s %s 失败：%w", action, managedServiceUnitName, err)
 		}
 		return nil
+	case "windows":
+		return runWindowsManagedService(action, stdout, stderr)
 	default:
 		return unsupportedManagedServicePlatformError(goos)
 	}
@@ -1258,6 +1305,8 @@ func runManagedLogsForPlatform(goos string, lineCount int, follow bool, stdout, 
 			return fmt.Errorf("读取 Linux user service 日志失败：%w", err)
 		}
 		return nil
+	case "windows":
+		return runWindowsManagedLogs(lineCount, follow, stdout, stderr)
 	default:
 		return unsupportedManagedServicePlatformError(goos)
 	}
@@ -1318,6 +1367,8 @@ func ensureManagedServiceInstalled(goos string) error {
 			return fmt.Errorf("检查 Linux user-systemd unit 失败：%w", err)
 		}
 		return fmt.Errorf("尚未安装 Linux user-systemd 服务：%s\n请先从正式 Release 解压目录运行：\n  bash ./scripts/install-linux.sh install", unitPath)
+	case "windows":
+		return ensureWindowsManagedTaskInstalled()
 	default:
 		return unsupportedManagedServicePlatformError(goos)
 	}
@@ -1336,7 +1387,7 @@ func linuxUserServiceUnitPath() (string, error) {
 }
 
 func unsupportedManagedServicePlatformError(goos string) error {
-	return fmt.Errorf("当前系统 %q 不支持后台服务命令；只支持 macOS Homebrew 和 Linux user-systemd，可改用 agentd serve 前台运行", goos)
+	return fmt.Errorf("当前系统 %q 不支持后台服务命令；支持 macOS Homebrew、Linux user-systemd 和 Windows Task Scheduler，可改用 agentd serve 前台运行", goos)
 }
 
 func printDoctorActions(w io.Writer, results doctor.Results) {
@@ -1378,7 +1429,7 @@ func homebrewLogPath() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("未找到 Mimi Mac 助手日志文件；请先运行 agentd up，或用 agentd serve 前台调试")
+	return "", fmt.Errorf("未找到 Mimi Remote 助手日志文件；请先运行 agentd up，或用 agentd serve 前台调试")
 }
 
 func tailLines(path string, count int) ([]string, error) {
@@ -1475,6 +1526,8 @@ func ensureManagedServiceDefaultConfig(goos string, requestedPath string) error 
 		serviceLabel = "Homebrew service"
 	case "linux":
 		serviceLabel = "Linux user-systemd service"
+	case "windows":
+		serviceLabel = "Windows 当前用户计划任务"
 	default:
 		return unsupportedManagedServicePlatformError(goos)
 	}
@@ -1523,7 +1576,7 @@ func ensureCodexCLIAvailable(configPath string) error {
 	// Homebrew service 的 PATH 通常比交互终端更窄。先把有效路径原子写回配置，
 	// 后台进程才不会在本次检查通过后又因找不到同一个 Codex 而失败。
 	if _, _, err := agentsetup.RepairCodexBin(configPath); err != nil {
-		return fmt.Errorf("未找到 Codex CLI，Mimi Mac 助手还不能启动。\n\n已检查配置路径、当前 PATH，以及 ChatGPT/Codex App 内置路径。\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
+		return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n已检查配置路径、当前 PATH，以及 ChatGPT/Codex App 内置路径。\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
 	}
 	cfg, err := config.LoadForDoctor(configPath)
 	if err != nil {
@@ -1534,7 +1587,7 @@ func ensureCodexCLIAvailable(configPath string) error {
 		bin = "codex"
 	}
 	if _, err := exec.LookPath(bin); err != nil {
-		return fmt.Errorf("未找到 Codex CLI，Mimi Mac 助手还不能启动。\n\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
+		return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
 	}
 	return nil
 }
@@ -1616,7 +1669,7 @@ func printQROnlyPairResult(w io.Writer, result agentsetup.Result) {
 
 func printServeConnection(w io.Writer, result agentsetup.Result) {
 	printWarnings(w, result.Warnings)
-	fmt.Fprintln(w, "\n用 iPad 扫这个二维码连接这台 Mac：")
+	fmt.Fprintln(w, "\n用 iPad 扫这个二维码连接这台电脑：")
 	printConnectionQRCode(w, result.PairURL)
 	if result.PairExpiresAt != "" {
 		fmt.Fprintf(w, "二维码 10 分钟内有效，有效期至：%s\n", result.PairExpiresAt)
@@ -1843,96 +1896,6 @@ func healthCheckURL(endpoint string) (string, error) {
 
 func readyCheckURL(endpoint string) (string, error) {
 	return serviceCheckURL(endpoint, "/api/readyz")
-}
-
-func runtimeStatusURL(endpoint string) (string, error) {
-	return serviceCheckURL(endpoint, "/api/runtime/status")
-}
-
-func fetchServiceRuntimeStatus(
-	ctx context.Context,
-	endpoint string,
-	token string,
-	timeout time.Duration,
-) (map[string]any, error) {
-	target, err := runtimeStatusURL(endpoint)
-	if err != nil {
-		return nil, err
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	if value := strings.TrimSpace(token); value != "" {
-		req.Header.Set("Authorization", "Bearer "+value)
-	}
-	client := http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("runtime status HTTP %d", resp.StatusCode)
-	}
-	var payload map[string]any
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, 256*1024))
-	if err := decoder.Decode(&payload); err != nil {
-		return nil, fmt.Errorf("runtime status 响应不是有效 JSON：%w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return nil, errors.New("runtime status 响应包含多个 JSON 值")
-		}
-		return nil, fmt.Errorf("runtime status 响应包含畸形尾部数据：%w", err)
-	}
-	if err := validateRuntimeStatusPayload(payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
-}
-
-func validateRuntimeStatusPayload(payload map[string]any) error {
-	rawRuntimes, ok := payload["runtimes"]
-	if !ok {
-		return errors.New("runtime status 响应缺少 runtimes")
-	}
-	runtimes, ok := rawRuntimes.([]any)
-	if !ok {
-		return errors.New("runtime status 响应的 runtimes 不是数组")
-	}
-	for index, rawRuntime := range runtimes {
-		runtime, ok := rawRuntime.(map[string]any)
-		if !ok {
-			return fmt.Errorf("runtime status 响应的 runtimes[%d] 不是对象", index)
-		}
-		for _, key := range []string{"id", "title", "state"} {
-			value, ok := runtime[key].(string)
-			if !ok || strings.TrimSpace(value) == "" {
-				return fmt.Errorf("runtime status 响应的 runtimes[%d].%s 无效", index, key)
-			}
-		}
-		if _, ok := runtime["enabled"].(bool); !ok {
-			return fmt.Errorf("runtime status 响应的 runtimes[%d].enabled 无效", index)
-		}
-	}
-	for _, key := range []string{"refreshing", "stale"} {
-		if value, exists := payload[key]; exists {
-			if _, ok := value.(bool); !ok {
-				return fmt.Errorf("runtime status 响应的 %s 不是布尔值", key)
-			}
-		}
-	}
-	if value, exists := payload["checked_at"]; exists {
-		if _, ok := value.(string); !ok {
-			return errors.New("runtime status 响应的 checked_at 不是字符串")
-		}
-	}
-	return nil
 }
 
 func serviceCheckURL(endpoint string, path string) (string, error) {

@@ -81,6 +81,9 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.configFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
+	if check := c.windowsLANCheck(ctx); check.Name != "" {
+		checks = append(checks, check)
+	}
 	if check := c.appServerTokenFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -239,7 +242,7 @@ func sensitiveFileCheck(name string, label string, path string) Check {
 		// Lstat 会把符号链接识别为非 regular，避免敏感路径被替换后指向意外文件。
 		return Check{Name: name, OK: false, Message: label + "必须是 regular file，不能是目录或符号链接", Fix: "改用当前用户拥有的普通文件"}
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return Check{
 			Name:    name,
 			OK:      false,

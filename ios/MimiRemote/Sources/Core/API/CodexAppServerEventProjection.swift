@@ -181,6 +181,23 @@ extension CodexAppServerSessionRuntime {
                 ),
                 metadata(threadID: threadID, turnID: nil)
             ))
+        case "thread/name/updated":
+            guard let threadID = params["threadId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !threadID.isEmpty
+            else {
+                return
+            }
+            let name = params["threadName"]?.stringValue
+                ?? params["name"]?.stringValue
+                ?? ""
+            let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = withUpdatedSession(threadID) { item in
+                // 标题是远端 thread 元数据。直接更新 Session 投影后，详情标题、会话列表和
+                // 项目侧栏会共用同一份状态，不需要等待下一次 thread/read/list。
+                item.title = normalizedName.isEmpty
+                    ? L10n.text("ui.unnamed_session")
+                    : normalizedName
+            }
         case "thread/goal/updated":
             guard let goal = threadGoal(from: .object(params)) else {
                 return
@@ -325,7 +342,7 @@ extension CodexAppServerSessionRuntime {
             // thread/search 的最终权限边界在 agentd gateway：它会按 projects/browse_roots 裁剪响应。
             // iOS 不发送 cwd，只拒绝不可能作为会话目录的空值/相对路径；合法 managed worktree
             // 未必已进入 config.projects，不能在这里误删 gateway 已授权的结果。
-            guard !cwd.isEmpty, (cwd as NSString).isAbsolutePath else {
+            guard !cwd.isEmpty, isAbsoluteRemoteHostPath(cwd) else {
                 continue
             }
             let session = try agentSession(from: thread, projects: projects, fallbackProject: nil)
@@ -534,11 +551,42 @@ extension CodexAppServerSessionRuntime {
         return projects
             .filter { project in
                 let projectPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
-                return path == projectPath || path.hasPrefix(projectPath + "/")
+                return remoteHostPath(path, isWithin: projectPath)
             }
             .max { lhs, rhs in
-                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+                remoteHostPathDepth(lhs.path) < remoteHostPathDepth(rhs.path)
             }
+    }
+
+    /// `cwd` 属于远端宿主，不能用 iOS Foundation 的本机 Unix 路径判断。
+    /// 这里只识别网关允许返回的 Unix、Windows 盘符和 UNC 绝对路径。
+    func isAbsoluteRemoteHostPath(_ path: String) -> Bool {
+        if path.hasPrefix("/") || path.hasPrefix(#"\\"#) {
+            return true
+        }
+        guard path.count >= 3 else {
+            return false
+        }
+        let characters = Array(path.prefix(3))
+        return characters[0].isLetter
+            && characters[1] == ":"
+            && (characters[2] == "\\" || characters[2] == "/")
+    }
+
+    func remoteHostPath(_ path: String, isWithin root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else {
+            return false
+        }
+        guard path != root else {
+            return true
+        }
+        let separator: Character = root.contains("\\") ? "\\" : "/"
+        let prefix = root.last == separator ? root : root + String(separator)
+        return path.hasPrefix(prefix)
+    }
+
+    func remoteHostPathDepth(_ path: String) -> Int {
+        path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).count
     }
 
     func projectsIncludingWorkspace(_ projects: [AgentProject], workspace: AgentWorkspace) -> [AgentProject] {
@@ -1570,19 +1618,23 @@ extension CodexAppServerSessionRuntime {
         if lower.contains("approval") {
             return true
         }
-        // URL 型 MCP elicitation 没有表单内容，复用明确的批准/拒绝交互更安全。
+        let params = request.params?.objectValue ?? [:]
+        // URL 型 elicitation 和 Codex 明确标记的工具调用都走审批；普通 form 仍是补充信息。
         return request.method == "mcpServer/elicitation/request"
-            && request.params?.objectValue?["mode"]?.stringValue == "url"
+            && (params["mode"]?.stringValue == "url"
+                || CodexMCPToolApprovalProtocol.isToolCall(params))
     }
 
     func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
         if request.method == "item/tool/requestUserInput" {
             return true
         }
-        // form/openai-form 都投影到现有补充信息卡；未知 mode 也走此路径，
-        // 用户没有填入时回 decline，不会误接受无法理解的 MCP 请求。
+        let params = request.params?.objectValue ?? [:]
+        // form/openai-form 都投影到现有补充信息卡；Codex 工具审批例外，避免空 schema
+        // 被渲染成虚假的“补充信息”输入框。
         return request.method == "mcpServer/elicitation/request"
-            && request.params?.objectValue?["mode"]?.stringValue != "url"
+            && params["mode"]?.stringValue != "url"
+            && !CodexMCPToolApprovalProtocol.isToolCall(params)
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {
@@ -1607,6 +1659,9 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         if method == "mcpServer/elicitation/request" {
+            if CodexMCPToolApprovalProtocol.isToolCall(params) {
+                return mcpToolApprovalResponse(params: params, decision: decision)
+            }
             return .object([
                 "action": .string(decision == "accept" ? "accept" : decision == "cancel" ? "cancel" : "decline"),
                 "content": .null,
@@ -1614,6 +1669,33 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         return .object(["decision": .string(decision)])
+    }
+
+    func mcpToolApprovalResponse(
+        params: [String: CodexAppServerJSONValue],
+        decision: String
+    ) -> CodexAppServerJSONValue {
+        let persistenceModes = CodexMCPToolApprovalProtocol.persistenceModes(params)
+        let normalized = normalizeApprovalDecision(decision)
+        let persist: String?
+        switch normalized {
+        case "accept":
+            persist = nil
+        case "acceptForSession" where persistenceModes.contains("session"):
+            persist = "session"
+        case "acceptAlways" where persistenceModes.contains("always"):
+            persist = "always"
+        case "cancel":
+            return .object(["action": .string("cancel"), "content": .null, "_meta": .null])
+        default:
+            // 客户端不能扩大上游声明的权限范围；未知或未提供的持久化选项一律拒绝。
+            return .object(["action": .string("decline"), "content": .null, "_meta": .null])
+        }
+        return .object([
+            "action": .string("accept"),
+            "content": .null,
+            "_meta": persist.map { .object(["persist": .string($0)]) } ?? .null
+        ])
     }
 
     func userInputResponse(
@@ -1692,6 +1774,8 @@ extension CodexAppServerSessionRuntime {
             return "accept"
         case "acceptforsession", "accept_for_session":
             return "acceptForSession"
+        case "acceptalways", "accept_always", "acceptandremember", "accept_and_remember":
+            return "acceptAlways"
         case "acceptwithpermissionupdate", "accept_with_permission_update":
             return "acceptWithPermissionUpdate"
         case "cancel":

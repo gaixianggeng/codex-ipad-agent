@@ -373,6 +373,53 @@ extension SessionStore {
         workspaceGitSummaryUpdatedAtByPath[path] = now
     }
 
+    /// Agent 回合结束后只刷新用户已经看过的 Git 状态。按 path 合并尾部事件，
+    /// 避免每个 diff/patch 通知都在 Mac 上启动一组 Git 子进程。
+    func scheduleGitRefreshAfterTurnCompletion(
+        sessionID: SessionID,
+        hostScope: HostScope
+    ) {
+        guard appStore.activeHostScope == hostScope,
+              let path = sessionsByID[sessionID]?.dir.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty,
+              gitStatusByPath[path] != nil || workspaceGitSummaryByPath[path] != nil
+        else {
+            return
+        }
+
+        gitRefreshTasksByPath[path]?.cancel()
+        let revision = gitRefreshRevisionByPath[path, default: 0] &+ 1
+        gitRefreshRevisionByPath[path] = revision
+        gitRefreshTasksByPath[path] = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: self.gitRefreshDelayNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  self.appStore.activeHostScope == hostScope,
+                  self.gitRefreshRevisionByPath[path] == revision
+            else {
+                return
+            }
+
+            if self.gitStatusByPath[path] != nil {
+                await self.refreshGitStatus(path: path)
+            } else if self.workspaceGitSummaryByPath[path] != nil {
+                await self.refreshWorkspaceGitSummary(path: path, force: true)
+            }
+
+            guard self.appStore.activeHostScope == hostScope,
+                  self.gitRefreshRevisionByPath[path] == revision
+            else {
+                return
+            }
+            self.gitRefreshTasksByPath.removeValue(forKey: path)
+            self.gitRefreshRevisionByPath.removeValue(forKey: path)
+        }
+    }
+
     func performSelectedGitAction(_ action: GitActionKind, files: [String]) async {
         guard let path = selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines),
               !path.isEmpty
@@ -712,18 +759,26 @@ extension SessionStore {
         else {
             return
         }
+        await pollGitTestFlightRelease(path: path)
+    }
+
+    func pollGitTestFlightRelease(path: String) async {
+        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetPath.isEmpty else {
+            return
+        }
         let lease: ProjectsGitHostLease
         do {
             lease = try captureProjectsGitHostLease()
         } catch {
-            gitTestFlightErrorByPath[path] = error.localizedDescription
+            gitTestFlightErrorByPath[targetPath] = error.localizedDescription
             return
         }
         while !Task.isCancelled {
             guard canApplyProjectsGitResult(lease) else { return }
-            await refreshGitTestFlightStatus(path: path, lease: lease)
+            await refreshGitTestFlightStatus(path: targetPath, lease: lease)
             guard canApplyProjectsGitResult(lease),
-                  gitTestFlightStatusByPath[path]?.job?.isRunning == true else {
+                  gitTestFlightStatusByPath[targetPath]?.job?.isRunning == true else {
                 return
             }
             do {

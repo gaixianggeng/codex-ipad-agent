@@ -1,4 +1,4 @@
-# App Review Notes — Mimi Remote 1.0
+# App Review Notes — Mimi Remote 1.1
 
 Mimi Remote is a native developer-tool client for a computer owned by, or explicitly authorized for use by, the user.
 

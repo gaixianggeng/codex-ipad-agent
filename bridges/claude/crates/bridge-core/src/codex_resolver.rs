@@ -225,39 +225,44 @@ fn common_codex_candidates() -> Vec<PathBuf> {
             candidates.push(home.join(".volta/bin/codex.cmd"));
             candidates.push(home.join(".local/bin/codex.exe"));
         }
-        return candidates;
     }
 
     #[cfg(not(windows))]
-    if let Some(home) = home {
-        let codex_home = std::env::var_os("CODEX_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".codex"));
-        candidates.push(codex_home.join("packages/standalone/current/codex"));
-        candidates.push(home.join(".bun/bin/codex"));
-        candidates.push(home.join(".volta/bin/codex"));
-        candidates.push(home.join(".local/bin/codex"));
-        candidates.push(home.join(".cargo/bin/codex"));
-        push_env_dir_candidate(&mut candidates, "PNPM_HOME", "codex");
-        push_env_dir_candidate(&mut candidates, "NVM_BIN", "codex");
-        if let Some(volta_home) = std::env::var_os("VOLTA_HOME").filter(|value| !value.is_empty()) {
-            candidates.push(PathBuf::from(volta_home).join("bin/codex"));
+    {
+        if let Some(home) = home {
+            let codex_home = std::env::var_os("CODEX_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex"));
+            candidates.push(codex_home.join("packages/standalone/current/codex"));
+            candidates.push(home.join(".bun/bin/codex"));
+            candidates.push(home.join(".volta/bin/codex"));
+            candidates.push(home.join(".local/bin/codex"));
+            candidates.push(home.join(".cargo/bin/codex"));
+            push_env_dir_candidate(&mut candidates, "PNPM_HOME", "codex");
+            push_env_dir_candidate(&mut candidates, "NVM_BIN", "codex");
+            if let Some(volta_home) =
+                std::env::var_os("VOLTA_HOME").filter(|value| !value.is_empty())
+            {
+                candidates.push(PathBuf::from(volta_home).join("bin/codex"));
+            }
+            if let Some(cargo_home) =
+                std::env::var_os("CARGO_HOME").filter(|value| !value.is_empty())
+            {
+                candidates.push(PathBuf::from(cargo_home).join("bin/codex"));
+            }
+            #[cfg(target_os = "macos")]
+            {
+                candidates.push(home.join("Applications/Codex.app/Contents/Resources/codex"));
+                candidates.push(PathBuf::from(
+                    "/Applications/Codex.app/Contents/Resources/codex",
+                ));
+            }
         }
-        if let Some(cargo_home) = std::env::var_os("CARGO_HOME").filter(|value| !value.is_empty()) {
-            candidates.push(PathBuf::from(cargo_home).join("bin/codex"));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            candidates.push(home.join("Applications/Codex.app/Contents/Resources/codex"));
-            candidates.push(PathBuf::from(
-                "/Applications/Codex.app/Contents/Resources/codex",
-            ));
-        }
+        candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
+        candidates.push(PathBuf::from("/usr/local/bin/codex"));
+        candidates.push(PathBuf::from("/usr/bin/codex"));
     }
-    candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
-    candidates.push(PathBuf::from("/usr/local/bin/codex"));
-    candidates.push(PathBuf::from("/usr/bin/codex"));
     candidates
 }
 

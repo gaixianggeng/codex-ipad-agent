@@ -13,6 +13,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "--debug-skip-pairing",
             "--debug-seed-ui"
         ]
+        if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
+            app.launchArguments.append("--debug-seed-mcp-approval-ui")
+        }
         app.launch()
         XCTAssertTrue(
             app.wait(for: .runningForeground, timeout: 25),
@@ -34,6 +37,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     func testLaunchAndQRScannerCanBePresentedRepeatedly() throws {
         XCTAssertGreaterThan(app.windows.count, 0, "启动后应存在可交互窗口")
 
+        try openHostInstaller()
+        assertHostInstallerSupportsMacAndWindows()
+
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
@@ -45,6 +51,55 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try presentQRScanner()
         assertScannerRemainsPresented()
         app.descendant(identifier: "qrScanner.close").tap()
+    }
+
+    private func openHostInstaller() throws {
+        try enterWorkbenchIfNeeded()
+        try openSettings()
+
+        let connection = app.descendant(identifier: "settings.connectionManagement")
+        XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供电脑连接管理入口")
+        connection.tap()
+
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.hostInstaller.platform").waitForExistence(timeout: 8),
+            "未配对时连接管理页应展示电脑平台选择器"
+        )
+    }
+
+    private func assertHostInstallerSupportsMacAndWindows() {
+        let platformPicker = app.descendant(identifier: "settings.hostInstaller.platform")
+        let mac = platformPicker.buttons["Mac"]
+        let windows = platformPicker.buttons["Windows"]
+
+        XCTAssertTrue(mac.waitForExistence(timeout: 4), "安装入口应提供 Mac 选项")
+        XCTAssertTrue(windows.waitForExistence(timeout: 4), "安装入口应提供 Windows 选项")
+
+        windows.tap()
+        XCTAssertTrue(
+            waitUntilLabelContains(
+                app.descendant(identifier: "settings.hostInstaller.installationDetail"),
+                text: "Windows"
+            ),
+            "切换后应展示 Windows 安装说明"
+        )
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.hostInstaller.githubRelease").exists,
+            "Windows 安装入口应继续提供 GitHub Releases"
+        )
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.hostInstaller.share").exists,
+            "Windows 安装入口应支持分享下载链接"
+        )
+
+        mac.tap()
+        XCTAssertTrue(
+            waitUntilLabelContains(
+                app.descendant(identifier: "settings.hostInstaller.installationDetail"),
+                text: "Mac"
+            ),
+            "切回后应展示 Mac 安装说明"
+        )
     }
 
     func testVoiceProviderCopyAndSelectionSurviveRotation() throws {
@@ -122,6 +177,26 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
         dismissPresentedMenuOrPopover()
         XCTAssertEqual(app.state, .runningForeground, "完成紧凑工具栏操作后 App 应保持前台运行")
+    }
+
+    func testMCPToolApprovalShowsScopedTrustActions() throws {
+        try openComposerIfNeeded()
+
+        let approveOnce = app.descendant(identifier: "approval.approveOnce")
+        let allowForSession = app.descendant(identifier: "approval.allowMCPForSession")
+        let alwaysAllow = app.descendant(identifier: "approval.alwaysAllowMCPTool")
+        let reject = app.descendant(identifier: "approval.reject")
+
+        XCTAssertTrue(approveOnce.waitForExistence(timeout: 12), "MCP 工具审批应保留单次允许入口")
+        XCTAssertTrue(allowForSession.waitForExistence(timeout: 5), "Codex 声明 session 持久化后应展示本次会话允许")
+        XCTAssertTrue(alwaysAllow.waitForExistence(timeout: 5), "Codex 声明 always 持久化后应展示始终允许")
+        XCTAssertTrue(reject.waitForExistence(timeout: 5), "MCP 工具审批应始终允许拒绝")
+
+        assertMinimumTouchTarget(approveOnce, named: "单次允许")
+        assertMinimumTouchTarget(allowForSession, named: "本次会话允许")
+        assertMinimumTouchTarget(alwaysAllow, named: "始终允许")
+        assertMinimumTouchTarget(reject, named: "拒绝")
+        XCTAssertEqual(app.state, .runningForeground, "展示完整 MCP 信任选项后 App 应保持前台运行")
     }
 
     func testComposerCameraAttachmentCanPresentAndCancel() throws {
@@ -295,13 +370,87 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         add(pickerScreenshot)
     }
 
+    func testWorkspaceIconStyleSwitchesBetweenEmojiAndJourney() throws {
+        try enterWorkbenchIfNeeded()
+        try openWorkspaceAppearanceSettings()
+
+        let picker = app.descendant(identifier: "settings.workspaceIconStyle")
+        XCTAssertTrue(picker.waitForExistence(timeout: 8), "外观设置应展示工作区图标风格")
+        assertMinimumTouchTarget(picker, named: "工作区图标风格")
+
+        let expectedStyleIdentifiers = [
+            "journey",
+            "threeKingdoms",
+            "waterMargin",
+            "redChamber",
+            "greekMythology",
+            "sherlockHolmes",
+            "aliceWonderland",
+            "emoji"
+        ]
+        for styleID in expectedStyleIdentifiers {
+            let option = app.descendant(
+                identifier: "settings.workspaceIconStyle.option.\(styleID)"
+            )
+            XCTAssertTrue(
+                option.waitForExistence(timeout: 5),
+                "工作区图标风格应展示 \(styleID)"
+            )
+            assertMinimumTouchTarget(option, named: "\(styleID) 风格选项")
+        }
+
+        guard firstExistingButton(
+            labels: ["西游记", "Journey to the West"],
+            timeout: 5
+        ) != nil, let emoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+            XCTFail("工作区图标风格应同时提供《西游记》和 Emoji")
+            return
+        }
+        let originallyUsedEmoji = isSelected(emoji)
+
+        emoji.tap()
+        XCTAssertTrue(waitUntilSelected(emoji), "选择 Emoji 后应立即保存")
+        try relaunchDirectlyIntoWorkspaces()
+        XCTAssertTrue(
+            currentWorkspaceIconLabelContainsEmoji(),
+            "切换到 Emoji 后，工作区卡片应立即恢复 Emoji 图标"
+        )
+
+        try openWorkspaceAppearanceSettings()
+        guard let currentJourney = firstExistingButton(
+            labels: ["西游记", "Journey to the West"],
+            timeout: 5
+        ) else {
+            XCTFail("重新进入设置后应仍能找到《西游记》选项")
+            return
+        }
+        currentJourney.tap()
+        XCTAssertTrue(waitUntilSelected(currentJourney), "选择《西游记》后应立即保存")
+        try relaunchDirectlyIntoWorkspaces()
+        XCTAssertFalse(
+            currentWorkspaceIconLabelContainsEmoji(),
+            "切回《西游记》后，工作区卡片不应继续显示 Emoji"
+        )
+
+        // 真机测试不应永久改变用户原来的视觉偏好。
+        if originallyUsedEmoji {
+            try openWorkspaceAppearanceSettings()
+            guard let originalEmoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+                XCTFail("测试结束时应能恢复 Emoji 偏好")
+                return
+            }
+            originalEmoji.tap()
+            XCTAssertTrue(waitUntilSelected(originalEmoji), "测试结束时应恢复原 Emoji 偏好")
+        }
+    }
+
     private func presentQRScanner() throws {
         installCameraPermissionMonitor()
 
         // 扫码页关闭后会回到连接管理页。优先复用当前页面的入口，避免为了第二次
         // 拉起扫码器又退回工作台并重新进入设置，降低实体机导航差异带来的误报。
         let currentConnectionScan = app.descendant(identifier: "settings.connection.scanQRCode")
-        let firstSetupScan = app.descendant(identifier: "settings.macInstaller.scan")
+        let firstSetupScan = app.descendant(identifier: "settings.hostInstaller.scan")
         if currentConnectionScan.exists, currentConnectionScan.isHittable {
             currentConnectionScan.tap()
         } else if firstSetupScan.exists, firstSetupScan.isHittable {
@@ -313,7 +462,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
             connection.tap()
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
-            let setupScan = app.descendant(identifier: "settings.macInstaller.scan")
+            let setupScan = app.descendant(identifier: "settings.hostInstaller.scan")
             if scrollUntilHittable(scan, maximumSwipes: 4) {
                 scan.tap()
             } else {
@@ -405,6 +554,17 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if workbenchSettingsEntry.waitForExistence(timeout: 3) {
             return
         }
+        // iPad 的 NavigationSplitView 可能在启动后默认收起侧栏；先展开侧栏，
+        // 才能访问侧栏底部的设置入口，避免把正常工作台误判为不可测试。
+        if let showSidebar = firstExistingButton(
+            labels: ["显示边栏", "Show Sidebar"],
+            timeout: 2
+        ), showSidebar.isHittable {
+            showSidebar.tap()
+            if workbenchSettingsEntry.waitForExistence(timeout: 8) {
+                return
+            }
+        }
         if app.descendant(identifier: "composer.options").exists {
             let back = app.navigationBars.buttons.firstMatch
             if back.waitForExistence(timeout: 3), back.isHittable {
@@ -429,6 +589,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if app.descendant(identifier: "settings.voiceInputProvider.codex").exists {
             return
         }
+        if !workbenchSettingsEntry.exists,
+           let showSidebar = firstExistingButton(
+               labels: ["显示边栏", "Show Sidebar"],
+               timeout: 2
+           ),
+           showSidebar.isHittable {
+            showSidebar.tap()
+            _ = workbenchSettingsEntry.waitForExistence(timeout: 8)
+        }
         let settings = workbenchSettingsEntry
         guard settings.waitForExistence(timeout: 8) else {
             throw XCTSkip("工作台未展示设置入口")
@@ -438,6 +607,44 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             app.descendant(identifier: "settings.connectionManagement").waitForExistence(timeout: 12),
             "设置页应正常打开"
         )
+    }
+
+    private func openWorkspaceAppearanceSettings() throws {
+        try openSettings()
+        let appearance = app.descendant(identifier: "settings.appearance")
+        XCTAssertTrue(scrollUntilHittable(appearance), "设置页应提供外观入口")
+        appearance.tap()
+        XCTAssertTrue(
+            app.descendant(identifier: "settings.workspaceIconStyle").waitForExistence(timeout: 8),
+            "外观页应展示工作区图标风格选择器"
+        )
+    }
+
+    private func relaunchDirectlyIntoWorkspaces() throws {
+        app.terminate()
+        if !app.launchArguments.contains("--debug-open-workspaces") {
+            app.launchArguments.append("--debug-open-workspaces")
+        }
+        app.launch()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 25),
+            "MimiRemote 应能重新进入工作区"
+        )
+        let iconButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        XCTAssertTrue(
+            iconButtons.firstMatch.waitForExistence(timeout: 15),
+            "重新进入工作区后应展示可更换的图标"
+        )
+    }
+
+    private func currentWorkspaceIconLabelContainsEmoji() -> Bool {
+        let iconButtons = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        guard iconButtons.firstMatch.exists else { return false }
+        let label = iconButtons.firstMatch.label
+        let builtInEmoji = ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
+        return builtInEmoji.contains { label.contains($0) }
     }
 
     private func selectMode(identifier: String) throws {
@@ -517,6 +724,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                     return candidate.exists && !self.isSelected(candidate)
                 }
             ),
+            object: element
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed
+    }
+
+    private func waitUntilLabelContains(_ element: XCUIElement, text: String) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label CONTAINS[c] %@", text),
             object: element
         )
         return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed

@@ -89,6 +89,7 @@ final class SessionStore: ObservableObject {
     @Published var isRefreshingCapabilities = false
     @Published var capabilityErrorMessage: String?
     @Published var isCreatingWorktree = false
+    @Published var duplicatingSessionIDs: Set<SessionID> = []
     @Published var worktreeBranchesByPath: [String: WorktreeBranchListResponse] = [:]
     @Published var worktreeBranchErrorByPath: [String: String] = [:]
     @Published var isRefreshingWorktreeBranches = false
@@ -233,6 +234,11 @@ final class SessionStore: ObservableObject {
     // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
     // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
     var externalReadOnlySessionIDs: Set<SessionID> = []
+    // 只记录当前 Host 生命周期内由 iPad 的 turn/start 明确返回的 turnID。不能用持久化的
+    // `.takenOver` / `.ipadOwned` 代替：同一 thread 后续可能真的在 Mac 启动新 turn。
+    // 精确到 session + turn 后，既能过滤 Desktop-origin 历史线程的 rollout 镜像，
+    // 又不会放行 turnID 不同的真实 Mac 活动。
+    var locallyStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
     var isRefreshingExternalActivity = false
     var externalActivityCapabilityUnavailable = false
     var connectionChangeGeneration = 0
@@ -284,6 +290,8 @@ final class SessionStore: ObservableObject {
     var sessionListFirstPageCacheByKey: [SessionListFirstPageRequestKey: SessionListFirstPageCacheEntry] = [:]
     var sessionListCooldownUntilByBudgetKey: [SessionListBudgetKey: Date] = [:]
     var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
+    var gitRefreshTasksByPath: [String: Task<Void, Never>] = [:]
+    var gitRefreshRevisionByPath: [String: UInt64] = [:]
     var missingRunningSessionStateByID: [SessionID: MissingRunningSessionState] = [:]
     var missingRunningSessionReconciliationTasksByID: [SessionID: Task<Void, Never>] = [:]
     var lastSessionLibraryIndexRefreshAt: Date?
@@ -321,6 +329,7 @@ final class SessionStore: ObservableObject {
     let sessionListFirstPageCacheTTL: TimeInterval = 2
     let sessionLibraryIndexPollingInterval: TimeInterval = 60
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
+    var gitRefreshDelayNanoseconds: UInt64 = 600_000_000
     let economyHistoryPageLimit = 60
     let fullHistoryPageLimit = 20
     let historyFirstPageCacheTTL: TimeInterval = 4
@@ -998,66 +1007,81 @@ final class SessionStore: ObservableObject {
     }
 
     var selectedGitStatus: GitStatusResponse? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return gitStatusByPath[path]
+        gitStatus(for: selectedGitStatusPath)
     }
 
     var selectedGitStatusErrorMessage: String? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return gitStatusErrorByPath[path]
+        gitStatusError(for: selectedGitStatusPath)
     }
 
     var selectedGitActionErrorMessage: String? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return gitActionErrorByPath[path]
+        gitActionError(for: selectedGitStatusPath)
     }
 
     var selectedGitQuickPublishResult: GitQuickPublishResponse? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return gitQuickPublishResultByPath[path]
+        gitQuickPublishResult(for: selectedGitStatusPath)
     }
 
     var selectedGitTestFlightStatus: GitTestFlightStatusResponse? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return gitTestFlightStatusByPath[path]
+        gitTestFlightStatus(for: selectedGitStatusPath)
     }
 
     var selectedGitTestFlightErrorMessage: String? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return gitTestFlightErrorByPath[path]
+        gitTestFlightError(for: selectedGitStatusPath)
     }
 
     var selectedPullRequestURL: String? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return pullRequestStatusByPath[path]?.url ?? pullRequestURLByPath[path]
+        pullRequestURL(for: selectedGitStatusPath)
     }
 
     var selectedPullRequestStatus: GitPullRequestStatusResponse? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return pullRequestStatusByPath[path]
+        pullRequestStatus(for: selectedGitStatusPath)
     }
 
     var selectedPullRequestStatusErrorMessage: String? {
-        guard let path = selectedGitStatusPath else {
-            return nil
-        }
-        return pullRequestStatusErrorByPath[path]
+        pullRequestStatusError(for: selectedGitStatusPath)
+    }
+
+    func gitStatus(for path: String?) -> GitStatusResponse? {
+        normalizedGitStatePath(path).flatMap { gitStatusByPath[$0] }
+    }
+
+    func gitStatusError(for path: String?) -> String? {
+        normalizedGitStatePath(path).flatMap { gitStatusErrorByPath[$0] }
+    }
+
+    func gitActionError(for path: String?) -> String? {
+        normalizedGitStatePath(path).flatMap { gitActionErrorByPath[$0] }
+    }
+
+    func gitQuickPublishResult(for path: String?) -> GitQuickPublishResponse? {
+        normalizedGitStatePath(path).flatMap { gitQuickPublishResultByPath[$0] }
+    }
+
+    func gitTestFlightStatus(for path: String?) -> GitTestFlightStatusResponse? {
+        normalizedGitStatePath(path).flatMap { gitTestFlightStatusByPath[$0] }
+    }
+
+    func gitTestFlightError(for path: String?) -> String? {
+        normalizedGitStatePath(path).flatMap { gitTestFlightErrorByPath[$0] }
+    }
+
+    func pullRequestURL(for path: String?) -> String? {
+        guard let path = normalizedGitStatePath(path) else { return nil }
+        return pullRequestStatusByPath[path]?.url ?? pullRequestURLByPath[path]
+    }
+
+    func pullRequestStatus(for path: String?) -> GitPullRequestStatusResponse? {
+        normalizedGitStatePath(path).flatMap { pullRequestStatusByPath[$0] }
+    }
+
+    func pullRequestStatusError(for path: String?) -> String? {
+        normalizedGitStatePath(path).flatMap { pullRequestStatusErrorByPath[$0] }
+    }
+
+    private func normalizedGitStatePath(_ path: String?) -> String? {
+        let normalized = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? nil : normalized
     }
 
     var connectionBadgeTitle: String? {

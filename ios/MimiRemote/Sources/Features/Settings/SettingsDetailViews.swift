@@ -417,8 +417,13 @@ struct CapabilityItemRow: View {
 
 struct AppearanceView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
+
+    let profileID: String
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -438,6 +443,45 @@ struct AppearanceView: View {
                 Text(L10n.text("ui.dark_and_light_colors"))
             } footer: {
                 Text(L10n.text("ui.system_mode_follows_the_current_device_appearance_light"))
+            }
+            .listRowBackground(tokens.elevatedSurface)
+
+            Section {
+                LazyVGrid(
+                    columns: workspaceIconStyleColumns,
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    ForEach(WorkspaceIconStyle.allCases) { style in
+                        let isSelected =
+                            workspaceAppearanceStore.style(profileID: profileID) == style
+                        Button {
+                            workspaceIconStyleBinding.wrappedValue = style
+                        } label: {
+                            WorkspaceIconStyleOptionLabel(
+                                style: style,
+                                isSelected: isSelected,
+                                tokens: tokens
+                            )
+                        }
+                        .buttonStyle(
+                            WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
+                        )
+                        .accessibilityLabel(style.title)
+                        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .accessibilityIdentifier(
+                            "settings.workspaceIconStyle.option.\(style.rawValue)"
+                        )
+                    }
+                }
+                // 八种选项在 iPhone 上自动降为两列或单列，避免固定列数挤压大字体。
+                .padding(.vertical, 4)
+                .accessibilityIdentifier("settings.workspaceIconStyle")
+            } header: {
+                Text(L10n.text("ui.workspace_avatar_style"))
+            } footer: {
+                Text(L10n.text("ui.workspace_avatar_style_description"))
             }
             .listRowBackground(tokens.elevatedSurface)
 
@@ -513,6 +557,10 @@ struct AppearanceView: View {
             Section {
                 Button(role: .destructive) {
                     themeStore.reset()
+                    workspaceAppearanceStore.setStyle(
+                        .journey,
+                        profileID: profileID
+                    )
                 } label: {
                     Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
                 }
@@ -523,7 +571,7 @@ struct AppearanceView: View {
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .background(tokens.background.ignoresSafeArea())
-        .navigationTitle(L10n.text("ui.appearance"))
+        .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
         .tint(tokens.accent)
@@ -531,6 +579,32 @@ struct AppearanceView: View {
 
     private var fontScaleText: String {
         "\(Int((themeStore.fontScale * 100).rounded()))%"
+    }
+
+    private var workspaceIconStyleColumns: [GridItem] {
+        // 辅助功能字号直接减少列数，避免只放大文字却把长作品名挤进窄卡片。
+        let minimumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 300 : 190
+        let maximumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 520 : 260
+        return [
+            GridItem(
+                .adaptive(minimum: minimumWidth, maximum: maximumWidth),
+                spacing: 10
+            )
+        ]
+    }
+
+    private var workspaceIconStyleBinding: Binding<WorkspaceIconStyle> {
+        Binding(
+            get: {
+                workspaceAppearanceStore.style(profileID: profileID)
+            },
+            set: {
+                workspaceAppearanceStore.setStyle(
+                    $0,
+                    profileID: profileID
+                )
+            }
+        )
     }
 
     private func iconName(for mode: ThemeMode) -> String {
@@ -542,6 +616,95 @@ struct AppearanceView: View {
         case .dark:
             return "moon"
         }
+    }
+}
+
+private struct WorkspaceIconStyleOptionLabel: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @ScaledMetric(relativeTo: .callout) private var dynamicCalloutSize: CGFloat = 16
+
+    let style: WorkspaceIconStyle
+    let isSelected: Bool
+    let tokens: ThemeTokens
+
+    var body: some View {
+        HStack(spacing: 12) {
+            representativeImage
+
+            Text(style.title)
+                // 叠加系统 Dynamic Type 与 App 内字体缩放，避免辅助功能字号下
+                // 只有页面标题变大、作品名称仍停留在固定字号。
+                .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .medium))
+                .foregroundStyle(tokens.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 4)
+
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .semibold))
+                    .foregroundStyle(tokens.primaryAction)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+        .background(
+            isSelected
+                ? tokens.primaryAction.opacity(0.10)
+                : tokens.contentPanelBackground.opacity(0.58),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    isSelected ? tokens.primaryAction.opacity(0.72) : tokens.border.opacity(0.5),
+                    lineWidth: isSelected ? 1.25 : 0.75
+                )
+        }
+    }
+
+    @ViewBuilder
+    private var representativeImage: some View {
+        if let assetName = style.representativeAssetName {
+            Image(assetName)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(tokens.border.opacity(0.5), lineWidth: 0.75)
+                }
+                .accessibilityHidden(true)
+        } else {
+            Text(verbatim: "🦧")
+                .font(.system(size: 28))
+                .frame(width: 44, height: 44)
+                .background(
+                    Color(red: 0.88, green: 0.72, blue: 0.34).opacity(0.22),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct WorkspaceIconStylePressButtonStyle: ButtonStyle {
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // 普通模式用轻微缩放提供按下即时反馈；Reduce Motion 下只改变透明度。
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .animation(
+                reduceMotion
+                    ? .easeOut(duration: 0.08)
+                    : .spring(response: 0.22, dampingFraction: 1),
+                value: configuration.isPressed
+            )
     }
 }
 

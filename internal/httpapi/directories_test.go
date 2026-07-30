@@ -155,16 +155,12 @@ func TestDirectoryListHidesSymlinkEscapingAllowlist(t *testing.T) {
 	projectDir := configuredProjectPath(t, server.handler)
 
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(projectDir, "escape")); err != nil {
-		t.Fatal(err)
-	}
+	requireTestSymlink(t, outside, filepath.Join(projectDir, "escape"))
 	insideTarget := filepath.Join(projectDir, "real-target")
 	if err := os.Mkdir(insideTarget, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(insideTarget, filepath.Join(projectDir, "alias")); err != nil {
-		t.Fatal(err)
-	}
+	requireTestSymlink(t, insideTarget, filepath.Join(projectDir, "alias"))
 
 	rec, body := listDirectories(t, server.handler, projectDir)
 	if rec.Code != http.StatusOK {
@@ -220,9 +216,7 @@ func TestDirectoryListUsesBrowseRootsBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(browseRoot, "escape")); err != nil {
-		t.Fatal(err)
-	}
+	requireTestSymlink(t, outside, filepath.Join(browseRoot, "escape"))
 
 	var projectDir string
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {

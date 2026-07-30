@@ -1,28 +1,7 @@
 name: Go CI
 
 on:
-  pull_request:
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
-      - ".goreleaser.yml"
-      - "packaging/**"
-      - "scripts/check-packaging.sh"
-      - "scripts/check-macos-release-signing.sh"
-      - "scripts/check-release-artifacts.sh"
-      - "scripts/check-source-size.sh"
-      - "scripts/install-linux.sh"
-      - "scripts/test-install-linux.sh"
-      - "scripts/sign-agentd-dev-macos.sh"
-      - "scripts/restart-agentd-dev-macos.sh"
-      - "scripts/restart-agentd-dev-handoff-macos.sh"
-      - "scripts/verify-release.sh"
-      - "README.md"
-      - "docs/install-upgrade-rollback.md"
-      - "docs/codex-protocol-support.md"
-      - ".github/workflows/go-ci.yml"
-      - ".github/workflows/release.yml"
+  workflow_call:
   push:
     branches:
       - main
@@ -38,6 +17,9 @@ on:
       - "scripts/check-source-size.sh"
       - "scripts/install-linux.sh"
       - "scripts/test-install-linux.sh"
+      - "scripts/build-windows-installer.ps1"
+      - "scripts/check-windows-installer.ps1"
+      - "scripts/test-windows-install.ps1"
       - "scripts/sign-agentd-dev-macos.sh"
       - "scripts/restart-agentd-dev-macos.sh"
       - "scripts/restart-agentd-dev-handoff-macos.sh"
@@ -101,3 +83,46 @@ jobs:
           distribution: goreleaser
           version: "v2.15.3"
           args: check
+
+  verify-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $unformatted = gofmt -l (git ls-files '*.go')
+          if ($unformatted) { throw "Unformatted Go files:`n$($unformatted -join "`n")" }
+
+      - name: Check module files
+        shell: pwsh
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Vet and test
+        shell: pwsh
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Build Windows binaries
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$env:RUNNER_TEMP\agentd.exe" ./cmd/agentd
+          go build -trimpath -ldflags "-s -w -H=windowsgui" -o "$env:RUNNER_TEMP\mimi-remote-tray.exe" ./cmd/mimi-remote-tray
+
+      - name: Check Windows packaging policy
+        shell: pwsh
+        run: ./scripts/test-windows-install.ps1

@@ -18,6 +18,14 @@ struct DiffPanelView: View {
     @State private var isShowingQuickPublishConfirmation = false
     @State private var isShowingTestFlightConfirmation = false
 
+    /// 工作区页传入显式 path 时不改写全局会话选择；Session Inspector 继续使用默认选择。
+    let workspacePath: String?
+
+    init(workspacePath: String? = nil) {
+        let normalized = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.workspacePath = normalized?.isEmpty == false ? normalized : nil
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
@@ -27,7 +35,7 @@ struct DiffPanelView: View {
                     Text(L10n.text("ui.git_changes"))
                         .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
-                    Text(sessionStore.selectedGitStatusPath ?? L10n.text("ui.no_workspace_selected"))
+                    Text(gitPath ?? L10n.text("ui.no_workspace_selected"))
                         .font(themeStore.codeFont(.caption2))
                         .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
@@ -40,15 +48,16 @@ struct DiffPanelView: View {
                 }
                 Button {
                     Task {
-                        await sessionStore.refreshSelectedGitStatus()
-                        await sessionStore.refreshSelectedPullRequestStatus()
+                        guard let gitPath else { return }
+                        await sessionStore.refreshGitStatus(path: gitPath)
+                        await sessionStore.refreshPullRequestStatus(path: gitPath)
                     }
                 } label: {
                     Label(L10n.text("ui.refresh_git_status"), systemImage: "arrow.clockwise")
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
-                .disabled(sessionStore.selectedGitStatusPath == nil || gitControlIsWorking)
+                .disabled(gitPath == nil || gitControlIsWorking)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -81,30 +90,32 @@ struct DiffPanelView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
-        .task(id: sessionStore.selectedGitStatusPath) {
+        .task(id: gitPath) {
             commitMessage = ""
             lastGeneratedCommitMessage = ""
-            await sessionStore.refreshSelectedGitStatus()
+            guard let gitPath else { return }
+            await sessionStore.refreshGitStatus(path: gitPath)
             updateCommitMessageSuggestion(force: true)
-            await sessionStore.refreshSelectedGitTestFlightStatus()
+            await sessionStore.refreshGitTestFlightStatus(path: gitPath)
         }
-        .task(id: sessionStore.selectedGitTestFlightStatus?.job?.id) {
-            guard sessionStore.selectedGitTestFlightStatus?.job?.isRunning == true else {
+        .task(id: gitTestFlightStatus?.job?.id) {
+            guard let gitPath, gitTestFlightStatus?.job?.isRunning == true else {
                 return
             }
-            await sessionStore.pollSelectedGitTestFlightRelease()
+            await sessionStore.pollGitTestFlightRelease(path: gitPath)
         }
-        .onChange(of: sessionStore.selectedGitStatus) { _, status in
+        .onChange(of: gitStatus) { _, status in
             guard status?.hasChanges == true else {
                 return
             }
             updateCommitMessageSuggestion(force: false)
         }
         .confirmationDialog(L10n.text("ui.submit_and_push_74661f7a"), isPresented: $isShowingQuickPublishConfirmation, titleVisibility: .visible) {
-            Button(sessionStore.selectedGitStatus?.hasChanges == true ? L10n.text("ui.submit_and_push") : L10n.text("ui.push_current_branch")) {
+            Button(gitStatus?.hasChanges == true ? L10n.text("ui.submit_and_push") : L10n.text("ui.push_current_branch")) {
                 let message = quickPublishMessage
                 Task {
-                    _ = await sessionStore.quickPublishSelectedGitChanges(message: message)
+                    guard let gitPath else { return }
+                    _ = await sessionStore.quickPublishGitChanges(path: gitPath, message: message)
                 }
             }
             Button(L10n.text("ui.cancel"), role: .cancel) {}
@@ -115,7 +126,8 @@ struct DiffPanelView: View {
             Button(L10n.text("ui.publish_testflight_on_host")) {
                 let whatToTest = testFlightWhatToTest
                 Task {
-                    _ = await sessionStore.startSelectedGitTestFlightRelease(whatToTest: whatToTest)
+                    guard let gitPath else { return }
+                    _ = await sessionStore.startGitTestFlightRelease(path: gitPath, whatToTest: whatToTest)
                 }
             }
             Button(L10n.text("ui.cancel"), role: .cancel) {}
@@ -127,7 +139,10 @@ struct DiffPanelView: View {
                 Button(L10n.format("ui.undo_value", file.path), role: .destructive) {
                     let path = file.path
                     pendingRevertFile = nil
-                    Task { await sessionStore.performSelectedGitAction(.revert, files: [path]) }
+                    Task {
+                        guard let gitPath else { return }
+                        await sessionStore.performGitAction(path: gitPath, action: .revert, files: [path])
+                    }
                 }
             }
             Button(L10n.text("ui.cancel"), role: .cancel) {
@@ -141,7 +156,10 @@ struct DiffPanelView: View {
                 Button(L10n.text("ui.undo_hunk"), role: .destructive) {
                     pendingRevertHunkPatch = nil
                     pendingRevertHunkTitle = ""
-                    Task { await sessionStore.performSelectedGitPatchAction(.revertPatch, patch: patch) }
+                    Task {
+                        guard let gitPath else { return }
+                        await sessionStore.performGitPatchAction(path: gitPath, action: .revertPatch, patch: patch)
+                    }
                 }
             }
             Button(L10n.text("ui.cancel"), role: .cancel) {
@@ -155,7 +173,7 @@ struct DiffPanelView: View {
 
     @ViewBuilder
     private func gitStatusContent(tokens: ThemeTokens) -> some View {
-        if let error = sessionStore.selectedGitStatusErrorMessage {
+        if let error = gitStatusError {
             InspectorSummaryCard(
                 symbolName: "exclamationmark.triangle",
                 title: L10n.text("ui.git_status_is_unavailable"),
@@ -164,7 +182,7 @@ struct DiffPanelView: View {
                 lineLimit: nil
             )
         } else {
-            if let actionError = sessionStore.selectedGitActionErrorMessage {
+            if let actionError = gitActionError {
                 InspectorSummaryCard(
                     symbolName: "exclamationmark.triangle",
                     title: L10n.text("ui.git_action_failed"),
@@ -174,7 +192,7 @@ struct DiffPanelView: View {
                 )
             }
 
-            if let status = sessionStore.selectedGitStatus {
+            if let status = gitStatus {
                 if !status.isRepository {
                     ContentUnavailableView(L10n.text("ui.the_current_workspace_is_not_a_git_repository"), systemImage: "folder")
                         .font(themeStore.uiFont(.caption))
@@ -190,8 +208,8 @@ struct DiffPanelView: View {
                     GitQuickPublishBox(
                         message: $commitMessage,
                         status: status,
-                        testFlightStatus: sessionStore.selectedGitTestFlightStatus,
-                        testFlightError: sessionStore.selectedGitTestFlightErrorMessage,
+                        testFlightStatus: gitTestFlightStatus,
+                        testFlightError: gitTestFlightError,
                         isWorking: gitControlIsWorking,
                         isRefreshingTestFlight: sessionStore.isRefreshingGitTestFlightStatus,
                         onRegenerateMessage: {
@@ -207,22 +225,36 @@ struct DiffPanelView: View {
                     GitPublishBox(
                         title: $pullRequestTitle,
                         prBody: $pullRequestBody,
-                        pullRequestURL: sessionStore.selectedPullRequestURL,
-                        pullRequestStatus: sessionStore.selectedPullRequestStatus,
-                        pullRequestStatusError: sessionStore.selectedPullRequestStatusErrorMessage,
+                        pullRequestURL: pullRequestURL,
+                        pullRequestStatus: pullRequestStatus,
+                        pullRequestStatusError: pullRequestStatusError,
                         isRefreshingPullRequestStatus: sessionStore.isRefreshingPullRequestStatus,
                         isWorking: gitControlIsWorking,
                         canPublish: nonEmpty(status.branch) != nil,
                         onPush: {
-                            Task { await sessionStore.pushSelectedGitBranch() }
+                            Task {
+                                guard let gitPath else { return }
+                                await sessionStore.pushGitBranch(path: gitPath)
+                            }
                         },
                         onCreatePullRequest: {
                             let title = pullRequestTitle
                             let body = pullRequestBody
-                            Task { await sessionStore.createSelectedPullRequest(title: title, body: body, draft: true) }
+                            Task {
+                                guard let gitPath else { return }
+                                await sessionStore.createPullRequest(
+                                    path: gitPath,
+                                    title: title,
+                                    body: body,
+                                    draft: true
+                                )
+                            }
                         },
                         onRefreshPullRequestStatus: {
-                            Task { await sessionStore.refreshSelectedPullRequestStatus() }
+                            Task {
+                                guard let gitPath else { return }
+                                await sessionStore.refreshPullRequestStatus(path: gitPath)
+                            }
                         },
                         reviewCommentCount: selectedReviewComments.count,
                         onAppendReviewNotes: {
@@ -239,17 +271,23 @@ struct DiffPanelView: View {
                             files: status.files,
                             isWorking: gitControlIsWorking,
                             onStage: { file in
-                                Task { await sessionStore.performSelectedGitAction(.stage, files: [file.path]) }
+                                Task {
+                                    guard let gitPath else { return }
+                                    await sessionStore.performGitAction(path: gitPath, action: .stage, files: [file.path])
+                                }
                             },
                             onUnstage: { file in
-                                Task { await sessionStore.performSelectedGitAction(.unstage, files: [file.path]) }
-                        },
-                        onRevert: { file in
-                            pendingRevertFile = file
-                            isShowingRevertConfirmation = true
-                        }
-                    )
-                }
+                                Task {
+                                    guard let gitPath else { return }
+                                    await sessionStore.performGitAction(path: gitPath, action: .unstage, files: [file.path])
+                                }
+                            },
+                            onRevert: { file in
+                                pendingRevertFile = file
+                                isShowingRevertConfirmation = true
+                            }
+                        )
+                    }
                     if let diffStat = nonEmpty(status.diffStat) {
                         InspectorSummaryCard(
                             symbolName: "chart.bar.doc.horizontal",
@@ -266,8 +304,9 @@ struct DiffPanelView: View {
                             onCommit: {
                                 let message = commitMessage
                                 Task {
-                                    await sessionStore.commitSelectedGitChanges(message: message)
-                                    if sessionStore.selectedGitActionErrorMessage == nil {
+                                    guard let gitPath else { return }
+                                    await sessionStore.commitGitChanges(path: gitPath, message: message)
+                                    if sessionStore.gitActionError(for: gitPath) == nil {
                                         commitMessage = ""
                                     }
                                 }
@@ -281,7 +320,14 @@ struct DiffPanelView: View {
                             primaryActionSystemImage: "minus.square",
                             primaryActionTint: tokens.accent,
                             onPrimaryAction: { hunk in
-                                Task { await sessionStore.performSelectedGitPatchAction(.unstagePatch, patch: hunk.patch) }
+                                Task {
+                                    guard let gitPath else { return }
+                                    await sessionStore.performGitPatchAction(
+                                        path: gitPath,
+                                        action: .unstagePatch,
+                                        patch: hunk.patch
+                                    )
+                                }
                             },
                             reviewComments: selectedReviewComments,
                             onAddReviewComment: addReviewComment
@@ -296,7 +342,14 @@ struct DiffPanelView: View {
                             primaryActionSystemImage: "plus.square",
                             primaryActionTint: tokens.accent,
                             onPrimaryAction: { hunk in
-                                Task { await sessionStore.performSelectedGitPatchAction(.stagePatch, patch: hunk.patch) }
+                                Task {
+                                    guard let gitPath else { return }
+                                    await sessionStore.performGitPatchAction(
+                                        path: gitPath,
+                                        action: .stagePatch,
+                                        patch: hunk.patch
+                                    )
+                                }
                             },
                             destructiveActionTitle: L10n.text("ui.undo_hunk"),
                             destructiveActionSystemImage: "arrow.counterclockwise",
@@ -334,6 +387,8 @@ struct DiffPanelView: View {
     }
 
     private var fileChangeItems: [DiffPanelItem] {
+        // 工作区直达 Git 时不能混入当前活动会话（可能属于另一个目录）的运行时摘要。
+        guard workspacePath == nil else { return [] }
         let messages = conversationStore
             .messages(for: sessionStore.selectedSessionID)
             .filter { $0.kind == .fileChangeSummary }
@@ -354,14 +409,14 @@ struct DiffPanelView: View {
     }
 
     private var selectedReviewComments: [GitReviewComment] {
-        let path = sessionStore.selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let path = gitPath ?? ""
         return reviewComments
             .filter { $0.workspacePath == path }
             .sorted { $0.createdAt < $1.createdAt }
     }
 
     private func addReviewComment(hunk: GitPatchHunk, body: String) {
-        let workspacePath = sessionStore.selectedGitStatusPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let workspacePath = gitPath ?? ""
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !workspacePath.isEmpty, !text.isEmpty else {
             return
@@ -418,7 +473,7 @@ struct DiffPanelView: View {
     }
 
     private var quickPublishConfirmationMessage: String {
-        guard let status = sessionStore.selectedGitStatus else {
+        guard let status = gitStatus else {
             return L10n.text("ui.the_current_branch_will_be_pushed_normally_and")
         }
         if status.hasChanges {
@@ -436,7 +491,7 @@ struct DiffPanelView: View {
         if !current.isEmpty {
             return current
         }
-        return sessionStore.selectedGitQuickPublishResult?.message ?? ""
+        return sessionStore.gitQuickPublishResult(for: gitPath)?.message ?? ""
     }
 
     private var quickPublishMessage: String {
@@ -445,7 +500,7 @@ struct DiffPanelView: View {
     }
 
     private func updateCommitMessageSuggestion(force: Bool) {
-        guard let status = sessionStore.selectedGitStatus, status.hasChanges else {
+        guard let status = gitStatus, status.hasChanges else {
             return
         }
         let next = GitCommitMessageSuggestion.make(from: status)
@@ -454,6 +509,42 @@ struct DiffPanelView: View {
             commitMessage = next
         }
         lastGeneratedCommitMessage = next
+    }
+
+    private var gitPath: String? {
+        workspacePath ?? sessionStore.selectedGitStatusPath
+    }
+
+    private var gitStatus: GitStatusResponse? {
+        sessionStore.gitStatus(for: gitPath)
+    }
+
+    private var gitStatusError: String? {
+        sessionStore.gitStatusError(for: gitPath)
+    }
+
+    private var gitActionError: String? {
+        sessionStore.gitActionError(for: gitPath)
+    }
+
+    private var gitTestFlightStatus: GitTestFlightStatusResponse? {
+        sessionStore.gitTestFlightStatus(for: gitPath)
+    }
+
+    private var gitTestFlightError: String? {
+        sessionStore.gitTestFlightError(for: gitPath)
+    }
+
+    private var pullRequestURL: String? {
+        sessionStore.pullRequestURL(for: gitPath)
+    }
+
+    private var pullRequestStatus: GitPullRequestStatusResponse? {
+        sessionStore.pullRequestStatus(for: gitPath)
+    }
+
+    private var pullRequestStatusError: String? {
+        sessionStore.pullRequestStatusError(for: gitPath)
     }
 
     private func nonEmpty(_ value: String?) -> String? {

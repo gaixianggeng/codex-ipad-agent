@@ -5,6 +5,7 @@ struct RootView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @EnvironmentObject private var hostStatusStore: HostStatusStore
     @Environment(\.colorScheme) private var colorScheme
@@ -29,6 +30,14 @@ struct RootView: View {
                 SettingsView(isInitialSetup: true)
                     .environment(\.themeSystemColorScheme, colorScheme)
             }
+        }
+        .task(id: appStore.activeHostScope) {
+            migrateLegacyWorkspaceAppearance()
+        }
+        .onChange(of: appStore.connectionProfiles) { _, _ in
+            // 删除重复 endpoint 后，旧数据可能刚刚变成可唯一归属；此时立即重试，
+            // 不要求用户先进入工作区页面才能恢复原来的图标偏好。
+            migrateLegacyWorkspaceAppearance()
         }
         .task {
             restoreActiveHostNavigationIfNeeded()
@@ -166,6 +175,14 @@ struct RootView: View {
         } message: {
             Text(notificationRouteAlertMessage ?? L10n.text("ui.please_try_again_later"))
         }
+    }
+
+    private func migrateLegacyWorkspaceAppearance() {
+        workspaceAppearanceStore.migrateLegacyValueIfNeeded(
+            profileID: appStore.activeHostScope.profileID,
+            endpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
     }
 
     private var notificationRouteAlertBinding: Binding<Bool> {

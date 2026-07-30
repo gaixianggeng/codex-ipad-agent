@@ -981,61 +981,7 @@ private struct ProjectSessionRows: View {
                 .onTapGesture {
                     Task { await sessionStore.selectSession(session) }
                 }
-                .contextMenu {
-                    if sessionStore.isSessionObserving(session) {
-                        Button {
-                            sessionStore.takeOverSession(session)
-                        } label: {
-                            Label(L10n.text("ui.take_over_to_ipad"), systemImage: "hand.raised.fill")
-                        }
-                    }
-
-                    Button {
-                        sessionStore.toggleSessionPinned(session)
-                    } label: {
-                        Label(isPinned ? L10n.text("ui.unpin") : L10n.text("ui.pin_to_top"), systemImage: isPinned ? "pin.slash" : "pin")
-                    }
-
-                    Button {
-                        Task { await sessionStore.handoffSessionToWorktree(session) }
-                    } label: {
-                        Label(L10n.text("ui.go_to_the_new_git_worktree"), systemImage: "arrow.triangle.branch")
-                    }
-                    .disabled(session.isRunning || sessionStore.isCreatingWorktree)
-
-                    Menu {
-                        Button {
-                            Task { await sessionStore.scheduleSessionReminder(session, after: 30 * 60) }
-                        } label: {
-                            Label(L10n.text("ui.30_minutes_later"), systemImage: "timer")
-                        }
-                        Button {
-                            Task { await sessionStore.scheduleSessionReminder(session, after: 2 * 60 * 60) }
-                        } label: {
-                            Label(L10n.text("ui.2_hours_later"), systemImage: "clock")
-                        }
-                        Button {
-                            Task { await sessionStore.scheduleSessionReminder(session, after: 24 * 60 * 60) }
-                        } label: {
-                            Label(L10n.text("ui.tomorrow"), systemImage: "calendar")
-                        }
-                        if reminder != nil {
-                            Button(role: .destructive) {
-                                sessionStore.clearSessionReminder(session)
-                            } label: {
-                                Label(L10n.text("ui.clear_reminder"), systemImage: "bell.slash")
-                            }
-                        }
-                    } label: {
-                        Label(L10n.text("ui.reminder"), systemImage: reminder == nil ? "bell" : "bell.fill")
-                    }
-
-                    Button(role: isArchived ? nil : .destructive) {
-                        Task { await sessionStore.toggleSessionArchivedRemote(session) }
-                    } label: {
-                        Label(isArchived ? L10n.text("ui.unarchive") : L10n.text("ui.archive"), systemImage: isArchived ? "archivebox.fill" : "archivebox")
-                    }
-                }
+                .sessionRowActions(session)
                 .padding(.leading, 30)
                 .sidebarListRow()
         }

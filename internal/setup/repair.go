@@ -182,7 +182,7 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops private
 		}
 	}()
 
-	if err := file.Chmod(0o600); err != nil {
+	if err := makePrivateFile(file); err != nil {
 		return "", err
 	}
 	written, err := ops.write(file, raw)

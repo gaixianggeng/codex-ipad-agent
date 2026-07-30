@@ -455,7 +455,7 @@ func (r *Router) managedWorktreeRepositoryIdentity(ctx context.Context, worktree
 	defer cancel()
 	identity := worktreeCleanupInstanceIdentity{}
 	resolvedCheckout, ok := managedWorktreeCheckoutRootFromGit(ctx, checkoutPath)
-	if !ok || resolvedCheckout != canonicalPathBestEffort(checkoutPath) {
+	if !ok || !sameFilesystemPath(resolvedCheckout, canonicalPathBestEffort(checkoutPath)) {
 		return identity, false
 	}
 	identity.CheckoutPath = resolvedCheckout
@@ -468,7 +468,7 @@ func (r *Router) managedWorktreeRepositoryIdentity(ctx context.Context, worktree
 		return identity, false
 	}
 	repositoryCommon, ok := gitCommonDirectory(ctx, worktree.RepositoryPath)
-	if !ok || repositoryCommon != checkoutCommon {
+	if !ok || !sameFilesystemPath(repositoryCommon, checkoutCommon) {
 		return identity, false
 	}
 	identity.GitDirectory, ok = gitDirectory(ctx, checkoutPath)
@@ -545,11 +545,11 @@ func filesystemObjectIdentity(path string) (string, bool) {
 	}
 	dev, ok := numericStatField(stat.FieldByName("Dev"))
 	if !ok {
-		return "", false
+		return platformFilesystemObjectIdentity(path)
 	}
 	ino, ok := numericStatField(stat.FieldByName("Ino"))
 	if !ok {
-		return "", false
+		return platformFilesystemObjectIdentity(path)
 	}
 	// 只绑定稳定的文件系统对象身份与类型。Git 的只读 status/lock
 	// 可能改变 linked-worktree gitdir 的 mtime/size，把它们放入指纹会

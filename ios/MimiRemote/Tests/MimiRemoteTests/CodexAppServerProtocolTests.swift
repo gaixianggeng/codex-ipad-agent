@@ -2,6 +2,199 @@ import XCTest
 @testable import MimiRemote
 
 final class CodexAppServerProtocolTests: XCTestCase {
+    func testLiveWindowsHostHealthFromPhysicalDevice() async throws {
+        guard let rawEndpoint = ProcessInfo.processInfo.environment["MIMI_LIVE_WINDOWS_ENDPOINT"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !rawEndpoint.isEmpty
+        else {
+            throw XCTSkip("仅在显式提供 Windows 宿主 Endpoint 时运行真机网络验证")
+        }
+        let endpoint = try EndpointTransportPolicy.validatedEndpoint(rawEndpoint)
+        guard var components = URLComponents(string: endpoint) else {
+            return XCTFail("Windows 宿主 Endpoint 无法解析")
+        }
+        components.path = "/healthz"
+        components.query = nil
+        components.fragment = nil
+        guard let healthURL = components.url else {
+            return XCTFail("Windows 宿主 health URL 无法构造")
+        }
+
+        var request = URLRequest(url: healthURL)
+        request.timeoutInterval = 12
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(httpResponse.statusCode, 200)
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertEqual(payload?["ok"] as? Bool, true)
+        XCTAssertFalse((payload?["version"] as? String ?? "").isEmpty)
+    }
+
+    @MainActor
+    func testLivePersistedWindowsConnectionFromPhysicalDevice() async throws {
+        guard let expectedPath = ProcessInfo.processInfo.environment["MIMI_LIVE_WINDOWS_EXPECTED_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedPath.isEmpty
+        else {
+            throw XCTSkip("仅在显式提供 Windows 工作区原始路径时验证真机持久化配对")
+        }
+
+        // 直接从 App 的 UserDefaults 与 Keychain 恢复现有配对，验证冷启动不是只显示
+        // 缓存的“已连接”，同时避免把 Token、配对码或二维码写入测试输出。
+        let appStore = AppStore()
+        XCTAssertNotNil(appStore.activeConnectionProfile)
+        XCTAssertFalse(appStore.token.isEmpty, "冷启动应从 Keychain 恢复当前 Windows 凭据")
+        XCTAssertTrue(appStore.isConfigured)
+
+        let client = try appStore.makeSessionStoreAPIClient()
+        let projects = try await client.projects()
+        let project = try XCTUnwrap(
+            projects.first(where: { $0.path == expectedPath }),
+            "项目发现应返回并原样保留 Windows 路径：\(expectedPath)"
+        )
+        let page = try await client.sessionsPage(
+            projectID: project.id,
+            cursor: nil,
+            limit: 20,
+            consistency: .authoritative
+        )
+        XCTAssertFalse(page.sessions.isEmpty, "Windows thread/list 应返回至少一个会话")
+        XCTAssertTrue(
+            page.sessions.allSatisfy { $0.dir == expectedPath },
+            "thread/list cwd 必须保留原始 Windows 路径"
+        )
+    }
+
+    @MainActor
+    func testLivePersistedWindowsCreateResumeAndSendFromPhysicalDevice() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let expectedPath = environment["MIMI_LIVE_WINDOWS_EXPECTED_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedPath.isEmpty,
+            let prompt = environment["MIMI_LIVE_WINDOWS_MESSAGE"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !prompt.isEmpty,
+            let expectedReply = environment["MIMI_LIVE_WINDOWS_EXPECTED_REPLY"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedReply.isEmpty
+        else {
+            throw XCTSkip("仅在显式提供 Windows 路径、测试消息和预期回复时运行端到端真机验证")
+        }
+
+        let appStore = AppStore()
+        let client = try appStore.makeSessionStoreAPIClient()
+        let projects = try await client.projects()
+        let project = try XCTUnwrap(projects.first(where: { $0.path == expectedPath }))
+        let modelOptions = try await client.modelOptions()
+        let model = try XCTUnwrap(
+            modelOptions.first(where: {
+                $0.isDefault && $0.runtimeProvider?.lowercased() != "claude"
+            }) ?? modelOptions.first(where: {
+                !$0.hidden && $0.runtimeProvider?.lowercased() != "claude"
+            }),
+            "Windows Codex 应返回至少一个可用模型"
+        )
+        let turnOptions = CodexAppServerTurnOptions(
+            runtimeProvider: model.runtimeProvider,
+            model: model.model,
+            modelProvider: model.provider,
+            reasoningEffort: model.defaultReasoningEffort
+                .flatMap(CodexAppServerReasoningEffort.init(rawValue:)) ?? .xhigh
+        )
+        let existingPage = try await client.sessionsPage(
+            projectID: project.id,
+            cursor: nil,
+            limit: 50,
+            consistency: .authoritative
+        )
+        let existingSession = existingPage.sessions.first {
+            $0.dir == expectedPath &&
+                ($0.preview?.contains(prompt) == true || $0.title.contains(prompt))
+        }
+        let sessionID: String
+        if let existingSession {
+            // 真机验证可能因设备连接或服务端限流而重跑。复用同一验收会话，避免每次
+            // 都向用户的 Windows thread store 写入一条重复记录。
+            sessionID = existingSession.id
+        } else {
+            // createSession 会经同一 app-server runtime 依次发送 thread/start 与首个
+            // turn/start；使用独立会话避免把验收消息写入用户已有上下文。
+            let created = try await client.createSession(
+                CreateSessionRequest(
+                    projectID: project.id,
+                    projectPath: project.path,
+                    projectName: project.name,
+                    prompt: prompt,
+                    turnOptions: turnOptions,
+                    resumeID: "",
+                    clientMessageID: "mim13-\(UUID().uuidString)"
+                )
+            )
+            XCTAssertEqual(created.session.dir, expectedPath)
+            XCTAssertFalse(created.session.id.isEmpty)
+            sessionID = created.session.id
+        }
+
+        var observedMessages: [CodexHistoryMessage] = []
+        var lastHistoryError: Error?
+        for _ in 0..<36 {
+            do {
+                // economy 使用 summary itemsView；5 秒间隔既覆盖异步回复，又不会触发
+                // Windows app-server 对 thread/turns/list full 查询的临时限流。
+                observedMessages = try await client.messagesPage(
+                    sessionID: sessionID,
+                    before: nil,
+                    limit: 20,
+                    loadMode: .economy
+                ).messages
+                lastHistoryError = nil
+            } catch {
+                // Windows 上 thread/start 先创建 rollout 文件，再异步写入首条元数据；
+                // 文件存在但仍为空的极短窗口不能让端到端验收提前失败。
+                lastHistoryError = error
+                try await Task.sleep(for: .seconds(5))
+                continue
+            }
+            let sentMessageExists = observedMessages.contains {
+                $0.role == MessageRole.user.rawValue && $0.content.contains(prompt)
+            }
+            let replyExists = observedMessages.contains {
+                $0.role == MessageRole.assistant.rawValue && $0.content.contains(expectedReply)
+            }
+            if sentMessageExists && replyExists {
+                break
+            }
+            try await Task.sleep(for: .seconds(5))
+        }
+        XCTAssertTrue(
+            observedMessages.contains {
+                $0.role == MessageRole.user.rawValue && $0.content.contains(prompt)
+            },
+            "新建会话应持久化 iPad 发出的测试消息，最后错误：\(lastHistoryError?.localizedDescription ?? "无")"
+        )
+        XCTAssertTrue(
+            observedMessages.contains {
+                $0.role == MessageRole.assistant.rawValue && $0.content.contains(expectedReply)
+            },
+            "Windows Codex 应返回预期验收回复，最后错误：\(lastHistoryError?.localizedDescription ?? "无")"
+        )
+
+        let resumed = try await client.session(id: sessionID, afterSeq: nil)
+        XCTAssertEqual(resumed.session.id, sessionID)
+        XCTAssertEqual(resumed.session.dir, expectedPath)
+
+        let page = try await client.sessionsPage(
+            projectID: project.id,
+            cursor: nil,
+            limit: 50,
+            consistency: .authoritative
+        )
+        XCTAssertTrue(
+            page.sessions.contains(where: { $0.id == sessionID && $0.dir == expectedPath }),
+            "新会话应能通过 Windows thread/list 恢复"
+        )
+    }
+
     func testWorktreeDeleteResponseDecodesLegacyAndRegistryCleanupWarning() throws {
         let legacyJSON = #"{"deleted_path":"/tmp/worktree-a","worktrees":[]}"#
         let legacy = try AgentAPIClient.decoder.decode(WorktreeDeleteResponse.self, from: Data(legacyJSON.utf8))
@@ -296,6 +489,48 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)
     }
 
+    func testThreadListBuilderPreservesWindowsCWDAsRemoteHostPath() throws {
+        let windowsPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let project = AgentProject(id: "repo", name: "Repo", path: "  \(windowsPath)  ")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = try builder.threadList(cwd: "\n\(windowsPath)\t")
+        let params = try XCTUnwrap(request.params?.objectValue)
+
+        XCTAssertEqual(request.method, "thread/list")
+        XCTAssertEqual(params["cwd"]?.stringValue, windowsPath)
+    }
+
+    func testRequestBuilderValidatesWindowsChildPathWithoutRewritingIt() throws {
+        let projectPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let imagePath = projectPath + #"\screens\preview.png"#
+        let project = AgentProject(id: "repo", name: "Repo", path: projectPath)
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(input: [.localImage(path: imagePath)])
+        )
+        let input = try XCTUnwrap(request.params?.objectValue?["input"]?.arrayValue)
+        XCTAssertEqual(input.first?.objectValue?["path"]?.stringValue, imagePath)
+
+        XCTAssertThrowsError(try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(input: [
+                .localImage(path: projectPath + #"\..\other\preview.png"#)
+            ])
+        ))
+        XCTAssertThrowsError(try builder.turnStart(
+            threadID: "thread-1",
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(input: [
+                .localImage(path: projectPath + #"\screens/../other/preview.png"#)
+            ])
+        ))
+    }
+
     func testThreadSearchBuilderUsesCodexSchemaWithoutCWD() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
@@ -311,6 +546,32 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(params["archived"]?.boolValue, false)
         XCTAssertNil(params["cwd"], "thread/search 不应由 iOS 注入任意 cwd")
+    }
+
+    func testThreadSearchPreservesAndMapsWindowsHostPaths() async throws {
+        let projectPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let worktreePath = projectPath + #"\.codex\worktrees\mim-13"#
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let page = try await runtime.threadSearchPage(
+            from: .object([
+                "data": .array([
+                    .object([
+                        "snippet": .string("Windows result"),
+                        "thread": .object([
+                            "id": .string("thread-windows"),
+                            "cwd": .string(worktreePath),
+                            "name": .string("Windows thread")
+                        ])
+                    ])
+                ])
+            ]),
+            projects: [AgentProject(id: "repo", name: "Repo", path: projectPath)]
+        )
+
+        let result = try XCTUnwrap(page.results.first)
+        XCTAssertEqual(page.results.count, 1)
+        XCTAssertEqual(result.session.dir, worktreePath)
+        XCTAssertEqual(result.session.projectID, "repo")
     }
 
     func testThreadResumeBuilderRequestsBoundedRecentTurns() throws {
@@ -726,6 +987,26 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(skill.presentationDescription, "Find risky changes")
         XCTAssertEqual(skill.scope, "system")
         XCTAssertEqual(skill.brandColor, "#43A7A8")
+    }
+
+    func testSkillsListParserMatchesWindowsCWDWithoutRewritingIt() throws {
+        let windowsPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
+        let parsed = SkillCapability.parseAppServerListResult(.object([
+            "data": .array([
+                .object([
+                    "cwd": .string("  \(windowsPath)  "),
+                    "skills": .array([
+                        .object([
+                            "name": .string("review"),
+                            "path": .string(#"C:\Users\gaixg\.codex\skills\review\SKILL.md"#),
+                            "enabled": .bool(true)
+                        ])
+                    ])
+                ])
+            ])
+        ]), cwd: windowsPath)
+
+        XCTAssertEqual(parsed.map(\.name), ["review"])
     }
 
     func testInstalledPluginListBuilderAndComposerMetadataParser() throws {
@@ -1664,6 +1945,86 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "environment" })?.options.map(\.label), ["staging", "production"])
     }
 
+    func testCodexMcpToolElicitationProjectsToApprovalWithDeclaredTrustChoices() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-tool-approval-1"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "turnId": .string("turn-1"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string(#"Allow the linear MCP server to run tool "save_issue"?"#),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([:])
+                ]),
+                "_meta": .object([
+                    "codex_approval_kind": .string("mcp_tool_call"),
+                    "persist": .array([.string("session"), .string("always")])
+                ])
+            ])
+        )
+
+        var projector = CodexAppServerEventProjector()
+        guard case .approvalRequest(let approval, let metadata) = projector.project(request) else {
+            return XCTFail("Codex MCP 工具调用应投影为审批，而不是空表单")
+        }
+        XCTAssertEqual(metadata.sessionID, "thread-1")
+        XCTAssertEqual(approval.kind, CodexMCPToolApprovalProtocol.kind)
+        XCTAssertTrue(approval.body?.contains("save_issue") == true)
+        XCTAssertEqual(
+            approval.availableDecisions,
+            ["accept", "acceptForSession", "acceptAlways", "decline"]
+        )
+        let summary = ApprovalSummary(
+            id: approval.id,
+            title: approval.title,
+            body: approval.body,
+            kind: approval.kind,
+            count: 1,
+            availableDecisions: approval.availableDecisions
+        )
+        XCTAssertTrue(summary.canAcceptMCPToolForSession)
+        XCTAssertTrue(summary.canAlwaysAllowMCPTool)
+    }
+
+    func testCodexMcpToolElicitationDoesNotInventPersistentTrustChoices() throws {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-tool-destructive"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "serverName": .string("linear"),
+                "mode": .string("form"),
+                "message": .string("Allow destructive tool call?"),
+                "requestedSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([:])
+                ]),
+                "_meta": .object([
+                    "codex_approval_kind": .string("mcp_tool_call")
+                ])
+            ])
+        )
+
+        var projector = CodexAppServerEventProjector()
+        guard case .approvalRequest(let approval, _) = projector.project(request) else {
+            return XCTFail("expected MCP tool approval")
+        }
+        XCTAssertEqual(approval.availableDecisions, ["accept", "decline"])
+        let summary = ApprovalSummary(
+            id: approval.id,
+            title: approval.title,
+            body: approval.body,
+            kind: approval.kind,
+            count: 1,
+            availableDecisions: approval.availableDecisions
+        )
+        XCTAssertFalse(summary.canAcceptMCPToolForSession)
+        XCTAssertFalse(summary.canAlwaysAllowMCPTool)
+    }
+
     func testMcpURLelicitationProjectsToExplicitApproval() {
         let request = CodexAppServerServerRequest(
             id: .int(17),
@@ -1684,6 +2045,38 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(approval.id, "17")
         XCTAssertEqual(approval.kind, "mcp_elicitation")
         XCTAssertTrue(approval.body?.contains("https://example.test/oauth") == true)
+    }
+
+    func testRuntimeProjectsThreadNameUpdateIntoCachedSession() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        await runtime.handle(CodexAppServerNotification(
+            method: "thread/started",
+            params: .object([
+                "thread": .object([
+                    "id": .string("thread-title"),
+                    "cwd": .string("/tmp/thread-title"),
+                    "name": .string("旧标题"),
+                    "status": .object(["type": .string("idle")])
+                ])
+            ])
+        ))
+        await runtime.handle(CodexAppServerNotification(
+            method: "thread/name/updated",
+            params: .object([
+                "threadId": .string("thread-title"),
+                "threadName": .string("  新标题  ")
+            ])
+        ))
+
+        let shell = await runtime.historyThreadShell(
+            sessionID: "thread-title",
+            projects: []
+        )
+
+        XCTAssertEqual(shell["name"]?.stringValue, "新标题")
     }
 
     func testRuntimeBuildsTypedMcpElicitationResponses() async {
@@ -1726,6 +2119,53 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let urlAccepted = await runtime.approvalResponse(method: url.method, params: url.params?.objectValue ?? [:], decision: "accept")
         XCTAssertEqual(urlAccepted["action"]?.stringValue, "accept")
         XCTAssertEqual(urlAccepted["content"], .null)
+    }
+
+    func testRuntimeBuildsScopedCodexMcpToolApprovalResponsesAndFailsClosed() async {
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        let params: [String: CodexAppServerJSONValue] = [
+            "mode": .string("form"),
+            "_meta": .object([
+                "codex_approval_kind": .string("mcp_tool_call"),
+                "persist": .array([.string("session"), .string("always")])
+            ])
+        ]
+
+        let once = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: params,
+            decision: "accept"
+        )
+        XCTAssertEqual(once["action"]?.stringValue, "accept")
+        XCTAssertEqual(once["_meta"], .null)
+
+        let session = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: params,
+            decision: "acceptForSession"
+        )
+        XCTAssertEqual(session["action"]?.stringValue, "accept")
+        XCTAssertEqual(session["_meta"]?.objectValue?["persist"]?.stringValue, "session")
+
+        let always = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: params,
+            decision: "acceptAlways"
+        )
+        XCTAssertEqual(always["action"]?.stringValue, "accept")
+        XCTAssertEqual(always["_meta"]?.objectValue?["persist"]?.stringValue, "always")
+
+        let oneTimeOnlyParams: [String: CodexAppServerJSONValue] = [
+            "mode": .string("form"),
+            "_meta": .object(["codex_approval_kind": .string("mcp_tool_call")])
+        ]
+        let forgedAlways = await runtime.approvalResponse(
+            method: "mcpServer/elicitation/request",
+            params: oneTimeOnlyParams,
+            decision: "acceptAlways"
+        )
+        XCTAssertEqual(forgedAlways["action"]?.stringValue, "decline")
+        XCTAssertEqual(forgedAlways["_meta"], .null)
     }
 
     func testProjectorMapsPlanReasoningUsageCompactionNameMCPAndDeprecationNotifications() throws {
@@ -1796,10 +2236,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let named = CodexAppServerNotification(method: "thread/name/updated", params: .object([
             "threadId": .string("thread-1"), "threadName": .string("新名称")
         ]))
-        guard case .messageCompleted(let nameMessage, _) = projector.project(named) else {
-            return XCTFail("expected name message")
-        }
-        XCTAssertTrue(nameMessage.content.contains("新名称"))
+        XCTAssertNil(projector.project(named), "标题是导航元数据，不应写入 transcript")
 
         let mcp = CodexAppServerNotification(method: "item/mcpToolCall/progress", params: .object([
             "threadId": .string("thread-1"), "turnId": .string("turn-1"), "itemId": .string("mcp-item"),
