@@ -452,7 +452,7 @@ struct AppearanceView: View {
                     alignment: .center,
                     spacing: dynamicTypeSize.isAccessibilitySize ? 14 : 10
                 ) {
-                    ForEach(WorkspaceIconStyle.allCases) { style in
+                    ForEach(selectableWorkspaceIconStyles) { style in
                         let isSelected =
                             workspaceAppearanceStore.style(profileID: profileID) == style
                         Button {
@@ -475,7 +475,7 @@ struct AppearanceView: View {
                         )
                     }
                 }
-                // 默认 4 × 2 保持快速扫读；辅助功能字号减少列数，让单行出处仍可辨识。
+                // 常规字号固定四列快速扫读；新增风格自然换行，辅助功能字号减少列数。
                 .padding(.vertical, 6)
                 .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
@@ -587,6 +587,12 @@ struct AppearanceView: View {
         return Array(
             repeating: GridItem(.flexible(minimum: 44, maximum: 160), spacing: spacing),
             count: columnCount
+        )
+    }
+
+    private var selectableWorkspaceIconStyles: [WorkspaceIconStyle] {
+        WorkspaceIconStyle.selectableStyles(
+            currentStyle: workspaceAppearanceStore.style(profileID: profileID)
         )
     }
 
