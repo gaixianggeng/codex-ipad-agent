@@ -13,6 +13,8 @@ on:
       - ".goreleaser.yml"
       - "packaging/**"
       - "scripts/check-packaging.sh"
+      - "scripts/check-critical-regressions.sh"
+      - "scripts/test-conversation-regressions.sh"
       - "scripts/check-macos-release-signing.sh"
       - "scripts/check-release-artifacts.sh"
       - "scripts/check-source-size.sh"

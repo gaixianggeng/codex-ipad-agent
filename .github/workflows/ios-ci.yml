@@ -14,6 +14,7 @@ on:
       - "scripts/test-ios-device-management.sh"
       - "scripts/testdata/ios-device-management/**"
       - "scripts/test-conversation-regressions.sh"
+      - "scripts/check-critical-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
       - "scripts/check-ios-network-security.sh"

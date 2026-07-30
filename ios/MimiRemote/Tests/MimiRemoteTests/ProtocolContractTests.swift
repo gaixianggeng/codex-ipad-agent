@@ -96,6 +96,52 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertTrue(message.contains(String(MimiProtocolContract.currentRevision)))
     }
 
+    func testCriticalJourneyFixtureMatchesIOSRequestBuilders() throws {
+        let fixture = try criticalJourneyContractFixture()
+        XCTAssertEqual(fixture.schemaVersion, 1)
+        XCTAssertEqual(fixture.rest.pairClaim.method, "POST")
+        XCTAssertEqual(fixture.rest.pairClaim.path, "/api/pair/claim")
+        XCTAssertFalse(fixture.rest.pairClaim.requiresAuth)
+        XCTAssertEqual(fixture.webSocket.path, "/api/app-server/ws")
+        XCTAssertTrue(fixture.webSocket.requiresAuth)
+
+        let project = AgentProject(
+            id: "critical-journey",
+            name: "Critical Journey",
+            path: "/tmp/critical-journey"
+        )
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+        let actualClientMethods = [
+            try builder.threadList(cwd: project.path).method,
+            builder.threadRead(threadID: "thread-critical").method,
+            try builder.threadResume(
+                threadID: "thread-critical",
+                cwd: project.path
+            ).method,
+            try builder.turnStart(
+                threadID: "thread-critical",
+                cwd: project.path,
+                prompt: "继续"
+            ).method,
+            builder.turnInterrupt(
+                threadID: "thread-critical",
+                turnID: "turn-critical"
+            ).method,
+        ]
+        XCTAssertEqual(actualClientMethods, fixture.webSocket.clientMethods)
+        XCTAssertEqual(
+            Set(fixture.webSocket.serverRequestMethods),
+            [
+                "item/commandExecution/requestApproval",
+                "item/tool/requestUserInput",
+            ]
+        )
+        XCTAssertEqual(
+            fixture.webSocket.resolutionNotification,
+            "serverRequest/resolved"
+        )
+    }
+
     private func decodeVersionFixture(_ name: String) throws -> VersionResponse {
         try AgentAPIClient.decoder.decode(VersionResponse.self, from: fixtureData(name))
     }
@@ -113,6 +159,69 @@ final class ProtocolContractTests: XCTestCase {
                 .appendingPathComponent(name)
         )
     }
+}
+
+struct CriticalJourneyContractFixture: Decodable {
+    struct REST: Decodable {
+        struct PairClaim: Decodable {
+            let method: String
+            let path: String
+            let requiresAuth: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case method
+                case path
+                case requiresAuth = "requires_auth"
+            }
+        }
+
+        let pairClaim: PairClaim
+
+        enum CodingKeys: String, CodingKey {
+            case pairClaim = "pair_claim"
+        }
+    }
+
+    struct WebSocket: Decodable {
+        let path: String
+        let requiresAuth: Bool
+        let clientMethods: [String]
+        let serverRequestMethods: [String]
+        let resolutionNotification: String
+
+        enum CodingKeys: String, CodingKey {
+            case path
+            case requiresAuth = "requires_auth"
+            case clientMethods = "client_methods"
+            case serverRequestMethods = "server_request_methods"
+            case resolutionNotification = "resolution_notification"
+        }
+    }
+
+    let schemaVersion: Int
+    let rest: REST
+    let webSocket: WebSocket
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case rest
+        case webSocket = "websocket"
+    }
+}
+
+func criticalJourneyContractFixture() throws -> CriticalJourneyContractFixture {
+    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    for _ in 0..<4 {
+        root.deleteLastPathComponent()
+    }
+    let data = try Data(
+        contentsOf: root
+            .appendingPathComponent("contracts")
+            .appendingPathComponent("mimi-protocol")
+            .appendingPathComponent("fixtures")
+            .appendingPathComponent("critical-journey.json")
+    )
+    return try JSONDecoder().decode(CriticalJourneyContractFixture.self, from: data)
 }
 
 private struct ClientCompatibilityFixture: Decodable {
