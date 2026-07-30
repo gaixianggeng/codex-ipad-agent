@@ -1449,18 +1449,6 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
-    func isTerminalHistoryStatus(_ value: CodexAppServerJSONValue?) -> Bool {
-        let raw = value?.stringValue
-            ?? value?.objectValue?["type"]?.stringValue
-            ?? value?.objectValue?["status"]?.stringValue
-        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "completed", "complete", "succeeded", "success", "failed", "failure", "interrupted", "cancelled", "canceled", "aborted":
-            return true
-        default:
-            return false
-        }
-    }
-
     func estimatedHistoryItemDate(startedAt: Date?, completedAt: Date?, itemIndex: Int, itemCount: Int) -> Date? {
         guard let startedAt else {
             return completedAt
