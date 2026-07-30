@@ -378,7 +378,10 @@ extension ConversationDataFlowTests {
             hostScope: store.appStore.activeHostScope
         ))
 
-        socket.onTurnSendOutcome?(nil, .accepted(turnID: "turn-local-race"))
+        socket.onTurnSendOutcome?(
+            nil,
+            .accepted(turnID: "turn-local-race")
+        )
         for _ in 0..<10 where store.externalActivityBySessionID[threadID] != nil {
             await Task.yield()
         }

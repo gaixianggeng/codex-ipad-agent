@@ -853,6 +853,13 @@ final class ConversationStore: ObservableObject {
         }
     }
 
+    func turnLifecycle(
+        sessionID: SessionID,
+        turnID: TurnID
+    ) -> ConversationTurnLifecycle? {
+        turnLifecycleBySessionID[scopedSessionID(for: sessionID)]?[turnID]
+    }
+
     private func append(_ message: ConversationMessage, sessionID: String) {
         let scopedSessionID = scopedSessionID(for: sessionID)
         var message = message

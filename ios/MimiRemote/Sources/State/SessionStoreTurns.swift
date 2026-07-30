@@ -1,5 +1,16 @@
 import Foundation
 
+enum QueuedTurnAcceptedDisposition {
+    case awaitingStart(turnID: TurnID?)
+    case guidance
+    case terminal(turnID: TurnID?)
+    case superseded(
+        turnID: TurnID?,
+        activeTurnID: TurnID
+    )
+    case threadClosed(turnID: TurnID?)
+}
+
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
     func refreshCodexUsage() async {
@@ -1140,10 +1151,77 @@ extension SessionStore {
         }
     }
 
+    func reconciledAcceptedDisposition(
+        sessionID: SessionID,
+        disposition: QueuedTurnAcceptedDisposition
+    ) -> QueuedTurnAcceptedDisposition {
+        let currentActiveTurnID = sessionsByID[sessionID]?.activeTurnID
+        func isTerminal(_ turnID: TurnID) -> Bool {
+            conversationStore.turnLifecycle(
+                sessionID: sessionID,
+                turnID: turnID
+            )?.isTerminal == true
+        }
+
+        switch disposition {
+        case .awaitingStart(let turnID):
+            if let turnID, isTerminal(turnID) {
+                return .terminal(turnID: turnID)
+            }
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(
+                    turnID: turnID,
+                    activeTurnID: currentActiveTurnID
+                )
+            }
+            return disposition
+        case .terminal(let turnID):
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(
+                    turnID: turnID,
+                    activeTurnID: currentActiveTurnID
+                )
+            }
+            return disposition
+        case .superseded(let turnID, let reportedActiveTurnID):
+            let effectiveActiveTurnID: TurnID
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID,
+               currentActiveTurnID != reportedActiveTurnID {
+                effectiveActiveTurnID = currentActiveTurnID
+            } else {
+                effectiveActiveTurnID = reportedActiveTurnID
+            }
+            if isTerminal(effectiveActiveTurnID) {
+                // completed(B) 可能先于 superseded(A,B) 落到 MainActor；lifecycle 是
+                // 不会随 activeTurnID 清空而丢失的终态证据，禁止再次复活 B。
+                return .terminal(turnID: effectiveActiveTurnID)
+            }
+            return .superseded(
+                turnID: turnID,
+                activeTurnID: effectiveActiveTurnID
+            )
+        case .threadClosed(let turnID):
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(
+                    turnID: turnID,
+                    activeTurnID: currentActiveTurnID
+                )
+            }
+            return disposition
+        case .guidance:
+            return disposition
+        }
+    }
+
     @discardableResult
     func handleQueuedSendAccepted(
         clientMessageID: ClientMessageID,
-        sessionID: SessionID
+        sessionID: SessionID,
+        disposition explicitDisposition: QueuedTurnAcceptedDisposition? = nil
     ) -> Bool {
         guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
               location.sessionID == sessionID,
@@ -1153,22 +1231,98 @@ extension SessionStore {
             return false
         }
         let wasGuidance = queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID) != nil
+        let disposition = reconciledAcceptedDisposition(
+            sessionID: sessionID,
+            disposition: explicitDisposition
+                ?? (wasGuidance
+                    ? .guidance
+                    : .awaitingStart(turnID: nil))
+        )
 
         guard mutateAndPersistQueuedTurns({
             guard var queue = queuedRunningTurnsBySessionID[sessionID],
                   queue.indices.contains(location.index) else { return }
             queue.remove(at: location.index)
-            if !wasGuidance {
+            switch disposition {
+            case .awaitingStart(let turnID):
                 let blockedCompletionID = queuedTurnBlockedCompletionIDBySessionID[sessionID]
                 for index in queue.indices where queue[index].dispatchState == .waiting {
-                    queue[index].waitsForAcceptedTurnStart = true
-                    queue[index].blockedCompletionID = blockedCompletionID
+                    if let turnID {
+                        queue[index].waitsForAcceptedTurnStart = nil
+                        queue[index].blockedCompletionID = nil
+                        queue[index].expectedTurnID = turnID
+                    } else {
+                        queue[index].waitsForAcceptedTurnStart = true
+                        queue[index].blockedCompletionID = blockedCompletionID
+                        queue[index].expectedTurnID = nil
+                    }
+                }
+            case .superseded(_, let activeTurnID):
+                for index in queue.indices where queue[index].dispatchState == .waiting {
+                    queue[index].waitsForAcceptedTurnStart = nil
+                    queue[index].blockedCompletionID = nil
+                    queue[index].expectedTurnID = activeTurnID
+                }
+            case .terminal:
+                for index in queue.indices where queue[index].dispatchState == .waiting {
+                    queue[index].waitsForAcceptedTurnStart = nil
+                    queue[index].blockedCompletionID = nil
                     queue[index].expectedTurnID = nil
                 }
+            case .threadClosed:
+                for index in queue.indices where queue[index].dispatchState == .waiting {
+                    queue[index].waitsForAcceptedTurnStart = nil
+                    queue[index].blockedCompletionID = nil
+                    queue[index].expectedTurnID = nil
+                }
+            case .guidance:
+                break
             }
             setQueuedTurns(queue, sessionID: sessionID)
         }) else {
             return true
+        }
+        switch disposition {
+        case .awaitingStart(let turnID):
+            if turnID != nil {
+                queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+                queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            }
+        case .guidance:
+            break
+        case .terminal(let turnID):
+            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            updateSession(sessionID) { session in
+                guard session.activeTurnID == nil
+                        || session.activeTurnID == turnID else {
+                    return
+                }
+                session.activeTurnID = nil
+            }
+        case .superseded(let turnID, let activeTurnID):
+            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            updateSession(sessionID) { session in
+                guard session.activeTurnID == nil
+                        || session.activeTurnID == turnID
+                        || session.activeTurnID == activeTurnID else {
+                    return
+                }
+                session.status = SessionStatus.running.rawValue
+                session.activeTurnID = activeTurnID
+            }
+        case .threadClosed(let turnID):
+            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            updateSession(sessionID) { session in
+                guard session.activeTurnID == nil
+                        || session.activeTurnID == turnID else {
+                    return
+                }
+                session.status = "closed"
+                session.activeTurnID = nil
+            }
         }
         conversationStore.updateSendStatus(
             clientMessageID: clientMessageID,
@@ -1180,6 +1334,10 @@ extension SessionStore {
             sessionID: sessionID
         )
         stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
+        if case .terminal = disposition {
+            // 终态早于 ACK 时，对应 completion 已经过去；持久化移除首项后立即推进 FIFO。
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
         return true
     }
 
@@ -1213,101 +1371,6 @@ extension SessionStore {
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
         return true
-    }
-
-    func handleTurnSendOutcome(
-        clientMessageID: ClientMessageID?,
-        sessionID: SessionID,
-        outcome: TurnSendOutcome
-    ) {
-        let recoveredExternalMisclassification: Bool
-        if case .accepted(let turnID) = outcome, let turnID {
-            recoveredExternalMisclassification = recordLocallyStartedTurn(
-                sessionID: sessionID,
-                turnID: turnID
-            )
-        } else {
-            recoveredExternalMisclassification = false
-        }
-        guard let clientMessageID else { return }
-        switch outcome {
-        case .accepted:
-            if !handleQueuedSendAccepted(clientMessageID: clientMessageID, sessionID: sessionID) {
-                conversationStore.updateSendStatus(
-                    clientMessageID: clientMessageID,
-                    sessionID: sessionID,
-                    status: .sent
-                )
-                conversationStore.compactTurnPayloadAfterSendAccepted(
-                    clientMessageID: clientMessageID,
-                    sessionID: sessionID
-                )
-            }
-            if recoveredExternalMisclassification,
-               selectedSessionID != sessionID,
-               queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
-                // external snapshot 会停止后台队列 socket。ACK 对账成功且仍有后续项时，
-                // 重新建立监听，让 FIFO 能在当前 turn 完成后继续派发。
-                ensureQueuedSessionMonitoring(sessionID: sessionID)
-            }
-        case .activeTurnConflict(let activeTurnID, let message):
-            // 这是“新消息未被接受”，不是原会话失败。恢复权威 active turn，
-            // 并保留已有审批/补充问题；排队项回到等待态，待原 turn 完成后再发。
-            updateSession(sessionID) { item in
-                item.activeTurnID = activeTurnID
-                if item.pendingUserInput != nil {
-                    item.status = "waiting_for_input"
-                } else if item.pendingApproval != nil {
-                    item.status = "waiting_for_approval"
-                } else {
-                    item.status = "running"
-                }
-            }
-            if handleQueuedActiveTurnConflict(
-                clientMessageID: clientMessageID,
-                sessionID: sessionID,
-                activeTurnID: activeTurnID
-            ) {
-                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
-                return
-            }
-            conversationStore.updateSendStatus(
-                clientMessageID: clientMessageID,
-                sessionID: sessionID,
-                status: .failed
-            )
-            setStatusMessage(message)
-        case .rejected(let message):
-            if handleQueuedSendRejected(
-                clientMessageID: clientMessageID,
-                sessionID: sessionID,
-                message: message
-            ) {
-                return
-            }
-            conversationStore.updateSendStatus(
-                clientMessageID: clientMessageID,
-                sessionID: sessionID,
-                status: .failed
-            )
-            clearForegroundActivity(sessionID: sessionID)
-            setErrorMessage(L10n.format("ui.sending_failed_value", message))
-        case .uncertain(let message):
-            if handleQueuedSendFailure(
-                clientMessageID: clientMessageID,
-                sessionID: sessionID,
-                message: message
-            ) {
-                return
-            }
-            conversationStore.updateSendStatus(
-                clientMessageID: clientMessageID,
-                sessionID: sessionID,
-                status: .failed
-            )
-            clearForegroundActivity(sessionID: sessionID)
-            setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
-        }
     }
 
     @discardableResult
