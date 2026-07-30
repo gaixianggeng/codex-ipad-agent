@@ -790,9 +790,15 @@ struct UnifiedWorkbenchShell: View {
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
                 isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+                isUnread: sessionStore.isHistorySessionUnread(session),
                 style: .sidebar
             )
         }
+        .accessibilityValue(
+            sessionStore.isHistorySessionUnread(session)
+                ? L10n.text("ui.unread_result")
+                : ""
+        )
         .sessionRowActions(session)
         .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowSeparator(.hidden)

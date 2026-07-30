@@ -484,6 +484,9 @@ extension SessionStore {
         ) else {
             return false
         }
+        // 选择提交意味着详情已经成为当前可见目标；历史加载即使随后失败，也不能让列表
+        // 继续把用户刚打开过的完成结果标成未读。
+        markHistorySessionRead(session.id)
         if wasNoOpSelection {
             return true
         }

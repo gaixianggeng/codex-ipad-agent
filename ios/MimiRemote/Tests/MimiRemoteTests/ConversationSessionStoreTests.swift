@@ -1573,6 +1573,210 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(sockets.count, 1)
     }
 
+    func testCompletionVersionIgnoresHydrationAndOrderingOnlyChanges() {
+        let original = AgentSession(
+            id: "session-version",
+            projectID: "project-version",
+            project: "project-version",
+            dir: "/tmp/project-version",
+            title: "完成版本",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: "session-version",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 20),
+            recencyAt: Date(timeIntervalSince1970: 18)
+        )
+        let refreshedMetadata = AgentSession(
+            id: original.id,
+            projectID: original.projectID,
+            project: original.project,
+            dir: original.dir,
+            title: "刷新后标题",
+            status: original.status,
+            source: original.source,
+            resumeID: original.resumeID,
+            createdAt: original.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 99),
+            recencyAt: original.recencyAt
+        )
+        let newCompletion = AgentSession(
+            id: original.id,
+            projectID: original.projectID,
+            project: original.project,
+            dir: original.dir,
+            title: original.title,
+            status: original.status,
+            source: original.source,
+            resumeID: original.resumeID,
+            createdAt: original.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 30),
+            recencyAt: Date(timeIntervalSince1970: 30)
+        )
+
+        let originalVersion = SessionCompletionVersion(session: original)
+        XCTAssertTrue(
+            originalVersion.representsSameCompletion(
+                as: SessionCompletionVersion(session: refreshedMetadata)
+            ),
+            "recencyAt 未变化时，标题刷新和 updatedAt 元数据变化不能制造未读"
+        )
+        XCTAssertFalse(
+            originalVersion.representsSameCompletion(
+                as: SessionCompletionVersion(session: newCompletion)
+            )
+        )
+
+        let sparse = AgentSession(
+            id: original.id,
+            projectID: original.projectID,
+            project: original.project,
+            dir: original.dir,
+            title: original.title,
+            status: original.status,
+            source: original.source,
+            resumeID: original.resumeID,
+            createdAt: original.createdAt,
+            updatedAt: original.updatedAt
+        )
+        XCTAssertTrue(
+            SessionCompletionVersion(session: sparse).representsSameCompletion(
+                as: originalVersion
+            ),
+            "轻量列表后续补齐 recencyAt 时，应通过双方共有的 updatedAt 识别为同一次完成"
+        )
+    }
+
+    func testHistoryUnreadPersistsReadAndReopensForNextCompletion() async {
+        let suiteName = "ConversationSessionStoreTests.HistoryUnread.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let readStateStore = SessionHistoryReadStateStore(defaults: defaults)
+        let appStore = AppStore(defaults: defaults)
+        let project = makeProject(id: "project-unread")
+        let initialHistory = makeSession(
+            id: "session-unread",
+            projectID: project.id,
+            title: "初始旧历史",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: "session-unread",
+            updatedAt: Date(timeIntervalSince1970: 10),
+            recencyAt: Date(timeIntervalSince1970: 10)
+        )
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory([
+            CodexHistoryMessage(
+                id: "history-unread-message",
+                role: "assistant",
+                content: "已加载",
+                createdAt: Date(timeIntervalSince1970: 10)
+            )
+        ], sessionID: initialHistory.id)
+        let client = MockSessionStoreClient(projects: [project], sessions: [initialHistory])
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            sessionHistoryReadStateStore: readStateStore,
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+
+        store.sessions = [initialHistory]
+        XCTAssertFalse(store.isHistorySessionUnread(initialHistory), "升级后首次见到的旧历史应建立已读基线")
+
+        let running = makeSession(
+            id: initialHistory.id,
+            projectID: project.id,
+            title: "新一轮运行中",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            resumeID: initialHistory.resumeID,
+            activeTurnID: "turn-1",
+            updatedAt: Date(timeIntervalSince1970: 20),
+            recencyAt: Date(timeIntervalSince1970: 20)
+        )
+        store.sessions = [running]
+        XCTAssertFalse(store.isHistorySessionUnread(running), "进行中会话不能显示历史未读")
+
+        let firstCompletion = makeSession(
+            id: initialHistory.id,
+            projectID: project.id,
+            title: "第一轮完成",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: initialHistory.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 21),
+            recencyAt: Date(timeIntervalSince1970: 21)
+        )
+        store.sessions = [firstCompletion]
+        XCTAssertTrue(store.isHistorySessionUnread(firstCompletion))
+
+        await store.selectSession(firstCompletion)
+        XCTAssertFalse(store.isHistorySessionUnread(firstCompletion), "打开历史会话后应立即标记已读")
+
+        let persisted = readStateStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
+        XCTAssertFalse(try XCTUnwrap(persisted[firstCompletion.id]).isUnread)
+
+        let restartedStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionHistoryReadStateStore: readStateStore,
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        restartedStore.sessions = [firstCompletion]
+        XCTAssertFalse(
+            restartedStore.isHistorySessionUnread(firstCompletion),
+            "App 重启和列表重新加载后不能把已读状态回退"
+        )
+
+        restartedStore.returnToSessionList()
+        let secondRunning = makeSession(
+            id: firstCompletion.id,
+            projectID: project.id,
+            title: "第二轮运行中",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            resumeID: firstCompletion.resumeID,
+            activeTurnID: "turn-2",
+            updatedAt: Date(timeIntervalSince1970: 30),
+            recencyAt: Date(timeIntervalSince1970: 30)
+        )
+        restartedStore.sessions = [secondRunning]
+        XCTAssertFalse(restartedStore.isHistorySessionUnread(secondRunning))
+
+        let secondCompletion = makeSession(
+            id: firstCompletion.id,
+            projectID: project.id,
+            title: "第二轮完成",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: firstCompletion.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 31),
+            recencyAt: Date(timeIntervalSince1970: 31)
+        )
+        restartedStore.sessions = [secondCompletion]
+        XCTAssertTrue(
+            restartedStore.isHistorySessionUnread(secondCompletion),
+            "同一会话产生新的完成结果后应重新进入未读"
+        )
+
+        restartedStore.sessions = [secondCompletion]
+        XCTAssertTrue(
+            restartedStore.isHistorySessionUnread(secondCompletion),
+            "相同完成版本的重复刷新不能改变未读判定"
+        )
+    }
+
     func testSelectingHistorySessionKeepsSelectionWhenMessages404() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_missing", projectID: project.id, title: "缺失 rollout", status: "history", source: "codex", resumeID: "missing")

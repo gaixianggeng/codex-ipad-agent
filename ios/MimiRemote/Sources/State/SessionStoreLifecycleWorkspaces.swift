@@ -98,6 +98,7 @@ extension SessionStore {
         )
         let selectedSessionID = "debug-session-layout"
         let runningSessionID = "debug-session-running"
+        let historySessionID = "debug-session-workspace"
         // MCP 审批样例只在显式 Debug 参数下出现，用于真机检查 Codex 声明的
         // 一次、会话和永久信任入口；不连接真实 MCP，也不会写入用户授权配置。
         let mcpApproval = appStore.shouldSeedDebugMCPApprovalUI
@@ -145,7 +146,7 @@ extension SessionStore {
                 activeTurnID: "debug-turn-running"
             ),
             AgentSession(
-                id: "debug-session-workspace",
+                id: historySessionID,
                 projectID: sampleApp.id,
                 project: sampleApp.name,
                 dir: sampleApp.path,
@@ -207,11 +208,28 @@ extension SessionStore {
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
         replaceSessionsIfChanged(with: sessions, projectID: nil)
+        if appStore.shouldSeedDebugHistoryUnreadUI,
+           var unreadCandidate = sessions.first(where: { $0.id == historySessionID }) {
+            // 先让未选中的历史会话经历一次“运行中 → 新完成”，以复用生产判定链路。
+            // 该参数只服务 iPhone/iPad 运行态验收，不污染普通 Debug 种子与快照。
+            unreadCandidate.status = SessionStatus.running.rawValue
+            unreadCandidate.activeTurnID = "debug-turn-history-unread"
+            unreadCandidate.updatedAt = now.addingTimeInterval(-60)
+            unreadCandidate.recencyAt = now.addingTimeInterval(-60)
+            upsert(unreadCandidate)
+
+            unreadCandidate.status = SessionStatus.completed.rawValue
+            unreadCandidate.activeTurnID = nil
+            unreadCandidate.updatedAt = now.addingTimeInterval(-30)
+            unreadCandidate.recencyAt = now.addingTimeInterval(-30)
+            upsert(unreadCandidate)
+        }
         _ = commitSelection(
             projectID: mimiDemo.id,
             sessionID: appStore.shouldSeedDebugQueuedTurnsUI ? runningSessionID : selectedSessionID,
             reason: .userOpen
         )
+        markHistorySessionRead(selectedSessionID)
         if appStore.shouldSeedDebugQueuedTurnsUI {
             // 队列样例需要处于可控的运行中会话，才能同时验收“排队（默认）/引导”切换；
             // 普通 Debug 工作台仍保留原来的观察态样例，不改变其接管流程覆盖。

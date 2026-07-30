@@ -51,6 +51,7 @@ final class SessionStore: ObservableObject {
     @Published var isLoadingMoreSessionSearchResults = false
     @Published var pinnedSessionIDs: Set<SessionID> = []
     @Published var archivedSessionIDs: Set<SessionID> = []
+    @Published private(set) var unreadHistorySessionIDs: Set<SessionID> = []
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
@@ -150,6 +151,13 @@ final class SessionStore: ObservableObject {
         connectionSwitchTargetProfileID = profileID
     }
 
+    func setUnreadHistorySessionIDs(_ value: Set<SessionID>) {
+        guard unreadHistorySessionIDs != value else {
+            return
+        }
+        unreadHistorySessionIDs = value
+    }
+
     let appStore: AppStore
     let conversationStore: ConversationStore
     let logStore: LogStore
@@ -157,6 +165,7 @@ final class SessionStore: ObservableObject {
     let eventReducer: EventReducer
     let recentWorkspaceStore: RecentWorkspaceStore
     let sessionListPreferenceStore: SessionListPreferenceStore
+    let sessionHistoryReadStateStore: SessionHistoryReadStateStore
     let sessionControlStateStore: SessionControlStateStore
     let sessionReminderStore: SessionReminderStore
     let sessionReminderScheduler: any SessionReminderScheduling
@@ -255,6 +264,7 @@ final class SessionStore: ObservableObject {
     var deliveredRuntimeNotificationIDs: Set<String> = []
     var locallyCompletedSessionIDs: Set<SessionID> = []
     var locallyCompletedGoalThreadIDs: Set<SessionID> = []
+    var historyReadStateBySessionID: [SessionID: SessionHistoryReadState] = [:]
     var listProjectionBySessionID: [SessionID: SessionListProjection] = [:]
     var recentActivityProjectionBySessionID: [SessionID: SessionRecentActivityProjection] = [:]
     // 队列订阅不依赖当前页面；用户切到其他会话后，原 thread 仍能在完成时继续 FIFO 派发。
@@ -357,6 +367,7 @@ final class SessionStore: ObservableObject {
         contextStore: SessionContextStore? = nil,
         recentWorkspaceStore: RecentWorkspaceStore? = nil,
         sessionListPreferenceStore: SessionListPreferenceStore? = nil,
+        sessionHistoryReadStateStore: SessionHistoryReadStateStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
         sessionReminderStore: SessionReminderStore? = nil,
         historySavingsNoticeStore: HistorySavingsNoticeStore? = nil,
@@ -413,6 +424,14 @@ final class SessionStore: ObservableObject {
             self.sessionListPreferenceStore = SessionListPreferenceStore(defaults: defaults)
         } else {
             self.sessionListPreferenceStore = SessionListPreferenceStore()
+        }
+        if let sessionHistoryReadStateStore {
+            self.sessionHistoryReadStateStore = sessionHistoryReadStateStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(suiteName: "SessionStore.HistoryReadStates.\(UUID().uuidString)") ?? .standard
+            self.sessionHistoryReadStateStore = SessionHistoryReadStateStore(defaults: defaults)
+        } else {
+            self.sessionHistoryReadStateStore = SessionHistoryReadStateStore()
         }
         if let sessionControlStateStore {
             self.sessionControlStateStore = sessionControlStateStore
@@ -492,6 +511,7 @@ final class SessionStore: ObservableObject {
         self.externalActivitySleep = externalActivitySleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
+        reloadHistoryReadStates()
         reloadSessionControlStates()
         reloadSessionReminders()
         reloadQueuedTurns()

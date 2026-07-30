@@ -11548,6 +11548,24 @@
         }
       }
     },
+    "ui.unread_result" : {
+      "comment" : "Accessibility value for a history session that has a new completed result the user has not opened.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unread result"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未读结果"
+          }
+        }
+      }
+    },
     "ui.host_in_parentheses" : {
       "comment" : "Endpoint host enclosed in language-appropriate parentheses.",
       "localizations" : {

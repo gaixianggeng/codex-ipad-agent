@@ -86,6 +86,7 @@ extension SessionStore {
         terminalStreamStore.removeAll(profileID: profileID)
         recentWorkspaceStore.remove(profileID: profileID)
         sessionListPreferenceStore.remove(profileID: profileID)
+        sessionHistoryReadStateStore.remove(profileID: profileID)
         sessionControlStateStore.remove(profileID: profileID)
         sessionReminderStore.remove(profileID: profileID)
         sessionReminderScheduler.cancel(profileID: profileID)
