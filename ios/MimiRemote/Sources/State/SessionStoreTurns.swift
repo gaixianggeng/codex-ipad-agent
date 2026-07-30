@@ -1159,6 +1159,12 @@ extension SessionStore {
         // 此时必须按普通 start 建立后续队列 barrier，不能沿用 steer 的快速完成语义。
         let wasGuidance = acceptedAsGuidance
             ?? (wasGuidanceDispatch && startedTurnID == nil)
+        let acceptedTurnAlreadyTerminal = startedTurnID.flatMap {
+            conversationStore.turnLifecycle(sessionID: sessionID, turnID: $0)
+        }?.isTerminal == true
+        let acceptedTurnAlreadyStarted = startedTurnID.map {
+            queuedTurnStartedIDBySessionID[sessionID] == $0
+        } == true
 
         guard mutateAndPersistQueuedTurns({
             guard var queue = queuedRunningTurnsBySessionID[sessionID],
@@ -1167,9 +1173,21 @@ extension SessionStore {
             if !wasGuidance {
                 let blockedCompletionID = queuedTurnBlockedCompletionIDBySessionID[sessionID]
                 for index in queue.indices where queue[index].dispatchState == .waiting {
-                    queue[index].waitsForAcceptedTurnStart = true
-                    queue[index].blockedCompletionID = blockedCompletionID
-                    queue[index].expectedTurnID = nil
+                    if acceptedTurnAlreadyTerminal {
+                        // fallback turn 已在 ACK 前完成；不能再建立永远等不到事件的启动门闩。
+                        queue[index].waitsForAcceptedTurnStart = nil
+                        queue[index].blockedCompletionID = nil
+                        queue[index].expectedTurnID = nil
+                    } else if acceptedTurnAlreadyStarted, let startedTurnID {
+                        // started 已先到时直接绑定权威 turn，后续 completion 会正常放行。
+                        queue[index].waitsForAcceptedTurnStart = nil
+                        queue[index].blockedCompletionID = nil
+                        queue[index].expectedTurnID = startedTurnID
+                    } else {
+                        queue[index].waitsForAcceptedTurnStart = true
+                        queue[index].blockedCompletionID = blockedCompletionID
+                        queue[index].expectedTurnID = nil
+                    }
                 }
             }
             setQueuedTurns(queue, sessionID: sessionID)
@@ -1186,12 +1204,27 @@ extension SessionStore {
             sessionID: sessionID
         )
         if wasGuidanceDispatch, let startedTurnID {
-            updateSession(sessionID) { session in
-                session.status = SessionStatus.running.rawValue
-                session.activeTurnID = startedTurnID
+            if acceptedTurnAlreadyTerminal {
+                updateSession(sessionID) { session in
+                    guard session.activeTurnID == nil
+                            || session.activeTurnID == startedTurnID else {
+                        return
+                    }
+                    session.activeTurnID = nil
+                }
+            } else {
+                updateSession(sessionID) { session in
+                    session.status = SessionStatus.running.rawValue
+                    session.activeTurnID = startedTurnID
+                }
             }
         }
         stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
+        if acceptedTurnAlreadyTerminal {
+            queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+            queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+        }
         return true
     }
 

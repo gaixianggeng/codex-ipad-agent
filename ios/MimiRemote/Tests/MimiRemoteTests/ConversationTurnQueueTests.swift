@@ -704,6 +704,87 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testQueuedGuidanceFallbackCompletedBeforeACKImmediatelyAdvancesFIFO() async throws {
+        let project = makeProject(id: "proj_queue_guide_terminal_before_ack")
+        let running = makeSession(
+            id: "sess_queue_guide_terminal_before_ack",
+            projectID: project.id,
+            title: "Queue Guide Terminal Before ACK",
+            status: SessionStatus.running.rawValue,
+            source: "claude",
+            activeTurnID: "turn_stale"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        let firstAccepted = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "fallback 第一条")
+        )
+        XCTAssertTrue(firstAccepted)
+        let clientMessageID = try XCTUnwrap(store.selectedQueuedTurns.first?.id)
+        let secondAccepted = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "fallback 后续")
+        )
+        XCTAssertTrue(secondAccepted)
+        XCTAssertTrue(store.guideQueuedTurnNow(clientMessageID: clientMessageID))
+
+        socket.emitEvent(.turnStarted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn_fallback_fast",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: clientMessageID,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID("turn_fallback_fast", store: store)
+        socket.emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 2,
+            sessionID: running.id,
+            turnID: "turn_fallback_fast",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: clientMessageID,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID(nil, store: store)
+
+        socket.onTurnSendOutcome?(
+            clientMessageID,
+            .accepted(turnID: "turn_fallback_fast")
+        )
+
+        try await waitForSentTurnCount(1, socket: socket)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, "fallback 后续")
+        XCTAssertNil(store.selectedSession?.activeTurnID, "迟到 ACK 不得复活已完成的 fallback turn")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .dispatching)
+        XCTAssertFalse(store.selectedQueuedTurns.first?.waitsForAcceptedTurnStart == true)
+        XCTAssertFalse(store.queuedGuidanceDispatchClientMessageIDs.contains(clientMessageID))
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testQueuedGuidanceFallbackConflictPreservesNewActiveTurn() async throws {
         let project = makeProject(id: "proj_queue_guide_new_active")
         let running = makeSession(
