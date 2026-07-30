@@ -25399,6 +25399,23 @@
         }
       }
     },
+    "ui.tap_to_cancel_voice_input_preparation" : {
+      "comment" : "Accessibility hint for the enabled microphone button while its audio session is still preparing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to cancel voice input preparation"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点取消语音输入准备"
+          }
+        }
+      }
+    },
     "ui.tap_to_stop_apple_voice_input" : {
       "localizations" : {
         "en" : {
