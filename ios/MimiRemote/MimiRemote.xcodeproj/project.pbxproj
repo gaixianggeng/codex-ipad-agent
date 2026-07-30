@@ -184,6 +184,7 @@
 		E4C5AB826686611C3468FAB8 /* ComposerAttachmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF511A69E274B12E5E2AE265 /* ComposerAttachmentViews.swift */; };
 		E52FF51E6A66678EBAEF7F9E /* testComposerModelTriggerFastIndicator.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 608F5B2621676207DEE92BA8 /* testComposerModelTriggerFastIndicator.1.png */; };
 		E790247242197F065BB1F1DE /* ConversationDirectRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025CFFED953120CE5B667800 /* ConversationDirectRuntimeTests.swift */; };
+		C03800000000000000000001 /* WorkspaceSessionLoadingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03800000000000000000002 /* WorkspaceSessionLoadingTests.swift */; };
 		E7EE1A6D1A2A19F69E8F6513 /* testConversationBubbleAlignment.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 0FC920B8D7FE7F76E2C18FD7 /* testConversationBubbleAlignment.1.png */; };
 		E811D57414AC2415D22ADDF0 /* APIResponses.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266B02E274C8B9B137FF4ACB /* APIResponses.swift */; };
 		E8CF63B25946995924E1B888 /* InitialConnectionSettingsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C75EB69B7DE1AAE7350B2C5 /* InitialConnectionSettingsSections.swift */; };
@@ -229,6 +230,7 @@
 /* Begin PBXFileReference section */
 		00BF9FE4AEE49C6DD13873AA /* testComposerStatusTrayCrowdedCompactWidth.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testComposerStatusTrayCrowdedCompactWidth.1.png; sourceTree = "<group>"; };
 		025CFFED953120CE5B667800 /* ConversationDirectRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectRuntimeTests.swift; sourceTree = "<group>"; };
+		C03800000000000000000002 /* WorkspaceSessionLoadingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionLoadingTests.swift; sourceTree = "<group>"; };
 		02BA631A94730FC521FE15F6 /* AssistantTextNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantTextNormalizer.swift; sourceTree = "<group>"; };
 		033E0CF93AA4A06CC89D7AD1 /* ConversationRuntimeFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRuntimeFlowTests.swift; sourceTree = "<group>"; };
 		04740AD795D6AEEF87C98B35 /* ConversationMessageAccessories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationMessageAccessories.swift; sourceTree = "<group>"; };
@@ -577,6 +579,7 @@
 				7348A6FCD28C7489CC7097AD /* ThemeStoreTests.swift */,
 				AB4A66767462028B863816B7 /* WorkspaceAppearanceStoreTests.swift */,
 				85879EDF3D64609C3C6BA873 /* WorkspaceGitSummaryTests.swift */,
+				C03800000000000000000002 /* WorkspaceSessionLoadingTests.swift */,
 				327AF69020E348B4AE9F7BBE /* WorkspaceVisualSnapshotTests.swift */,
 				7DD567ECF6024FEEF09274D5 /* __Snapshots__ */,
 				89403F8D35BD5D42FF3A98B9 /* Fixtures */,
@@ -1142,6 +1145,7 @@
 				420F5F2A694B0E491DBD45B0 /* ThemeStoreTests.swift in Sources */,
 				A3621619C40A5F0CFB0C4F10 /* WorkspaceAppearanceStoreTests.swift in Sources */,
 				951475AE3120CB42A905E3B3 /* WorkspaceGitSummaryTests.swift in Sources */,
+				C03800000000000000000001 /* WorkspaceSessionLoadingTests.swift in Sources */,
 				626E053AFAE30F345EEFC01D /* WorkspaceVisualSnapshotTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
