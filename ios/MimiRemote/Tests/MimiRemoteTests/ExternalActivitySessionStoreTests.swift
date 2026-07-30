@@ -455,6 +455,242 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testTerminalAckAfterExternalMisclassificationDispatchesNextQueuedTurn() async throws {
+        let project = makeProject(id: "proj_external_terminal_ack")
+        let threadID = "thread-terminal-ack"
+        let acceptedClientMessageID = "client-terminal-ack"
+        let nextClientMessageID = "client-terminal-next"
+        let localTurnID = "turn-terminal-local"
+        let session = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "终态 ACK 撤销误判",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: localTurnID
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: session,
+            client: client,
+            socket: socket
+        )
+        store.sessionControlStateByID[threadID] = .takenOver
+        store.queuedRunningTurnsBySessionID[threadID] = [
+            QueuedTurnEntry(
+                sessionID: threadID,
+                projectID: project.id,
+                payload: CodexAppServerTurnPayload(prompt: "已接受且快速完成"),
+                clientMessageID: acceptedClientMessageID,
+                intent: .standard,
+                dispatchState: .needsConfirmation
+            ),
+            QueuedTurnEntry(
+                sessionID: threadID,
+                projectID: project.id,
+                payload: CodexAppServerTurnPayload(prompt: "终态后继续"),
+                clientMessageID: nextClientMessageID,
+                intent: .standard,
+                expectedTurnID: localTurnID
+            )
+        ]
+        store.externalActivityBySessionID[threadID] = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: localTurnID,
+            revision: "rev-terminal-local"
+        )
+        store.externalReadOnlySessionIDs.insert(threadID)
+
+        store.handleTurnSendOutcome(
+            clientMessageID: acceptedClientMessageID,
+            sessionID: threadID,
+            outcome: .acceptedTerminal(turnID: localTurnID)
+        )
+
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertEqual(store.locallyStartedTurnIDBySessionID[threadID], localTurnID)
+        XCTAssertNil(store.sessionsByID[threadID]?.activeTurnID)
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
+
+        socket.emitStatus(.connected)
+        try await waitForSentTurnCount(1, socket: socket)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, "终态后继续")
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.dispatchState,
+            .dispatching
+        )
+    }
+
+    func testTerminalAckAfterLaggingExternalSnapshotRestoresCompletedStatus() async throws {
+        let project = makeProject(id: "proj_external_terminal_status")
+        let threadID = "thread-terminal-status"
+        let clientMessageID = "client-terminal-status"
+        let localTurnID = "turn-terminal-status"
+        let session = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "终态 ACK 恢复完成状态",
+            status: SessionStatus.completed.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: session,
+            client: client,
+            socket: socket
+        )
+        store.sessionControlStateByID[threadID] = .takenOver
+        store.queuedRunningTurnsBySessionID[threadID] = [QueuedTurnEntry(
+            sessionID: threadID,
+            projectID: project.id,
+            payload: CodexAppServerTurnPayload(prompt: "已完成但 ACK 迟到"),
+            clientMessageID: clientMessageID,
+            intent: .standard,
+            dispatchState: .needsConfirmation
+        )]
+        store.conversationStore.updateTurnLifecycle(
+            .completed,
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: threadID,
+                turnID: localTurnID,
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: clientMessageID,
+                revision: nil,
+                createdAt: nil
+            ),
+            fallbackSessionID: threadID
+        )
+
+        // completion 已先投影，随后滞后的外部活动快照又错误复活同一 turn。
+        await store.applyExternalActivitySnapshot(
+            [makeExternalActivity(
+                threadID: threadID,
+                projectID: project.id,
+                turnID: localTurnID,
+                revision: "rev-terminal-status"
+            )],
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+        XCTAssertEqual(store.sessionsByID[threadID]?.status, SessionStatus.running.rawValue)
+        XCTAssertTrue(store.externalReadOnlySessionIDs.contains(threadID))
+
+        store.handleTurnSendOutcome(
+            clientMessageID: clientMessageID,
+            sessionID: threadID,
+            outcome: .acceptedTerminal(turnID: localTurnID)
+        )
+
+        XCTAssertTrue(store.queuedRunningTurnsBySessionID[threadID]?.isEmpty != false)
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertNil(store.sessionsByID[threadID]?.activeTurnID)
+        XCTAssertEqual(store.sessionsByID[threadID]?.status, SessionStatus.completed.rawValue)
+        XCTAssertTrue(socket.connectedSessionIDs.isEmpty, "无后续队列时不应复活已结束连接")
+    }
+
+    func testSupersededAckAfterExternalMisclassificationRestoresBackgroundMonitoring() async throws {
+        let project = makeProject(id: "proj_external_superseded_ack")
+        let threadID = "thread-superseded-ack"
+        let acceptedClientMessageID = "client-superseded-ack"
+        let nextClientMessageID = "client-superseded-next"
+        let localTurnID = "turn-superseded-local"
+        let authoritativeTurnID = "turn-superseded-authoritative"
+        let session = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "新轮次 ACK 撤销误判",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: localTurnID
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let socket = MockWebSocketClient()
+        let store = makeExternalActivityStore(
+            project: project,
+            session: session,
+            client: client,
+            socket: socket
+        )
+        store.sessionControlStateByID[threadID] = .takenOver
+        store.queuedRunningTurnsBySessionID[threadID] = [
+            QueuedTurnEntry(
+                sessionID: threadID,
+                projectID: project.id,
+                payload: CodexAppServerTurnPayload(prompt: "已被新轮次取代"),
+                clientMessageID: acceptedClientMessageID,
+                intent: .standard,
+                dispatchState: .needsConfirmation
+            ),
+            QueuedTurnEntry(
+                sessionID: threadID,
+                projectID: project.id,
+                payload: CodexAppServerTurnPayload(prompt: "等待权威轮次完成"),
+                clientMessageID: nextClientMessageID,
+                intent: .standard,
+                expectedTurnID: localTurnID
+            )
+        ]
+        store.externalActivityBySessionID[threadID] = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: localTurnID,
+            revision: "rev-superseded-local"
+        )
+        store.externalReadOnlySessionIDs.insert(threadID)
+
+        store.handleTurnSendOutcome(
+            clientMessageID: acceptedClientMessageID,
+            sessionID: threadID,
+            outcome: .acceptedSuperseded(
+                turnID: localTurnID,
+                activeTurnID: authoritativeTurnID
+            )
+        )
+
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertEqual(store.locallyStartedTurnIDBySessionID[threadID], localTurnID)
+        XCTAssertEqual(store.sessionsByID[threadID]?.activeTurnID, authoritativeTurnID)
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.expectedTurnID,
+            authoritativeTurnID
+        )
+        XCTAssertEqual(socket.connectedSessionIDs, [threadID])
+
+        socket.emitStatus(.connected)
+        socket.emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 1,
+            sessionID: threadID,
+            turnID: authoritativeTurnID,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSentTurnCount(1, socket: socket)
+        XCTAssertEqual(socket.sentTurns.first?.payload.textPrompt, "等待权威轮次完成")
+        XCTAssertEqual(
+            store.queuedRunningTurnsBySessionID[threadID]?.first?.dispatchState,
+            .dispatching
+        )
+    }
+
     func testCompletedLocalTurnIgnoresLaggingSameTurnSnapshot() async throws {
         let project = makeProject(id: "proj_external_terminal_lag")
         let threadID = "thread-terminal-lag"

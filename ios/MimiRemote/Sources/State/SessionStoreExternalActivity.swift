@@ -321,10 +321,22 @@ extension SessionStore {
         outcome: TurnSendOutcome
     ) {
         let recoveredExternalMisclassification: Bool
-        if case .accepted(let turnID) = outcome, let turnID {
+        if let turnID = acceptedTurnID(from: outcome) {
+            // terminal / superseded 也可能在 ACK 回到 MainActor 前被外部活动轮询误判。
+            // 所有带精确 turnID 的 accepted outcome 都必须先撤销只读 tombstone。
+            let shouldRestoreSelectedConnection: Bool
+            switch outcome {
+            case .accepted, .acceptedSuperseded:
+                shouldRestoreSelectedConnection = true
+            case .acceptedTerminal, .acceptedThreadClosed,
+                 .activeTurnConflict, .rejected, .uncertain:
+                // 已终态或已关闭时不先复活旧连接；若仍有队列，finishAccepted 会按需建链。
+                shouldRestoreSelectedConnection = false
+            }
             recoveredExternalMisclassification = recordLocallyStartedTurn(
                 sessionID: sessionID,
-                turnID: turnID
+                turnID: turnID,
+                restoreSelectedConnection: shouldRestoreSelectedConnection
             )
         } else {
             recoveredExternalMisclassification = false
@@ -354,11 +366,15 @@ extension SessionStore {
                 // 期间覆盖已经到达的更新 turn。
                 switch disposition {
                 case .terminal(let turnID):
+                    let terminalStatus = turnID.flatMap {
+                        conversationStore.turnLifecycle(sessionID: sessionID, turnID: $0)
+                    } == .failed ? SessionStatus.failed : .completed
                     updateSession(sessionID) { session in
                         guard session.activeTurnID == nil
                                 || session.activeTurnID == turnID else {
                             return
                         }
+                        session.status = terminalStatus.rawValue
                         session.activeTurnID = nil
                     }
                 case .superseded(let turnID, let activeTurnID):
@@ -403,6 +419,12 @@ extension SessionStore {
                 turnID: turnID,
                 activeTurnID: activeTurnID
             ))
+            if recoveredExternalMisclassification,
+               selectedSessionID != sessionID,
+               queuedRunningTurnsBySessionID[sessionID]?.isEmpty == false {
+                // external snapshot 已停止后台队列 socket；当前权威 turn 完成前必须恢复监听。
+                ensureQueuedSessionMonitoring(sessionID: sessionID)
+            }
         case .acceptedThreadClosed(let turnID):
             finishAccepted(.threadClosed(turnID: turnID))
         case .activeTurnConflict(let activeTurnID, let message):

@@ -1293,11 +1293,16 @@ extension SessionStore {
         case .terminal(let turnID):
             queuedTurnAwaitingStartSessionIDs.remove(sessionID)
             queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            let terminalStatus = turnID.flatMap {
+                conversationStore.turnLifecycle(sessionID: sessionID, turnID: $0)
+            } == .failed ? SessionStatus.failed : .completed
             updateSession(sessionID) { session in
                 guard session.activeTurnID == nil
                         || session.activeTurnID == turnID else {
                     return
                 }
+                // external activity 误判可能已把已完成会话重写为 running；ACK 必须恢复终态。
+                session.status = terminalStatus.rawValue
                 session.activeTurnID = nil
             }
         case .superseded(let turnID, let activeTurnID):
