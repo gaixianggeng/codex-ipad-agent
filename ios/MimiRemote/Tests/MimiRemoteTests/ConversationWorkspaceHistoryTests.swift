@@ -50,6 +50,52 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceSessionAgeBoundaryIgnoresPinnedStaleSession() {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let project = makeProject(id: "workspace-pinned")
+        let pinnedStale = makeSession(
+            id: "pinned-stale",
+            projectID: project.id,
+            title: "置顶旧规划",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-WorkspaceSessionAgeBoundary.staleInterval - 60)
+        )
+        let recent = makeSession(
+            id: "recent",
+            projectID: project.id,
+            title: "最近规划",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-60)
+        )
+        let stale = makeSession(
+            id: "stale",
+            projectID: project.id,
+            title: "普通旧规划",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-WorkspaceSessionAgeBoundary.staleInterval - 120)
+        )
+
+        XCTAssertEqual(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(
+                in: [pinnedStale, recent, stale],
+                excludingSessionIDs: [pinnedStale.id],
+                now: now
+            ),
+            2
+        )
+        XCTAssertNil(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(
+                in: [pinnedStale, recent],
+                excludingSessionIDs: [pinnedStale.id],
+                now: now
+            ),
+            "置顶旧会话不应单独制造“12 小时前”分组"
+        )
+    }
+
     func testRecentSessionSortUsesUserRecencyInsteadOfAgentUpdatedAt() {
         let project = makeProject(id: "proj_recency_sort")
         let first = makeSession(
