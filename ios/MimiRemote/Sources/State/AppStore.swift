@@ -674,17 +674,8 @@ final class AppStore: ObservableObject {
         return MultiRuntimeSessionWebSocketClient(bundle: bundle)
     }
 
-    func replaceCapabilityNegotiation(
-        _ negotiation: HostCapabilityNegotiation,
-        preserving state: ActiveHostState
-    ) {
-        activeHostState = ActiveHostState(
-            scope: state.scope,
-            endpoint: state.endpoint,
-            displayName: state.displayName,
-            committedAt: state.committedAt,
-            capabilityNegotiation: negotiation
-        )
+    func replaceCapabilityNegotiation(_ negotiation: HostCapabilityNegotiation, preserving state: ActiveHostState) {
+        activeHostState = state.replacingCapabilityNegotiation(with: negotiation)
     }
 
     func prepareConnectionSettings(

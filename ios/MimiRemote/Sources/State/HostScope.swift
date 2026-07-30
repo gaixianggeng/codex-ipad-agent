@@ -88,6 +88,18 @@ struct ActiveHostState: Equatable, Sendable {
     let displayName: String
     let committedAt: Date
     let capabilityNegotiation: HostCapabilityNegotiation
+
+    func replacingCapabilityNegotiation(
+        with negotiation: HostCapabilityNegotiation
+    ) -> ActiveHostState {
+        ActiveHostState(
+            scope: scope,
+            endpoint: endpoint,
+            displayName: displayName,
+            committedAt: committedAt,
+            capabilityNegotiation: negotiation
+        )
+    }
 }
 
 enum CapabilityNegotiationLog {
