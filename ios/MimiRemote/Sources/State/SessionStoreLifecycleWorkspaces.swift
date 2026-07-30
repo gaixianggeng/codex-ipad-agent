@@ -78,6 +78,37 @@ extension SessionStore {
             creditsUnlimited: false,
             creditBalance: nil
         )
+        // 固定的年度活动仅用于 Debug 视觉回归，帮助同时检查 iPhone 纵向和 iPad
+        // 左右布局；生产环境始终使用 account/usage/read 的账号数据。
+        var debugCalendar = Calendar(identifier: .gregorian)
+        debugCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayFormatter = DateFormatter()
+        dayFormatter.calendar = debugCalendar
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.timeZone = debugCalendar.timeZone
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        let debugDailyUsage = (0..<365).compactMap { daysAgo -> AccountTokenUsageDailyBucket? in
+            guard daysAgo % 4 != 0,
+                  daysAgo % 11 != 0,
+                  let date = debugCalendar.date(
+                      byAdding: .day,
+                      value: -daysAgo,
+                      to: now
+                  )
+            else {
+                return nil
+            }
+            let wave = Int64((daysAgo * 37) % 11 + 1)
+            return AccountTokenUsageDailyBucket(
+                startDate: dayFormatter.string(from: date),
+                tokens: wave * wave * 1_800_000
+            )
+        }
+        accountTokenUsage = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 50_160_000_000),
+            dailyUsageBuckets: debugDailyUsage
+        )
+        isAccountTokenUsageUnavailable = false
         let mimiDemo = AgentWorkspace(
             id: "debug-mimi-demo",
             name: "mimi-remote",
