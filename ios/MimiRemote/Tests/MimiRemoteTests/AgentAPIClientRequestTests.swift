@@ -381,8 +381,26 @@ final class AgentAPIClientRequestTests: XCTestCase {
 
         if contract.requiresAuth {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer mobile-contract-token", "\(contract.name) auth")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: MimiProtocolContract.clientRevisionHeader),
+                String(MimiProtocolContract.currentRevision),
+                "\(contract.name) client protocol revision"
+            )
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: MimiProtocolContract.minimumServerRevisionHeader),
+                String(MimiProtocolContract.minimumSupportedServerRevision),
+                "\(contract.name) minimum server protocol revision"
+            )
         } else {
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "\(contract.name) 不应携带长期访问码")
+            XCTAssertNil(
+                request.value(forHTTPHeaderField: MimiProtocolContract.clientRevisionHeader),
+                "\(contract.name) 未认证入口不应协商业务协议"
+            )
+            XCTAssertNil(
+                request.value(forHTTPHeaderField: MimiProtocolContract.minimumServerRevisionHeader),
+                "\(contract.name) 未认证入口不应协商业务协议"
+            )
         }
         for (field, value) in contract.headers {
             XCTAssertEqual(request.value(forHTTPHeaderField: field), value, "\(contract.name) \(field)")

@@ -266,6 +266,7 @@ private struct FileUploadTransport {
         request.httpMethod = "POST"
         request.timeoutInterval = 300
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        MimiProtocolContract.applyClientHeaders(to: &request)
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
         request.setValue(Self.base64URL(file.name), forHTTPHeaderField: "X-Mimi-File-Name")

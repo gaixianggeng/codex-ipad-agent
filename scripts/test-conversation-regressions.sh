@@ -28,6 +28,7 @@ echo "==> iOS conversation regressions"
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
 # - PairingLinkTests：Endpoint allowlist、ATS 对应的 HTTP/HTTPS 传输策略。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
+# - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
   -collect-test-diagnostics never \
@@ -50,4 +51,5 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testExpandedProcessGroupRendering \
   -only-testing:MimiRemoteTests/MarkdownRenderingTests \
   -only-testing:MimiRemoteTests/PairingLinkTests \
-  -only-testing:MimiRemoteTests/DoctorDiagnosticsTests
+  -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
+  -only-testing:MimiRemoteTests/ProtocolContractTests

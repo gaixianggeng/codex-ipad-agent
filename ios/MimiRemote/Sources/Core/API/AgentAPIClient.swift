@@ -309,12 +309,14 @@ struct AgentAPIClient {
     }
 
     func version(timeout: TimeInterval = 20) async throws -> VersionResponse {
-        try await request(
+        let response: VersionResponse = try await request(
             path: "/api/version",
             method: "GET",
             body: Optional<Data>.none,
             timeout: timeout
         )
+        try response.requireCompatible()
+        return response
     }
 
     func appServerConfig(timeout: TimeInterval = 20) async throws -> CodexAppServerConfigResponse {
@@ -512,6 +514,7 @@ struct AgentAPIClient {
         request.timeoutInterval = timeout
         if requiresAuth {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            MimiProtocolContract.applyClientHeaders(to: &request)
         }
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)

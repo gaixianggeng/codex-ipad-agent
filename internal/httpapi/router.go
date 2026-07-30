@@ -22,6 +22,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
 
@@ -162,46 +163,50 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 	mux.HandleFunc("/api/health", r.healthz)
 	mux.HandleFunc("/api/pair/claim", r.pairingClaimHandler)
 	mux.HandleFunc("/api/pair/local", r.localPairingClaimHandler)
-	mux.Handle("/api/readyz", r.auth.Middleware(http.HandlerFunc(r.readyz)))
-	mux.Handle("/api/version", r.auth.Middleware(http.HandlerFunc(r.versionHandler)))
-	mux.Handle("/api/doctor", r.auth.Middleware(http.HandlerFunc(r.doctorHandler)))
-	mux.Handle("/api/diagnostics/relay", r.auth.Middleware(http.HandlerFunc(r.relayDiagnosticsHandler)))
-	mux.Handle("/api/diagnostics/tailscale-path", r.auth.Middleware(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
+	// 先认证再判断协议窗口，既不向未认证请求暴露服务端修订，也让 REST/WS 共用同一条 fail-closed 边界。
+	authed := func(handler http.Handler) http.Handler {
+		return r.auth.Middleware(protocolCompatibilityMiddleware(handler))
+	}
+	mux.Handle("/api/readyz", authed(http.HandlerFunc(r.readyz)))
+	mux.Handle("/api/version", authed(http.HandlerFunc(r.versionHandler)))
+	mux.Handle("/api/doctor", authed(http.HandlerFunc(r.doctorHandler)))
+	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
+	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	if cfg.Debug.EnableCodexHistory {
-		mux.Handle("/api/debug/codex-history", r.auth.Middleware(http.HandlerFunc(r.codexHistoryDebugHandler)))
+		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {
 		mux.HandleFunc("/api/debug/codex-history", r.codexHistoryDebugDisabledHandler)
 	}
-	mux.Handle("/api/projects", r.auth.Middleware(http.HandlerFunc(r.projectsHandler)))
-	mux.Handle("/api/workspaces/resolve", r.auth.Middleware(http.HandlerFunc(r.workspaceResolveHandler)))
-	mux.Handle("/api/directories/list", r.auth.Middleware(http.HandlerFunc(r.directoryListHandler)))
-	mux.Handle("/api/files/read", r.auth.Middleware(http.HandlerFunc(r.fileReadHandler)))
-	mux.Handle("/api/file-uploads", r.auth.Middleware(http.HandlerFunc(r.fileUploadHandler)))
-	mux.Handle("/api/file-uploads/", r.auth.Middleware(http.HandlerFunc(r.fileUploadHandler)))
-	mux.Handle("/api/worktrees/list", r.auth.Middleware(http.HandlerFunc(r.worktreeListHandler)))
-	mux.Handle("/api/worktrees/branches", r.auth.Middleware(http.HandlerFunc(r.worktreeBranchListHandler)))
-	mux.Handle("/api/worktrees/create", r.auth.Middleware(http.HandlerFunc(r.worktreeCreateHandler)))
-	mux.Handle("/api/worktrees/delete", r.auth.Middleware(http.HandlerFunc(r.worktreeDeleteHandler)))
-	mux.Handle("/api/worktrees/prune", r.auth.Middleware(http.HandlerFunc(r.worktreePruneHandler)))
-	mux.Handle("/api/worktrees/cleanup", r.auth.Middleware(http.HandlerFunc(r.worktreeCleanupHandler)))
-	mux.Handle("/api/capabilities/list", r.auth.Middleware(http.HandlerFunc(r.capabilityListHandler)))
-	mux.Handle("/api/actions/list", r.auth.Middleware(http.HandlerFunc(r.commandActionListHandler)))
-	mux.Handle("/api/actions/run", r.auth.Middleware(http.HandlerFunc(r.commandActionRunHandler)))
-	mux.Handle("/api/git/status", r.auth.Middleware(http.HandlerFunc(r.gitStatusHandler)))
-	mux.Handle("/api/git/action", r.auth.Middleware(http.HandlerFunc(r.gitActionHandler)))
-	mux.Handle("/api/git/commit", r.auth.Middleware(http.HandlerFunc(r.gitCommitHandler)))
-	mux.Handle("/api/git/push", r.auth.Middleware(http.HandlerFunc(r.gitPushHandler)))
-	mux.Handle("/api/git/quick-publish", r.auth.Middleware(http.HandlerFunc(r.gitQuickPublishHandler)))
-	mux.Handle("/api/git/testflight/status", r.auth.Middleware(http.HandlerFunc(r.gitTestFlightStatusHandler)))
-	mux.Handle("/api/git/testflight/run", r.auth.Middleware(http.HandlerFunc(r.gitTestFlightRunHandler)))
-	mux.Handle("/api/git/pull-request", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestHandler)))
-	mux.Handle("/api/git/pull-request/status", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestStatusHandler)))
-	mux.Handle("/api/voice/transcribe", r.auth.Middleware(http.HandlerFunc(r.voiceTranscribeHandler)))
-	mux.Handle("/api/runtime/status", r.auth.Middleware(http.HandlerFunc(r.runtimeStatusHandler)))
-	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
-	mux.Handle("/api/app-server/external-activity", r.auth.Middleware(http.HandlerFunc(r.externalActivityHandler)))
-	mux.Handle("/api/app-server/history-media/", r.auth.Middleware(http.HandlerFunc(r.appServerHistoryMediaHandler)))
-	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
+	mux.Handle("/api/projects", authed(http.HandlerFunc(r.projectsHandler)))
+	mux.Handle("/api/workspaces/resolve", authed(http.HandlerFunc(r.workspaceResolveHandler)))
+	mux.Handle("/api/directories/list", authed(http.HandlerFunc(r.directoryListHandler)))
+	mux.Handle("/api/files/read", authed(http.HandlerFunc(r.fileReadHandler)))
+	mux.Handle("/api/file-uploads", authed(http.HandlerFunc(r.fileUploadHandler)))
+	mux.Handle("/api/file-uploads/", authed(http.HandlerFunc(r.fileUploadHandler)))
+	mux.Handle("/api/worktrees/list", authed(http.HandlerFunc(r.worktreeListHandler)))
+	mux.Handle("/api/worktrees/branches", authed(http.HandlerFunc(r.worktreeBranchListHandler)))
+	mux.Handle("/api/worktrees/create", authed(http.HandlerFunc(r.worktreeCreateHandler)))
+	mux.Handle("/api/worktrees/delete", authed(http.HandlerFunc(r.worktreeDeleteHandler)))
+	mux.Handle("/api/worktrees/prune", authed(http.HandlerFunc(r.worktreePruneHandler)))
+	mux.Handle("/api/worktrees/cleanup", authed(http.HandlerFunc(r.worktreeCleanupHandler)))
+	mux.Handle("/api/capabilities/list", authed(http.HandlerFunc(r.capabilityListHandler)))
+	mux.Handle("/api/actions/list", authed(http.HandlerFunc(r.commandActionListHandler)))
+	mux.Handle("/api/actions/run", authed(http.HandlerFunc(r.commandActionRunHandler)))
+	mux.Handle("/api/git/status", authed(http.HandlerFunc(r.gitStatusHandler)))
+	mux.Handle("/api/git/action", authed(http.HandlerFunc(r.gitActionHandler)))
+	mux.Handle("/api/git/commit", authed(http.HandlerFunc(r.gitCommitHandler)))
+	mux.Handle("/api/git/push", authed(http.HandlerFunc(r.gitPushHandler)))
+	mux.Handle("/api/git/quick-publish", authed(http.HandlerFunc(r.gitQuickPublishHandler)))
+	mux.Handle("/api/git/testflight/status", authed(http.HandlerFunc(r.gitTestFlightStatusHandler)))
+	mux.Handle("/api/git/testflight/run", authed(http.HandlerFunc(r.gitTestFlightRunHandler)))
+	mux.Handle("/api/git/pull-request", authed(http.HandlerFunc(r.gitPullRequestHandler)))
+	mux.Handle("/api/git/pull-request/status", authed(http.HandlerFunc(r.gitPullRequestStatusHandler)))
+	mux.Handle("/api/voice/transcribe", authed(http.HandlerFunc(r.voiceTranscribeHandler)))
+	mux.Handle("/api/runtime/status", authed(http.HandlerFunc(r.runtimeStatusHandler)))
+	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
+	mux.Handle("/api/app-server/external-activity", authed(http.HandlerFunc(r.externalActivityHandler)))
+	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
+	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }
 
@@ -348,12 +353,7 @@ func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":            "agentd",
-		"version":         r.version,
-		"installation_id": r.installationID,
-		"capabilities":    []string{"file_upload_v1"},
-	})
+	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponse(r.version, r.installationID))
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {
