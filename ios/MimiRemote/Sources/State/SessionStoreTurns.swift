@@ -13,51 +13,6 @@ enum QueuedTurnAcceptedDisposition {
 
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
-    func refreshAccountTokenUsage() async {
-        let hostScope = appStore.activeHostScope
-        guard accountTokenUsageRefreshHostScope != hostScope else {
-            return
-        }
-
-        accountTokenUsageRefreshHostScope = hostScope
-        isRefreshingAccountTokenUsage = true
-        defer {
-            if accountTokenUsageRefreshHostScope == hostScope {
-                accountTokenUsageRefreshHostScope = nil
-                isRefreshingAccountTokenUsage = false
-            }
-        }
-
-        guard !Task.isCancelled else { return }
-        do {
-            let snapshot = try await clientFactory().refreshAccountTokenUsage()
-            guard !Task.isCancelled,
-                  appStore.activeHostScope == hostScope,
-                  accountTokenUsageRefreshHostScope == hostScope
-            else {
-                return
-            }
-            if let snapshot {
-                accountTokenUsage = snapshot
-                // summary 可用不代表日粒度历史可用；nil bucket 必须诚实显示“暂不可用”，
-                // 同时仍保留 lifetimeTokens 供卡片标题展示。
-                isAccountTokenUsageUnavailable = snapshot.dailyUsageBuckets == nil
-            } else if accountTokenUsage == nil {
-                isAccountTokenUsageUnavailable = true
-            }
-        } catch is CancellationError {
-            return
-        } catch {
-            guard appStore.activeHostScope == hostScope,
-                  accountTokenUsageRefreshHostScope == hostScope,
-                  accountTokenUsage == nil
-            else {
-                return
-            }
-            isAccountTokenUsageUnavailable = true
-        }
-    }
-
     func refreshCodexUsage() async {
         await refreshUsage(runtimeProvider: "codex")
     }
@@ -1201,9 +1156,15 @@ extension SessionStore {
 
     func reconciledAcceptedDisposition(
         sessionID: SessionID,
-        disposition: QueuedTurnAcceptedDisposition
+        disposition: QueuedTurnAcceptedDisposition,
+        ignoringActiveTurnID: TurnID? = nil
     ) -> QueuedTurnAcceptedDisposition {
-        let currentActiveTurnID = sessionsByID[sessionID]?.activeTurnID
+        let reportedActiveTurnID = sessionsByID[sessionID]?.activeTurnID
+        // guidance fallback 的前提是 Runtime 已在 RPC 前确认旧 expected turn 不存在。
+        // 只忽略这一个精确 ID；期间若出现其它 active turn，仍按 superseded 保护。
+        let currentActiveTurnID = reportedActiveTurnID == ignoringActiveTurnID
+            ? nil
+            : reportedActiveTurnID
         func isTerminal(_ turnID: TurnID) -> Bool {
             conversationStore.turnLifecycle(
                 sessionID: sessionID,
@@ -1279,12 +1240,20 @@ extension SessionStore {
             return false
         }
         let wasGuidance = queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID) != nil
+        let ignoredStaleActiveTurnID: TurnID?
+        if wasGuidance,
+           case .awaitingStart = explicitDisposition {
+            ignoredStaleActiveTurnID = item.expectedTurnID
+        } else {
+            ignoredStaleActiveTurnID = nil
+        }
         let disposition = reconciledAcceptedDisposition(
             sessionID: sessionID,
             disposition: explicitDisposition
                 ?? (wasGuidance
                     ? .guidance
-                    : .awaitingStart(turnID: nil))
+                    : .awaitingStart(turnID: nil)),
+            ignoringActiveTurnID: ignoredStaleActiveTurnID
         )
 
         guard mutateAndPersistQueuedTurns({
@@ -1335,6 +1304,15 @@ extension SessionStore {
             if turnID != nil {
                 queuedTurnAwaitingStartSessionIDs.remove(sessionID)
                 queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+            }
+            if wasGuidance, let turnID {
+                // stale guidance 在 RPC 前确认 active turn 缺失后会降级为新的 turn/start。
+                // 只有这一条显式 accepted 路径可以把 ACK 中的新 turn 设为本地权威状态；
+                // terminal / superseded 已在上面的 disposition 对账中被改写，不会复活旧 turn。
+                updateSession(sessionID) { session in
+                    session.status = SessionStatus.running.rawValue
+                    session.activeTurnID = turnID
+                }
             }
         case .guidance:
             break
@@ -1438,6 +1416,9 @@ extension SessionStore {
               item.dispatchState == .dispatching else {
             return false
         }
+        // guidance fallback 已发现权威的新 active turn；清掉旧 steer 标记，
+        // 后续等待项再派发时必须完全按普通 turn/start 处理。
+        queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         guard mutateAndPersistQueuedTurns({

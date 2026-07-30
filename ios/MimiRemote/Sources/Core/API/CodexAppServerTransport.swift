@@ -2,6 +2,7 @@ import Foundation
 
 enum TurnSendOutcome: Equatable {
     case accepted(turnID: TurnID?)
+    case guidanceAccepted
     case acceptedTerminal(turnID: TurnID?)
     case acceptedSuperseded(
         turnID: TurnID?,
