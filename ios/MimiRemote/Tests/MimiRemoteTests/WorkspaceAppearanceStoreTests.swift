@@ -111,9 +111,18 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         for style in WorkspaceIconStyle.allCases {
             let englishName = L10n.text(style.titleKey, language: .english)
             let chineseName = L10n.text(style.titleKey, language: .simplifiedChinese)
+            let compactEnglishName = L10n.text(style.compactTitleKey, language: .english)
+            let compactChineseName = L10n.text(
+                style.compactTitleKey,
+                language: .simplifiedChinese
+            )
 
             XCTAssertNotEqual(englishName, style.titleKey)
             XCTAssertNotEqual(chineseName, style.titleKey)
+            XCTAssertNotEqual(compactEnglishName, style.compactTitleKey)
+            XCTAssertNotEqual(compactChineseName, style.compactTitleKey)
+            XCTAssertFalse(compactEnglishName.isEmpty)
+            XCTAssertFalse(compactChineseName.isEmpty)
         }
     }
 

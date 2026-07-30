@@ -43,6 +43,32 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         L10n.text(titleKey)
     }
 
+    var compactTitleKey: String {
+        switch self {
+        case .journey:
+            return "ui.workspace_icon_style_compact_journey"
+        case .threeKingdoms:
+            return "ui.workspace_icon_style_compact_three_kingdoms"
+        case .waterMargin:
+            return "ui.workspace_icon_style_compact_water_margin"
+        case .redChamber:
+            return "ui.workspace_icon_style_compact_red_chamber"
+        case .greekMythology:
+            return "ui.workspace_icon_style_compact_greek_mythology"
+        case .sherlockHolmes:
+            return "ui.workspace_icon_style_compact_sherlock_holmes"
+        case .aliceWonderland:
+            return "ui.workspace_icon_style_compact_alice_wonderland"
+        case .emoji:
+            return "ui.workspace_icon_style_compact_emoji"
+        }
+    }
+
+    /// 网格只显示一行短出处；辅助功能仍使用 `title` 朗读完整作品名。
+    var compactTitle: String {
+        L10n.text(compactTitleKey)
+    }
+
     var representativeAssetName: String? {
         switch self {
         case .journey:

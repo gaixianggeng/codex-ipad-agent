@@ -449,8 +449,8 @@ struct AppearanceView: View {
             Section {
                 LazyVGrid(
                     columns: workspaceIconStyleColumns,
-                    alignment: .leading,
-                    spacing: 10
+                    alignment: .center,
+                    spacing: dynamicTypeSize.isAccessibilitySize ? 14 : 10
                 ) {
                     ForEach(WorkspaceIconStyle.allCases) { style in
                         let isSelected =
@@ -475,8 +475,8 @@ struct AppearanceView: View {
                         )
                     }
                 }
-                // 八种选项在 iPhone 上自动降为两列或单列，避免固定列数挤压大字体。
-                .padding(.vertical, 4)
+                // 默认 4 × 2 保持快速扫读；辅助功能字号减少列数，让单行出处仍可辨识。
+                .padding(.vertical, 6)
                 .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
@@ -582,15 +582,12 @@ struct AppearanceView: View {
     }
 
     private var workspaceIconStyleColumns: [GridItem] {
-        // 辅助功能字号直接减少列数，避免只放大文字却把长作品名挤进窄卡片。
-        let minimumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 300 : 190
-        let maximumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 520 : 260
-        return [
-            GridItem(
-                .adaptive(minimum: minimumWidth, maximum: maximumWidth),
-                spacing: 10
-            )
-        ]
+        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 4
+        let spacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 12 : 6
+        return Array(
+            repeating: GridItem(.flexible(minimum: 44, maximum: 160), spacing: spacing),
+            count: columnCount
+        )
     }
 
     private var workspaceIconStyleBinding: Binding<WorkspaceIconStyle> {
@@ -620,74 +617,87 @@ struct AppearanceView: View {
 }
 
 private struct WorkspaceIconStyleOptionLabel: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
-    @ScaledMetric(relativeTo: .callout) private var dynamicCalloutSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .caption) private var dynamicCaptionSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .body) private var dynamicAvatarSize: CGFloat = 56
 
     let style: WorkspaceIconStyle
     let isSelected: Bool
     let tokens: ThemeTokens
 
     var body: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: dynamicTypeSize.isAccessibilitySize ? 9 : 7) {
             representativeImage
 
-            Text(style.title)
-                // 叠加系统 Dynamic Type 与 App 内字体缩放，避免辅助功能字号下
-                // 只有页面标题变大、作品名称仍停留在固定字号。
-                .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .medium))
-                .foregroundStyle(tokens.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Spacer(minLength: 4)
-
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .semibold))
-                    .foregroundStyle(tokens.primaryAction)
-                    .accessibilityHidden(true)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-        .background(
-            isSelected
-                ? tokens.primaryAction.opacity(0.10)
-                : tokens.contentPanelBackground.opacity(0.58),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(
-                    isSelected ? tokens.primaryAction.opacity(0.72) : tokens.border.opacity(0.5),
-                    lineWidth: isSelected ? 1.25 : 0.75
+            Text(style.compactTitle)
+                .font(
+                    themeStore.uiFont(
+                        size: dynamicCaptionSize,
+                        weight: isSelected ? .semibold : .medium
+                    )
                 )
+                .foregroundStyle(isSelected ? tokens.primaryAction : tokens.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 0.9 : 0.72)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity)
         }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 4)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 112 : 88,
+            alignment: .top
+        )
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
     private var representativeImage: some View {
-        if let assetName = style.representativeAssetName {
-            Image(assetName)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(tokens.border.opacity(0.5), lineWidth: 0.75)
+        ZStack(alignment: .bottomTrailing) {
+            Group {
+                if let assetName = style.representativeAssetName {
+                    Image(assetName)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Text(verbatim: "🦧")
+                        .font(.system(size: avatarDiameter * 0.58))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(
+                            Color(red: 0.88, green: 0.72, blue: 0.34).opacity(0.22)
+                        )
                 }
-                .accessibilityHidden(true)
-        } else {
-            Text(verbatim: "🦧")
-                .font(.system(size: 28))
-                .frame(width: 44, height: 44)
-                .background(
-                    Color(red: 0.88, green: 0.72, blue: 0.34).opacity(0.22),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-                .accessibilityHidden(true)
+            }
+            .frame(width: avatarDiameter, height: avatarDiameter)
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(
+                        isSelected ? tokens.primaryAction : tokens.border.opacity(0.55),
+                        lineWidth: isSelected ? 2.5 : 0.75
+                    )
+            }
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(tokens.primaryAction, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(tokens.elevatedSurface, lineWidth: 2)
+                    }
+                    .offset(x: 2, y: 2)
+            }
         }
+        .accessibilityHidden(true)
+    }
+
+    private var avatarDiameter: CGFloat {
+        min(dynamicAvatarSize, dynamicTypeSize.isAccessibilitySize ? 68 : 60)
     }
 }
 
