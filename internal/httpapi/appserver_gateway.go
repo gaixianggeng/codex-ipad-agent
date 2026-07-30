@@ -91,6 +91,7 @@ var appServerAllowedMethods = map[string]struct{}{
 	"skills/list":             {},
 	"plugin/installed":        {},
 	"account/rateLimits/read": {},
+	"account/usage/read":      {},
 }
 
 // appServerAllowedServerRequestMethods 是反向 RPC 的显式能力边界。

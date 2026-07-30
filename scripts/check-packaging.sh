@@ -31,6 +31,7 @@ for required_file in \
   packaging/windows/register-service.ps1 \
   scripts/build-macos-installer.sh \
   scripts/ci-pr-scope.sh \
+  scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
   scripts/build-windows-installer.ps1 \
@@ -53,6 +54,7 @@ done
 bash -n \
   scripts/build-macos-installer.sh \
   scripts/ci-pr-scope.sh \
+  scripts/check-critical-regressions.sh \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
   scripts/check-release-prerequisites.sh \

@@ -43,6 +43,58 @@ extension CodexAppServerProtocolTests {
         XCTAssertEqual(context.subagents[0].canAcceptDirectInput, false)
         XCTAssertEqual(context.subagents[1].statusMessage, "done")
     }
+
+    func testContextSubagentsUsesAllReceiversAndNeverToolItemID() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("parent-thread"),
+            "turns": .array([
+                .object([
+                    "status": .string("completed"),
+                    "items": .array([
+                        .object([
+                            "id": .string("tool-item-is-not-thread"),
+                            "type": .string("collabAgentToolCall"),
+                            "receiverThreadIds": .array([
+                                .string("child-a"),
+                                .string("child-b"),
+                            ]),
+                            "agentNickname": .string("Noether"),
+                            "agentRole": .string("review"),
+                            "agentsStates": .object([
+                                "child-a": .object([
+                                    "status": .string("running"),
+                                    "message": .string("checking"),
+                                    "sessionId": .string("session-a"),
+                                    "canAcceptDirectInput": .bool(false),
+                                ]),
+                                "child-b": .object([
+                                    "status": .string("completed"),
+                                    "canAcceptDirectInput": .bool(true),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]
+
+        let subagents = await runtime.contextSubagents(from: thread, status: "history")
+
+        XCTAssertEqual(subagents.map(\.id), ["child-a", "child-b"])
+        XCTAssertFalse(subagents.contains { $0.id == "tool-item-is-not-thread" })
+        XCTAssertEqual(subagents[0].parentThreadID, "parent-thread")
+        XCTAssertEqual(subagents[0].sessionID, "session-a")
+        XCTAssertEqual(subagents[0].nickname, "Noether")
+        XCTAssertEqual(subagents[0].role, "review")
+        XCTAssertEqual(subagents[0].status, "running")
+        XCTAssertEqual(subagents[0].statusMessage, "checking")
+        XCTAssertEqual(subagents[0].canAcceptDirectInput, false)
+        XCTAssertEqual(subagents[1].canAcceptDirectInput, true)
+    }
 }
 
 @MainActor

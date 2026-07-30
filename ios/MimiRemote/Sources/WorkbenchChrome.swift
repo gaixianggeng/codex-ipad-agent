@@ -35,9 +35,9 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
-    /// selectedSessionID 可能在设置 Tab 或列表页继续保留，不能据此判断会话是否真的可见。
+    /// selectedSessionID 可能在“我的”或列表页继续保留，不能据此判断会话是否真的可见。
     func visibleSessionID(usesCompactNavigation: Bool) -> SessionID? {
-        if usesCompactNavigation, compactSelectedTab == .settings {
+        if usesCompactNavigation, compactSelectedTab == .me {
             return nil
         }
         if usesCompactNavigation {
@@ -68,22 +68,37 @@ struct WorkbenchNavigationState: Equatable {
             )
 
         case .synchronize(let restoredRoute):
+            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
             let preservedPendingSessionID = restoredRoute.detailSessionID == pendingSessionSelectionID
                 ? pendingSessionSelectionID
                 : nil
             route = restoredRoute
             selection = Self.destination(for: restoredRoute)
             pendingSessionSelectionID = preservedPendingSessionID
-            guard usesCompactNavigation else { return nil }
+            guard usesCompactNavigation else {
+                if preservesMe {
+                    selection = .me
+                }
+                return nil
+            }
             restoreCompactPath(for: restoredRoute)
+            if preservesMe {
+                compactSelectedTab = .me
+                selection = .me
+            }
             return nil
 
         case .selectionCommitted(let commit):
+            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
             pendingSessionSelectionID = nil
             switch commit.reason {
             case .invalidation:
                 guard route.detailSessionID != nil else { return nil }
                 applyRoot(route.rootPage, usesCompactNavigation: usesCompactNavigation)
+                restoreMeIfNeeded(
+                    preservesMe,
+                    usesCompactNavigation: usesCompactNavigation
+                )
 
             case .identityReplacement(let previousID):
                 guard route.detailSessionID == previousID,
@@ -93,6 +108,10 @@ struct WorkbenchNavigationState: Equatable {
                     source: route.rootPage,
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: true
+                )
+                restoreMeIfNeeded(
+                    preservesMe,
+                    usesCompactNavigation: usesCompactNavigation
                 )
 
             case .restoration:
@@ -105,6 +124,10 @@ struct WorkbenchNavigationState: Equatable {
                     source: route.rootPage,
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: true
+                )
+                restoreMeIfNeeded(
+                    preservesMe,
+                    usesCompactNavigation: usesCompactNavigation
                 )
 
             case .notification:
@@ -131,14 +154,14 @@ struct WorkbenchNavigationState: Equatable {
             return nil
 
         case .compactPathChanged(let tab, let path):
-            guard tab != .settings else { return nil }
+            guard tab != .me else { return nil }
             compactSelectedTab = tab
             switch tab {
             case .sessions:
                 compactSessionPath = path
             case .workspaces:
                 compactWorkspacePath = path
-            case .settings:
+            case .me:
                 break
             }
 
@@ -151,6 +174,8 @@ struct WorkbenchNavigationState: Equatable {
             case .workspaces:
                 route = .workspaces
                 pendingSessionSelectionID = nil
+            case .me:
+                break
             case .session(let sessionID):
                 route = .session(id: sessionID, source: Self.rootPage(for: tab))
             case .subagent(let parentID, _):
@@ -161,8 +186,9 @@ struct WorkbenchNavigationState: Equatable {
 
         case .compactTabChanged(let tab):
             compactSelectedTab = tab
-            guard tab != .settings else {
-                // 设置是全局配置，切入时保留当前会话/工作区上下文。
+            guard tab != .me else {
+                // “我的”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
+                selection = .me
                 return nil
             }
             let path = tab == .sessions ? compactSessionPath : compactWorkspacePath
@@ -175,6 +201,8 @@ struct WorkbenchNavigationState: Equatable {
             case .workspaces:
                 route = .workspaces
                 pendingSessionSelectionID = nil
+            case .me:
+                break
             case .session(let sessionID):
                 route = .session(id: sessionID, source: Self.rootPage(for: tab))
             case .subagent(let parentID, _):
@@ -191,6 +219,19 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
+    /// “我的”是覆盖在工作台路由之上的全局页面。后台恢复、失效或会话 ID 替换
+    /// 可以更新隐藏路由，但不能在没有用户导航意图时把当前页面抢走。
+    private mutating func restoreMeIfNeeded(
+        _ shouldRestore: Bool,
+        usesCompactNavigation: Bool
+    ) {
+        guard shouldRestore else { return }
+        selection = .me
+        if usesCompactNavigation {
+            compactSelectedTab = .me
+        }
+    }
+
     private mutating func open(
         _ destination: AppDestination,
         requestedSource: WorkbenchRootPage?,
@@ -202,6 +243,12 @@ struct WorkbenchNavigationState: Equatable {
             applyRoot(.sessions, usesCompactNavigation: usesCompactNavigation)
         case .workspaces:
             applyRoot(.workspaces, usesCompactNavigation: usesCompactNavigation)
+        case .me:
+            selection = .me
+            if usesCompactNavigation {
+                compactSelectedTab = .me
+            }
+            return nil
         case .session(let sessionID):
             applySession(
                 sessionID,
@@ -316,6 +363,8 @@ struct WorkbenchNavigationState: Equatable {
             // 返回列表本身就是显式用户意图；即使当前 ID 已为空也要推进选择代次，
             // 让仍在等待的恢复、通知和创建任务立即失效。
             return .returnToSessionList
+        case .me:
+            return nil
         case .session(let sessionID):
             guard selectedSessionID != sessionID,
                   pendingSessionSelectionID != sessionID else { return nil }
@@ -336,9 +385,13 @@ struct WorkbenchNavigationState: Equatable {
             return .sessions
         case .workspaces:
             return .workspaces
-        case .settings:
+        case .me:
             return route.rootPage
         }
+    }
+
+    private func isShowingMe(usesCompactNavigation: Bool) -> Bool {
+        usesCompactNavigation ? compactSelectedTab == .me : selection == .me
     }
 
     private static func destination(for route: WorkbenchRestorationRoute) -> AppDestination {
@@ -381,7 +434,7 @@ struct WorkbenchNavigationState: Equatable {
         switch destination {
         case .session, .subagent:
             return true
-        case .sessions, .workspaces:
+        case .sessions, .workspaces, .me:
             return false
         }
     }
@@ -860,8 +913,10 @@ struct CombinedUsageItem: Identifiable {
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
         includesClaude: Bool,
-        codexTint: Color = .pink,
-        claudeLongTint: Color = .cyan,
+        // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
+        // 外环使用青色、中环使用粉色；设置页与左上角入口复用这里，避免图例和圆环错位。
+        codexTint: Color = .cyan,
+        claudeLongTint: Color = .pink,
         claudeShortTint: Color
     ) -> [CombinedUsageItem] {
         var items: [CombinedUsageItem] = []

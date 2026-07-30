@@ -2115,6 +2115,7 @@ extension ConversationDataFlowTests {
             projectPath: project.path
         ))
         XCTAssertEqual(builder.accountRateLimitsRead().method, "account/rateLimits/read")
+        XCTAssertEqual(builder.accountUsageRead().method, "account/usage/read")
     }
 
     func testCodexUsageDisplaySummaryFormatsRateLimit() throws {

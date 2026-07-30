@@ -434,6 +434,65 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(sandbox["writableRoots"])
     }
 
+    func testAccountTokenUsageBuilderAndParserPreserveInt64AndNullableBuckets() async throws {
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [])
+        XCTAssertEqual(builder.accountUsageRead().method, "account/usage/read")
+        XCTAssertNil(builder.accountUsageRead().params)
+
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let payload = CodexAppServerJSONValue.object([
+            "summary": .object([
+                "lifetimeTokens": .int(50_160_000_000)
+            ]),
+            "dailyUsageBuckets": .array([
+                .object([
+                    "startDate": .string("2026-07-30"),
+                    "tokens": .int(9_223_372_036)
+                ]),
+                .object([
+                    "startDate": .string("2026-07-29"),
+                    "tokens": .int(-10)
+                ])
+            ])
+        ])
+
+        let parsedSnapshot = await runtime.accountTokenUsageSnapshot(fromPayload: payload)
+        let snapshot = try XCTUnwrap(parsedSnapshot)
+        XCTAssertEqual(snapshot.summary.lifetimeTokens, 50_160_000_000)
+        XCTAssertEqual(
+            snapshot.dailyUsageBuckets,
+            [
+                AccountTokenUsageDailyBucket(
+                    startDate: "2026-07-30",
+                    tokens: 9_223_372_036
+                ),
+                AccountTokenUsageDailyBucket(startDate: "2026-07-29", tokens: 0)
+            ]
+        )
+
+        let parsedNullBuckets = await runtime.accountTokenUsageSnapshot(
+            fromPayload: .object([
+                "summary": .object([:]),
+                "dailyUsageBuckets": .null
+            ])
+        )
+        let nullBuckets = try XCTUnwrap(parsedNullBuckets)
+        XCTAssertNil(nullBuckets.summary.lifetimeTokens)
+        XCTAssertNil(nullBuckets.dailyUsageBuckets)
+
+        let parsedEmptyBuckets = await runtime.accountTokenUsageSnapshot(
+            fromPayload: .object([
+                "summary": .object([:]),
+                "dailyUsageBuckets": .array([])
+            ])
+        )
+        let emptyBuckets = try XCTUnwrap(parsedEmptyBuckets)
+        XCTAssertEqual(emptyBuckets.dailyUsageBuckets, [])
+    }
+
     func testDeterministicGatewayPolicyFailureStopsReconnectOnlyForHardPolicyErrors() {
         // 硬策略拒绝：重连必然复现，应停止自动重连。
         XCTAssertTrue(SessionStore.isDeterministicGatewayPolicyFailure(
@@ -503,58 +562,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(params["archived"]?.boolValue, false)
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, false)
-    }
-
-    func testContextSubagentsUsesAllReceiversAndNeverToolItemID() async {
-        let runtime = CodexAppServerSessionRuntime(
-            endpoint: "http://127.0.0.1:8787",
-            token: "test"
-        )
-        let thread: [String: CodexAppServerJSONValue] = [
-            "id": .string("parent-thread"),
-            "turns": .array([
-                .object([
-                    "status": .string("completed"),
-                    "items": .array([
-                        .object([
-                            "id": .string("tool-item-is-not-thread"),
-                            "type": .string("collabAgentToolCall"),
-                            "receiverThreadIds": .array([
-                                .string("child-a"),
-                                .string("child-b"),
-                            ]),
-                            "agentNickname": .string("Noether"),
-                            "agentRole": .string("review"),
-                            "agentsStates": .object([
-                                "child-a": .object([
-                                    "status": .string("running"),
-                                    "message": .string("checking"),
-                                    "sessionId": .string("session-a"),
-                                    "canAcceptDirectInput": .bool(false),
-                                ]),
-                                "child-b": .object([
-                                    "status": .string("completed"),
-                                    "canAcceptDirectInput": .bool(true),
-                                ]),
-                            ]),
-                        ]),
-                    ]),
-                ]),
-            ]),
-        ]
-
-        let subagents = await runtime.contextSubagents(from: thread, status: "history")
-
-        XCTAssertEqual(subagents.map(\.id), ["child-a", "child-b"])
-        XCTAssertFalse(subagents.contains { $0.id == "tool-item-is-not-thread" })
-        XCTAssertEqual(subagents[0].parentThreadID, "parent-thread")
-        XCTAssertEqual(subagents[0].sessionID, "session-a")
-        XCTAssertEqual(subagents[0].nickname, "Noether")
-        XCTAssertEqual(subagents[0].role, "review")
-        XCTAssertEqual(subagents[0].status, "running")
-        XCTAssertEqual(subagents[0].statusMessage, "checking")
-        XCTAssertEqual(subagents[0].canAcceptDirectInput, false)
-        XCTAssertEqual(subagents[1].canAcceptDirectInput, true)
     }
 
     func testGlobalThreadProjectionRestoresStableRelationAndAuthorizedProject() async throws {

@@ -173,6 +173,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         await runtime.refreshRateLimit()
     }
 
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+        await runtime.refreshAccountTokenUsage()
+    }
+
     func threadGoal(threadID: String) async throws -> ThreadGoal? {
         try await runtime.threadGoal(threadID: threadID)
     }
@@ -503,6 +507,11 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
 
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         await bundle.runtime(for: runtimeProvider).refreshRateLimit()
+    }
+
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+        // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
+        await bundle.codex.refreshAccountTokenUsage()
     }
 
     func threadGoal(threadID: String) async throws -> ThreadGoal? {

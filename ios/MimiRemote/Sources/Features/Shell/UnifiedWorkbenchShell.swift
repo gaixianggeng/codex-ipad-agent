@@ -3,6 +3,7 @@ import SwiftUI
 enum AppDestination: Hashable {
     case sessions
     case workspaces
+    case me
     case session(SessionID)
     case subagent(parentID: SessionID, childID: SessionID)
 }
@@ -46,13 +47,13 @@ final class WorkbenchNavigationBindingScheduler {
 enum CompactWorkbenchTab: Hashable {
     case sessions
     case workspaces
-    case settings
+    case me
 
     var title: String {
         switch self {
         case .sessions: return L10n.text("ui.session")
         case .workspaces: return L10n.text("ui.workspace")
-        case .settings: return L10n.text("ui.settings")
+        case .me: return L10n.text("ui.me")
         }
     }
 
@@ -60,7 +61,7 @@ enum CompactWorkbenchTab: Hashable {
         switch self {
         case .sessions: return "bubble.left.and.bubble.right"
         case .workspaces: return "folder"
-        case .settings: return "gearshape"
+        case .me: return "person.crop.circle"
         }
     }
 }
@@ -258,10 +259,10 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
             .tabItem {
-                Label(CompactWorkbenchTab.settings.title, systemImage: CompactWorkbenchTab.settings.systemImage)
-                    .accessibilityIdentifier("compactTab.settings")
+                Label(CompactWorkbenchTab.me.title, systemImage: CompactWorkbenchTab.me.systemImage)
+                    .accessibilityIdentifier("compactTab.me")
             }
-            .tag(CompactWorkbenchTab.settings)
+            .tag(CompactWorkbenchTab.me)
         }
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
@@ -284,11 +285,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func openConnectionSettings(layout: WorkbenchLayout) {
-        if layout.usesCompactNavigation {
-            applyNavigation(.compactTabChanged(.settings), layout: layout)
-        } else {
-            presentedSheet = .settings
-        }
+        open(.me, layout: layout)
     }
 
     private func credentialsInvalidBanner(tokens: ThemeTokens) -> some View {
@@ -406,7 +403,11 @@ struct UnifiedWorkbenchShell: View {
             .frame(maxHeight: .infinity)
 
             // 设置属于整个工作台而不是某个列表项，固定在侧栏底部可让顶部只保留品牌和当前内容。
-            sidebarFooter(tokens: tokens, bottomSafeAreaInset: bottomSafeAreaInset)
+            sidebarFooter(
+                tokens: tokens,
+                layout: layout,
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
         }
         // NavigationSplitView 在 iPad 竖屏以 overlay 展开侧栏时不会保证内容采用整列理想高度，
         // 根容器必须主动填满列高，Footer 才能稳定锚定到底部安全区。
@@ -414,7 +415,7 @@ struct UnifiedWorkbenchShell: View {
         .background(tokens.sidebarBackground.ignoresSafeArea())
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                sidebarBrandHeader(tokens: tokens)
+                sidebarBrandHeader(tokens: tokens, layout: layout)
             }
             // iPadOS 26+ 会默认给 leading toolbar item 添加共享玻璃底板；
             // 品牌标题不是独立按钮，隐藏底板后仍保留系统正确的 leading 对齐。
@@ -425,7 +426,10 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
-    private func sidebarBrandHeader(tokens: ThemeTokens) -> some View {
+    private func sidebarBrandHeader(
+        tokens: ThemeTokens,
+        layout: WorkbenchLayout
+    ) -> some View {
         let headerWidth: CGFloat = 190
 
         return HStack(spacing: 8) {
@@ -445,7 +449,7 @@ struct UnifiedWorkbenchShell: View {
             HostSwitcherMenu(
                 presentation: .sidebar,
                 manageConnections: {
-                    presentedSheet = .settings
+                    open(.me, layout: layout)
                 }
             )
             .layoutPriority(1)
@@ -458,28 +462,39 @@ struct UnifiedWorkbenchShell: View {
             SessionIndexRow(
                 session: session,
                 foregroundActivity: sessionStore.foregroundActivity(for: session.id),
-                isSelected: session.id == sessionStore.selectedSessionID,
+                isSelected: navigationState.selection == .session(session.id),
                 isPinned: sessionStore.isSessionPinned(session.id),
                 isArchived: sessionStore.isSessionArchived(session.id),
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
                 isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+                isUnread: sessionStore.isHistorySessionUnread(session),
                 style: .sidebar
             )
         }
+        .accessibilityValue(
+            sessionStore.isHistorySessionUnread(session)
+                ? L10n.text("ui.unread_result")
+                : ""
+        )
         .sessionRowActions(session)
         .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
 
-    private func sidebarFooter(tokens: ThemeTokens, bottomSafeAreaInset: CGFloat) -> some View {
+    private func sidebarFooter(
+        tokens: ThemeTokens,
+        layout: WorkbenchLayout,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
         WorkbenchSidebarFooter(
             tokens: tokens,
             bottomSafeAreaInset: bottomSafeAreaInset,
+            isMeSelected: navigationState.selection == .me,
             onOpenSettings: {
-                // 设置是全局配置，不改变当前会话或工作区选择。
-                presentedSheet = .settings
+                // “我的”是一级入口，但不覆盖后台保留的会话/工作区恢复路由。
+                open(.me, layout: layout)
             },
             onNewSession: {
                 // 侧栏底部保留全局新建入口，和会话页右上角共用同一个创建流程。
@@ -517,6 +532,12 @@ struct UnifiedWorkbenchShell: View {
             sessionList(layout: layout)
         case .workspaces:
             workspaces(layout: layout)
+        case .me:
+            SettingsView(
+                isInitialSetup: false,
+                showsDoneButton: false,
+                embedsNavigationStack: false
+            )
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
         case .subagent(let parentID, let childID):
@@ -548,6 +569,14 @@ struct UnifiedWorkbenchShell: View {
             }
         case .workspaces:
             workspaces(layout: layout)
+        case .me:
+            NavigationStack {
+                SettingsView(
+                    isInitialSetup: false,
+                    showsDoneButton: false,
+                    embedsNavigationStack: false
+                )
+            }
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
         case .subagent:
@@ -830,11 +859,8 @@ struct UnifiedWorkbenchShell: View {
                 )
                 return
             }
-            if presentedSheet == .settings {
-                // 横屏的 split layout 用 sheet 承载设置；回到紧凑布局时把同一页面
-                // 还原为设置 Tab，避免旋转后突然跳回会话并丢失用户刚选的内容。
-                presentedSheet = nil
-                applyNavigation(.compactTabChanged(.settings), layout: layout)
+            if navigationState.selection == .me {
+                applyNavigation(.compactTabChanged(.me), layout: layout)
             } else {
                 synchronizeNavigation(for: layout)
             }
@@ -845,10 +871,10 @@ struct UnifiedWorkbenchShell: View {
             showingInspector = true
         }
 
-        if navigationState.compactSelectedTab == .settings {
-            // split layout 没有“设置”详情 destination。旋转时继续以 sheet 呈现同一
-            // SettingsView，使表单状态和 @AppStorage 选择保持可见且可操作。
-            presentedSheet = .settings
+        if navigationState.compactSelectedTab == .me {
+            open(.me, layout: layout)
+        } else {
+            synchronizeNavigation(for: layout)
         }
     }
 
@@ -1013,129 +1039,6 @@ struct UnifiedWorkbenchShell: View {
         case .failed: return .red
         case .terminated: return .red
         case .disconnected: return tokens.tertiaryText
-        }
-    }
-}
-
-/// 固定导航入口自绘选中态，避免 iOS 26 SidebarListStyle 自动套用过圆的胶囊背景。
-struct WorkbenchSidebarDestinationButton: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let title: String
-    let systemImage: String
-    let isSelected: Bool
-    let tokens: ThemeTokens
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(tokens.primaryAction)
-                    .frame(width: 24)
-
-                Text(title)
-                    .font(themeStore.uiFont(.body, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(tokens.primaryText)
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-            .background(
-                isSelected ? tokens.selectionFill : Color.clear,
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay(alignment: .leading) {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(tokens.primaryAction)
-                        .frame(width: 3, height: 22)
-                        .padding(.leading, 3)
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .accessibilityLabel(title)
-        .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
-    }
-}
-
-/// 全局配置放左侧，主创建动作放右侧；两端布局在侧栏高度变化时保持稳定。
-struct WorkbenchSidebarFooter: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let tokens: ThemeTokens
-    let bottomSafeAreaInset: CGFloat
-    let onOpenSettings: () -> Void
-    let onNewSession: () -> Void
-
-    init(
-        tokens: ThemeTokens,
-        bottomSafeAreaInset: CGFloat = 0,
-        onOpenSettings: @escaping () -> Void,
-        onNewSession: @escaping () -> Void
-    ) {
-        self.tokens = tokens
-        self.bottomSafeAreaInset = bottomSafeAreaInset
-        self.onOpenSettings = onOpenSettings
-        self.onNewSession = onNewSession
-    }
-
-    var body: some View {
-        // footer 下方还包含系统安全区；向下补偿其一半（最多 10pt），让控件在整块可见底栏中视觉居中，
-        // 同时仍把完整触控区域留在安全区之上。
-        let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
-
-        HStack {
-            Button(action: onOpenSettings) {
-                Label(L10n.text("ui.settings"), systemImage: "gearshape")
-                    .font(themeStore.uiFont(.subheadline, weight: .medium))
-                    .padding(.horizontal, 12)
-                    .frame(height: 36)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(tokens.secondaryText)
-            .background(tokens.surface.opacity(0.72), in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(tokens.border.opacity(0.6), lineWidth: 1)
-            }
-            .accessibilityLabel(L10n.text("ui.open_settings"))
-            .accessibilityIdentifier("sidebar.settings")
-
-            Spacer(minLength: 0)
-
-            Button(action: onNewSession) {
-                Image(systemName: "plus")
-                    .font(themeStore.uiFont(size: 15, weight: .semibold))
-                    .frame(width: 36, height: 36)
-                    .background(tokens.primaryAction, in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(tokens.primaryAction.opacity(0.72), lineWidth: 1)
-                    }
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(tokens.primaryActionForeground)
-            .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
-            .accessibilityIdentifier("sidebar.newSession")
-        }
-        .offset(y: safeAreaVisualOffset)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(tokens.sidebarBackground)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(tokens.border.opacity(0.55))
-                .frame(height: 1)
         }
     }
 }

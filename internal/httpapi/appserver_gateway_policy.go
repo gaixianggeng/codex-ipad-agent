@@ -367,7 +367,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	switch method {
 	case "initialize":
 		sanitized = sanitizedGatewayInitializeParams(params)
-	case "initialized", "model/list", "account/rateLimits/read":
+	case "initialized", "model/list", "account/rateLimits/read", "account/usage/read":
 		sanitized = map[string]any{}
 	case "skills/list":
 		sanitized = sanitizedGatewaySkillsListParams(params, validated.cwd)

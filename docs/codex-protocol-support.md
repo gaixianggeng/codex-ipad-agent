@@ -12,9 +12,13 @@
 
 方法快照位于 `internal/httpapi/testdata/codex-protocol/`，CI 会在 Codex 版本或方法集合漂移时失败。
 
+本文件只描述 Codex app-server 上游协议。Mimi iOS 与 `agentd` 自身 REST /
+WebSocket 的修订窗口、共享 fixtures 和更新命令见
+[Mimi iOS / agentd 版本化契约](mimi-protocol-contracts.md)。
+
 ## 当前开放能力
 
-Go Gateway 当前开放 25 个 client frame method，其中 `initialized` 是 notification，其余是 request：
+Go Gateway 当前开放 26 个 client frame method，其中 `initialized` 是 notification，其余是 request：
 
 | 能力 | 方法 |
 | --- | --- |
@@ -24,7 +28,7 @@ Go Gateway 当前开放 25 个 client frame method，其中 `initialized` 是 no
 | 目标任务 | `thread/goal/get`、`thread/goal/set`、`thread/goal/clear` |
 | Review | `review/start` |
 | Turn | `turn/start`、`turn/steer`、`turn/interrupt` |
-| 只读发现能力 | `model/list`、`skills/list`、`plugin/installed`、`account/rateLimits/read` |
+| 只读发现能力 | `model/list`、`skills/list`、`plugin/installed`、`account/rateLimits/read`、`account/usage/read` |
 
 所有带 `threadId` 的管理操作都要求该 thread 已由当前 Gateway 连接通过 allowlist cwd 授权。
 

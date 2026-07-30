@@ -417,6 +417,45 @@ extension CodexAppServerSessionRuntime {
         _ = await refreshRateLimitIfAvailable()
     }
 
+    func refreshAccountTokenUsage() async -> AccountTokenUsageSnapshot? {
+        if let accountTokenUsageRefreshTask {
+            return await accountTokenUsageRefreshTask.value
+        }
+
+        let task = Task { [self] in
+            await performAccountTokenUsageRefresh()
+        }
+        accountTokenUsageRefreshTask = task
+        let snapshot = await task.value
+        accountTokenUsageRefreshTask = nil
+        return snapshot
+    }
+
+    func performAccountTokenUsageRefresh() async -> AccountTokenUsageSnapshot? {
+        // 账号活动是 Codex/ChatGPT 专属能力；Claude bridge 没有同构数据，必须 fail closed。
+        guard runtimeProvider == "codex",
+              let config = try? await ensureConfig(),
+              config.policy.allowedMethods.contains("account/usage/read")
+        else {
+            return accountTokenUsage
+        }
+
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                CodexAppServerRequestBuilder(allowlistedProjects: config.projects).accountUsageRead(),
+                timeout: min(requestTimeout, 10)
+            )
+            guard let snapshot = accountTokenUsageSnapshot(fromPayload: result) else {
+                return accountTokenUsage
+            }
+            accountTokenUsage = snapshot
+            return snapshot
+        } catch {
+            // “我的”页的统计是展示增强，失败时保留最近一次内存快照，不影响会话链路。
+            return accountTokenUsage
+        }
+    }
+
     func applyAccountRateLimit(_ summary: RateLimitSummary) {
         accountRateLimit = summary
         for sessionID in Array(contextsBySessionID.keys) {
@@ -673,6 +712,44 @@ extension CodexAppServerSessionRuntime {
             return rateLimitSummary(fromSnapshot: rateLimits)
         }
         return rateLimitSummary(fromSnapshot: object)
+    }
+
+    func accountTokenUsageSnapshot(
+        fromPayload value: CodexAppServerJSONValue?
+    ) -> AccountTokenUsageSnapshot? {
+        guard let object = value?.objectValue,
+              let summary = object["summary"]?.objectValue
+        else {
+            return nil
+        }
+
+        let buckets: [AccountTokenUsageDailyBucket]?
+        switch object["dailyUsageBuckets"] {
+        case .array(let values):
+            buckets = values.compactMap { value in
+                guard let bucket = value.objectValue,
+                      let startDate = firstString(in: bucket, keys: ["startDate"]),
+                      let tokens = firstInt64(in: bucket, keys: ["tokens"])
+                else {
+                    return nil
+                }
+                return AccountTokenUsageDailyBucket(
+                    startDate: startDate,
+                    tokens: max(tokens, 0)
+                )
+            }
+        case .null, .none:
+            buckets = nil
+        default:
+            buckets = nil
+        }
+
+        return AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(
+                lifetimeTokens: firstInt64(in: summary, keys: ["lifetimeTokens"])
+            ),
+            dailyUsageBuckets: buckets
+        )
     }
 
     func rateLimitSummary(fromSnapshot snapshot: [String: CodexAppServerJSONValue]?) -> RateLimitSummary? {

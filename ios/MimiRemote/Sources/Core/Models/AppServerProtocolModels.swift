@@ -462,6 +462,11 @@ struct CodexAppServerRequestBuilder {
         CodexAppServerRequestSpec(method: "account/rateLimits/read")
     }
 
+    func accountUsageRead() -> CodexAppServerRequestSpec {
+        // 该方法在 app-server schema 中没有 params；省略字段可兼容严格校验版本。
+        CodexAppServerRequestSpec(method: "account/usage/read", params: nil)
+    }
+
     func threadStart(projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
         var resolved = options
         if resolved.model == nil {

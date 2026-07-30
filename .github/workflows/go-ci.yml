@@ -9,12 +9,16 @@ on:
       - "**/*.go"
       - "go.mod"
       - "go.sum"
+      - "contracts/mimi-protocol/**"
       - ".goreleaser.yml"
       - "packaging/**"
       - "scripts/check-packaging.sh"
+      - "scripts/check-critical-regressions.sh"
+      - "scripts/test-conversation-regressions.sh"
       - "scripts/check-macos-release-signing.sh"
       - "scripts/check-release-artifacts.sh"
       - "scripts/check-source-size.sh"
+      - "scripts/check-mimi-protocol-contract.sh"
       - "scripts/install-linux.sh"
       - "scripts/test-install-linux.sh"
       - "scripts/build-windows-installer.ps1"
@@ -27,6 +31,7 @@ on:
       - "README.md"
       - "docs/install-upgrade-rollback.md"
       - "docs/codex-protocol-support.md"
+      - "docs/mimi-protocol-contracts.md"
       - ".github/workflows/go-ci.yml"
       - ".github/workflows/release.yml"
   workflow_dispatch:
@@ -54,6 +59,9 @@ jobs:
 
       - name: Check packaging sources
         run: bash ./scripts/check-packaging.sh
+
+      - name: Check Mimi protocol contract
+        run: bash ./scripts/check-mimi-protocol-contract.sh
 
       - name: Check formatting
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
@@ -102,6 +110,10 @@ jobs:
         run: |
           $unformatted = gofmt -l (git ls-files '*.go')
           if ($unformatted) { throw "Unformatted Go files:`n$($unformatted -join "`n")" }
+
+      - name: Check Mimi protocol contract
+        shell: bash
+        run: bash ./scripts/check-mimi-protocol-contract.sh
 
       - name: Check module files
         shell: pwsh

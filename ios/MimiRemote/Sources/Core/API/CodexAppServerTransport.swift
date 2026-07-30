@@ -70,6 +70,7 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        MimiProtocolContract.applyClientHeaders(to: &request)
         credentialFingerprint = connectionCredentialFingerprint(token)
         let nextTask = session.webSocketTask(with: request)
         WebSocketMessageLimits.apply(to: nextTask, maximumMessageSize: maximumMessageSize)
@@ -134,6 +135,24 @@ final class URLSessionCodexAppServerTransport: CodexAppServerTransport {
             return AgentAPIError.credentialsInvalid(
                 status: status,
                 credentialFingerprint: credentialFingerprint
+            )
+        }
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 426 {
+            let serverRevision = http.value(
+                forHTTPHeaderField: MimiProtocolContract.serverRevisionHeader
+            ) ?? "unknown"
+            let minimumClientRevision = http.value(
+                forHTTPHeaderField: MimiProtocolContract.minimumClientRevisionHeader
+            ) ?? "unknown"
+            return AgentAPIError.server(
+                status: http.statusCode,
+                message: L10n.format(
+                    "ui.agentd_websocket_protocol_incompatible_values",
+                    serverRevision,
+                    minimumClientRevision,
+                    MimiProtocolContract.currentRevision
+                )
             )
         }
         return error

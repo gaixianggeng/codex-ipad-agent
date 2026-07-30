@@ -163,6 +163,7 @@ protocol SessionStoreAPIClient {
     ) async throws -> HistoryMessagesPage
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary?
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary?
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot?
 }
 
 extension SessionStoreAPIClient {
@@ -186,6 +187,9 @@ extension SessionStoreAPIClient {
     }
     func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
         try await refreshRateLimit(sessionID: nil)
+    }
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+        nil
     }
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         []
