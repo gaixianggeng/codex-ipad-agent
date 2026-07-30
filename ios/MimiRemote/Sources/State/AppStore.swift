@@ -633,6 +633,10 @@ final class AppStore: ObservableObject {
     var shouldSeedDebugMCPApprovalUI: Bool {
         debugLaunchConfiguration.seedsMCPApprovalUI
     }
+
+    var shouldSeedDebugHistoryUnreadUI: Bool {
+        debugLaunchConfiguration.seedsHistoryUnreadUI
+    }
 #endif
 
     func client() throws -> AgentAPIClient {
@@ -1922,6 +1926,7 @@ private struct DebugLaunchConfiguration {
     let seedsWorkbenchUI: Bool
     let seedsQueuedTurnsUI: Bool
     let seedsMCPApprovalUI: Bool
+    let seedsHistoryUnreadUI: Bool
     let endpoint: String?
     let token: String?
 
@@ -1932,15 +1937,19 @@ private struct DebugLaunchConfiguration {
             || boolValue(environment["MIMI_DEBUG_SEED_QUEUE_UI"])
         let seedsMCPApprovalUI = arguments.contains("--debug-seed-mcp-approval-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_MCP_APPROVAL_UI"])
+        let seedsHistoryUnreadUI = arguments.contains("--debug-seed-history-unread-ui")
+            || boolValue(environment["MIMI_DEBUG_SEED_HISTORY_UNREAD_UI"])
         return DebugLaunchConfiguration(
             opensWorkbenchWithoutPairing: arguments.contains("--debug-skip-pairing")
                 || boolValue(environment["MIMI_DEBUG_SKIP_PAIRING"]),
             seedsWorkbenchUI: arguments.contains("--debug-seed-ui")
                 || boolValue(environment["MIMI_DEBUG_SEED_UI"])
                 || seedsQueuedTurnsUI
-                || seedsMCPApprovalUI,
+                || seedsMCPApprovalUI
+                || seedsHistoryUnreadUI,
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
             seedsMCPApprovalUI: seedsMCPApprovalUI,
+            seedsHistoryUnreadUI: seedsHistoryUnreadUI,
             endpoint: argumentValue(named: "--debug-endpoint", in: arguments)
                 ?? environment["MIMI_DEBUG_ENDPOINT"],
             token: argumentValue(named: "--debug-token", in: arguments)
