@@ -217,6 +217,11 @@ final class SessionStore: ObservableObject {
     var connectedSessionID: String?
     var connectedHostScope: HostScope?
     var connectedCredentialFingerprint: String?
+    // iPad 同时保留父会话与一个子会话阅读区；子会话使用独立只读订阅，
+    // 不复用 selectedSession 的前台 socket，避免切换右栏时断开父会话。
+    var relatedSessionSocket: (any SessionWebSocketClient)?
+    var relatedSessionSocketID: SessionID?
+    var relatedSessionSocketGeneration = 0
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     var webSocketReconnectTask: Task<Void, Never>?
@@ -241,6 +246,9 @@ final class SessionStore: ObservableObject {
     var locallyStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
     var isRefreshingExternalActivity = false
     var externalActivityCapabilityUnavailable = false
+    // 旧 agentd 不接受无 cwd thread/list 时，本 Host 生命周期只探测一次；
+    // 精确工作区列表仍继续工作，形成明确能力检测与兼容回退。
+    var controlledGlobalDiscoveryUnavailable = false
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -1245,7 +1253,7 @@ final class SessionStore: ObservableObject {
     }
 
     func controlState(for session: AgentSession) -> SessionControlState {
-        if isExternalReadOnlySession(session) {
+        if isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             return .observing
         }
         if let state = sessionControlStateByID[session.id] {
@@ -1261,7 +1269,7 @@ final class SessionStore: ObservableObject {
         guard let session else {
             return true
         }
-        guard !isExternalReadOnlySession(session) else {
+        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
             return false
         }
         guard session.isRunning else {
@@ -1331,7 +1339,8 @@ final class SessionStore: ObservableObject {
         guard isSelectedSessionObserving else {
             return nil
         }
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             return L10n.text("ui.mac_observe_only")
         }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
@@ -1341,15 +1350,19 @@ final class SessionStore: ObservableObject {
         guard let session = selectedSession else {
             return false
         }
-        return !isExternalReadOnlySession(session)
+        return !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
     }
 
     func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
         externalReadOnlySessionIDs.contains(session.id)
     }
 
+    func isProtocolReadOnlySession(_ session: AgentSession) -> Bool {
+        !session.allowsDirectInput
+    }
+
     func takeOverSession(_ session: AgentSession) {
-        guard !isExternalReadOnlySession(session) else {
+        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
             setStatusMessage(L10n.text("ui.mac_observe_only"))
             return
         }

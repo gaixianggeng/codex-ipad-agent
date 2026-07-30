@@ -1225,20 +1225,55 @@ struct CodexAppServerEventProjector {
         params: [String: CodexAppServerJSONValue],
         metadata: AgentEventMetadata
     ) -> AgentEvent? {
-        guard let item = params["item"]?.objectValue,
-              let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
-        else {
+        guard let item = params["item"]?.objectValue else {
             return nil
         }
+        let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
+        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
+        guard task != nil || !subagents.isEmpty else { return nil }
         return .sessionContext(
             SessionContextSnapshot(
                 sessionID: metadata.sessionID,
                 threadID: metadata.sessionID,
-                tasks: [task],
+                tasks: task.map { [$0] } ?? [],
+                subagents: subagents,
                 updatedAt: Date()
             ),
             metadata
         )
+    }
+
+    private func contextSubagents(
+        from item: [String: CodexAppServerJSONValue],
+        parentThreadID: SessionID?
+    ) -> [SessionContextSubagent] {
+        guard firstString(in: item, keys: ["type"]) == "collabAgentToolCall",
+              let parentThreadID,
+              !parentThreadID.isEmpty
+        else {
+            return []
+        }
+        let receiverThreadIDs = item["receiverThreadIds"]?.arrayValue?
+            .compactMap(\.stringValue)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            ?? []
+        let agentStates = item["agentsStates"]?.objectValue ?? [:]
+        return Array(Set(receiverThreadIDs)).sorted().map { childThreadID in
+            let state = agentStates[childThreadID]?.objectValue
+            return SessionContextSubagent(
+                id: childThreadID,
+                parentThreadID: parentThreadID,
+                sessionID: firstString(in: state ?? [:], keys: ["sessionId"]),
+                nickname: firstString(in: item, keys: ["agentNickname", "nickname", "tool"]),
+                role: firstString(in: item, keys: ["agentRole", "role"]),
+                status: firstString(in: state ?? [:], keys: ["status"])
+                    ?? agentStates[childThreadID]?.stringValue
+                    ?? firstString(in: item, keys: ["status"]),
+                statusMessage: firstString(in: state ?? [:], keys: ["message"]),
+                canAcceptDirectInput: state?["canAcceptDirectInput"]?.boolValue
+            )
+        }
     }
 
     private func contextTask(

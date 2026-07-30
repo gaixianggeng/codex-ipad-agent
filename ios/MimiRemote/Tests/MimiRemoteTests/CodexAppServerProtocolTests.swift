@@ -489,6 +489,119 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)
     }
 
+    func testControlledGlobalThreadListOmitsCWDAndCarriesOpaqueCursor() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = builder.controlledGlobalThreadList(limit: 50, cursor: "mimi_opaque")
+        let params = try XCTUnwrap(request.params?.objectValue)
+
+        XCTAssertEqual(request.method, "thread/list")
+        XCTAssertNil(params["cwd"], "受控全局发现不能伪造项目 cwd")
+        XCTAssertEqual(params["cursor"]?.stringValue, "mimi_opaque")
+        XCTAssertEqual(params["sortKey"]?.stringValue, "updated_at")
+        XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(params["archived"]?.boolValue, false)
+        XCTAssertEqual(params["useStateDbOnly"]?.boolValue, false)
+    }
+
+    func testContextSubagentsUsesAllReceiversAndNeverToolItemID() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("parent-thread"),
+            "turns": .array([
+                .object([
+                    "status": .string("completed"),
+                    "items": .array([
+                        .object([
+                            "id": .string("tool-item-is-not-thread"),
+                            "type": .string("collabAgentToolCall"),
+                            "receiverThreadIds": .array([
+                                .string("child-a"),
+                                .string("child-b"),
+                            ]),
+                            "agentNickname": .string("Noether"),
+                            "agentRole": .string("review"),
+                            "agentsStates": .object([
+                                "child-a": .object([
+                                    "status": .string("running"),
+                                    "message": .string("checking"),
+                                    "sessionId": .string("session-a"),
+                                    "canAcceptDirectInput": .bool(false),
+                                ]),
+                                "child-b": .object([
+                                    "status": .string("completed"),
+                                    "canAcceptDirectInput": .bool(true),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+        ]
+
+        let subagents = await runtime.contextSubagents(from: thread, status: "history")
+
+        XCTAssertEqual(subagents.map(\.id), ["child-a", "child-b"])
+        XCTAssertFalse(subagents.contains { $0.id == "tool-item-is-not-thread" })
+        XCTAssertEqual(subagents[0].parentThreadID, "parent-thread")
+        XCTAssertEqual(subagents[0].sessionID, "session-a")
+        XCTAssertEqual(subagents[0].nickname, "Noether")
+        XCTAssertEqual(subagents[0].role, "review")
+        XCTAssertEqual(subagents[0].status, "running")
+        XCTAssertEqual(subagents[0].statusMessage, "checking")
+        XCTAssertEqual(subagents[0].canAcceptDirectInput, false)
+        XCTAssertEqual(subagents[1].canAcceptDirectInput, true)
+    }
+
+    func testGlobalThreadProjectionRestoresStableRelationAndAuthorizedProject() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let project = AgentProject(
+            id: "repo",
+            name: "Repo",
+            path: "/Users/me/repo"
+        )
+        let thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("child-thread"),
+            "sessionId": .string("session-child"),
+            "cwd": .string("/Users/me/.codex/worktrees/09f4/repo"),
+            "name": .string("Child"),
+            "status": .object(["type": .string("idle")]),
+            "parentThreadId": .string("parent-thread"),
+            "agentNickname": .string("Euler"),
+            "agentRole": .string("worker"),
+            "canAcceptDirectInput": .bool(false),
+            "mimiRemote": .object([
+                "projectId": .string(project.id),
+                "projectName": .string(project.name),
+                "projectPath": .string(project.path),
+                "discovery": .string("global"),
+                "readOnly": .bool(true),
+            ]),
+        ]
+
+        let session = try await runtime.agentSession(
+            from: thread,
+            projects: [project],
+            fallbackProject: nil
+        )
+
+        XCTAssertEqual(session.projectID, project.id)
+        XCTAssertEqual(session.parentThreadID, "parent-thread")
+        XCTAssertEqual(session.appServerSessionID, "session-child")
+        XCTAssertEqual(session.agentNickname, "Euler")
+        XCTAssertEqual(session.agentRole, "worker")
+        XCTAssertEqual(session.canAcceptDirectInput, false)
+        XCTAssertFalse(session.allowsDirectInput)
+        XCTAssertEqual(session.context?.subagents.first?.id, "child-thread")
+    }
+
     func testThreadListBuilderPreservesWindowsCWDAsRemoteHostPath() throws {
         let windowsPath = #"C:\Users\gaixg\code\codex-ipad-agent"#
         let project = AgentProject(id: "repo", name: "Repo", path: "  \(windowsPath)  ")

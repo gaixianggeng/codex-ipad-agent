@@ -98,6 +98,16 @@ extension SessionStore {
         )
         let selectedSessionID = "debug-session-layout"
         let runningSessionID = "debug-session-running"
+        let subagentSessionID = "debug-session-subagent"
+        let debugSubagent = SessionContextSubagent(
+            id: subagentSessionID,
+            parentThreadID: selectedSessionID,
+            sessionID: "debug-app-server-subagent",
+            nickname: "Scout",
+            role: "reviewer",
+            status: SessionStatus.completed.rawValue,
+            canAcceptDirectInput: false
+        )
         // MCP 审批样例只在显式 Debug 参数下出现，用于真机检查 Codex 声明的
         // 一次、会话和永久信任入口；不连接真实 MCP，也不会写入用户授权配置。
         let mcpApproval = appStore.shouldSeedDebugMCPApprovalUI
@@ -127,7 +137,22 @@ extension SessionStore {
                 updatedAt: now.addingTimeInterval(-60 * 3),
                 preview: L10n.text("ui.review_installation_steps_architecture_diagrams_privacy_boundaries_and"),
                 rateLimit: debugRateLimit,
-                pendingApproval: mcpApproval
+                pendingApproval: mcpApproval,
+                context: SessionContextSnapshot(
+                    sessionID: selectedSessionID,
+                    threadID: selectedSessionID,
+                    status: SessionContextStatus(type: SessionStatus.completed.rawValue),
+                    environment: SessionContextEnvironment(
+                        id: "debug-local",
+                        kind: "local",
+                        label: L10n.text("ui.local"),
+                        cwd: mimiDemo.path,
+                        provider: "codex",
+                        runtimeProvider: "codex"
+                    ),
+                    subagents: [debugSubagent],
+                    updatedAt: now.addingTimeInterval(-60 * 3)
+                )
             ),
             AgentSession(
                 id: runningSessionID,
@@ -143,6 +168,25 @@ extension SessionStore {
                 updatedAt: now.addingTimeInterval(-60 * 1),
                 preview: L10n.text("ui.verifying_disconnection_recovery_approval_and_queued_message_status"),
                 activeTurnID: "debug-turn-running"
+            ),
+            AgentSession(
+                id: subagentSessionID,
+                projectID: mimiDemo.id,
+                project: mimiDemo.name,
+                dir: "/Users/demo/.codex/worktrees/765f/mimi-remote",
+                title: L10n.text("ui.review_notes"),
+                status: SessionStatus.completed.rawValue,
+                source: "debug",
+                runtimeProvider: "codex",
+                resumeID: subagentSessionID,
+                createdAt: now.addingTimeInterval(-60 * 24),
+                updatedAt: now.addingTimeInterval(-60 * 5),
+                preview: L10n.text("ui.document_verification_has_been_completed_the_installation_command"),
+                appServerSessionID: "debug-app-server-subagent",
+                parentThreadID: selectedSessionID,
+                agentNickname: "Scout",
+                agentRole: "reviewer",
+                canAcceptDirectInput: false
             ),
             AgentSession(
                 id: "debug-session-workspace",
@@ -224,6 +268,7 @@ extension SessionStore {
         disconnectWebSocket()
         seedDebugConversationMessages(sessionID: selectedSessionID, now: now)
         seedDebugConversationMessages(sessionID: runningSessionID, now: now.addingTimeInterval(-60 * 10))
+        seedDebugConversationMessages(sessionID: subagentSessionID, now: now.addingTimeInterval(-60 * 5))
         if appStore.shouldSeedDebugQueuedTurnsUI {
             // 队列演示必须同时呈现一个真实的 streaming 气泡。只把 session 标成 running
             // 会让已完成的上一轮看起来仍在生成，进而误导发送/排队状态的真机验收。

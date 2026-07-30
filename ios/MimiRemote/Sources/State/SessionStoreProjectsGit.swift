@@ -947,7 +947,7 @@ extension SessionStore {
 
     @discardableResult
     func toggleSessionArchivedRemote(_ session: AgentSession) async -> Bool {
-        guard !isExternalReadOnlySession(session) else {
+        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
             setStatusMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
@@ -973,7 +973,7 @@ extension SessionStore {
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
-        !isExternalReadOnlySession(session)
+        !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
             && !session.isLocalDraft
             && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
     }
@@ -1313,13 +1313,39 @@ extension SessionStore {
             // 再发一次相同 thread/list 只会重复占用 gateway 预算。
             return !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
         }
-        guard !workspaces.isEmpty else { return }
         let generation = appStore.connectionGeneration
         let consistency: SessionListConsistency = authoritative ? .authoritative : .fastIndexed
         guard let client = try? clientFactory() else {
             return
         }
 
+        // 先用最多 4 页、每页 50 条的有界全局发现补齐 Codex 外部 Worktree。
+        // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
+        // iOS 只消费 opaque cursor，不接触上游全局 cursor。
+        if !controlledGlobalDiscoveryUnavailable {
+            var cursor: String?
+            for pageIndex in 0..<4 {
+                guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                do {
+                    let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
+                    guard appStore.connectionGeneration == generation else { return }
+                    mergeSessionPage(page.sessions)
+                    guard page.hasMore,
+                          let nextCursor = page.nextCursor,
+                          nextCursor != cursor else {
+                        break
+                    }
+                    cursor = nextCursor
+                } catch {
+                    if pageIndex == 0, isControlledGlobalDiscoveryUnavailable(error) {
+                        controlledGlobalDiscoveryUnavailable = true
+                    }
+                    break
+                }
+            }
+        }
+
+        guard !workspaces.isEmpty else { return }
         // 全局会话库属于后台发现流量，按工作区串行读取。高负载时宁可逐步补齐侧栏，
         // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
         for workspace in workspaces {
@@ -1333,6 +1359,12 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
             mergeSessionLibraryPages([result], generation: generation)
         }
+    }
+
+    func isControlledGlobalDiscoveryUnavailable(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("thread/list")
+            && (message.contains("cwd") || message.contains("method") || message.contains("不允许"))
     }
 
     func applyNetworkReachabilityStatus(_ update: NetworkPathStatusUpdate) {

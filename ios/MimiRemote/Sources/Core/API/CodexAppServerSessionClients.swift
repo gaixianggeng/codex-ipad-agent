@@ -153,6 +153,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit, consistency: consistency)
     }
 
+    func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        try await runtime.controlledGlobalSessionsPage(cursor: cursor, limit: limit)
+    }
+
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
         try await runtime.searchSessions(query: query, cursor: cursor, limit: limit)
     }
@@ -468,6 +472,13 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
             ? try await page(runtime: bundle.claude, workspace: workspace, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
             : preservedPage(cursor: decoded.claude, buffer: decoded.claudeBuffer)
         return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
+    }
+
+    func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        // 受控全局发现是 Codex App Server 能力；Claude bridge 没有同构的无 cwd 合同。
+        let page = try await codexClient.controlledGlobalSessionsPage(cursor: cursor, limit: limit)
+        bundle.routes.remember(page.sessions)
+        return page
     }
 
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {

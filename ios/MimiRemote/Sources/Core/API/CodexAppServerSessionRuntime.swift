@@ -367,6 +367,27 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
+    func controlledGlobalSessionsPage(
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
+        let projects = try await projects()
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: projects)
+                .controlledGlobalThreadList(limit: limit, cursor: cursor),
+            timeout: longRunningRequestTimeout
+        )
+        let page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return page
+    }
+
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
         let searchTerm = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !searchTerm.isEmpty else {

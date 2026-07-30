@@ -100,6 +100,24 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			if err := validateGatewayThreadListParams(params); err != nil {
 				return err
 			}
+			if !validated.hasCWD {
+				if normalizeAppServerRuntimeID(p.runtimeID) != "codex" {
+					return fmt.Errorf("thread/list.cwd 不能为空")
+				}
+				if err := p.resolveGlobalListCursor(params); err != nil {
+					return err
+				}
+				limit := int64(appServerGatewayThreadListMaxLimit)
+				if value, ok := params["limit"]; ok && value != nil {
+					limit, _ = gatewayJSONNumberInt64(value)
+				}
+				return p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
+					method:           method,
+					responseLimit:    limit,
+					responseLimitSet: true,
+					globalDiscovery:  true,
+				})
+			}
 		}
 		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
 			return err
@@ -140,8 +158,12 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
 		}
-		if _, ok := p.allowedThread(threadID); !ok {
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
 		}
 		if !scopeOK {
 			return fmt.Errorf("%s.cwd 必须来自已授权工作区", method)
@@ -155,16 +177,27 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
 		}
-		if _, ok := p.allowedThread(threadID); !ok {
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
+		if gatewayMethodMutatesThread(method) && gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
+		}
 		if method == "thread/read" {
-			if err := p.rememberPendingThreadResponse(frame.ID, method, "", ""); err != nil {
+			if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
+				method: method, threadID: threadID,
+			}); err != nil {
 				return err
 			}
 		}
 		if method == "thread/turns/list" {
 			if err := validateGatewayThreadTurnsListParams(params); err != nil {
+				return err
+			}
+			if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
+				method: method, threadID: threadID,
+			}); err != nil {
 				return err
 			}
 		}
@@ -188,8 +221,12 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
 		}
-		if _, ok := p.allowedThread(threadID); !ok {
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
 		}
 	case "turn/start":
 		threadID, ok := gatewayStringParam(params, "threadId")
@@ -199,6 +236,9 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		thread, ok := p.allowedThread(threadID)
 		if !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能接受直接输入", method)
 		}
 		// 项目作用域：同项目内目录都可用；browse 作用域：scope id 是 canonical cwd 的
 		// hash，等价于精确目录绑定，不允许切到允许根下的 sibling 目录。
@@ -214,6 +254,9 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能接受直接输入", method)
+		}
 		if _, ok := gatewayStringParam(params, "expectedTurnId"); !ok {
 			return fmt.Errorf("%s.expectedTurnId 不能为空", method)
 		}
@@ -225,11 +268,28 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if !ok {
 			return fmt.Errorf("%s.threadId 不能为空", method)
 		}
-		if _, ok := p.allowedThread(threadID); !ok {
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		if gatewayThreadRejectsWrites(thread) {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
 		}
 	}
 	return nil
+}
+
+func gatewayThreadRejectsWrites(thread appServerGatewayAllowedThread) bool {
+	return thread.readOnly || (thread.directInputKnown && !thread.canAcceptDirectInput)
+}
+
+func gatewayMethodMutatesThread(method string) bool {
+	switch method {
+	case "thread/name/set", "thread/compact/start", "thread/goal/set", "thread/goal/clear", "review/start":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *appServerGatewayPolicy) validateThreadInputPaths(method string, params map[string]any, thread appServerGatewayAllowedThread) error {
@@ -344,7 +404,10 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	default:
 		return payload, nil
 	}
-	if reflect.DeepEqual(params, sanitized) {
+	// 无 cwd thread/list 的连接级 opaque cursor 会在 capability 校验时就地
+	// 还原；即使 sanitized 与已变更的 params 相等，也必须重建 frame，不能把
+	// 客户端 token 从原始 payload 直接透传给 upstream。
+	if reflect.DeepEqual(params, sanitized) && method != "thread/list" {
 		return payload, nil
 	}
 	var frame map[string]any

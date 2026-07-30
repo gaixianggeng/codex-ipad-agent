@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +14,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 func (p *appServerGatewayPolicy) rememberPendingThreadResponse(id *json.RawMessage, method string, cwd string, scopeID string) error {
@@ -83,6 +88,9 @@ func (p *appServerGatewayPolicy) allowedThread(threadID string) (appServerGatewa
 	if ok {
 		return thread, true
 	}
+	if p.router == nil {
+		return appServerGatewayAllowedThread{}, false
+	}
 	return p.router.gatewayThread(p.runtimeID, threadID)
 }
 
@@ -147,6 +155,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				payload = redacted
 			}
 		}
+		p.allowRelatedThreadsFromNotification(frame.Params)
 		return payload, true, nil
 	}
 	if gatewayFrameIsResponse(&frame) {
@@ -208,10 +217,282 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		p.completePendingThreadResponse(key, pending, threads)
 		return rewritten, true, nil
 	}
+	if pending.method == "thread/list" && pending.globalDiscovery {
+		rewritten, threads, err := p.sanitizeGlobalThreadListResponse(payload, pending)
+		if err != nil {
+			p.forgetPending(frame.ID)
+			return payload, false, &appServerGatewayPolicyError{
+				id: frame.ID, message: err.Error(), target: "client",
+			}
+		}
+		p.completePendingThreadResponse(key, pending, threads)
+		return rewritten, true, nil
+	}
+	if pending.method == "thread/turns/list" {
+		p.completePendingThreadResponse(key, pending, p.relatedThreadsFromResult(frame.Result, pending))
+		return payload, true, nil
+	}
+	if pending.method == "thread/read" {
+		payload = p.enforceReadOnlyThreadResponse(payload, pending.threadID)
+	}
 	p.completePendingThreadResponse(key, pending, p.threadsFromResult(frame.Result, pending))
 	// 成功响应先把 thread 写入连接级与全局 gateway 授权表，再释放
 	// pending-use。转换期间至少有一种保护存在，cleanup 看不到可删除窗口。
 	return payload, true, nil
+}
+
+func (p *appServerGatewayPolicy) resolveGlobalListCursor(params map[string]any) error {
+	raw, exists := params["cursor"]
+	if !exists || raw == nil {
+		return nil
+	}
+	token, ok := raw.(string)
+	token = strings.TrimSpace(token)
+	if !ok || token == "" {
+		return fmt.Errorf("thread/list.cursor 必须是非空字符串")
+	}
+	p.mu.Lock()
+	upstream, found := p.globalListCursors[token]
+	p.mu.Unlock()
+	if !found || strings.TrimSpace(upstream) == "" {
+		return fmt.Errorf("thread/list.cursor 已失效或不属于当前授权连接")
+	}
+	params["cursor"] = upstream
+	return nil
+}
+
+func (p *appServerGatewayPolicy) storeGlobalListCursor(upstream string) (string, error) {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return "", nil
+	}
+	raw := make([]byte, 18)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("生成 thread/list 安全 cursor 失败")
+	}
+	token := "mimi_" + base64.RawURLEncoding.EncodeToString(raw)
+	p.mu.Lock()
+	if p.globalListCursors == nil || len(p.globalListCursors) >= appServerGatewayGlobalCursorMax {
+		// cursor 只在当前 gateway 连接内有效。容量到顶时整体换代比逐项 LRU 更简单，
+		// 旧页继续请求会明确失败，不会退回接受 upstream 原始 cursor。
+		p.globalListCursors = map[string]string{}
+	}
+	p.globalListCursors[token] = upstream
+	p.mu.Unlock()
+	return token, nil
+}
+
+func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
+	payload []byte,
+	pending appServerGatewayPendingThreadRequest,
+) ([]byte, []appServerGatewayAllowedThread, error) {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return nil, nil, fmt.Errorf("thread/list response 无效")
+	}
+	var resultFields map[string]json.RawMessage
+	if raw := response["result"]; len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &resultFields) != nil {
+		return nil, nil, fmt.Errorf("thread/list response.result 必须是对象")
+	}
+	dataRaw, ok := resultFields["data"]
+	if !ok || bytes.Equal(bytes.TrimSpace(dataRaw), []byte("null")) {
+		return nil, nil, fmt.Errorf("thread/list response.data 必须是数组")
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(dataRaw, &rawItems); err != nil {
+		return nil, nil, fmt.Errorf("thread/list response.data 必须是数组")
+	}
+
+	limit := int64(appServerGatewayThreadListMaxLimit)
+	if pending.responseLimitSet {
+		limit = pending.responseLimit
+	}
+	if limit <= 0 || limit > appServerGatewayThreadListMaxLimit {
+		limit = appServerGatewayThreadListMaxLimit
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	projectByCommonDir := p.authorizedProjectsByGitCommonDir(ctx)
+	safeItems := make([]map[string]any, 0, min(len(rawItems), int(limit)))
+	allowedThreads := make([]appServerGatewayAllowedThread, 0, cap(safeItems))
+	for _, rawItem := range rawItems {
+		if int64(len(safeItems)) >= limit || ctx.Err() != nil {
+			break
+		}
+		var itemFields map[string]json.RawMessage
+		var thread appServerGatewayThreadWire
+		if json.Unmarshal(rawItem, &itemFields) != nil || json.Unmarshal(rawItem, &thread) != nil {
+			continue
+		}
+		threadIDRaw := firstNonEmptyRaw(thread.ID, thread.ThreadID, thread.SessionID)
+		cwdRaw := firstNonEmptyRaw(thread.CWD, thread.Path)
+		threadID := strings.TrimSpace(threadIDRaw)
+		cwd := strings.TrimSpace(cwdRaw)
+		if threadID == "" || threadID != threadIDRaw || cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) {
+			continue
+		}
+		scope, ok := p.router.gatewayScopeForPath(cwd)
+		if !ok {
+			continue
+		}
+		info, err := os.Stat(scope.realPath)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		project, ok := projectForGlobalThread(ctx, scope, projectByCommonDir)
+		if !ok {
+			continue
+		}
+
+		// 外部 browse-root Worktree 只有“可读发现”资格。显式 parent 子会话在旧
+		// App Server 缺 capability 时同样 fail-closed；普通项目 thread 保留旧版兼容。
+		forceReadOnly := scope.browse || (strings.TrimSpace(thread.ParentThreadID) != "" && thread.CanAcceptDirectInput == nil)
+		canAccept := false
+		directInputKnown := forceReadOnly || thread.CanAcceptDirectInput != nil
+		if thread.CanAcceptDirectInput != nil && !forceReadOnly {
+			canAccept = *thread.CanAcceptDirectInput
+		}
+
+		safeThread := copyGatewayRawFields(itemFields,
+			"id", "sessionId", "threadId", "parentThreadId", "cwd", "path",
+			"name", "preview", "status", "modelProvider", "source", "threadSource",
+			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
+			"canAcceptDirectInput",
+		)
+		if forceReadOnly {
+			safeThread["canAcceptDirectInput"] = false
+		}
+		safeThread["mimiRemote"] = map[string]any{
+			"projectId":   project.ID,
+			"projectName": project.Name,
+			"projectPath": project.Path,
+			"discovery":   "global",
+			"readOnly":    forceReadOnly,
+		}
+		safeItems = append(safeItems, safeThread)
+		allowedThreads = append(allowedThreads, appServerGatewayAllowedThread{
+			id:                   threadID,
+			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
+			cwd:                  scope.realPath,
+			scopeID:              scope.id,
+			canAcceptDirectInput: canAccept,
+			directInputKnown:     directInputKnown,
+			readOnly:             forceReadOnly,
+		})
+	}
+
+	safeResult := map[string]any{"data": safeItems}
+	if rawCursor, exists := resultFields["nextCursor"]; exists && !bytes.Equal(bytes.TrimSpace(rawCursor), []byte("null")) {
+		var upstreamCursor string
+		if json.Unmarshal(rawCursor, &upstreamCursor) == nil && strings.TrimSpace(upstreamCursor) != "" {
+			cursor, err := p.storeGlobalListCursor(upstreamCursor)
+			if err != nil {
+				return nil, nil, err
+			}
+			safeResult["nextCursor"] = cursor
+		}
+	} else if exists {
+		safeResult["nextCursor"] = nil
+	}
+	safeResponse := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      response["id"],
+		"result":  safeResult,
+	}
+	rewritten, err := json.Marshal(safeResponse)
+	if err != nil {
+		return nil, nil, fmt.Errorf("重写 thread/list response 失败：%w", err)
+	}
+	return rewritten, allowedThreads, nil
+}
+
+func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, threadID string) []byte {
+	allowed, ok := p.allowedThread(threadID)
+	if !ok || !allowed.readOnly {
+		return payload
+	}
+	var response map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if decoder.Decode(&response) != nil {
+		return payload
+	}
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return payload
+	}
+	thread, ok := result["thread"].(map[string]any)
+	if !ok {
+		return payload
+	}
+	actualID, _ := gatewayStringParam(thread, "id")
+	if actualID == "" {
+		actualID, _ = gatewayStringParam(thread, "threadId")
+	}
+	if actualID != "" && actualID != strings.TrimSpace(threadID) {
+		return payload
+	}
+	thread["canAcceptDirectInput"] = false
+	annotation, _ := thread["mimiRemote"].(map[string]any)
+	if annotation == nil {
+		annotation = map[string]any{}
+	}
+	annotation["readOnly"] = true
+	thread["mimiRemote"] = annotation
+	rewritten, err := json.Marshal(response)
+	if err != nil {
+		return payload
+	}
+	return rewritten
+}
+
+func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) map[string]projects.Project {
+	out := map[string]projects.Project{}
+	ambiguous := map[string]struct{}{}
+	for _, project := range p.router.projects.List() {
+		commonDir, ok := gitCommonDirectory(ctx, project.RealPath)
+		if !ok {
+			continue
+		}
+		if existing, exists := out[commonDir]; exists && existing.ID != project.ID {
+			delete(out, commonDir)
+			ambiguous[commonDir] = struct{}{}
+			continue
+		}
+		if _, exists := ambiguous[commonDir]; !exists {
+			out[commonDir] = project
+		}
+	}
+	return out
+}
+
+func projectForGlobalThread(
+	ctx context.Context,
+	scope gatewayScope,
+	projectByCommonDir map[string]projects.Project,
+) (projects.Project, bool) {
+	if strings.TrimSpace(scope.project.ID) != "" {
+		return scope.project, true
+	}
+	if !scope.browse {
+		return projects.Project{}, false
+	}
+	commonDir, ok := gitCommonDirectory(ctx, scope.realPath)
+	if !ok {
+		return projects.Project{}, false
+	}
+	project, ok := projectByCommonDir[commonDir]
+	return project, ok
+}
+
+func copyGatewayRawFields(src map[string]json.RawMessage, keys ...string) map[string]any {
+	dst := make(map[string]any, len(keys))
+	for _, key := range keys {
+		if raw, ok := src[key]; ok {
+			dst[key] = raw
+		}
+	}
+	return dst
 }
 
 func (p *appServerGatewayPolicy) sanitizeThreadSearchResponse(payload []byte, pending appServerGatewayPendingThreadRequest) ([]byte, []appServerGatewayAllowedThread, error) {
@@ -566,12 +847,153 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			continue
 		}
 		out = append(out, appServerGatewayAllowedThread{
-			id:                strings.TrimSpace(id),
-			runtimeID:         normalizeAppServerRuntimeID(p.runtimeID),
-			autoTitleEligible: pending.method == "thread/start" && normalizeAppServerRuntimeID(p.runtimeID) == "codex",
+			id:                   strings.TrimSpace(id),
+			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
+			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput,
+			directInputKnown:     item.CanAcceptDirectInput != nil,
+			autoTitleEligible:    pending.method == "thread/start" && normalizeAppServerRuntimeID(p.runtimeID) == "codex",
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,
 			scopeID: scope.id,
+		})
+		out = append(out, relatedThreadsForParent(
+			receiverThreadIDsFromWireTurns(item.Turns),
+			normalizeAppServerRuntimeID(p.runtimeID),
+			scope.realPath,
+			scope.id,
+		)...)
+	}
+	if pending.threadID != "" {
+		out = append(out, p.relatedThreadsFromResult(raw, pending)...)
+	}
+	return out
+}
+
+func receiverThreadIDsFromWireTurns(turns []struct {
+	Items []struct {
+		Type              string         `json:"type"`
+		ReceiverThreadIDs []string       `json:"receiverThreadIds"`
+		AgentsStates      map[string]any `json:"agentsStates"`
+	} `json:"items"`
+}) []string {
+	var ids []string
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type != "collabAgentToolCall" {
+				continue
+			}
+			ids = append(ids, item.ReceiverThreadIDs...)
+		}
+	}
+	return ids
+}
+
+func (p *appServerGatewayPolicy) relatedThreadsFromResult(
+	raw json.RawMessage,
+	pending appServerGatewayPendingThreadRequest,
+) []appServerGatewayAllowedThread {
+	parent, ok := p.allowedThread(pending.threadID)
+	if !ok {
+		return nil
+	}
+	return relatedThreadsForParent(
+		receiverThreadIDsFromJSON(raw),
+		normalizeAppServerRuntimeID(p.runtimeID),
+		parent.cwd,
+		parent.scopeID,
+	)
+}
+
+func (p *appServerGatewayPolicy) allowRelatedThreadsFromNotification(raw json.RawMessage) {
+	var params map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&params) != nil {
+		return
+	}
+	parentID, _ := gatewayStringParam(params, "threadId")
+	if parentID == "" {
+		if thread, ok := params["thread"].(map[string]any); ok {
+			parentID, _ = gatewayStringParam(thread, "id")
+		}
+	}
+	parent, ok := p.allowedThread(parentID)
+	if !ok {
+		return
+	}
+	for _, related := range relatedThreadsForParent(
+		receiverThreadIDsFromAny(params),
+		normalizeAppServerRuntimeID(p.runtimeID),
+		parent.cwd,
+		parent.scopeID,
+	) {
+		p.allowThread(related)
+	}
+}
+
+func receiverThreadIDsFromJSON(raw json.RawMessage) []string {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return nil
+	}
+	return receiverThreadIDsFromAny(value)
+}
+
+func receiverThreadIDsFromAny(value any) []string {
+	var ids []string
+	var walk func(any, int)
+	walk = func(current any, depth int) {
+		if depth > 12 {
+			return
+		}
+		switch typed := current.(type) {
+		case map[string]any:
+			itemType, _ := gatewayStringParam(typed, "type")
+			if itemType == "collabAgentToolCall" {
+				if rawIDs, ok := typed["receiverThreadIds"].([]any); ok {
+					for _, rawID := range rawIDs {
+						id, ok := rawID.(string)
+						id = strings.TrimSpace(id)
+						if ok && id != "" {
+							ids = append(ids, id)
+						}
+					}
+				}
+			}
+			for _, child := range typed {
+				walk(child, depth+1)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(value, 0)
+	return ids
+}
+
+func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID string) []appServerGatewayAllowedThread {
+	seen := map[string]struct{}{}
+	out := make([]appServerGatewayAllowedThread, 0, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" || id != rawID {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, appServerGatewayAllowedThread{
+			id:                   id,
+			runtimeID:            runtimeID,
+			cwd:                  cwd,
+			scopeID:              scopeID,
+			canAcceptDirectInput: false,
+			directInputKnown:     true,
 		})
 	}
 	return out
@@ -591,6 +1013,16 @@ func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThrea
 func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayAllowedThread) (appServerGatewayAllowedThread, bool) {
 	if strings.TrimSpace(thread.id) == "" || strings.TrimSpace(thread.scopeID) == "" {
 		return appServerGatewayAllowedThread{}, false
+	}
+	if existing, ok := p.allowedThread(thread.id); ok {
+		if existing.readOnly {
+			thread.readOnly = true
+			thread.directInputKnown = true
+			thread.canAcceptDirectInput = false
+		} else if !thread.directInputKnown && existing.directInputKnown {
+			thread.directInputKnown = true
+			thread.canAcceptDirectInput = existing.canAcceptDirectInput
+		}
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
 		thread.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
@@ -662,6 +1094,16 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	now := time.Now()
 	thread.lastSeen = now
 	r.gatewayThreadsMu.Lock()
+	if existing, ok := r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)]; ok {
+		if existing.readOnly {
+			thread.readOnly = true
+			thread.directInputKnown = true
+			thread.canAcceptDirectInput = false
+		} else if !thread.directInputKnown && existing.directInputKnown {
+			thread.directInputKnown = true
+			thread.canAcceptDirectInput = existing.canAcceptDirectInput
+		}
+	}
 	r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)] = thread
 	r.pruneGatewayThreadsLocked(now)
 	r.gatewayThreadsMu.Unlock()

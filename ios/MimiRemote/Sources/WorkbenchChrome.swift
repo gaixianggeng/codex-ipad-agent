@@ -65,8 +65,24 @@ struct WorkbenchLayout: Equatable {
 }
 
 extension View {
-    func sessionInspectorPresentation(isPresented: Binding<Bool>, layout: WorkbenchLayout) -> some View {
-        modifier(SessionInspectorPresentation(isPresented: isPresented, layout: layout))
+    func sessionInspectorPresentation(
+        isPresented: Binding<Bool>,
+        layout: WorkbenchLayout,
+        relatedSubagent: Binding<SessionContextSubagent?>,
+        parentSessionID: Binding<SessionID?>,
+        onOpenSubagent: @escaping (SessionContextSubagent) -> Void,
+        onCloseRelatedSubagent: @escaping () -> Void
+    ) -> some View {
+        modifier(
+            SessionInspectorPresentation(
+                isPresented: isPresented,
+                layout: layout,
+                relatedSubagent: relatedSubagent,
+                parentSessionID: parentSessionID,
+                onOpenSubagent: onOpenSubagent,
+                onCloseRelatedSubagent: onCloseRelatedSubagent
+            )
+        )
     }
 }
 
@@ -74,33 +90,283 @@ struct SessionInspectorPresentation: ViewModifier {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var isPresented: Bool
     let layout: WorkbenchLayout
+    @Binding var relatedSubagent: SessionContextSubagent?
+    @Binding var parentSessionID: SessionID?
+    let onOpenSubagent: (SessionContextSubagent) -> Void
+    let onCloseRelatedSubagent: () -> Void
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if layout.usesAttachedInspector {
             content.inspector(isPresented: $isPresented) {
-                SessionInspectorView()
-                    .inspectorColumnWidth(
-                        min: layout.inspectorColumn.min,
-                        ideal: layout.inspectorColumn.ideal,
-                        max: layout.inspectorColumn.max
-                    )
+                Group {
+                    if let relatedSubagent, let parentSessionID {
+                        RelatedSessionConversationView(
+                            relation: relatedSubagent,
+                            parentSessionID: parentSessionID,
+                            showsCloseButton: true,
+                            onClose: onCloseRelatedSubagent
+                        )
+                    } else {
+                        SessionInspectorView()
+                    }
+                }
+                .inspectorColumnWidth(
+                    min: layout.inspectorColumn.min,
+                    ideal: layout.inspectorColumn.ideal,
+                    max: layout.inspectorColumn.max
+                )
+                .environment(
+                    \.openSubagentSession,
+                    OpenSubagentSessionAction(handler: onOpenSubagent)
+                )
             }
         } else {
             content.sheet(isPresented: $isPresented) {
                 NavigationStack {
                     SessionInspectorView()
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button(L10n.text("ui.complete")) {
-                                    isPresented = false
+                        .environment(
+                            \.openSubagentSession,
+                            OpenSubagentSessionAction(handler: onOpenSubagent)
+                        )
+                        .navigationDestination(
+                            isPresented: Binding(
+                                get: { relatedSubagent != nil && parentSessionID != nil },
+                                set: { presented in
+                                    if !presented {
+                                        onCloseRelatedSubagent()
+                                    }
                                 }
+                            )
+                        ) {
+                            if let relatedSubagent, let parentSessionID {
+                                RelatedSessionConversationView(
+                                    relation: relatedSubagent,
+                                    parentSessionID: parentSessionID,
+                                    showsCloseButton: false,
+                                    onClose: {}
+                                )
                             }
                         }
                 }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(L10n.text("ui.complete")) {
+                            isPresented = false
+                        }
+                    }
+                }
+                .interactiveDismissDisabled(relatedSubagent != nil)
                 .presentationDetents(horizontalSizeClass == .compact ? [.large] : [.medium, .large])
                 .presentationDragIndicator(.visible)
             }
+        }
+    }
+}
+
+/// 子 Agent 始终保留父会话为主选择，并使用独立订阅读取真实 Thread。
+/// iPad 将它放入附着检查器列；iPhone 由外层 NavigationStack 原生 push。
+struct RelatedSessionConversationView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    let relation: SessionContextSubagent
+    let parentSessionID: SessionID
+    let showsCloseButton: Bool
+    let onClose: () -> Void
+
+    @State private var isLoading = true
+    @State private var didFailToLoad = false
+    @State private var measuredContentWidth: CGFloat?
+
+    private var childSession: AgentSession? {
+        sessionStore.sessionsByID[relation.id]
+    }
+
+    private var title: String {
+        let nickname = relation.nickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let nickname, !nickname.isEmpty {
+            return nickname
+        }
+        let childTitle = childSession?.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let childTitle, !childTitle.isEmpty {
+            return childTitle
+        }
+        return relation.displayName
+    }
+
+    private var isReadOnly: Bool {
+        childSession?.allowsDirectInput != true || relation.canAcceptDirectInput != true
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        GeometryReader { proxy in
+            let width = measuredContentWidth ?? proxy.size.width
+            let layout = ConversationLayout(
+                containerWidth: width,
+                horizontalSizeClass: horizontalSizeClass,
+                safeAreaInsets: proxy.safeAreaInsets
+            )
+
+            VStack(spacing: 0) {
+                relatedHeader(tokens: tokens)
+                Divider()
+                    .overlay(tokens.border.opacity(0.72))
+
+                ZStack {
+                    ConversationTimelineView(layout: layout, sessionID: relation.id)
+
+                    if isLoading {
+                        ProgressView(L10n.text("ui.loading"))
+                            .controlSize(.regular)
+                    } else if didFailToLoad && childSession == nil {
+                        ContentUnavailableView(
+                            L10n.text("ui.sub_agent"),
+                            systemImage: "exclamationmark.triangle",
+                            description: Text(L10n.text("ui.sub_agent_unavailable"))
+                        )
+                    }
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.width
+            } action: { newWidth in
+                guard newWidth > 0, measuredContentWidth != newWidth else { return }
+                measuredContentWidth = newWidth
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                relatedFooter(tokens: tokens)
+            }
+            .background(tokens.background.ignoresSafeArea())
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .accessibilityIdentifier("subagent.conversation.\(relation.id)")
+        .task(id: relation.id) {
+            isLoading = true
+            didFailToLoad = false
+            let loaded = await sessionStore.prepareRelatedSession(
+                relation,
+                parentSessionID: parentSessionID
+            )
+            guard !Task.isCancelled else { return }
+            didFailToLoad = loaded == nil
+            isLoading = false
+        }
+        .onDisappear {
+            sessionStore.stopRelatedSessionObservation(sessionID: relation.id)
+        }
+    }
+
+    private func relatedHeader(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Image(systemName: statusSymbolName)
+                        .foregroundStyle(statusColor(tokens: tokens))
+                    Text(title)
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(2)
+                }
+
+                HStack(spacing: 6) {
+                    if let role = relation.role, !role.isEmpty {
+                        Text(role)
+                    }
+                    Text(childSession?.displayStatusText ?? statusText)
+                    if isReadOnly {
+                        Label(L10n.text("ui.read_only"), systemImage: "lock.fill")
+                    }
+                }
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(2)
+
+                Text(L10n.text("ui.sub_agent_managed_by_parent"))
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if showsCloseButton {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(L10n.text("ui.close"))
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, showsCloseButton ? 4 : 14)
+        .padding(.vertical, 10)
+    }
+
+    private func relatedFooter(tokens: ThemeTokens) -> some View {
+        Label(
+            isReadOnly
+                ? L10n.text("ui.sub_agent_managed_read_only")
+                : L10n.text("ui.sub_agent_managed_by_parent"),
+            systemImage: isReadOnly ? "lock.fill" : "person.2.fill"
+        )
+        .font(themeStore.uiFont(.caption, weight: .medium))
+        .foregroundStyle(tokens.secondaryText)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.horizontal, 12)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(tokens.border.opacity(0.72))
+                .frame(height: 0.5)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var normalizedStatus: String {
+        (childSession?.status ?? relation.status ?? "").lowercased()
+    }
+
+    private var statusText: String {
+        switch normalizedStatus {
+        case "active", "running", "inprogress", "in_progress", "started":
+            return L10n.text("ui.running")
+        case "completed", "complete", "success", "succeeded":
+            return L10n.text("ui.complete")
+        case "systemerror", "failed":
+            return L10n.text("ui.abnormal")
+        default:
+            return L10n.text("ui.history")
+        }
+    }
+
+    private var statusSymbolName: String {
+        switch normalizedStatus {
+        case "active", "running", "inprogress", "in_progress", "started":
+            return "circle.fill"
+        case "completed", "complete", "success", "succeeded":
+            return "checkmark.circle.fill"
+        case "systemerror", "failed":
+            return "exclamationmark.triangle.fill"
+        default:
+            return "circle"
+        }
+    }
+
+    private func statusColor(tokens: ThemeTokens) -> Color {
+        switch normalizedStatus {
+        case "active", "running", "inprogress", "in_progress", "started":
+            return tokens.primaryAction
+        case "completed", "complete", "success", "succeeded":
+            return .green
+        case "systemerror", "failed":
+            return .red
+        default:
+            return tokens.tertiaryText
         }
     }
 }

@@ -452,7 +452,9 @@ extension CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidResponse
         }
         let cwd = thread["cwd"]?.stringValue ?? fallbackProject?.path ?? ""
-        let project = projectFor(cwd: cwd, projects: projects) ?? fallbackProject
+        let project = gatewayAnnotatedProject(from: thread, projects: projects)
+            ?? projectFor(cwd: cwd, projects: projects)
+            ?? fallbackProject
         let projectID = project?.id ?? fallbackProject?.id ?? cwd
         let projectName = project?.name ?? fallbackProject?.name ?? cwd
         let status = sessionStatus(from: thread["status"], forceRunning: forceRunning)
@@ -511,8 +513,31 @@ extension CodexAppServerSessionRuntime {
             usage: cached?.usage,
             rateLimit: rateLimit,
             goal: goal,
+            appServerSessionID: nonEmpty(thread["sessionId"]?.stringValue),
+            parentThreadID: nonEmpty(thread["parentThreadId"]?.stringValue),
+            agentNickname: nonEmpty(thread["agentNickname"]?.stringValue),
+            agentRole: nonEmpty(thread["agentRole"]?.stringValue),
+            canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
             context: context
         )
+    }
+
+    func gatewayAnnotatedProject(
+        from thread: [String: CodexAppServerJSONValue],
+        projects: [AgentProject]
+    ) -> AgentProject? {
+        guard let annotation = thread["mimiRemote"]?.objectValue,
+              annotation["discovery"]?.stringValue == "global",
+              let projectID = nonEmpty(annotation["projectId"]?.stringValue),
+              let projectPath = nonEmpty(annotation["projectPath"]?.stringValue)
+        else {
+            return nil
+        }
+        // agentd 已做 repo identity 裁剪；iOS 再与当前 config.projects 交叉验证，
+        // 避免陈旧连接或协议混用把会话投影到不存在的项目。
+        return projects.first {
+            $0.id == projectID && $0.path == projectPath
+        }
     }
 
     func sessionContext(
@@ -906,16 +931,22 @@ extension CodexAppServerSessionRuntime {
         status: String
     ) -> [SessionContextSubagent] {
         var subagents: [SessionContextSubagent] = []
+        var seenThreadIDs = Set<String>()
         if let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) {
-            subagents.append(
-                SessionContextSubagent(
-                    id: thread["id"]?.stringValue ?? UUID().uuidString,
+            if let childThreadID = nonEmpty(thread["id"]?.stringValue) {
+                subagents.append(
+                    SessionContextSubagent(
+                    id: childThreadID,
                     parentThreadID: parentThreadID,
+                    sessionID: nonEmpty(thread["sessionId"]?.stringValue),
                     nickname: nonEmpty(thread["agentNickname"]?.stringValue),
                     role: nonEmpty(thread["agentRole"]?.stringValue),
-                    status: status
+                    status: status,
+                    canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue
+                    )
                 )
-            )
+                seenThreadIDs.insert(childThreadID)
+            }
         }
         guard let threadID = nonEmpty(thread["id"]?.stringValue) else {
             return subagents
@@ -924,24 +955,41 @@ extension CodexAppServerSessionRuntime {
         for turn in turns.reversed() {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             for item in items.reversed() where item["type"]?.stringValue == "collabAgentToolCall" {
-                let id = nonEmpty(
+                let receiverThreadIDs = item["receiverThreadIds"]?.arrayValue?
+                    .compactMap(\.stringValue)
+                    .compactMap { nonEmpty($0) }
+                    ?? []
+                let legacyThreadID = nonEmpty(
                     item["childThreadId"]?.stringValue,
                     item["agentThreadId"]?.stringValue,
                     item["subagentThreadId"]?.stringValue,
-                    item["threadId"]?.stringValue,
-                    item["id"]?.stringValue
-                ) ?? UUID().uuidString
-                subagents.append(
-                    SessionContextSubagent(
-                        id: id,
+                    item["threadId"]?.stringValue
+                )
+                let childThreadIDs = receiverThreadIDs.isEmpty
+                    ? legacyThreadID.map { [$0] } ?? []
+                    : receiverThreadIDs
+                let agentStates = item["agentsStates"]?.objectValue ?? [:]
+                for childThreadID in childThreadIDs where seenThreadIDs.insert(childThreadID).inserted {
+                    let agentState = agentStates[childThreadID]?.objectValue
+                    let stateStatus = nonEmpty(
+                        agentState?["status"]?.stringValue,
+                        agentStates[childThreadID]?.stringValue
+                    )
+                    subagents.append(
+                        SessionContextSubagent(
+                        id: childThreadID,
                         parentThreadID: threadID,
+                        sessionID: nonEmpty(agentState?["sessionId"]?.stringValue),
                         nickname: nonEmpty(item["agentNickname"]?.stringValue, item["nickname"]?.stringValue, item["tool"]?.stringValue),
                         role: nonEmpty(item["agentRole"]?.stringValue, item["role"]?.stringValue),
-                        status: nonEmpty(item["status"]?.stringValue, turn["status"]?.stringValue, status)
+                        status: nonEmpty(stateStatus, item["status"]?.stringValue, turn["status"]?.stringValue, status),
+                        statusMessage: nonEmpty(agentState?["message"]?.stringValue),
+                        canAcceptDirectInput: agentState?["canAcceptDirectInput"]?.boolValue
+                        )
                     )
-                )
-                if subagents.count >= 8 {
-                    return subagents
+                    if subagents.count >= 32 {
+                        return subagents
+                    }
                 }
             }
         }

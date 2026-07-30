@@ -904,17 +904,58 @@ func contextSourcesFromThread(thread appServerThread) []session.ContextSource {
 }
 
 func contextSubagentsFromThread(thread appServerThread) []session.ContextSubagent {
+	subagents := make([]session.ContextSubagent, 0, 8)
+	seen := map[string]struct{}{}
 	parentThreadID := strings.TrimSpace(thread.ParentThreadID)
-	if parentThreadID == "" {
-		return nil
+	if childThreadID := strings.TrimSpace(firstNonEmpty(thread.ID, thread.SessionID)); parentThreadID != "" && childThreadID != "" {
+		subagents = append(subagents, session.ContextSubagent{
+			ID:                   childThreadID,
+			ParentThreadID:       parentThreadID,
+			SessionID:            strings.TrimSpace(thread.SessionID),
+			Nickname:             strings.TrimSpace(thread.AgentNickname),
+			Role:                 strings.TrimSpace(thread.AgentRole),
+			Status:               appServerThreadStatusValueToSessionStatus(thread.Status),
+			CanAcceptDirectInput: thread.CanAcceptDirectInput,
+		})
+		seen[childThreadID] = struct{}{}
 	}
-	return []session.ContextSubagent{{
-		ID:             firstNonEmpty(thread.ID, thread.SessionID),
-		ParentThreadID: parentThreadID,
-		Nickname:       strings.TrimSpace(thread.AgentNickname),
-		Role:           strings.TrimSpace(thread.AgentRole),
-		Status:         appServerThreadStatusValueToSessionStatus(thread.Status),
-	}}
+	threadID := strings.TrimSpace(firstNonEmpty(thread.ID, thread.SessionID))
+	if threadID == "" {
+		return subagents
+	}
+	for turnIndex := len(thread.Turns) - 1; turnIndex >= 0; turnIndex-- {
+		turn := thread.Turns[turnIndex]
+		for itemIndex := len(turn.Items) - 1; itemIndex >= 0; itemIndex-- {
+			item := turn.Items[itemIndex]
+			if item.Type != "collabAgentToolCall" {
+				continue
+			}
+			for _, rawReceiverID := range item.ReceiverThreadIDs {
+				receiverID := strings.TrimSpace(rawReceiverID)
+				if receiverID == "" || receiverID != rawReceiverID {
+					continue
+				}
+				if _, exists := seen[receiverID]; exists {
+					continue
+				}
+				seen[receiverID] = struct{}{}
+				state := item.AgentsStates[receiverID]
+				subagents = append(subagents, session.ContextSubagent{
+					ID:                   receiverID,
+					ParentThreadID:       threadID,
+					SessionID:            strings.TrimSpace(state.SessionID),
+					Nickname:             strings.TrimSpace(item.Tool),
+					Status:               firstNonEmpty(state.Status, item.Status, turn.Status),
+					StatusMessage:        strings.TrimSpace(state.Message),
+					CanAcceptDirectInput: state.CanAcceptDirectInput,
+				})
+				if len(subagents) >= 32 {
+					return subagents
+				}
+			}
+		}
+	}
+	return subagents
 }
 
 func contextTasksFromThread(thread appServerThread) []session.ContextTask {

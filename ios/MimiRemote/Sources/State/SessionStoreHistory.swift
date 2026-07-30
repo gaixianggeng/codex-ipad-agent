@@ -1300,7 +1300,7 @@ extension SessionStore {
         await loadHistoryIfNeeded(for: session)
         guard isSelectionLeaseCurrent(selectionLease) else { return }
         if session.isRunning {
-            if autoAttach && canControlSession(session) {
+            if autoAttach && (canControlSession(session) || isProtocolReadOnlySession(session)) {
                 // 前台恢复会反复走到这里；已加载会话的 loadHistoryIfNeeded 是 no-op，此时若做
                 // 完整回放，backlog 里的旧卡会被追加到已合并的时间线后面。状态级回放已经
                 // 覆盖 completed 内容，足够补齐离开期间的输出。
@@ -1552,6 +1552,11 @@ extension SessionStore {
             pendingApproval: item.pendingApproval,
             pendingUserInput: item.pendingUserInput,
             goal: item.goal,
+            appServerSessionID: item.appServerSessionID,
+            parentThreadID: item.parentThreadID,
+            agentNickname: item.agentNickname,
+            agentRole: item.agentRole,
+            canAcceptDirectInput: item.canAcceptDirectInput,
             context: item.context
         )
     }

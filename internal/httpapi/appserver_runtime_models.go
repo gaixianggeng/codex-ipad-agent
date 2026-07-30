@@ -654,23 +654,24 @@ type appServerTurnEnvelope struct {
 }
 
 type appServerThread struct {
-	ID             string                `json:"id"`
-	SessionID      string                `json:"sessionId"`
-	ForkedFromID   string                `json:"forkedFromId"`
-	ParentThreadID string                `json:"parentThreadId"`
-	Preview        string                `json:"preview"`
-	CWD            string                `json:"cwd"`
-	Name           string                `json:"name"`
-	ModelProvider  string                `json:"modelProvider"`
-	Source         any                   `json:"source"`
-	ThreadSource   string                `json:"threadSource"`
-	AgentNickname  string                `json:"agentNickname"`
-	AgentRole      string                `json:"agentRole"`
-	GitInfo        *appServerGitInfo     `json:"gitInfo"`
-	CreatedAt      int64                 `json:"createdAt"`
-	UpdatedAt      int64                 `json:"updatedAt"`
-	Status         appServerThreadStatus `json:"status"`
-	Turns          []appServerTurn       `json:"turns"`
+	ID                   string                `json:"id"`
+	SessionID            string                `json:"sessionId"`
+	ForkedFromID         string                `json:"forkedFromId"`
+	ParentThreadID       string                `json:"parentThreadId"`
+	Preview              string                `json:"preview"`
+	CWD                  string                `json:"cwd"`
+	Name                 string                `json:"name"`
+	ModelProvider        string                `json:"modelProvider"`
+	Source               any                   `json:"source"`
+	ThreadSource         string                `json:"threadSource"`
+	AgentNickname        string                `json:"agentNickname"`
+	AgentRole            string                `json:"agentRole"`
+	CanAcceptDirectInput *bool                 `json:"canAcceptDirectInput"`
+	GitInfo              *appServerGitInfo     `json:"gitInfo"`
+	CreatedAt            int64                 `json:"createdAt"`
+	UpdatedAt            int64                 `json:"updatedAt"`
+	Status               appServerThreadStatus `json:"status"`
+	Turns                []appServerTurn       `json:"turns"`
 }
 
 type appServerThreadStatus struct {
@@ -711,24 +712,33 @@ type appServerTurn struct {
 }
 
 type appServerThreadItem struct {
-	Type           string                   `json:"type"`
-	ID             string                   `json:"id"`
-	ClientID       string                   `json:"clientId"`
-	Content        []appServerUserInput     `json:"content"`
-	Text           string                   `json:"text"`
-	Command        string                   `json:"command"`
-	CWD            string                   `json:"cwd"`
-	ProcessID      string                   `json:"processId"`
-	Source         string                   `json:"source"`
-	Status         string                   `json:"status"`
-	CommandActions []appServerCommandAction `json:"commandActions"`
-	ExitCode       *int                     `json:"exitCode"`
-	Changes        []appServerFileChange    `json:"changes"`
-	Server         string                   `json:"server"`
-	Tool           string                   `json:"tool"`
-	Namespace      string                   `json:"namespace"`
-	PluginID       string                   `json:"pluginId"`
-	Arguments      any                      `json:"arguments"`
+	Type              string                               `json:"type"`
+	ID                string                               `json:"id"`
+	ClientID          string                               `json:"clientId"`
+	Content           []appServerUserInput                 `json:"content"`
+	Text              string                               `json:"text"`
+	Command           string                               `json:"command"`
+	CWD               string                               `json:"cwd"`
+	ProcessID         string                               `json:"processId"`
+	Source            string                               `json:"source"`
+	Status            string                               `json:"status"`
+	CommandActions    []appServerCommandAction             `json:"commandActions"`
+	ExitCode          *int                                 `json:"exitCode"`
+	Changes           []appServerFileChange                `json:"changes"`
+	Server            string                               `json:"server"`
+	Tool              string                               `json:"tool"`
+	Namespace         string                               `json:"namespace"`
+	PluginID          string                               `json:"pluginId"`
+	Arguments         any                                  `json:"arguments"`
+	ReceiverThreadIDs []string                             `json:"receiverThreadIds"`
+	AgentsStates      map[string]appServerCollabAgentState `json:"agentsStates"`
+}
+
+type appServerCollabAgentState struct {
+	Status               string `json:"status"`
+	Message              string `json:"message"`
+	SessionID            string `json:"sessionId"`
+	CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
 }
 
 type appServerUserInput struct {

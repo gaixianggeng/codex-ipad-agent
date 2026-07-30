@@ -1,0 +1,323 @@
+package httpapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+)
+
+func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t *testing.T) {
+	browseRoot := t.TempDir()
+	var projectDir string
+	var externalWorktree string
+	var symlinkedWorktree string
+	var otherRepo string
+	var deletedWorktree string
+	var listPage atomic.Int64
+
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, _ int, payload []byte) {
+		var frame struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params map[string]any  `json:"params"`
+		}
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到无效 JSON：%v", err)
+			return
+		}
+		switch frame.Method {
+		case "thread/list":
+			if listPage.Add(1) == 1 {
+				_ = conn.WriteJSON(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      json.RawMessage(frame.ID),
+					"result": map[string]any{
+						"data": []any{
+							map[string]any{
+								"id": "thread-root", "cwd": projectDir, "name": "Root",
+								"canAcceptDirectInput": true,
+							},
+							map[string]any{
+								"id": "thread-external", "cwd": externalWorktree, "name": "External",
+								"parentThreadId": "thread-root", "agentNickname": "worker-a",
+								"agentRole": "worker", "sessionId": "session-a",
+								"canAcceptDirectInput": true,
+							},
+							map[string]any{
+								"id": "thread-symlink", "cwd": symlinkedWorktree, "name": "Symlink",
+							},
+							map[string]any{"id": "thread-other", "cwd": otherRepo, "name": "Other repo"},
+							map[string]any{"id": "thread-deleted", "cwd": deletedWorktree, "name": "Deleted"},
+							map[string]any{"id": "thread-relative", "cwd": "relative/path", "name": "Relative"},
+						},
+						"nextCursor": "upstream-secret-cursor",
+						"private":    "must-not-pass-through",
+					},
+				})
+			} else {
+				if got, _ := frame.Params["cursor"].(string); got != "upstream-secret-cursor" {
+					t.Errorf("gateway 必须把连接级 opaque cursor 还原为 upstream cursor，got=%q", got)
+				}
+				_ = conn.WriteJSON(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      json.RawMessage(frame.ID),
+					"result": map[string]any{
+						"data":       []any{},
+						"nextCursor": nil,
+					},
+				})
+			}
+		case "thread/read":
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      json.RawMessage(frame.ID),
+				"result": map[string]any{
+					"thread": map[string]any{
+						"id": "thread-external", "cwd": externalWorktree,
+						"parentThreadId": "thread-root", "canAcceptDirectInput": true,
+					},
+				},
+			})
+		}
+	})
+	handler, dir := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.BrowseRoots = []string{browseRoot}
+	})
+	projectDir = dir
+
+	runGitTestCommand(t, projectDir, "init")
+	runGitTestCommand(t, projectDir, "config", "user.email", "mim24@example.invalid")
+	runGitTestCommand(t, projectDir, "config", "user.name", "MIM-24")
+	if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("mim24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, projectDir, "add", "README.md")
+	runGitTestCommand(t, projectDir, "commit", "-m", "initial")
+
+	externalWorktree = filepath.Join(browseRoot, "codex-external-worktree")
+	runGitTestCommand(t, projectDir, "worktree", "add", "-b", "mim24-external", externalWorktree)
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", projectDir, "worktree", "remove", "--force", externalWorktree).Run()
+	})
+	symlinkedWorktree = filepath.Join(browseRoot, "codex-external-link")
+	if err := os.Symlink(externalWorktree, symlinkedWorktree); err != nil {
+		t.Fatal(err)
+	}
+
+	deletedWorktree = filepath.Join(browseRoot, "deleted-worktree")
+	runGitTestCommand(t, projectDir, "worktree", "add", "-b", "mim24-deleted", deletedWorktree)
+	runGitTestCommand(t, projectDir, "worktree", "remove", "--force", deletedWorktree)
+
+	otherRepo = filepath.Join(browseRoot, "unrelated-repository")
+	if err := os.MkdirAll(otherRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, otherRepo, "init")
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"id": 700, "method": "thread/list",
+		"params": map[string]any{"limit": 50, "sortKey": "updated_at"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstRequest := readUpstreamFrame(t, received)
+	if bytes.Contains(firstRequest, []byte(`"cwd"`)) {
+		t.Fatalf("受控全局发现不能伪造 cwd：%s", firstRequest)
+	}
+
+	firstResponse := readGatewayRaw(t, conn)
+	if bytes.Contains(firstResponse, []byte("upstream-secret-cursor")) ||
+		bytes.Contains(firstResponse, []byte("must-not-pass-through")) {
+		t.Fatalf("gateway 不得原样下发 upstream cursor 或未知字段：%s", firstResponse)
+	}
+	var response struct {
+		Result struct {
+			Data []struct {
+				ID                   string `json:"id"`
+				CWD                  string `json:"cwd"`
+				ParentThreadID       string `json:"parentThreadId"`
+				AgentNickname        string `json:"agentNickname"`
+				AgentRole            string `json:"agentRole"`
+				SessionID            string `json:"sessionId"`
+				CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
+				MimiRemote           struct {
+					ProjectID string `json:"projectId"`
+					ReadOnly  bool   `json:"readOnly"`
+				} `json:"mimiRemote"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(firstResponse, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Result.Data) != 3 {
+		t.Fatalf("仅应保留项目根与同仓库外部 Worktree（含 symlink），got=%s", firstResponse)
+	}
+	byID := map[string]struct {
+		readOnly bool
+		canInput *bool
+	}{}
+	for _, item := range response.Result.Data {
+		if item.MimiRemote.ProjectID != "demo" {
+			t.Fatalf("安全结果必须绑定授权 project，got=%+v", item)
+		}
+		byID[item.ID] = struct {
+			readOnly bool
+			canInput *bool
+		}{item.MimiRemote.ReadOnly, item.CanAcceptDirectInput}
+		if item.ID == "thread-external" &&
+			(item.ParentThreadID != "thread-root" || item.AgentNickname != "worker-a" ||
+				item.AgentRole != "worker" || item.SessionID != "session-a") {
+			t.Fatalf("子会话稳定元数据必须保留：%+v", item)
+		}
+	}
+	if external := byID["thread-external"]; !external.readOnly ||
+		external.canInput == nil || *external.canInput {
+		t.Fatalf("外部 Worktree 会话必须 fail-closed 为只读：%+v", external)
+	}
+	if root := byID["thread-root"]; root.readOnly || root.canInput == nil || !*root.canInput {
+		t.Fatalf("项目根顶层 thread 应保留显式写能力：%+v", root)
+	}
+	if !strings.HasPrefix(response.Result.NextCursor, "mimi_") {
+		t.Fatalf("分页 cursor 必须是当前连接生成的 opaque token：%q", response.Result.NextCursor)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"id": 701, "method": "thread/read",
+		"params": map[string]any{"threadId": "thread-external", "includeTurns": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	readResponse := readGatewayRaw(t, conn)
+	if !bytes.Contains(readResponse, []byte(`"canAcceptDirectInput":false`)) ||
+		!bytes.Contains(readResponse, []byte(`"readOnly":true`)) {
+		t.Fatalf("thread/read 不得把外部 Worktree 恢复为可写：%s", readResponse)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"id": 702, "method": "turn/start",
+		"params": map[string]any{
+			"threadId":          "thread-external",
+			"cwd":               externalWorktree,
+			"input":             []any{map[string]any{"type": "text", "text": "must be rejected"}},
+			"approvalPolicy":    "on-request",
+			"approvalsReviewer": "user",
+			"sandboxPolicy": map[string]any{
+				"type": "workspaceWrite", "writableRoots": []string{externalWorktree}, "networkAccess": false,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "只读子会话") {
+		t.Fatalf("只读子 Thread 必须阻止 turn/start：%+v", errFrame)
+	}
+	assertNoUpstreamFrame(t, received)
+
+	readOnlyMutations := []map[string]any{
+		{
+			"id": 704, "method": "thread/name/set",
+			"params": map[string]any{"threadId": "thread-external", "name": "must be rejected"},
+		},
+		{
+			"id": 705, "method": "thread/archive",
+			"params": map[string]any{"threadId": "thread-external"},
+		},
+		{
+			"id": 706, "method": "turn/interrupt",
+			"params": map[string]any{"threadId": "thread-external", "turnId": "turn-running"},
+		},
+		{
+			"id": 707, "method": "thread/fork",
+			"params": map[string]any{
+				"threadId": "thread-external", "cwd": externalWorktree,
+				"approvalPolicy": "on-request", "approvalsReviewer": "user",
+				"sandbox": "danger-full-access",
+			},
+		},
+	}
+	for _, request := range readOnlyMutations {
+		if err := conn.WriteJSON(request); err != nil {
+			t.Fatal(err)
+		}
+		if errFrame := readGatewayError(t, conn); !strings.Contains(errFrame.message, "只读子会话") {
+			t.Fatalf("%s 必须被只读边界阻止：%+v", request["method"], errFrame)
+		}
+		assertNoUpstreamFrame(t, received)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"id": 703, "method": "thread/list",
+		"params": map[string]any{"limit": 50, "cursor": response.Result.NextCursor},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondRequest := readUpstreamFrame(t, received)
+	if bytes.Contains(secondRequest, []byte(response.Result.NextCursor)) ||
+		!bytes.Contains(secondRequest, []byte("upstream-secret-cursor")) {
+		t.Fatalf("upstream 只能看到还原后的原始 cursor：%s", secondRequest)
+	}
+	secondResponse := readGatewayRaw(t, conn)
+	if !bytes.Contains(secondResponse, []byte(`"nextCursor":null`)) {
+		t.Fatalf("末页应稳定返回 null cursor：%s", secondResponse)
+	}
+}
+
+func TestReceiverThreadIDsOnlyComeFromCollabAgentToolCalls(t *testing.T) {
+	raw := json.RawMessage(`{
+		"thread": {
+			"turns": [{
+				"items": [
+					{
+						"id": "tool-item-is-not-a-thread",
+						"type": "collabAgentToolCall",
+						"receiverThreadIds": ["child-a", "child-b", "child-a"],
+						"agentsStates": {
+							"child-a": {"status": "running"},
+							"child-b": {"status": "completed"}
+						}
+					},
+					{
+						"id": "ordinary-item",
+						"type": "commandExecution",
+						"receiverThreadIds": ["must-not-be-authorized"]
+					}
+				]
+			}]
+		}
+	}`)
+	related := relatedThreadsForParent(
+		receiverThreadIDsFromJSON(raw),
+		"codex",
+		"/authorized/repository",
+		"project-demo",
+	)
+	if len(related) != 2 || related[0].id != "child-a" || related[1].id != "child-b" {
+		t.Fatalf("receiverThreadIds 应支持多 receiver 并去重，got=%+v", related)
+	}
+	for _, thread := range related {
+		if thread.id == "tool-item-is-not-a-thread" || thread.id == "must-not-be-authorized" {
+			t.Fatalf("tool item id 或非 collab item receiver 不得成为 Thread ID：%+v", related)
+		}
+		if !thread.directInputKnown || thread.canAcceptDirectInput {
+			t.Fatalf("receiver 子 Thread 未返回 capability 时必须只读：%+v", thread)
+		}
+	}
+}

@@ -1107,6 +1107,55 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(state.compactWorkspacePath, [.session("session-1")])
     }
 
+    func testWorkbenchNavigationPushesSubagentWhileKeepingParentSelected() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "parent-thread", source: .sessions)
+        )
+
+        let effect = state.reduce(
+            .open(
+                .subagent(parentID: "parent-thread", childID: "child-thread"),
+                source: .sessions
+            ),
+            usesCompactNavigation: true,
+            selectedSessionID: "parent-thread"
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertEqual(state.selection, .session("parent-thread"))
+        XCTAssertEqual(
+            state.route,
+            .session(id: "parent-thread", source: .sessions)
+        )
+        XCTAssertEqual(
+            state.compactSessionPath,
+            [
+                .session("parent-thread"),
+                .subagent(parentID: "parent-thread", childID: "child-thread"),
+            ]
+        )
+        XCTAssertEqual(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "child-thread",
+            "通知可见性必须以屏幕正在阅读的 child Thread 为准"
+        )
+
+        let popEffect = state.reduce(
+            .compactPathChanged(
+                tab: .sessions,
+                path: [.session("parent-thread")]
+            ),
+            usesCompactNavigation: true,
+            selectedSessionID: "parent-thread"
+        )
+        XCTAssertNil(popEffect)
+        XCTAssertEqual(state.selection, .session("parent-thread"))
+        XCTAssertEqual(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "parent-thread"
+        )
+    }
+
     func testWorkbenchNavigationCreatedSessionCallbackDoesNotOpenTwice() {
         var state = WorkbenchNavigationState(route: .workspaces)
 

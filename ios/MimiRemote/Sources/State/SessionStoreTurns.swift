@@ -270,7 +270,12 @@ extension SessionStore {
     }
 
     func loadEarlierHistoryForSelectedSession() async {
-        guard let session = selectedSession,
+        guard let selectedSessionID else { return }
+        await loadEarlierHistory(sessionID: selectedSessionID)
+    }
+
+    func loadEarlierHistory(sessionID: SessionID) async {
+        guard let session = sessionsByID[sessionID],
               let cursor = historyPreviousCursorBySessionID[session.id],
               canLoadEarlierHistory(sessionID: session.id),
               !loadingEarlierHistorySessionIDs.contains(session.id)
@@ -589,7 +594,8 @@ extension SessionStore {
         tokenBudget: Int64? = nil,
         runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
@@ -681,7 +687,8 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
@@ -1803,7 +1810,8 @@ extension SessionStore {
         status: ThreadGoalStatus?,
         tokenBudget: Int64?
     ) async -> Bool {
-        if let session = sessionsByID[threadID], isExternalReadOnlySession(session) {
+        if let session = sessionsByID[threadID],
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
@@ -1862,7 +1870,8 @@ extension SessionStore {
         guard let sessionID = selectedSessionID else {
             return
         }
-        if let session = sessionsByID[sessionID], isExternalReadOnlySession(session) {
+        if let session = sessionsByID[sessionID],
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return
         }

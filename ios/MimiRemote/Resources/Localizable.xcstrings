@@ -24666,6 +24666,57 @@
         }
       }
     },
+    "ui.sub_agent_managed_by_parent" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Managed by the parent session"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由父会话管理"
+          }
+        }
+      }
+    },
+    "ui.sub_agent_managed_read_only" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Managed by the parent session · Read Only"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由父会话管理 · 只读"
+          }
+        }
+      }
+    },
+    "ui.sub_agent_unavailable" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This child session is no longer available or is outside the authorized repository scope."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个子会话已不可用，或不在已授权仓库范围内。"
+          }
+        }
+      }
+    },
     "ui.submission_instructions" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

@@ -4,6 +4,7 @@ enum AppDestination: Hashable {
     case sessions
     case workspaces
     case session(SessionID)
+    case subagent(parentID: SessionID, childID: SessionID)
 }
 
 private enum AppSheetDestination: String, Identifiable {
@@ -118,6 +119,12 @@ struct WorkbenchNavigationState: Equatable {
         if usesCompactNavigation, compactSelectedTab == .settings {
             return nil
         }
+        if usesCompactNavigation {
+            let path = compactSelectedTab == .workspaces ? compactWorkspacePath : compactSessionPath
+            if case .subagent(_, let childID) = path.last {
+                return childID
+            }
+        }
         guard case .session(let sessionID) = selection else {
             return nil
         }
@@ -225,6 +232,9 @@ struct WorkbenchNavigationState: Equatable {
                 pendingSessionSelectionID = nil
             case .session(let sessionID):
                 route = .session(id: sessionID, source: Self.rootPage(for: tab))
+            case .subagent(let parentID, _):
+                selection = .session(parentID)
+                route = .session(id: parentID, source: Self.rootPage(for: tab))
             }
             return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
 
@@ -246,6 +256,9 @@ struct WorkbenchNavigationState: Equatable {
                 pendingSessionSelectionID = nil
             case .session(let sessionID):
                 route = .session(id: sessionID, source: Self.rootPage(for: tab))
+            case .subagent(let parentID, _):
+                selection = .session(parentID)
+                route = .session(id: parentID, source: Self.rootPage(for: tab))
             }
             return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
 
@@ -274,6 +287,13 @@ struct WorkbenchNavigationState: Equatable {
                 source: requestedSource ?? (usesCompactNavigation ? activeRootPage : route.rootPage),
                 usesCompactNavigation: usesCompactNavigation,
                 replacesCompactPath: false
+            )
+        case .subagent(let parentID, let childID):
+            applySubagent(
+                parentID: parentID,
+                childID: childID,
+                source: requestedSource ?? (usesCompactNavigation ? activeRootPage : route.rootPage),
+                usesCompactNavigation: usesCompactNavigation
             )
         }
         return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
@@ -343,6 +363,29 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
+    private mutating func applySubagent(
+        parentID: SessionID,
+        childID: SessionID,
+        source: WorkbenchRootPage,
+        usesCompactNavigation: Bool
+    ) {
+        let parentDestination = AppDestination.session(parentID)
+        let childDestination = AppDestination.subagent(parentID: parentID, childID: childID)
+        route = .session(id: parentID, source: source)
+        selection = parentDestination
+        guard usesCompactNavigation else { return }
+
+        let path = [parentDestination, childDestination]
+        switch source {
+        case .sessions:
+            compactSelectedTab = .sessions
+            compactSessionPath = path
+        case .workspaces:
+            compactSelectedTab = .workspaces
+            compactWorkspacePath = path
+        }
+    }
+
     private mutating func effectForUserNavigation(
         to destination: AppDestination,
         selectedSessionID: SessionID?
@@ -358,6 +401,11 @@ struct WorkbenchNavigationState: Equatable {
             // selectSession 包含网络恢复，可能跨帧；记录在途 ID，阻止同一个 UI 事件链重复启动。
             pendingSessionSelectionID = sessionID
             return .selectSession(sessionID)
+        case .subagent(let parentID, _):
+            guard selectedSessionID != parentID,
+                  pendingSessionSelectionID != parentID else { return nil }
+            pendingSessionSelectionID = parentID
+            return .selectSession(parentID)
         }
     }
 
@@ -399,13 +447,22 @@ struct WorkbenchNavigationState: Equatable {
 
         var updatedPath = currentPath
         if let currentDestination = updatedPath.last,
-           case .session = currentDestination {
+           Self.isSessionDetailDestination(currentDestination) {
             // local:* 占位切到真实 ID 时替换当前详情，不能再 push 一层。
             updatedPath[updatedPath.index(before: updatedPath.endIndex)] = destination
         } else {
             updatedPath.append(destination)
         }
         return updatedPath
+    }
+
+    private static func isSessionDetailDestination(_ destination: AppDestination) -> Bool {
+        switch destination {
+        case .session, .subagent:
+            return true
+        case .sessions, .workspaces:
+            return false
+        }
     }
 }
 
@@ -430,6 +487,8 @@ struct UnifiedWorkbenchShell: View {
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
     @State private var didApplyDebugLaunchRoute = false
+    @State private var selectedRelatedSubagent: SessionContextSubagent?
+    @State private var relatedSubagentParentID: SessionID?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -476,6 +535,12 @@ struct UnifiedWorkbenchShell: View {
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
                 handleLayoutModeChange(
                     usesCompactNavigation: usesCompactNavigation,
+                    layout: layout
+                )
+            }
+            .onChange(of: layout.usesAttachedInspector) { _, usesAttachedInspector in
+                handleRelatedPresentationChange(
+                    usesAttachedInspector: usesAttachedInspector,
                     layout: layout
                 )
             }
@@ -845,6 +910,23 @@ struct UnifiedWorkbenchShell: View {
             workspaces(layout: layout)
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
+        case .subagent(let parentID, let childID):
+            if let relation = selectedRelatedSubagent,
+               relation.id == childID,
+               relatedSubagentParentID == parentID {
+                RelatedSessionConversationView(
+                    relation: relation,
+                    parentSessionID: parentID,
+                    showsCloseButton: false,
+                    onClose: {}
+                )
+            } else {
+                ContentUnavailableView(
+                    L10n.text("ui.sub_agent"),
+                    systemImage: "person.2.slash",
+                    description: Text(L10n.text("ui.sub_agent_unavailable"))
+                )
+            }
         }
     }
 
@@ -858,6 +940,8 @@ struct UnifiedWorkbenchShell: View {
         case .workspaces:
             workspaces(layout: layout)
         case .session:
+            sessionDetail(layout: layout, tokens: tokens)
+        case .subagent:
             sessionDetail(layout: layout, tokens: tokens)
         }
     }
@@ -932,7 +1016,7 @@ struct UnifiedWorkbenchShell: View {
                         .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
                         Button {
-                            showingInspector.toggle()
+                            toggleInspector()
                         } label: {
                             Label(
                                 showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
@@ -983,7 +1067,7 @@ struct UnifiedWorkbenchShell: View {
                         tokens: tokens,
                         isActive: showingInspector
                     ) {
-                        showingInspector.toggle()
+                        toggleInspector()
                     }
                 }
             }
@@ -992,7 +1076,24 @@ struct UnifiedWorkbenchShell: View {
         .toolbar(.hidden, for: .tabBar)
         .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .sessionActionSheets(presentation: $sessionActionPresentation)
-        .sessionInspectorPresentation(isPresented: $showingInspector, layout: layout)
+        .environment(
+            \.openSubagentSession,
+            OpenSubagentSessionAction { subagent in
+                openRelatedSubagent(subagent, layout: layout)
+            }
+        )
+        .sessionInspectorPresentation(
+            isPresented: $showingInspector,
+            layout: layout,
+            relatedSubagent: $selectedRelatedSubagent,
+            parentSessionID: $relatedSubagentParentID,
+            onOpenSubagent: { subagent in
+                openRelatedSubagent(subagent, layout: layout)
+            },
+            onCloseRelatedSubagent: {
+                closeRelatedSubagent(keepInspectorVisible: true)
+            }
+        )
     }
 
     private func selectionBinding(layout: WorkbenchLayout) -> Binding<AppDestination?> {
@@ -1024,6 +1125,13 @@ struct UnifiedWorkbenchShell: View {
             set: { path in
                 let expectedPath = compactPath(for: tab)
                 guard path != expectedPath else { return }
+                if case .subagent = expectedPath.last,
+                   !path.contains(where: {
+                       if case .subagent = $0 { return true }
+                       return false
+                   }) {
+                    closeRelatedSubagent(keepInspectorVisible: false)
+                }
                 let lane: WorkbenchNavigationBindingScheduler.Lane = tab == .workspaces
                     ? .compactWorkspacesPath
                     : .compactSessionsPath
@@ -1061,6 +1169,11 @@ struct UnifiedWorkbenchShell: View {
         source: WorkbenchRootPage? = nil,
         layout: WorkbenchLayout
     ) {
+        if case .subagent = destination {
+            // 由 openRelatedSubagent 先保存展示元数据。
+        } else if selectedRelatedSubagent != nil {
+            closeRelatedSubagent(keepInspectorVisible: false)
+        }
         applyNavigation(.open(destination, source: source), layout: layout)
     }
 
@@ -1082,10 +1195,26 @@ struct UnifiedWorkbenchShell: View {
 
     private func applyDebugLaunchRouteIfNeeded(layout: WorkbenchLayout) {
 #if DEBUG
-        guard !didApplyDebugLaunchRoute,
-              ProcessInfo.processInfo.arguments.contains("--debug-open-workspaces") else {
+        guard !didApplyDebugLaunchRoute else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--debug-open-subagent") {
+            didApplyDebugLaunchRoute = true
+            Task { @MainActor in
+                // 紧凑布局可能先出现、Debug 内存种子稍后才完成注入；短暂等待
+                // 父会话和系统第一层 push 落稳，再完整复用生产路由进入子会话。
+                for _ in 0..<20 {
+                    if let parentID = sessionStore.selectedSessionID,
+                       let relation = sessionStore.contextStore.context(for: parentID)?.subagents.first {
+                        try? await Task.sleep(nanoseconds: 700_000_000)
+                        openRelatedSubagent(relation, layout: layout)
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+            }
             return
         }
+        guard arguments.contains("--debug-open-workspaces") else { return }
         didApplyDebugLaunchRoute = true
         // 真机视觉验证可直接抵达目标页；仅 Debug 生效，不改变正常或 Release 启动路径。
         open(.workspaces, layout: layout)
@@ -1097,6 +1226,18 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout
     ) {
         if usesCompactNavigation {
+            if let relation = selectedRelatedSubagent,
+               let parentID = relatedSubagentParentID {
+                showingInspector = false
+                applyNavigation(
+                    .open(
+                        .subagent(parentID: parentID, childID: relation.id),
+                        source: navigationState.route.rootPage
+                    ),
+                    layout: layout
+                )
+                return
+            }
             if presentedSheet == .settings {
                 // 横屏的 split layout 用 sheet 承载设置；回到紧凑布局时把同一页面
                 // 还原为设置 Tab，避免旋转后突然跳回会话并丢失用户刚选的内容。
@@ -1108,10 +1249,69 @@ struct UnifiedWorkbenchShell: View {
             return
         }
 
+        if selectedRelatedSubagent != nil {
+            showingInspector = true
+        }
+
         if navigationState.compactSelectedTab == .settings {
             // split layout 没有“设置”详情 destination。旋转时继续以 sheet 呈现同一
             // SettingsView，使表单状态和 @AppStorage 选择保持可见且可操作。
             presentedSheet = .settings
+        }
+    }
+
+    private func handleRelatedPresentationChange(
+        usesAttachedInspector: Bool,
+        layout: WorkbenchLayout
+    ) {
+        guard selectedRelatedSubagent != nil, !layout.usesCompactNavigation else { return }
+        _ = usesAttachedInspector
+        showingInspector = true
+    }
+
+    private func toggleInspector() {
+        if showingInspector {
+            closeRelatedSubagent(keepInspectorVisible: false)
+            showingInspector = false
+        } else {
+            showingInspector = true
+        }
+    }
+
+    private func openRelatedSubagent(
+        _ relation: SessionContextSubagent,
+        layout: WorkbenchLayout
+    ) {
+        guard !relation.id.isEmpty, let parentID = sessionStore.selectedSessionID else { return }
+        selectedRelatedSubagent = relation
+        relatedSubagentParentID = parentID
+
+        if layout.usesCompactNavigation {
+            showingInspector = false
+            DispatchQueue.main.async {
+                open(
+                    .subagent(parentID: parentID, childID: relation.id),
+                    source: navigationState.route.rootPage,
+                    layout: layout
+                )
+            }
+        } else if layout.usesAttachedInspector {
+            showingInspector = true
+        } else {
+            // 中等宽度继续复用当前系统 sheet，只替换其中的详情内容。
+            // 这同时保留父会话上下文，并避免两个 sheet 交接时的呈现竞态。
+            showingInspector = true
+        }
+    }
+
+    private func closeRelatedSubagent(keepInspectorVisible: Bool) {
+        if let childID = selectedRelatedSubagent?.id {
+            sessionStore.stopRelatedSessionObservation(sessionID: childID)
+        }
+        selectedRelatedSubagent = nil
+        relatedSubagentParentID = nil
+        if keepInspectorVisible {
+            showingInspector = true
         }
     }
 

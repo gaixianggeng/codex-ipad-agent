@@ -39,6 +39,7 @@ const (
 	appServerGatewayThreadSearchMaxLimit     = appServerGatewayThreadListMaxLimit
 	appServerGatewayThreadSearchTermMaxBytes = 512
 	appServerGatewayInitialTurnsMaxLimit     = 5
+	appServerGatewayGlobalCursorMax          = 128
 )
 
 var (
@@ -228,6 +229,7 @@ type appServerGatewayPolicy struct {
 	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
+	globalListCursors     map[string]string
 	beforePendingRemember func()
 	beforeManagedComplete func()
 }
@@ -238,6 +240,8 @@ type appServerGatewayPendingThreadRequest struct {
 	scopeID             string
 	responseLimit       int64
 	responseLimitSet    bool
+	globalDiscovery     bool
+	threadID            string
 	managedWorktreePath string
 	createdAt           time.Time
 }
@@ -301,20 +305,32 @@ type gatewayScope struct {
 }
 
 type appServerGatewayAllowedThread struct {
-	id                string
-	runtimeID         string
-	cwd               string
-	scopeID           string
-	autoTitleEligible bool
-	lastSeen          time.Time
+	id                   string
+	runtimeID            string
+	cwd                  string
+	scopeID              string
+	canAcceptDirectInput bool
+	directInputKnown     bool
+	readOnly             bool
+	autoTitleEligible    bool
+	lastSeen             time.Time
 }
 
 type appServerGatewayThreadWire struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	SessionID string `json:"sessionId"`
-	CWD       string `json:"cwd"`
-	Path      string `json:"path"`
+	ID                   string `json:"id"`
+	ThreadID             string `json:"threadId"`
+	SessionID            string `json:"sessionId"`
+	CWD                  string `json:"cwd"`
+	Path                 string `json:"path"`
+	ParentThreadID       string `json:"parentThreadId"`
+	CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
+	Turns                []struct {
+		Items []struct {
+			Type              string         `json:"type"`
+			ReceiverThreadIDs []string       `json:"receiverThreadIds"`
+			AgentsStates      map[string]any `json:"agentsStates"`
+		} `json:"items"`
+	} `json:"turns"`
 }
 
 func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request) {

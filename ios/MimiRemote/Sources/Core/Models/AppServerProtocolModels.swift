@@ -402,6 +402,22 @@ struct CodexAppServerRequestBuilder {
         ]))
     }
 
+    /// 无 cwd 列表只用于 agentd 的受控全局发现。客户端不携带项目过滤器，也不
+    /// 依赖 experimental parent/ancestor API；路径与仓库身份裁剪完全由 gateway 完成。
+    func controlledGlobalThreadList(
+        limit: Int? = 50,
+        cursor: String? = nil
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
+            "limit": limit.map { .int(Int64($0)) },
+            "cursor": cursor.map { .string($0) },
+            "sortKey": .string("updated_at"),
+            "sortDirection": .string("desc"),
+            "archived": .bool(false),
+            "useStateDbOnly": .bool(false)
+        ]))
+    }
+
     func threadSearch(
         query: String,
         limit: Int? = 50,

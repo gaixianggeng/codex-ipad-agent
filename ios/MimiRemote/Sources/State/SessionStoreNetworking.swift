@@ -135,6 +135,7 @@ protocol SessionStoreAPIClient {
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage
+    func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse
     func threadGoal(threadID: String) async throws -> ThreadGoal?
@@ -165,6 +166,10 @@ protocol SessionStoreAPIClient {
 }
 
 extension SessionStoreAPIClient {
+    func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        SessionsPage(sessions: [])
+    }
+
     func externalActivities() async throws -> ExternalActivityResponse? {
         // 旧 agentd/iOS 测试客户端没有该能力时明确返回 nil；nil 表示“不支持”，
         // 与新 agentd 返回 activities=[]（支持但当前无活动）不能混为一谈。
