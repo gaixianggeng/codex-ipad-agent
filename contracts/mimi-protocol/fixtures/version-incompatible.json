@@ -1,0 +1,10 @@
+{
+  "name": "agentd",
+  "version": "future",
+  "installation_id": "00112233-4455-4677-8899-aabbccddeeff",
+  "protocol_revision": 3,
+  "minimum_client_protocol_revision": 3,
+  "capabilities": [
+    "file_upload_v1"
+  ]
+}

@@ -67,13 +67,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Personalization"
+            "value" : "Appearance & Personalization"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "个性化"
+            "value" : "外观与个性化"
           }
         }
       }
@@ -1057,13 +1057,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Advanced"
+            "value" : "Diagnostics & Development"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "高级"
+            "value" : "诊断与开发"
           }
         }
       }
@@ -12997,13 +12997,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Legal & Support"
+            "value" : "About & Support"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "法律与支持"
+            "value" : "关于与支持"
           }
         }
       }
@@ -28877,6 +28877,42 @@
         }
       }
     },
+    "ui.connection" : {
+      "comment" : "Settings section title for saved Mac devices and connection health.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接"
+          }
+        }
+      }
+    },
+    "ui.mac_devices" : {
+      "comment" : "Settings row title for managing the currently active and other saved Macs.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac & Devices"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 与设备"
+          }
+        }
+      }
+    },
     "ui.token_usage" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -33366,6 +33402,57 @@
         }
       }
     },
+    "ui.agentd_protocol_client_too_old_values" : {
+      "comment" : "Protocol negotiation failed because agentd requires a newer Mimi Remote client. Placeholders are server revision, minimum client revision, and current client revision.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd protocol revision %@ requires client revision %@ or later; this app is revision %@. Update Mimi Remote."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd 协议修订为 %@，最低需要客户端修订 %@，当前 App 为 %@；请升级 Mimi Remote。"
+          }
+        }
+      }
+    },
+    "ui.agentd_protocol_metadata_invalid_values" : {
+      "comment" : "Protocol negotiation failed because agentd returned an invalid revision window. Placeholders are protocol revision and minimum client revision.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd returned invalid protocol metadata: protocol_revision=%@, minimum_client_protocol_revision=%@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd 返回了无效的协议元数据：protocol_revision=%@，minimum_client_protocol_revision=%@。"
+          }
+        }
+      }
+    },
+    "ui.agentd_protocol_server_too_old_values" : {
+      "comment" : "Protocol negotiation failed because agentd is too old. Placeholders are server revision and the minimum server revision required by the app.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd protocol revision is %@; this app requires revision %@ or later. Update agentd."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "agentd 协议修订为 %@，当前 App 最低需要 %@；请升级 agentd。"
+          }
+        }
+      }
+    },
     "ui.agentd_version_too_old_for_multi_mac" : {
       "comment" : "Shown when a Mac cannot provide the stable installation identity required for safe multi-Mac switching.",
       "localizations" : {
@@ -33379,6 +33466,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这台电脑的 agentd 版本过旧，尚不支持安全的多电脑身份校验。请先升级并重启 agentd。"
+          }
+        }
+      }
+    },
+    "ui.agentd_websocket_protocol_incompatible_values" : {
+      "comment" : "WebSocket handshake failed due to protocol incompatibility. Placeholders are server revision, minimum client revision, and current app revision.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Protocol incompatible: agentd revision=%@, minimum client revision=%@, app revision=%@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "协议不兼容：agentd revision=%@，minimum client revision=%@，App revision=%@。"
           }
         }
       }
@@ -33736,6 +33840,258 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "完成 Mac 设置后，扫描它显示的二维码。"
+          }
+        }
+      }
+    },
+    "ui.me" : {
+      "comment" : "Top-level destination for account usage, preferences, devices, and app information.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Me"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我的"
+          }
+        }
+      }
+    },
+    "ui.my_preferences" : {
+      "comment" : "Section title for personal app preferences on the Me page.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "My Preferences"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我的偏好设置"
+          }
+        }
+      }
+    },
+    "ui.more" : {
+      "comment" : "Section title for secondary destinations on the Me page.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多"
+          }
+        }
+      }
+    },
+    "ui.current_remaining" : {
+      "comment" : "Heading above the account quota rings; the rings represent remaining quota.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current Remaining"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前剩余"
+          }
+        }
+      }
+    },
+    "ui.token_activity" : {
+      "comment" : "Heading for the account's daily Token activity dot grid.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token Activity"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token 活动"
+          }
+        }
+      }
+    },
+    "ui.lifetime_token_value" : {
+      "comment" : "Compact lifetime Token count shown in the Token activity header. The placeholder is a localized compact number.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lifetime · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "累计 Token · %@"
+          }
+        }
+      }
+    },
+    "ui.loading_token_activity" : {
+      "comment" : "Loading message for account Token activity.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading Token activity…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载 Token 活动…"
+          }
+        }
+      }
+    },
+    "ui.token_activity_unavailable" : {
+      "comment" : "Shown when the current host or account cannot return account Token activity.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token activity is temporarily unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token 活动暂时不可用"
+          }
+        }
+      }
+    },
+    "ui.token_activity_waiting" : {
+      "comment" : "Initial placeholder before the first account Token activity refresh finishes.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token activity will appear after refresh"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新后显示 Token 活动"
+          }
+        }
+      }
+    },
+    "ui.token_activity_accessibility_value" : {
+      "comment" : "VoiceOver summary for the Token activity grid. The placeholder is the number of active days.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ active days in the past year"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "过去一年有 %@ 天使用了 Token"
+          }
+        }
+      }
+    },
+    "ui.advanced_and_development" : {
+      "comment" : "Me page destination grouping advanced capabilities and developer mode.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Advanced & Development"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高级与开发"
+          }
+        }
+      }
+    },
+    "ui.about_and_legal" : {
+      "comment" : "Me page destination grouping app information and legal documents.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "About & Legal"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关于与法律"
+          }
+        }
+      }
+    },
+    "ui.compact_number_hundred_million_suffix" : {
+      "comment" : "Chinese compact-number suffix for one hundred million. Only used by the Simplified Chinese formatter.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " hundred million"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "亿"
+          }
+        }
+      }
+    },
+    "ui.compact_number_ten_thousand_suffix" : {
+      "comment" : "Chinese compact-number suffix for ten thousand. Only used by the Simplified Chinese formatter.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " ten thousand"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "万"
           }
         }
       }

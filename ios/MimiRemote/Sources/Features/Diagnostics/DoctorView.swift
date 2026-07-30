@@ -631,6 +631,7 @@ struct DoctorView: View {
             var request = URLRequest(url: url)
             request.timeoutInterval = 20
             request.setValue("Bearer \(appStore.token)", forHTTPHeaderField: "Authorization")
+            MimiProtocolContract.applyClientHeaders(to: &request)
             let (data, response) = try await URLSession.shared.data(for: request)
             try Task.checkCancellation()
             doctorState = .loaded(try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response))
@@ -666,6 +667,7 @@ struct DoctorView: View {
             var request = URLRequest(url: url)
             request.timeoutInterval = 30
             request.setValue("Bearer \(appStore.token)", forHTTPHeaderField: "Authorization")
+            MimiProtocolContract.applyClientHeaders(to: &request)
             let (data, response) = try await URLSession.shared.data(for: request)
             try Task.checkCancellation()
             historyState = .loaded(try DoctorDiagnosticsParser.parseRawResponse(

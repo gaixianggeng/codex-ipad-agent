@@ -40,7 +40,7 @@ xcodegen generate \
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-日常 `build` / `run` 优先使用 available、paired、USB 连接的真机，没有可用真机时回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test` 与 CI 固定使用 Simulator；兼容性测试通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
+日常 `build` / `run` 优先租用 available、paired、USB 连接的真机，跳过已占用设备后回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test`、快照与 CI 精确固定这台 M5 iPad，忙或缺失时不切换 iPad mini。使用 `bash ./scripts/ios-dev.sh leases` 查看跨 Worktree 租约和外部 `xcodebuild`；兼容性运行通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
 
 Claude bridge 改动至少运行：
 
@@ -58,6 +58,30 @@ cargo test --locked \
 bash ./scripts/check-public-repo-safety.sh
 bash ./scripts/check-third-party-notices.sh
 bash ./scripts/check-ios-privacy-manifest.sh
+```
+
+## Mimi iOS / agentd 契约
+
+iOS 与 `agentd` 的版本窗口、握手 header、capabilities 和共享 golden fixtures 以
+[`contracts/mimi-protocol/`](contracts/mimi-protocol/) 为权威来源。不要直接修改
+Go/Swift 生成文件。协议变化先更新 manifest 与 fixtures，再执行：
+
+```bash
+go run ./internal/protocolcontract/cmd/generate --write
+bash ./scripts/check-mimi-protocol-contract.sh
+bash ./scripts/test-conversation-regressions.sh
+```
+
+字段演进、跨版本矩阵、失败语义和风险边界见
+[Mimi iOS / agentd 版本化契约](docs/mimi-protocol-contracts.md)。
+
+关键用户链路的风险、测试层和 PR Gate selector 映射见
+[关键用户链路分层回归](docs/critical-user-journey-regressions.md)。修改配对、Host
+切换、连接恢复、会话/turn、审批/中断或 Git/Worktree 链路时，先运行：
+
+```bash
+bash ./scripts/check-critical-regressions.sh
+bash ./scripts/test-conversation-regressions.sh
 ```
 
 ## 快速 PR Gate

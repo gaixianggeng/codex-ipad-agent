@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "protocol_name": "mimi-agent-api",
+  "current_revision": 2,
+  "minimum_supported_client_revision": 1,
+  "minimum_supported_server_revision": 1,
+  "legacy_client_revision": 1,
+  "legacy_server_revision": 1,
+  "headers": {
+    "client_revision": "X-Mimi-Protocol-Revision",
+    "minimum_server_revision": "X-Mimi-Minimum-Server-Protocol-Revision",
+    "server_revision": "X-Mimi-Server-Protocol-Revision",
+    "minimum_client_revision": "X-Mimi-Minimum-Client-Protocol-Revision"
+  },
+  "capabilities": [
+    "file_upload_v1"
+  ]
+}

@@ -126,6 +126,26 @@ enum WorkspaceSessionAgeBoundary {
     }
 }
 
+/// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
+struct WorkspaceSessionLoadInvocationTokens {
+    private var latestByProjectID: [String: UUID] = [:]
+
+    @discardableResult
+    mutating func begin(for projectID: String) -> UUID {
+        let invocationID = UUID()
+        latestByProjectID[projectID] = invocationID
+        return invocationID
+    }
+
+    func isCurrent(_ invocationID: UUID, for projectID: String) -> Bool {
+        latestByProjectID[projectID] == invocationID
+    }
+
+    mutating func remove(for projectID: String) {
+        latestByProjectID.removeValue(forKey: projectID)
+    }
+}
+
 private struct WorkspaceGitInspectionTarget: Identifiable {
     let id: String
     let name: String
@@ -154,8 +174,8 @@ struct WorkspaceRootView: View {
     @State private var selectedWorkspaceID: String?
     @State private var catalogState: CatalogState = .idle
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
+    @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     @State private var isPresentingOpenWorkspace = false
-    @State private var pendingWorkspaceRemoval: AgentProject?
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
 
     init(
@@ -217,6 +237,9 @@ struct WorkspaceRootView: View {
             // 首次进入或切换工作区时，如果本地还没有数据就主动补齐会话首屏。
             // 已有内容时保留即时展示，用户仍可通过刷新按钮或下拉手动同步。
             guard sessionStore.sessions(forProjectID: selectedWorkspaceID).isEmpty else {
+                // 缓存命中也是更新后的 View invocation；先让旧 waiter 失去回写资格，
+                // 避免它随后用取消或失败状态盖掉当前已展示的内容。
+                sessionLoadInvocationTokens.begin(for: selectedWorkspaceID)
                 sessionLoadStates[selectedWorkspaceID] = .loaded
                 return
             }
@@ -249,29 +272,6 @@ struct WorkspaceRootView: View {
                     }
             }
             .presentationDetents([.large])
-        }
-        .confirmationDialog(
-            L10n.text("ui.remove_directory"),
-            isPresented: Binding(
-                get: { pendingWorkspaceRemoval != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        pendingWorkspaceRemoval = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let project = pendingWorkspaceRemoval {
-                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
-                    removeWorkspace(project)
-                }
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingWorkspaceRemoval = nil
-            }
-        } message: {
-            Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
     }
@@ -469,7 +469,7 @@ struct WorkspaceRootView: View {
                                     tokens: tokens,
                                     action: {},
                                     onOpenGitChanges: {},
-                                    onRemove: {}
+                                    onConfirmRemove: {}
                                 )
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .redacted(reason: .placeholder)
@@ -525,10 +525,8 @@ struct WorkspaceRootView: View {
                                     selectedWorkspaceID = project.id
                                 } onOpenGitChanges: {
                                     gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
-                                } onRemove: {
-                                    // 当前浏览中的卡片不允许移除；用户需先切到正确工作区，再处理误开的目录。
-                                    guard selectedWorkspaceID != project.id else { return }
-                                    pendingWorkspaceRemoval = project
+                                } onConfirmRemove: {
+                                    removeWorkspace(project)
                                 }
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .id(project.id)
@@ -636,9 +634,9 @@ struct WorkspaceRootView: View {
     }
 
     private func removeWorkspace(_ project: AgentProject) {
-        pendingWorkspaceRemoval = nil
         guard selectedWorkspaceID != project.id else { return }
         sessionLoadStates.removeValue(forKey: project.id)
+        sessionLoadInvocationTokens.remove(for: project.id)
         sessionStore.forgetWorkspace(project)
     }
 
@@ -673,18 +671,29 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshWorkspaceSessions(projectID: String) async {
-        guard sessionLoadStates[projectID] != .loading else { return }
+        // `.loading` 只是 View 展示状态，不能证明仍有未取消的 waiter。每次调用都重新加入
+        // SessionStore 的共享请求，并用 invocation token 阻止旧调用覆盖新状态。
+        let invocationID = sessionLoadInvocationTokens.begin(for: projectID)
         sessionLoadStates[projectID] = .loading
         do {
             try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+                return
+            }
             guard !Task.isCancelled else {
                 sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
                 return
             }
             sessionLoadStates[projectID] = .loaded
         } catch is CancellationError {
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+                return
+            }
             sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
         } catch {
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+                return
+            }
             sessionLoadStates[projectID] = .failed(error.localizedDescription)
         }
     }
@@ -756,8 +765,9 @@ private struct WorkspaceLibraryCard: View {
     let tokens: ThemeTokens
     let action: () -> Void
     let onOpenGitChanges: () -> Void
-    let onRemove: () -> Void
+    let onConfirmRemove: () -> Void
     @State private var isPresentingIconPicker = false
+    @State private var isPresentingRemoveConfirmation = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -782,9 +792,12 @@ private struct WorkspaceLibraryCard: View {
                 }
 
                 if !isSelected {
-                    Button(role: .destructive, action: onRemove) {
+                    Button(role: .destructive) {
+                        isPresentingRemoveConfirmation = true
+                    } label: {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
                     }
+                    .accessibilityIdentifier("workspace.remove.request.\(project.id)")
                 }
             } label: {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "ellipsis.circle")
@@ -795,6 +808,24 @@ private struct WorkspaceLibraryCard: View {
             }
             .menuStyle(.button)
             .accessibilityLabel(L10n.text("ui.workspace_actions"))
+            .accessibilityIdentifier("workspace.card.actions.\(project.id)")
+            // iPad 会把 confirmationDialog 适配成 popover；必须挂在真实的 44pt 操作源上，
+            // 让系统在旋转和分栏宽度变化时从当前卡片计算箭头与安全区域，而不是使用整页根视图。
+            .confirmationDialog(
+                L10n.text("ui.remove_directory"),
+                isPresented: $isPresentingRemoveConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
+                    onConfirmRemove()
+                }
+                .accessibilityIdentifier("workspace.remove.confirm.\(project.id)")
+                Button(L10n.text("ui.cancel"), role: .cancel) {
+                    isPresentingRemoveConfirmation = false
+                }
+            } message: {
+                Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
+            }
             .padding(.top, 4)
             .padding(.trailing, 2)
 

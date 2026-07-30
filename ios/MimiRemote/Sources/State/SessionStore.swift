@@ -80,6 +80,9 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
+    @Published var accountTokenUsage: AccountTokenUsageSnapshot?
+    @Published var isRefreshingAccountTokenUsage = false
+    @Published var isAccountTokenUsageUnavailable = false
     // 使用量刷新跨设置页、个人页和侧栏共享，由 Store 按 runtime 去重。
     // 视图只观察自己的 provider，避免 Claude loading 禁用其他按钮，也避免
     // 页面关闭后由未结构化 Task 回写已销毁的局部 @State。
@@ -318,6 +321,7 @@ final class SessionStore: ObservableObject {
     @Published var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
     @Published var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     var appServerModelOptionsLastRefresh: Date?
+    var accountTokenUsageRefreshHostScope: HostScope?
     @Published var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
     let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
