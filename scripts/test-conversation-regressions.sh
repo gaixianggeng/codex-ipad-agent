@@ -21,10 +21,6 @@ fi
   ./internal/httpapi \
   -count=1
 
-# 本地固定到项目默认 iPad；CI 在任务开始时只解析一次 UDID，再由两个测试脚本复用。
-resolved_destination="$(bash "$ROOT_DIR/scripts/ios-dev.sh" prepare)"
-derived_data_path="$(bash "$ROOT_DIR/scripts/ios-dev.sh" derived-data-path)"
-
 echo "==> iOS conversation regressions"
 # 这些测试组覆盖 Mimi Remote 对话请求链路和发布安全边界：
 # - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
@@ -39,12 +35,9 @@ echo "==> iOS conversation regressions"
 # - PairingLinkTests：Endpoint allowlist、ATS 对应的 HTTP/HTTPS 传输策略。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
-xcodebuild test -quiet \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -destination "$resolved_destination" \
-  -derivedDataPath "$derived_data_path" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" test \
+  -quiet \
+  -collect-test-diagnostics never \
   -testLanguage zh-Hans \
   -testRegion CN \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \

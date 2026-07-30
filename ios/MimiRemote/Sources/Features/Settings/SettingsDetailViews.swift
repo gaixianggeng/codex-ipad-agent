@@ -417,6 +417,8 @@ struct CapabilityItemRow: View {
 
 struct AppearanceView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.themeSystemColorScheme) private var themeSystemColorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
@@ -445,22 +447,36 @@ struct AppearanceView: View {
             .listRowBackground(tokens.elevatedSurface)
 
             Section {
-                Picker(selection: workspaceIconStyleBinding) {
+                LazyVGrid(
+                    columns: workspaceIconStyleColumns,
+                    alignment: .leading,
+                    spacing: 10
+                ) {
                     ForEach(WorkspaceIconStyle.allCases) { style in
-                        WorkspaceIconStyleOptionLabel(
-                            style: style,
-                            isSelected: workspaceAppearanceStore.style(profileID: profileID) == style,
-                            tokens: tokens
+                        let isSelected =
+                            workspaceAppearanceStore.style(profileID: profileID) == style
+                        Button {
+                            workspaceIconStyleBinding.wrappedValue = style
+                        } label: {
+                            WorkspaceIconStyleOptionLabel(
+                                style: style,
+                                isSelected: isSelected,
+                                tokens: tokens
+                            )
+                        }
+                        .buttonStyle(
+                            WorkspaceIconStylePressButtonStyle(reduceMotion: reduceMotion)
                         )
-                        .tag(style)
+                        .accessibilityLabel(style.title)
+                        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .accessibilityIdentifier(
+                            "settings.workspaceIconStyle.option.\(style.rawValue)"
+                        )
                     }
-                } label: {
-                    Text(L10n.text("ui.workspace_avatar_style"))
                 }
-                // 代表图需要保留足够尺寸；原生 inline Picker 同时提供系统选中标记、
-                // VoiceOver 单选语义，并能在 iPhone 与大字体下自然纵向排布。
-                .pickerStyle(.inline)
-                .labelsHidden()
+                // 八种选项在 iPhone 上自动降为两列或单列，避免固定列数挤压大字体。
+                .padding(.vertical, 4)
                 .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
@@ -565,6 +581,18 @@ struct AppearanceView: View {
         "\(Int((themeStore.fontScale * 100).rounded()))%"
     }
 
+    private var workspaceIconStyleColumns: [GridItem] {
+        // 辅助功能字号直接减少列数，避免只放大文字却把长作品名挤进窄卡片。
+        let minimumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 300 : 190
+        let maximumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 520 : 260
+        return [
+            GridItem(
+                .adaptive(minimum: minimumWidth, maximum: maximumWidth),
+                spacing: 10
+            )
+        ]
+    }
+
     private var workspaceIconStyleBinding: Binding<WorkspaceIconStyle> {
         Binding(
             get: {
@@ -593,6 +621,7 @@ struct AppearanceView: View {
 
 private struct WorkspaceIconStyleOptionLabel: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @ScaledMetric(relativeTo: .callout) private var dynamicCalloutSize: CGFloat = 16
 
     let style: WorkspaceIconStyle
     let isSelected: Bool
@@ -603,20 +632,43 @@ private struct WorkspaceIconStyleOptionLabel: View {
             representativeImage
 
             Text(style.title)
-                .font(themeStore.uiFont(.body))
+                // 叠加系统 Dynamic Type 与 App 内字体缩放，避免辅助功能字号下
+                // 只有页面标题变大、作品名称仍停留在固定字号。
+                .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .medium))
                 .foregroundStyle(tokens.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 4)
+
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .semibold))
+                    .foregroundStyle(tokens.primaryAction)
+                    .accessibilityHidden(true)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(isSelected ? L10n.text("ui.selected") : "")
-        .accessibilityIdentifier("settings.workspaceIconStyle.option.\(style.rawValue)")
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+        .background(
+            isSelected
+                ? tokens.primaryAction.opacity(0.10)
+                : tokens.contentPanelBackground.opacity(0.58),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    isSelected ? tokens.primaryAction.opacity(0.72) : tokens.border.opacity(0.5),
+                    lineWidth: isSelected ? 1.25 : 0.75
+                )
+        }
     }
 
     @ViewBuilder
     private var representativeImage: some View {
-        switch style {
-        case .journey:
-            Image("WorkspaceCharacterSunWukong")
+        if let assetName = style.representativeAssetName {
+            Image(assetName)
                 .resizable()
                 .scaledToFill()
                 .frame(width: 44, height: 44)
@@ -626,8 +678,8 @@ private struct WorkspaceIconStyleOptionLabel: View {
                         .stroke(tokens.border.opacity(0.5), lineWidth: 0.75)
                 }
                 .accessibilityHidden(true)
-        case .emoji:
-                Text(verbatim: "🦧")
+        } else {
+            Text(verbatim: "🦧")
                 .font(.system(size: 28))
                 .frame(width: 44, height: 44)
                 .background(
@@ -636,6 +688,23 @@ private struct WorkspaceIconStyleOptionLabel: View {
                 )
                 .accessibilityHidden(true)
         }
+    }
+}
+
+private struct WorkspaceIconStylePressButtonStyle: ButtonStyle {
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // 普通模式用轻微缩放提供按下即时反馈；Reduce Motion 下只改变透明度。
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
+            .opacity(configuration.isPressed ? 0.84 : 1)
+            .animation(
+                reduceMotion
+                    ? .easeOut(duration: 0.08)
+                    : .spring(response: 0.22, dampingFraction: 1),
+                value: configuration.isPressed
+            )
     }
 }
 

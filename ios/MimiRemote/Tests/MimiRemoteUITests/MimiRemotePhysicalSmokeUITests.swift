@@ -378,10 +378,31 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 8), "外观设置应展示工作区图标风格")
         assertMinimumTouchTarget(picker, named: "工作区图标风格")
 
-        guard let journey = firstExistingButton(
+        let expectedStyleIdentifiers = [
+            "journey",
+            "threeKingdoms",
+            "waterMargin",
+            "redChamber",
+            "greekMythology",
+            "sherlockHolmes",
+            "aliceWonderland",
+            "emoji"
+        ]
+        for styleID in expectedStyleIdentifiers {
+            let option = app.descendant(
+                identifier: "settings.workspaceIconStyle.option.\(styleID)"
+            )
+            XCTAssertTrue(
+                option.waitForExistence(timeout: 5),
+                "工作区图标风格应展示 \(styleID)"
+            )
+            assertMinimumTouchTarget(option, named: "\(styleID) 风格选项")
+        }
+
+        guard firstExistingButton(
             labels: ["西游记", "Journey to the West"],
             timeout: 5
-        ), let emoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
+        ) != nil, let emoji = firstExistingButton(labels: ["Emoji"], timeout: 5) else {
             XCTFail("工作区图标风格应同时提供《西游记》和 Emoji")
             return
         }
@@ -533,6 +554,17 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if workbenchSettingsEntry.waitForExistence(timeout: 3) {
             return
         }
+        // iPad 的 NavigationSplitView 可能在启动后默认收起侧栏；先展开侧栏，
+        // 才能访问侧栏底部的设置入口，避免把正常工作台误判为不可测试。
+        if let showSidebar = firstExistingButton(
+            labels: ["显示边栏", "Show Sidebar"],
+            timeout: 2
+        ), showSidebar.isHittable {
+            showSidebar.tap()
+            if workbenchSettingsEntry.waitForExistence(timeout: 8) {
+                return
+            }
+        }
         if app.descendant(identifier: "composer.options").exists {
             let back = app.navigationBars.buttons.firstMatch
             if back.waitForExistence(timeout: 3), back.isHittable {
@@ -556,6 +588,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     private func openSettings() throws {
         if app.descendant(identifier: "settings.voiceInputProvider.codex").exists {
             return
+        }
+        if !workbenchSettingsEntry.exists,
+           let showSidebar = firstExistingButton(
+               labels: ["显示边栏", "Show Sidebar"],
+               timeout: 2
+           ),
+           showSidebar.isHittable {
+            showSidebar.tap()
+            _ = workbenchSettingsEntry.waitForExistence(timeout: 8)
         }
         let settings = workbenchSettingsEntry
         guard settings.waitForExistence(timeout: 8) else {

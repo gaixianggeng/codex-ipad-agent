@@ -121,6 +121,26 @@ enum WorkspaceSessionAgeBoundary {
     }
 }
 
+/// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
+struct WorkspaceSessionLoadInvocationTokens {
+    private var latestByProjectID: [String: UUID] = [:]
+
+    @discardableResult
+    mutating func begin(for projectID: String) -> UUID {
+        let invocationID = UUID()
+        latestByProjectID[projectID] = invocationID
+        return invocationID
+    }
+
+    func isCurrent(_ invocationID: UUID, for projectID: String) -> Bool {
+        latestByProjectID[projectID] == invocationID
+    }
+
+    mutating func remove(for projectID: String) {
+        latestByProjectID.removeValue(forKey: projectID)
+    }
+}
+
 private struct WorkspaceGitInspectionTarget: Identifiable {
     let id: String
     let name: String
@@ -149,6 +169,7 @@ struct WorkspaceRootView: View {
     @State private var selectedWorkspaceID: String?
     @State private var catalogState: CatalogState = .idle
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
+    @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     @State private var isPresentingOpenWorkspace = false
     @State private var pendingWorkspaceRemoval: AgentProject?
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
@@ -212,6 +233,9 @@ struct WorkspaceRootView: View {
             // 首次进入或切换工作区时，如果本地还没有数据就主动补齐会话首屏。
             // 已有内容时保留即时展示，用户仍可通过刷新按钮或下拉手动同步。
             guard sessionStore.sessions(forProjectID: selectedWorkspaceID).isEmpty else {
+                // 缓存命中也是更新后的 View invocation；先让旧 waiter 失去回写资格，
+                // 避免它随后用取消或失败状态盖掉当前已展示的内容。
+                sessionLoadInvocationTokens.begin(for: selectedWorkspaceID)
                 sessionLoadStates[selectedWorkspaceID] = .loaded
                 return
             }
@@ -422,6 +446,7 @@ struct WorkspaceRootView: View {
         let projectIDs = sessionStore.sidebarProjects.map(\.id)
         let iconStyle = appearanceStore.style(profileID: profileID)
         let characterAssignments = appearanceStore.characterAssignments(
+            style: iconStyle,
             profileID: profileID,
             projectIDs: projectIDs
         )
@@ -442,6 +467,7 @@ struct WorkspaceRootView: View {
                                     appearanceStore: appearanceStore,
                                     iconStyle: iconStyle,
                                     displayedCharacter: appearanceStore.character(
+                                        style: iconStyle,
                                         profileID: profileID,
                                         projectID: "loading-\(index)"
                                     ),
@@ -471,11 +497,16 @@ struct WorkspaceRootView: View {
                             ForEach(sessionStore.sidebarProjects) { project in
                                 let projectSessions = sessionStore.sessions(forProjectID: project.id)
                                 let displayedCharacter = characterAssignments[project.id]
-                                    ?? appearanceStore.character(profileID: profileID, projectID: project.id)
+                                    ?? appearanceStore.character(
+                                        style: iconStyle,
+                                        profileID: profileID,
+                                        projectID: project.id
+                                    )
                                 let displayedEmoji = emojiAssignments[project.id]
                                     ?? appearanceStore.emoji(profileID: profileID, projectID: project.id)
                                 let unavailableCharacterIDs: Set<String> =
-                                    projectIDs.count <= WorkspaceAppearanceStore.builtInCharacters.count
+                                    projectIDs.count
+                                        <= WorkspaceAppearanceStore.characters(for: iconStyle).count
                                     ? Set(
                                         characterAssignments.compactMap { otherProjectID, character in
                                             otherProjectID == project.id ? nil : character.id
@@ -627,6 +658,7 @@ struct WorkspaceRootView: View {
         pendingWorkspaceRemoval = nil
         guard selectedWorkspaceID != project.id else { return }
         sessionLoadStates.removeValue(forKey: project.id)
+        sessionLoadInvocationTokens.remove(for: project.id)
         sessionStore.forgetWorkspace(project)
     }
 
@@ -661,18 +693,29 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshWorkspaceSessions(projectID: String) async {
-        guard sessionLoadStates[projectID] != .loading else { return }
+        // `.loading` 只是 View 展示状态，不能证明仍有未取消的 waiter。每次调用都重新加入
+        // SessionStore 的共享请求，并用 invocation token 阻止旧调用覆盖新状态。
+        let invocationID = sessionLoadInvocationTokens.begin(for: projectID)
         sessionLoadStates[projectID] = .loading
         do {
             try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+                return
+            }
             guard !Task.isCancelled else {
                 sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
                 return
             }
             sessionLoadStates[projectID] = .loaded
         } catch is CancellationError {
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+                return
+            }
             sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
         } catch {
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+                return
+            }
             sessionLoadStates[projectID] = .failed(error.localizedDescription)
         }
     }
@@ -873,8 +916,7 @@ private struct WorkspaceLibraryCard: View {
 
     @ViewBuilder
     private var iconTile: some View {
-        switch iconStyle {
-        case .journey:
+        if iconStyle.usesCharacters {
             Image(displayedCharacter.assetName)
                 .resizable()
                 .scaledToFill()
@@ -890,7 +932,7 @@ private struct WorkspaceLibraryCard: View {
                 }
                 .opacity(isUnavailable ? 0.62 : 1)
                 .accessibilityHidden(true)
-        case .emoji:
+        } else {
             let palette: [Color] = [
                 Color(red: 0.91, green: 0.63, blue: 0.48),
                 Color(red: 0.47, green: 0.67, blue: 0.78),
@@ -940,17 +982,17 @@ private struct WorkspaceLibraryCard: View {
 
     @ViewBuilder
     private var iconPicker: some View {
-        switch iconStyle {
-        case .journey:
+        if iconStyle.usesCharacters {
             WorkspaceCharacterPicker(
                 project: project,
                 profileID: profileID,
                 appearanceStore: appearanceStore,
+                style: iconStyle,
                 currentCharacterID: displayedCharacter.id,
                 unavailableCharacterIDs: unavailableCharacterIDs,
                 tokens: tokens
             )
-        case .emoji:
+        } else {
             WorkspaceEmojiPicker(
                 project: project,
                 profileID: profileID,
@@ -963,12 +1005,7 @@ private struct WorkspaceLibraryCard: View {
     }
 
     private var currentIconName: String {
-        switch iconStyle {
-        case .journey:
-            return displayedCharacter.name
-        case .emoji:
-            return displayedEmoji
-        }
+        iconStyle.usesCharacters ? displayedCharacter.name : displayedEmoji
     }
 
     private func metadataRow(now: Date) -> some View {
@@ -1131,6 +1168,7 @@ private struct WorkspaceCharacterPicker: View {
     let project: AgentProject
     let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
+    let style: WorkspaceIconStyle
     let currentCharacterID: String
     let unavailableCharacterIDs: Set<String>
     let tokens: ThemeTokens
@@ -1149,11 +1187,12 @@ private struct WorkspaceCharacterPicker: View {
             }
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(WorkspaceAppearanceStore.builtInCharacters) { character in
+                ForEach(WorkspaceAppearanceStore.characters(for: style)) { character in
                     let isUnavailable = unavailableCharacterIDs.contains(character.id)
                     Button {
                         appearanceStore.setCustomCharacterID(
                             character.id,
+                            style: style,
                             profileID: profileID,
                             projectID: project.id
                         )
