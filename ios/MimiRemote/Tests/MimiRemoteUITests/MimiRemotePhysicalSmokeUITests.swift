@@ -166,92 +166,44 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
     }
 
-    func testSettingsUsesUnifiedStatusModuleAndOneStandardRowHeight() throws {
+    func testMePageCombinesQuotaActivityPreferencesAndMore() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
 
-        let statusModule = app.descendant(identifier: "settings.statusModule")
-        let tokenQuota = app.descendant(identifier: "settings.tokenQuota")
+        let tokenUsage = app.descendant(identifier: "settings.tokenUsage")
+        let activityGrid = app.descendant(identifier: "settings.tokenActivity.grid")
+        let activityUnavailable = app.descendant(identifier: "settings.tokenActivity.unavailable")
         let macDevices = app.descendant(identifier: "settings.connectionManagement")
-        let connectionSpeed = app.descendant(identifier: "settings.connectionSpeedTest")
         let appearance = app.descendant(identifier: "settings.appearance")
         let language = app.descendant(identifier: "settings.language")
         let voiceInput = app.descendant(identifier: "settings.voiceInput")
         let defaultPermissions = app.descendant(identifier: "settings.defaultPermissions")
+        let diagnostics = app.descendant(identifier: "settings.diagnostics")
+        let advanced = app.descendant(identifier: "settings.advancedDevelopment")
+        let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
 
-        XCTAssertTrue(statusModule.waitForExistence(timeout: 8), "设置页应展示统一状态模块")
-        XCTAssertTrue(tokenQuota.waitForExistence(timeout: 8), "设置页应展示 Token 额度卡")
+        XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
+        XCTAssertTrue(
+            activityGrid.waitForExistence(timeout: 4)
+                || activityUnavailable.waitForExistence(timeout: 1),
+            "Token 模块应展示真实点格数据或诚实的不可用状态"
+        )
         XCTAssertTrue(macDevices.waitForExistence(timeout: 4), "设置页应展示 Mac 多设备入口")
-        XCTAssertTrue(connectionSpeed.waitForExistence(timeout: 4), "设置页应展示连接测速入口")
         XCTAssertTrue(appearance.waitForExistence(timeout: 4), "设置页应展示偏好设置")
 
-        // SwiftUI 的 accessibility frame 只包住额度可见内容，不包含
-        // quotaSummaryMinimumHeight 留出的上下呼吸空间；紧凑宽度至少容纳 68pt 圆环，
-        // 宽布局放大到 82pt 后也不能重新膨胀成独立仪表盘。
-        XCTAssertGreaterThanOrEqual(tokenQuota.frame.height, 68, "Token 摘要必须完整容纳自适应三圆环")
-        XCTAssertLessThanOrEqual(tokenQuota.frame.height, 116, "Token 摘要内容不能重新膨胀成大卡")
-        XCTAssertLessThanOrEqual(
-            tokenQuota.frame.maxY,
-            macDevices.frame.minY,
-            "Mac 设备必须位于 Token 额度下方"
-        )
-        XCTAssertLessThanOrEqual(
-            macDevices.frame.maxY,
-            connectionSpeed.frame.minY,
-            "连接测速必须位于 Mac 设备下方"
-        )
-        XCTAssertLessThan(
-            macDevices.frame.minY - tokenQuota.frame.maxY,
-            52,
-            "Token 额度与 Mac 设备之间不能再出现独立 Section 间距"
-        )
-        XCTAssertEqual(
-            macDevices.frame.maxY,
-            connectionSpeed.frame.minY,
-            accuracy: 2,
-            "Mac 设备与连接测速之间只保留容器内分隔线"
-        )
-        XCTAssertGreaterThan(
-            tokenQuota.frame.width,
-            250,
-            "Token 摘要在 iPhone 与 iPad 都应使用完整单栏宽度，不再拆成半宽卡片"
-        )
-        XCTAssertEqual(
-            statusModule.frame.minX,
-            appearance.frame.minX,
-            accuracy: 2,
-            "状态模块左边界必须与标准设置分组对齐"
-        )
-        XCTAssertEqual(
-            statusModule.frame.width,
-            appearance.frame.width,
-            accuracy: 2,
-            "状态模块必须与标准设置分组使用同一外部宽度"
-        )
-        let standardRows = [
-            macDevices,
-            connectionSpeed,
-            appearance,
-        ]
-        for row in standardRows {
-            XCTAssertEqual(
-                row.frame.height,
-                52,
-                accuracy: 1,
-                "标准字号下所有设置行都应使用同一可见高度"
-            )
-        }
+        XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
+        XCTAssertGreaterThan(tokenUsage.frame.width, 250, "Token 模块应使用完整分组宽度")
+        XCTAssertEqual(macDevices.frame.height, 52, accuracy: 1, "Mac 与设备应保持标准行高")
+        XCTAssertEqual(appearance.frame.height, 52, accuracy: 1, "偏好项应保持标准行高")
 
         let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "settings-unified-status-overview"
+        screenshot.name = "me-token-usage-overview"
         screenshot.lifetime = .keepAlways
         add(screenshot)
 
-        // 紧凑设备上语言行可能位于首屏下方，SwiftUI Form 会延迟创建未显示的行。
-        // 先完成状态模块与偏好卡的同屏宽度比较，再滚动验证后续标准行。
         XCTAssertTrue(
             scrollUntilHittable(language, maximumSwipes: 4),
-            "设置页应能滚动到语言入口"
+            "我的页面应能滚动到语言入口"
         )
         XCTAssertEqual(language.frame.height, 52, accuracy: 1, "语言行应保持标准行高")
 
@@ -263,30 +215,22 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         XCTAssertEqual(voiceInput.frame.height, 52, accuracy: 1, "语音输入行应保持标准行高")
         XCTAssertEqual(defaultPermissions.frame.height, 52, accuracy: 1, "默认权限行应保持标准行高")
 
-        let openSource = app.descendant(identifier: "settings.openSourceLicense")
-        XCTAssertTrue(scrollUntilHittable(openSource), "设置页应能滚动到关于与支持分区")
-
-        let bottomRows = [
-            app.descendant(identifier: "settings.diagnostics"),
-            app.descendant(identifier: "settings.capabilities"),
-            app.descendant(identifier: "settings.developerMode"),
-            app.descendant(identifier: "settings.support"),
-            app.descendant(identifier: "settings.privacyPolicy"),
-            app.descendant(identifier: "settings.termsOfUse"),
-            openSource
-        ]
+        XCTAssertTrue(scrollUntilHittable(aboutLegal), "我的页面应能滚动到“更多”分区")
+        // “Mac 与设备”已在页面顶部验证；滚到底部后它可能被 List 懒加载卸载，
+        // 这里只检查当前可见的“更多”入口，避免把视口状态误判为功能缺失。
+        let bottomRows = [diagnostics, advanced, aboutLegal]
         for row in bottomRows {
-            XCTAssertTrue(row.waitForExistence(timeout: 4), "设置页下半部分入口应存在")
+            XCTAssertTrue(row.waitForExistence(timeout: 4), "“更多”分区入口应存在")
             XCTAssertEqual(
                 row.frame.height,
                 52,
                 accuracy: 1,
-                "设置页下半部分也必须使用同一标准行高"
+                "“更多”分区应统一使用标准行高"
             )
         }
 
         let bottomScreenshot = XCTAttachment(screenshot: app.screenshot())
-        bottomScreenshot.name = "settings-compact-layout-bottom"
+        bottomScreenshot.name = "me-preferences-and-more"
         bottomScreenshot.lifetime = .keepAlways
         add(bottomScreenshot)
     }
@@ -928,11 +872,11 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private var workbenchSettingsEntry: XCUIElement {
-        let compact = app.descendant(identifier: "compactTab.settings")
+        let compact = app.descendant(identifier: "compactTab.me")
         if compact.exists {
             return compact
         }
-        return app.descendant(identifier: "sidebar.settings")
+        return app.descendant(identifier: "sidebar.me")
     }
 }
 
