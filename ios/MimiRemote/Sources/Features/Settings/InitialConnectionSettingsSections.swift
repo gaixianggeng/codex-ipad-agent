@@ -545,10 +545,11 @@ struct InitialConnectionSettingsSections: View {
     @ViewBuilder
     private func connectionProfileRow(_ item: ConnectionProfileSettingsItem) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: item.isCurrent ? "desktopcomputer.and.macbook" : "desktopcomputer")
-                .font(themeStore.uiFont(.body, weight: .semibold))
+            // 设置页与工作台复用服务端上报的平台语义；未知平台继续显示通用电脑。
+            HostPlatformGlyph(kind: item.profile.hostPlatform.iconKind)
                 .foregroundStyle(item.isCurrent ? themeStore.tokens(for: colorScheme).accent : Color.secondary)
                 .frame(width: 24)
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.profile.displayName)

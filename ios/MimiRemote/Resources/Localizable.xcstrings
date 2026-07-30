@@ -1807,6 +1807,23 @@
         }
       }
     },
+    "ui.another_host" : {
+      "comment" : "Secondary saved host name used by the debug-only platform icon preview.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another host"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一台主机"
+          }
+        }
+      }
+    },
     "ui.another_mac_connection_operation_is_still_in_progress" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -11579,6 +11596,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "（%@）"
+          }
+        }
+      }
+    },
+    "ui.host_platform_preview_name" : {
+      "comment" : "Debug-only host name for a platform icon preview. The placeholder is macOS, Windows, Linux, or Unknown.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ host"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 主机"
           }
         }
       }
@@ -33518,6 +33552,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "检查 Mac 状态"
+          }
+        }
+      }
+    },
+    "ui.check_host_status" : {
+      "comment" : "Menu action that refreshes the cached availability status of saved hosts across macOS, Windows, and Linux.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Host Status"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查主机状态"
           }
         }
       }

@@ -10,6 +10,7 @@ final class ProtocolContractTests: XCTestCase {
             current.minimumClientProtocolRevision,
             MimiProtocolContract.minimumSupportedClientRevision
         )
+        XCTAssertEqual(current.platform, "darwin")
         XCTAssertEqual(Set(current.capabilities), MimiProtocolContract.declaredCapabilities)
         XCTAssertNoThrow(try current.requireCompatible())
 
@@ -19,6 +20,7 @@ final class ProtocolContractTests: XCTestCase {
             previous.minimumClientProtocolRevision,
             MimiProtocolContract.minimumSupportedClientRevision
         )
+        XCTAssertNil(previous.platform)
         XCTAssertTrue(previous.capabilities.isEmpty, "旧服务缺少 capability 时必须安全降级为空集合")
         XCTAssertNoThrow(try previous.requireCompatible())
 
