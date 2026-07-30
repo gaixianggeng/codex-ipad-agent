@@ -392,7 +392,6 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "threeKingdoms",
             "waterMargin",
             "redChamber",
-            "greekMythology",
             "onePiece",
             "naruto",
             "digimon",
@@ -458,25 +457,17 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     private func assertWorkspaceStyleGridUsesFourColumns(_ frames: [CGRect]) {
-        XCTAssertEqual(frames.count, 9)
-        guard frames.count == 9 else { return }
+        XCTAssertEqual(frames.count, 8)
+        guard frames.count == 8 else { return }
 
         let firstRowY = frames[0].midY
         let secondRowY = frames[4].midY
-        let thirdRowY = frames[8].midY
         for frame in frames.prefix(4) {
             XCTAssertEqual(frame.midY, firstRowY, accuracy: 2, "前四个风格应位于第一排")
         }
-        for frame in frames[4..<8] {
+        for frame in frames.suffix(4) {
             XCTAssertEqual(frame.midY, secondRowY, accuracy: 2, "后四个风格应位于第二排")
         }
-        XCTAssertEqual(
-            frames[8].midX,
-            frames[0].midX,
-            accuracy: 2,
-            "第九个风格应从第三排第一列开始"
-        )
-        XCTAssertGreaterThan(thirdRowY, secondRowY, "第九个风格应位于第三排")
         XCTAssertGreaterThan(secondRowY - firstRowY, 44, "两排风格不应重叠")
     }
 

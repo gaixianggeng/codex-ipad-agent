@@ -140,13 +140,13 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 .threeKingdoms,
                 .waterMargin,
                 .redChamber,
-                .greekMythology,
                 .onePiece,
                 .naruto,
                 .digimon,
                 .emoji
             ]
         )
+        XCTAssertLessThanOrEqual(WorkspaceIconStyle.visibleStyles.count, 8)
         XCTAssertEqual(
             WorkspaceIconStyle.selectableStyles(currentStyle: .journey),
             WorkspaceIconStyle.visibleStyles
@@ -158,6 +158,10 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         XCTAssertEqual(
             WorkspaceIconStyle.selectableStyles(currentStyle: .aliceWonderland),
             WorkspaceIconStyle.visibleStyles + [.aliceWonderland]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .greekMythology),
+            WorkspaceIconStyle.visibleStyles + [.greekMythology]
         )
     }
 

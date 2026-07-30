@@ -23,7 +23,6 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         .threeKingdoms,
         .waterMargin,
         .redChamber,
-        .greekMythology,
         .onePiece,
         .naruto,
         .digimon,
