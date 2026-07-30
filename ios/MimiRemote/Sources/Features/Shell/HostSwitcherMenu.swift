@@ -84,38 +84,34 @@ struct HostSwitcherMenu: View {
 
         switch presentation {
         case .sidebar:
-            HStack(spacing: 8) {
-                if appStore.connectionProfiles.count > 1 {
-                    // 宽布局侧栏与紧凑 Toolbar 复用同一平台语义；状态仍由文字行独立表达。
-                    HostPlatformGlyph(kind: currentHostIconKind)
-                        .frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(profileName)
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
                 }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(profileName)
-                            .font(.headline.weight(.semibold))
-                            .lineLimit(1)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2.weight(.semibold))
+                HStack(spacing: 5) {
+                    if appStore.connectionProfiles.count > 1 {
+                        // 侧栏把平台降为状态行的小型辅助信息，避免与额度入口和主机名称争抢视觉。
+                        HostPlatformGlyph(kind: currentHostIconKind, size: 11)
                             .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
                     }
-                    HStack(spacing: 5) {
-                        if isSwitching {
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else {
-                            Circle()
-                                .fill(currentConnectionColor)
-                                .frame(width: 6, height: 6)
-                        }
-                        Text(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    if isSwitching {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Circle()
+                            .fill(currentConnectionColor)
+                            .frame(width: 6, height: 6)
                     }
+                    Text(isSwitching ? L10n.text("ui.connecting") : currentConnectionText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             .frame(maxWidth: 150, alignment: .leading)
@@ -276,43 +272,56 @@ struct HostSwitcherMenu: View {
     }
 }
 
-/// 三个平台图标保持相同的 18pt 视觉盒，连接状态仍独立叠在右下角。
+/// 三个平台图标保持相同的视觉盒，连接状态由调用方独立表达。
 /// Windows 使用 Windows 11 的正视四格造型；Linux 使用模板渲染的经典 Tux 矢量图。
-private struct HostPlatformGlyph: View {
+struct HostPlatformGlyph: View {
     let kind: HostPlatformIconKind
+    let size: CGFloat
+
+    init(kind: HostPlatformIconKind, size: CGFloat = 18) {
+        self.kind = kind
+        self.size = size
+    }
 
     @ViewBuilder
-    var body: some View {
+    private var glyph: some View {
         switch kind {
         case .apple:
             Image(systemName: "apple.logo")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: size * 8 / 9, weight: size < 14 ? .medium : .semibold))
                 .symbolRenderingMode(.hierarchical)
         case .windows11:
-            Windows11Mark()
-                .frame(width: 15, height: 15)
+            Windows11Mark(spacing: size / 12)
+                .frame(width: size * 5 / 6, height: size * 5 / 6)
         case .linuxTux:
             Image("LinuxTux")
                 .resizable()
                 .renderingMode(.template)
                 .scaledToFit()
-                .frame(width: 17, height: 18)
+                .frame(width: size * 17 / 18, height: size)
         case .genericComputer:
             Image(systemName: "desktopcomputer")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: size * 8 / 9, weight: size < 14 ? .medium : .semibold))
                 .symbolRenderingMode(.hierarchical)
         }
+    }
+
+    var body: some View {
+        glyph
+            .frame(width: size, height: size)
     }
 }
 
 private struct Windows11Mark: View {
+    let spacing: CGFloat
+
     var body: some View {
-        VStack(spacing: 1.5) {
-            HStack(spacing: 1.5) {
+        VStack(spacing: spacing) {
+            HStack(spacing: spacing) {
                 Rectangle()
                 Rectangle()
             }
-            HStack(spacing: 1.5) {
+            HStack(spacing: spacing) {
                 Rectangle()
                 Rectangle()
             }
