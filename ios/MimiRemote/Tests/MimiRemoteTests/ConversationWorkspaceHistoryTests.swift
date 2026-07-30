@@ -86,6 +86,14 @@ extension ConversationDataFlowTests {
             ),
             2
         )
+        XCTAssertNil(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(
+                in: [pinnedStale, recent],
+                excludingSessionIDs: [pinnedStale.id],
+                now: now
+            ),
+            "置顶旧会话不应单独制造“12 小时前”分组"
+        )
     }
 
     func testRecentSessionSortUsesUserRecencyInsteadOfAgentUpdatedAt() {

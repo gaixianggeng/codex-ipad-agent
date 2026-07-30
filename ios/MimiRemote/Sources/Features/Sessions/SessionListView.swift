@@ -648,7 +648,8 @@ struct SessionIndexRow: View {
         }
         .padding(.horizontal, style == .sidebar ? 10 : 14)
         .padding(.vertical, style == .sidebar ? 6 : 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // 视觉仍保持紧凑，但整个会话行至少保留 44pt，兼顾触控、指针和全键盘访问。
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .background(rowBackground(tokens: tokens), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(alignment: .leading) {
             if isSelected {
