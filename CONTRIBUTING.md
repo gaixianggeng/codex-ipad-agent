@@ -40,7 +40,7 @@ xcodegen generate \
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-日常 `build` / `run` 优先使用 available、paired、USB 连接的真机，没有可用真机时回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test` 与 CI 固定使用 Simulator；兼容性测试通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
+日常 `build` / `run` 优先租用 available、paired、USB 连接的真机，跳过已占用设备后回退到 `iPad Pro 13-inch (M5)` Simulator。`build-for-testing`、`test`、快照与 CI 精确固定这台 M5 iPad，忙或缺失时不切换 iPad mini。使用 `bash ./scripts/ios-dev.sh leases` 查看跨 Worktree 租约和外部 `xcodebuild`；兼容性运行通过 `IOS_TARGET_MODE=simulator` 和 `IOS_SIMULATOR_NAME` 显式切换。
 
 Claude bridge 改动至少运行：
 

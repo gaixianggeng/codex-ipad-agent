@@ -6,79 +6,163 @@ PROJECT_PATH="${PROJECT_PATH:-$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj}"
 SCHEME="${SCHEME:-MimiRemote}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 TARGET_MODE="${IOS_TARGET_MODE:-auto}"
-SIMULATOR_NAME="${IOS_SIMULATOR_NAME:-iPad Pro 13-inch (M5)}"
+DEFAULT_SIMULATOR_NAME="iPad Pro 13-inch (M5)"
+SIMULATOR_NAME="${IOS_SIMULATOR_NAME:-$DEFAULT_SIMULATOR_NAME}"
 SIMULATOR_ID="${IOS_SIMULATOR_ID:-}"
-DEVICE_NAME="${IOS_DEVICE_NAME:-${DEVICE_NAME:-iPad Pro}}"
+DEFAULT_DEVICE_NAME="iPad Pro"
+DEVICE_NAME="${IOS_DEVICE_NAME:-${DEVICE_NAME:-$DEFAULT_DEVICE_NAME}}"
 DEVICE_ID="${IOS_DEVICE_ID:-${DEVICE_ID:-}}"
-DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-$ROOT_DIR/ios/MimiRemote/build/dev-simulator-derived}"
-DEVICE_DERIVED_DATA_PATH="${IOS_DEVICE_DERIVED_DATA_PATH:-$ROOT_DIR/ios/MimiRemote/build/dev-device-derived}"
+SIMULATOR_DERIVED_DATA_ROOT="$ROOT_DIR/ios/MimiRemote/build/dev-simulator-derived"
+DEVICE_DERIVED_DATA_ROOT="$ROOT_DIR/ios/MimiRemote/build/dev-device-derived"
 BUNDLE_ID="${BUNDLE_ID:-com.gaixianggeng.mimi}"
+XCRUN_BIN="${IOS_XCRUN_BIN:-xcrun}"
+XCODEBUILD_BIN="${IOS_XCODEBUILD_BIN:-xcodebuild}"
+OPEN_BIN="${IOS_OPEN_BIN:-open}"
+
+# shellcheck source=./ios-device-lease.sh
+source "$ROOT_DIR/scripts/ios-device-lease.sh"
+
+SELECTED_KIND=""
+SELECTED_ID=""
+SELECTED_NAME=""
+SELECTED_DESTINATION=""
+SELECTED_DERIVED_DATA=""
 
 usage() {
   cat <<'EOF'
 用法：
   bash ./scripts/ios-dev.sh [build|build-for-testing|test|run]
+  bash ./scripts/ios-dev.sh target
   bash ./scripts/ios-dev.sh destination
   bash ./scripts/ios-dev.sh prepare
-  bash ./scripts/ios-dev.sh target
   bash ./scripts/ios-dev.sh derived-data-path
+  bash ./scripts/ios-dev.sh leases
 
 默认目标：
-  build/run: USB 真机优先，没有可用真机时使用 iPad Pro 13-inch (M5) Simulator
-  test:      固定使用 iPad Pro 13-inch (M5) Simulator
+  build/run: USB 真机优先；设备已占用时跳过，最后回退固定 iPad Simulator
+  test:      精确固定 iPad Pro 13-inch (M5)，忙或缺失时明确失败
   Scheme:    MimiRemote
   Config:    Debug
 
 可选覆盖：
   IOS_TARGET_MODE         auto（默认）、device 或 simulator
-  IOS_DEVICE_NAME         多台 USB 真机时优先的设备名，默认 iPad Pro
-  IOS_DEVICE_ID           用 UDID 明确选择 USB 真机
-  IOS_SIMULATOR_NAME      明确选择另一台 Simulator，用于兼容性测试
-  IOS_SIMULATOR_ID        用 UDID 明确选择 Simulator，优先于名称
-  IOS_TEST_DESTINATION    CI 使用的完整 destination，必须包含 Simulator UDID
-  IOS_DERIVED_DATA_PATH   覆盖固定的 DerivedData 目录
-  IOS_DEVICE_DERIVED_DATA_PATH 覆盖真机构建的固定 DerivedData 目录
+  IOS_DEVICE_NAME         普通 build/run 优先的 USB 真机名，默认 iPad Pro
+  IOS_DEVICE_ID           用 UDID 明确选择普通 build/run 的 USB 真机
+  IOS_SIMULATOR_NAME      普通 build/run 显式选择兼容性 Simulator
+  IOS_SIMULATOR_ID        普通 build/run 用 UDID 选择 Simulator
+  IOS_TEST_DESTINATION    CI 解析一次的测试 destination；设备必须仍是固定 M5 iPad
+  IOS_DERIVED_DATA_PATH   覆盖本次 Simulator DerivedData
+  IOS_DEVICE_DERIVED_DATA_PATH 覆盖本次真机 DerivedData
+  IOS_DEVICE_LEASE_WAIT_SECONDS 固定测试设备忙时的等待秒数，默认 0（明确失败）
 
-脚本只把 available、paired、USB 连接的 iOS/iPadOS 设备视为真机候选。
-不会创建、擦除 Simulator，也不会随机选择多台真机。
+租约按 UDID 跨 Worktree 原子占用，并记录 PID、Codex Task、Worktree、命令、
+DerivedData 和开始时间。脚本不会创建、擦除或删除 Simulator，也不会关闭其他任务的设备。
 EOF
 }
 
 require_command() {
   local command_name="$1"
-  if ! command -v "$command_name" >/dev/null 2>&1; then
+  if ! command -v "$command_name" >/dev/null 2>&1 && [[ ! -x "$command_name" ]]; then
     echo "缺少命令：$command_name" >&2
     exit 1
   fi
 }
 
-available_simulator_id() {
+simulator_record() {
   local requested_id="$1"
   local requested_name="$2"
+  local require_name="$3"
 
-  xcrun simctl list devices available -j | \
-    IOS_REQUESTED_ID="$requested_id" IOS_REQUESTED_NAME="$requested_name" ruby -rjson -e '
+  "$XCRUN_BIN" simctl list devices available -j | \
+    IOS_REQUESTED_ID="$requested_id" \
+    IOS_REQUESTED_NAME="$requested_name" \
+    IOS_REQUIRE_NAME="$require_name" \
+    ruby -rjson -e '
       requested_id = ENV.fetch("IOS_REQUESTED_ID", "")
       requested_name = ENV.fetch("IOS_REQUESTED_NAME")
+      require_name = ENV.fetch("IOS_REQUIRE_NAME") == "1"
       entries = JSON.parse(STDIN.read).fetch("devices").flat_map do |runtime, devices|
         version = runtime.scan(/\d+/).map(&:to_i)
         devices.map { |device| [version, device] }
       end
-
       candidates = entries.select do |_version, device|
-        device["isAvailable"] &&
-          (requested_id.empty? ? device["name"] == requested_name : device["udid"] == requested_id)
+        next false unless device["isAvailable"]
+        if requested_id.empty?
+          device["name"] == requested_name
+        else
+          device["udid"] == requested_id && (!require_name || device["name"] == requested_name)
+        end
       end
       chosen = candidates.max_by { |version, _device| version }
-      print chosen.last.fetch("udid") if chosen
+      puts [chosen.last.fetch("udid"), chosen.last.fetch("name")].join("\t") if chosen
     '
 }
 
-available_physical_device() {
-  xcrun devicectl list devices --json-output - --quiet --timeout 5 | \
-    IOS_REQUESTED_DEVICE_ID="$DEVICE_ID" IOS_REQUESTED_DEVICE_NAME="$DEVICE_NAME" ruby -rjson -e '
+resolve_simulator_record() {
+  local requested_id="$1"
+  local requested_name="$2"
+  local require_name="$3"
+  local record
+  record="$(simulator_record "$requested_id" "$requested_name" "$require_name")"
+  if [[ -z "$record" ]]; then
+    if [[ "$require_name" == "1" ]]; then
+      echo "找不到精确的测试 Simulator：$DEFAULT_SIMULATOR_NAME" >&2
+      [[ -n "$requested_id" ]] && echo "指定 UDID 不是可用的 ${DEFAULT_SIMULATOR_NAME}：$requested_id" >&2
+    elif [[ -n "$requested_id" ]]; then
+      echo "找不到可用的 iOS Simulator：$requested_id" >&2
+    else
+      echo "找不到可用的 iOS Simulator：$requested_name" >&2
+    fi
+    echo "不会回退到 iPad mini、其他 iPad 或 iPhone。当前可用设备：" >&2
+    "$XCRUN_BIN" simctl list devices available >&2
+    return 4
+  fi
+  printf '%s\n' "$record"
+}
+
+destination_id() {
+  local destination="$1"
+  local suffix
+  suffix="${destination#*id=}"
+  [[ "$suffix" != "$destination" ]] || return 1
+  printf '%s\n' "${suffix%%,*}"
+}
+
+fixed_test_simulator_record() {
+  local requested_id=""
+  if [[ -n "${IOS_TEST_DESTINATION:-}" ]]; then
+    if [[ "$IOS_TEST_DESTINATION" != *"platform=iOS Simulator"* || "$IOS_TEST_DESTINATION" != *"id="* ]]; then
+      echo "IOS_TEST_DESTINATION 必须包含固定 Simulator 的 UDID。" >&2
+      return 2
+    fi
+    requested_id="$(destination_id "$IOS_TEST_DESTINATION")"
+  fi
+  resolve_simulator_record "$requested_id" "$DEFAULT_SIMULATOR_NAME" 1
+}
+
+build_simulator_record() {
+  resolve_simulator_record "$SIMULATOR_ID" "$SIMULATOR_NAME" 0
+}
+
+physical_device_records() {
+  local include_all="${1:-0}"
+  local restrict_name=0
+  local requested_device_id="$DEVICE_ID"
+  local requested_device_name="$DEVICE_NAME"
+  [[ -n "${IOS_DEVICE_NAME:-}" ]] && restrict_name=1
+  if [[ "$include_all" == "1" ]]; then
+    restrict_name=0
+    requested_device_id=""
+    requested_device_name="$DEFAULT_DEVICE_NAME"
+  fi
+  "$XCRUN_BIN" devicectl list devices --json-output - --quiet --timeout 5 | \
+    IOS_REQUESTED_DEVICE_ID="$requested_device_id" \
+    IOS_REQUESTED_DEVICE_NAME="$requested_device_name" \
+    IOS_RESTRICT_DEVICE_NAME="$restrict_name" \
+    ruby -rjson -e '
       requested_id = ENV.fetch("IOS_REQUESTED_DEVICE_ID", "")
       requested_name = ENV.fetch("IOS_REQUESTED_DEVICE_NAME")
+      restrict_name = ENV.fetch("IOS_RESTRICT_DEVICE_NAME") == "1"
       devices = JSON.parse(STDIN.read).fetch("result").fetch("devices")
       candidates = devices.map do |device|
         properties = device.fetch("properties", {})
@@ -88,105 +172,83 @@ available_physical_device() {
         next unless hardware["platform"] == "iOS" && hardware["reality"] == "physical"
         next unless connection["transportType"] == "wired"
         next unless connection["state"] == "connected" && connection["pairingState"] == "paired"
-
         udid = hardware["udid"]
         name = state["name"]
         next if udid.to_s.empty? || name.to_s.empty?
+        next if !requested_id.empty? && udid != requested_id
+        next if requested_id.empty? && restrict_name && name != requested_name
         [udid, name]
       end.compact
-
-      if !requested_id.empty?
-        chosen = candidates.find { |udid, _name| udid == requested_id }
-        unless chosen
-          warn "找不到可用的 USB 真机：#{requested_id}"
-          exit 4
-        end
-        puts chosen.join("\t")
-        exit
-      end
-
-      preferred = candidates.select { |_udid, name| name == requested_name }
-      if preferred.length == 1
-        puts preferred.first.join("\t")
-      elsif preferred.length > 1
-        warn "存在多台同名 USB 真机：#{requested_name}，请设置 IOS_DEVICE_ID。"
-        preferred.each { |udid, name| warn "- #{name}: #{udid}" }
-        exit 2
-      elsif candidates.length == 1
-        puts candidates.first.join("\t")
-      elsif candidates.empty?
-        exit 3
-      else
-        warn "检测到多台 USB 真机，但没有唯一的 #{requested_name}。请设置 IOS_DEVICE_ID。"
-        candidates.each { |udid, name| warn "- #{name}: #{udid}" }
-        exit 2
-      end
+      candidates.sort_by! { |udid, name| [name == requested_name ? 0 : 1, name, udid] }
+      candidates.each { |udid, name| puts [udid, name].join("\t") }
     '
 }
 
-resolve_destination() {
-  if [[ -n "${IOS_TEST_DESTINATION:-}" ]]; then
-    if [[ "$IOS_TEST_DESTINATION" != *"platform=iOS Simulator"* || "$IOS_TEST_DESTINATION" != *"id="* ]]; then
-      echo "IOS_TEST_DESTINATION 必须是包含 Simulator UDID 的完整 destination。" >&2
-      echo "示例：platform=iOS Simulator,id=00000000-0000-0000-0000-000000000000" >&2
-      exit 1
-    fi
-    printf '%s\n' "$IOS_TEST_DESTINATION"
-    return
-  fi
-
-  local resolved_id
-  resolved_id="$(available_simulator_id "$SIMULATOR_ID" "$SIMULATOR_NAME")"
-  if [[ -z "$resolved_id" ]]; then
-    if [[ -n "$SIMULATOR_ID" ]]; then
-      echo "找不到可用的 iOS Simulator：$SIMULATOR_ID" >&2
-    else
-      echo "找不到默认 iOS Simulator：$SIMULATOR_NAME" >&2
-    fi
-    echo "脚本不会自动选择其他设备。当前可用设备：" >&2
-    xcrun simctl list devices available >&2
-    exit 1
-  fi
-
-  printf 'platform=iOS Simulator,id=%s\n' "$resolved_id"
+observable_device_records() {
+  physical_device_records 1 | while IFS=$'\t' read -r device_id device_name; do
+    [[ -n "$device_id" ]] && printf 'device\t%s\t%s\n' "$device_id" "$device_name"
+  done
+  "$XCRUN_BIN" simctl list devices available -j | ruby -rjson -e '
+    records = JSON.parse(STDIN.read).fetch("devices").flat_map do |runtime, devices|
+      version = runtime.scan(/\d+/).map(&:to_i)
+      devices.map do |device|
+        next unless device["isAvailable"]
+        [version, device.fetch("name"), device.fetch("udid")]
+      end.compact
+    end
+    records.sort_by { |version, name, udid| [version, name, udid] }.each do |_version, name, udid|
+      puts ["simulator", udid, name].join("\t")
+    end
+  '
 }
 
-resolve_build_target() {
-  local effective_mode="$TARGET_MODE"
-  local device_record device_status simulator_destination simulator_id
+simulator_derived_data_path() {
+  local simulator_id="$1"
+  if [[ -n "${IOS_DERIVED_DATA_PATH:-}" ]]; then
+    printf '%s\n' "$IOS_DERIVED_DATA_PATH"
+  else
+    # 租约按 UDID 隔离，DerivedData 必须使用相同粒度。否则两个 Runtime
+    # 下的同名 Simulator 会持有不同租约，却并发写入同一构建数据库。
+    printf '%s/%s\n' "$SIMULATOR_DERIVED_DATA_ROOT" "$simulator_id"
+  fi
+}
 
+device_derived_data_path() {
+  local device_id="$1"
+  if [[ -n "${IOS_DEVICE_DERIVED_DATA_PATH:-}" ]]; then
+    printf '%s\n' "$IOS_DEVICE_DERIVED_DATA_PATH"
+  else
+    printf '%s/%s\n' "$DEVICE_DERIVED_DATA_ROOT" "$device_id"
+  fi
+}
+
+select_target() {
+  local kind="$1"
+  local device_id="$2"
+  local device_name="$3"
+  SELECTED_KIND="$kind"
+  SELECTED_ID="$device_id"
+  SELECTED_NAME="$device_name"
+  if [[ "$kind" == "device" ]]; then
+    SELECTED_DESTINATION="platform=iOS,id=$device_id"
+    SELECTED_DERIVED_DATA="$(device_derived_data_path "$device_id")"
+  else
+    SELECTED_DESTINATION="platform=iOS Simulator,id=$device_id"
+    SELECTED_DERIVED_DATA="$(simulator_derived_data_path "$device_id")"
+  fi
+}
+
+effective_target_mode() {
+  local effective_mode="$TARGET_MODE"
   if [[ -z "${IOS_TARGET_MODE:-}" ]]; then
-    if [[ -n "${IOS_TEST_DESTINATION:-}" || -n "${IOS_SIMULATOR_ID:-}" || -n "${IOS_SIMULATOR_NAME:-}" ]]; then
+    if [[ -n "${IOS_SIMULATOR_ID:-}" || -n "${IOS_SIMULATOR_NAME:-}" ]]; then
       effective_mode="simulator"
     elif [[ -n "$DEVICE_ID" || -n "${IOS_DEVICE_NAME:-}" ]]; then
       effective_mode="device"
     fi
   fi
-
   case "$effective_mode" in
-    simulator)
-      simulator_destination="$(resolve_destination)"
-      simulator_id="$(simulator_id_from_destination "$simulator_destination")"
-      printf 'simulator\t%s\t%s\n' "$simulator_id" "$SIMULATOR_NAME"
-      ;;
-    auto|device)
-      if device_record="$(available_physical_device)"; then
-        printf 'device\t%s\n' "$device_record"
-        return
-      else
-        device_status=$?
-      fi
-      if [[ "$effective_mode" == "auto" && "$device_status" -eq 3 ]]; then
-        simulator_destination="$(resolve_destination)"
-        simulator_id="$(simulator_id_from_destination "$simulator_destination")"
-        printf 'simulator\t%s\t%s\n' "$simulator_id" "$SIMULATOR_NAME"
-        return
-      fi
-      if [[ "$device_status" -eq 3 ]]; then
-        echo "没有检测到 available、paired、USB 连接的 iOS 真机。" >&2
-      fi
-      return "$device_status"
-      ;;
+    auto|device|simulator) printf '%s\n' "$effective_mode" ;;
     *)
       echo "IOS_TARGET_MODE 只支持 auto、device 或 simulator：$effective_mode" >&2
       return 2
@@ -194,43 +256,107 @@ resolve_build_target() {
   esac
 }
 
-simulator_id_from_destination() {
-  local destination="$1"
-  local suffix
-  suffix="${destination#*id=}"
-  if [[ "$suffix" == "$destination" ]]; then
-    return 1
+select_available_build_target() {
+  local effective_mode physical_records record device_id device_name simulator_record_value
+  effective_mode="$(effective_target_mode)" || return
+
+  if [[ "$effective_mode" == "simulator" ]]; then
+    simulator_record_value="$(build_simulator_record)" || return
+    IFS=$'\t' read -r device_id device_name <<< "$simulator_record_value"
+    if ! ios_lease_device_is_available simulator "$device_id" "$device_name"; then
+      echo "指定 Simulator 正在使用：$device_name ($device_id)" >&2
+      echo "$IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
+      return 75
+    fi
+    select_target simulator "$device_id" "$device_name"
+    return
   fi
-  printf '%s\n' "${suffix%%,*}"
+
+  physical_records="$(physical_device_records)"
+  if [[ -n "$DEVICE_ID" && -z "$physical_records" ]]; then
+    echo "找不到 available、paired、USB 连接的真机：$DEVICE_ID" >&2
+    return 4
+  fi
+  if [[ -n "${IOS_DEVICE_NAME:-}" && -z "$physical_records" ]]; then
+    echo "找不到 available、paired、USB 连接的真机：$IOS_DEVICE_NAME" >&2
+    return 4
+  fi
+
+  while IFS=$'\t' read -r device_id device_name; do
+    [[ -n "$device_id" ]] || continue
+    if ios_lease_device_is_available device "$device_id" "$device_name"; then
+      select_target device "$device_id" "$device_name"
+      return
+    fi
+    echo "==> 跳过占用设备：$device_name ($device_id) · $IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
+  done <<< "$physical_records"
+
+  if [[ "$effective_mode" == "device" ]]; then
+    if [[ -z "$physical_records" ]]; then
+      echo "没有检测到 available、paired、USB 连接的 iOS 真机。" >&2
+    else
+      echo "所有匹配的 USB 真机都在使用中。" >&2
+    fi
+    return 75
+  fi
+
+  simulator_record_value="$(resolve_simulator_record "" "$DEFAULT_SIMULATOR_NAME" 1)" || return
+  IFS=$'\t' read -r device_id device_name <<< "$simulator_record_value"
+  if ! ios_lease_device_is_available simulator "$device_id" "$device_name"; then
+    echo "USB 真机不可用，固定 fallback Simulator 也正在使用：$device_name ($device_id)" >&2
+    echo "$IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
+    return 75
+  fi
+  select_target simulator "$device_id" "$device_name"
 }
 
-prepare_destination() {
-  local destination target_id booted_id booted_ids
-  destination="$(resolve_destination)"
-  target_id="$(simulator_id_from_destination "$destination")"
-  booted_ids="$(
-    xcrun simctl list devices booted -j | ruby -rjson -e '
-      JSON.parse(STDIN.read).fetch("devices").values.flatten.each do |device|
-        puts device.fetch("udid") if device["state"] == "Booted"
-      end
-    '
-  )"
+acquire_selected_target() {
+  local lease_command="$1"
+  ios_lease_try_acquire \
+    "$SELECTED_KIND" \
+    "$SELECTED_ID" \
+    "$SELECTED_NAME" \
+    "$lease_command" \
+    "$SELECTED_DERIVED_DATA"
+}
 
-  # 切换目标前关闭其他已启动设备，保证 Xcode、Codex 和测试脚本共用一台 Simulator。
-  while IFS= read -r booted_id; do
-    [[ -n "$booted_id" ]] || continue
-    if [[ "$booted_id" != "$target_id" ]]; then
-      echo "==> 关闭非默认 Simulator：$booted_id" >&2
-      xcrun simctl shutdown "$booted_id"
+select_and_acquire_build_target() {
+  local lease_command="$1"
+  local attempts=0
+  while (( attempts < 16 )); do
+    select_available_build_target || return
+    if acquire_selected_target "$lease_command"; then
+      ios_lease_install_traps
+      return
     fi
-  done <<< "$booted_ids"
+    attempts=$((attempts + 1))
+  done
+  echo "设备状态持续变化，无法获得稳定租约。请运行 leases 查看占用。" >&2
+  return 75
+}
 
-  printf '%s\n' "$destination"
+select_fixed_test_target() {
+  local record
+  record="$(fixed_test_simulator_record)" || return
+  IFS=$'\t' read -r SELECTED_ID SELECTED_NAME <<< "$record"
+  select_target simulator "$SELECTED_ID" "$SELECTED_NAME"
+}
+
+acquire_fixed_test_target() {
+  local lease_command="$1"
+  select_fixed_test_target || return
+  ios_lease_acquire_wait \
+    simulator \
+    "$SELECTED_ID" \
+    "$SELECTED_NAME" \
+    "$lease_command" \
+    "$SELECTED_DERIVED_DATA"
+  ios_lease_install_traps
 }
 
 simulator_is_booted() {
   local target_id="$1"
-  xcrun simctl list devices booted -j | IOS_TARGET_ID="$target_id" ruby -rjson -e '
+  "$XCRUN_BIN" simctl list devices booted -j | IOS_TARGET_ID="$target_id" ruby -rjson -e '
     devices = JSON.parse(STDIN.read).fetch("devices").values.flatten
     exit(devices.any? { |device| device["udid"] == ENV.fetch("IOS_TARGET_ID") } ? 0 : 1)
   '
@@ -238,19 +364,17 @@ simulator_is_booted() {
 
 run_xcodebuild() {
   local action="$1"
-  local destination="$2"
-  shift 2
-
+  shift
   echo "==> $SCHEME $CONFIGURATION · $action"
-  echo "    destination: $destination"
-  echo "    DerivedData: $DERIVED_DATA_PATH"
+  echo "    destination: $SELECTED_DESTINATION"
+  echo "    DerivedData: $SELECTED_DERIVED_DATA"
 
-  xcodebuild \
+  "$XCODEBUILD_BIN" \
     -project "$PROJECT_PATH" \
     -scheme "$SCHEME" \
     -configuration "$CONFIGURATION" \
-    -destination "$destination" \
-    -derivedDataPath "$DERIVED_DATA_PATH" \
+    -destination "$SELECTED_DESTINATION" \
+    -derivedDataPath "$SELECTED_DERIVED_DATA" \
     CODE_SIGNING_ALLOWED=NO \
     "$@" \
     "$action"
@@ -258,100 +382,115 @@ run_xcodebuild() {
 
 run_device_action() {
   local action="$1"
-  local target_id="$2"
-  local target_name="$3"
-  shift 3
-
-  echo "==> 检测到 USB 真机，使用 $target_name ($target_id)"
+  shift
+  echo "==> 使用已租用 USB 真机：$SELECTED_NAME ($SELECTED_ID)"
   if [[ "$action" == "build" ]]; then
-    DEVICE_ID="$target_id" \
-      DEVICE_NAME="$target_name" \
-      DERIVED_DATA_PATH="$DEVICE_DERIVED_DATA_PATH" \
+    DEVICE_ID="$SELECTED_ID" \
+      DEVICE_NAME="$SELECTED_NAME" \
+      DERIVED_DATA_PATH="$SELECTED_DERIVED_DATA" \
+      IOS_XCODEBUILD_BIN="$XCODEBUILD_BIN" \
       SKIP_INSTALL=1 \
       SKIP_LAUNCH=1 \
       bash "$ROOT_DIR/scripts/deploy-ipad.sh" "$@"
   else
-    DEVICE_ID="$target_id" \
-      DEVICE_NAME="$target_name" \
-      DERIVED_DATA_PATH="$DEVICE_DERIVED_DATA_PATH" \
+    DEVICE_ID="$SELECTED_ID" \
+      DEVICE_NAME="$SELECTED_NAME" \
+      DERIVED_DATA_PATH="$SELECTED_DERIVED_DATA" \
+      IOS_XCODEBUILD_BIN="$XCODEBUILD_BIN" \
       bash "$ROOT_DIR/scripts/deploy-ipad.sh" "$@"
   fi
+}
+
+print_lease_status() {
+  local record kind device_id device_name found=0
+  while IFS=$'\t' read -r kind device_id device_name; do
+    [[ -n "$device_id" ]] || continue
+    found=1
+    ios_lease_print_status "$kind" "$device_id" "$device_name"
+  done < <(observable_device_records)
+  [[ "$found" -eq 1 ]] || echo "当前没有可观察的 iOS 真机或 Simulator。"
 }
 
 command_name="${1:-build}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
+lease_command="bash ./scripts/ios-dev.sh $command_name"
+[[ $# -gt 0 ]] && lease_command="$lease_command $*"
 
 case "$command_name" in
-  destination)
-    require_command xcrun
+  destination|prepare)
+    require_command "$XCRUN_BIN"
     require_command ruby
-    resolve_destination
-    ;;
-  prepare)
-    require_command xcrun
-    require_command ruby
-    prepare_destination
+    select_fixed_test_target
+    printf '%s\n' "$SELECTED_DESTINATION"
     ;;
   target)
-    require_command xcrun
+    require_command "$XCRUN_BIN"
+    require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
-    target_record="$(resolve_build_target)"
-    IFS=$'\t' read -r target_kind target_id target_name <<< "$target_record"
-    printf '%s: %s (%s)\n' "$target_kind" "$target_name" "$target_id"
+    select_available_build_target
+    printf '%s: %s (%s)\n' "$SELECTED_KIND" "$SELECTED_NAME" "$SELECTED_ID"
+    printf 'DerivedData: %s\n' "$SELECTED_DERIVED_DATA"
     ;;
   derived-data-path)
-    printf '%s\n' "$DERIVED_DATA_PATH"
+    require_command "$XCRUN_BIN"
+    require_command ruby
+    select_fixed_test_target
+    printf '%s\n' "$SELECTED_DERIVED_DATA"
+    ;;
+  leases|lease-status)
+    require_command "$XCRUN_BIN"
+    require_command "$IOS_DEVICE_LEASE_PS_BIN"
+    require_command ruby
+    print_lease_status
     ;;
   build)
-    require_command xcodebuild
-    require_command xcrun
+    require_command "$XCODEBUILD_BIN"
+    require_command "$XCRUN_BIN"
+    require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
-    target_record="$(resolve_build_target)"
-    IFS=$'\t' read -r target_kind target_id target_name <<< "$target_record"
-    if [[ "$target_kind" == "device" ]]; then
-      run_device_action build "$target_id" "$target_name" "$@"
+    select_and_acquire_build_target "$lease_command"
+    if [[ "$SELECTED_KIND" == "device" ]]; then
+      run_device_action build "$@"
     else
-      resolved_destination="$(prepare_destination)"
-      run_xcodebuild build "$resolved_destination" "$@"
+      run_xcodebuild build "$@"
     fi
     ;;
   build-for-testing|test)
-    require_command xcodebuild
-    require_command xcrun
+    require_command "$XCODEBUILD_BIN"
+    require_command "$XCRUN_BIN"
+    require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
-    resolved_destination="$(prepare_destination)"
-    run_xcodebuild "$command_name" "$resolved_destination" "$@"
+    acquire_fixed_test_target "$lease_command"
+    run_xcodebuild "$command_name" "$@"
     ;;
   run)
-    require_command open
-    require_command xcodebuild
-    require_command xcrun
+    require_command "$XCODEBUILD_BIN"
+    require_command "$XCRUN_BIN"
+    require_command "$IOS_DEVICE_LEASE_PS_BIN"
     require_command ruby
-    target_record="$(resolve_build_target)"
-    IFS=$'\t' read -r target_kind target_id target_name <<< "$target_record"
-    if [[ "$target_kind" == "device" ]]; then
-      run_device_action run "$target_id" "$target_name" "$@"
+    select_and_acquire_build_target "$lease_command"
+    if [[ "$SELECTED_KIND" == "device" ]]; then
+      run_device_action run "$@"
       exit 0
     fi
 
-    resolved_destination="$(prepare_destination)"
-    resolved_simulator_id="$(simulator_id_from_destination "$resolved_destination")"
-    if ! simulator_is_booted "$resolved_simulator_id"; then
-      xcrun simctl boot "$resolved_simulator_id"
+    require_command "$OPEN_BIN"
+    if ! simulator_is_booted "$SELECTED_ID"; then
+      "$XCRUN_BIN" simctl boot "$SELECTED_ID"
     fi
-    open -a Simulator
-    xcrun simctl bootstatus "$resolved_simulator_id" -b
-    run_xcodebuild build "$resolved_destination" "$@"
+    "$OPEN_BIN" -a Simulator
+    "$XCRUN_BIN" simctl bootstatus "$SELECTED_ID" -b
+    run_xcodebuild build "$@"
 
-    app_path="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION-iphonesimulator/MimiRemote.app"
+    app_path="$SELECTED_DERIVED_DATA/Build/Products/$CONFIGURATION-iphonesimulator/MimiRemote.app"
     if [[ ! -d "$app_path" ]]; then
       echo "构建成功但找不到 App：$app_path" >&2
       exit 1
     fi
-    xcrun simctl install "$resolved_simulator_id" "$app_path"
-    xcrun simctl launch --terminate-running-process "$resolved_simulator_id" "$BUNDLE_ID"
+    "$XCRUN_BIN" simctl install "$SELECTED_ID" "$app_path"
+    "$XCRUN_BIN" simctl launch --terminate-running-process "$SELECTED_ID" "$BUNDLE_ID"
     ;;
   -h|--help|help)
     usage

@@ -274,7 +274,7 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The QR code is a short-lived, single-use pairing ticket, not a long-lived token. Manual connection is available as a fallback.
 
-Command-line `build` and `run` prefer an available, paired USB iOS device and fall back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests and CI remain Simulator-only:
+Command-line `build` and `run` lease an available, paired USB iOS device and skip busy targets before falling back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests, snapshots, and CI require that exact Simulator and never fall back to iPad mini. Run `bash ./scripts/ios-dev.sh leases` to inspect cross-worktree leases and external `xcodebuild` usage:
 
 ```bash
 bash ./scripts/ios-dev.sh build-for-testing
