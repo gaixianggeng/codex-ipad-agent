@@ -181,7 +181,36 @@ This shape keeps deployment small and auditable, but the tradeoff is explicit: t
 
 ## Install and run
 
-### 1. Prepare your Mac
+### Windows host
+
+Requirements:
+
+- Windows 10/11 x64, with Codex CLI installed and signed in as the same Windows user.
+- The PC and iPhone/iPad on the same private network. Tailscale is recommended across networks.
+
+Download the versioned `Mimi-Remote-Setup-*.exe`, `.sha256`, and `.metadata.json` files from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest). Always verify the SHA-256. When `metadata.json` reports `authenticode-pfx`, require an Authenticode status of `Valid`; when it reports `unsigned-release`, expect `NotSigned` and a possible Microsoft Defender SmartScreen warning:
+
+```powershell
+$setup = Get-Item .\Mimi-Remote-Setup-*.exe
+(Get-FileHash $setup -Algorithm SHA256).Hash
+(Get-AuthenticodeSignature $setup).Status
+```
+
+Unsigned assets include `-unsigned` in the EXE filename. Only run one when it came from this repository's official Release and its SHA-256 matches the published sidecar.
+
+The per-user installer embeds `agentd.exe`, `alleycat-claude-bridge.exe`, and a native `mimi-remote-tray.exe`; Go, Rust, and administrator-level services are not required. It registers a limited current-user Task Scheduler task, starts it, waits for `/api/readyz`, and launches the notification-area controller. The tray shows the endpoint and Codex/Claude state and provides start, stop, restart, pairing, Doctor, and log actions. Configuration and credentials stay under `%APPDATA%\mimi-remote`; logs stay under `%LOCALAPPDATA%\Mimi Remote\logs`. Normal upgrade and uninstall preserve them.
+
+Private-LAN access is opt-in. Without Tailscale and without that selection, a fresh Windows install remains loopback-only. If selected, Setup first requires the default Windows network profile to be **Private**, removes any prompt-created extra inbound rules for `agentd.exe`, then creates one Private-profile, `LocalSubnet` rule and only then expands `agentd` to LAN listening. Runtime validation rejects Public/Any or otherwise unmanaged inbound Allow rules. The pairing endpoint follows the system default route and excludes Hyper-V, WSL, container, and VPN-only virtual adapters. A Public profile is rejected rather than widening the firewall boundary; only mark a Wi-Fi or Ethernet network Private when you trust it. Day-to-day commands can also be run from PowerShell:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" status
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" pair --qr-only
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" doctor --fix
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" logs -n 200
+& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" restart --no-pair
+```
+
+### macOS host
 
 Requirements:
 
@@ -219,7 +248,7 @@ agentd stop
 On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
 From an agent, automation, or retained remote log, use `agentd up --no-pair` / `agentd restart --no-pair` so the output contains no pairing QR code, endpoint, or long-lived access token. `agentd up --no-pair --json` returns only the version, readiness state, and safe warnings rather than the complete setup result. When pairing is needed, have the user run `agentd pair --qr-only` in a local terminal.
 
-For Linux installation and recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
+For Windows, macOS, and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
 
 To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
 
@@ -229,7 +258,7 @@ https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/insta
 
 Ask `$skill-installer` to install that GitHub path. Each GitHub Release also includes `install-mimi-remote.zip` and its SHA-256 file for an auditable, versioned copy.
 
-### 2. Build the iOS app from source
+### Build the iOS app from source
 
 Mimi Remote requires iOS/iPadOS 26 or later. Install XcodeGen before generating the Xcode project:
 
@@ -245,13 +274,13 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The QR code is a short-lived, single-use pairing ticket, not a long-lived token. Manual connection is available as a fallback.
 
-Command-line `build` and `run` prefer an available, paired USB iOS device and fall back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests and CI remain Simulator-only:
+Command-line `build` and `run` lease an available, paired USB iOS device and skip busy targets before falling back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests, snapshots, and CI require that exact Simulator and never fall back to iPad mini. Run `bash ./scripts/ios-dev.sh leases` to inspect cross-worktree leases and external `xcodebuild` usage:
 
 ```bash
 bash ./scripts/ios-dev.sh build-for-testing
 ```
 
-### 3. Build the backend from source (optional)
+### Build the backend from source (optional)
 
 ```bash
 go test ./...
@@ -281,7 +310,7 @@ macOS does not provide one background-requestable permission for the entire user
 
 The Claude runtime is disabled by default. When enabled, `agentd` supervises one resident `alleycat-claude-bridge` and attaches mobile WebSocket sessions to it by a stable session key. Each Claude thread owns a headless stdio JSONL process; reconnects replay missed events or reload authoritative history instead of resubmitting `turn/start`.
 
-The Mac DMG already includes a signed, compatible bridge next to `agentd`; do not install a second copy with Cargo for that setup. Install the bridge from source only for Homebrew, Linux, or standalone development:
+The Windows installer and Mac DMG already include a compatible bridge next to `agentd`; signed Windows releases and the notarized Mac DMG preserve platform code identity, while an `unsigned-release` Windows package does not. Do not install a second copy with Cargo for those setups. Install the bridge from source only for Homebrew, Linux, or standalone development:
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
@@ -304,7 +333,7 @@ Enable it explicitly in the user configuration:
 }
 ```
 
-An empty `bridge_bin` selects the bridge bundled with Mimi Remote Mac. Homebrew and Linux installations must instead set the absolute path returned by `command -v alleycat-claude-bridge`. The configuration file contains long-lived credentials: back it up privately, update only the `claude` fields with a JSON-aware tool, preserve mode `0600`, and never print the complete file into logs or chats.
+An empty `bridge_bin` selects the bridge bundled with the Windows installer or Mimi Remote Mac. Homebrew and Linux installations must instead set the absolute path returned by `command -v alleycat-claude-bridge`. The configuration file contains long-lived credentials: back it up privately, update only the `claude` fields with a JSON-aware tool, preserve mode `0600`, and never print the complete file into logs or chats.
 
 After changing the configuration, restart from the current service owner: use **Restart Service** in the Mimi Remote Mac menu, `agentd restart --no-pair` for Homebrew, or the user-systemd service on Linux. Run Doctor and confirm that the mobile runtime picker exposes Claude without disrupting Codex.
 

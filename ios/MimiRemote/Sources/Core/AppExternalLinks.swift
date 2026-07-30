@@ -7,6 +7,8 @@ enum AppExternalLinks {
     /// 普通用户从公开 Release 页面了解版本；系统分享则发送稳定的 latest DMG 直链。
     static let macRelease = makeURL("https://github.com/gaixianggeng/codex-ipad-agent/releases/latest")
     static let macInstaller = makeURL("https://github.com/gaixianggeng/codex-ipad-agent/releases/latest/download/Mimi-Remote-Mac.dmg")
+    /// Windows 安装器带版本号，latest Release 页面是稳定且不会指向过期产物的入口。
+    static let windowsRelease = makeURL("https://github.com/gaixianggeng/codex-ipad-agent/releases/latest")
     static let privacyPolicy = makeURL("https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/privacy-policy.md")
     static let termsOfUse = makeURL("https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/terms-of-use.md")
     static let support = makeURL("https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md")

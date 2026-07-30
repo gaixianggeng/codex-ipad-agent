@@ -1,6 +1,7 @@
 package codexhistory
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,65 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
+
+func TestExternalActivityReadsStateDatabaseWithoutSQLiteCLI(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{
+		ID: "demo", Name: "Demo", Path: projectDir,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rolloutPath := filepath.Join(t.TempDir(), "thread-windows.jsonl")
+	meta := `{"timestamp":"2026-07-29T11:00:00Z","type":"session_meta","payload":{"id":"thread-windows","cwd":` +
+		mustJSONQuote(t, projectDir) + `,"originator":"Codex Desktop","thread_source":"user"}}`
+	if err := os.WriteFile(
+		rolloutPath,
+		[]byte(meta+"\n"+externalEventLine("task_started", "turn-windows")+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	databasePath := filepath.Join(t.TempDir(), "state_5.sqlite")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+		create table threads (
+			id text primary key,
+			cwd text not null,
+			source text not null,
+			thread_source text not null,
+			rollout_path text not null,
+			updated_at_ms integer not null,
+			archived integer not null default 0
+		);
+		create table thread_spawn_edges (child_thread_id text);
+		insert into threads values (?, ?, 'vscode', 'user', ?, 1, 0);
+	`, "thread-windows", projectDir, rolloutPath); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	activities, err := NewExternalActivityTracker(databasePath, registry).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activities) != 1 ||
+		activities[0].ThreadID != "thread-windows" ||
+		activities[0].State != "running" {
+		t.Fatalf("unexpected external activities: %+v", activities)
+	}
+}
 
 func TestExternalActivityFiltersSourceAndProject(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)

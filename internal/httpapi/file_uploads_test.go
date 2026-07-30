@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -114,14 +115,14 @@ func TestFileUploadExpiresAndUsesPrivateCachePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rootInfo.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && rootInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("缓存根目录权限必须是 0700：%o", rootInfo.Mode().Perm())
 	}
 	contentInfo, err := os.Stat(filepath.Join(cacheDir, metadata.ID, fileUploadContentFilename))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contentInfo.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && contentInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("缓存文件权限必须是 0600：%o", contentInfo.Mode().Perm())
 	}
 

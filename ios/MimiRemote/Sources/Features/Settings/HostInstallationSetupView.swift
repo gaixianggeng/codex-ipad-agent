@@ -1,10 +1,72 @@
 import SwiftUI
 
-/// 首次连接只保留两个用户阶段：先在 Mac 上准备，再在当前设备扫码。
-/// 命令行和手动输入由外层单独收进“其他连接方式”，避免恢复路径干扰主任务。
-struct MacInstallationSetupView: View {
+enum HostInstallationPlatform: String, CaseIterable, Identifiable {
+    case mac
+    case windows
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mac:
+            "Mac"
+        case .windows:
+            "Windows"
+        }
+    }
+
+    var installTitle: String {
+        switch self {
+        case .mac:
+            L10n.text("ui.install_mimi_remote_mac")
+        case .windows:
+            L10n.text("ui.install_mimi_remote_windows")
+        }
+    }
+
+    var installationDetail: String {
+        switch self {
+        case .mac:
+            L10n.text("ui.mac_installer_requirements_and_instructions")
+        case .windows:
+            L10n.text("ui.windows_installer_requirements_and_instructions")
+        }
+    }
+
+    var shareTitle: String {
+        switch self {
+        case .mac:
+            L10n.text("ui.send_download_link_to_mac")
+        case .windows:
+            L10n.text("ui.send_download_link_to_windows")
+        }
+    }
+
+    var installerURL: URL {
+        switch self {
+        case .mac:
+            AppExternalLinks.macInstaller
+        case .windows:
+            AppExternalLinks.windowsRelease
+        }
+    }
+
+    var releaseURL: URL {
+        switch self {
+        case .mac:
+            AppExternalLinks.macRelease
+        case .windows:
+            AppExternalLinks.windowsRelease
+        }
+    }
+}
+
+/// 首次连接只保留两个用户阶段：先在电脑上准备，再在当前设备扫码。
+/// 平台选择只改变远端安装入口；配对和凭据处理继续复用同一条安全链路。
+struct HostInstallationSetupView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var selectedPlatform: HostInstallationPlatform = .mac
 
     let connectionFooter: String
     let isScanDisabled: Bool
@@ -16,20 +78,29 @@ struct MacInstallationSetupView: View {
 
         Group {
             Section {
+                Picker(L10n.text("ui.computer_platform"), selection: $selectedPlatform) {
+                    ForEach(HostInstallationPlatform.allCases) { platform in
+                        Text(platform.title).tag(platform)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.hostInstaller.platform")
+
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(L10n.text("ui.install_mimi_remote_mac"))
+                    Text(selectedPlatform.installTitle)
                         .font(themeStore.uiFont(.body, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
 
-                    Text(L10n.text("ui.mac_installer_requirements_and_instructions"))
+                    Text(selectedPlatform.installationDetail)
                         .font(themeStore.uiFont(.footnote))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 4)
                 .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("settings.hostInstaller.installationDetail")
 
-                Link(destination: AppExternalLinks.macRelease) {
+                Link(destination: selectedPlatform.releaseURL) {
                     HStack(spacing: 12) {
                         // 品牌资源保持官方黑白原色，不跟随 App 的主题色染色。
                         Image("GitHubInvertocat")
@@ -57,34 +128,34 @@ struct MacInstallationSetupView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(L10n.text("ui.view_releases_on_github"))
                 .accessibilityHint(L10n.text("ui.github_release_accessibility_hint"))
-                .accessibilityIdentifier("settings.macInstaller.githubRelease")
+                .accessibilityIdentifier("settings.hostInstaller.githubRelease")
 
-                ShareLink(item: AppExternalLinks.macInstaller) {
+                ShareLink(item: selectedPlatform.installerURL) {
                     GloballyCenteredActionLabel(
-                        title: L10n.text("ui.send_download_link_to_mac"),
+                        title: selectedPlatform.shareTitle,
                         systemImage: "square.and.arrow.up"
                     )
                 }
                 .buttonStyle(.bordered)
                 .tint(tokens.primaryAction)
                 .controlSize(.large)
-                .accessibilityIdentifier("settings.macInstaller.share")
+                .accessibilityIdentifier("settings.hostInstaller.share")
             } header: {
-                Text(L10n.text("ui.prepare_on_mac"))
+                Text(L10n.text("ui.computer_platform"))
             } footer: {
-                Text(L10n.text("ui.select_code_directory_then_mac_shows_qr"))
+                Text(L10n.text("ui.select_code_directory_then_computer_shows_qr"))
             }
 
             Section {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(L10n.text("ui.scan_qr_code_after_mac_setup"))
+                    Text(L10n.text("ui.scan_qr_code_to_connect"))
                         .font(themeStore.uiFont(.footnote))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
 
                     Button(action: onScan) {
                         GloballyCenteredActionLabel(
-                            title: L10n.text("ui.scan_qr_code_on_mac"),
+                            title: L10n.text("ui.scan_qr_code_on_computer"),
                             systemImage: "qrcode.viewfinder"
                         )
                     }
@@ -92,7 +163,7 @@ struct MacInstallationSetupView: View {
                     .tint(tokens.primaryAction)
                     .controlSize(.large)
                     .disabled(isScanDisabled)
-                    .accessibilityIdentifier("settings.macInstaller.scan")
+                    .accessibilityIdentifier("settings.hostInstaller.scan")
 
                     Button(action: onPasteConnectionInfo) {
                         GloballyCenteredActionLabel(
@@ -105,7 +176,7 @@ struct MacInstallationSetupView: View {
                     .controlSize(.large)
                     .disabled(isScanDisabled)
                     .accessibilityHint(L10n.text("ui.paste_connection_info_hint"))
-                    .accessibilityIdentifier("settings.macInstaller.pasteConnectionInfo")
+                    .accessibilityIdentifier("settings.hostInstaller.pasteConnectionInfo")
                 }
                 .padding(.vertical, 4)
             } header: {

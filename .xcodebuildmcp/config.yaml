@@ -5,5 +5,5 @@ sessionDefaults:
   configuration: Debug
   simulatorName: iPad Pro 13-inch (M5)
   useLatestOS: true
-  derivedDataPath: ./ios/MimiRemote/build/dev-simulator-derived
+  # DerivedData 必须在 session 中按已解析的 Simulator UDID 设置，不能静态共享。
   bundleId: com.gaixianggeng.mimi

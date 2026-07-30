@@ -1038,7 +1038,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(operations, ["最新 Tab", "会话 Path"])
     }
 
-    func testWorkbenchVisibleSessionExcludesSettingsTabAndRootPages() {
+    func testWorkbenchVisibleSessionExcludesMeTabAndRootPages() {
         var state = WorkbenchNavigationState(
             route: .session(id: "session-visible", source: .sessions)
         )
@@ -1048,13 +1048,13 @@ extension ConversationDataFlowTests {
             "session-visible"
         )
         _ = state.reduce(
-            .compactTabChanged(.settings),
+            .compactTabChanged(.me),
             usesCompactNavigation: true,
             selectedSessionID: "session-visible"
         )
         XCTAssertNil(
             state.visibleSessionID(usesCompactNavigation: true),
-            "设置 Tab 会保留会话路由，但会话内容已经不可见"
+            "“我的”Tab 会保留会话路由，但会话内容已经不可见"
         )
 
         _ = state.reduce(
@@ -1074,6 +1074,194 @@ extension ConversationDataFlowTests {
         XCTAssertNil(
             state.visibleSessionID(usesCompactNavigation: true),
             "返回会话列表后不应再把 selectedSessionID 当作可见详情"
+        )
+    }
+
+    func testWorkbenchMePreservesCompactRouteAndNavigationStack() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "session-visible", source: .workspaces)
+        )
+        let preservedPath = state.compactWorkspacePath
+
+        let openEffect = state.reduce(
+            .compactTabChanged(.me),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+
+        XCTAssertNil(openEffect)
+        XCTAssertEqual(state.compactSelectedTab, .me)
+        XCTAssertEqual(state.selection, .me)
+        XCTAssertEqual(
+            state.route,
+            .session(id: "session-visible", source: .workspaces)
+        )
+        XCTAssertEqual(state.compactWorkspacePath, preservedPath)
+
+        let returnEffect = state.reduce(
+            .compactTabChanged(.workspaces),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+        XCTAssertNil(returnEffect)
+        XCTAssertEqual(state.selection, .session("session-visible"))
+        XCTAssertEqual(state.compactWorkspacePath, preservedPath)
+    }
+
+    func testWorkbenchMeSurvivesRestorationFeedbackInBothLayouts() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(route: .sessions)
+            _ = state.reduce(
+                .open(.me, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+
+            _ = state.reduce(
+                .synchronize(.workspaces),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+
+            XCTAssertEqual(state.selection, .me)
+            XCTAssertEqual(state.route, .workspaces)
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .me)
+            }
+            XCTAssertNil(
+                state.visibleSessionID(usesCompactNavigation: usesCompactNavigation)
+            )
+        }
+    }
+
+    func testWorkbenchMeSurvivesBackgroundSelectionCommits() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(
+                route: .session(id: "session-original", source: .workspaces)
+            )
+            _ = state.reduce(
+                .open(.me, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: "session-original"
+            )
+
+            _ = state.reduce(
+                .selectionCommitted(SessionSelectionCommit(
+                    sequence: 1,
+                    projectID: nil,
+                    sessionID: "session-replacement",
+                    reason: .identityReplacement(previousID: "session-original")
+                )),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: "session-replacement"
+            )
+            XCTAssertEqual(state.selection, .me)
+            XCTAssertEqual(
+                state.route,
+                .session(id: "session-replacement", source: .workspaces)
+            )
+
+            _ = state.reduce(
+                .selectionCommitted(SessionSelectionCommit(
+                    sequence: 2,
+                    projectID: nil,
+                    sessionID: nil,
+                    reason: .invalidation
+                )),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+            XCTAssertEqual(state.selection, .me)
+            XCTAssertEqual(state.route, .workspaces)
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .me)
+            }
+        }
+    }
+
+    func testAccountTokenUsageMarksNilDailyHistoryUnavailableButKeepsLifetime() async {
+        let snapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 50_160_000_000),
+            dailyUsageBuckets: nil
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageHandler: { snapshot }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAccountTokenUsage()
+
+        XCTAssertEqual(store.accountTokenUsage, snapshot)
+        XCTAssertTrue(
+            store.isAccountTokenUsageUnavailable,
+            "summary 可用但日历史为 nil 时，点格图必须诚实显示暂不可用"
+        )
+    }
+
+    func testAccountTokenUsageDropsLateResponseAfterHostSwitch() async throws {
+        let suiteName = "ConversationSessionStoreTests.TokenUsageHostScope.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let gate = AccountTokenUsageResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageHandler: {
+                await gate.response()
+            }
+        )
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let oldSnapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 1),
+            dailyUsageBuckets: []
+        )
+        let currentSnapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 2),
+            dailyUsageBuckets: []
+        )
+
+        let refreshTask = Task { @MainActor in
+            await store.refreshAccountTokenUsage()
+        }
+        await gate.waitUntilStarted()
+
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "Mac B"),
+            installationID: "installation-b"
+        ))
+        let newScope = appStore.activeHostScope
+        store.accountTokenUsage = currentSnapshot
+        store.accountTokenUsageRefreshHostScope = newScope
+        store.isRefreshingAccountTokenUsage = true
+
+        await gate.resolve(oldSnapshot)
+        await refreshTask.value
+
+        XCTAssertEqual(store.accountTokenUsage, currentSnapshot)
+        XCTAssertEqual(store.accountTokenUsageRefreshHostScope, newScope)
+        XCTAssertTrue(
+            store.isRefreshingAccountTokenUsage,
+            "旧主机请求的 defer 不能清掉新主机正在进行的刷新"
         )
     }
 
@@ -1158,6 +1346,11 @@ extension ConversationDataFlowTests {
     func testWorkbenchNavigationNotificationOpensSessionsDetail() {
         for usesCompactNavigation in [true, false] {
             var state = WorkbenchNavigationState(route: .workspaces)
+            _ = state.reduce(
+                .open(.me, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
 
             let effect = state.reduce(
                 .selectionCommitted(SessionSelectionCommit(
@@ -3144,6 +3337,34 @@ private actor GitStatusResponseGate {
 
     func resolve(_ response: GitStatusResponse) {
         continuation?.resume(returning: response)
+        continuation = nil
+    }
+}
+
+private actor AccountTokenUsageResponseGate {
+    private var continuation: CheckedContinuation<AccountTokenUsageSnapshot?, Never>?
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func response() async -> AccountTokenUsageSnapshot? {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            didStart = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func resolve(_ snapshot: AccountTokenUsageSnapshot?) {
+        continuation?.resume(returning: snapshot)
         continuation = nil
     }
 }

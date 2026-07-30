@@ -2,8 +2,6 @@ import Foundation
 
 // 通知事件、上下文投影、历史消息转换和 server request 映射保持纯内部实现。
 extension CodexAppServerSessionRuntime {
-    private var terminalInteractionTombstoneLimit: Int { 512 }
-
     func releaseStaleApprovalRequest(_ request: CodexAppServerServerRequest) {
         removePendingApprovalRequest(request)
         guard let connection else {
@@ -344,7 +342,7 @@ extension CodexAppServerSessionRuntime {
             // thread/search 的最终权限边界在 agentd gateway：它会按 projects/browse_roots 裁剪响应。
             // iOS 不发送 cwd，只拒绝不可能作为会话目录的空值/相对路径；合法 managed worktree
             // 未必已进入 config.projects，不能在这里误删 gateway 已授权的结果。
-            guard !cwd.isEmpty, (cwd as NSString).isAbsolutePath else {
+            guard !cwd.isEmpty, isAbsoluteRemoteHostPath(cwd) else {
                 continue
             }
             let session = try agentSession(from: thread, projects: projects, fallbackProject: nil)
@@ -417,6 +415,45 @@ extension CodexAppServerSessionRuntime {
             return
         }
         _ = await refreshRateLimitIfAvailable()
+    }
+
+    func refreshAccountTokenUsage() async -> AccountTokenUsageSnapshot? {
+        if let accountTokenUsageRefreshTask {
+            return await accountTokenUsageRefreshTask.value
+        }
+
+        let task = Task { [self] in
+            await performAccountTokenUsageRefresh()
+        }
+        accountTokenUsageRefreshTask = task
+        let snapshot = await task.value
+        accountTokenUsageRefreshTask = nil
+        return snapshot
+    }
+
+    func performAccountTokenUsageRefresh() async -> AccountTokenUsageSnapshot? {
+        // 账号活动是 Codex/ChatGPT 专属能力；Claude bridge 没有同构数据，必须 fail closed。
+        guard runtimeProvider == "codex",
+              let config = try? await ensureConfig(),
+              config.policy.allowedMethods.contains("account/usage/read")
+        else {
+            return accountTokenUsage
+        }
+
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                CodexAppServerRequestBuilder(allowlistedProjects: config.projects).accountUsageRead(),
+                timeout: min(requestTimeout, 10)
+            )
+            guard let snapshot = accountTokenUsageSnapshot(fromPayload: result) else {
+                return accountTokenUsage
+            }
+            accountTokenUsage = snapshot
+            return snapshot
+        } catch {
+            // “我的”页的统计是展示增强，失败时保留最近一次内存快照，不影响会话链路。
+            return accountTokenUsage
+        }
     }
 
     func applyAccountRateLimit(_ summary: RateLimitSummary) {
@@ -553,11 +590,42 @@ extension CodexAppServerSessionRuntime {
         return projects
             .filter { project in
                 let projectPath = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
-                return path == projectPath || path.hasPrefix(projectPath + "/")
+                return remoteHostPath(path, isWithin: projectPath)
             }
             .max { lhs, rhs in
-                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+                remoteHostPathDepth(lhs.path) < remoteHostPathDepth(rhs.path)
             }
+    }
+
+    /// `cwd` 属于远端宿主，不能用 iOS Foundation 的本机 Unix 路径判断。
+    /// 这里只识别网关允许返回的 Unix、Windows 盘符和 UNC 绝对路径。
+    func isAbsoluteRemoteHostPath(_ path: String) -> Bool {
+        if path.hasPrefix("/") || path.hasPrefix(#"\\"#) {
+            return true
+        }
+        guard path.count >= 3 else {
+            return false
+        }
+        let characters = Array(path.prefix(3))
+        return characters[0].isLetter
+            && characters[1] == ":"
+            && (characters[2] == "\\" || characters[2] == "/")
+    }
+
+    func remoteHostPath(_ path: String, isWithin root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else {
+            return false
+        }
+        guard path != root else {
+            return true
+        }
+        let separator: Character = root.contains("\\") ? "\\" : "/"
+        let prefix = root.last == separator ? root : root + String(separator)
+        return path.hasPrefix(prefix)
+    }
+
+    func remoteHostPathDepth(_ path: String) -> Int {
+        path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).count
     }
 
     func projectsIncludingWorkspace(_ projects: [AgentProject], workspace: AgentWorkspace) -> [AgentProject] {
@@ -619,6 +687,44 @@ extension CodexAppServerSessionRuntime {
             return rateLimitSummary(fromSnapshot: rateLimits)
         }
         return rateLimitSummary(fromSnapshot: object)
+    }
+
+    func accountTokenUsageSnapshot(
+        fromPayload value: CodexAppServerJSONValue?
+    ) -> AccountTokenUsageSnapshot? {
+        guard let object = value?.objectValue,
+              let summary = object["summary"]?.objectValue
+        else {
+            return nil
+        }
+
+        let buckets: [AccountTokenUsageDailyBucket]?
+        switch object["dailyUsageBuckets"] {
+        case .array(let values):
+            buckets = values.compactMap { value in
+                guard let bucket = value.objectValue,
+                      let startDate = firstString(in: bucket, keys: ["startDate"]),
+                      let tokens = firstInt64(in: bucket, keys: ["tokens"])
+                else {
+                    return nil
+                }
+                return AccountTokenUsageDailyBucket(
+                    startDate: startDate,
+                    tokens: max(tokens, 0)
+                )
+            }
+        case .null, .none:
+            buckets = nil
+        default:
+            buckets = nil
+        }
+
+        return AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(
+                lifetimeTokens: firstInt64(in: summary, keys: ["lifetimeTokens"])
+            ),
+            dailyUsageBuckets: buckets
+        )
     }
 
     func rateLimitSummary(fromSnapshot snapshot: [String: CodexAppServerJSONValue]?) -> RateLimitSummary? {
@@ -1412,145 +1518,6 @@ extension CodexAppServerSessionRuntime {
             ?? request.id.description
     }
 
-    func isTerminalInteractionNotification(_ notification: CodexAppServerNotification) -> Bool {
-        switch notification.method {
-        case "turn/completed", "thread/closed", "error":
-            return true
-        default:
-            return false
-        }
-    }
-
-    func clearPendingServerRequestsForTerminalNotification(_ notification: CodexAppServerNotification) {
-        let params = notification.params?.objectValue ?? [:]
-        guard let sessionID = approvalSessionID(from: params) else {
-            return
-        }
-        let turnID = notification.method == "thread/closed"
-            ? nil
-            : firstString(in: params, keys: ["turnId", "turnID", "turn_id"])
-                ?? params["turn"]?.objectValue?["id"]?.stringValue
-
-        for request in Set(pendingApprovalRequestsByID.values)
-        where terminalNotificationMatches(request: request, sessionID: sessionID, turnID: turnID) {
-            removePendingApprovalRequest(request)
-        }
-        for request in Set(pendingUserInputRequestsByID.values)
-        where terminalNotificationMatches(request: request, sessionID: sessionID, turnID: turnID) {
-            removePendingUserInputRequest(request)
-        }
-        discardBufferedInteractionRequests(sessionID: sessionID, turnID: turnID)
-    }
-
-    func terminalNotificationMatches(
-        request: CodexAppServerServerRequest,
-        sessionID: SessionID,
-        turnID: TurnID?
-    ) -> Bool {
-        guard approvalSessionID(for: request) == sessionID else {
-            return false
-        }
-        guard let turnID else {
-            return true
-        }
-        // MCP elicitation 的 turnId 在协议中可省略；一旦所属 thread 的 turn 已 terminal，
-        // 这类无 turnId 请求也必须随该边界淘汰，不能在 reattach 时复活。
-        guard let requestTurnID = approvalTurnID(for: request) else {
-            return true
-        }
-        return requestTurnID == turnID
-    }
-
-    func discardBufferedInteractionRequests(sessionID: SessionID, turnID: TurnID?) {
-        guard var events = bufferedEventsBySessionID[sessionID] else {
-            return
-        }
-        events.removeAll { event in
-            switch event {
-            case .approvalRequest(_, let metadata),
-                 .userInputRequest(_, let metadata):
-                guard let turnID else {
-                    return true
-                }
-                return metadata.turnID == nil || metadata.turnID == turnID
-            default:
-                return false
-            }
-        }
-        if events.isEmpty {
-            bufferedEventsBySessionID.removeValue(forKey: sessionID)
-        } else {
-            bufferedEventsBySessionID[sessionID] = events
-        }
-    }
-
-    func isResolvedServerRequestTombstoned(_ request: CodexAppServerServerRequest) -> Bool {
-        let sessionID = approvalSessionID(for: request)
-        let ids = uniqueStrings([
-            approvalID(for: request),
-            userInputRequestID(for: request),
-            request.id.description
-        ].compactMap { $0 })
-        return ids.contains { id in
-            if let sessionID,
-               resolvedServerRequestTombstonesByKey[resolvedRequestTombstoneKey(sessionID: sessionID, requestID: id)] != nil {
-                return true
-            }
-            return resolvedServerRequestTombstonesByKey[resolvedRequestTombstoneKey(sessionID: nil, requestID: id)] != nil
-        }
-    }
-
-    func isTerminallyStaleServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
-        guard let sessionID = approvalSessionID(for: request) else {
-            return false
-        }
-        if let turnID = approvalTurnID(for: request),
-           terminalTurnTombstonesByKey[terminalTurnTombstoneKey(sessionID: sessionID, turnID: turnID)] != nil {
-            return true
-        }
-        guard approvalTurnID(for: request) == nil,
-              terminalSessionBarriers[sessionID] != nil else {
-            return false
-        }
-        // 新 turn 的 RPC 与 turn/started 通知也可能跨 pump 乱序；本地已经明确在启动或持有
-        // 非 terminal active turn 时，无 turnId MCP 请求属于新一轮，不能被上一轮 barrier 误杀。
-        if sessionsStartingTurn.contains(sessionID)
-            || contextsBySessionID[sessionID]?.activeTurnID != nil {
-            return false
-        }
-        return true
-    }
-
-    func resolvedRequestTombstoneKey(sessionID: SessionID?, requestID: String) -> String {
-        "\(sessionID ?? "*")#\(requestID)"
-    }
-
-    func terminalTurnTombstoneKey(sessionID: SessionID, turnID: TurnID) -> String {
-        "\(sessionID)#\(turnID)"
-    }
-
-    func pruneInteractionTombstones() {
-        for key in oldestTombstoneKeysToRemove(resolvedServerRequestTombstonesByKey) {
-            resolvedServerRequestTombstonesByKey.removeValue(forKey: key)
-        }
-        for key in oldestTombstoneKeysToRemove(terminalTurnTombstonesByKey) {
-            terminalTurnTombstonesByKey.removeValue(forKey: key)
-        }
-        for key in oldestTombstoneKeysToRemove(terminalSessionBarriers) {
-            terminalSessionBarriers.removeValue(forKey: key)
-        }
-    }
-
-    func oldestTombstoneKeysToRemove<Key: Hashable>(_ entries: [Key: Date]) -> [Key] {
-        guard entries.count > terminalInteractionTombstoneLimit else {
-            return []
-        }
-        return entries
-            .sorted(by: { $0.value < $1.value })
-            .prefix(entries.count - terminalInteractionTombstoneLimit)
-            .map(\.key)
-    }
-
     func rememberPendingApprovalRequest(_ request: CodexAppServerServerRequest) {
         guard isApprovalLikeServerRequest(request) else {
             return
@@ -1769,7 +1736,7 @@ extension CodexAppServerSessionRuntime {
         if lower.contains("approval") {
             return true
         }
-        // URL 以及空/不可完整渲染的已知 MCP form 都使用明确的一次性允许/拒绝交互。
+        // URL 与带精确协议标记的 Codex MCP 工具调用使用明确的授权交互。
         return request.method == "mcpServer/elicitation/request"
             && codexMCPElicitationPresentation(
                 params: request.params?.objectValue ?? [:]
@@ -1816,6 +1783,9 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         if method == "mcpServer/elicitation/request" {
+            if CodexMCPToolApprovalProtocol.isToolCall(params) {
+                return mcpToolApprovalResponse(params: params, decision: decision)
+            }
             return .object([
                 "action": .string(decision == "accept" ? "accept" : decision == "cancel" ? "cancel" : "decline"),
                 "content": .null,
@@ -1823,6 +1793,33 @@ extension CodexAppServerSessionRuntime {
             ])
         }
         return .object(["decision": .string(decision)])
+    }
+
+    func mcpToolApprovalResponse(
+        params: [String: CodexAppServerJSONValue],
+        decision: String
+    ) -> CodexAppServerJSONValue {
+        let persistenceModes = CodexMCPToolApprovalProtocol.persistenceModes(params)
+        let normalized = normalizeApprovalDecision(decision)
+        let persist: String?
+        switch normalized {
+        case "accept":
+            persist = nil
+        case "acceptForSession" where persistenceModes.contains("session"):
+            persist = "session"
+        case "acceptAlways" where persistenceModes.contains("always"):
+            persist = "always"
+        case "cancel":
+            return .object(["action": .string("cancel"), "content": .null, "_meta": .null])
+        default:
+            // 客户端不能扩大上游声明的权限范围；未知或未提供的持久化选项一律拒绝。
+            return .object(["action": .string("decline"), "content": .null, "_meta": .null])
+        }
+        return .object([
+            "action": .string("accept"),
+            "content": .null,
+            "_meta": persist.map { .object(["persist": .string($0)]) } ?? .null
+        ])
     }
 
     func userInputResponse(
@@ -1901,6 +1898,8 @@ extension CodexAppServerSessionRuntime {
             return "accept"
         case "acceptforsession", "accept_for_session":
             return "acceptForSession"
+        case "acceptalways", "accept_always", "acceptandremember", "accept_and_remember":
+            return "acceptAlways"
         case "acceptwithpermissionupdate", "accept_with_permission_update":
             return "acceptWithPermissionUpdate"
         case "cancel":

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -33,8 +34,11 @@ func TestLoadOrCreateInstallationIDCreatesStablePrivateIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		t.Fatalf("安装身份必须是 0600 普通文件：mode=%v", info.Mode())
+	if !info.Mode().IsRegular() {
+		t.Fatalf("安装身份必须是普通文件：mode=%v", info.Mode())
+	}
+	if err := validateInstallationIDFilePermissions(info); err != nil {
+		t.Fatalf("安装身份文件权限不符合平台要求：%v", err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -77,6 +81,9 @@ func TestLoadOrCreateInstallationIDRepairsPermissionAndRejectsSymlink(t *testing
 	valid := "00112233-4455-4677-8899-aabbccddeeff\n"
 
 	t.Run("permission", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows 使用当前用户 AppData ACL，不公开 POSIX 权限位")
+		}
 		path := filepath.Join(t.TempDir(), installationIDFileName)
 		if err := os.WriteFile(path, []byte(valid), 0o644); err != nil {
 			t.Fatal(err)
@@ -110,6 +117,10 @@ func TestLoadOrCreateInstallationIDRepairsPermissionAndRejectsSymlink(t *testing
 		if err := os.WriteFile(path, []byte(damaged), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		beforeInfo, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := loadOrCreateInstallationID(path, bytes.NewReader(make([]byte, 16))); err == nil {
 			t.Fatal("格式损坏不能因权限可修复而放行")
 		}
@@ -117,8 +128,12 @@ func TestLoadOrCreateInstallationIDRepairsPermissionAndRejectsSymlink(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o644 {
-			t.Fatalf("内容损坏时不能先修改文件：%04o", info.Mode().Perm())
+		if info.Mode().Perm() != beforeInfo.Mode().Perm() {
+			t.Fatalf(
+				"内容损坏时不能先修改文件权限：before=%04o after=%04o",
+				beforeInfo.Mode().Perm(),
+				info.Mode().Perm(),
+			)
 		}
 	})
 
@@ -130,6 +145,9 @@ func TestLoadOrCreateInstallationIDRepairsPermissionAndRejectsSymlink(t *testing
 			t.Fatal(err)
 		}
 		if err := os.Symlink(target, path); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("当前 Windows 环境不允许创建符号链接：%v", err)
+			}
 			t.Fatal(err)
 		}
 		if _, err := loadOrCreateInstallationID(path, bytes.NewReader(make([]byte, 16))); err == nil || !strings.Contains(err.Error(), "符号链接") {

@@ -5,21 +5,57 @@ struct HealthResponse: Codable {
     let version: String
 }
 
+enum ProtocolCompatibilityError: LocalizedError, Equatable {
+    case invalidServerMetadata(protocolRevision: Int, minimumClientRevision: Int)
+    case serverTooOld(serverRevision: Int, minimumServerRevision: Int)
+    case clientTooOld(clientRevision: Int, minimumClientRevision: Int, serverRevision: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidServerMetadata(let protocolRevision, let minimumClientRevision):
+            return L10n.format(
+                "ui.agentd_protocol_metadata_invalid_values",
+                protocolRevision,
+                minimumClientRevision
+            )
+        case .serverTooOld(let serverRevision, let minimumServerRevision):
+            return L10n.format(
+                "ui.agentd_protocol_server_too_old_values",
+                serverRevision,
+                minimumServerRevision
+            )
+        case .clientTooOld(let clientRevision, let minimumClientRevision, let serverRevision):
+            return L10n.format(
+                "ui.agentd_protocol_client_too_old_values",
+                serverRevision,
+                minimumClientRevision,
+                clientRevision
+            )
+        }
+    }
+}
+
 struct VersionResponse: Codable {
     let name: String
     let version: String
     let installationID: String?
+    let protocolRevision: Int
+    let minimumClientProtocolRevision: Int
     let capabilities: [String]
 
     init(
         name: String,
         version: String,
         installationID: String? = nil,
+        protocolRevision: Int = MimiProtocolContract.currentRevision,
+        minimumClientProtocolRevision: Int = MimiProtocolContract.minimumSupportedClientRevision,
         capabilities: [String] = []
     ) {
         self.name = name
         self.version = version
         self.installationID = installationID
+        self.protocolRevision = protocolRevision
+        self.minimumClientProtocolRevision = minimumClientProtocolRevision
         self.capabilities = capabilities
     }
 
@@ -27,6 +63,8 @@ struct VersionResponse: Codable {
         case name
         case version
         case installationID = "installation_id"
+        case protocolRevision = "protocol_revision"
+        case minimumClientProtocolRevision = "minimum_client_protocol_revision"
         case capabilities
     }
 
@@ -35,8 +73,40 @@ struct VersionResponse: Codable {
         self.name = try container.decode(String.self, forKey: .name)
         self.version = try container.decode(String.self, forKey: .version)
         self.installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
-        // 旧 agentd 没有 capabilities。解码必须成功，具体功能入口再给出明确升级提示。
+        // revision 1 的旧 agentd 没有版本化字段。按明确记录的上一版窗口解码，
+        // 再由 requireCompatible() 判断；不能因纯加法字段缺失让整条连接直接解析失败。
+        self.protocolRevision = try container.decodeIfPresent(Int.self, forKey: .protocolRevision)
+            ?? MimiProtocolContract.legacyServerRevision
+        self.minimumClientProtocolRevision = try container.decodeIfPresent(
+            Int.self,
+            forKey: .minimumClientProtocolRevision
+        ) ?? MimiProtocolContract.minimumSupportedClientRevision
+        // 旧 agentd 没有 capabilities。解码为空集合后由具体功能入口安全隐藏或给出升级提示。
         self.capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+    }
+
+    func requireCompatible() throws {
+        guard protocolRevision > 0,
+              minimumClientProtocolRevision > 0,
+              minimumClientProtocolRevision <= protocolRevision else {
+            throw ProtocolCompatibilityError.invalidServerMetadata(
+                protocolRevision: protocolRevision,
+                minimumClientRevision: minimumClientProtocolRevision
+            )
+        }
+        guard protocolRevision >= MimiProtocolContract.minimumSupportedServerRevision else {
+            throw ProtocolCompatibilityError.serverTooOld(
+                serverRevision: protocolRevision,
+                minimumServerRevision: MimiProtocolContract.minimumSupportedServerRevision
+            )
+        }
+        guard minimumClientProtocolRevision <= MimiProtocolContract.currentRevision else {
+            throw ProtocolCompatibilityError.clientTooOld(
+                clientRevision: MimiProtocolContract.currentRevision,
+                minimumClientRevision: minimumClientProtocolRevision,
+                serverRevision: protocolRevision
+            )
+        }
     }
 }
 
@@ -606,12 +676,13 @@ struct SkillCapability: Codable, Hashable, Identifiable {
         guard let entries = result?.objectValue?["data"]?.arrayValue else {
             return []
         }
-        let normalizedCWD = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        let normalizedCWD = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingEntries = entries.filter { entry in
             guard let entryCWD = entry.objectValue?["cwd"]?.stringValue else {
                 return false
             }
-            return URL(fileURLWithPath: entryCWD).standardizedFileURL.path == normalizedCWD
+            // cwd 属于远端宿主；只比较清理空白后的原始字符串，不能让 iOS 改写 Windows 路径。
+            return entryCWD.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedCWD
         }
         let sourceEntries = matchingEntries.isEmpty ? entries : matchingEntries
         var seenPaths: Set<String> = []

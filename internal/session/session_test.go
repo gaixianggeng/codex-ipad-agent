@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,9 @@ func TestManagerListUnsortedKeepsListOrderingCompatible(t *testing.T) {
 }
 
 func TestCreateWithFakeCodexUsesProjectDirAndBoundsTerminalSize(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creack/pty does not provide a Windows backend")
+	}
 	projectDir := t.TempDir()
 	realProjectDir, err := filepath.EvalSymlinks(projectDir)
 	if err != nil {
@@ -188,6 +192,9 @@ func TestCreateWithFakeCodexUsesProjectDirAndBoundsTerminalSize(t *testing.T) {
 }
 
 func TestCreateExistingResumeSessionWritesPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creack/pty does not provide a Windows backend")
+	}
 	projectDir := t.TempDir()
 	fakeCodex := filepath.Join(t.TempDir(), "codex")
 	inputLog := filepath.Join(t.TempDir(), "input.log")

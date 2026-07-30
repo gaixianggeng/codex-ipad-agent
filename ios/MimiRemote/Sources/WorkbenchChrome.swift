@@ -197,8 +197,10 @@ struct CombinedUsageItem: Identifiable {
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
         includesClaude: Bool,
-        codexTint: Color = .pink,
-        claudeLongTint: Color = .cyan,
+        // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
+        // 外环使用青色、中环使用粉色；设置页与左上角入口复用这里，避免图例和圆环错位。
+        codexTint: Color = .cyan,
+        claudeLongTint: Color = .pink,
         claudeShortTint: Color
     ) -> [CombinedUsageItem] {
         var items: [CombinedUsageItem] = []

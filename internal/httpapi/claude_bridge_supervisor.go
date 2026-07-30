@@ -7,9 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -18,12 +16,9 @@ import (
 // can exercise the timeout path without a ten-second wait.
 var claudeBridgeStartTimeout = 10 * time.Second
 
-// macOS caps sockaddr_un.sun_path at 104 bytes. A socket we cannot bind is a
-// confusing failure deep inside the bridge, so reject the path up front.
-const claudeBridgeMaxSocketPath = 100
-
 // claudeBridgeSupervisor owns a single resident `alleycat-claude-bridge`
-// running in `--socket` mode.
+// running behind a platform-local transport: a Unix socket on Unix and a
+// loopback-only TCP listener on Windows.
 //
 // The bridge used to be spawned per WebSocket connection, which tied every
 // piece of in-flight state to the life of a phone's network link: dropping the
@@ -32,11 +27,12 @@ const claudeBridgeMaxSocketPath = 100
 // reconnect. Keeping one process behind a socket lets a connection come and go
 // while the turn keeps running.
 type claudeBridgeSupervisor struct {
-	mu         sync.Mutex
-	dir        string
-	socketPath string
-	cmd        *exec.Cmd
-	startedAt  time.Time
+	mu        sync.Mutex
+	dir       string
+	network   string
+	address   string
+	cmd       *exec.Cmd
+	startedAt time.Time
 	// done is closed by the reaper once the process has been waited on. It is
 	// the only exit signal anyone else waits for: cmd.Wait has exactly one
 	// consumer, so startup and shutdown cannot starve each other of it.
@@ -130,7 +126,7 @@ func (s *claudeBridgeSupervisor) clearCursors() {
 	}
 }
 
-// ensure returns the socket path of a running bridge, starting one if needed.
+// ensure returns the local endpoint of a running bridge, starting one if needed.
 func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[string]string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,7 +134,7 @@ func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[strin
 		return "", errors.New("Claude bridge 管理器已停止")
 	}
 	if s.cmd != nil && !s.exited {
-		return s.socketPath, nil
+		return s.address, nil
 	}
 	if s.cmd != nil {
 		log.Printf("claude bridge exited; starting a replacement")
@@ -148,10 +144,11 @@ func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[strin
 		s.reset()
 		return "", err
 	}
-	return s.socketPath, nil
+	return s.address, nil
 }
 
-// start spawns the bridge and blocks until its socket accepts a connection.
+// start spawns the bridge and blocks until its local endpoint accepts a
+// connection.
 // Caller must hold s.mu.
 func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string]string) error {
 	if s.dir == "" {
@@ -161,16 +158,12 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 		}
 		s.dir = dir
 	}
-	socketPath := filepath.Join(s.dir, "bridge.sock")
-	if len(socketPath) > claudeBridgeMaxSocketPath {
-		return fmt.Errorf("Claude bridge socket 路径过长（%d 字节）：%s", len(socketPath), socketPath)
-	}
-	// A leftover node from a crashed predecessor would make bind fail.
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("清理 Claude bridge socket 失败：%w", err)
+	network, address, transportArgs, err := prepareClaudeBridgeEndpoint(s.dir)
+	if err != nil {
+		return err
 	}
 
-	cmd := exec.Command(bin, append(append([]string{}, args...), "--socket", socketPath)...)
+	cmd := exec.Command(bin, append(append([]string{}, args...), transportArgs...)...)
 	cmd.Env = buildClaudeBridgeEnv(env)
 	configureGatewayCommandProcessGroup(cmd)
 	stderr, err := cmd.StderrPipe()
@@ -186,18 +179,19 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	done := make(chan struct{})
 	s.cmd = cmd
 	s.done = done
-	s.socketPath = socketPath
+	s.network = network
+	s.address = address
 	s.exited = false
 	go s.reap(cmd, done)
 
-	if err := waitForClaudeBridgeSocket(socketPath, done, claudeBridgeStartTimeout); err != nil {
+	if err := waitForClaudeBridgeEndpoint(network, address, done, claudeBridgeStartTimeout); err != nil {
 		// Kill and walk away without waiting on the reaper: we hold s.mu, and
 		// the reaper takes it before closing done, so waiting here would
 		// deadlock the supervisor — and with it every later ensure() — for a
 		// bridge that merely failed to bind in time. The reaper still runs and
 		// still reaps; ensure() clears the bookkeeping, and the `s.cmd == cmd`
 		// guard keeps this dead process from clobbering its replacement.
-		terminateGatewayProcessGroup(cmd, syscall.SIGKILL)
+		terminateGatewayProcessGroup(cmd, true)
 		return err
 	}
 	return nil
@@ -228,23 +222,24 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 // sessions.
 func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	s.mu.Lock()
-	socketPath := s.socketPath
+	network := s.network
+	address := s.address
 	alive := s.cmd != nil && !s.exited
 	s.cursorMu.Lock()
 	cursorEpoch := s.cursorEpoch
 	s.cursorMu.Unlock()
 	s.mu.Unlock()
-	if !alive || socketPath == "" {
+	if !alive || network == "" || address == "" {
 		return nil, 0, errors.New("Claude bridge 未运行")
 	}
 	// reset() 也持有 s.mu，并在同一次临界区内推进 cursorEpoch。因此这里捕获
-	// 到的 socket 与 epoch 必定属于同一个 supervisor 代次。解锁后若发生换代，
+	// 到的 endpoint 与 epoch 必定属于同一个 supervisor 代次。解锁后若发生换代，
 	// 最坏只会让新连接携带旧 epoch，其 delivered watermark 会被安全忽略。
-	// The socket node exists from bind, but listen lands a moment later, so a
-	// dial racing a just-started bridge can see ECONNREFUSED. Retry briefly.
+	// Endpoint publication and listen readiness are not one atomic operation,
+	// so a dial racing a just-started bridge can see ECONNREFUSED. Retry briefly.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		conn, err := net.DialTimeout("unix", socketPath, time.Second)
+		conn, err := net.DialTimeout(network, address, time.Second)
 		if err == nil {
 			return conn, cursorEpoch, nil
 		}
@@ -292,13 +287,13 @@ func (s *claudeBridgeSupervisor) shutdown() {
 // if the bridge does not go quietly. It waits on the reaper's done channel,
 // which has no competing consumer.
 func terminateClaudeBridge(cmd *exec.Cmd, done <-chan struct{}) {
-	terminateGatewayProcessGroup(cmd, syscall.SIGTERM)
+	terminateGatewayProcessGroup(cmd, false)
 	select {
 	case <-done:
 		return
 	case <-time.After(300 * time.Millisecond):
 	}
-	terminateGatewayProcessGroup(cmd, syscall.SIGKILL)
+	terminateGatewayProcessGroup(cmd, true)
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -311,20 +306,21 @@ func terminateClaudeBridge(cmd *exec.Cmd, done <-chan struct{}) {
 func (s *claudeBridgeSupervisor) reset() {
 	s.cmd = nil
 	s.done = nil
-	s.socketPath = ""
+	s.network = ""
+	s.address = ""
 	s.startedAt = time.Time{}
 	s.exited = false
 	s.clearCursors()
 }
 
-// waitForClaudeBridgeSocket polls until the bridge has bound its socket, the
-// process dies, or the deadline passes.
+// waitForClaudeBridgeEndpoint polls until the bridge has bound its endpoint,
+// the process dies, or the deadline passes.
 //
-// It deliberately checks for the socket node rather than dialing it: a probe
-// connection is a real bridge connection, and one that opens and closes at
-// once would churn a session for nothing. dial retries instead, which also
-// covers the sliver between bind and listen.
-func waitForClaudeBridgeSocket(socketPath string, done <-chan struct{}, timeout time.Duration) error {
+// Unix can observe the socket node without opening a real connection. TCP has
+// no equivalent readiness primitive, so the Windows path performs a loopback
+// connect and immediately closes it; the bridge treats that as a harmless
+// unattached local connection.
+func waitForClaudeBridgeEndpoint(network, address string, done <-chan struct{}, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		select {
@@ -332,11 +328,19 @@ func waitForClaudeBridgeSocket(socketPath string, done <-chan struct{}, timeout 
 			return errors.New("Claude bridge 启动后立即退出")
 		default:
 		}
-		if _, err := os.Stat(socketPath); err == nil {
-			return nil
+		if network == "unix" {
+			if _, err := os.Stat(address); err == nil {
+				return nil
+			}
+		} else {
+			conn, err := net.DialTimeout(network, address, 250*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("Claude bridge 在 %s 内未监听 socket", timeout)
+			return fmt.Errorf("Claude bridge 在 %s 内未监听本地端点 %s", timeout, address)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

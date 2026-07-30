@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -139,12 +140,13 @@ func TestDefaultAgentDNetworkPrefersTailscaleAndFallsBackToLAN(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			listen, allowLAN, err := defaultAgentDNetwork(
+			listen, allowLAN, err := defaultAgentDNetworkWithLANFallback(
 				context.Background(),
 				pairingNetworkLookups{
 					tailscaleIP: func(context.Context) string { return testCase.tailscaleIP },
 					lanIP:       func() string { return testCase.lanIP },
 				},
+				true,
 			)
 			if testCase.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
@@ -161,6 +163,23 @@ func TestDefaultAgentDNetworkPrefersTailscaleAndFallsBackToLAN(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestDefaultAgentDNetworkCanRequireExplicitLANOptIn(t *testing.T) {
+	listen, allowLAN, err := defaultAgentDNetworkWithLANFallback(
+		context.Background(),
+		pairingNetworkLookups{
+			tailscaleIP: func(context.Context) string { return "" },
+			lanIP:       func() string { return "192.168.31.20" },
+		},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listen != "127.0.0.1:8787" || allowLAN {
+		t.Fatalf("未显式允许 LAN 时必须保持 loopback：listen=%s allowLAN=%v", listen, allowLAN)
 	}
 }
 
@@ -330,6 +349,9 @@ func TestRepairManagedWSTokenFileRejectsSymlinkAndDirectory(t *testing.T) {
 				}
 				link := filepath.Join(dir, "token-link")
 				if err := os.Symlink(target, link); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skip("Windows symlink creation requires Developer Mode or elevation")
+					}
 					t.Fatal(err)
 				}
 				return link
@@ -438,7 +460,7 @@ func assertPrivateTokenFile(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("upstream token 必须是 0600 regular file：mode=%v", info.Mode())
 	}
 	raw, err := os.ReadFile(path)

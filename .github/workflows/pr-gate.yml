@@ -1,0 +1,153 @@
+name: PR Gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Detect change scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      go: ${{ steps.scope.outputs.go }}
+      ios: ${{ steps.scope.outputs.ios }}
+      rust: ${{ steps.scope.outputs.rust }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            bash ./scripts/ci-pr-scope.sh \
+              --base "$BASE_SHA" \
+              --head "$HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT" \
+              --summary "$GITHUB_STEP_SUMMARY"
+          else
+            bash ./scripts/ci-pr-scope.sh \
+              --all \
+              --github-output "$GITHUB_OUTPUT" \
+              --summary "$GITHUB_STEP_SUMMARY"
+          fi
+
+  codex-protocol:
+    name: Codex protocol
+    uses: ./.github/workflows/codex-protocol.yml
+
+  repository-safety:
+    name: Repository safety
+    uses: ./.github/workflows/public-repo-safety.yml
+
+  go:
+    name: Go and release
+    needs: scope
+    if: needs.scope.outputs.go == 'true'
+    uses: ./.github/workflows/go-ci.yml
+
+  ios:
+    name: iOS
+    needs: scope
+    if: needs.scope.outputs.ios == 'true'
+    uses: ./.github/workflows/ios-ci.yml
+
+  rust:
+    name: Rust bridge
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    uses: ./.github/workflows/claude-bridge-ci.yml
+
+  gate:
+    name: PR Gate
+    if: always()
+    needs:
+      - scope
+      - codex-protocol
+      - repository-safety
+      - go
+      - ios
+      - rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every applicable check
+        shell: bash
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          PROTOCOL_RESULT: ${{ needs.codex-protocol.result }}
+          SAFETY_RESULT: ${{ needs.repository-safety.result }}
+          GO_REQUIRED: ${{ needs.scope.outputs.go }}
+          GO_RESULT: ${{ needs.go.result }}
+          IOS_REQUIRED: ${{ needs.scope.outputs.ios }}
+          IOS_RESULT: ${{ needs.ios.result }}
+          RUST_REQUIRED: ${{ needs.scope.outputs.rust }}
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: |
+          set -euo pipefail
+
+          failures=0
+
+          require_success() {
+            local label="$1"
+            local result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error title=${label}::expected success, got ${result}"
+              failures=1
+            fi
+          }
+
+          require_scoped_success() {
+            local label="$1"
+            local required="$2"
+            local result="$3"
+            if [[ "$required" == "true" && "$result" != "success" ]]; then
+              echo "::error title=${label}::required by changed paths, got ${result}"
+              failures=1
+            elif [[ "$required" != "true" && "$result" != "skipped" ]]; then
+              echo "::error title=${label}::not required, expected skipped, got ${result}"
+              failures=1
+            fi
+          }
+
+          require_success "Change scope" "$SCOPE_RESULT"
+          require_success "Codex protocol" "$PROTOCOL_RESULT"
+          require_success "Repository safety" "$SAFETY_RESULT"
+          require_scoped_success "Go and release" "$GO_REQUIRED" "$GO_RESULT"
+          require_scoped_success "iOS" "$IOS_REQUIRED" "$IOS_RESULT"
+          require_scoped_success "Rust bridge" "$RUST_REQUIRED" "$RUST_RESULT"
+
+          {
+            echo "## PR Gate"
+            echo
+            echo "| 检查 | 是否需要 | 结果 |"
+            echo "| --- | --- | --- |"
+            echo "| Change scope | always | \`$SCOPE_RESULT\` |"
+            echo "| Codex protocol | always | \`$PROTOCOL_RESULT\` |"
+            echo "| Repository safety | always | \`$SAFETY_RESULT\` |"
+            echo "| Go and release | \`$GO_REQUIRED\` | \`$GO_RESULT\` |"
+            echo "| iOS | \`$IOS_REQUIRED\` | \`$IOS_RESULT\` |"
+            echo "| Rust bridge | \`$RUST_REQUIRED\` | \`$RUST_RESULT\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$failures" -ne 0 ]]; then
+            echo "PR Gate 失败：至少一项必需检查未成功完成。" >&2
+            exit 1
+          fi
+
+          echo "PR Gate 通过：所有必需检查均已成功完成。"

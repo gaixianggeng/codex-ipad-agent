@@ -120,9 +120,9 @@ func pairingEndpoint(
 			host = strings.TrimSpace(lookups.lanIP())
 		}
 		if host == "" {
-			return "", nil, fmt.Errorf("未检测到可用的局域网 IPv4，请确认 Mac 已连接 Wi-Fi 或以太网")
+			return "", nil, fmt.Errorf("未检测到可用的局域网 IPv4，请确认这台电脑已连接 Wi-Fi 或以太网")
 		}
-		return httpEndpoint(host, port), []string{"局域网配对仅适用于与这台 Mac 位于同一局域网的设备"}, nil
+		return httpEndpoint(host, port), []string{"局域网配对仅适用于与这台电脑位于同一局域网的设备"}, nil
 	}
 
 	return "", nil, fmt.Errorf("不支持的配对网络 %q", network)
@@ -168,24 +168,13 @@ func firstLANIPv4() string {
 		return ""
 	}
 
-	type candidate struct {
-		ip    string
-		name  string
-		score int
-	}
-	candidates := []candidate{}
+	preferredIP := preferredOutboundLANIPv4()
+	candidates := []lanIPv4Candidate{}
 	for _, item := range interfaces {
 		if item.Flags&net.FlagUp == 0 || item.Flags&net.FlagLoopback != 0 {
 			continue
 		}
 		name := strings.ToLower(item.Name)
-		if strings.HasPrefix(name, "utun") ||
-			strings.HasPrefix(name, "awdl") ||
-			strings.HasPrefix(name, "llw") ||
-			strings.HasPrefix(name, "ipsec") ||
-			strings.HasPrefix(name, "ppp") {
-			continue
-		}
 		addresses, err := item.Addrs()
 		if err != nil {
 			continue
@@ -201,19 +190,87 @@ func firstLANIPv4() string {
 			if !isPrivateLANIPv4(ip) {
 				continue
 			}
-			score := 20
-			if name == "en0" || name == "en1" {
-				score = 0
-			} else if strings.HasPrefix(name, "en") {
-				score = 5
-			} else if strings.HasPrefix(name, "bridge") ||
-				strings.HasPrefix(name, "vmenet") ||
-				strings.HasPrefix(name, "docker") {
-				score = 50
-			}
-			candidates = append(candidates, candidate{ip: ip.String(), name: name, score: score})
+			candidates = append(candidates, lanIPv4Candidate{
+				ip:      ip.String(),
+				name:    name,
+				score:   lanInterfaceScore(name, ip.String() == preferredIP),
+				virtual: likelyVirtualLANInterface(name),
+			})
 		}
 	}
+	return selectLANIPv4Candidate(candidates)
+}
+
+type lanIPv4Candidate struct {
+	ip      string
+	name    string
+	score   int
+	virtual bool
+}
+
+func preferredOutboundLANIPv4() string {
+	// UDP connect 不会发送数据，只让内核根据当前路由表选择出口地址。相比按网卡名称
+	// 排序，它能在 Windows 上避开排在 WLAN 前面的 Hyper-V/WSL 私有地址。
+	conn, err := net.DialUDP("udp4", nil, &net.UDPAddr{
+		IP:   net.IPv4(8, 8, 8, 8),
+		Port: 53,
+	})
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || !isPrivateLANIPv4(local.IP) {
+		return ""
+	}
+	return local.IP.String()
+}
+
+func lanInterfaceScore(name string, preferred bool) int {
+	score := 20
+	switch {
+	case name == "en0" || name == "en1",
+		name == "wlan",
+		strings.Contains(name, "wi-fi"),
+		strings.Contains(name, "wifi"):
+		score = 0
+	case strings.HasPrefix(name, "en"),
+		strings.Contains(name, "ethernet"):
+		score = 5
+	case likelyVirtualLANInterface(name):
+		score = 100
+	}
+	if preferred && !likelyVirtualLANInterface(name) {
+		score -= 1000
+	}
+	return score
+}
+
+func likelyVirtualLANInterface(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, marker := range []string{
+		"vethernet",
+		"hyper-v",
+		"default switch",
+		"wsl",
+		"virtualbox",
+		"vmware",
+		"docker",
+		"vmenet",
+		"utun",
+		"awdl",
+		"llw",
+		"ipsec",
+		"ppp",
+	} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return strings.HasPrefix(name, "bridge")
+}
+
+func selectLANIPv4Candidate(candidates []lanIPv4Candidate) string {
 	sort.Slice(candidates, func(left, right int) bool {
 		if candidates[left].score != candidates[right].score {
 			return candidates[left].score < candidates[right].score
@@ -224,6 +281,11 @@ func firstLANIPv4() string {
 		return candidates[left].ip < candidates[right].ip
 	})
 	if len(candidates) == 0 {
+		return ""
+	}
+	// 只有虚拟交换机/容器/VPN 私网时不发布 LAN 配对地址。该地址通常只能被本机
+	// 虚拟机访问，发给手机或平板只会产生一个看似合理、实际不可达的二维码。
+	if candidates[0].virtual {
 		return ""
 	}
 	return candidates[0].ip
@@ -248,7 +310,18 @@ func SetLANAccess(configPath string, enabled bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	originalListen := cfg.Listen
 	cfg.Network.AllowLAN = enabled
+	if !enabled {
+		host, port := splitListen(cfg.Listen)
+		ip := net.ParseIP(strings.Trim(host, "[]"))
+		if ip != nil && ip.IsUnspecified() {
+			if port == "" {
+				port = defaultAgentDPort
+			}
+			cfg.Listen = net.JoinHostPort("127.0.0.1", port)
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		return false, fmt.Errorf("新的网络配置无效：%w", err)
 	}
@@ -277,7 +350,8 @@ func SetLANAccess(configPath string, enabled bool) (bool, error) {
 			return false, fmt.Errorf("解析 network.allow_lan 失败：%w", err)
 		}
 	}
-	if current == enabled {
+	updatedListen := cfg.Listen
+	if current == enabled && updatedListen == originalListen {
 		return false, nil
 	}
 
@@ -291,6 +365,13 @@ func SetLANAccess(configPath string, enabled bool) (bool, error) {
 		return false, fmt.Errorf("编码 network 配置失败：%w", err)
 	}
 	document["network"] = encodedNetwork
+	if updatedListen != originalListen {
+		encodedListen, err := json.Marshal(updatedListen)
+		if err != nil {
+			return false, fmt.Errorf("编码 listen 配置失败：%w", err)
+		}
+		document["listen"] = encodedListen
+	}
 	updated, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {
 		return false, fmt.Errorf("编码配置文件失败：%w", err)

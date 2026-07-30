@@ -2,17 +2,62 @@
 
 ## 目标
 
-让个人开发者在新 Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
+让个人开发者在新 Windows、Mac 或 Linux 电脑上快速启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
 
 ## 方案
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
+- Windows 普通用户使用按用户 EXE 安装器；有证书时优先 Authenticode 签名，无证书时发布元数据明确标记为 `unsigned-release` 的安装包，后台由当前用户计划任务托管。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
 - Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和两个 Token 都留在系统用户配置目录，升级二进制不会删除它们。
 - 回滚先恢复可用性：优先运行旧 keg 或旧 Release 二进制，再决定是否回滚 Homebrew Formula。
 
 ## 实现
+
+### Windows 首次安装（推荐）
+
+前置条件：Windows 10/11 x64，已在当前 Windows 用户下安装并登录 Codex CLI；电脑与移动设备位于同一可信私有网络，并且 Windows 已将默认 Wi-Fi/以太网配置为“专用网络”。正式 Release 的 `Mimi-Remote-Setup-<version>.exe` 已同时内置 Go 后端 `agentd.exe`、Rust 后端 `alleycat-claude-bridge.exe` 和 `mimi-remote-tray.exe`，普通用户不需要安装 Go、Rust、Homebrew，也不应把服务注册为 LocalSystem。Public 网络以及 Windows 安全弹窗自动创建的额外 Public/Any 入站规则都会 fail closed；安装器会清理这些额外规则，不要手工放宽。
+
+从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载同版本的安装器、`.sha256` 和 `.metadata.json`。在 PowerShell 中先验证摘要与 Authenticode：
+
+```powershell
+$setup = Get-Item .\Mimi-Remote-Setup-*.exe
+(Get-FileHash $setup -Algorithm SHA256).Hash
+(Get-AuthenticodeSignature $setup).Status
+```
+
+摘要必须与 `.sha256` 一致。`.metadata.json` 为 `authenticode-pfx` 时签名状态必须为 `Valid`；为 `unsigned-release` 时状态应为 `NotSigned`，EXE 文件名包含 `-unsigned`，Windows 可能显示 Microsoft Defender SmartScreen 警告。未签名版本只应从本仓库正式 Release 下载并核对摘要。安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`，注册名为 `Mimi Remote agentd` 的当前用户登录任务，以 limited 权限执行：
+
+```text
+agentd.exe serve --log-file "%LOCALAPPDATA%\Mimi Remote\logs\agentd.log"
+```
+
+安装完成前会启动任务并等待真实 `/api/readyz`；失败会使安装失败，而不是把“进程已启动”误报成可用。交互安装最后会启动通知区域托盘，托盘提供状态、启动、停止、重启、配对、Doctor 和日志入口；“退出托盘”不停止后台，“退出并停止服务”会二次确认。普通卸载和覆盖升级都保留 `%APPDATA%\mimi-remote` 中的配置、配对 Token，以及 `%LOCALAPPDATA%\Mimi Remote\logs` 中的日志。
+
+Windows 防火墙规则和 LAN 监听默认都不启用。只有用户明确勾选 LAN 访问时才请求 UAC；规则固定限制在 `profile=private`、`remoteip=localsubnet` 和安装目录内的 `agentd.exe`，创建成功后才把服务扩大为 LAN 监听。不得改为 Public profile 或任意公网来源。使用 Tailscale 时仍优先采用 Tailnet 地址。没有 Tailscale 时，LAN Endpoint 来自系统默认路由对应的物理网卡；Hyper-V Default Switch、WSL、容器和 VPN-only 虚拟地址不会被发布到配对二维码。
+
+常用管理命令：
+
+```powershell
+$agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
+& $agentd status
+& $agentd pair --qr-only
+& $agentd doctor --fix
+& $agentd logs -n 200
+& $agentd restart --no-pair
+& $agentd stop
+```
+
+`start`、`stop`、`restart` 和 `status` 只 Query/Run/End 当前用户计划任务，CLI 不会暗中创建任务；任务缺失时应重新运行安装器。Claude bridge 在 Windows 上只监听随机的 `127.0.0.1` 回环 TCP 端口，拒绝非回环地址；agentd 停止时会终止完整子进程树。
+
+### Windows 升级、回滚与卸载
+
+覆盖安装新版本即可升级，不要先卸载旧版。安装器先停止旧任务，再替换两份二进制、重新注册任务并等待就绪；配置和 Token 不轮换。升级前可私下备份 `%APPDATA%\mimi-remote`，但不得上传到 Issue、PR 或聊天。
+
+若新版无法就绪，重新运行上一版仍具有效 Authenticode 签名且来自正式 Release 的安装器。回滚只替换程序文件，继续复用现有配置；如果未来出现明确的不兼容配置迁移，应先由版本化迁移代码处理，不能直接删除凭据目录。
+
+从“已安装的应用”卸载会先停止并删除计划任务、移除可选防火墙规则和程序文件，但保留配置、Token 与日志，便于重装后继续使用。只有确认永久撤销现有配对时，才由用户手工删除这些数据目录。
 
 ### macOS 首次安装（推荐）
 
@@ -327,6 +372,15 @@ macOS 产物还必须配置以下 GitHub Actions Secrets：
 | `MACOS_NOTARY_KEY` | App Store Connect API `.p8` 私钥的 base64 | 只用于 Apple notarization |
 | `MACOS_NOTARY_KEY_ID` | 10 位 API Key ID | 与 `.p8` 配套 |
 | `MACOS_NOTARY_ISSUER_ID` | App Store Connect Issuer UUID | 与 `.p8` 配套 |
+
+Windows 安装器可选配置以下 Authenticode Secrets：
+
+| Secret | 内容 | 权限边界 |
+| --- | --- | --- |
+| `WINDOWS_SIGN_PFX` | Windows 代码签名证书与私钥导出的 PFX，再整体 base64 | 只用于签名两份 `.exe` 和最终安装器 |
+| `WINDOWS_SIGN_PFX_PASSWORD` | PFX 导出密码 | 只在 Windows release job 的临时文件生命周期内使用 |
+
+Windows verify job 会在发布前构建 release 二进制、编译 Inno Setup、验证 SHA-256 与签名模式，再把已验证安装器作为 Actions artifact 交给发布 job；PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制要求有效 Authenticode，两个都缺失时显式构建 `unsigned-release`；只配置其中一个、签名无效或安装器静态策略不满足时，正式 tag 发布必须失败。
 
 Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 

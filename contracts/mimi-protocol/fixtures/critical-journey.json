@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "rest": {
+    "pair_claim": {
+      "method": "POST",
+      "path": "/api/pair/claim",
+      "requires_auth": false
+    }
+  },
+  "websocket": {
+    "path": "/api/app-server/ws",
+    "requires_auth": true,
+    "client_methods": [
+      "thread/list",
+      "thread/read",
+      "thread/resume",
+      "turn/start",
+      "turn/interrupt"
+    ],
+    "server_request_methods": [
+      "item/commandExecution/requestApproval",
+      "item/tool/requestUserInput"
+    ],
+    "resolution_notification": "serverRequest/resolved"
+  }
+}

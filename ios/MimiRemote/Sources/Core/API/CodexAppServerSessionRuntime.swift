@@ -110,6 +110,8 @@ actor CodexAppServerSessionRuntime {
     var accountRateLimit: RateLimitSummary?
     var rateLimitRefreshTask: Task<RateLimitSummary?, Never>?
     var lastRateLimitRefreshAt: Date?
+    var accountTokenUsage: AccountTokenUsageSnapshot?
+    var accountTokenUsageRefreshTask: Task<AccountTokenUsageSnapshot?, Never>?
     // 正在 startTurn 中的 thread：turn/start 请求挂起期间，actor 会重入处理 server-request，
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。
@@ -176,6 +178,7 @@ actor CodexAppServerSessionRuntime {
         notificationPumpTask?.cancel()
         serverRequestPumpTask?.cancel()
         rateLimitRefreshTask?.cancel()
+        accountTokenUsageRefreshTask?.cancel()
         threadResumeTasksBySessionID.values.forEach { $0.task.cancel() }
         turnInterruptRecoveryTasksBySessionID.values.forEach { $0.task.cancel() }
     }
@@ -280,6 +283,8 @@ actor CodexAppServerSessionRuntime {
         await cancelConnectionAttempt()
         rateLimitRefreshTask?.cancel()
         rateLimitRefreshTask = nil
+        accountTokenUsageRefreshTask?.cancel()
+        accountTokenUsageRefreshTask = nil
         cancelAllTurnInterruptRecoveryTasks()
         guard let activeConnection = connection else {
             notificationPumpTask?.cancel()

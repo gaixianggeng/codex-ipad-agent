@@ -3,6 +3,82 @@ import AudioToolbox
 import SwiftUI
 import UIKit
 
+enum VoiceMicButtonState: Equatable {
+    case idle
+    case preparing
+    case recording
+    case transcribing
+
+    init(isPreparing: Bool, isRecording: Bool, isTranscribing: Bool) {
+        // 转写阶段必须优先：即使异步状态短暂重叠，也不能把不可重复触发的转写误报成可操作状态。
+        if isTranscribing {
+            self = .transcribing
+        } else if isRecording {
+            self = .recording
+        } else if isPreparing {
+            self = .preparing
+        } else {
+            self = .idle
+        }
+    }
+
+    var isEnabled: Bool {
+        self != .transcribing
+    }
+
+    var showsProgress: Bool {
+        self == .preparing || self == .transcribing
+    }
+
+    var isActive: Bool {
+        self != .idle
+    }
+
+    var accessibilityTitle: String {
+        switch self {
+        case .idle:
+            return L10n.text("ui.start_voice_input")
+        case .preparing:
+            return L10n.text("ui.end_voice_input")
+        case .recording:
+            return L10n.text("ui.stop_recording")
+        case .transcribing:
+            return L10n.text("ui.transcribing_speech")
+        }
+    }
+
+    var accessibilityValue: String {
+        switch self {
+        case .idle:
+            return L10n.text("ui.not_started")
+        case .preparing:
+            return L10n.text("ui.preparing")
+        case .recording:
+            return L10n.text("ui.recording")
+        case .transcribing:
+            return L10n.text("ui.transcribing")
+        }
+    }
+
+    func accessibilityHint(usesRealtimeTranscription: Bool) -> String {
+        switch self {
+        case .idle:
+            return usesRealtimeTranscription
+                ? L10n.text("ui.tap_to_start_apple_realtime_voice_input")
+                : L10n.text("ui.click_to_start_recording")
+        case .preparing:
+            return L10n.text("ui.tap_to_cancel_voice_input_preparation")
+        case .recording:
+            return usesRealtimeTranscription
+                ? L10n.text("ui.tap_to_stop_apple_voice_input")
+                : L10n.text("ui.tap_to_stop_recording_and_start_transcribing")
+        case .transcribing:
+            // 转写阶段按钮不可重复触发；标题和值已经完整表达状态，不再提供错误的操作提示。
+            return ""
+        }
+    }
+}
+
 struct VoiceMicButton: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -16,19 +92,24 @@ struct VoiceMicButton: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let state = VoiceMicButtonState(
+            isPreparing: isPreparing,
+            isRecording: isRecording,
+            isTranscribing: isTranscribing
+        )
 
         Button(action: onTap) {
             Group {
-                if isPreparing || isTranscribing {
+                if state.showsProgress {
                     ProgressView()
                 } else {
-                    Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                    Image(systemName: state == .recording ? "stop.fill" : "mic.fill")
                 }
             }
             .font(themeStore.uiFont(size: 16, weight: .semibold))
             // 空闲态和其它工具按钮保持中性；录音、准备和转写才使用主题紫表达活动状态。
             .foregroundStyle(
-                isRecording || isPreparing || isTranscribing
+                state.isActive
                     ? tokens.primaryAction
                     : tokens.primaryText
             )
@@ -44,41 +125,11 @@ struct VoiceMicButton: View {
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .disabled(isPreparing || isTranscribing)
-        .accessibilityLabel(accessibilityTitle)
-        .accessibilityValue(accessibilityValue)
-        .accessibilityHint(accessibilityHint)
-    }
-
-    private var accessibilityTitle: String {
-        if isRecording {
-            return L10n.text("ui.stop_recording")
-        }
-        if isPreparing {
-            return L10n.text("ui.preparing_microphone")
-        }
-        return isTranscribing ? L10n.text("ui.transcribing_speech") : L10n.text("ui.start_voice_input")
-    }
-
-    private var accessibilityValue: String {
-        if isRecording {
-            return L10n.text("ui.recording")
-        }
-        if isPreparing {
-            return L10n.text("ui.preparing")
-        }
-        return isTranscribing ? L10n.text("ui.transcribing") : L10n.text("ui.not_started")
-    }
-
-    private var accessibilityHint: String {
-        if isRecording {
-            return usesRealtimeTranscription
-                ? L10n.text("ui.tap_to_stop_apple_voice_input")
-                : L10n.text("ui.tap_to_stop_recording_and_start_transcribing")
-        }
-        return usesRealtimeTranscription
-            ? L10n.text("ui.tap_to_start_apple_realtime_voice_input")
-            : L10n.text("ui.click_to_start_recording")
+        // 准备音频会话可能耗时，必须允许用户再次点击取消；否则准备卡住时按钮会永久无响应。
+        .disabled(!state.isEnabled)
+        .accessibilityLabel(state.accessibilityTitle)
+        .accessibilityValue(state.accessibilityValue)
+        .accessibilityHint(state.accessibilityHint(usesRealtimeTranscription: usesRealtimeTranscription))
     }
 }
 

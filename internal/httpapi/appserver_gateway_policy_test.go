@@ -915,6 +915,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		`{"method":"initialized","params":{` + dangerousTail + `}}`,
 		`{"id":61,"method":"model/list","params":{` + dangerousTail + `}}`,
 		`{"id":62,"method":"account/rateLimits/read","params":{` + dangerousTail + `}}`,
+		`{"id":63,"method":"account/usage/read","params":{` + dangerousTail + `}}`,
 	}
 	for _, frame := range emptyParamFrames {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
@@ -1414,6 +1415,24 @@ func TestAppServerGatewayServerRequestAllowlistMatchesMobileCapabilities(t *test
 		if policyErr.data["reason"] != "unsupported_server_request" || policyErr.data["method"] != method {
 			t.Fatalf("未支持 server request 错误数据异常 method=%s data=%v", method, policyErr.data)
 		}
+	}
+}
+
+func TestAppServerGatewayPassesCodexMCPToolApprovalMetadataAndDecisionUnchanged(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+	request := []byte(`{"id":"mcp-approval-1","method":"mcpServer/elicitation/request","params":{"threadId":"thread-1","serverName":"linear","mode":"form","message":"Allow save_issue?","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call","persist":["session","always"]}}}`)
+	forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request)
+	if policyErr != nil || !forward || !bytes.Equal(forwarded, request) {
+		t.Fatalf("MCP 工具审批元数据应透明转发给移动端：forward=%t err=%+v payload=%s", forward, policyErr, forwarded)
+	}
+
+	decision := []byte(`{"id":"mcp-approval-1","result":{"action":"accept","content":null,"_meta":{"persist":"always"}}}`)
+	forwardedDecision, err := policy.validateClientFrame(websocket.TextMessage, decision)
+	if err != nil || !bytes.Equal(forwardedDecision, decision) {
+		t.Fatalf("Mac 端 Codex 需要原始 persist 决策完成精确工具授权：err=%v payload=%s", err, forwardedDecision)
 	}
 }
 

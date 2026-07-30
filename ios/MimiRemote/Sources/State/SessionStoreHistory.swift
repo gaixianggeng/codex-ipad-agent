@@ -1245,7 +1245,7 @@ extension SessionStore {
         let workspacePath = standardizedSessionListPath(workspace.path)
         let rootPath = workspace.rootProjectPath.map(standardizedSessionListPath)
         let cwd: String
-        if let rootPath, workspacePath == rootPath || workspacePath.hasPrefix(rootPath == "/" ? "/" : rootPath + "/") {
+        if let rootPath, remoteHostPath(workspacePath, isWithin: rootPath) {
             cwd = rootPath
         } else {
             cwd = workspacePath
@@ -1258,9 +1258,8 @@ extension SessionStore {
     }
 
     func standardizedSessionListPath(_ rawPath: String) -> String {
-        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return trimmed }
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        // 这是远端宿主路径。只清理传输层空白，避免把 `C:\...` 改写成 iOS 本机路径。
+        rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func sessionListCooldownDelayNanoseconds(for workspace: AgentWorkspace) -> UInt64? {
@@ -1580,11 +1579,27 @@ extension SessionStore {
         return recentWorkspaces
             .filter { workspace in
                 let workspacePath = workspace.path.trimmingCharacters(in: .whitespacesAndNewlines)
-                return path == workspacePath || path.hasPrefix(workspacePath + "/")
+                return remoteHostPath(path, isWithin: workspacePath)
             }
             .max { lhs, rhs in
-                lhs.path.split(separator: "/").count < rhs.path.split(separator: "/").count
+                remoteHostPathDepth(lhs.path) < remoteHostPathDepth(rhs.path)
             }
+    }
+
+    func remoteHostPath(_ path: String, isWithin root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else {
+            return false
+        }
+        guard path == root else {
+            let separator: Character = root.contains("\\") ? "\\" : "/"
+            let prefix = root.last == separator ? root : root + String(separator)
+            return path.hasPrefix(prefix)
+        }
+        return true
+    }
+
+    func remoteHostPathDepth(_ path: String) -> Int {
+        path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).count
     }
 
     func mergeSessionPage(_ pageSessions: [AgentSession]) {

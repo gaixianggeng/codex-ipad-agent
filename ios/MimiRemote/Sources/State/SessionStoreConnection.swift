@@ -1904,6 +1904,10 @@ extension SessionStore {
         appServerModelOptionsLastRefresh = nil
         isClaudeRuntimeChannelAvailable = false
         accountRateLimitsByRuntime = [:]
+        accountTokenUsage = nil
+        isRefreshingAccountTokenUsage = false
+        isAccountTokenUsageUnavailable = false
+        accountTokenUsageRefreshHostScope = nil
         refreshingUsageRuntimeProviders = []
         isRefreshingAppServerModels = false
         capabilityList = nil

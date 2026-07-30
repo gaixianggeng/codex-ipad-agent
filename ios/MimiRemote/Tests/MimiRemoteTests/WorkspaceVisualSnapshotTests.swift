@@ -8,9 +8,10 @@ import XCTest
 final class WorkspaceVisualSnapshotTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
+        try SnapshotTestEnvironment.requireFixedSimulator()
         try XCTSkipUnless(
             UIDevice.current.userInterfaceIdiom == .pad,
-            "工作区视觉基线使用 iPad mini 画布录制。"
+            "工作区视觉基线在固定 M5 iPad 上使用 iPad 画布录制。"
         )
     }
 

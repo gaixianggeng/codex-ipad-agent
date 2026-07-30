@@ -19,6 +19,7 @@ final class AgentAPIClientRequestTests: XCTestCase {
             session: session
         )
         let workspacePath = "/Users/demo/project"
+        let criticalJourney = try criticalJourneyContractFixture()
 
         let contracts: [RESTRequestContract] = [
             .init("health", path: "/healthz", method: "GET", requiresAuth: false) { client in
@@ -26,9 +27,9 @@ final class AgentAPIClientRequestTests: XCTestCase {
             },
             .init(
                 "pair claim",
-                path: "/api/pair/claim",
-                method: "POST",
-                requiresAuth: false,
+                path: criticalJourney.rest.pairClaim.path,
+                method: criticalJourney.rest.pairClaim.method,
+                requiresAuth: criticalJourney.rest.pairClaim.requiresAuth,
                 json: [
                     "endpoint": "http://100.64.0.8:8787",
                     "issued_at": "2026-07-23T10:00:00Z",
@@ -381,8 +382,26 @@ final class AgentAPIClientRequestTests: XCTestCase {
 
         if contract.requiresAuth {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer mobile-contract-token", "\(contract.name) auth")
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: MimiProtocolContract.clientRevisionHeader),
+                String(MimiProtocolContract.currentRevision),
+                "\(contract.name) client protocol revision"
+            )
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: MimiProtocolContract.minimumServerRevisionHeader),
+                String(MimiProtocolContract.minimumSupportedServerRevision),
+                "\(contract.name) minimum server protocol revision"
+            )
         } else {
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "\(contract.name) 不应携带长期访问码")
+            XCTAssertNil(
+                request.value(forHTTPHeaderField: MimiProtocolContract.clientRevisionHeader),
+                "\(contract.name) 未认证入口不应协商业务协议"
+            )
+            XCTAssertNil(
+                request.value(forHTTPHeaderField: MimiProtocolContract.minimumServerRevisionHeader),
+                "\(contract.name) 未认证入口不应协商业务协议"
+            )
         }
         for (field, value) in contract.headers {
             XCTAssertEqual(request.value(forHTTPHeaderField: field), value, "\(contract.name) \(field)")

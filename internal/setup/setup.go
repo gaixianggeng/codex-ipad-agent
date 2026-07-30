@@ -109,7 +109,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	if err != nil {
 		return Result{}, err
 	}
-	// 默认生成一个真机可连接的配置：优先 Tailscale；缺失时自动开放局域网。
+	// 默认优先使用 Tailscale。Windows 需要安装器先建立受限防火墙规则才开放 LAN；
+	// 其他平台在缺少 Tailscale 时仍自动回退到局域网。
 	// 显式 --listen 仍完全尊重调用方，保留 loopback 模拟器/开发场景。
 	listen := strings.TrimSpace(options.Listen)
 	allowLAN := false
@@ -118,6 +119,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 		if err != nil {
 			return Result{}, err
 		}
+	} else {
+		host, _ := splitListen(listen)
+		ip := net.ParseIP(strings.Trim(host, "[]"))
+		allowLAN = ip != nil && (ip.IsUnspecified() || isPrivateLANIPv4(ip))
 	}
 	appServerListen := strings.TrimSpace(options.AppServerListen)
 	if appServerListen == "" {
@@ -327,8 +332,23 @@ func defaultAgentDNetwork(
 	ctx context.Context,
 	lookups pairingNetworkLookups,
 ) (listen string, allowLAN bool, err error) {
+	return defaultAgentDNetworkWithLANFallback(
+		ctx,
+		lookups,
+		automaticLANFallbackEnabled,
+	)
+}
+
+func defaultAgentDNetworkWithLANFallback(
+	ctx context.Context,
+	lookups pairingNetworkLookups,
+	allowAutomaticLAN bool,
+) (listen string, allowLAN bool, err error) {
 	if ip := strings.TrimSpace(lookups.tailscaleIP(ctx)); ip != "" {
 		return net.JoinHostPort(ip, defaultAgentDPort), false, nil
+	}
+	if !allowAutomaticLAN {
+		return net.JoinHostPort("127.0.0.1", defaultAgentDPort), false, nil
 	}
 	if ip := net.ParseIP(strings.TrimSpace(lookups.lanIP())); isPrivateLANIPv4(ip) {
 		// LAN IP 会随 DHCP/Wi-Fi 切换变化，因此监听通配地址并在生成配对码时动态选当前 LAN IP。
@@ -361,11 +381,11 @@ func endpointForListen(ctx context.Context, listen string) (string, []string) {
 			host = ip
 		} else {
 			host = "127.0.0.1"
-			warnings = append(warnings, "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认 iPad 能访问这台 Mac")
+			warnings = append(warnings, "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认 iPad 能访问这台电脑")
 		}
 	}
 	if isLoopbackHost(host) {
-		warnings = append(warnings, "当前 Endpoint 是本机地址，只适合 Mac 本机或模拟器；iPad 真机建议先安装并登录 Tailscale，再重新运行 agentd up")
+		warnings = append(warnings, "当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；iPad 真机建议先安装并登录 Tailscale，或显式启用受限的局域网访问")
 	}
 	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String(), warnings
 }
@@ -410,9 +430,9 @@ func firstTailscaleIP(ctx context.Context) string {
 		return ""
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		ip := strings.TrimSpace(line)
-		if net.ParseIP(ip) != nil {
-			return ip
+		ip := net.ParseIP(strings.TrimSpace(line))
+		if isTailscaleIPv4(ip) {
+			return ip.String()
 		}
 	}
 	return ""
