@@ -780,8 +780,10 @@ extension ConversationDataFlowTests {
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
         var statuses: [WebSocketStatus] = []
         var events: [AgentEvent] = []
+        var sendOutcome: TurnSendOutcome?
         socket.onStatus = { statuses.append($0) }
         socket.onEvent = { events.append($0) }
+        socket.onTurnSendOutcome = { _, outcome in sendOutcome = outcome }
         socket.connect(sessionID: "thr_delta_guidance")
 
         let resume = try await waitForFakeAppServerRequest(transport, method: "thread/resume", after: 3)
@@ -822,6 +824,10 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(steerParams["clientUserMessageId"]?.stringValue, "client_delta_guidance")
         XCTAssertEqual(steerParams["input"]?.arrayValue?.first?.objectValue?["text"]?.stringValue, "沿着当前回复继续")
         transportResponse(transport, id: steer.id, result: #"{}"#)
+        for _ in 0..<200 where sendOutcome == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(sendOutcome, .guidanceAccepted)
 
         socket.disconnect()
     }

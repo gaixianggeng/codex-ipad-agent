@@ -1143,7 +1143,9 @@ extension SessionStore {
     @discardableResult
     func handleQueuedSendAccepted(
         clientMessageID: ClientMessageID,
-        sessionID: SessionID
+        sessionID: SessionID,
+        startedTurnID: TurnID? = nil,
+        acceptedAsGuidance: Bool? = nil
     ) -> Bool {
         guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
               location.sessionID == sessionID,
@@ -1152,7 +1154,11 @@ extension SessionStore {
         else {
             return false
         }
-        let wasGuidance = queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID) != nil
+        let wasGuidanceDispatch = queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID) != nil
+        // guidance 因本地 stale active 降级成 turn/start 时会携带新 turnID；
+        // 此时必须按普通 start 建立后续队列 barrier，不能沿用 steer 的快速完成语义。
+        let wasGuidance = acceptedAsGuidance
+            ?? (wasGuidanceDispatch && startedTurnID == nil)
 
         guard mutateAndPersistQueuedTurns({
             guard var queue = queuedRunningTurnsBySessionID[sessionID],
@@ -1179,6 +1185,12 @@ extension SessionStore {
             clientMessageID: clientMessageID,
             sessionID: sessionID
         )
+        if wasGuidanceDispatch, let startedTurnID {
+            updateSession(sessionID) { session in
+                session.status = SessionStatus.running.rawValue
+                session.activeTurnID = startedTurnID
+            }
+        }
         stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
         return true
     }
@@ -1231,8 +1243,13 @@ extension SessionStore {
         }
         guard let clientMessageID else { return }
         switch outcome {
-        case .accepted:
-            if !handleQueuedSendAccepted(clientMessageID: clientMessageID, sessionID: sessionID) {
+        case .accepted(let turnID):
+            if !handleQueuedSendAccepted(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                startedTurnID: turnID,
+                acceptedAsGuidance: false
+            ) {
                 conversationStore.updateSendStatus(
                     clientMessageID: clientMessageID,
                     sessionID: sessionID,
@@ -1249,6 +1266,22 @@ extension SessionStore {
                 // external snapshot 会停止后台队列 socket。ACK 对账成功且仍有后续项时，
                 // 重新建立监听，让 FIFO 能在当前 turn 完成后继续派发。
                 ensureQueuedSessionMonitoring(sessionID: sessionID)
+            }
+        case .guidanceAccepted:
+            if !handleQueuedSendAccepted(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                acceptedAsGuidance: true
+            ) {
+                conversationStore.updateSendStatus(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    status: .sent
+                )
+                conversationStore.compactTurnPayloadAfterSendAccepted(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID
+                )
             }
         case .activeTurnConflict(let activeTurnID, let message):
             // 这是“新消息未被接受”，不是原会话失败。恢复权威 active turn，
@@ -1322,6 +1355,9 @@ extension SessionStore {
               item.dispatchState == .dispatching else {
             return false
         }
+        // guidance fallback 已发现权威的新 active turn；清掉旧 steer 标记，
+        // 后续等待项再派发时必须完全按普通 turn/start 处理。
+        queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         guard mutateAndPersistQueuedTurns({

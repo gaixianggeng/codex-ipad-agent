@@ -946,6 +946,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         }
         let acceptedHandler = onSendAccepted
         let failureHandler = onSendFailure
+        let outcomeHandler = onTurnSendOutcome
         Task { [runtime, sessionID] in
             do {
                 try await runtime.steerTurn(
@@ -955,11 +956,47 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                     expectedTurnID: expectedTurnID
                 )
                 await MainActor.run {
-                    acceptedHandler?(clientMessageID)
+                    if let outcomeHandler {
+                        // steer 成功仍属于当前 turn，必须和降级后的 turn/start 明确区分。
+                        outcomeHandler(clientMessageID, .guidanceAccepted)
+                    } else {
+                        acceptedHandler?(clientMessageID)
+                    }
                 }
             } catch {
+                if case CodexAppServerSessionRuntimeError.missingActiveTurn = error {
+                    // missingActiveTurn 来自 steerTurn 的 RPC 前本地校验，确定没有发送。
+                    // 仅此情形安全降级成普通 turn/start；任何上游/网络错误都禁止自动重试。
+                    do {
+                        let turnID = try await runtime.startTurn(
+                            sessionID: sessionID,
+                            payload: payload,
+                            clientMessageID: clientMessageID
+                        )
+                        await MainActor.run {
+                            if let outcomeHandler {
+                                outcomeHandler(clientMessageID, .accepted(turnID: turnID))
+                            } else {
+                                acceptedHandler?(clientMessageID)
+                            }
+                        }
+                    } catch {
+                        await MainActor.run {
+                            if let outcomeHandler {
+                                outcomeHandler(clientMessageID, Self.turnSendOutcome(for: error))
+                            } else {
+                                failureHandler?(clientMessageID, error.localizedDescription)
+                            }
+                        }
+                    }
+                    return
+                }
                 await MainActor.run {
-                    failureHandler?(clientMessageID, error.localizedDescription)
+                    if let outcomeHandler {
+                        outcomeHandler(clientMessageID, Self.turnSendOutcome(for: error))
+                    } else {
+                        failureHandler?(clientMessageID, error.localizedDescription)
+                    }
                 }
             }
         }
