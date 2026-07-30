@@ -1,16 +1,5 @@
 import Foundation
 
-enum QueuedTurnAcceptedDisposition {
-    case awaitingStart(turnID: TurnID?)
-    case guidance
-    case terminal(turnID: TurnID?)
-    case superseded(
-        turnID: TurnID?,
-        activeTurnID: TurnID
-    )
-    case threadClosed(turnID: TurnID?)
-}
-
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
     func refreshAccountTokenUsage() async {
@@ -1203,72 +1192,6 @@ extension SessionStore {
                 queue[index].lastError = message
             }
             queuedRunningTurnsBySessionID[sessionID] = queue
-        }
-    }
-
-    func reconciledAcceptedDisposition(
-        sessionID: SessionID,
-        disposition: QueuedTurnAcceptedDisposition
-    ) -> QueuedTurnAcceptedDisposition {
-        let currentActiveTurnID = sessionsByID[sessionID]?.activeTurnID
-        func isTerminal(_ turnID: TurnID) -> Bool {
-            conversationStore.turnLifecycle(
-                sessionID: sessionID,
-                turnID: turnID
-            )?.isTerminal == true
-        }
-
-        switch disposition {
-        case .awaitingStart(let turnID):
-            if let turnID, isTerminal(turnID) {
-                return .terminal(turnID: turnID)
-            }
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .terminal(let turnID):
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .superseded(let turnID, let reportedActiveTurnID):
-            let effectiveActiveTurnID: TurnID
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID,
-               currentActiveTurnID != reportedActiveTurnID {
-                effectiveActiveTurnID = currentActiveTurnID
-            } else {
-                effectiveActiveTurnID = reportedActiveTurnID
-            }
-            if isTerminal(effectiveActiveTurnID) {
-                // completed(B) 可能先于 superseded(A,B) 落到 MainActor；lifecycle 是
-                // 不会随 activeTurnID 清空而丢失的终态证据，禁止再次复活 B。
-                return .terminal(turnID: effectiveActiveTurnID)
-            }
-            return .superseded(
-                turnID: turnID,
-                activeTurnID: effectiveActiveTurnID
-            )
-        case .threadClosed(let turnID):
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .guidance:
-            return disposition
         }
     }
 
