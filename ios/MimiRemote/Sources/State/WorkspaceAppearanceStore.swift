@@ -12,6 +12,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     case aliceWonderland
     case onePiece
     case naruto
+    case digimon
     case emoji
 
     var id: String { rawValue }
@@ -25,6 +26,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         .greekMythology,
         .onePiece,
         .naruto,
+        .digimon,
         .emoji
     ]
 
@@ -60,6 +62,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_one_piece"
         case .naruto:
             return "ui.workspace_icon_style_naruto"
+        case .digimon:
+            return "ui.workspace_icon_style_digimon"
         case .emoji:
             return "ui.emoji"
         }
@@ -89,6 +93,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "ui.workspace_icon_style_compact_one_piece"
         case .naruto:
             return "ui.workspace_icon_style_compact_naruto"
+        case .digimon:
+            return "ui.workspace_icon_style_compact_digimon"
         case .emoji:
             return "ui.workspace_icon_style_compact_emoji"
         }
@@ -119,6 +125,8 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
             return "WorkspaceCharacterOnePieceLuffy"
         case .naruto:
             return "WorkspaceCharacterNarutoNaruto"
+        case .digimon:
+            return "WorkspaceCharacterDigimonAgumon"
         case .emoji:
             return nil
         }
@@ -350,6 +358,19 @@ final class WorkspaceAppearanceStore: ObservableObject {
         WorkspaceCharacterIcon(id: "naruto-tsunade", assetName: "WorkspaceCharacterNarutoTsunade", nameKey: "ui.workspace_character_naruto_tsunade")
     ]
 
+    static let digimonCharacters = [
+        WorkspaceCharacterIcon(id: "digimon-agumon", assetName: "WorkspaceCharacterDigimonAgumon", nameKey: "ui.workspace_character_digimon_agumon"),
+        WorkspaceCharacterIcon(id: "digimon-gabumon", assetName: "WorkspaceCharacterDigimonGabumon", nameKey: "ui.workspace_character_digimon_gabumon"),
+        WorkspaceCharacterIcon(id: "digimon-patamon", assetName: "WorkspaceCharacterDigimonPatamon", nameKey: "ui.workspace_character_digimon_patamon"),
+        WorkspaceCharacterIcon(id: "digimon-gatomon", assetName: "WorkspaceCharacterDigimonGatomon", nameKey: "ui.workspace_character_digimon_gatomon"),
+        WorkspaceCharacterIcon(id: "digimon-biyomon", assetName: "WorkspaceCharacterDigimonBiyomon", nameKey: "ui.workspace_character_digimon_biyomon"),
+        WorkspaceCharacterIcon(id: "digimon-tentomon", assetName: "WorkspaceCharacterDigimonTentomon", nameKey: "ui.workspace_character_digimon_tentomon"),
+        WorkspaceCharacterIcon(id: "digimon-gomamon", assetName: "WorkspaceCharacterDigimonGomamon", nameKey: "ui.workspace_character_digimon_gomamon"),
+        WorkspaceCharacterIcon(id: "digimon-palmon", assetName: "WorkspaceCharacterDigimonPalmon", nameKey: "ui.workspace_character_digimon_palmon"),
+        WorkspaceCharacterIcon(id: "digimon-veemon", assetName: "WorkspaceCharacterDigimonVeemon", nameKey: "ui.workspace_character_digimon_veemon"),
+        WorkspaceCharacterIcon(id: "digimon-guilmon", assetName: "WorkspaceCharacterDigimonGuilmon", nameKey: "ui.workspace_character_digimon_guilmon")
+    ]
+
     static let builtInCharactersByStyle: [WorkspaceIconStyle: [WorkspaceCharacterIcon]] = [
         .journey: builtInCharacters,
         .threeKingdoms: threeKingdomsCharacters,
@@ -359,7 +380,8 @@ final class WorkspaceAppearanceStore: ObservableObject {
         .sherlockHolmes: sherlockHolmesCharacters,
         .aliceWonderland: aliceWonderlandCharacters,
         .onePiece: onePieceCharacters,
-        .naruto: narutoCharacters
+        .naruto: narutoCharacters,
+        .digimon: digimonCharacters
     ]
 
     private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>

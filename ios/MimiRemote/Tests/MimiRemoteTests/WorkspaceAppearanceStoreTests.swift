@@ -58,7 +58,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .sherlockHolmes,
             .aliceWonderland,
             .onePiece,
-            .naruto
+            .naruto,
+            .digimon
         ]
         let newCharacters = newStyles.flatMap {
             WorkspaceAppearanceStore.characters(for: $0)
@@ -71,8 +72,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 "\(style.rawValue) 应提供 10 个角色"
             )
         }
-        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 80)
-        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 80)
+        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 90)
+        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 90)
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
     }
 
@@ -87,7 +88,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .sherlockHolmes,
             .aliceWonderland,
             .onePiece,
-            .naruto
+            .naruto,
+            .digimon
         ]
 
         for style in newStyles {
@@ -141,6 +143,7 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 .greekMythology,
                 .onePiece,
                 .naruto,
+                .digimon,
                 .emoji
             ]
         )

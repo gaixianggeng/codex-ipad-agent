@@ -475,7 +475,7 @@ struct AppearanceView: View {
                         )
                     }
                 }
-                // 默认 4 × 2 保持快速扫读；辅助功能字号减少列数，让单行出处仍可辨识。
+                // 常规字号固定四列快速扫读；新增风格自然换行，辅助功能字号减少列数。
                 .padding(.vertical, 6)
                 .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
