@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +239,73 @@ func TestExternalActivityExcludesExactGatewayOwnedTurn(t *testing.T) {
 	}
 }
 
+func TestExternalActivityDelayedUserMessageAfterTaskStartedStillClaimsGatewayTurn(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-ipad",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now.Add(time.Second), "task_started", "turn-ipad"),
+		// managed app-server 冷启动时真实观察到 user_message 比 task_started
+		// 晚约 13 秒落盘；精确 client ID 不能因此被当成 Mac external。
+		externalUserMessageLine(now.Add(15*time.Second), "client-ipad"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("延迟落盘的精确 gateway 消息不应被识别为 Desktop external：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
+		t.Fatalf("延迟 user_message 应恢复精确 gateway 归属：%+v", entry)
+	}
+}
+
+func TestExternalActivityExactMessageCannotClaimTurnStartedOutsideGatewayWindow(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fixture.tracker.now = func() time.Time { return now }
+	fixture.tracker.RegisterGatewayTurnStart("thread-1", "client-ipad")
+	path := fixture.writeRollout(
+		"thread-1",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(
+			now.Add(gatewayTurnStartWindow+time.Second),
+			"task_started",
+			"turn-desktop",
+		),
+		externalUserMessageLine(
+			now.Add(gatewayTurnStartWindow+2*time.Second),
+			"client-ipad",
+		),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-1", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+		t.Fatalf("登记窗口外的新 turn 必须保持 external 只读：%+v", got)
+	}
+	if entry := fixture.tracker.files[path]; entry.gatewayOwned || entry.gatewayTurnPending {
+		t.Fatalf("登记窗口外的 turn 不得吸收失败 gateway 请求证据：%+v", entry)
+	}
+}
+
 func TestExternalActivityAlsoSupportsUserMessageBeforeTaskStarted(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
@@ -441,6 +509,262 @@ func TestExternalActivityNewDesktopTurnResetsGatewayOwnership(t *testing.T) {
 	}
 }
 
+func TestExternalActivityPersistentClaimSurvivesTrackerRestartAndCandidateGap(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 31, 1, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "private-state", "gateway-turn-claims.json")
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	fixture.tracker.RegisterGatewayTurnStart("thread-restart", "client-restart")
+	path := fixture.writeRollout(
+		"thread-restart",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now.Add(-time.Minute), "task_started", "turn-history"),
+		externalEventLineAt(now.Add(-50*time.Second), "task_complete", "turn-history"),
+		externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-ipad"),
+		externalUserMessageLine(now.Add(500*time.Millisecond), "client-restart"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	row := externalActivityTestRow{
+		ID: "thread-restart", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}
+	fixture.rows = []externalActivityTestRow{row}
+
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("首个 Tracker 应确认 iPad-owned turn：%+v", got)
+	}
+	if len(fixture.tracker.ownedGatewayTurns) != 1 {
+		t.Fatalf("精确 Thread+Turn claim 应提升并落盘：%+v", fixture.tracker.ownedGatewayTurns)
+	}
+	if runtime.GOOS != "windows" {
+		dirInfo, err := os.Stat(filepath.Dir(claimPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fileInfo, err := os.Stat(claimPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := dirInfo.Mode().Perm(); got != 0o700 {
+			t.Fatalf("claim 目录权限必须是 0700，got=%o", got)
+		}
+		if got := fileInfo.Mode().Perm(); got != 0o600 {
+			t.Fatalf("claim 文件权限必须是 0600，got=%o", got)
+		}
+	}
+
+	// 模拟第二个 Router/Tracker 启动时列表短暂缺页。缺页不能删除 claim。
+	fixture.rows = nil
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now.Add(time.Second) })
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("候选缺页不应制造外部活动：%+v", got)
+	}
+	storedAfterGap, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedAfterGap.Owned) != 1 ||
+		storedAfterGap.Owned[0].ThreadID != "thread-restart" ||
+		storedAfterGap.Owned[0].TurnID != "turn-ipad" {
+		t.Fatalf("候选缺页必须保留精确 claim：%+v", storedAfterGap)
+	}
+
+	// 列表恢复后，新 Tracker 从包含历史旧 turn 的同一 rollout 全量重扫。
+	// 历史 task_started 不能提前删除时间更晚的持久化 claim。
+	fixture.rows = []externalActivityTestRow{row}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now.Add(2 * time.Second) })
+	if got := fixture.snapshot(t); len(got) != 0 {
+		t.Fatalf("重启后的 Tracker 应恢复 gateway-owned 证据：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if !entry.active || !entry.gatewayOwned || entry.turnID != "turn-ipad" {
+		t.Fatalf("重建 rollout cache 后归属异常：%+v", entry)
+	}
+
+	// 同一 Thread 后续出现没有 gateway 证据的新 Mac turn，必须立即清旧 claim，
+	// 恢复仅观察保护；再重启一次也不能被旧 claim 隐藏。
+	now = now.Add(3 * time.Second)
+	fixture.appendLine(path, externalEventLineAt(now, "task_started", "turn-mac-next"))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-mac-next" {
+		t.Fatalf("真正的新 Mac turn 必须保持 external 只读：%+v", got)
+	}
+	now = now.Add(time.Second)
+	fixture.appendLine(path, externalEventLineAt(now, "task_complete", "turn-ipad"))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	got = fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-mac-next" {
+		t.Fatalf("旧 gateway turn 的迟到 terminal 不能结束或隐藏新 Mac turn：%+v", got)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now.Add(time.Second) })
+	got = fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-mac-next" {
+		t.Fatalf("清理旧 claim 后再次重启仍应识别新 Mac turn：%+v", got)
+	}
+	storedAfterMacTurn, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedAfterMacTurn.Owned) != 0 {
+		t.Fatalf("不同的新 turn 必须清理旧 owned claim：%+v", storedAfterMacTurn.Owned)
+	}
+}
+
+func TestExternalActivityPersistentClaimClearsOnTerminalAndTTL(t *testing.T) {
+	tests := []struct {
+		name       string
+		finishTurn func(*externalActivityTrackerFixture, string, *time.Time)
+	}{
+		{
+			name: "matching terminal",
+			finishTurn: func(fixture *externalActivityTrackerFixture, path string, now *time.Time) {
+				*now = now.Add(time.Second)
+				fixture.appendLine(path, externalEventLineAt(*now, "turn_aborted", "turn-ipad"))
+				if err := os.Chtimes(path, *now, *now); err != nil {
+					fixture.t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "ttl after rollout stale",
+			finishTurn: func(_ *externalActivityTrackerFixture, _ string, now *time.Time) {
+				*now = now.Add(gatewayOwnedTurnClaimTTL + time.Second)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExternalActivityTrackerFixture(t)
+			now := time.Date(2026, 7, 31, 2, 0, 0, 0, time.UTC)
+			claimPath := filepath.Join(t.TempDir(), "state", "claims.json")
+			fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+			fixture.tracker.RegisterGatewayTurnStart("thread-ipad", "client-ipad")
+			path := fixture.writeRollout(
+				"thread-ipad",
+				"Codex Desktop",
+				fixture.projectDir,
+				externalEventLineAt(now.Add(100*time.Millisecond), "task_started", "turn-ipad"),
+				externalUserMessageLine(now.Add(500*time.Millisecond), "client-ipad"),
+			)
+			if err := os.Chtimes(path, now, now); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rows = []externalActivityTestRow{{
+				ID: "thread-ipad", CWD: fixture.projectDir, Source: "vscode",
+				ThreadSource: "user", RolloutPath: path,
+			}}
+			if got := fixture.snapshot(t); len(got) != 0 {
+				t.Fatalf("iPad turn 不应是 external：%+v", got)
+			}
+
+			tc.finishTurn(fixture, path, &now)
+			if got := fixture.snapshot(t); len(got) != 0 {
+				t.Fatalf("terminal/TTL 后不应返回 external：%+v", got)
+			}
+			if len(fixture.tracker.ownedGatewayTurns) != 0 {
+				t.Fatalf("terminal/TTL 后必须清理内存 claim：%+v", fixture.tracker.ownedGatewayTurns)
+			}
+			stored, err := newGatewayTurnClaimStore(claimPath).load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(stored.Owned) != 0 {
+				t.Fatalf("terminal/TTL 后必须清理落盘 claim：%+v", stored.Owned)
+			}
+		})
+	}
+}
+
+func TestExternalActivityExpiredClaimWithFreshRolloutFailsClosedAsExternal(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "claims.json")
+	expiredEvidenceAt := now.Add(-gatewayOwnedTurnClaimTTL - time.Second)
+	if err := newGatewayTurnClaimStore(claimPath).save(gatewayTurnClaimStoreFile{
+		Owned: []gatewayTurnOwnedClaimStoreEntry{{
+			ThreadID:       "thread-expired",
+			TurnID:         "turn-expired",
+			LastEvidenceAt: expiredEvidenceAt,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	path := fixture.writeRollout(
+		"thread-expired",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(expiredEvidenceAt, "task_started", "turn-expired"),
+	)
+	// 即使 rollout 因其他落盘动作仍处于 fresh 窗口，过期 claim 也不能继续
+	// 放宽控制；必须 fail-closed 恢复为真正的 external 只读活动。
+	if err := os.Chtimes(path, now.Add(-5*time.Minute), now.Add(-5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-expired", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-expired" {
+		t.Fatalf("过期 claim + fresh rollout 必须保持 external 只读：%+v", got)
+	}
+	entry := fixture.tracker.files[path]
+	if entry.gatewayOwned {
+		t.Fatalf("过期 claim 不得恢复 gateway ownership：%+v", entry)
+	}
+	stored, err := newGatewayTurnClaimStore(claimPath).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Owned) != 0 {
+		t.Fatalf("过期 claim 应从落盘状态清理：%+v", stored.Owned)
+	}
+}
+
+func TestExternalActivityCorruptClaimStoreFailsClosed(t *testing.T) {
+	fixture := newExternalActivityTrackerFixture(t)
+	now := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)
+	claimPath := filepath.Join(t.TempDir(), "state", "claims.json")
+	if err := os.MkdirAll(filepath.Dir(claimPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claimPath, []byte(`{"version":1,"owned":[`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.replaceTrackerWithClaimStore(claimPath, func() time.Time { return now })
+	path := fixture.writeRollout(
+		"thread-desktop",
+		"Codex Desktop",
+		fixture.projectDir,
+		externalEventLineAt(now, "task_started", "turn-desktop"),
+	)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatal(err)
+	}
+	fixture.rows = []externalActivityTestRow{{
+		ID: "thread-desktop", CWD: fixture.projectDir, Source: "vscode",
+		ThreadSource: "user", RolloutPath: path,
+	}}
+
+	got := fixture.snapshot(t)
+	if len(got) != 1 || got[0].TurnID != "turn-desktop" {
+		t.Fatalf("损坏 claim store 必须 fail-closed 保留 external：%+v", got)
+	}
+	if fixture.tracker.Diagnostics().ClaimStoreErrors != 1 {
+		t.Fatalf("损坏 claim store 应记录一次脱敏诊断：%+v", fixture.tracker.Diagnostics())
+	}
+}
+
 func TestGatewayTurnRegistrationsAreBoundedAndExpire(t *testing.T) {
 	fixture := newExternalActivityTrackerFixture(t)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
@@ -517,6 +841,21 @@ func newExternalActivityTrackerFixture(t *testing.T) *externalActivityTrackerFix
 		return json.Marshal(fixture.rows)
 	}
 	return fixture
+}
+
+func (f *externalActivityTrackerFixture) replaceTrackerWithClaimStore(
+	claimStorePath string,
+	now func() time.Time,
+) {
+	f.t.Helper()
+	query := f.tracker.query
+	f.tracker = NewExternalActivityTrackerWithClaimStore(
+		f.db,
+		f.tracker.registry,
+		claimStorePath,
+	)
+	f.tracker.query = query
+	f.tracker.now = now
 }
 
 func (f *externalActivityTrackerFixture) writeRollout(threadID, originator, cwd string, lines ...string) string {
