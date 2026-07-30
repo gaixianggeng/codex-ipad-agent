@@ -42,7 +42,7 @@ iPhone / iPad SwiftUI App
 | --- | --- | --- |
 | 会话 | 列表、本地即时搜索、Codex 全文搜索及显式分页、新建、恢复、历史分页、流式输出、steer、interrupt、审批、goal、fork、archive/unarchive、本地 pin | 全文搜索每页最多 50 条，严格裁剪到授权 cwd，并由用户显式继续加载；Cloud / projectless thread 未支持；每个会话同时只允许一个 iOS WebSocket attach |
 | 工作区 | 项目扫描、`browse_roots` 目录浏览、打开目录、managed Worktree 创建/列出/受保护删除/prune/分支选择；registry 记录真实 checkout 根和使用时间，Git 状态区分 clean/dirty/unknown；APP 可预览 30 天清理候选、查看 blocker 并二次确认；Gateway 建立 thread 期间用 pending-use lease 阻止删除 | 每项目至少保留最近 3 个，清理和普通移动 API 都不允许 force；无人值守自动删除仍关闭 |
-| Git | status、diff、文件和 hunk 级 stage/unstage/revert、commit、push、草稿 PR 和 PR 状态 | GitHub Review API 级 inline comment 尚未接入 |
+| Git | status、diff、文件和 hunk 级 stage/unstage/revert、commit、push、草稿 PR 和 PR 状态；完整/摘要状态统一返回 upstream 与 ahead/behind，支持从工作区直达并在回合结束后防抖刷新；Quick Publish 尊重既有 upstream，落后远端时在提交前阻断 | pull/rebase 与冲突处理、GitHub Review API 级 inline comment 尚未接入 |
 | 输入输出 | 富 Markdown、图片输入、历史图片按需加载、语音转写、文件安全读取和 QuickLook；当前会话可导出 ANSI 清洗后的有界 UTF-8 日志，导出头部不读取连接凭据 | PDF/大型 artifact 的富预览和后台下载尚未实现；日志正文可能包含用户命令、代码和工具输出，分享前需自行检查 |
 | 能力发现 | Skills 和 MCP 配置只读浏览、allowlist actions | 不在 iPad 上启停 MCP、修改 Codex 配置或处理 OAuth |
 | 移动体验 | iPhone/iPad 自适应、深浅色、主题和字号、Codex 5h/7d 用量、提醒、运行态通知、通知点击回到当前 Mac 会话；通知未授权时提醒仍可保留为 App 内状态并明确告知，冷启动/回前台清理过期提醒；通知 payload 不含 Token 或明文 endpoint，错 Mac 只提示手动切换档案；凭据失效终止重试；NWPath 事件按递增序号交付并丢弃迟到旧状态，离线暂停、恢复单次重连和 jitter 退避，首次 unknown→在线只在已有网络错误或挂起会话时恢复一次；首次配对提交后最多等待 45 秒恢复项目/会话，已有档案修复或切换等待 10 秒，超时保留 Keychain 凭据且打开设置可直接重试；保存、重命名和删除多台 Mac 档案，每台独立 Keychain Token 和稳定安装身份，候选连接验证后原子单活切换；非当前 Mac 只在菜单打开后轻量探测，不加载业务状态；缓存、媒体、通知和异步任务按 Profile 隔离；重命名只更新非敏感显示名，不重建连接；忘记/删除凭据必须二次确认并统一清理 Profile 数据；AI 用量刷新按 runtime 独立 loading 和去重，Claude 慢查询不禁用其他设置操作 | 后台 push、离线通知、连接档案云同步和离线队列持久化尚未实现；快速切换发布前仍需通过 Release 真机性能门禁 |
@@ -96,13 +96,7 @@ xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
 
-xcodebuild \
-  -project ios/MimiRemote/MimiRemote.xcodeproj \
-  -scheme MimiRemote \
-  -configuration Debug \
-  -sdk iphoneos \
-  CODE_SIGNING_ALLOWED=NO \
-  build-for-testing
+bash ./scripts/ios-dev.sh build-for-testing
 ```
 
 Mimi TestFlight 使用本机 `git testflight-push`：先推送并核对远端 commit，再在干净 worktree 中归档、上传和内部组分发，不依赖 GitHub Actions。其他 CI 与公开 Release workflows 保持不变。

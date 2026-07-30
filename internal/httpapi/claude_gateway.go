@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -865,23 +864,6 @@ func writeGatewayRuntimeErrorWithData(conn *websocket.Conn, code string, message
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(appServerGatewayWriteWindow))
 	_ = conn.WriteMessage(websocket.TextMessage, raw)
-}
-
-func configureGatewayCommandProcessGroup(cmd *exec.Cmd) {
-	if cmd == nil {
-		return
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-}
-
-func terminateGatewayProcessGroup(cmd *exec.Cmd, signal syscall.Signal) {
-	pid := gatewayProcessID(cmd)
-	if pid <= 0 {
-		return
-	}
-	if err := syscall.Kill(-pid, signal); err != nil && err != syscall.ESRCH {
-		_ = syscall.Kill(pid, signal)
-	}
 }
 
 func gatewayProcessID(cmd *exec.Cmd) int {

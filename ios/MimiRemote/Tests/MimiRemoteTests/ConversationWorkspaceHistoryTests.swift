@@ -325,6 +325,79 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.managedWorktrees.map(\.workspace.id), [workspace.id])
     }
 
+    func testSessionStoreDuplicatesSessionInSameWorkspaceAndNamesTheCopy() async {
+        let project = makeProject(id: "proj_duplicate")
+        let workspace = AgentWorkspace(project: project)
+        let source = makeSession(
+            id: "codex_source",
+            projectID: project.id,
+            title: "修复 Git 状态",
+            status: "history",
+            source: "codex",
+            resumeID: "thread_source"
+        )
+        let forked = makeSession(
+            id: "thread_copy",
+            projectID: project.id,
+            title: "Forked",
+            status: "history",
+            source: "codex",
+            resumeID: "thread_copy"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [source],
+            sessionForkResults: ["thread_source": .success(forked)],
+            resolveResults: [project.path: .success(workspace)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let duplicated = await store.duplicateSessionInCurrentWorkspace(source)
+
+        XCTAssertTrue(duplicated)
+        XCTAssertEqual(client.requestedResolvePaths, [project.path])
+        XCTAssertEqual(client.requestedSessionForks, [
+            RequestedSessionFork(
+                threadID: "thread_source",
+                workspaceID: workspace.id,
+                reason: .duplicate
+            )
+        ])
+        XCTAssertEqual(client.requestedThreadNames, [
+            RequestedThreadName(
+                threadID: forked.id,
+                name: "修复 Git 状态 · \(L10n.text("ui.copy"))"
+            )
+        ])
+        XCTAssertEqual(
+            store.sessions.first(where: { $0.id == forked.id })?.title,
+            "修复 Git 状态 · \(L10n.text("ui.copy"))"
+        )
+        XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertEqual(store.selectedSessionID, forked.id)
+        XCTAssertTrue(store.duplicatingSessionIDs.isEmpty)
+    }
+
+    func testDuplicatedSessionTitleKeepsCopySuffixWithinUTF8Limit() {
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { throw MockError.unimplemented }
+        )
+
+        let title = store.duplicatedSessionTitle(from: String(repeating: "会", count: 120))
+
+        XCTAssertLessThanOrEqual(title.utf8.count, 256)
+        XCTAssertTrue(title.hasSuffix(" · \(L10n.text("ui.copy"))"))
+    }
+
     func testSessionStoreHandoffsSessionWithNativeForkWhenAvailable() async {
         let project = makeProject(id: "proj_1")
         let source = makeSession(
@@ -382,7 +455,11 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(handedOff)
         XCTAssertEqual(client.requestedSessionForks, [
-            RequestedSessionFork(threadID: "thread_source", workspaceID: workspace.id)
+            RequestedSessionFork(
+                threadID: "thread_source",
+                workspaceID: workspace.id,
+                reason: .worktreeHandoff
+            )
         ])
         XCTAssertTrue(client.createPayloads.isEmpty)
         XCTAssertEqual(store.selectedProjectID, workspace.id)
@@ -453,7 +530,11 @@ extension ConversationDataFlowTests {
             RequestedWorktreeCreate(path: project.path, name: "audit handoff", base: "main", branch: "mimi/audit-handoff")
         ])
         XCTAssertEqual(client.requestedSessionForks, [
-            RequestedSessionFork(threadID: "thread_source", workspaceID: workspace.id)
+            RequestedSessionFork(
+                threadID: "thread_source",
+                workspaceID: workspace.id,
+                reason: .worktreeHandoff
+            )
         ])
         XCTAssertEqual(client.createPayloads.count, 1)
         guard let payload = client.createPayloads.first else {

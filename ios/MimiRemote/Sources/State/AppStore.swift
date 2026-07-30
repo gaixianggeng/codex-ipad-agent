@@ -629,6 +629,10 @@ final class AppStore: ObservableObject {
     var shouldSeedDebugQueuedTurnsUI: Bool {
         debugLaunchConfiguration.seedsQueuedTurnsUI
     }
+
+    var shouldSeedDebugMCPApprovalUI: Bool {
+        debugLaunchConfiguration.seedsMCPApprovalUI
+    }
 #endif
 
     func client() throws -> AgentAPIClient {
@@ -713,33 +717,36 @@ final class AppStore: ObservableObject {
         )
     }
 
-    func preparePairingURL(_ url: URL) async throws -> PreparedConnectionSettings {
+    func preparePairingURL(
+        _ url: URL,
+        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
+    ) async throws -> PreparedConnectionSettings {
         if let ticket = try Self.pairingTicket(from: url) {
             let credentials = try await claimPairing(ticket)
             return try await prepareConnectionSettings(
                 endpoint: credentials.endpoint,
-                token: credentials.token
+                token: credentials.token,
+                profileTarget: profileTarget
             )
         }
         let credentials = try Self.pairingCredentials(from: url)
         return try await prepareConnectionSettings(
             endpoint: credentials.endpoint,
-            token: credentials.token
+            token: credentials.token,
+            profileTarget: profileTarget
         )
     }
 
     func prepareNewPairingURL(_ url: URL, displayName: String) async throws -> PreparedConnectionSettings {
-        let prepared = try await preparePairingURL(url)
-        return PreparedConnectionSettings(
-            endpoint: prepared.endpoint,
-            token: prepared.token,
+        // 新档案目标必须在兑换二维码前就确定，并贯穿身份校验、Runtime 预热和提交。
+        // 如果先按 currentOrNew 准备、最后再改成 newProfile，第二台电脑会被误判为
+        // 当前档案更换了安装身份，且 PreparedHostLease 仍会保留错误目标。
+        return try await preparePairingURL(
+            url,
             profileTarget: .newProfile(
                 id: UUID().uuidString,
-                displayName: Self.normalizedProfileDisplayName(displayName, endpoint: prepared.endpoint)
-            ),
-            validatedAt: prepared.validatedAt,
-            installationID: prepared.installationID,
-            hostContext: prepared.hostContext
+                displayName: displayName
+            )
         )
     }
 
@@ -1914,6 +1921,7 @@ private struct DebugLaunchConfiguration {
     let opensWorkbenchWithoutPairing: Bool
     let seedsWorkbenchUI: Bool
     let seedsQueuedTurnsUI: Bool
+    let seedsMCPApprovalUI: Bool
     let endpoint: String?
     let token: String?
 
@@ -1922,13 +1930,17 @@ private struct DebugLaunchConfiguration {
         let environment = processInfo.environment
         let seedsQueuedTurnsUI = arguments.contains("--debug-seed-queue-ui")
             || boolValue(environment["MIMI_DEBUG_SEED_QUEUE_UI"])
+        let seedsMCPApprovalUI = arguments.contains("--debug-seed-mcp-approval-ui")
+            || boolValue(environment["MIMI_DEBUG_SEED_MCP_APPROVAL_UI"])
         return DebugLaunchConfiguration(
             opensWorkbenchWithoutPairing: arguments.contains("--debug-skip-pairing")
                 || boolValue(environment["MIMI_DEBUG_SKIP_PAIRING"]),
             seedsWorkbenchUI: arguments.contains("--debug-seed-ui")
                 || boolValue(environment["MIMI_DEBUG_SEED_UI"])
-                || seedsQueuedTurnsUI,
+                || seedsQueuedTurnsUI
+                || seedsMCPApprovalUI,
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
+            seedsMCPApprovalUI: seedsMCPApprovalUI,
             endpoint: argumentValue(named: "--debug-endpoint", in: arguments)
                 ?? environment["MIMI_DEBUG_ENDPOINT"],
             token: argumentValue(named: "--debug-token", in: arguments)

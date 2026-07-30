@@ -915,6 +915,7 @@ extension ConversationDataFlowTests {
         store.interruptSelectedTurn()
 
         XCTAssertEqual(sockets[0].sentCtrlCCount, 1)
+        XCTAssertEqual(sockets[0].sentCtrlCTurnIDs, ["turn_ctrl_c"])
         XCTAssertEqual(store.statusMessage, L10n.text("ui.stopping_current_reply"))
         XCTAssertNil(store.errorMessage)
 

@@ -406,9 +406,9 @@ func (r *Router) gitStatusWithOptions(ctx context.Context, realPath string, summ
 
 	branch, _, _ := runGitReadOnly(ctx, realPath, 4*1024, "branch", "--show-current")
 	head, _, _ := runGitReadOnly(ctx, realPath, 4*1024, "rev-parse", "--short", "HEAD")
+	ahead, behind, upstream := gitUpstreamStatus(ctx, realPath)
 
 	if summaryOnly {
-		ahead, behind, upstream := gitUpstreamStatus(ctx, realPath)
 		response := gitStatusResponse{
 			Path:         realPath,
 			IsRepository: true,
@@ -455,6 +455,9 @@ func (r *Router) gitStatusWithOptions(ctx context.Context, realPath string, summ
 		IsRepository: true,
 		Branch:       strings.TrimSpace(branch),
 		Head:         strings.TrimSpace(head),
+		Ahead:        ahead,
+		Behind:       behind,
+		Upstream:     upstream,
 		StatusText:   strings.TrimSpace(statusText),
 		DiffStat:     strings.TrimSpace(diffStat),
 		UnstagedDiff: strings.TrimSpace(unstagedDiff),

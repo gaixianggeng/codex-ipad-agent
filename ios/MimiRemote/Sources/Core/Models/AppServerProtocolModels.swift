@@ -379,7 +379,7 @@ struct CodexAppServerRequestBuilder {
 
     init(allowlistedProjects: [AgentProject]) {
         self.projectsByID = Dictionary(uniqueKeysWithValues: allowlistedProjects.map { ($0.id, $0) })
-        self.allowlistedPaths = Set(allowlistedProjects.map(\.path).compactMap(Self.standardizedAllowlistPath))
+        self.allowlistedPaths = Set(allowlistedProjects.map(\.path).compactMap(Self.cleanedRemoteHostPath))
     }
 
     func threadList(
@@ -734,11 +734,11 @@ struct CodexAppServerRequestBuilder {
     }
 
     private func allowlistedPath(_ path: String) throws -> String {
-        let standardized = Self.standardizedAllowlistPath(path) ?? ""
-        guard allowlistedPaths.contains(standardized) else {
+        let cleaned = Self.cleanedRemoteHostPath(path) ?? ""
+        guard allowlistedPaths.contains(cleaned) else {
             throw CodexAppServerRequestBuilderError.pathNotAllowlisted(path.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return standardized
+        return cleaned
     }
 
     private func safeThreadRuntimeParams(cwd: String) -> [String: CodexAppServerJSONValue?] {
@@ -825,11 +825,11 @@ struct CodexAppServerRequestBuilder {
     }
 
     private func isPathInAllowlist(_ raw: String) -> Bool {
-        guard let path = Self.standardizedAllowlistPath(raw) else {
+        guard let path = Self.cleanedRemoteHostPath(raw) else {
             return false
         }
         return allowlistedPaths.contains { root in
-            path == root || path.hasPrefix(root + "/")
+            Self.remoteHostPath(path, isWithin: root)
         }
     }
 
@@ -867,11 +867,33 @@ struct CodexAppServerRequestBuilder {
         }
     }
 
-    private static func standardizedAllowlistPath(_ raw: String) -> String? {
+    private static func cleanedRemoteHostPath(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return nil
         }
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        // 路径属于远程主机，可能使用 Windows、Unix 或其他文件系统语义。
+        // iOS 只能清理传输层空白，不能用本机 Foundation URL 改写它。
+        return trimmed
+    }
+
+    private static func remoteHostPath(_ path: String, isWithin root: String) -> Bool {
+        guard path != root else {
+            return true
+        }
+
+        let separator: Character = root.contains("\\") ? "\\" : "/"
+        let prefix = root.last == separator ? root : root + String(separator)
+        guard path.hasPrefix(prefix) else {
+            return false
+        }
+
+        let relativePath = path.dropFirst(prefix.count)
+        guard !relativePath.isEmpty else {
+            return false
+        }
+        return !relativePath.split(whereSeparator: { $0 == "/" || $0 == "\\" }).contains {
+            $0 == "." || $0 == ".."
+        }
     }
 }

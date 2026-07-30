@@ -20,6 +20,26 @@ func (s stubExternalActivitySource) Snapshot() ([]codexhistory.ExternalActivity,
 	return s.activities, s.err
 }
 
+type recordingExternalActivitySource struct {
+	registrations []gatewayTurnStartRegistration
+}
+
+type gatewayTurnStartRegistration struct {
+	threadID            string
+	clientUserMessageID string
+}
+
+func (s *recordingExternalActivitySource) Snapshot() ([]codexhistory.ExternalActivity, error) {
+	return []codexhistory.ExternalActivity{}, nil
+}
+
+func (s *recordingExternalActivitySource) RegisterGatewayTurnStart(threadID string, clientUserMessageID string) {
+	s.registrations = append(s.registrations, gatewayTurnStartRegistration{
+		threadID:            threadID,
+		clientUserMessageID: clientUserMessageID,
+	})
+}
+
 func TestExternalActivityRequiresAuthAndReturnsSanitizedSnapshot(t *testing.T) {
 	handler, router := appServerGatewayRouterFixtureWithRouter(t, "", nil)
 	router.externalActivity = stubExternalActivitySource{activities: []codexhistory.ExternalActivity{{

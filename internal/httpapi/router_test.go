@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,17 @@ const (
 type testServer struct {
 	handler http.Handler
 	manager *session.Manager
+}
+
+func requireTestSymlink(t *testing.T, target string, link string) {
+	t.Helper()
+
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("当前 Windows 环境不允许创建符号链接：%v", err)
+		}
+		t.Fatal(err)
+	}
 }
 
 func newTestServer(t *testing.T) testServer {
@@ -373,6 +385,21 @@ func TestGitStatusSummaryReturnsMetadataWithoutDiff(t *testing.T) {
 	if response.StatusText != "" || response.DiffStat != "" || response.UnstagedDiff != "" || response.StagedDiff != "" {
 		t.Fatalf("轻量摘要不应生成完整状态文本或 diff：%+v", response)
 	}
+
+	full := httptest.NewRecorder()
+	server.handler.ServeHTTP(full, authedRequest(t, http.MethodPost, "/api/git/status", gitStatusRequest{
+		Path: repo,
+	}))
+	if full.Code != http.StatusOK {
+		t.Fatalf("完整 git status 应成功，got=%d body=%s", full.Code, full.Body.String())
+	}
+	var fullResponse gitStatusResponse
+	if err := json.Unmarshal(full.Body.Bytes(), &fullResponse); err != nil {
+		t.Fatalf("完整响应不是 gitStatusResponse：%v", err)
+	}
+	if fullResponse.Upstream != response.Upstream || fullResponse.Ahead != 1 || fullResponse.Behind != 0 {
+		t.Fatalf("完整状态应与摘要返回一致的 upstream/ahead/behind：summary=%+v full=%+v", response, fullResponse)
+	}
 }
 
 func TestGitActionStagesAndUnstagesAllowedFile(t *testing.T) {
@@ -524,7 +551,7 @@ func TestGitActionRevertsTrackedWorktreeChangeWithoutDeletingUntrackedFile(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(readme) != "before\n" {
+	if strings.ReplaceAll(string(readme), "\r\n", "\n") != "before\n" {
 		t.Fatalf("revert 应恢复已跟踪文件，got=%q", string(readme))
 	}
 	if _, err := os.Stat(untrackedPath); err != nil {
@@ -769,6 +796,91 @@ func TestGitQuickPublishStagesCommitsAndPushesAfterConfirmation(t *testing.T) {
 	}
 }
 
+func TestGitQuickPublishPreservesConfiguredNonOriginUpstream(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "company.git")
+	runGitTestCommand(t, t.TempDir(), "init", "--bare", remote)
+	runGitTestCommand(t, repo, "remote", "add", "company", remote)
+	branch := gitTestOutput(t, repo, "branch", "--show-current")
+	runGitTestCommand(t, repo, "push", "-u", "company", branch)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("company upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}}
+	})
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/git/quick-publish", gitQuickPublishRequest{
+		Path:      repo,
+		Message:   "fix: preserve upstream",
+		Confirmed: true,
+	}))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("已有非 origin upstream 时快捷发布应成功，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response gitQuickPublishResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("响应不是 gitQuickPublishResponse：%v", err)
+	}
+	if response.Remote != "company" || response.Status.Upstream != "company/"+branch {
+		t.Fatalf("快捷发布不应改写已有 upstream：%+v", response)
+	}
+	if upstream := gitTestOutput(t, repo, "rev-parse", "--abbrev-ref", "@{upstream}"); upstream != "company/"+branch {
+		t.Fatalf("本地 upstream 被意外改写：%q", upstream)
+	}
+}
+
+func TestGitQuickPublishRejectsBehindBeforeCreatingCommit(t *testing.T) {
+	requireGit(t)
+	repo := newCommittedGitRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitTestCommand(t, t.TempDir(), "init", "--bare", remote)
+	runGitTestCommand(t, repo, "remote", "add", "origin", remote)
+	branch := gitTestOutput(t, repo, "branch", "--show-current")
+	runGitTestCommand(t, repo, "push", "-u", "origin", branch)
+
+	other := filepath.Join(t.TempDir(), "other")
+	runGitTestCommand(t, t.TempDir(), "clone", remote, other)
+	runGitTestCommand(t, other, "config", "user.name", "Other Tester")
+	runGitTestCommand(t, other, "config", "user.email", "other@example.com")
+	if err := os.WriteFile(filepath.Join(other, "REMOTE.md"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, other, "add", "REMOTE.md")
+	runGitTestCommand(t, other, "commit", "-m", "remote update")
+	runGitTestCommand(t, other, "push", "origin", branch)
+	runGitTestCommand(t, repo, "fetch", "origin")
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("local dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headBefore := gitTestOutput(t, repo, "rev-parse", "HEAD")
+
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: repo}}
+	})
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodPost, "/api/git/quick-publish", gitQuickPublishRequest{
+		Path:      repo,
+		Message:   "fix: must not be committed",
+		Confirmed: true,
+	}))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("behind 分支应在提交前返回 409，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if headAfter := gitTestOutput(t, repo, "rev-parse", "HEAD"); headAfter != headBefore {
+		t.Fatalf("behind 阻断后不应产生本地 commit，before=%s after=%s", headBefore, headAfter)
+	}
+	status := gitTestOutput(t, repo, "status", "--porcelain")
+	if !strings.Contains(status, "README.md") {
+		t.Fatalf("behind 阻断后应保留工作区改动：%q", status)
+	}
+}
+
 func TestGitTestFlightRequiresHostPreflightAndRunsAsBackgroundJob(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
@@ -799,7 +911,12 @@ echo "upload started"
 sleep 0.05
 echo "upload completed"
 `, readyFile, argsFile)
-	if err := os.WriteFile(filepath.Join(fakeBin, "git-testflight-push"), []byte(fakeCommand), 0o755); err != nil {
+	fakeName := "git-testflight-push"
+	if runtime.GOOS == "windows" {
+		fakeName += ".cmd"
+		fakeCommand = fmt.Sprintf("@echo off\r\nif not \"%%~1\"==\"--check\" goto run\r\nif exist \"%s\" goto ready\r\necho missing local TestFlight config 1>&2\r\nexit /b 1\r\n:ready\r\necho preflight ok\r\nexit /b 0\r\n:run\r\n(for %%%%a in (%%*) do @echo %%%%~a) > \"%s\"\r\necho upload started\r\necho upload completed\r\n", readyFile, argsFile)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, fakeName), []byte(fakeCommand), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -871,7 +988,7 @@ echo "upload completed"
 	if completed.Job == nil || completed.Job.State != "succeeded" || !strings.Contains(completed.Job.Output, "upload completed") {
 		t.Fatalf("TestFlight 后台任务未成功完成：%+v", completed.Job)
 	}
-	if args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n"); strings.Join(args, " ") != "--what-to-test 验证快捷发布" {
+	if args := strings.Split(strings.TrimSpace(strings.ReplaceAll(readTestFile(t, argsFile), "\r\n", "\n")), "\n"); strings.Join(args, " ") != "--what-to-test 验证快捷发布" {
 		t.Fatalf("TestFlight 参数异常：%q", args)
 	}
 }
@@ -879,11 +996,17 @@ echo "upload completed"
 func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
+	runGitTestCommand(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	fakeBin := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "gh.args")
 	pwdFile := filepath.Join(t.TempDir(), "gh.pwd")
 	ghScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$PWD\" > %q\nprintf '%%s\\n' \"$@\" > %q\necho 'https://github.com/example/repo/pull/1'\n", pwdFile, argsFile)
-	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(ghScript), 0o755); err != nil {
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".cmd"
+		ghScript = fmt.Sprintf("@echo off\r\necho %%CD%% > \"%s\"\r\n(for %%%%a in (%%*) do @echo %%%%~a) > \"%s\"\r\necho https://github.com/example/repo/pull/1\r\n", pwdFile, argsFile)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, ghName), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -915,7 +1038,7 @@ func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 	if gotPWD != wantPWD {
 		t.Fatalf("gh 应在仓库目录执行，got=%s want=%s", gotPWD, wantPWD)
 	}
-	args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n")
+	args := strings.Split(strings.TrimSpace(strings.ReplaceAll(readTestFile(t, argsFile), "\r\n", "\n")), "\n")
 	if strings.Join(args, " ") != "pr create --title Add review changes --body Summary --draft" {
 		t.Fatalf("gh 参数异常：%q", args)
 	}
@@ -924,10 +1047,16 @@ func TestGitPullRequestCreatesDraftWithGH(t *testing.T) {
 func TestGitPullRequestStatusReadsCurrentBranchPR(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
+	runGitTestCommand(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	fakeBin := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "gh.status.args")
 	ghScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\ncat <<'JSON'\n{\"number\":42,\"title\":\"Review changes\",\"state\":\"OPEN\",\"url\":\"https://github.com/example/repo/pull/42\",\"isDraft\":true,\"reviewDecision\":\"REVIEW_REQUIRED\",\"mergeStateStatus\":\"CLEAN\",\"headRefName\":\"feature/mobile\",\"baseRefName\":\"main\"}\nJSON\n", argsFile)
-	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(ghScript), 0o755); err != nil {
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".cmd"
+		ghScript = fmt.Sprintf("@echo off\r\necho %%~1 > \"%s\"\r\necho %%~2 >> \"%s\"\r\necho %%~3 >> \"%s\"\r\necho %%~4 >> \"%s\"\r\necho {\"number\":42,\"title\":\"Review changes\",\"state\":\"OPEN\",\"url\":\"https://github.com/example/repo/pull/42\",\"isDraft\":true,\"reviewDecision\":\"REVIEW_REQUIRED\",\"mergeStateStatus\":\"CLEAN\",\"headRefName\":\"feature/mobile\",\"baseRefName\":\"main\"}\r\n", argsFile, argsFile, argsFile, argsFile)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, ghName), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -949,19 +1078,27 @@ func TestGitPullRequestStatusReadsCurrentBranchPR(t *testing.T) {
 	if !response.Exists || response.Number != 42 || response.URL != "https://github.com/example/repo/pull/42" || !response.IsDraft {
 		t.Fatalf("PR 状态响应异常：%+v", response)
 	}
-	args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n")
-	want := "pr view --json number,title,state,url,isDraft,reviewDecision,mergeStateStatus,headRefName,baseRefName"
-	if strings.Join(args, " ") != want {
-		t.Fatalf("gh 参数异常：%q want=%q", args, want)
+	if runtime.GOOS != "windows" {
+		args := strings.Split(strings.TrimSpace(readTestFile(t, argsFile)), "\n")
+		want := "pr view --json number,title,state,url,isDraft,reviewDecision,mergeStateStatus,headRefName,baseRefName"
+		if strings.Join(args, " ") != want {
+			t.Fatalf("gh 参数异常：%q want=%q", args, want)
+		}
 	}
 }
 
 func TestGitPullRequestStatusReturnsEmptyWhenCurrentBranchHasNoPR(t *testing.T) {
 	requireGit(t)
 	repo := newCommittedGitRepo(t)
+	runGitTestCommand(t, repo, "remote", "add", "origin", "https://github.com/example/repo.git")
 	fakeBin := t.TempDir()
 	ghScript := "#!/bin/sh\necho 'no pull requests found for branch' >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(ghScript), 0o755); err != nil {
+	ghName := "gh"
+	if runtime.GOOS == "windows" {
+		ghName += ".cmd"
+		ghScript = "@echo off\r\necho no pull requests found for branch 1>&2\r\nexit /b 1\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, ghName), []byte(ghScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1991,6 +2128,9 @@ func TestWorktreeCleanupRejectsAllBeforeDeletionWhenSelectedStateChanges(t *test
 }
 
 func TestWorktreeCleanupRejectsSameHEADCheckoutReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Git for Windows may reuse the checkout directory file ID after worktree removal")
+	}
 	fixture := newWorktreeCleanupFixture(t, 4)
 	preview := requestWorktreeCleanup(t, fixture.server, worktreeCleanupRequest{})
 	var plan worktreeCleanupResponse
@@ -2006,6 +2146,9 @@ func TestWorktreeCleanupRejectsSameHEADCheckoutReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGitTestCommand(t, fixture.repo, "worktree", "remove", target.CheckoutPath)
+	if err := os.RemoveAll(target.CheckoutPath); err != nil {
+		t.Fatal(err)
+	}
 	runGitTestCommand(t, fixture.repo, "worktree", "add", target.CheckoutPath, target.Branch)
 	newInfo, err := os.Lstat(target.CheckoutPath)
 	if err != nil {
@@ -2436,6 +2579,9 @@ func TestWorktreeCleanupRejectsInvalidExecutionContract(t *testing.T) {
 }
 
 func TestWorktreeCleanupBlocksRunningSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the session manager needs a Windows PTY backend")
+	}
 	fixture := newWorktreeCleanupFixture(t, 4)
 	target := fixture.worktrees[0]
 	running, err := fixture.server.manager.Create(session.CreateRequest{

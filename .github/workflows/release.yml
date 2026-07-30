@@ -93,8 +93,77 @@ jobs:
       - name: Check release artifacts
         run: bash ./scripts/check-release-artifacts.sh
 
+  verify-windows:
+    if: github.repository == 'gaixianggeng/codex-ipad-agent'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build and verify Windows installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+        run: |
+          $hasPfx = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX_PASSWORD)
+          if ($hasPfx -ne $hasPassword) {
+            throw 'WINDOWS_SIGN_PFX and WINDOWS_SIGN_PFX_PASSWORD must either both be configured or both be absent.'
+          }
+          $pfx = $null
+          try {
+            if ($hasPfx) {
+              $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
+              ./scripts/build-windows-installer.ps1 `
+                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -PfxPath $pfx `
+                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+            } else {
+              Write-Warning 'Windows signing secrets are absent. Publishing an unsigned installer that may trigger Microsoft Defender SmartScreen.'
+              ./scripts/build-windows-installer.ps1 `
+                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -AllowUnsignedRelease
+            }
+            $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
+            if ($hasPfx) {
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -RequireSignature
+              'Windows installer signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            } else {
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+              'Windows installer signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
+          } finally {
+            if ($pfx) {
+              Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Upload verified Windows installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mimi-remote-windows-installer
+          path: dist-windows/
+          if-no-files-found: error
+
   release:
-    needs: verify
+    needs:
+      - verify
+      - verify-windows
     if: github.repository == 'gaixianggeng/codex-ipad-agent'
     runs-on: macos-26
     timeout-minutes: 45
@@ -167,3 +236,27 @@ jobs:
         env:
           MIMI_REQUIRE_MACOS_SIGNATURE: "1"
         run: bash ./scripts/check-release-artifacts.sh
+
+  publish-windows:
+    needs:
+      - release
+      - verify-windows
+    if: github.repository == 'gaixianggeng/codex-ipad-agent'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified Windows installer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mimi-remote-windows-installer
+          path: dist-windows
+
+      - name: Upload Windows installer to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem -LiteralPath dist-windows -File
+          gh release upload $env:GITHUB_REF_NAME $files.FullName --clobber --repo $env:GITHUB_REPOSITORY

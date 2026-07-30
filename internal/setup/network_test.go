@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -150,6 +151,44 @@ func TestPrivateLANIPv4ExcludesTailscaleAndPublicAddresses(t *testing.T) {
 	}
 }
 
+func TestSelectLANIPv4CandidatePrefersPhysicalDefaultRoute(t *testing.T) {
+	candidates := []lanIPv4Candidate{
+		{
+			ip:      "172.21.96.1",
+			name:    "vethernet (default switch)",
+			score:   lanInterfaceScore("vethernet (default switch)", false),
+			virtual: true,
+		},
+		{
+			ip:      "192.168.31.140",
+			name:    "wlan",
+			score:   lanInterfaceScore("wlan", true),
+			virtual: false,
+		},
+		{
+			ip:      "172.18.32.1",
+			name:    "vethernet (wsl (hyper-v firewall))",
+			score:   lanInterfaceScore("vethernet (wsl (hyper-v firewall))", false),
+			virtual: true,
+		},
+	}
+	if got := selectLANIPv4Candidate(candidates); got != "192.168.31.140" {
+		t.Fatalf("应选择系统默认路由对应的 WLAN 地址，got=%s", got)
+	}
+}
+
+func TestSelectLANIPv4CandidateRejectsVirtualOnlyNetwork(t *testing.T) {
+	candidates := []lanIPv4Candidate{{
+		ip:      "172.21.96.1",
+		name:    "vethernet (default switch)",
+		score:   lanInterfaceScore("vethernet (default switch)", true),
+		virtual: true,
+	}}
+	if got := selectLANIPv4Candidate(candidates); got != "" {
+		t.Fatalf("只有 Hyper-V 私网时不应发布 LAN Endpoint，got=%s", got)
+	}
+}
+
 func TestSetLANAccessPreservesExistingConfigFields(t *testing.T) {
 	root := t.TempDir()
 	projectPath := filepath.Join(root, "project")
@@ -208,7 +247,55 @@ func TestSetLANAccessPreservesExistingConfigFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("配置权限必须保持私有：mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestSetLANAccessDisablingWildcardRestoresLoopback(t *testing.T) {
+	root := t.TempDir()
+	projectPath := filepath.Join(root, "project")
+	if err := os.Mkdir(projectPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config.json")
+	document := map[string]any{
+		"listen":  "0.0.0.0:8787",
+		"network": map[string]any{"allow_lan": true, "future_option": "keep"},
+		"auth":    map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		"projects": []map[string]any{{
+			"id": "demo", "name": "Demo", "path": projectPath,
+		}},
+		"future_top_level": map[string]any{"keep": true},
+	}
+	raw, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := SetLANAccess(configPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("关闭 LAN 应报告配置发生变化")
+	}
+	updatedRaw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(updatedRaw, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated["listen"] != "127.0.0.1:8787" {
+		t.Fatalf("关闭 LAN 后必须恢复 loopback，got=%v", updated["listen"])
+	}
+	network, _ := updated["network"].(map[string]any)
+	if network["allow_lan"] != false || network["future_option"] != "keep" {
+		t.Fatalf("关闭 LAN 时必须保留未知网络字段：%v", network)
 	}
 }

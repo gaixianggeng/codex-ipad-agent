@@ -79,6 +79,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
     private(set) var sentCtrlCCount = 0
+    private(set) var sentCtrlCTurnIDs: [TurnID] = []
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
     private(set) var sentUserInputResponses: [(requestID: String, answers: [String: [String]])] = []
     private(set) var disconnectCallCount = 0
@@ -123,8 +124,9 @@ final class MockWebSocketClient: SessionWebSocketClient {
         return sendGuidanceResult
     }
 
-    func sendCtrlC() -> Bool {
+    func sendCtrlC(expectedTurnID: TurnID) -> Bool {
         sentCtrlCCount += 1
+        sentCtrlCTurnIDs.append(expectedTurnID)
         return sendCtrlCResult
     }
 
@@ -288,6 +290,12 @@ struct RequestedSessionArchive: Equatable {
 struct RequestedSessionFork: Equatable {
     let threadID: String
     let workspaceID: String
+    let reason: AgentSessionForkReason
+}
+
+struct RequestedThreadName: Equatable {
+    let threadID: String
+    let name: String
 }
 
 struct RequestedThreadGoalSet: Equatable {
@@ -492,6 +500,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedSessionAfterSeqs: [EventSequence?] = []
     var requestedSessionArchives: [RequestedSessionArchive] = []
     var requestedSessionForks: [RequestedSessionFork] = []
+    var requestedThreadNames: [RequestedThreadName] = []
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
     var requestedSessionReviews: [RequestedSessionReview] = []
     var requestedMessageSessionIDs: [String] = []
@@ -1014,6 +1023,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         }
     }
 
+    func setThreadName(threadID: String, name: String) async throws {
+        requestedThreadNames.append(RequestedThreadName(threadID: threadID, name: name))
+    }
+
     func startReview(
         threadID: String,
         target: CodexAppServerReviewTarget,
@@ -1027,8 +1040,14 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         return CodexAppServerReviewStartResult(reviewThreadID: threadID, turnID: "turn-review")
     }
 
-    func forkSession(threadID: String, workspace: AgentWorkspace) async throws -> AgentSession {
-        requestedSessionForks.append(RequestedSessionFork(threadID: threadID, workspaceID: workspace.id))
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
+        requestedSessionForks.append(
+            RequestedSessionFork(threadID: threadID, workspaceID: workspace.id, reason: reason)
+        )
         switch sessionForkResults[threadID] {
         case .success(let session):
             return session

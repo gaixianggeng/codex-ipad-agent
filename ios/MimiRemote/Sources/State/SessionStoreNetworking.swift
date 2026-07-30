@@ -1,6 +1,11 @@
 import Foundation
 import Network
 
+enum AgentSessionForkReason: String, Hashable, Sendable {
+    case worktreeHandoff = "worktree_handoff"
+    case duplicate = "duplicate"
+}
+
 // API 外观、网络状态源与事件批处理从 SessionStore 生命周期实现中解耦。
 enum NetworkReachabilityStatus: Equatable, Sendable {
     case unknown
@@ -136,7 +141,11 @@ protocol SessionStoreAPIClient {
     func setThreadGoal(threadID: String, objective: String?, status: ThreadGoalStatus?, tokenBudget: Int64?) async throws -> ThreadGoal
     func clearThreadGoal(threadID: String) async throws
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse
-    func forkSession(threadID: String, workspace: AgentWorkspace) async throws -> AgentSession
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession
     func stopSession(id: String) async throws
     func setSessionArchived(id: String, archived: Bool) async throws
     func setThreadName(threadID: String, name: String) async throws
@@ -225,7 +234,11 @@ extension SessionStoreAPIClient {
         throw AgentAPIError.invalidResponse
     }
 
-    func forkSession(threadID: String, workspace: AgentWorkspace) async throws -> AgentSession {
+    func forkSession(
+        threadID: String,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
         throw AgentAPIError.invalidResponse
     }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -187,11 +188,13 @@ func TestCommandActionListFiltersByWorkspaceScope(t *testing.T) {
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	testCommand, testArgs := testEchoCommand("ok")
+	outsideCommand, outsideArgs := testEchoCommand("bad")
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
 		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
 		cfg.Actions = []config.ActionConfig{
-			{ID: "test", Name: "测试", Command: "/bin/echo", Args: []string{"ok"}, WorkingDir: "app", RequiresConfirmation: true},
-			{ID: "outside", Name: "越界", Command: "/bin/echo", Args: []string{"bad"}, WorkingDir: "../outside"},
+			{ID: "test", Name: "测试", Command: testCommand, Args: testArgs, WorkingDir: "app", RequiresConfirmation: true},
+			{ID: "outside", Name: "越界", Command: outsideCommand, Args: outsideArgs, WorkingDir: "../outside"},
 		}
 	})
 	rec := httptest.NewRecorder()
@@ -222,10 +225,11 @@ func TestCommandActionListFiltersByWorkspaceScope(t *testing.T) {
 
 func TestCommandActionRunExecutesConfiguredCommand(t *testing.T) {
 	projectDir := t.TempDir()
+	command, args := testEchoCommand("hello")
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
 		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
 		cfg.Actions = []config.ActionConfig{
-			{ID: "echo", Name: "Echo", Command: "/bin/echo", Args: []string{"hello"}, TimeoutSeconds: 2},
+			{ID: "echo", Name: "Echo", Command: command, Args: args, TimeoutSeconds: 2},
 		}
 	})
 	rec := httptest.NewRecorder()
@@ -247,10 +251,11 @@ func TestCommandActionRunExecutesConfiguredCommand(t *testing.T) {
 
 func TestCommandActionRunRequiresExplicitConfirmation(t *testing.T) {
 	projectDir := t.TempDir()
+	command, args := testEchoCommand("ship")
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
 		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
 		cfg.Actions = []config.ActionConfig{
-			{ID: "deploy", Name: "Deploy", Command: "/bin/echo", Args: []string{"ship"}, RequiresConfirmation: true},
+			{ID: "deploy", Name: "Deploy", Command: command, Args: args, RequiresConfirmation: true},
 		}
 	})
 
@@ -278,10 +283,16 @@ func TestCommandActionRunRequiresExplicitConfirmation(t *testing.T) {
 
 func TestCommandActionRunReturnsNonZeroExitWithoutHTTPFailure(t *testing.T) {
 	projectDir := t.TempDir()
+	command := "/bin/sh"
+	args := []string{"-c", "echo definitely-missing-file >&2; exit 7"}
+	if runtime.GOOS == "windows" {
+		command = "cmd.exe"
+		args = []string{"/d", "/c", "echo definitely-missing-file 1>&2 & exit /b 7"}
+	}
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
 		cfg.Projects = []config.ProjectConfig{{ID: "repo", Name: "Repo", Path: projectDir}}
 		cfg.Actions = []config.ActionConfig{
-			{ID: "missing", Name: "Missing", Command: "/bin/ls", Args: []string{"definitely-missing-file"}},
+			{ID: "missing", Name: "Missing", Command: command, Args: args},
 		}
 	})
 	rec := httptest.NewRecorder()
@@ -302,8 +313,9 @@ func TestCommandActionRunReturnsNonZeroExitWithoutHTTPFailure(t *testing.T) {
 }
 
 func TestCommandActionRunRejectsPathOutsideAllowlist(t *testing.T) {
+	command, args := testEchoCommand("unused")
 	server := newTestServerWithConfig(t, func(cfg *config.Config) {
-		cfg.Actions = []config.ActionConfig{{ID: "echo", Name: "Echo", Command: "/bin/echo"}}
+		cfg.Actions = []config.ActionConfig{{ID: "echo", Name: "Echo", Command: command, Args: args}}
 	})
 	rec := httptest.NewRecorder()
 	req := authedRequest(t, http.MethodPost, "/api/actions/run", commandActionRunRequest{Path: t.TempDir(), ID: "echo"})
@@ -315,14 +327,25 @@ func TestCommandActionRunRejectsPathOutsideAllowlist(t *testing.T) {
 	}
 }
 
+func testEchoCommand(text string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/d", "/c", "echo " + text}
+	}
+	return "/bin/echo", []string{text}
+}
+
 func TestCapabilityListDiscoversSkillsAndMCPWithoutSecrets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	binDir := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	fakeMCP := filepath.Join(binDir, "fake-mcp")
+	if runtime.GOOS == "windows" {
+		fakeMCP += ".exe"
+	}
 	if err := os.WriteFile(fakeMCP, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

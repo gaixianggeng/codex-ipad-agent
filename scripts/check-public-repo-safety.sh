@@ -95,5 +95,6 @@ if [[ "$failures" -ne 0 ]]; then
 fi
 
 bash ./scripts/check-third-party-notices.sh
+bash ./scripts/check-pr-gate.sh
 
 echo "公开仓库安全门禁通过。"

@@ -415,6 +415,7 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -425,6 +426,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var presentedSheet: AppSheetDestination?
+    @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
     @State private var didApplyDebugLaunchRoute = false
@@ -888,7 +890,8 @@ struct UnifiedWorkbenchShell: View {
             // 紧凑布局的 destination 必须复用外层绑定 path 的 NavigationStack。
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: layout.usesCompactNavigation
-            )
+            ),
+            appearanceStore: workspaceAppearanceStore
         )
     }
 
@@ -913,6 +916,14 @@ struct UnifiedWorkbenchShell: View {
             if layout.usesCompactNavigation {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if let session = sessionStore.selectedSession {
+                            SessionActionMenuContent(
+                                session: session,
+                                presentation: $sessionActionPresentation
+                            )
+                            Divider()
+                        }
+
                         Button {
                             Task { await sessionStore.refreshCurrentContext() }
                         } label: {
@@ -936,6 +947,23 @@ struct UnifiedWorkbenchShell: View {
                     .accessibilityLabel(L10n.text("ui.options"))
                 }
             } else {
+                if let session = sessionStore.selectedSession {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            SessionActionMenuContent(
+                                session: session,
+                                presentation: $sessionActionPresentation
+                            )
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(tokens.secondaryText)
+                        }
+                        .accessibilityLabel(L10n.text("ui.options"))
+                    }
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     workbenchToolbarIconButton(
                         systemImage: "arrow.clockwise",
@@ -963,6 +991,7 @@ struct UnifiedWorkbenchShell: View {
         .background(tokens.background.ignoresSafeArea())
         .toolbar(.hidden, for: .tabBar)
         .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
+        .sessionActionSheets(presentation: $sessionActionPresentation)
         .sessionInspectorPresentation(isPresented: $showingInspector, layout: layout)
     }
 

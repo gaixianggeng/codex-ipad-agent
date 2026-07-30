@@ -730,8 +730,8 @@ actor CodexAppServerSessionRuntime {
         _ = try await sendRecoveringFromStaleInitialization(
             try builder.threadSetName(threadID: threadID, name: name)
         )
-        // title 是 AgentSession 的不可变快照；等 thread/name/updated 通知后由投影层告知 UI，
-        // 下次 thread/list/read 会拉取权威名称，避免本地与 app-server 状态分叉。
+        // thread/name/updated 会实时更新 Runtime 的 Session 投影；调用方仍可在弱网或
+        // 通知丢失时通过 thread/read 拉取权威名称，不维护第二份本地标题。
     }
 
     func compactThread(threadID: SessionID) async throws {
@@ -772,12 +772,16 @@ actor CodexAppServerSessionRuntime {
         return CodexAppServerReviewStartResult(reviewThreadID: reviewThreadID, turnID: turnID)
     }
 
-    func forkSession(threadID: SessionID, workspace: AgentWorkspace) async throws -> AgentSession {
+    func forkSession(
+        threadID: SessionID,
+        workspace: AgentWorkspace,
+        reason: AgentSessionForkReason
+    ) async throws -> AgentSession {
         let baseProjects = try await projects()
         let project = AgentProject(id: workspace.id, name: workspace.name, path: workspace.path)
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
         var options = CodexAppServerTurnOptions.default
-        options.threadSource = "worktree_handoff"
+        options.threadSource = reason.rawValue
         let result = try await sendRecoveringFromStaleInitialization(
             try CodexAppServerRequestBuilder(allowlistedProjects: projects).threadFork(
                 threadID: threadID,
@@ -1911,8 +1915,26 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    func interruptActiveTurn(sessionID: SessionID) async throws {
-        guard let turnID = contextsBySessionID[sessionID]?.activeTurnID else {
+    func interruptActiveTurn(
+        sessionID: SessionID,
+        expectedTurnID: TurnID? = nil
+    ) async throws {
+        let cachedTurnID = contextsBySessionID[sessionID]?.activeTurnID
+        if let expectedTurnID,
+           let cachedTurnID,
+           cachedTurnID != expectedTurnID,
+           let session = contextsBySessionID[sessionID]?.session {
+            // Store 与 runtime 已观察到不同的 active turn 时，宁可拒绝旧控制命令，
+            // 也不能误停用户刚开始的新一轮。
+            throw CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: session,
+                activeTurnID: cachedTurnID
+            )
+        }
+        // SessionStore 是当前 Composer 的交互事实来源。列表/历史刷新可能先把 runtime
+        // 的局部缓存清空，但 Store 仍握有用户实际看到的 turn ID；把它作为安全回退，
+        // 避免控制命令尚未发出就误报 missingActiveTurn。
+        guard let turnID = cachedTurnID ?? expectedTurnID else {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: sessionID, turnID: turnID)

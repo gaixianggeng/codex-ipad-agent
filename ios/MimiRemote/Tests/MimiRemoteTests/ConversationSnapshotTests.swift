@@ -653,14 +653,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testConversationBubbleAlignment() {
         assertSnapshot(
             of: makeSeededConversation(),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
     func testDefaultDarkConversationPalette() {
         assertSnapshot(
             of: makeSeededConversation(colorScheme: .dark),
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -1302,7 +1314,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             id: "runtime-claude",
             project: project,
             title: "检查兼容性",
-            status: "completed",
+            status: "history",
             preview: "Claude Code 会话",
             runtimeProvider: "claude"
         )
@@ -1400,6 +1412,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testAppearancePreview() {
         let defaults = UserDefaults(suiteName: "ConversationSnapshotTests.Appearance.\(UUID().uuidString)")!
         let themeStore = ThemeStore(defaults: defaults)
+        let workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: defaults)
         themeStore.mode = .dark
         themeStore.preset = .gruvbox
         themeStore.uiFontPreset = .rounded
@@ -1407,9 +1420,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         themeStore.setFontScale(1.1)
 
         let view = NavigationStack {
-            AppearanceView()
+            AppearanceView(profileID: "snapshot-profile")
         }
         .environmentObject(themeStore)
+        .environmentObject(workspaceAppearanceStore)
         .environment(\.colorScheme, .dark)
         .frame(width: 560, height: 1180)
 

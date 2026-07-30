@@ -1,26 +1,13 @@
 name: iOS CI
 
 on:
-  pull_request:
-    paths:
-      - "ios/MimiRemote/**"
-      - "scripts/test-conversation-regressions.sh"
-      - "scripts/test-ios-localization-smoke.sh"
-      - "scripts/check-ios-localization.sh"
-      - "scripts/check-ios-network-security.sh"
-      - "scripts/check-ios-privacy-manifest.sh"
-      - "scripts/check-app-store-metadata.sh"
-      - "scripts/check-source-size.sh"
-      - "docs/app-store/**"
-      - "docs/privacy-policy.md"
-      - "docs/support.md"
-      - "docs/terms-of-use.md"
-      - ".github/workflows/ios-ci.yml"
+  workflow_call:
   push:
     branches:
       - main
     paths:
       - "ios/MimiRemote/**"
+      - "scripts/ios-dev.sh"
       - "scripts/test-conversation-regressions.sh"
       - "scripts/test-ios-localization-smoke.sh"
       - "scripts/check-ios-localization.sh"
@@ -33,6 +20,7 @@ on:
       - "docs/support.md"
       - "docs/terms-of-use.md"
       - ".github/workflows/ios-ci.yml"
+      - ".xcodebuildmcp/config.yaml"
   workflow_dispatch:
     inputs:
       publish_app_store:
@@ -73,6 +61,29 @@ jobs:
           go version
           xcodebuild -version
           xcrun simctl list devices available
+
+      - name: Resolve one CI simulator
+        shell: bash
+        run: |
+          simulator_id="$(
+            xcrun simctl list devices available -j | ruby -rjson -e '
+              entries = JSON.parse(STDIN.read).fetch("devices").flat_map do |runtime, devices|
+                version = runtime.scan(/\d+/).map(&:to_i)
+                devices.map do |device|
+                  next unless device["isAvailable"] && device["name"].match?(/iPad|iPhone/)
+                  family_rank = device["name"].start_with?("iPad") ? 1 : 0
+                  [version, family_rank, device["name"], device["udid"]]
+                end.compact
+              end
+              chosen = entries.max_by { |version, family_rank, name, _udid| [version, family_rank, name] }
+              print chosen.last if chosen
+            '
+          )"
+          if [[ -z "$simulator_id" ]]; then
+            echo "No available iOS Simulator on the runner." >&2
+            exit 1
+          fi
+          echo "IOS_TEST_DESTINATION=platform=iOS Simulator,id=$simulator_id" >> "$GITHUB_ENV"
 
       - name: Check network security policy
         run: bash ./scripts/check-ios-network-security.sh

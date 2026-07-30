@@ -1,5 +1,16 @@
 import Foundation
 
+enum ComposerPrimaryAction: Equatable {
+    case submit
+    case stopCurrentReply
+
+    static func resolve(canSubmitDraft: Bool, canStopCurrentReply: Bool) -> ComposerPrimaryAction {
+        // 运行中只有草稿此刻确实可提交时，发送/排队才抢占主按钮。
+        // 上传、加载或额度限制暂时阻塞提交时保留“停止”，同时不丢弃用户草稿。
+        canStopCurrentReply && !canSubmitDraft ? .stopCurrentReply : .submit
+    }
+}
+
 struct SubmittedComposerDraft {
     let text: String
     let attachments: [CodexAppServerUserInput]

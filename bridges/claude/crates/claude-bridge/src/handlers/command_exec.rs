@@ -365,13 +365,34 @@ mod tests {
         state
     }
 
+    #[cfg(windows)]
+    fn test_shell_command(script: &str) -> Vec<String> {
+        vec![
+            "powershell.exe".into(),
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script.into(),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn test_shell_command(script: &str) -> Vec<String> {
+        vec!["sh".into(), "-c".into(), script.into()]
+    }
+
     #[tokio::test]
     async fn buffered_exec_returns_stdout() {
         let state = dummy_state();
         let resp = handle_command_exec(
             &state,
             p::CommandExecParams {
-                command: vec!["sh".into(), "-c".into(), "printf hello".into()],
+                command: test_shell_command(if cfg!(windows) {
+                    "[Console]::Out.Write('hello')"
+                } else {
+                    "printf hello"
+                }),
                 ..Default::default()
             },
         )
@@ -388,7 +409,11 @@ mod tests {
         let resp = handle_command_exec(
             &state,
             p::CommandExecParams {
-                command: vec!["sh".into(), "-c".into(), "printf err >&2; exit 3".into()],
+                command: test_shell_command(if cfg!(windows) {
+                    "[Console]::Error.Write('err'); exit 3"
+                } else {
+                    "printf err >&2; exit 3"
+                }),
                 ..Default::default()
             },
         )
@@ -405,7 +430,11 @@ mod tests {
         let err = handle_command_exec(
             &state,
             p::CommandExecParams {
-                command: vec!["sh".into(), "-c".into(), "sleep 5".into()],
+                command: test_shell_command(if cfg!(windows) {
+                    "Start-Sleep -Seconds 5"
+                } else {
+                    "sleep 5"
+                }),
                 timeout_ms: Some(50),
                 ..Default::default()
             },

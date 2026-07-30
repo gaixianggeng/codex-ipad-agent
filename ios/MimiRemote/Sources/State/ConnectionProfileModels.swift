@@ -1,9 +1,9 @@
 import Foundation
 
-/// 一台已保存 Mac 的本地连接档案。
+/// 一台已保存电脑的本地连接档案。
 ///
 /// `id` 是客户端数据隔离命名空间；`installationID` 是 agentd 返回的稳定安装身份；
-/// `endpoint` 只是可变路由，不能作为跨 Mac 数据主键。
+/// `endpoint` 只是可变路由，不能作为跨电脑数据主键。
 struct ConnectionProfile: Codable, Identifiable, Equatable {
     let id: String
     var displayName: String
@@ -78,9 +78,9 @@ struct ConnectionProfileSettingsModel: Equatable {
     }
 }
 
-/// 在自己的另一台设备上复用 Mac 连接时使用的短期导入链接。
+/// 在自己的另一台设备上复用电脑连接时使用的短期导入链接。
 ///
-/// 格式沿用 Mac 端已经提供的 `mimiremote://` 协议；区别仅在于已保存档案
+/// 格式沿用宿主端已经提供的 `mimiremote://` 协议；区别仅在于已保存档案
 /// 持有长期访问码，因此使用 `connect` 路由并通过 `expires_at` 限制 App 的导入窗口。
 struct ConnectionTransferLink: Equatable {
     static let validityInterval: TimeInterval = 10 * 60
@@ -237,7 +237,7 @@ enum PreparedConnectionProfileTarget: Equatable {
     case existingProfile(id: String)
 }
 
-/// 已完成目标 Mac 验证、等待事务提交的值对象。
+/// 已完成目标电脑验证、等待事务提交的值对象。
 struct PreparedConnectionSettings: Equatable {
     let endpoint: String
     let token: String

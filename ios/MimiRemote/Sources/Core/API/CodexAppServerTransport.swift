@@ -23,7 +23,7 @@ protocol SessionWebSocketClient: AnyObject {
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
     func sendGuidance(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID) -> Bool
-    func sendCtrlC() -> Bool
+    func sendCtrlC(expectedTurnID: TurnID) -> Bool
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool
     func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool
     func acknowledgeAppliedEvent(_ event: AgentEvent)

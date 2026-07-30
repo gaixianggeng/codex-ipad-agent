@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,8 @@ const (
 	gitTestFlightRunTimeout     = 45 * time.Minute
 	gitTestFlightWhatToTestMax  = 1000
 )
+
+var errGitQuickPublishBehind = errors.New("当前分支落后于 upstream")
 
 type gitQuickPublishRequest struct {
 	Path      string `json:"path"`
@@ -107,14 +110,21 @@ func (r *Router) gitQuickPublishHandler(w http.ResponseWriter, req *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	remote, err := normalizedGitRemote(payload.Remote)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	remote := strings.TrimSpace(payload.Remote)
+	if remote != "" {
+		remote, err = normalizedGitRemote(remote)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	response, err := r.gitQuickPublish(req.Context(), realPath, message, remote)
 	if err != nil {
+		if errors.Is(err, errGitQuickPublishBehind) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -132,12 +142,31 @@ func (r *Router) gitQuickPublish(ctx context.Context, realPath string, message s
 	if !status.IsRepository {
 		return gitQuickPublishResponse{}, fmt.Errorf("当前工作区不是 Git 仓库")
 	}
+	if status.Behind > 0 {
+		// 必须在 add/commit 之前阻断，否则快捷入口会留下一个用户没有预期的本地提交，
+		// 然后才在 push 阶段发现非 fast-forward。
+		return gitQuickPublishResponse{}, fmt.Errorf(
+			"%w（落后 %d 个提交），请先显式同步远端后重试",
+			errGitQuickPublishBehind,
+			status.Behind,
+		)
+	}
 	branch, err := currentGitBranch(ctx, realPath)
 	if err != nil {
 		return gitQuickPublishResponse{}, err
 	}
-	if _, _, err := runGitReadOnly(ctx, realPath, 4*1024, "remote", "get-url", remote); err != nil {
-		return gitQuickPublishResponse{}, fmt.Errorf("Git remote 不存在或不可用：%w", err)
+
+	effectiveRemote := remote
+	usesExistingUpstream := effectiveRemote == "" && strings.TrimSpace(status.Upstream) != ""
+	if effectiveRemote == "" && !usesExistingUpstream {
+		effectiveRemote = "origin"
+	}
+	if effectiveRemote != "" {
+		if _, _, err := runGitReadOnly(ctx, realPath, 4*1024, "remote", "get-url", effectiveRemote); err != nil {
+			return gitQuickPublishResponse{}, fmt.Errorf("Git remote 不存在或不可用：%w", err)
+		}
+	} else {
+		effectiveRemote = gitRemoteNameFromUpstream(status.Upstream)
 	}
 
 	committed := len(status.Files) > 0
@@ -159,8 +188,14 @@ func (r *Router) gitQuickPublish(ctx context.Context, realPath string, message s
 		}
 	}
 
+	// 已有 upstream 时用普通 push，尊重用户的 pushRemote / upstream 配置；
+	// 只有没有 upstream（或调用方显式指定 remote）时才建立/更新跟踪关系。
+	pushArgs := []string{"push"}
+	if !usesExistingUpstream {
+		pushArgs = append(pushArgs, "-u", effectiveRemote, branch)
+	}
 	// 明确禁止 force push；快捷入口与普通 Push 使用相同的安全边界。
-	if output, _, err := runGitCommand(ctx, realPath, 32*1024, "push", "-u", remote, branch); err != nil {
+	if output, _, err := runGitCommand(ctx, realPath, 32*1024, pushArgs...); err != nil {
 		return gitQuickPublishResponse{}, err
 	} else if text := strings.TrimSpace(output); text != "" {
 		outputParts = append(outputParts, text)
@@ -171,13 +206,25 @@ func (r *Router) gitQuickPublish(ctx context.Context, realPath string, message s
 	}
 	return gitQuickPublishResponse{
 		Path:      realPath,
-		Remote:    remote,
+		Remote:    effectiveRemote,
 		Branch:    branch,
 		Message:   message,
 		Committed: committed,
 		Output:    strings.Join(outputParts, "\n\n"),
 		Status:    status,
 	}, nil
+}
+
+func gitRemoteNameFromUpstream(upstream string) string {
+	normalized := strings.TrimSpace(upstream)
+	if normalized == "" {
+		return ""
+	}
+	remote, _, found := strings.Cut(normalized, "/")
+	if !found {
+		return normalized
+	}
+	return remote
 }
 
 func (r *Router) gitTestFlightStatusHandler(w http.ResponseWriter, req *http.Request) {
@@ -340,7 +387,18 @@ func gitTestFlightExecutable(repoRoot string) (string, bool) {
 
 func executableFile(path string) bool {
 	stat, err := os.Stat(path)
-	return err == nil && stat.Mode().IsRegular() && stat.Mode().Perm()&0o111 != 0
+	if err != nil || !stat.Mode().IsRegular() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".exe", ".com", ".bat", ".cmd":
+			return true
+		default:
+			return false
+		}
+	}
+	return stat.Mode().Perm()&0o111 != 0
 }
 
 func displayTestFlightCommand(executable string, repoRoot string) string {

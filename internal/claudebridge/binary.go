@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-const BinaryName = "alleycat-claude-bridge"
-
 // ResolveBinary 优先使用显式配置；配置缺失或失效时回退到与 agentd
 // 同目录的随包 bridge。Gateway、配置校验和 Doctor 必须共用这条规则，
 // 否则完整 Mac App 安装会出现“运行时可用但诊断失败”的状态分裂。
@@ -47,7 +45,7 @@ func resolveExecutable(command string) (string, bool) {
 	}
 	if filepath.IsAbs(command) || strings.ContainsAny(command, `/\`) {
 		info, err := os.Stat(command)
-		if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		if err != nil || !isExecutableFile(command, info) {
 			return command, false
 		}
 		return command, true
