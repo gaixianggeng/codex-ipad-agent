@@ -109,11 +109,77 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "切换后立即生效，两套风格会分别保留各自的图标选择。"
+            "value" : "切换后立即生效，每套风格会分别保留各自的图标选择。"
           }
         }
       }
     },
+    "ui.workspace_icon_style_three_kingdoms" : {"comment":"Workspace icon style based on Romance of the Three Kingdoms.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Three Kingdoms"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"三国演义"}}}},
+    "ui.workspace_icon_style_water_margin" : {"comment":"Workspace icon style based on Water Margin.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Water Margin"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"水浒传"}}}},
+    "ui.workspace_icon_style_red_chamber" : {"comment":"Workspace icon style based on Dream of the Red Chamber.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Dream of the Red Chamber"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"红楼梦"}}}},
+    "ui.workspace_icon_style_greek_mythology" : {"comment":"Workspace icon style based on Greek mythology.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Greek Mythology"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"希腊神话"}}}},
+    "ui.workspace_icon_style_sherlock_holmes" : {"comment":"Workspace icon style based on the Sherlock Holmes stories.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sherlock Holmes"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"福尔摩斯"}}}},
+    "ui.workspace_icon_style_alice_wonderland" : {"comment":"Workspace icon style based on Alice's Adventures in Wonderland.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Alice in Wonderland"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"爱丽丝梦游仙境"}}}},
+    "ui.workspace_character_three_liu_bei" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Liu Bei"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"刘备"}}}},
+    "ui.workspace_character_three_guan_yu" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Guan Yu"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"关羽"}}}},
+    "ui.workspace_character_three_zhang_fei" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Zhang Fei"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"张飞"}}}},
+    "ui.workspace_character_three_zhuge_liang" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Zhuge Liang"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"诸葛亮"}}}},
+    "ui.workspace_character_three_cao_cao" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Cao Cao"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"曹操"}}}},
+    "ui.workspace_character_three_sun_quan" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sun Quan"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"孙权"}}}},
+    "ui.workspace_character_three_zhao_yun" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Zhao Yun"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"赵云"}}}},
+    "ui.workspace_character_three_lu_bu" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Lü Bu"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"吕布"}}}},
+    "ui.workspace_character_three_diaochan" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Diaochan"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"貂蝉"}}}},
+    "ui.workspace_character_three_sima_yi" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sima Yi"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"司马懿"}}}},
+    "ui.workspace_character_water_song_jiang" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Song Jiang"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"宋江"}}}},
+    "ui.workspace_character_water_lin_chong" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Lin Chong"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"林冲"}}}},
+    "ui.workspace_character_water_lu_zhishen" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Lu Zhishen"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"鲁智深"}}}},
+    "ui.workspace_character_water_wu_song" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Wu Song"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"武松"}}}},
+    "ui.workspace_character_water_li_kui" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Li Kui"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"李逵"}}}},
+    "ui.workspace_character_water_wu_yong" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Wu Yong"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"吴用"}}}},
+    "ui.workspace_character_water_lu_junyi" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Lu Junyi"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"卢俊义"}}}},
+    "ui.workspace_character_water_yan_qing" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Yan Qing"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"燕青"}}}},
+    "ui.workspace_character_water_hu_sanniang" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Hu Sanniang"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"扈三娘"}}}},
+    "ui.workspace_character_water_sun_erniang" : {"comment":"Built-in Water Margin workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sun Erniang"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"孙二娘"}}}},
+    "ui.workspace_character_red_jia_baoyu" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Jia Baoyu"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"贾宝玉"}}}},
+    "ui.workspace_character_red_lin_daiyu" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Lin Daiyu"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"林黛玉"}}}},
+    "ui.workspace_character_red_xue_baochai" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Xue Baochai"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"薛宝钗"}}}},
+    "ui.workspace_character_red_wang_xifeng" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Wang Xifeng"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"王熙凤"}}}},
+    "ui.workspace_character_red_shi_xiangyun" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Shi Xiangyun"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"史湘云"}}}},
+    "ui.workspace_character_red_miaoyu" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Miaoyu"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"妙玉"}}}},
+    "ui.workspace_character_red_jia_tanchun" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Jia Tanchun"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"贾探春"}}}},
+    "ui.workspace_character_red_qingwen" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Qingwen"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"晴雯"}}}},
+    "ui.workspace_character_red_xiangling" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Xiangling"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"香菱"}}}},
+    "ui.workspace_character_red_grandmother_jia" : {"comment":"Built-in Dream of the Red Chamber workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Grandmother Jia"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"贾母"}}}},
+    "ui.workspace_character_greek_zeus" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Zeus"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"宙斯"}}}},
+    "ui.workspace_character_greek_hera" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Hera"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"赫拉"}}}},
+    "ui.workspace_character_greek_poseidon" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Poseidon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"波塞冬"}}}},
+    "ui.workspace_character_greek_athena" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Athena"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"雅典娜"}}}},
+    "ui.workspace_character_greek_apollo" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Apollo"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"阿波罗"}}}},
+    "ui.workspace_character_greek_artemis" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Artemis"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"阿尔忒弥斯"}}}},
+    "ui.workspace_character_greek_hermes" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Hermes"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"赫尔墨斯"}}}},
+    "ui.workspace_character_greek_aphrodite" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Aphrodite"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"阿佛洛狄忒"}}}},
+    "ui.workspace_character_greek_ares" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Ares"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"阿瑞斯"}}}},
+    "ui.workspace_character_greek_hades" : {"comment":"Built-in Greek mythology workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Hades"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"哈迪斯"}}}},
+    "ui.workspace_character_sherlock_holmes" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sherlock Holmes"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"福尔摩斯"}}}},
+    "ui.workspace_character_sherlock_watson" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Dr. John Watson"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"华生医生"}}}},
+    "ui.workspace_character_sherlock_irene_adler" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Irene Adler"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"艾琳·艾德勒"}}}},
+    "ui.workspace_character_sherlock_moriarty" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Professor Moriarty"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"莫里亚蒂教授"}}}},
+    "ui.workspace_character_sherlock_mycroft" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Mycroft Holmes"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"迈克罗夫特·福尔摩斯"}}}},
+    "ui.workspace_character_sherlock_lestrade" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Inspector Lestrade"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"雷斯垂德探长"}}}},
+    "ui.workspace_character_sherlock_hudson" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Mrs. Hudson"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"哈德森太太"}}}},
+    "ui.workspace_character_sherlock_morstan" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Mary Morstan"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"玛丽·摩斯坦"}}}},
+    "ui.workspace_character_sherlock_gregson" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Inspector Gregson"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"格雷格森探长"}}}},
+    "ui.workspace_character_sherlock_moran" : {"comment":"Built-in Sherlock Holmes workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Colonel Moran"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"莫兰上校"}}}},
+    "ui.workspace_character_alice_alice" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Alice"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"爱丽丝"}}}},
+    "ui.workspace_character_alice_white_rabbit" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"White Rabbit"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"白兔先生"}}}},
+    "ui.workspace_character_alice_mad_hatter" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Mad Hatter"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"疯帽匠"}}}},
+    "ui.workspace_character_alice_cheshire_cat" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Cheshire Cat"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"柴郡猫"}}}},
+    "ui.workspace_character_alice_queen_of_hearts" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Queen of Hearts"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"红心王后"}}}},
+    "ui.workspace_character_alice_king_of_hearts" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"King of Hearts"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"红心国王"}}}},
+    "ui.workspace_character_alice_march_hare" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"March Hare"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"三月兔"}}}},
+    "ui.workspace_character_alice_dormouse" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Dormouse"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"睡鼠"}}}},
+    "ui.workspace_character_alice_caterpillar" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Caterpillar"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"毛毛虫"}}}},
+    "ui.workspace_character_alice_duchess" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Duchess"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"公爵夫人"}}}},
     "·" : {
       "comment" : "A separator between two elements.",
       "isCommentAutoGenerated" : true,
@@ -25329,6 +25395,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "轻点开始 Apple 实时语音输入"
+          }
+        }
+      }
+    },
+    "ui.tap_to_cancel_voice_input_preparation" : {
+      "comment" : "Accessibility hint for the enabled microphone button while its audio session is still preparing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to cancel voice input preparation"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点取消语音输入准备"
           }
         }
       }

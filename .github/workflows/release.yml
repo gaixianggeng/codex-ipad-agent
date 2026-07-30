@@ -111,27 +111,46 @@ jobs:
         shell: pwsh
         run: choco install innosetup --yes --no-progress
 
-      - name: Build and verify signed Windows installer
+      - name: Build and verify Windows installer
         shell: pwsh
         env:
           WINDOWS_SIGN_PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
-          if (-not $env:WINDOWS_SIGN_PFX -or -not $env:WINDOWS_SIGN_PFX_PASSWORD) {
-            throw 'WINDOWS_SIGN_PFX and WINDOWS_SIGN_PFX_PASSWORD are required for a release.'
+          $hasPfx = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX_PASSWORD)
+          if ($hasPfx -ne $hasPassword) {
+            throw 'WINDOWS_SIGN_PFX and WINDOWS_SIGN_PFX_PASSWORD must either both be configured or both be absent.'
           }
-          $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
+          $pfx = $null
           try {
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
-            ./scripts/build-windows-installer.ps1 `
-              -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
-              -OutputDirectory dist-windows `
-              -PfxPath $pfx `
-              -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+            if ($hasPfx) {
+              $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
+              ./scripts/build-windows-installer.ps1 `
+                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -PfxPath $pfx `
+                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+            } else {
+              Write-Warning 'Windows signing secrets are absent. Publishing an unsigned installer that may trigger Microsoft Defender SmartScreen.'
+              ./scripts/build-windows-installer.ps1 `
+                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -AllowUnsignedRelease
+            }
             $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
-            ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -RequireSignature
+            if ($hasPfx) {
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -RequireSignature
+              'Windows installer signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            } else {
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+              'Windows installer signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
           } finally {
-            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            if ($pfx) {
+              Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            }
           }
 
       - name: Upload verified Windows installer
