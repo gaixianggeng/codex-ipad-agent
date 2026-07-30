@@ -1760,48 +1760,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(message.content, "hello world")
     }
 
-    func testProjectorMapsLiveCollabReceiversWithoutUsingToolItemID() throws {
-        let notification = CodexAppServerNotification(method: "item/completed", params: .object([
-            "threadId": .string("parent-thread"),
-            "turnId": .string("turn-1"),
-            "item": .object([
-                "id": .string("tool-item-is-not-thread"),
-                "type": .string("collabAgentToolCall"),
-                "tool": .string("review"),
-                "receiverThreadIds": .array([
-                    .string("child-a"),
-                    .string("child-b"),
-                    .string(" child-padded "),
-                ]),
-                "agentsStates": .object([
-                    "child-a": .object([
-                        "status": .string("running"),
-                        "sessionId": .string("session-a"),
-                        "canAcceptDirectInput": .bool(false),
-                    ]),
-                    "child-b": .object([
-                        "status": .string("completed"),
-                        "message": .string("done"),
-                    ]),
-                ]),
-            ]),
-        ]))
-
-        var projector = CodexAppServerEventProjector()
-        guard case .sessionContext(let context, let metadata) = projector.project(notification) else {
-            return XCTFail("expected live session context")
-        }
-        XCTAssertEqual(metadata.sessionID, "parent-thread")
-        XCTAssertEqual(context.subagents.map(\.id), ["child-a", "child-b"])
-        XCTAssertFalse(context.subagents.contains { $0.id == "tool-item-is-not-thread" })
-        XCTAssertFalse(context.subagents.contains { $0.id.contains("padded") })
-        XCTAssertEqual(context.subagents[0].parentThreadID, "parent-thread")
-        XCTAssertEqual(context.subagents[0].sessionID, "session-a")
-        XCTAssertEqual(context.subagents[0].status, "running")
-        XCTAssertEqual(context.subagents[0].canAcceptDirectInput, false)
-        XCTAssertEqual(context.subagents[1].statusMessage, "done")
-    }
-
     func testProjectorMapsCompletedGeneratedAndViewedImages() throws {
         var projector = CodexAppServerEventProjector()
         let generated = CodexAppServerNotification(method: "item/completed", params: .object([

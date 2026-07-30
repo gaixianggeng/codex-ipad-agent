@@ -1364,7 +1364,10 @@ extension SessionStore {
     func isControlledGlobalDiscoveryUnavailable(_ error: Error) -> Bool {
         let message = error.localizedDescription.lowercased()
         return message.contains("thread/list")
-            && (message.contains("cwd") || message.contains("method") || message.contains("不允许"))
+            && (message.contains("cwd")
+                || message.contains("method")
+                || message.contains("unsupported")
+                || message.contains("not supported"))
     }
 
     func applyNetworkReachabilityStatus(_ update: NetworkPathStatusUpdate) {
