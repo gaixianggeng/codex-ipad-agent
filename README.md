@@ -40,7 +40,7 @@ Mimi Remote connects directly to your Mac through Tailscale or the same local ne
 
 Mimi Remote is an independent third-party project. It is not affiliated with, endorsed by, or a product of OpenAI, Anthropic, or Tailscale. Codex is the primary supported runtime; the optional Claude Code bridge is experimental.
 
-> There is no public App Store release yet. Build the iOS app from source; internal TestFlight builds are not a public download channel.
+> There is no public App Store release yet. Install the iOS app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source.
 
 <table>
   <tr>
@@ -186,7 +186,7 @@ Check these before you install:
 - **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed on that host. Codex must be authenticated with usable access: either ChatGPT sign-in with available Codex usage or an API key with active usage-based billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
-- **iOS installation today:** there is no public App Store package. Building and installing the app requires a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; follow the [iOS build guide](ios/MimiRemote/README.md).
+- **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
 - **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
 
 ## Install and run
@@ -195,7 +195,7 @@ Check these before you install:
 
 1. **Authenticate Codex:** install Codex CLI on the host, run `codex login`, and confirm the account or API billing has usable access.
 2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest), finish first-run setup, and confirm the service is ready.
-3. **Build and install the iOS app:** on a Mac, follow the [iOS build guide](ios/MimiRemote/README.md) to generate the Xcode project and run it on your iPhone or iPad.
+3. **Install the iOS app:** join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6). Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
 ### Windows host
@@ -275,9 +275,11 @@ https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/insta
 
 Ask `$skill-installer` to install that GitHub path. Each GitHub Release also includes `install-mimi-remote.zip` and its SHA-256 file for an auditable, versioned copy.
 
-### Build the iOS app from source
+### Install the iOS app
 
-Mimi Remote requires iOS/iPadOS 26 or later. Install XcodeGen before generating the Xcode project:
+Mimi Remote requires iOS/iPadOS 26 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path.
+
+To build the app from source instead, use a Mac with Xcode 26 or later and install XcodeGen before generating the Xcode project:
 
 ```bash
 brew install xcodegen
