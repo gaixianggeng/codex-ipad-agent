@@ -545,7 +545,7 @@ func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any
 }
 
 func sanitizedGatewayThreadListParams(params map[string]any) map[string]any {
-	return copyGatewayParams(params, "cwd", "limit", "cursor", "sortKey", "sortDirection", "archived", "useStateDbOnly")
+	return copyGatewayParams(params, "cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly")
 }
 
 func sanitizedGatewayThreadSearchParams(params map[string]any) map[string]any {
@@ -704,6 +704,26 @@ func validateGatewayThreadListParams(params map[string]any) error {
 		case "desc":
 		default:
 			return fmt.Errorf("thread/list.sortDirection 不支持：%s", text)
+		}
+	}
+	if value, ok := params["sourceKinds"]; ok && value != nil {
+		sourceKinds, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("thread/list.sourceKinds 必须是字符串数组")
+		}
+		// 全局发现只需要用户交互会话和 Codex 派发的子 Agent。拒绝 exec/unknown
+		// 等内部来源，避免把新的上游来源类型静默扩大到移动端可见范围。
+		allowed := map[string]struct{}{
+			"cli": {}, "vscode": {}, "appServer": {}, "subAgent": {},
+		}
+		for _, value := range sourceKinds {
+			sourceKind, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("thread/list.sourceKinds 必须是字符串数组")
+			}
+			if _, ok := allowed[sourceKind]; !ok {
+				return fmt.Errorf("thread/list.sourceKinds 不支持：%s", sourceKind)
+			}
 		}
 	}
 	if value, ok := params["archived"]; ok && value != nil {

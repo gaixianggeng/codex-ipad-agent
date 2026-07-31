@@ -413,6 +413,15 @@ struct CodexAppServerRequestBuilder {
             "cursor": cursor.map { .string($0) },
             "sortKey": .string("updated_at"),
             "sortDirection": .string("desc"),
+            // thread/list 省略 sourceKinds 时只返回交互式会话。显式加入 subAgent，
+            // 才能发现 Codex 从另一聊天派发、但没有 parentThreadId 的独立任务。
+            // gateway 仍会按授权项目和 Git 仓库身份逐条裁剪这些全局结果。
+            "sourceKinds": .array([
+                .string("cli"),
+                .string("vscode"),
+                .string("appServer"),
+                .string("subAgent"),
+            ]),
             "archived": .bool(false),
             "useStateDbOnly": .bool(false)
         ]))

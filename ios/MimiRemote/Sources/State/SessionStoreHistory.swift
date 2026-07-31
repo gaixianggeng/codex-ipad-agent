@@ -1428,6 +1428,19 @@ extension SessionStore {
         // thread/read 校准。读取也失败时最多保留 3 个刷新周期，不能形成永久幽灵运行态。
         result.append(contentsOf: knownRunningSessions)
 
+        let controlledGlobalSessions = sessions(forProjectID: projectID).filter { session in
+            guard controlledGlobalSessionIDs.contains(session.id),
+                  shouldRetainSessionMissingFromFreshPage(session),
+                  !knownIDs.contains(session.id) else {
+                return false
+            }
+            knownIDs.insert(session.id)
+            return true
+        }
+        // 工作区 thread/list 只查询精确 cwd，不会返回同仓外部 Worktree。只保留本 Host
+        // 已由 agentd 全局裁剪授权的 ID；下一次完整全局遍历会负责清除已消失项。
+        result.append(contentsOf: controlledGlobalSessions)
+
         guard preserveAllLoaded || isShowingAllSessions(projectID: projectID) else {
             return result
         }

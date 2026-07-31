@@ -2171,6 +2171,7 @@ extension SessionStore {
 
     func clearConnectionData() {
         controlledGlobalDiscoveryUnavailable = false
+        controlledGlobalSessionIDs = []
         stopRelatedSessionObservation()
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil

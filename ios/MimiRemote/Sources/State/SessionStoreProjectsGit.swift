@@ -1324,15 +1324,19 @@ extension SessionStore {
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
         if !controlledGlobalDiscoveryUnavailable {
             var cursor: String?
+            var discoveredSessionIDs: Set<SessionID> = []
+            var reachedTraversalEnd = false
             for pageIndex in 0..<4 {
                 guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
                 do {
                     let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
                     guard appStore.connectionGeneration == generation else { return }
+                    discoveredSessionIDs.formUnion(page.sessions.map(\.id))
                     mergeSessionPage(page.sessions)
                     guard page.hasMore,
                           let nextCursor = page.nextCursor,
                           nextCursor != cursor else {
+                        reachedTraversalEnd = !page.hasMore
                         break
                     }
                     cursor = nextCursor
@@ -1342,6 +1346,16 @@ extension SessionStore {
                     }
                     break
                 }
+            }
+            guard appStore.activeHostScope == hostScope,
+                  appStore.connectionGeneration == generation,
+                  !Task.isCancelled else { return }
+            if reachedTraversalEnd {
+                // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
+                // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
+                controlledGlobalSessionIDs = discoveredSessionIDs
+            } else {
+                controlledGlobalSessionIDs.formUnion(discoveredSessionIDs)
             }
         }
 

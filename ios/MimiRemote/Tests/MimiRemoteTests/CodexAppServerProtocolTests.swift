@@ -560,6 +560,10 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["cursor"]?.stringValue, "mimi_opaque")
         XCTAssertEqual(params["sortKey"]?.stringValue, "updated_at")
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(
+            params["sourceKinds"]?.arrayValue?.compactMap(\.stringValue),
+            ["cli", "vscode", "appServer", "subAgent"]
+        )
         XCTAssertEqual(params["archived"]?.boolValue, false)
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, false)
     }

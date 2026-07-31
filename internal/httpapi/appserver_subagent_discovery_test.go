@@ -222,13 +222,20 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 
 	if err := conn.WriteJSON(map[string]any{
 		"id": 700, "method": "thread/list",
-		"params": map[string]any{"limit": 50, "sortKey": "updated_at"},
+		"params": map[string]any{
+			"limit":       50,
+			"sortKey":     "updated_at",
+			"sourceKinds": []any{"cli", "vscode", "appServer", "subAgent"},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	firstRequest := readUpstreamFrame(t, received)
 	if bytes.Contains(firstRequest, []byte(`"cwd"`)) {
 		t.Fatalf("受控全局发现不能伪造 cwd：%s", firstRequest)
+	}
+	if !bytes.Contains(firstRequest, []byte(`"sourceKinds":["cli","vscode","appServer","subAgent"]`)) {
+		t.Fatalf("受控全局发现必须显式包含 Codex 派发的 subAgent 来源：%s", firstRequest)
 	}
 
 	firstResponse := readGatewayRaw(t, conn)

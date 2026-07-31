@@ -110,6 +110,72 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceRefreshPreservesControlledGlobalWorktreeUntilCompleteTraversalRemovesIt() async throws {
+        let project = makeProject(id: "proj_global_refresh")
+        let workspaceSession = makeSession(
+            id: "thread-workspace",
+            projectID: project.id,
+            title: "Workspace",
+            status: "history",
+            source: "codex"
+        )
+        let externalSession = AgentSession(
+            id: "thread-external-worktree",
+            projectID: project.id,
+            project: project.name,
+            dir: "/tmp/codex-worktrees/external",
+            title: "External Worktree",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-worktree",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 3),
+            canAcceptDirectInput: false
+        )
+        var globalSessions = [externalSession]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspaceSessions: [project.id: [workspaceSession]],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.reloadRecentWorkspaces()
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            Set(store.sessions(forProjectID: project.id).map(\.id)),
+            [workspaceSession.id, externalSession.id],
+            "精确 cwd 刷新不得删除已通过受控全局发现授权的外部 Worktree"
+        )
+        XCTAssertFalse(store.sessionsByID[externalSession.id]?.allowsDirectInput ?? true)
+
+        globalSessions = []
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            [workspaceSession.id],
+            "完整全局遍历确认消失后，下一次工作区刷新应清除旧外部会话"
+        )
+    }
+
     func testProtocolReadOnlySessionRejectsPromptBeforeClientCall() async {
         let project = makeProject(id: "proj_read_only")
         var child = makeSession(

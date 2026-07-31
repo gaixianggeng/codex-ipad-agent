@@ -262,6 +262,9 @@ final class SessionStore: ObservableObject {
     // 旧 agentd 不接受无 cwd thread/list 时，本 Host 生命周期只探测一次；
     // 精确工作区列表仍继续工作，形成明确能力检测与兼容回退。
     var controlledGlobalDiscoveryUnavailable = false
+    // 记录当前 Host 经 agentd 受控全局发现授权过的 Thread。精确 cwd 的工作区刷新
+    // 不会返回外部 Worktree，必须保留这些 ID；完整全局遍历确认消失后再收缩集合。
+    var controlledGlobalSessionIDs: Set<SessionID> = []
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
