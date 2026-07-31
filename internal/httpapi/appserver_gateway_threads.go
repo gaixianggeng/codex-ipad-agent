@@ -234,6 +234,17 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if pending.method == "thread/read" {
+		if err := p.validateReadOnlyThreadResponse(frame.Result, pending); err != nil {
+			p.forgetPending(frame.ID)
+			return payload, false, &appServerGatewayPolicyError{
+				id:      frame.ID,
+				message: err.Error(),
+				data: gatewayPolicyErrorData("thread_read_scope_mismatch", 0, map[string]any{
+					"threadId": pending.threadID,
+				}),
+				target: "client",
+			}
+		}
 		payload = p.enforceReadOnlyThreadResponse(payload, pending.threadID)
 	}
 	p.completePendingThreadResponse(key, pending, p.threadsFromResult(frame.Result, pending))
@@ -345,9 +356,9 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			continue
 		}
 
-		// 外部 browse-root Worktree 只有“可读发现”资格。显式 parent 子会话在旧
-		// App Server 缺 capability 时同样 fail-closed；普通项目 thread 保留旧版兼容。
-		forceReadOnly := scope.browse || (strings.TrimSpace(thread.ParentThreadID) != "" && thread.CanAcceptDirectInput == nil)
+		// 外部 browse-root Worktree 和所有显式 parent 子会话都只有“可读发现”资格。
+		// 上游即使声明 canAcceptDirectInput=true，也不能越过 Phase 1 父会话管理边界。
+		forceReadOnly := scope.browse || strings.TrimSpace(thread.ParentThreadID) != ""
 		canAccept := false
 		directInputKnown := forceReadOnly || thread.CanAcceptDirectInput != nil
 		if thread.CanAcceptDirectInput != nil && !forceReadOnly {
@@ -445,6 +456,45 @@ func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, t
 		return payload
 	}
 	return rewritten
+}
+
+func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
+	raw json.RawMessage,
+	pending appServerGatewayPendingThreadRequest,
+) error {
+	allowed, ok := p.allowedThread(pending.threadID)
+	if !ok || !allowed.readOnly {
+		return nil
+	}
+
+	// receiverThreadIds 只提供关联线索，不能证明子 Thread 自身仍位于父会话作用域。
+	// 对只读 Thread 的首次/后续读取都重新核对响应中的真实 cwd；缺失或跨作用域时
+	// fail-closed，避免先借父 cwd 获得临时授权，再读取未授权目录中的会话正文。
+	var result struct {
+		Thread appServerGatewayThreadWire `json:"thread"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("thread/read 返回的只读子会话无法完成作用域校验")
+	}
+	threadIDRaw := firstNonEmptyRaw(result.Thread.ID, result.Thread.ThreadID, result.Thread.SessionID)
+	threadID := strings.TrimSpace(threadIDRaw)
+	if threadID == "" || threadID != threadIDRaw || threadID != strings.TrimSpace(pending.threadID) {
+		return fmt.Errorf("thread/read 返回的只读子会话身份与请求不一致")
+	}
+	cwdRaw := firstNonEmptyRaw(result.Thread.CWD, result.Thread.Path)
+	cwd := strings.TrimSpace(cwdRaw)
+	if cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) || p.router == nil {
+		return fmt.Errorf("thread/read 返回的只读子会话缺少可验证的 cwd")
+	}
+	scope, ok := p.router.gatewayScopeForPath(cwd)
+	if !ok || scope.id != allowed.scopeID {
+		return fmt.Errorf("thread/read 返回的只读子会话不在授权作用域")
+	}
+	info, err := os.Stat(scope.realPath)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("thread/read 返回的只读子会话 cwd 不可用")
+	}
+	return nil
 }
 
 func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) map[string]projects.Project {

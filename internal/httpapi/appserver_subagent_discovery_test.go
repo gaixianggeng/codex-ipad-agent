@@ -131,6 +131,10 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 								"canAcceptDirectInput": true,
 							},
 							map[string]any{
+								"id": "thread-root-child", "cwd": projectDir, "name": "Root child",
+								"parentThreadId": "thread-root", "canAcceptDirectInput": true,
+							},
+							map[string]any{
 								"id": "thread-external", "cwd": externalWorktree, "name": "External",
 								"parentThreadId": "thread-root", "agentNickname": "worker-a",
 								"agentRole": "worker", "sessionId": "session-a",
@@ -264,7 +268,7 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	if err := json.Unmarshal(firstResponse, &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Result.Data) != 4 {
+	if len(response.Result.Data) != 5 {
 		t.Fatalf("仅应保留项目根与同仓库多个外部 Worktree（含 symlink），got=%s", firstResponse)
 	}
 	byID := map[string]struct {
@@ -291,6 +295,9 @@ func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t
 	}
 	if root := byID["thread-root"]; root.readOnly || root.canInput == nil || !*root.canInput {
 		t.Fatalf("项目根顶层 thread 应保留显式写能力：%+v", root)
+	}
+	if child := byID["thread-root-child"]; !child.readOnly || child.canInput == nil || *child.canInput {
+		t.Fatalf("显式 parent 子 Thread 即使声明可输入也必须保持只读：%+v", child)
 	}
 	if !strings.HasPrefix(response.Result.NextCursor, "mimi_") {
 		t.Fatalf("分页 cursor 必须是当前连接生成的 opaque token：%q", response.Result.NextCursor)
@@ -450,6 +457,51 @@ func TestReceiverReadOnlyAuthorizationCannotBeUpgradedByThreadRead(t *testing.T)
 	})
 	if !ok || !normalized.readOnly || !normalized.directInputKnown || normalized.canAcceptDirectInput {
 		t.Fatalf("thread/read 不得升级父侧 receiver 的只读授权：%+v", normalized)
+	}
+}
+
+func TestReadOnlyThreadResponseRejectsReceiverOutsideParentScope(t *testing.T) {
+	projectDir := t.TempDir()
+	outsideDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{
+		ID: "demo", Name: "Demo", Path: projectDir,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{cfg: config.Config{}, projects: registry}
+	scope, ok := router.gatewayScopeForPath(projectDir)
+	if !ok {
+		t.Fatal("测试项目必须能解析授权作用域")
+	}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      "codex",
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{
+			"child-outside": {
+				id: "child-outside", runtimeID: "codex", cwd: scope.realPath, scopeID: scope.id,
+				directInputKnown: true, canAcceptDirectInput: false, readOnly: true,
+			},
+		},
+	}
+	id := json.RawMessage("801")
+	if err := policy.rememberPendingThreadRequest(&id, appServerGatewayPendingThreadRequest{
+		method: "thread/read", threadID: "child-outside", cwd: scope.realPath, scopeID: scope.id,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"id":801,"result":{"thread":{"id":"child-outside","cwd":%q,"parentThreadId":"parent","canAcceptDirectInput":false,"turns":[{"items":[{"type":"agentMessage","text":"must-not-leak"}]}]}}}`,
+		outsideDir,
+	))
+	_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	if forward || policyErr == nil {
+		t.Fatalf("跨作用域子 Thread 正文必须被阻断：forward=%v err=%+v", forward, policyErr)
+	}
+	if policyErr.data["reason"] != "thread_read_scope_mismatch" ||
+		!strings.Contains(policyErr.message, "不在授权作用域") {
+		t.Fatalf("跨作用域错误必须可诊断且不泄露正文：%+v", policyErr)
 	}
 }
 
