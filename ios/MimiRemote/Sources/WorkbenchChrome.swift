@@ -241,22 +241,22 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
                 }
         } else {
             button
-                // 让 ButtonStyle 自己承载 touch-down 高光，避免 plain button 与 glassEffect 分层。
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
+                .buttonStyle(.plain)
+                // 把原生交互玻璃直接作用在确定的 44pt 标签上，避免系统 ButtonStyle
+                // 根据紧凑图标再次缩小或放大圆面；按压和指针反馈仍由 Liquid Glass 提供。
+                .glassEffect(.regular.interactive(), in: .circle)
         }
     }
 
     private var button: some View {
         Button(action: action) {
             WorkbenchChromeIcon(systemName: "sidebar.left")
+                .frame(
+                    width: WorkbenchChromeIconMetrics.minimumHitTarget,
+                    height: WorkbenchChromeIconMetrics.minimumHitTarget
+                )
+                .contentShape(Circle())
         }
-        // 玻璃样式按系统图标控件尺寸绘制；外层只扩充命中区域，避免 44pt label 再叠加样式内边距。
-        .frame(
-            minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
-            minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
-        )
-        .contentShape(Circle())
         .foregroundStyle(tokens.primaryText)
     }
 }
