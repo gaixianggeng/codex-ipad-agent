@@ -190,7 +190,24 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 
 该通道默认关闭并标记为实验功能。普通断线不会重新提交 `turn/start`，重连优先回放缺失事件，超出窗口时读取本机 Claude 历史；bridge 或 Mac 重启前尚未落盘的极短窗口仍可能丢失。`goal`、`archive` 和 `fork` 尚未开放，详细生命周期、权限和失败模式见 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
 
+## 开始前检查
+
+安装前先确认：
+
+- **必需：**一台运行 iOS / iPadOS 26 或更高版本的 iPhone / iPad、一台可持续运行宿主服务的受支持电脑，以及安装在宿主电脑上的 Codex CLI。Codex 必须已完成认证并有可用额度：可以使用仍有 Codex 可用量的 ChatGPT 登录，也可以使用已启用按量计费的 API Key。认证方式见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth)。
+- **网络：**设备位于同一可信局域网时可以直连，不要求安装 Tailscale；跨网络时使用同一 Tailnet，或使用用户自行管理的安全 HTTPS 入口。不要把 `agentd` 的明文 HTTP 端口直接暴露到公网。
+- **可选 Runtime：**Claude Code 是默认关闭的实验通道，不能替代 Codex。启用时需按 [Claude Code 官方安装与认证文档](https://docs.anthropic.com/en/docs/claude-code/getting-started)单独安装和认证，Codex CLI 仍然必需。
+- **当前 iOS 安装方式：**尚无公开 App Store 包。构建和安装 App 需要 Mac、带 iOS 26 SDK 的 Xcode 26 或更高版本，以及 XcodeGen；按 [iOS 构建说明](ios/MimiRemote/README.md)操作。
+- **仅开发者需要：**普通 Windows / macOS 用户从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest)安装宿主时不需要 Go 或 Rust；只有从源码开发后端或 bridge 时才需要。各平台细节见 [完整安装、升级与回滚文档](docs/install-upgrade-rollback.md)。
+
 ## 快速开始
+
+### 首次安装只需四步
+
+1. **认证 Codex：**在宿主电脑安装 Codex CLI，运行 `codex login`，并确认账号额度或 API 按量计费可用。
+2. **安装并启动宿主：**从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest)安装 Windows 或 macOS 宿主，完成首次设置并确认服务已就绪。
+3. **构建并安装 iOS App：**在 Mac 上按 [iOS 构建说明](ios/MimiRemote/README.md)生成 Xcode 工程，并运行到 iPhone 或 iPad。
+4. **扫码配对：**打开宿主的配对入口（或运行 `agentd pair --qr-only`），在 Mimi Remote 中扫描短期二维码。
 
 推荐使用平台正式安装包：Windows 使用一键 EXE 安装器（有证书时使用 Authenticode 签名；无证书时明确标记为 `unsigned-release`），macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
 
@@ -268,7 +285,7 @@ https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/insta
 
 每个 GitHub Release 也会附带 `install-mimi-remote.zip` 和对应 SHA-256 文件，便于固定版本下载与审计。
 
-### 2. 安装 iOS App
+### 安装 iOS App
 
 公开 App Store 版本尚未发布。目前可以从源码构建：
 

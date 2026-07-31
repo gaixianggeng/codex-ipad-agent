@@ -179,7 +179,24 @@ The security boundary is deliberately concentrated on the Mac:
 
 This shape keeps deployment small and auditable, but the tradeoff is explicit: the Mac must be awake and privately reachable, and `agentd` plus the selected runtime must be healthy. There is no maintainer-operated relay, cloud state sync, or APNs background execution path.
 
+## Prerequisites
+
+Check these before you install:
+
+- **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed on that host. Codex must be authenticated with usable access: either ChatGPT sign-in with available Codex usage or an API key with active usage-based billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
+- **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
+- **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
+- **iOS installation today:** there is no public App Store package. Building and installing the app requires a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; follow the [iOS build guide](ios/MimiRemote/README.md).
+- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
+
 ## Install and run
+
+### First installation in four steps
+
+1. **Authenticate Codex:** install Codex CLI on the host, run `codex login`, and confirm the account or API billing has usable access.
+2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest), finish first-run setup, and confirm the service is ready.
+3. **Build and install the iOS app:** on a Mac, follow the [iOS build guide](ios/MimiRemote/README.md) to generate the Xcode project and run it on your iPhone or iPad.
+4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
 ### Windows host
 
