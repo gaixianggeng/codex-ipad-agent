@@ -2299,6 +2299,15 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(iPhone.lineWidth, 3)
         XCTAssertEqual(iPhone.ringSpacing, 1.5)
         XCTAssertEqual(iPhone.hitSize, 44)
+
+        let floatingSidebar = CodexUsageRingMetrics(
+            isCompact: false,
+            usesCondensedVisual: true
+        )
+        XCTAssertEqual(floatingSidebar.diameter, 30)
+        XCTAssertEqual(floatingSidebar.lineWidth, 3)
+        XCTAssertEqual(floatingSidebar.ringSpacing, 1.4)
+        XCTAssertEqual(floatingSidebar.hitSize, 44)
     }
 
     func testPhotoLibraryPickerConfigurationSupportsOrderedMultipleSelection() {

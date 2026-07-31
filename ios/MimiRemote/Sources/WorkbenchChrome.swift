@@ -473,16 +473,22 @@ struct WorkbenchLayout: Equatable {
     let usesCompactNavigation: Bool
     let prefersDetailOnly: Bool
     let usesAttachedInspector: Bool
+    let usesFloatingSidebarSurface: Bool
 
     var usesSheetInspectorNavigation: Bool {
         !usesCompactNavigation && !usesAttachedInspector
     }
 
-    init(containerWidth: CGFloat, horizontalSizeClass: UserInterfaceSizeClass?) {
+    init(
+        containerWidth: CGFloat,
+        horizontalSizeClass: UserInterfaceSizeClass?,
+        isPad: Bool
+    ) {
         let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
         // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
         // 这类宽度也必须使用真正的 push 导航，否则系统不会提供返回按钮和左缘返回手势。
-        let needsCompactNavigation = horizontalSizeClass == .compact || containerWidth < 860
+        let needsCompactNavigation = horizontalSizeClass == .compact
+            || containerWidth < WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
         let isTightPadWidth = containerWidth < 980
 
         if usesCompactMetrics {
@@ -505,6 +511,197 @@ struct WorkbenchLayout: Equatable {
         usesAttachedInspector = horizontalSizeClass != .compact && containerWidth >= 1180
         usesCompactNavigation = needsCompactNavigation
         prefersDetailOnly = needsCompactNavigation
+        // 只在 iPad 的真实双栏宽度启用浮动表面。设备类型与实际容器宽度共同判定，
+        // 避免 iPhone 横屏、Stage Manager 紧凑窗口和 Mac Catalyst 被外观误伤。
+        usesFloatingSidebarSurface = isPad
+            && horizontalSizeClass == .regular
+            && containerWidth >= WorkbenchSidebarSurfaceMetrics.minimumContainerWidth
+    }
+}
+
+enum WorkbenchSidebarSurfaceMetrics {
+    static let minimumContainerWidth: CGFloat = 860
+    // 与原 NavigationSplitView 的 ideal width 保持一致，避免切换为浮层后顶部信息再次拥挤。
+    static let overlayWidth: CGFloat = 300
+    static let outerInset: CGFloat = 12
+    static let cornerRadius: CGFloat = 18
+}
+
+/// iPad 工作台的图标型操作统一使用同一套光学尺寸；系统工具栏或 ButtonStyle 负责材质与按压反馈。
+enum WorkbenchChromeIconMetrics {
+    static let symbolSize: CGFloat = 15
+    static let symbolFrame: CGFloat = 18
+    static let minimumHitTarget: CGFloat = 44
+}
+
+struct WorkbenchChromeIcon: View {
+    let systemName: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: WorkbenchChromeIconMetrics.symbolSize, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
+            .frame(
+                width: WorkbenchChromeIconMetrics.symbolFrame,
+                height: WorkbenchChromeIconMetrics.symbolFrame
+            )
+    }
+}
+
+/// 把 iPad 浮动侧栏的纯视觉层级集中在 Chrome 层，业务 Shell 只负责提供内容和路由。
+struct WorkbenchSidebarContainer<
+    Content: View,
+    FloatingHeader: View,
+    ToolbarHeader: View
+>: View {
+    let tokens: ThemeTokens
+    let usesFloatingSurface: Bool
+    private let content: Content
+    private let floatingHeader: FloatingHeader
+    private let toolbarHeader: ToolbarHeader
+
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    init(
+        tokens: ThemeTokens,
+        usesFloatingSurface: Bool,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder floatingHeader: () -> FloatingHeader,
+        @ViewBuilder toolbarHeader: () -> ToolbarHeader
+    ) {
+        self.tokens = tokens
+        self.usesFloatingSurface = usesFloatingSurface
+        self.content = content()
+        self.floatingHeader = floatingHeader()
+        self.toolbarHeader = toolbarHeader()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if usesFloatingSurface {
+            content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    floatingHeader
+                }
+                .background(floatingSurfaceBackground)
+                .clipShape(sidebarShape)
+                .overlay {
+                    // 普通对比度依靠内容表面与工作区底色表达层级，避免描边或模糊阴影制造第三层颜色。
+                    // Increased Contrast 仍保留明确边界，不能只依赖轻微色差。
+                    if colorSchemeContrast == .increased {
+                        sidebarShape.stroke(tokens.border, lineWidth: 1)
+                    }
+                }
+                .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
+                // 浮层外围保持透明，直接透出同一块工作区背景；不能再绘制独立 sidebar column 底板。
+                .toolbar(.hidden, for: .navigationBar)
+        } else {
+            content
+                .background(tokens.sidebarBackground.ignoresSafeArea())
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        toolbarHeader
+                    }
+                    // 品牌标题不是独立按钮；隐藏 iPadOS 26 自动添加的共享玻璃底板。
+                    .sharedBackgroundVisibility(.hidden)
+                }
+        }
+    }
+
+    private var sidebarShape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: WorkbenchSidebarSurfaceMetrics.cornerRadius,
+            style: .continuous
+        )
+    }
+
+    private var floatingSurfaceBackground: some View {
+        // 大型导航面与普通项目卡复用同一实色；动态玻璃只保留给局部按钮。
+        Rectangle()
+            .fill(tokens.sidebarSurfaceBackground)
+    }
+}
+
+/// 真正浮层没有 NavigationSplitView 自动提供的“显示边栏”按钮，这里用系统玻璃与 SF Symbol 补回入口。
+struct WorkbenchFloatingSidebarRevealButton: View {
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    var body: some View {
+        WorkbenchFloatingSidebarToggleButton(tokens: tokens, action: action)
+            .accessibilityLabel(L10n.text("ui.show_sidebar"))
+            .accessibilityIdentifier("sidebar.show")
+    }
+}
+
+/// 浮动表面隐藏系统侧栏导航栏后，补回同等可达的 44pt 收起入口。
+struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
+    let tokens: ThemeTokens
+    let onCollapse: () -> Void
+    private let brand: Brand
+
+    init(
+        tokens: ThemeTokens,
+        onCollapse: @escaping () -> Void,
+        @ViewBuilder brand: () -> Brand
+    ) {
+        self.tokens = tokens
+        self.onCollapse = onCollapse
+        self.brand = brand()
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            brand
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // 收起与展开共用同一个系统玻璃按钮，保证触摸、指针和按压反馈完全一致。
+            WorkbenchFloatingSidebarToggleButton(tokens: tokens, action: onCollapse)
+                .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+}
+
+/// 结构切换只保留一层系统按钮玻璃；Reduce Transparency 使用等尺寸实色回退。
+private struct WorkbenchFloatingSidebarToggleButton: View {
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    var body: some View {
+        if reduceTransparency {
+            button
+                .buttonStyle(.plain)
+                .background(tokens.elevatedSurface, in: Circle())
+                .overlay {
+                    Circle()
+                        .stroke(tokens.border, lineWidth: 1)
+                }
+        } else {
+            button
+                .buttonStyle(.plain)
+                // 把原生交互玻璃直接作用在确定的 44pt 标签上，避免系统 ButtonStyle
+                // 根据紧凑图标再次缩小或放大圆面；按压和指针反馈仍由 Liquid Glass 提供。
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            WorkbenchChromeIcon(systemName: "sidebar.left")
+                .frame(
+                    width: WorkbenchChromeIconMetrics.minimumHitTarget,
+                    height: WorkbenchChromeIconMetrics.minimumHitTarget
+                )
+                .contentShape(Circle())
+        }
+        .foregroundStyle(tokens.primaryText)
     }
 }
 

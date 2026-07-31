@@ -95,11 +95,13 @@ struct UnifiedWorkbenchShell: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var floatingSidebarVisible = true
     @State private var presentedSheet: AppSheetDestination?
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
@@ -114,7 +116,8 @@ struct UnifiedWorkbenchShell: View {
         GeometryReader { proxy in
             let layout = WorkbenchLayout(
                 containerWidth: proxy.size.width,
-                horizontalSizeClass: horizontalSizeClass
+                horizontalSizeClass: horizontalSizeClass,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad
             )
 
             Group {
@@ -122,6 +125,12 @@ struct UnifiedWorkbenchShell: View {
                     compactLayout(
                         layout: layout,
                         tokens: tokens
+                    )
+                } else if layout.usesFloatingSidebarSurface {
+                    floatingLayout(
+                        layout: layout,
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else {
                     splitLayout(
@@ -288,6 +297,67 @@ struct UnifiedWorkbenchShell: View {
         .navigationSplitViewStyle(.balanced)
     }
 
+    private func floatingLayout(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
+        ZStack(alignment: .leading) {
+            // detail 必须收到真实的缩窄宽度提案，而不能只修改 safe area。
+            // Workspace 的 GeometryReader 与横向 ScrollView 会按提案宽度重新排版；
+            // 外层 ZStack 背景仍连续铺满整窗，因此不会重新出现独立的分栏底板。
+            detail(layout: layout, tokens: tokens)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(
+                    .leading,
+                    floatingSidebarVisible
+                        ? WorkbenchSidebarSurfaceMetrics.overlayWidth
+                        : 0
+                )
+
+            if floatingSidebarVisible {
+                sidebar(
+                    tokens: tokens,
+                    layout: layout,
+                    bottomSafeAreaInset: bottomSafeAreaInset
+                )
+                .frame(width: WorkbenchSidebarSurfaceMetrics.overlayWidth)
+                .frame(maxHeight: .infinity)
+                .transition(floatingSidebarTransition)
+                .zIndex(1)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .overlay(alignment: .topLeading) {
+            if !floatingSidebarVisible {
+                WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
+                    setFloatingSidebarVisible(true)
+                }
+                .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
+                .padding(.top, 6)
+                .transition(floatingSidebarTransition)
+                .accessibilitySortPriority(10)
+            }
+        }
+    }
+
+    private var floatingSidebarTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .move(edge: .leading).combined(with: .opacity)
+    }
+
+    private func setFloatingSidebarVisible(_ isVisible: Bool) {
+        withAnimation(
+            reduceMotion
+                ? nil
+                : .spring(response: 0.34, dampingFraction: 1)
+        ) {
+            floatingSidebarVisible = isVisible
+        }
+    }
+
     private func openConnectionSettings(layout: WorkbenchLayout) {
         open(.me, layout: layout)
     }
@@ -359,54 +429,49 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         bottomSafeAreaInset: CGFloat
     ) -> some View {
-        VStack(spacing: 0) {
-            List(selection: selectionBinding(layout: layout)) {
-                Section {
-                    sidebarDestinationRow(
-                        destination: .sessions,
-                        title: L10n.text("ui.session"),
-                        icon: .sessions,
-                        tokens: tokens,
-                        layout: layout
-                    )
-                    sidebarDestinationRow(
-                        destination: .workspaces,
-                        title: L10n.text("ui.workspace"),
-                        icon: .workspaces,
-                        tokens: tokens,
-                        layout: layout
-                    )
-                }
-
-                if !sessionStore.activeSessions.isEmpty {
-                    Section(L10n.text("ui.in_progress")) {
-                        ForEach(sessionStore.activeSessions) { session in
-                            sidebarSessionLink(session)
-                        }
-                    }
-                }
-
-                Section(sessionStore.activeSessions.isEmpty ? L10n.text("ui.recently") : L10n.text("ui.recent_history")) {
-                    if sessionStore.recentHistorySessions.isEmpty {
-                        Text(sessionStore.activeSessions.isEmpty ? L10n.text("ui.no_recent_conversations_yet") : L10n.text("ui.no_history_sessions_yet"))
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.tertiaryText)
-                            .listRowBackground(Color.clear)
+        WorkbenchSidebarContainer(
+            tokens: tokens,
+            usesFloatingSurface: layout.usesFloatingSidebarSurface
+        ) {
+            sidebarContent(
+                tokens: tokens,
+                layout: layout,
+                bottomSafeAreaInset: layout.usesFloatingSidebarSurface
+                    ? 0
+                    : bottomSafeAreaInset
+            )
+        } floatingHeader: {
+            WorkbenchFloatingSidebarHeader(
+                tokens: tokens,
+                onCollapse: {
+                    if layout.usesFloatingSidebarSurface {
+                        setFloatingSidebarVisible(false)
                     } else {
-                        ForEach(sessionStore.recentHistorySessions) { session in
-                            sidebarSessionLink(session)
-                        }
+                        columnVisibility = .detailOnly
                     }
                 }
+            ) {
+                sidebarBrandHeader(
+                    tokens: tokens,
+                    layout: layout,
+                    constrainedWidth: nil,
+                    usesFloatingChrome: true
+                )
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 38)
-            // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后，
-            // 列表自身滚动，底部全局操作不会跟着短列表上浮。
-            .frame(maxHeight: .infinity)
+        } toolbarHeader: {
+            sidebarBrandHeader(tokens: tokens, layout: layout)
+        }
+        .task {
+            await sessionStore.refreshSessionLibraryIndex()
+        }
+    }
 
-            // 设置属于整个工作台而不是某个列表项，固定在侧栏底部可让顶部只保留品牌和当前内容。
+    private func sidebarContent(tokens: ThemeTokens, layout: WorkbenchLayout, bottomSafeAreaInset: CGFloat) -> some View {
+        WorkbenchSidebarContentLayout(
+            usesFloatingSurface: layout.usesFloatingSidebarSurface
+        ) {
+            sidebarList(tokens: tokens, layout: layout)
+        } footer: {
             sidebarFooter(
                 tokens: tokens,
                 layout: layout,
@@ -416,31 +481,67 @@ struct UnifiedWorkbenchShell: View {
         // NavigationSplitView 在 iPad 竖屏以 overlay 展开侧栏时不会保证内容采用整列理想高度，
         // 根容器必须主动填满列高，Footer 才能稳定锚定到底部安全区。
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(tokens.sidebarBackground.ignoresSafeArea())
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                sidebarBrandHeader(tokens: tokens, layout: layout)
+    }
+
+    private func sidebarList(tokens: ThemeTokens, layout: WorkbenchLayout) -> some View {
+        List(selection: selectionBinding(layout: layout)) {
+            Section {
+                sidebarDestinationRow(
+                    destination: .sessions,
+                    title: L10n.text("ui.session"),
+                    icon: .sessions,
+                    tokens: tokens,
+                    layout: layout
+                )
+                sidebarDestinationRow(
+                    destination: .workspaces,
+                    title: L10n.text("ui.workspace"),
+                    icon: .workspaces,
+                    tokens: tokens,
+                    layout: layout
+                )
             }
-            // iPadOS 26+ 会默认给 leading toolbar item 添加共享玻璃底板；
-            // 品牌标题不是独立按钮，隐藏底板后仍保留系统正确的 leading 对齐。
-            .sharedBackgroundVisibility(.hidden)
+
+            if !sessionStore.activeSessions.isEmpty {
+                Section(L10n.text("ui.in_progress")) {
+                    ForEach(sessionStore.activeSessions) { session in
+                        sidebarSessionLink(session, layout: layout)
+                    }
+                }
+            }
+
+            Section(sessionStore.activeSessions.isEmpty ? L10n.text("ui.recently") : L10n.text("ui.recent_history")) {
+                if sessionStore.recentHistorySessions.isEmpty {
+                    Text(sessionStore.activeSessions.isEmpty ? L10n.text("ui.no_recent_conversations_yet") : L10n.text("ui.no_history_sessions_yet"))
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(sessionStore.recentHistorySessions) { session in
+                        sidebarSessionLink(session, layout: layout)
+                    }
+                }
+            }
         }
-        .task {
-            await sessionStore.refreshSessionLibraryIndex()
-        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 38)
+        // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
+        .frame(maxHeight: .infinity)
     }
 
     private func sidebarBrandHeader(
         tokens: ThemeTokens,
-        layout: WorkbenchLayout
+        layout: WorkbenchLayout,
+        constrainedWidth: CGFloat? = 190,
+        usesFloatingChrome: Bool = false
     ) -> some View {
-        let headerWidth: CGFloat = 190
-
-        return HStack(spacing: 8) {
+        HStack(spacing: usesFloatingChrome ? 6 : 8) {
             AIUsageRingsControl(
                 codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
                 claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
                 includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                usesCondensedVisual: usesFloatingChrome,
                 onRefresh: {
                     await sessionStore.refreshCodexUsage()
                     if sessionStore.hasClaudeRuntimeChannel {
@@ -452,29 +553,37 @@ struct UnifiedWorkbenchShell: View {
 
             HostSwitcherMenu(
                 presentation: .sidebar,
+                usesCondensedSidebarMetrics: usesFloatingChrome,
                 manageConnections: {
                     open(.me, layout: layout)
                 }
             )
             .layoutPriority(1)
         }
-        .frame(width: headerWidth, alignment: .leading)
+        .frame(width: constrainedWidth, alignment: .leading)
     }
 
-    private func sidebarSessionLink(_ session: AgentSession) -> some View {
-        NavigationLink(value: AppDestination.session(session.id)) {
-            SessionIndexRow(
-                session: session,
-                foregroundActivity: sessionStore.foregroundActivity(for: session.id),
-                isSelected: navigationState.selection == .session(session.id),
-                isPinned: sessionStore.isSessionPinned(session.id),
-                isArchived: sessionStore.isSessionArchived(session.id),
-                reminder: sessionStore.sessionReminder(for: session.id),
-                isObserving: sessionStore.isSessionObserving(session),
-                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
-                isUnread: sessionStore.isHistorySessionUnread(session),
-                style: .sidebar
-            )
+    @ViewBuilder
+    private func sidebarSessionLink(_ session: AgentSession, layout: WorkbenchLayout) -> some View {
+        Group {
+            if layout.usesFloatingSidebarSurface {
+                Button {
+                    openSession(session, source: .sessions, layout: layout)
+                } label: {
+                    sidebarSessionRow(session)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    navigationState.selection == .session(session.id)
+                        ? .isSelected
+                        : []
+                )
+            } else {
+                NavigationLink(value: AppDestination.session(session.id)) {
+                    sidebarSessionRow(session)
+                }
+            }
         }
         .accessibilityValue(
             sessionStore.isHistorySessionUnread(session)
@@ -487,6 +596,21 @@ struct UnifiedWorkbenchShell: View {
         .listRowBackground(Color.clear)
     }
 
+    private func sidebarSessionRow(_ session: AgentSession) -> some View {
+        SessionIndexRow(
+            session: session,
+            foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+            isSelected: navigationState.selection == .session(session.id),
+            isPinned: sessionStore.isSessionPinned(session.id),
+            isArchived: sessionStore.isSessionArchived(session.id),
+            reminder: sessionStore.sessionReminder(for: session.id),
+            isObserving: sessionStore.isSessionObserving(session),
+            isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+            isUnread: sessionStore.isHistorySessionUnread(session),
+            style: .sidebar
+        )
+    }
+
     private func sidebarFooter(
         tokens: ThemeTokens,
         layout: WorkbenchLayout,
@@ -494,6 +618,7 @@ struct UnifiedWorkbenchShell: View {
     ) -> some View {
         WorkbenchSidebarFooter(
             tokens: tokens,
+            usesFloatingSurface: layout.usesFloatingSidebarSurface,
             bottomSafeAreaInset: bottomSafeAreaInset,
             isMeSelected: navigationState.selection == .me,
             onOpenSettings: {
@@ -581,10 +706,15 @@ struct UnifiedWorkbenchShell: View {
                     embedsNavigationStack: false
                 )
             }
-        case .session:
-            sessionDetail(layout: layout, tokens: tokens)
-        case .subagent:
-            sessionDetail(layout: layout, tokens: tokens)
+        case .session, .subagent:
+            if layout.usesFloatingSidebarSurface {
+                // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，父会话与子会话路由都显式使用原生导航栈。
+                NavigationStack {
+                    sessionDetail(layout: layout, tokens: tokens)
+                }
+            } else {
+                sessionDetail(layout: layout, tokens: tokens)
+            }
         }
     }
 
@@ -598,7 +728,8 @@ struct UnifiedWorkbenchShell: View {
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
             },
-            manageConnections: manageConnections
+            manageConnections: manageConnections,
+            placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface
         )
     }
 
@@ -666,8 +797,7 @@ struct UnifiedWorkbenchShell: View {
                             )
                         }
                     } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
+                        WorkbenchChromeIcon(systemName: "ellipsis")
                             .foregroundStyle(tokens.secondaryText)
                     }
                     .accessibilityLabel(L10n.text("ui.options"))
@@ -681,8 +811,7 @@ struct UnifiedWorkbenchShell: View {
                                 presentation: $sessionActionPresentation
                             )
                         } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 16, weight: .semibold))
+                            WorkbenchChromeIcon(systemName: "ellipsis")
                                 .foregroundStyle(tokens.secondaryText)
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
@@ -988,9 +1117,7 @@ struct UnifiedWorkbenchShell: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
+            WorkbenchChromeIcon(systemName: systemImage)
         }
         .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
         .disabled(isDisabled)
@@ -1047,233 +1174,22 @@ struct UnifiedWorkbenchShell: View {
     }
 }
 
-/// 侧栏标题旁的 AI 账号剩余用量入口。与设置页共享三环和窗口选择规则，
-/// 在窄侧栏里只缩小图形，仍保留完整的 44pt 点击区。
-private struct AIUsageRingsControl: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    let codexDisplay: CodexUsageWindowsDisplay
-    let claudeDisplay: CodexUsageWindowsDisplay
-    let includesClaude: Bool
-    let onRefresh: () async -> Void
-
-    @State private var showsDetails = false
-    @State private var isRefreshing = false
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let metrics = CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
-        let items = usageItems(tokens: tokens)
-
-        CombinedUsageRingsGraphic(
-            items: items,
-            // 三环也是稳定的品牌识别；额度未接入时保留灰色轨道，不退化成单环。
-            expectedRingCount: 3,
-            diameter: metrics.diameter,
-            lineWidth: metrics.lineWidth,
-            ringSpacing: metrics.ringSpacing
-        )
-        .frame(width: metrics.hitSize, height: metrics.hitSize)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            showsDetails.toggle()
-        }
-        .hoverEffect(.highlight)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(L10n.text("ui.token_quota"))
-        .accessibilityValue(accessibilityValue(items: items))
-        .accessibilityIdentifier("sidebar.codexUsageRings")
-        .accessibilityAction {
-            showsDetails.toggle()
-        }
-        .popover(isPresented: $showsDetails, arrowEdge: .top) {
-            usageDetails(tokens: tokens)
-                .presentationCompactAdaptation(.sheet)
-                .presentationDetents([.height(360), .medium])
-                .presentationDragIndicator(.visible)
-        }
-    }
-
-    private func usageDetails(tokens: ThemeTokens) -> some View {
-        let items = usageItems(tokens: tokens)
-
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.text("ui.token_quota"))
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(windowSummaryText)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    Task { await refreshUsage() }
-                } label: {
-                    Group {
-                        if isRefreshing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                    }
-                    .frame(width: 34, height: 34)
-                    .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tokens.secondaryText)
-                .background(tokens.surface.opacity(0.72), in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border.opacity(0.72), lineWidth: 1)
-                }
-                .disabled(isRefreshing)
-                .accessibilityLabel(L10n.format("ui.refresh_value_usage", "AI"))
-            }
-
-            VStack(spacing: 14) {
-                if items.isEmpty {
-                    Text(L10n.text("ui.after_refreshing_the_account_window_currently_returned_by"))
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        if index > 0 {
-                            Divider().overlay(tokens.border.opacity(0.72))
-                        }
-                        usageWindowRow(item: item, tokens: tokens)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                usageCreditLine(name: "Codex", display: codexDisplay)
-                if includesClaude {
-                    usageCreditLine(name: "Claude", display: claudeDisplay)
-                }
-            }
-            .foregroundStyle(tokens.secondaryText)
-        }
-        .padding(16)
-        .frame(width: horizontalSizeClass == .compact ? nil : 320)
-        .frame(maxWidth: horizontalSizeClass == .compact ? .infinity : nil, alignment: .leading)
-    }
-
-    private func usageWindowRow(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
-        let progress = item.window.remainingProgress ?? 0
-
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle()
-                    .stroke(item.tint, lineWidth: 2.5)
-                    .frame(width: 12, height: 12)
-                Text("\(item.providerName) · \(item.window.label)")
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .monospacedDigit()
-                Text(item.window.title)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-
-                Spacer(minLength: 8)
-
-                Text(item.window.remainingText)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(
-                        item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
-                    )
-                    .monospacedDigit()
-            }
-
-            ProgressView(value: progress)
-                .tint(item.tint)
-                .opacity(item.window.remainingProgress == nil ? 0.3 : 1)
-
-            Text(item.window.resetText)
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
-        )
-        .accessibilityValue(
-            L10n.format(
-                "ui.usage_window_accessibility_value",
-                item.window.remainingText,
-                item.window.resetText
-            )
-        )
-    }
-
-    private func refreshUsage() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
-        await onRefresh()
-    }
-
-    private func usageItems(tokens: ThemeTokens) -> [CombinedUsageItem] {
-        CombinedUsageItem.make(
-            codexDisplay: codexDisplay,
-            claudeDisplay: claudeDisplay,
-            includesClaude: includesClaude,
-            claudeShortTint: tokens.accent
-        )
-    }
-
-    private var windowSummaryText: String {
-        var summaries = [codexDisplay.windowSummaryText]
-        if includesClaude {
-            summaries.append(claudeDisplay.windowSummaryText)
-        }
-        return summaries.joined(separator: " · ")
-    }
-
-    private func usageCreditLine(
-        name: String,
-        display: CodexUsageWindowsDisplay
-    ) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                .font(.system(size: 12, weight: .semibold))
-            // name 与 creditText 已分别完成本地化；按原文组合，避免 Xcode 抽取裸 `%@: %@` key。
-            Text(verbatim: "\(name): \(display.creditText)")
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .lineLimit(2)
-        }
-    }
-
-    private func accessibilityValue(items: [CombinedUsageItem]) -> String {
-        guard !items.isEmpty else {
-            return L10n.text("ui.account_usage_has_not_been_obtained_yet")
-        }
-        return items
-            .map { "\($0.providerName)\($0.window.accessibilityName)\($0.window.remainingText)" }
-            .joined(separator: L10n.text("ui.list_separator"))
-    }
-}
-
 struct CodexUsageRingMetrics {
     let diameter: CGFloat
     let lineWidth: CGFloat
     let ringSpacing: CGFloat
     let hitSize: CGFloat
 
-    init(isCompact: Bool) {
-        diameter = isCompact ? 32 : 36
-        lineWidth = isCompact ? 3 : 3.2
-        ringSpacing = isCompact ? 1.5 : 1.8
+    init(isCompact: Bool, usesCondensedVisual: Bool = false) {
+        if usesCondensedVisual {
+            diameter = 30
+            lineWidth = 3
+            ringSpacing = 1.4
+        } else {
+            diameter = isCompact ? 32 : 36
+            lineWidth = isCompact ? 3 : 3.2
+            ringSpacing = isCompact ? 1.5 : 1.8
+        }
         // 图形在 iPhone 上收紧，但点击区始终保持 44pt，兼顾窄屏排版和触控可用性。
         hitSize = 44
     }

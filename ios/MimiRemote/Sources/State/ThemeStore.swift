@@ -221,6 +221,12 @@ extension ThemeTokens {
         }
     }
 
+    /// iPad 宽屏侧栏与工作区普通卡片复用同一内容表面，只保留“背景 + 内容”两层颜色。
+    /// 大表面不再引入第三种灰白色；毛玻璃继续留给按钮和输入区等局部功能浮层。
+    var sidebarSurfaceBackground: Color {
+        contentPanelBackground
+    }
+
     var sidebarHoverFill: Color {
         guard preset == .codex else {
             return elevatedSurface

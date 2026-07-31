@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import Combine
 import Security
 import SwiftUI
@@ -7,6 +8,90 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testAppleSpeechHealthMonitorOnlyArmsAfterSustainedAudibleInput() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.7), 1)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+    }
+
+    func testAppleSpeechHealthMonitorResetsAfterGapAndAfterResult() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.2))
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1.6))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.7), 1)
+
+        monitor.observeResult()
+
+        XCTAssertFalse(monitor.isAwaitingResult(generation: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 3))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 3.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 3.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 3.7), 2)
+    }
+
+    func testAppleSpeechHealthMonitorDisarmsAfterSilenceAndCanRearm() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 1.7), 1)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1.8))
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+        XCTAssertNil(monitor.observeLevel(0.05, at: 2.1))
+        XCTAssertFalse(monitor.isAwaitingResult(generation: 1))
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.45))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.7))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.9), 2)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 2))
+    }
+
+    func testAppleSpeechAudioSessionEventParsesInterruptionNotifications() {
+        let began = Notification(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue,
+                AVAudioSessionInterruptionReasonKey: UInt(1)
+            ]
+        )
+        let ended = Notification(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue
+            ]
+        )
+
+        XCTAssertEqual(
+            AppleSpeechAudioSessionEvent.interruption(from: began),
+            .interruptionBegan(reasonRawValue: 1)
+        )
+        XCTAssertEqual(
+            AppleSpeechAudioSessionEvent.interruption(from: ended),
+            .interruptionEnded
+        )
+        XCTAssertNil(
+            AppleSpeechAudioSessionEvent.interruption(
+                from: Notification(name: AVAudioSession.routeChangeNotification)
+            )
+        )
+    }
+
     func testImageAttachmentEncoderDownsamplesLargeScreenshotAndProducesJPEGDataURL() throws {
         let sourceSize = CGSize(width: 2_732, height: 2_048)
         let rendererFormat = UIGraphicsImageRendererFormat.default()
