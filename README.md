@@ -183,7 +183,7 @@ This shape keeps deployment small and auditable, but the tradeoff is explicit: t
 
 Check these before you install:
 
-- **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed on that host. Codex must be authenticated with usable access: either ChatGPT sign-in with available Codex usage or an API key with active usage-based billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
+- **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
@@ -193,7 +193,7 @@ Check these before you install:
 
 ### First installation in four steps
 
-1. **Authenticate Codex:** install Codex CLI on the host, run `codex login`, and confirm the account or API billing has usable access.
+1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
 2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest), finish first-run setup, and confirm the service is ready.
 3. **Install the iOS app:** join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6). Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
 4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
