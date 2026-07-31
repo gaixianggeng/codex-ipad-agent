@@ -232,7 +232,7 @@ final class ThemeStoreTests: XCTestCase {
 
         assertRGB(lightBackground, red: 250, green: 247, blue: 241)
         assertRGB(lightSidebarBackground, red: 250, green: 247, blue: 241)
-        assertRGB(lightSidebarSurfaceBackground, red: 255, green: 255, blue: 255)
+        assertRGB(lightSidebarSurfaceBackground, red: 252, green: 251, blue: 248)
         assertRGB(lightSelectionFill, red: 239, green: 236, blue: 237)
         assertRGB(lightSidebarHoverFill, red: 240, green: 239, blue: 237)
         assertRGB(lightInputBackground, red: 255, green: 255, blue: 255)

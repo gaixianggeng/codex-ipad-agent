@@ -77,11 +77,11 @@ struct WorkbenchLayout: Equatable {
 
 enum WorkbenchSidebarSurfaceMetrics {
     static let minimumContainerWidth: CGFloat = 860
-    static let outerInset: CGFloat = 14
-    static let cornerRadius: CGFloat = 24
-    static let borderWidth: CGFloat = 0.5
-    static let shadowRadius: CGFloat = 26
-    static let shadowYOffset: CGFloat = 8
+    static let outerInset: CGFloat = 12
+    static let cornerRadius: CGFloat = 18
+    static let shadowRadius: CGFloat = 14
+    static let shadowYOffset: CGFloat = 4
+    static let detailLeadingTransitionWidth: CGFloat = 36
 }
 
 /// 把 iPad 浮动侧栏的纯视觉层级集中在 Chrome 层，业务 Shell 只负责提供内容和路由。
@@ -122,16 +122,15 @@ struct WorkbenchSidebarContainer<
                 .background(tokens.sidebarSurfaceBackground)
                 .clipShape(sidebarShape)
                 .overlay {
-                    sidebarShape.stroke(
-                        tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.72),
-                        lineWidth: colorSchemeContrast == .increased
-                            ? 1
-                            : WorkbenchSidebarSurfaceMetrics.borderWidth
-                    )
+                    // 普通对比度依靠轻微色差与环境阴影表达导航层级，避免闭合描边把侧栏读成内容卡片。
+                    // Increased Contrast 仍保留明确边界，不能只依赖阴影。
+                    if colorSchemeContrast == .increased {
+                        sidebarShape.stroke(tokens.border, lineWidth: 1)
+                    }
                 }
                 .shadow(
                     color: tokens.resolvedScheme == .light
-                        ? Color.black.opacity(0.075)
+                        ? Color.black.opacity(0.035)
                         : Color.clear,
                     radius: WorkbenchSidebarSurfaceMetrics.shadowRadius,
                     x: 0,
@@ -161,6 +160,50 @@ struct WorkbenchSidebarContainer<
     }
 }
 
+/// 在浮动侧栏与详情列之间提供短距离的渐进羽化。
+///
+/// 过渡从侧栏的 trailing inset 内开始，并在详情列中连续衰减。这里只叠加低透明度颜色，
+/// 不创建独立 Material 平面，避免在分栏裁切边界上出现第二层矩形或直角。
+struct WorkbenchDetailLeadingTransition: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    let tokens: ThemeTokens
+
+    var body: some View {
+        LinearGradient(
+            stops: transitionStops,
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .frame(width: WorkbenchSidebarSurfaceMetrics.detailLeadingTransitionWidth)
+        .blur(radius: reduceTransparency ? 0 : 3)
+        .offset(x: -WorkbenchSidebarSurfaceMetrics.outerInset)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var transitionStops: [Gradient.Stop] {
+        let leadingOpacity = reduceTransparency ? 0.86 : 0.52
+        let middleOpacity = reduceTransparency ? 0.48 : 0.20
+
+        return [
+            .init(
+                color: tokens.sidebarSurfaceBackground.opacity(leadingOpacity),
+                location: 0
+            ),
+            .init(
+                color: tokens.sidebarSurfaceBackground.opacity(middleOpacity),
+                location: 0.38
+            ),
+            .init(
+                color: tokens.sidebarSurfaceBackground.opacity(0.05),
+                location: 0.72
+            ),
+            .init(color: .clear, location: 1)
+        ]
+    }
+}
+
 /// 浮动表面隐藏系统侧栏导航栏后，补回同等可达的 44pt 收起入口。
 struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     let tokens: ThemeTokens
@@ -178,7 +221,7 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             brand
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -190,17 +233,14 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(tokens.primaryText)
-            .background(tokens.elevatedSurface.opacity(0.74), in: Circle())
-            .overlay {
-                Circle()
-                    .stroke(tokens.border.opacity(0.72), lineWidth: 0.5)
-            }
+            // 收起是低频结构操作，保持完整触控区但移除实体圆盘，给主机状态留出呼吸感。
+            .hoverEffect(.highlight)
             .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 10)
-        .padding(.top, 6)
-        .padding(.bottom, 4)
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 }
 

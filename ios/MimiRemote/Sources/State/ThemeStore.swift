@@ -229,7 +229,12 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            return .white
+            // 与右侧纯白内容卡拉开极轻微明度/色温差，让侧栏保持导航 surface 语义。
+            return Color(
+                red: 252.0 / 255.0,
+                green: 251.0 / 255.0,
+                blue: 248.0 / 255.0
+            )
         case .dark:
             return Color(
                 red: 33.0 / 255.0,
