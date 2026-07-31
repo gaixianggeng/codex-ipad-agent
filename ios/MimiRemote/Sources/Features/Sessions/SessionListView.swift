@@ -118,18 +118,20 @@ struct SessionPinnedBadge: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let side: CGFloat = compact ? 17 : 20
+        // 色块只承担置顶强调，不应比同一列表中的运行时图标更抢眼。
+        let side: CGFloat = compact ? 14 : 17
+        let cornerRadius: CGFloat = compact ? 4 : 5
 
         Image(systemName: "pin.fill")
-            .font(themeStore.uiFont(size: compact ? 8 : 10, weight: .bold))
+            .font(themeStore.uiFont(size: compact ? 7 : 8, weight: .bold))
             .foregroundStyle(tokens.primaryActionForeground)
             .frame(width: side, height: side)
             .background(
                 tokens.primaryAction,
-                in: RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(tokens.primaryActionForeground.opacity(0.18), lineWidth: 0.5)
             }
             .accessibilityElement(children: .ignore)
