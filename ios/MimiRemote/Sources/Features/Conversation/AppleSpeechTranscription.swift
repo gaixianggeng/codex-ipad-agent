@@ -39,14 +39,13 @@ struct AppleSpeechHealthMonitor: Equatable {
     private var nextGeneration = 0
 
     mutating func observeLevel(_ level: CGFloat, at uptime: TimeInterval) -> Int? {
-        guard awaitingResultGeneration == nil else {
-            return nil
-        }
         guard level >= Self.audibleThreshold else {
             if let lastAudibleAt,
                uptime - lastAudibleAt > Self.maximumAudibleGap {
+                // 已经停止连续发音时解除本代等待，避免短暂噪声或一句话后的静音误触发超时。
                 audibleSequenceStartedAt = nil
                 self.lastAudibleAt = nil
+                awaitingResultGeneration = nil
             }
             return nil
         }
@@ -55,10 +54,15 @@ struct AppleSpeechHealthMonitor: Equatable {
            uptime - lastAudibleAt <= Self.maximumAudibleGap {
             // 当前声音仍属于同一段连续发音。
         } else {
+            // 音频采样本身出现较长间隔时，也视为上一段发音已经结束。
             audibleSequenceStartedAt = uptime
+            awaitingResultGeneration = nil
         }
         lastAudibleAt = uptime
 
+        guard awaitingResultGeneration == nil else {
+            return nil
+        }
         guard let audibleSequenceStartedAt,
               uptime - audibleSequenceStartedAt >= Self.sustainedAudioDuration else {
             return nil

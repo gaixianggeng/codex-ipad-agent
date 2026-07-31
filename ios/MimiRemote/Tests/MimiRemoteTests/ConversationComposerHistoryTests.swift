@@ -39,6 +39,27 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(monitor.observeLevel(0.8, at: 3.7), 2)
     }
 
+    func testAppleSpeechHealthMonitorDisarmsAfterSilenceAndCanRearm() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 1.7), 1)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1.8))
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+        XCTAssertNil(monitor.observeLevel(0.05, at: 2.1))
+        XCTAssertFalse(monitor.isAwaitingResult(generation: 1))
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.45))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.7))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.9), 2)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 2))
+    }
+
     func testAppleSpeechAudioSessionEventParsesInterruptionNotifications() {
         let began = Notification(
             name: AVAudioSession.interruptionNotification,
