@@ -77,6 +77,8 @@ struct WorkbenchLayout: Equatable {
 
 enum WorkbenchSidebarSurfaceMetrics {
     static let minimumContainerWidth: CGFloat = 860
+    // 与原 NavigationSplitView 的 ideal width 保持一致，避免切换为浮层后顶部信息再次拥挤。
+    static let overlayWidth: CGFloat = 300
     static let outerInset: CGFloat = 12
     static let cornerRadius: CGFloat = 18
     static let shadowRadius: CGFloat = 14
@@ -96,6 +98,7 @@ struct WorkbenchSidebarContainer<
     private let toolbarHeader: ToolbarHeader
 
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     init(
         tokens: ThemeTokens,
@@ -118,7 +121,7 @@ struct WorkbenchSidebarContainer<
                 .safeAreaInset(edge: .top, spacing: 0) {
                     floatingHeader
                 }
-                .background(tokens.sidebarSurfaceBackground)
+                .background(floatingSurfaceBackground)
                 .clipShape(sidebarShape)
                 .overlay {
                     // 普通对比度依靠轻微色差与环境阴影表达导航层级，避免闭合描边把侧栏读成内容卡片。
@@ -136,7 +139,7 @@ struct WorkbenchSidebarContainer<
                     y: WorkbenchSidebarSurfaceMetrics.shadowYOffset
                 )
                 .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
-                .background(tokens.background.ignoresSafeArea())
+                // 浮层外围保持透明，直接透出同一块工作区背景；不能再绘制独立 sidebar column 底板。
                 .toolbar(.hidden, for: .navigationBar)
         } else {
             content
@@ -156,6 +159,64 @@ struct WorkbenchSidebarContainer<
             cornerRadius: WorkbenchSidebarSurfaceMetrics.cornerRadius,
             style: .continuous
         )
+    }
+
+    @ViewBuilder
+    private var floatingSurfaceBackground: some View {
+        if reduceTransparency || colorSchemeContrast == .increased {
+            tokens.sidebarSurfaceBackground
+        } else {
+            // 大型导航表面直接交给系统 Material 取样并模糊下方工作区；
+            // 额外叠实色会削弱透景感，并重新形成一块独立的“底栏”。
+            Rectangle()
+                .fill(.regularMaterial)
+        }
+    }
+}
+
+/// 真正浮层没有 NavigationSplitView 自动提供的“显示边栏”按钮，这里用系统玻璃与 SF Symbol 补回入口。
+struct WorkbenchFloatingSidebarRevealButton: View {
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                revealButton
+                    .background(tokens.elevatedSurface, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(tokens.border, lineWidth: 1)
+                    }
+            } else {
+                revealButton
+                    .glassEffect(.clear.interactive(), in: .circle)
+                    .overlay {
+                        if colorSchemeContrast == .increased {
+                            Circle()
+                                .stroke(tokens.border, lineWidth: 1)
+                        }
+                    }
+            }
+        }
+        .accessibilityLabel(L10n.text("ui.show_sidebar"))
+        .accessibilityIdentifier("sidebar.show")
+    }
+
+    private var revealButton: some View {
+        Button(action: action) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.primaryText)
+        .hoverEffect(.highlight)
     }
 }
 

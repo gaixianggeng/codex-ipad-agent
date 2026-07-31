@@ -23725,6 +23725,23 @@
         }
       }
     },
+    "ui.show_sidebar" : {
+      "comment" : "Accessibility label for the control that reveals the floating conversation sidebar.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Sidebar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示边栏"
+          }
+        }
+      }
+    },
     "ui.show_only_observed_current_limiting_windows" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

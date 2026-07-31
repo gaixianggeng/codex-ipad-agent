@@ -139,9 +139,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             labels: ["显示边栏", "Show Sidebar"],
             timeout: 8
         ) else {
-            XCTFail("收起侧栏后应保留系统显示边栏入口")
+            XCTFail("收起浮动侧栏后应保留原生显示边栏入口")
             return
         }
+        assertMinimumTouchTarget(showSidebar, named: "浮动侧栏显示按钮")
         showSidebar.tap()
         guard firstExistingButton(
             labels: ["收起会话列表", "Collapse conversation list"],

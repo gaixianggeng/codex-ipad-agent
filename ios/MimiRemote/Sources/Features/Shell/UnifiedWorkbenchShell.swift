@@ -474,11 +474,13 @@ struct UnifiedWorkbenchShell: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var floatingSidebarVisible = true
     @State private var presentedSheet: AppSheetDestination?
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
@@ -500,6 +502,12 @@ struct UnifiedWorkbenchShell: View {
                     compactLayout(
                         layout: layout,
                         tokens: tokens
+                    )
+                } else if layout.usesFloatingSidebarSurface {
+                    floatingLayout(
+                        layout: layout,
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else {
                     splitLayout(
@@ -664,6 +672,60 @@ struct UnifiedWorkbenchShell: View {
         .navigationSplitViewStyle(.balanced)
     }
 
+    private func floatingLayout(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
+        ZStack(alignment: .leading) {
+            // detail 始终只有一个实例并连续铺满背景，浮层直接覆盖在内容上方。
+            // 不保留透明占位，否则工作区仍会恰好从侧栏边缘开始，视觉上继续形成一条“分栏边界”。
+            detail(layout: layout, tokens: tokens)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if floatingSidebarVisible {
+                sidebar(
+                    tokens: tokens,
+                    layout: layout,
+                    bottomSafeAreaInset: bottomSafeAreaInset
+                )
+                .frame(width: WorkbenchSidebarSurfaceMetrics.overlayWidth)
+                .frame(maxHeight: .infinity)
+                .transition(floatingSidebarTransition)
+                .zIndex(1)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .overlay(alignment: .topLeading) {
+            if !floatingSidebarVisible {
+                WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
+                    setFloatingSidebarVisible(true)
+                }
+                .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
+                .padding(.top, 6)
+                .transition(floatingSidebarTransition)
+                .accessibilitySortPriority(10)
+            }
+        }
+    }
+
+    private var floatingSidebarTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .move(edge: .leading).combined(with: .opacity)
+    }
+
+    private func setFloatingSidebarVisible(_ isVisible: Bool) {
+        withAnimation(
+            reduceMotion
+                ? nil
+                : .spring(response: 0.34, dampingFraction: 1)
+        ) {
+            floatingSidebarVisible = isVisible
+        }
+    }
+
     private func openConnectionSettings(layout: WorkbenchLayout) {
         open(.me, layout: layout)
     }
@@ -745,7 +807,13 @@ struct UnifiedWorkbenchShell: View {
         } floatingHeader: {
             WorkbenchFloatingSidebarHeader(
                 tokens: tokens,
-                onCollapse: { columnVisibility = .detailOnly }
+                onCollapse: {
+                    if layout.usesFloatingSidebarSurface {
+                        setFloatingSidebarVisible(false)
+                    } else {
+                        columnVisibility = .detailOnly
+                    }
+                }
             ) {
                 sidebarBrandHeader(
                     tokens: tokens,
@@ -801,7 +869,7 @@ struct UnifiedWorkbenchShell: View {
             if !sessionStore.activeSessions.isEmpty {
                 Section(L10n.text("ui.in_progress")) {
                     ForEach(sessionStore.activeSessions) { session in
-                        sidebarSessionLink(session)
+                        sidebarSessionLink(session, layout: layout)
                     }
                 }
             }
@@ -814,7 +882,7 @@ struct UnifiedWorkbenchShell: View {
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(sessionStore.recentHistorySessions) { session in
-                        sidebarSessionLink(session)
+                        sidebarSessionLink(session, layout: layout)
                     }
                 }
             }
@@ -859,20 +927,27 @@ struct UnifiedWorkbenchShell: View {
         .frame(width: constrainedWidth, alignment: .leading)
     }
 
-    private func sidebarSessionLink(_ session: AgentSession) -> some View {
-        NavigationLink(value: AppDestination.session(session.id)) {
-            SessionIndexRow(
-                session: session,
-                foregroundActivity: sessionStore.foregroundActivity(for: session.id),
-                isSelected: navigationState.selection == .session(session.id),
-                isPinned: sessionStore.isSessionPinned(session.id),
-                isArchived: sessionStore.isSessionArchived(session.id),
-                reminder: sessionStore.sessionReminder(for: session.id),
-                isObserving: sessionStore.isSessionObserving(session),
-                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
-                isUnread: sessionStore.isHistorySessionUnread(session),
-                style: .sidebar
-            )
+    @ViewBuilder
+    private func sidebarSessionLink(_ session: AgentSession, layout: WorkbenchLayout) -> some View {
+        Group {
+            if layout.usesFloatingSidebarSurface {
+                Button {
+                    openSession(session, source: .sessions, layout: layout)
+                } label: {
+                    sidebarSessionRow(session)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    navigationState.selection == .session(session.id)
+                        ? .isSelected
+                        : []
+                )
+            } else {
+                NavigationLink(value: AppDestination.session(session.id)) {
+                    sidebarSessionRow(session)
+                }
+            }
         }
         .accessibilityValue(
             sessionStore.isHistorySessionUnread(session)
@@ -883,6 +958,21 @@ struct UnifiedWorkbenchShell: View {
         .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
+    }
+
+    private func sidebarSessionRow(_ session: AgentSession) -> some View {
+        SessionIndexRow(
+            session: session,
+            foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+            isSelected: navigationState.selection == .session(session.id),
+            isPinned: sessionStore.isSessionPinned(session.id),
+            isArchived: sessionStore.isSessionArchived(session.id),
+            reminder: sessionStore.sessionReminder(for: session.id),
+            isObserving: sessionStore.isSessionObserving(session),
+            isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+            isUnread: sessionStore.isHistorySessionUnread(session),
+            style: .sidebar
+        )
     }
 
     private func sidebarFooter(
@@ -964,7 +1054,14 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
         case .session:
-            sessionDetail(layout: layout, tokens: tokens)
+            if layout.usesFloatingSidebarSurface {
+                // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，显式使用原生 NavigationStack。
+                NavigationStack {
+                    sessionDetail(layout: layout, tokens: tokens)
+                }
+            } else {
+                sessionDetail(layout: layout, tokens: tokens)
+            }
         }
     }
 
