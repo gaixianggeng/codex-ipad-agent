@@ -20,6 +20,7 @@ struct PairingView: View {
                 PairingUnavailableState(
                     title: "暂时无法生成二维码",
                     description: error,
+                    isRetrying: isRefreshing,
                     retry: { refreshPairing() }
                 )
             } else {
@@ -185,8 +186,10 @@ private struct PairingNetworkPicker: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 300)
+            .frame(maxWidth: 300, minHeight: 44)
+            .contentShape(Rectangle())
             .disabled(isRefreshing)
+            .accessibilityHint("选择用于生成配对二维码的连接网络")
 
             Label(hint, systemImage: hintSymbol)
                 .font(.caption)
@@ -217,30 +220,35 @@ private struct PairingNetworkPicker: View {
     }
 }
 
-private struct PairingExpiryStatus: View {
+struct PairingExpiryStatus: View {
     let rawValue: String
 
     var body: some View {
-        if let expiryDate {
+        if let expiryDate = Self.expiryDate(from: rawValue) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 statusLabel(at: context.date, expiryDate: expiryDate)
             }
         } else {
-            Label(fallbackText, systemImage: "lock.shield")
+            Label(Self.fallbackText(for: rawValue), systemImage: "lock.shield")
                 .pairingStatusCapsule(foregroundColor: .secondary)
+                .accessibilityLabel("配对二维码有效期")
+                .accessibilityValue(Self.fallbackText(for: rawValue))
         }
     }
 
     private func statusLabel(at now: Date, expiryDate: Date) -> some View {
         let expired = expiryDate <= now
+        let text = statusText(at: now, expiryDate: expiryDate)
         return Label(
-            statusText(at: now, expiryDate: expiryDate),
+            text,
             systemImage: expired ? "exclamationmark.lock" : "clock.badge.checkmark"
         )
         .pairingStatusCapsule(foregroundColor: expired ? .orange : .secondary)
+        .accessibilityLabel("配对二维码有效期")
+        .accessibilityValue(text)
     }
 
-    private var expiryDate: Date? {
+    static func expiryDate(from rawValue: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: rawValue) {
@@ -250,28 +258,28 @@ private struct PairingExpiryStatus: View {
         return formatter.date(from: rawValue)
     }
 
-    private var fallbackText: String {
+    static func fallbackText(for rawValue: String) -> String {
         if rawValue.contains("后") || rawValue.contains("有效") || rawValue.contains("失效") {
-            return "\(rawValue) · 一次性连接码"
+            return rawValue
         }
-        return "有效至 \(rawValue) · 一次性连接码"
+        return "有效至 \(rawValue)"
     }
 
-    private func statusText(at now: Date, expiryDate: Date) -> String {
+    func statusText(at now: Date, expiryDate: Date) -> String {
         let remaining = expiryDate.timeIntervalSince(now)
         if remaining <= 0 {
-            return "二维码已失效 · 一次性连接码"
+            return "二维码已失效"
         }
         if remaining < 60 {
-            return "\(max(1, Int(ceil(remaining)))) 秒后失效 · 一次性连接码"
+            return "\(max(1, Int(ceil(remaining)))) 秒后失效"
         }
         if remaining < 60 * 60 {
-            return "\(Int(ceil(remaining / 60))) 分钟后失效 · 一次性连接码"
+            return "\(Int(ceil(remaining / 60))) 分钟后失效"
         }
         if Calendar.current.isDate(expiryDate, inSameDayAs: now) {
-            return "有效至 \(expiryDate.formatted(date: .omitted, time: .shortened)) · 一次性连接码"
+            return "有效至 \(expiryDate.formatted(date: .omitted, time: .shortened))"
         }
-        return "有效至 \(expiryDate.formatted(date: .abbreviated, time: .shortened)) · 一次性连接码"
+        return "有效至 \(expiryDate.formatted(date: .abbreviated, time: .shortened))"
     }
 }
 
@@ -325,10 +333,12 @@ private struct PairingActionBar: View {
                         didCopy ? "已复制" : "复制配对链接",
                         systemImage: didCopy ? "checkmark" : "doc.on.doc"
                     )
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.glass)
                 .accessibilityLabel(didCopy ? "配对链接已复制" : "复制配对链接")
+                .accessibilityHint("将当前十分钟有效的配对链接复制到剪贴板")
 
                 Button(action: refresh) {
                     HStack(spacing: 7) {
@@ -340,10 +350,14 @@ private struct PairingActionBar: View {
                         }
                         Text(isRefreshing ? "正在刷新" : "刷新二维码")
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.glassProminent)
                 .disabled(isRefreshing)
+                .accessibilityLabel(isRefreshing ? "正在刷新二维码" : "刷新二维码")
+                .accessibilityHint("生成一张新的十分钟配对二维码")
+                .accessibilityValue(isRefreshing ? "进行中" : "就绪")
             }
         }
         .controlSize(.large)
@@ -377,6 +391,7 @@ private struct PairingLoadingState: View {
 private struct PairingUnavailableState: View {
     let title: String
     let description: String
+    let isRetrying: Bool
     let retry: () -> Void
 
     var body: some View {
@@ -397,9 +412,25 @@ private struct PairingUnavailableState: View {
                     .frame(maxWidth: 340)
             }
 
-            Button("重新生成", systemImage: "arrow.clockwise", action: retry)
-                .buttonStyle(.glassProminent)
-                .controlSize(.large)
+            Button(action: retry) {
+                HStack(spacing: 7) {
+                    if isRetrying {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    Text(isRetrying ? "正在重新生成" : "重新生成")
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(isRetrying)
+            .accessibilityLabel(isRetrying ? "正在重新生成二维码" : "重新生成二维码")
+            .accessibilityHint("重试生成一张新的十分钟配对二维码")
+            .accessibilityValue(isRetrying ? "进行中" : "可重试")
         }
         .padding(40)
     }

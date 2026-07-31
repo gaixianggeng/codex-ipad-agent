@@ -1250,7 +1250,7 @@ struct InitialConnectionSettingsSections: View {
             token = appStore.token
             isAddingConnectionProfile = false
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
-            // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描一次性配对码。
+            // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
             Task { @MainActor in
                 defer { isSavingConnection = false }
                 _ = await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45)

@@ -1340,8 +1340,8 @@ extension SessionStore {
     }
 
     func reloadRecentWorkspaces() {
-        setRecentWorkspacesIfChanged(
-            recentWorkspaceStore.load(
+        applyRecentWorkspaceReconciliation(
+            recentWorkspaceStore.loadReconciled(
                 profileID: appStore.notificationRoutingProfileID,
                 legacyEndpoint: appStore.endpoint,
                 profiles: appStore.connectionProfiles
@@ -1353,13 +1353,159 @@ extension SessionStore {
         reloadSessionReminders()
     }
 
+    /// 最近工作区合并后，所有仍在内存中的 workspace ID 引用必须在同一个 MainActor
+    /// 事务里一起迁移。否则卡片虽然去重，当前选择、已加载会话或头像仍会留在旧 ID。
+    func applyRecentWorkspaceReconciliation(
+        _ reconciliation: RecentWorkspaceReconciliation
+    ) {
+        let replacements = reconciliation.replacedWorkspaceIDs
+        let previousSessionWorkspaceIDs = sessionWorkspaceIDs.map {
+            remappedWorkspaceIDs($0, replacements: replacements)
+        }
+        let previousSelectedProjectID = selectedProjectID.map {
+            replacements[$0] ?? $0
+        }
+        let migratedExpandedProjectIDs = remappedWorkspaceIDs(
+            expandedProjectIDs,
+            replacements: replacements
+        )
+        let migratedShowingAllProjectIDs = remappedWorkspaceIDs(
+            showingAllSessionProjectIDs,
+            replacements: replacements
+        )
+        let migratedVisibleLimits = remappedWorkspaceValues(
+            sessionVisibleLimitByProjectID,
+            replacements: replacements
+        )
+
+        for (oldID, newID) in replacements.sorted(by: { $0.key < $1.key }) {
+            let chainedOldIDs = workspaceIdentityReplacementByOldID.compactMap {
+                existingOldID,
+                existingNewID in
+                existingNewID == oldID ? existingOldID : nil
+            }
+            for chainedOldID in chainedOldIDs {
+                workspaceIdentityReplacementByOldID[chainedOldID] = newID
+            }
+            workspaceIdentityReplacementByOldID[oldID] = newID
+            workspaceAppearanceStore.migrateProjectIdentity(
+                profileID: appStore.notificationRoutingProfileID,
+                from: oldID,
+                to: newID
+            )
+        }
+
+        setRecentWorkspacesIfChanged(reconciliation.workspaces)
+        guard !replacements.isEmpty else {
+            return
+        }
+
+        setSelectedProjectID(previousSelectedProjectID)
+        setExpandedProjectIDs(migratedExpandedProjectIDs)
+        setShowingAllSessionProjectIDs(migratedShowingAllProjectIDs)
+        sessionVisibleLimitByProjectID = migratedVisibleLimits.filter {
+            migratedShowingAllProjectIDs.contains($0.key)
+        }
+        setSessionWorkspaceIDs(previousSessionWorkspaceIDs)
+
+        unavailableWorkspaceIDs = remappedWorkspaceIDs(
+            unavailableWorkspaceIDs,
+            replacements: replacements
+        )
+        sessionPageCursorByProjectID = remappedWorkspaceValues(
+            sessionPageCursorByProjectID,
+            replacements: replacements
+        )
+        sessionHasMoreByProjectID = remappedWorkspaceValues(
+            sessionHasMoreByProjectID,
+            replacements: replacements
+        )
+        sessionProjectsWithAdditionalPages = remappedWorkspaceIDs(
+            sessionProjectsWithAdditionalPages,
+            replacements: replacements
+        )
+
+        // 旧 identity 下正在进行的列表请求不能改名后继续回写；取消并丢弃即可，
+        // 随后的显式 open/refresh 会针对保留 ID 建立新请求。
+        for oldID in replacements.keys {
+            sessionPageRequestTokenByProjectID.removeValue(forKey: oldID)
+            sessionPageLoadingTokenByProjectID.removeValue(forKey: oldID)
+            sessionListReconciliationTasksByProjectID.removeValue(forKey: oldID)?.cancel()
+        }
+        let obsoleteFirstPageRequestKeys = sessionListFirstPageInFlightByKey.keys.filter {
+            replacements[$0.workspaceID] != nil
+        }
+        for key in obsoleteFirstPageRequestKeys {
+            sessionListFirstPageInFlightByKey[key]?.task.cancel()
+            sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+        }
+        sessionListFirstPageCacheByKey = sessionListFirstPageCacheByKey.filter {
+            replacements[$0.key.workspaceID] == nil
+        }
+
+        let workspacesByID = Dictionary(
+            uniqueKeysWithValues: reconciliation.workspaces.map { ($0.id, $0) }
+        )
+        let migratedSessions = sessions.map { item in
+            guard let newID = replacements[item.projectID],
+                  let workspace = workspacesByID[newID] else {
+                return item
+            }
+            return session(item, in: workspace)
+        }
+        if migratedSessions != sessions {
+            sessions = migratedSessions
+        }
+
+        let migratedRemoteSessions = remoteSessionSearchResults.map { item in
+            guard let newID = replacements[item.projectID],
+                  let workspace = workspacesByID[newID] else {
+                return item
+            }
+            return session(item, in: workspace)
+        }
+        if migratedRemoteSessions != remoteSessionSearchResults {
+            remoteSessionSearchResults = migratedRemoteSessions
+        }
+
+        externalActivityBySessionID = externalActivityBySessionID.mapValues { activity in
+            guard let newID = replacements[activity.projectID] else {
+                return activity
+            }
+            return ExternalSessionActivity(
+                threadID: activity.threadID,
+                projectID: newID,
+                source: activity.source,
+                state: activity.state,
+                turnID: activity.turnID,
+                revision: activity.revision,
+                lastActivityAt: activity.lastActivityAt
+            )
+        }
+        missingRunningSessionStateByID = missingRunningSessionStateByID.mapValues { state in
+            MissingRunningSessionState(
+                projectID: replacements[state.projectID] ?? state.projectID,
+                consecutiveRefreshMisses: state.consecutiveRefreshMisses
+            )
+        }
+    }
+
+    func retainedWorkspaceID(for workspaceID: String) -> String {
+        workspaceIdentityReplacementByOldID[workspaceID] ?? workspaceID
+    }
+
     func reloadSessionListPreferences() {
         let preferences = sessionListPreferenceStore.load(
             profileID: appStore.notificationRoutingProfileID,
             legacyEndpoint: appStore.endpoint,
             profiles: appStore.connectionProfiles
         )
-        let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(preferences.sessionWorkspaceIDs)
+        // 冷启动升级时 recent workspace 会先完成去重，筛选偏好随后才读取。
+        // 在校验有效 ID 前先迁移，否则旧 ID 会被误判为已删除并静默丢失。
+        let migratedSessionWorkspaceIDs = preferences.sessionWorkspaceIDs.map { workspaceIDs in
+            Set(workspaceIDs.map(retainedWorkspaceID))
+        }
+        let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(migratedSessionWorkspaceIDs)
         guard pinnedSessionIDs != preferences.pinnedSessionIDs
             || archivedSessionIDs != preferences.archivedSessionIDs
             || sessionWorkspaceIDs != loadedSessionWorkspaceIDs
@@ -1525,6 +1671,11 @@ extension SessionStore {
         guard let value else {
             return nil
         }
+        // SessionStore 初始化时 recent workspaces 尚未加载；此时不能把持久化筛选当作
+        // 无效 ID 清空。等工作区索引就绪后再做交集和“全选 = nil”归一化。
+        guard !validProjectIDs.isEmpty else {
+            return value.isEmpty ? nil : value
+        }
         let selectedIDs = value.intersection(validProjectIDs)
         // 全选和默认显示全部是同一个语义，归一成 nil，避免 UI 出现多余的“恢复全部显示”按钮。
         return selectedIDs == validProjectIDs ? nil : selectedIDs
@@ -1629,12 +1780,28 @@ extension SessionStore {
         saveSessionReminders()
     }
 
-    func rememberWorkspace(_ workspace: AgentWorkspace) {
-        let next = recentWorkspaceStore.upsert(
+    @discardableResult
+    func rememberWorkspace(
+        _ workspace: AgentWorkspace,
+        equivalentPaths: [String] = [],
+        prefersIncomingIdentity: Bool = true
+    ) -> AgentWorkspace {
+        let reconciliation = recentWorkspaceStore.upsertReconciled(
             workspace,
-            profileID: appStore.notificationRoutingProfileID
+            profileID: appStore.notificationRoutingProfileID,
+            equivalentPaths: equivalentPaths,
+            prefersIncomingIdentity: prefersIncomingIdentity
         )
-        setRecentWorkspacesIfChanged(next)
+        applyRecentWorkspaceReconciliation(reconciliation)
+
+        let matchingPaths = Set(
+            ([workspace.path] + equivalentPaths)
+                .map(WorkspacePathIdentity.normalizedPath)
+        )
+        return reconciliation.workspaces.first {
+            $0.id == workspace.id
+                || matchingPaths.contains(WorkspacePathIdentity.normalizedPath($0.path))
+        } ?? workspace
     }
 
     func upsertManagedWorktree(_ item: WorktreeListItem) {
@@ -1701,8 +1868,7 @@ extension SessionStore {
             return workspace
         }
         let workspace = AgentWorkspace(project: project)
-        rememberWorkspace(workspace)
-        return workspacesByID[workspace.id] ?? workspace
+        return rememberWorkspace(workspace, prefersIncomingIdentity: false)
     }
 
     func ensureWorkspaceForKnownProjectID(_ projectID: String) -> AgentWorkspace? {
@@ -2037,6 +2203,7 @@ extension SessionStore {
         )
         setProjectsIfChanged([])
         setRecentWorkspacesIfChanged([])
+        workspaceIdentityReplacementByOldID = [:]
         setSidebarProjectsIfChanged([])
         sessionWorkspaceIDs = nil
         pinnedSessionIDs = []
@@ -2596,4 +2763,25 @@ extension SessionStore {
             foregroundActivityBySessionID.removeValue(forKey: sessionID)
         }
     }
+}
+
+private func remappedWorkspaceIDs(
+    _ ids: Set<String>,
+    replacements: [String: String]
+) -> Set<String> {
+    Set(ids.map { replacements[$0] ?? $0 })
+}
+
+/// 目标 ID 已有状态时保留目标值；只有目标为空才承接旧 ID 的值。
+private func remappedWorkspaceValues<Value>(
+    _ values: [String: Value],
+    replacements: [String: String]
+) -> [String: Value] {
+    var remapped = values.filter { replacements[$0.key] == nil }
+    for (oldID, newID) in replacements.sorted(by: { $0.key < $1.key }) {
+        if remapped[newID] == nil, let value = values[oldID] {
+            remapped[newID] = value
+        }
+    }
+    return remapped
 }

@@ -629,6 +629,13 @@ struct WorkspaceRootView: View {
            projects.contains(where: { $0.id == selectedWorkspaceID }) {
             return
         }
+        if let selectedWorkspaceID {
+            let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
+            if projects.contains(where: { $0.id == retainedID }) {
+                self.selectedWorkspaceID = retainedID
+                return
+            }
+        }
         selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
         } ?? projects.first?.id

@@ -11,7 +11,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -83,6 +85,77 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	}
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)
+	}
+}
+
+func TestPairingURLRefreshCreatesDistinctTicketsAndKeepsPriorValidUntilOwnExpiry(t *testing.T) {
+	secret := "0123456789abcdef0123456789abcdef"
+	endpoint := "https://mac.example.test"
+	firstIssuedAt := time.Date(2026, 7, 31, 8, 0, 0, 100, time.UTC)
+	refreshedIssuedAt := firstIssuedAt.Add(30 * time.Second)
+	first := pairingTicketFromURL(
+		t,
+		pairingURL(endpoint, secret, firstIssuedAt, firstIssuedAt.Add(defaultPairingURLTTL)),
+	)
+	refreshed := pairingTicketFromURL(
+		t,
+		pairingURL(endpoint, secret, refreshedIssuedAt, refreshedIssuedAt.Add(defaultPairingURLTTL)),
+	)
+
+	if first.Signature == refreshed.Signature {
+		t.Fatal("主动刷新必须生成不同的配对票据")
+	}
+	firstExpiry, err := time.Parse(time.RFC3339Nano, first.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstIssue, err := time.Parse(time.RFC3339Nano, first.IssuedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstExpiry.Sub(firstIssue) != defaultPairingURLTTL {
+		t.Fatalf("配对票据必须保持 10 分钟有效期：%s", firstExpiry.Sub(firstIssue))
+	}
+
+	// 刷新当前没有主动撤销表；旧票据保持既有语义，到自己的 expires_at 前仍可重复使用。
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := auth.ValidatePairingTicket(secret, first, refreshedIssuedAt); err != nil {
+			t.Fatalf("刷新后旧票据第 %d 次校验应继续成功：%v", attempt, err)
+		}
+	}
+	if err := auth.ValidatePairingTicket(secret, refreshed, refreshedIssuedAt); err != nil {
+		t.Fatalf("刷新生成的新票据应成功：%v", err)
+	}
+	if err := auth.ValidatePairingTicket(secret, first, firstExpiry); err == nil {
+		t.Fatal("旧票据到自己的到期瞬间必须失效")
+	}
+	if err := auth.ValidatePairingTicket(secret, refreshed, firstExpiry); err != nil {
+		t.Fatalf("旧票据到期不应提前撤销新票据：%v", err)
+	}
+	refreshedExpiry, err := time.Parse(time.RFC3339Nano, refreshed.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.ValidatePairingTicket(secret, refreshed, refreshedExpiry); err == nil {
+		t.Fatal("新票据到自己的到期瞬间必须失效")
+	}
+}
+
+func pairingTicketFromURL(t *testing.T, rawURL string) auth.PairingTicket {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	if query.Get("token") != "" {
+		t.Fatal("短期配对链接不能携带长期 Token")
+	}
+	return auth.PairingTicket{
+		Endpoint:  query.Get("endpoint"),
+		IssuedAt:  query.Get("issued_at"),
+		ExpiresAt: query.Get("expires_at"),
+		Signature: query.Get("pair_sig"),
 	}
 }
 
