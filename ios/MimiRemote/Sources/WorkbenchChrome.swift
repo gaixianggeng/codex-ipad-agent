@@ -81,8 +81,6 @@ enum WorkbenchSidebarSurfaceMetrics {
     static let overlayWidth: CGFloat = 300
     static let outerInset: CGFloat = 12
     static let cornerRadius: CGFloat = 18
-    static let shadowRadius: CGFloat = 14
-    static let shadowYOffset: CGFloat = 4
 }
 
 /// 把 iPad 浮动侧栏的纯视觉层级集中在 Chrome 层，业务 Shell 只负责提供内容和路由。
@@ -98,7 +96,6 @@ struct WorkbenchSidebarContainer<
     private let toolbarHeader: ToolbarHeader
 
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     init(
         tokens: ThemeTokens,
@@ -124,20 +121,12 @@ struct WorkbenchSidebarContainer<
                 .background(floatingSurfaceBackground)
                 .clipShape(sidebarShape)
                 .overlay {
-                    // 普通对比度依靠轻微色差与环境阴影表达导航层级，避免闭合描边把侧栏读成内容卡片。
-                    // Increased Contrast 仍保留明确边界，不能只依赖阴影。
+                    // 普通对比度依靠内容表面与工作区底色表达层级，避免描边或模糊阴影制造第三层颜色。
+                    // Increased Contrast 仍保留明确边界，不能只依赖轻微色差。
                     if colorSchemeContrast == .increased {
                         sidebarShape.stroke(tokens.border, lineWidth: 1)
                     }
                 }
-                .shadow(
-                    color: tokens.resolvedScheme == .light
-                        ? Color.black.opacity(0.035)
-                        : Color.clear,
-                    radius: WorkbenchSidebarSurfaceMetrics.shadowRadius,
-                    x: 0,
-                    y: WorkbenchSidebarSurfaceMetrics.shadowYOffset
-                )
                 .padding(WorkbenchSidebarSurfaceMetrics.outerInset)
                 // 浮层外围保持透明，直接透出同一块工作区背景；不能再绘制独立 sidebar column 底板。
                 .toolbar(.hidden, for: .navigationBar)
@@ -161,16 +150,10 @@ struct WorkbenchSidebarContainer<
         )
     }
 
-    @ViewBuilder
     private var floatingSurfaceBackground: some View {
-        if reduceTransparency || colorSchemeContrast == .increased {
-            tokens.sidebarSurfaceBackground
-        } else {
-            // 大型导航表面直接交给系统 Material 取样并模糊下方工作区；
-            // 额外叠实色会削弱透景感，并重新形成一块独立的“底栏”。
-            Rectangle()
-                .fill(.regularMaterial)
-        }
+        // 大型导航面与普通项目卡复用同一实色；动态玻璃只保留给局部按钮。
+        Rectangle()
+            .fill(tokens.sidebarSurfaceBackground)
     }
 }
 

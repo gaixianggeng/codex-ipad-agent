@@ -232,7 +232,7 @@ final class ThemeStoreTests: XCTestCase {
 
         assertRGB(lightBackground, red: 250, green: 247, blue: 241)
         assertRGB(lightSidebarBackground, red: 250, green: 247, blue: 241)
-        assertRGB(lightSidebarSurfaceBackground, red: 252, green: 251, blue: 248)
+        assertRGB(lightSidebarSurfaceBackground, red: 255, green: 255, blue: 255)
         assertRGB(lightSelectionFill, red: 239, green: 236, blue: 237)
         assertRGB(lightSidebarHoverFill, red: 240, green: 239, blue: 237)
         assertRGB(lightInputBackground, red: 255, green: 255, blue: 255)
@@ -272,7 +272,7 @@ final class ThemeStoreTests: XCTestCase {
         assertRGB(darkSurface, red: 31, green: 29, blue: 30)
         assertRGB(darkElevatedSurface, red: 42, green: 39, blue: 41)
         assertRGB(darkSidebarBackground, red: 23, green: 21, blue: 22)
-        assertRGB(darkSidebarSurfaceBackground, red: 33, green: 31, blue: 28)
+        assertRGB(darkSidebarSurfaceBackground, red: 42, green: 39, blue: 41)
         assertRGB(darkSidebarHoverFill, red: 42, green: 39, blue: 41)
         assertRGB(darkInputBackground, red: 35, green: 33, blue: 36)
         assertRGB(darkPlanCardBackground, red: 35, green: 33, blue: 36)
@@ -298,6 +298,14 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(darkUserBubble.green, darkElevatedSurface.green, accuracy: 0.001)
         XCTAssertEqual(darkUserBubble.blue, darkElevatedSurface.blue, accuracy: 0.001)
         XCTAssertGreaterThan(darkUserBubble.alpha, 0.99)
+
+        // 浮动侧栏与普通工作区卡必须共用同一内容表面，避免出现第三种灰白/暖黑。
+        XCTAssertEqual(lightSidebarSurfaceBackground.red, lightSurface.red, accuracy: 0.001)
+        XCTAssertEqual(lightSidebarSurfaceBackground.green, lightSurface.green, accuracy: 0.001)
+        XCTAssertEqual(lightSidebarSurfaceBackground.blue, lightSurface.blue, accuracy: 0.001)
+        XCTAssertEqual(darkSidebarSurfaceBackground.red, darkContentPanelBackground.red, accuracy: 0.001)
+        XCTAssertEqual(darkSidebarSurfaceBackground.green, darkContentPanelBackground.green, accuracy: 0.001)
+        XCTAssertEqual(darkSidebarSurfaceBackground.blue, darkContentPanelBackground.blue, accuracy: 0.001)
     }
 
     func testXcodePresetKeepsEditorInspiredContrastAndAccents() {
