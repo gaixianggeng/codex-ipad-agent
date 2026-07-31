@@ -1997,9 +1997,12 @@ extension SessionStore {
         previews.reserveCapacity(grouped.count)
         hiddenCounts.reserveCapacity(grouped.count)
         for (projectID, projectSessions) in grouped {
-            let visibleSessions = Self.lifecycleVisibleSessions(
-                projectSessions,
-                limit: Self.sessionPreviewLimit
+            let visibleSessions = sessionsIncludingDerivedReadOnlySupplements(
+                base: Self.lifecycleVisibleSessions(
+                    projectSessions,
+                    limit: Self.sessionPreviewLimit
+                ),
+                candidates: projectSessions
             )
             let hiddenCount = max(0, projectSessions.count - visibleSessions.count)
             hiddenCounts[projectID] = hiddenCount
@@ -2031,7 +2034,10 @@ extension SessionStore {
 
         let allSessions = baseSessions
         let visibleLimit = sessionVisibleLimit(forProjectID: projectID)
-        let visibleSessions = Self.lifecycleVisibleSessions(allSessions, limit: visibleLimit)
+        let visibleSessions = sessionsIncludingDerivedReadOnlySupplements(
+            base: Self.lifecycleVisibleSessions(allSessions, limit: visibleLimit),
+            candidates: allSessions
+        )
         let isShowingAll = visibleLimit > Self.sessionPreviewLimit
 
         return ProjectSessionListSnapshot(
@@ -2063,6 +2069,36 @@ extension SessionStore {
         }
         let historyLimit = max(0, normalizedLimit - active.count)
         return active + Array(sessions.lazy.filter { !$0.isRunning }.prefix(historyLimit))
+    }
+
+    /// 项目预览和根侧栏共用同一个有界补充规则。完整保留原窗口及其顺序，再追加最多
+    /// 3 条派生只读历史；项目窗口特意把运行会话放在最前，不能用全量时间排序破坏它。
+    /// candidates 已使用稳定 recencyAt 排序，因此补充行不会读取 Agent 持续推进的
+    /// updatedAt 让 MIM-57 的列表再次跳动。
+    func sessionsIncludingDerivedReadOnlySupplements(
+        base: [AgentSession],
+        candidates: [AgentSession]
+    ) -> [AgentSession] {
+        var visibleByID: [SessionID: AgentSession] = [:]
+        visibleByID.reserveCapacity(base.count + Self.derivedReadOnlyHistorySupplementLimit)
+        for session in base {
+            visibleByID[session.id] = session
+        }
+
+        let supplements = candidates.lazy
+            .filter {
+                !$0.isRunning
+                    && !$0.isLocalDraft
+                    && self.isControlledGlobalDerivedReadOnlySession($0)
+            }
+            .prefix(Self.derivedReadOnlyHistorySupplementLimit)
+        var result = base
+        result.reserveCapacity(base.count + Self.derivedReadOnlyHistorySupplementLimit)
+        for session in supplements where visibleByID[session.id] == nil {
+            visibleByID[session.id] = session
+            result.append(session)
+        }
+        return result
     }
 
     func rebuildProjectSessionListSnapshot(forProjectID projectID: String) {
@@ -2267,6 +2303,27 @@ extension SessionStore {
 
     func isListableSession(_ session: AgentSession) -> Bool {
         !archivedSessionIDs.contains(session.id) || session.id == selectedSessionID || session.isRunning
+    }
+
+    /// 只用于根侧栏的有界展示优先级，不参与授权、父子关系或输入权限判断。
+    /// `<codex_delegation>` 是 Codex Desktop 独立派生 Thread 的兼容提示；必须同时满足
+    /// agentd 受控全局授权、Codex runtime 与协议只读，不能单凭用户可伪造的 preview 提权。
+    func isControlledGlobalDerivedReadOnlySession(_ session: AgentSession) -> Bool {
+        guard controlledGlobalSessionIDs.contains(session.id),
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex",
+              !session.allowsDirectInput else {
+            return false
+        }
+
+        if let parentThreadID = session.parentThreadID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !parentThreadID.isEmpty {
+            return true
+        }
+
+        let preview = session.preview?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return preview.hasPrefix("<codex_delegation>")
     }
 
     func projectMatchesSearch(_ project: AgentProject) -> Bool {

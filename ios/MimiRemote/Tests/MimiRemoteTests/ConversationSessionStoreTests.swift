@@ -80,6 +80,262 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.sessions.allSatisfy { !$0.allowsDirectInput })
     }
 
+    func testControlledGlobalDerivedReadOnlySessionsReceiveBoundedStableRecentHistoryVisibility() async {
+        let project = makeProject(id: "proj_derived_visibility")
+        var newestStructuralChild = makeSession(
+            id: "derived-newest",
+            projectID: project.id,
+            title: "Newest structural child",
+            status: "history",
+            source: "codex",
+            recencyAt: Date(timeIntervalSince1970: 300)
+        )
+        newestStructuralChild.parentThreadID = "parent-thread"
+        newestStructuralChild.canAcceptDirectInput = false
+
+        var secondDelegation = makeSession(
+            id: "derived-second",
+            projectID: project.id,
+            title: "Second delegation",
+            status: "history",
+            source: "codex",
+            preview: "\n  <codex_delegation>\nSecond",
+            recencyAt: Date(timeIntervalSince1970: 299)
+        )
+        secondDelegation.canAcceptDirectInput = false
+
+        let ordinaryHistory = (0..<11).map { index in
+            makeSession(
+                id: "ordinary-\(index)",
+                projectID: project.id,
+                title: "Ordinary \(index)",
+                status: "history",
+                source: "codex",
+                recencyAt: Date(timeIntervalSince1970: TimeInterval(298 - index))
+            )
+        }
+
+        var targetDelegation = makeSession(
+            id: "019fb5fd-b2e1-77b0-9427-79723979c7ef",
+            projectID: project.id,
+            title: "完善 MIM-56 工具活动语义",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nMIM-56",
+            recencyAt: Date(timeIntervalSince1970: 287)
+        )
+        targetDelegation.canAcceptDirectInput = false
+
+        var fourthDelegation = makeSession(
+            id: "derived-fourth",
+            projectID: project.id,
+            title: "Older delegation",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nOlder",
+            recencyAt: Date(timeIntervalSince1970: 286)
+        )
+        fourthDelegation.canAcceptDirectInput = false
+
+        var globalSessions = [
+            newestStructuralChild,
+            secondDelegation
+        ] + ordinaryHistory + [
+            targetDelegation,
+            fourthDelegation
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        let initialVisibleIDs = store.recentHistorySessions.map(\.id)
+        XCTAssertEqual(initialVisibleIDs.count, 9, "普通前 8 与重复的派生前 3 去重后应保持有界")
+        XCTAssertEqual(Set(initialVisibleIDs).count, initialVisibleIDs.count)
+        XCTAssertTrue(initialVisibleIDs.contains(targetDelegation.id), "全局第 14、派生第 3 的 MIM-56 应进入默认侧栏")
+        XCTAssertFalse(initialVisibleIDs.contains(fourthDelegation.id), "派生补充集不得突破 3 条上限")
+        XCTAssertTrue(
+            store.visibleSessions(forProjectID: project.id).contains { $0.id == targetDelegation.id },
+            "展开当前目录时也应在普通预览之外看到派生第 3 条"
+        )
+        XCTAssertTrue(
+            store.sessionListSnapshot(forProjectID: project.id).visibleSessions.contains {
+                $0.id == targetDelegation.id
+            }
+        )
+        XCTAssertFalse(
+            store.visibleSessions(forProjectID: project.id).contains { $0.id == fourthDelegation.id }
+        )
+
+        store.setSessionVisibleLimit(
+            SessionStore.sessionPreviewLimit + SessionStore.sessionExpansionStep,
+            forProjectID: project.id
+        )
+        XCTAssertTrue(
+            store.visibleSessions(forProjectID: project.id).contains { $0.id == targetDelegation.id },
+            "显示更多后派生补充行不能从当前目录消失"
+        )
+
+        // Agent 输出只会推进 updatedAt；recencyAt 不变时，可见 ID 与顺序都不能抖动。
+        for index in globalSessions.indices {
+            globalSessions[index].updatedAt = Date(timeIntervalSince1970: TimeInterval(10_000 + index))
+        }
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertEqual(store.recentHistorySessions.map(\.id), initialVisibleIDs)
+
+        let restartedClient = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let restartedStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { restartedClient }
+        )
+        await restartedStore.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertEqual(
+            restartedStore.recentHistorySessions.map(\.id),
+            initialVisibleIDs,
+            "重启后应由同一受控全局数据恢复，不依赖内存置顶时间"
+        )
+
+        store.sessionSearchQuery = "MIM-56"
+        store.remoteSessionSearchResults = [targetDelegation]
+        store.remoteSessionSearchSnippetByID[targetDelegation.id] = "MIM-56"
+        globalSessions.removeAll {
+            $0.id == targetDelegation.id || $0.id == newestStructuralChild.id
+        }
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertNil(store.sessionsByID[newestStructuralChild.id])
+        XCTAssertNil(store.sessionsByID[targetDelegation.id])
+        XCTAssertFalse(store.remoteSessionSearchResults.contains { $0.id == targetDelegation.id })
+        XCTAssertNil(store.remoteSessionSearchSnippetByID[targetDelegation.id])
+        XCTAssertFalse(store.sessionLibrarySessions.contains { $0.id == newestStructuralChild.id })
+        XCTAssertFalse(store.sessionLibrarySessions.contains { $0.id == targetDelegation.id })
+        XCTAssertFalse(
+            store.recentHistorySessions.contains { $0.id == newestStructuralChild.id },
+            "即使旧会话原本位于普通最近 8 条，授权撤销后也必须立即删除"
+        )
+        XCTAssertFalse(
+            store.recentHistorySessions.contains { $0.id == targetDelegation.id },
+            "完整全局遍历确认消失后，旧 Session 不得靠补充状态残留"
+        )
+    }
+
+    func testDerivedRecentHistorySupplementFailsClosedForWritableArchivedAndNonCodexSessions() async {
+        let project = makeProject(id: "proj_derived_boundaries")
+        let ordinaryHistory = (0..<8).map { index in
+            makeSession(
+                id: "recent-\(index)",
+                projectID: project.id,
+                title: "Recent \(index)",
+                status: "history",
+                source: "codex",
+                recencyAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+
+        var structuralChild = makeSession(
+            id: "structural-child",
+            projectID: project.id,
+            title: "Structural child",
+            status: "history",
+            source: "codex",
+            recencyAt: Date(timeIntervalSince1970: 20)
+        )
+        structuralChild.parentThreadID = "parent-thread"
+        structuralChild.canAcceptDirectInput = false
+
+        var envelopeChild = makeSession(
+            id: "envelope-child",
+            projectID: project.id,
+            title: "Envelope child",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nRead-only",
+            recencyAt: Date(timeIntervalSince1970: 19)
+        )
+        envelopeChild.canAcceptDirectInput = false
+
+        let writableEnvelope = makeSession(
+            id: "writable-envelope",
+            projectID: project.id,
+            title: "User text",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nUser-controlled text",
+            recencyAt: Date(timeIntervalSince1970: 18)
+        )
+        var claudeEnvelope = makeSession(
+            id: "claude-envelope",
+            projectID: project.id,
+            title: "Claude",
+            status: "history",
+            source: "claude",
+            preview: "<codex_delegation>\nNot Codex",
+            recencyAt: Date(timeIntervalSince1970: 17)
+        )
+        claudeEnvelope.canAcceptDirectInput = false
+        var runningChild = makeSession(
+            id: "running-child",
+            projectID: project.id,
+            title: "Running child",
+            status: "running",
+            source: "codex",
+            preview: "<codex_delegation>\nRunning",
+            recencyAt: Date(timeIntervalSince1970: 16)
+        )
+        runningChild.canAcceptDirectInput = false
+
+        let globalSessions = ordinaryHistory + [
+            structuralChild,
+            envelopeChild,
+            writableEnvelope,
+            claudeEnvelope,
+            runningChild
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == structuralChild.id })
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == envelopeChild.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == writableEnvelope.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == claudeEnvelope.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == runningChild.id })
+        XCTAssertTrue(store.activeSessions.contains { $0.id == runningChild.id })
+
+        store.toggleSessionArchived(envelopeChild)
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == envelopeChild.id })
+    }
+
     func testSessionLibraryFallsBackAfterControlledGlobalCapabilityRejection() async {
         let project = makeProject(id: "proj_fallback")
         let client = MockSessionStoreClient(

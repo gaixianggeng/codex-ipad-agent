@@ -1303,7 +1303,7 @@ extension SessionStore {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
             }
         }
-        // 全局“最近历史”最终只展示 8 条，但“进行中”不能沿用这个数量限制。
+        // 全局“最近历史”以 8 条为基础，并有界补入派生只读会话；“进行中”不能沿用数量限制。
         // 每个工作区读取标准 20 条轻量索引，不加载消息正文，在可见性和弱网成本间取 MVP 平衡。
         let workspaces = recentWorkspaces.filter { workspace in
             if authoritative {
@@ -1323,6 +1323,7 @@ extension SessionStore {
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
         if !controlledGlobalDiscoveryUnavailable {
+            let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
             var cursor: String?
             var discoveredSessionIDs: Set<SessionID> = []
             var reachedTraversalEnd = false
@@ -1331,7 +1332,14 @@ extension SessionStore {
                 do {
                     let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
                     guard appStore.connectionGeneration == generation else { return }
-                    discoveredSessionIDs.formUnion(page.sessions.map(\.id))
+                    let pageSessionIDs = Set(page.sessions.map(\.id))
+                    discoveredSessionIDs.formUnion(pageSessionIDs)
+                    // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
+                    // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
+                    let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
+                    if expandedControlledIDs != controlledGlobalSessionIDs {
+                        controlledGlobalSessionIDs = expandedControlledIDs
+                    }
                     mergeSessionPage(page.sessions)
                     guard page.hasMore,
                           let nextCursor = page.nextCursor,
@@ -1353,9 +1361,34 @@ extension SessionStore {
             if reachedTraversalEnd {
                 // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
                 // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
-                controlledGlobalSessionIDs = discoveredSessionIDs
+                let revokedSessionIDs = controlledIDsBeforeTraversal.subtracting(discoveredSessionIDs)
+                if !revokedSessionIDs.isEmpty {
+                    let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
+                    if retainedSessions != sessions {
+                        // 授权撤销与列表删除必须在同一轮完成。不能等待精确 cwd 刷新：
+                        // Host 可能没有工作区，外部 Worktree 也可能已经被删除。
+                        sessions = retainedSessions
+                    }
+                    // 远端搜索是独立于 canonical sessions 的增强缓存。若不同时清理，
+                    // 激活搜索后会把已撤权的外部 Worktree Thread 再投影回完整列表。
+                    let retainedRemoteSearchResults = remoteSessionSearchResults.filter {
+                        !revokedSessionIDs.contains($0.id)
+                    }
+                    if retainedRemoteSearchResults != remoteSessionSearchResults {
+                        remoteSessionSearchResults = retainedRemoteSearchResults
+                    }
+                    for sessionID in revokedSessionIDs {
+                        remoteSessionSearchSnippetByID.removeValue(forKey: sessionID)
+                    }
+                }
+                if controlledGlobalSessionIDs != discoveredSessionIDs {
+                    controlledGlobalSessionIDs = discoveredSessionIDs
+                }
             } else {
-                controlledGlobalSessionIDs.formUnion(discoveredSessionIDs)
+                let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
+                if expandedControlledIDs != controlledGlobalSessionIDs {
+                    controlledGlobalSessionIDs = expandedControlledIDs
+                }
             }
         }
 
