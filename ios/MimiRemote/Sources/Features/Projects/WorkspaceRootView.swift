@@ -286,6 +286,7 @@ struct WorkspaceRootView: View {
 
     private func navigationContent(tokens: ThemeTokens) -> some View {
         workspaceBrowser(tokens: tokens)
+            .accessibilityIdentifier("workspace.browser")
             .navigationTitle(L10n.text("ui.workspace"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -138,6 +138,25 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             )
         }
 
+        guard let workspaces = firstExistingButton(
+            labels: ["工作区", "Workspace"],
+            timeout: 5
+        ) else {
+            XCTFail("浮动侧栏应保留工作区入口")
+            return
+        }
+        workspaces.tap()
+        let workspaceBrowser = app.descendant(identifier: "workspace.browser")
+        XCTAssertTrue(
+            workspaceBrowser.waitForExistence(timeout: 8),
+            "工作区主内容应保持可访问"
+        )
+        XCTAssertGreaterThanOrEqual(
+            workspaceBrowser.frame.minX,
+            collapseSidebar.frame.maxX,
+            "展开侧栏后工作区必须获得真实的右侧布局区域，不能只裁切原始整屏内容"
+        )
+
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "MIM-41-iPad-floating-sidebar-landscape"
         screenshot.lifetime = .keepAlways

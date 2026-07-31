@@ -678,18 +678,17 @@ struct UnifiedWorkbenchShell: View {
         bottomSafeAreaInset: CGFloat
     ) -> some View {
         ZStack(alignment: .leading) {
-            // detail 的背景仍连续铺满整窗，但导航栏和主内容必须避让浮动侧栏。
-            // 透明 safe-area reservation 不绘制底板，只把真实可交互内容留在侧栏右侧。
+            // detail 必须收到真实的缩窄宽度提案，而不能只修改 safe area。
+            // Workspace 的 GeometryReader 与横向 ScrollView 会按提案宽度重新排版；
+            // 外层 ZStack 背景仍连续铺满整窗，因此不会重新出现独立的分栏底板。
             detail(layout: layout, tokens: tokens)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaInset(edge: .leading, spacing: 0) {
-                    if floatingSidebarVisible {
-                        Color.clear
-                            .frame(width: WorkbenchSidebarSurfaceMetrics.overlayWidth)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                    }
-                }
+                .padding(
+                    .leading,
+                    floatingSidebarVisible
+                        ? WorkbenchSidebarSurfaceMetrics.overlayWidth
+                        : 0
+                )
 
             if floatingSidebarVisible {
                 sidebar(
