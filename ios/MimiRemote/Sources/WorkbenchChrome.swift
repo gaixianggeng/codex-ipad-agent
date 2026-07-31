@@ -81,7 +81,6 @@ enum WorkbenchSidebarSurfaceMetrics {
     static let cornerRadius: CGFloat = 18
     static let shadowRadius: CGFloat = 14
     static let shadowYOffset: CGFloat = 4
-    static let detailLeadingTransitionWidth: CGFloat = 36
 }
 
 /// 把 iPad 浮动侧栏的纯视觉层级集中在 Chrome 层，业务 Shell 只负责提供内容和路由。
@@ -157,50 +156,6 @@ struct WorkbenchSidebarContainer<
             cornerRadius: WorkbenchSidebarSurfaceMetrics.cornerRadius,
             style: .continuous
         )
-    }
-}
-
-/// 在浮动侧栏与详情列之间提供短距离的渐进羽化。
-///
-/// 过渡从侧栏的 trailing inset 内开始，并在详情列中连续衰减。这里只叠加低透明度颜色，
-/// 不创建独立 Material 平面，避免在分栏裁切边界上出现第二层矩形或直角。
-struct WorkbenchDetailLeadingTransition: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    let tokens: ThemeTokens
-
-    var body: some View {
-        LinearGradient(
-            stops: transitionStops,
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-        .frame(width: WorkbenchSidebarSurfaceMetrics.detailLeadingTransitionWidth)
-        .blur(radius: reduceTransparency ? 0 : 3)
-        .offset(x: -WorkbenchSidebarSurfaceMetrics.outerInset)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
-    private var transitionStops: [Gradient.Stop] {
-        let leadingOpacity = reduceTransparency ? 0.86 : 0.52
-        let middleOpacity = reduceTransparency ? 0.48 : 0.20
-
-        return [
-            .init(
-                color: tokens.sidebarSurfaceBackground.opacity(leadingOpacity),
-                location: 0
-            ),
-            .init(
-                color: tokens.sidebarSurfaceBackground.opacity(middleOpacity),
-                location: 0.38
-            ),
-            .init(
-                color: tokens.sidebarSurfaceBackground.opacity(0.05),
-                location: 0.72
-            ),
-            .init(color: .clear, location: 1)
-        ]
     }
 }
 

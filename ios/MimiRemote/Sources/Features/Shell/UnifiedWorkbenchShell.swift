@@ -660,11 +660,6 @@ struct UnifiedWorkbenchShell: View {
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 340)
         } detail: {
             detail(layout: layout, tokens: tokens)
-                .overlay(alignment: .leading) {
-                    if layout.usesFloatingSidebarSurface {
-                        WorkbenchDetailLeadingTransition(tokens: tokens)
-                    }
-                }
         }
         .navigationSplitViewStyle(.balanced)
     }
