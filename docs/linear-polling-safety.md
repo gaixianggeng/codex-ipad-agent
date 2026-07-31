@@ -35,6 +35,13 @@ MIM-55 对应的持久化 rollout 显示：
 
 这说明旧工具 promise 没有随旧 Turn 结束被取消，迟到结果可以跨 Turn 回流。Desktop 26.727.40816（build 6067）重启后的本机日志也对同一远端 host 记录了 `remote control app-server stream became unknown`、持续 `waiting-for-device`，以及每轮约 30 秒的 `Codex app-server initialize handshake timed out`；重连从 01:05:43 至少持续到 02:48，而启动阶段本地 `thread/list` 仍为毫秒级。
 
+实现层失败日志明确包含 `source=thread_list ... timeoutMs=0`：
+
+- 2026-07-29 的历史样本为 `durationMs=299491 ... timeoutMs=0`；
+- 2026-07-31 重启后的样本为 `durationMs=35568 ... failureReason=remote_unavailable ... timeoutMs=0`。
+
+后一个样本只在 `remote control app-server stream became unknown` 后才失败并 partial-return。因此问题不是 timeout 配置过长，而是远端请求没有 deadline：连接处于半开状态时可以无限等待。
+
 ```text
 /Users/gaixiaotongxue/Library/Logs/com.openai.codex/2026/07/31/codex-desktop-4ccbd33d-bbf2-4d65-837c-fe00c5b6cd99-87930-t0-i1-010030-0.log
 ```
