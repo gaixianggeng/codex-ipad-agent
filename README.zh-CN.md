@@ -175,7 +175,7 @@ Codex app-server 是由 `agentd` 管理的 loopback 进程，也是默认运行�
 
 安全边界集中在 Mac：
 
-- 二维码只携带短期、单次使用的配对票据；换取到的长期 `agentd` Token 按 Mac Profile 保存到 Keychain。
+- 二维码只携带签名配对票据，不包含长期凭据；同一票据可在生成后的 10 分钟内重复兑换，换取到的长期 `agentd` Token 按 Mac Profile 保存到 Keychain。
 - app-server capability token 与 Provider 凭证不会离开 Mac；受管 app-server 只监听 loopback。
 - 客户端提交的项目 ID 必须通过配置中的项目 allowlist 解析；文件访问限制在项目根目录、`browse_roots` 和受管 Worktree。
 - Git 与 Worktree API 只暴露固定、经过参数校验的操作；通用命令必须预先配置为 Action，并受确认、超时、请求大小和输出上限约束。
@@ -282,7 +282,7 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 在 Xcode 中选择 `MimiRemote` scheme、开发者 Team 和目标 iPhone / iPad 后运行。工程要求 iOS / iPadOS 26 或更高版本。
 
-Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd up` 或 `agentd pair` 显示的二维码。二维码使用短期、单次兑换票据，不直接包含长期 Token；扫码不可用时可以展开高级手动连接。
+Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd up` 或 `agentd pair` 显示的二维码。二维码使用 10 分钟有效的签名票据，同一二维码或复制链接可在有效期内重复兑换，且不直接包含长期 Token；扫码不可用时可以展开高级手动连接。
 
 ## Claude Code 实验通道
 

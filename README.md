@@ -171,7 +171,7 @@ Codex app-server is a managed loopback process and remains the primary runtime. 
 
 The security boundary is deliberately concentrated on the Mac:
 
-- A QR code carries a short-lived, single-use pairing ticket. The resulting long-lived `agentd` token is stored in Keychain per Mac profile.
+- A QR code carries a signed pairing ticket that can be reused only during its 10-minute lifetime; it never carries the long-lived credential. The resulting `agentd` token is stored in Keychain per Mac profile.
 - The app-server capability token and provider credentials never leave the Mac. The managed app-server endpoint listens on loopback.
 - Client-supplied project IDs are resolved through the configured project allowlist. File access is limited to project roots, `browse_roots`, and managed Worktrees.
 - Git and Worktree APIs expose fixed, validated operations. General commands must be configured as actions and use confirmation, timeouts, request limits, and bounded output.
@@ -272,7 +272,7 @@ xcodegen generate \
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The QR code is a short-lived, single-use pairing ticket, not a long-lived token. Manual connection is available as a fallback.
+In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The signed QR ticket can be reused during its 10-minute lifetime and never contains the long-lived token. Manual connection is available as a fallback.
 
 Command-line `build` and `run` lease an available, paired USB iOS device and skip busy targets before falling back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests, snapshots, and CI require that exact Simulator and never fall back to iPad mini. Run `bash ./scripts/ios-dev.sh leases` to inspect cross-worktree leases and external `xcodebuild` usage:
 
