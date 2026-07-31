@@ -129,6 +129,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
         assertMinimumTouchTarget(collapseSidebar, named: "浮动侧栏收起按钮")
 
+        let sessionFilter = app.descendant(identifier: "sessions.filter")
+        if sessionFilter.waitForExistence(timeout: 5) {
+            XCTAssertGreaterThanOrEqual(
+                sessionFilter.frame.minX,
+                collapseSidebar.frame.maxX,
+                "详情页 leading 工具栏不能被浮动侧栏覆盖"
+            )
+        }
+
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "MIM-41-iPad-floating-sidebar-landscape"
         screenshot.lifetime = .keepAlways

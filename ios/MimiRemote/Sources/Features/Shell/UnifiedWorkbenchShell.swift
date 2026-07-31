@@ -678,10 +678,18 @@ struct UnifiedWorkbenchShell: View {
         bottomSafeAreaInset: CGFloat
     ) -> some View {
         ZStack(alignment: .leading) {
-            // detail 始终只有一个实例并连续铺满背景，浮层直接覆盖在内容上方。
-            // 不保留透明占位，否则工作区仍会恰好从侧栏边缘开始，视觉上继续形成一条“分栏边界”。
+            // detail 的背景仍连续铺满整窗，但导航栏和主内容必须避让浮动侧栏。
+            // 透明 safe-area reservation 不绘制底板，只把真实可交互内容留在侧栏右侧。
             detail(layout: layout, tokens: tokens)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .leading, spacing: 0) {
+                    if floatingSidebarVisible {
+                        Color.clear
+                            .frame(width: WorkbenchSidebarSurfaceMetrics.overlayWidth)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
 
             if floatingSidebarVisible {
                 sidebar(
@@ -1075,7 +1083,8 @@ struct UnifiedWorkbenchShell: View {
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
             },
-            manageConnections: manageConnections
+            manageConnections: manageConnections,
+            placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface
         )
     }
 

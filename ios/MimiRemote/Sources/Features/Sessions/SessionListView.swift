@@ -292,6 +292,7 @@ struct SessionListView: View {
     var onNewSession: (() -> Void)?
     var onSelectSession: ((AgentSession) -> Void)?
     var manageConnections: (() -> Void)?
+    var placesFilterInTrailingToolbar = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -395,31 +396,45 @@ struct SessionListView: View {
                 // 全局 Mac 入口与列表筛选是不同作用域，固定间隔让系统分别生成圆形材质。
                 ToolbarSpacer(.fixed, placement: .topBarLeading)
             }
-            ToolbarItem(placement: .topBarLeading) {
-                filterMenu(tokens: tokens)
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                sessionListToolbarButton(
-                    systemImage: "arrow.clockwise",
-                    accessibilityLabel: L10n.text("ui.refresh_session_library"),
-                    tokens: tokens
-                ) {
-                    Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
+            if placesFilterInTrailingToolbar {
+                // 真浮层只会改变详情内容的 leading safe area，系统 topBarLeading 仍按整窗放置。
+                // 将筛选并入右侧工具组，避免其圆形玻璃底板被侧栏盖住。
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    filterMenu(tokens: tokens)
+                    sessionListTrailingToolbarActions(tokens: tokens)
                 }
-
-                sessionListToolbarButton(
-                    systemImage: "plus",
-                    accessibilityLabel: L10n.text("ui.new_session_3da224c4"),
-                    tokens: tokens,
-                    isPrimary: true,
-                    action: presentNewSession
-                )
-                .accessibilityIdentifier("sessions.newSession")
+            } else {
+                ToolbarItem(placement: .topBarLeading) {
+                    filterMenu(tokens: tokens)
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    sessionListTrailingToolbarActions(tokens: tokens)
+                }
             }
         }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
         }
+    }
+
+    @ViewBuilder
+    private func sessionListTrailingToolbarActions(tokens: ThemeTokens) -> some View {
+        sessionListToolbarButton(
+            systemImage: "arrow.clockwise",
+            accessibilityLabel: L10n.text("ui.refresh_session_library"),
+            tokens: tokens
+        ) {
+            Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
+        }
+
+        sessionListToolbarButton(
+            systemImage: "plus",
+            accessibilityLabel: L10n.text("ui.new_session_3da224c4"),
+            tokens: tokens,
+            isPrimary: true,
+            action: presentNewSession
+        )
+        .accessibilityIdentifier("sessions.newSession")
     }
 
     /// 使用系统工具栏按钮，让不同系统版本自行处理材质、按下反馈和命中区域。
@@ -534,6 +549,7 @@ struct SessionListView: View {
                 .foregroundStyle(tokens.secondaryText)
         }
         .accessibilityLabel(L10n.text("ui.filter_sessions"))
+        .accessibilityIdentifier("sessions.filter")
     }
 
     private var filterTitle: String {
