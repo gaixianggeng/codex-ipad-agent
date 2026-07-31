@@ -644,9 +644,11 @@ private struct WorkspaceIconStyleOptionLabel: View {
                     )
                 )
                 .foregroundStyle(isSelected ? tokens.primaryAction : tokens.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 0.9 : 0.72)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.72)
                 .allowsTightening(true)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 2)
