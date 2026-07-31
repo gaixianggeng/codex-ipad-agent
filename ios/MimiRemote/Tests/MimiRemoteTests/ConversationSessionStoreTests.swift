@@ -3516,6 +3516,204 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.capabilityErrorMessage)
     }
 
+    func testRememberWorkspaceMigratesLegacySelectionSessionsAndCustomAvatar() throws {
+        let suiteName = "WorkspaceIdentityMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(defaults: defaults)
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive-link",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let other = AgentWorkspace(
+            id: "ws_other",
+            name: "other",
+            path: "/Users/me/code/other",
+            lastOpenedAt: Date(timeIntervalSince1970: 5)
+        )
+        let recentStore = RecentWorkspaceStore(defaults: defaults)
+        recentStore.save(
+            [legacy, other],
+            profileID: appStore.notificationRoutingProfileID
+        )
+        let appearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+        appearanceStore.setCustomCharacterID(
+            "nezha",
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: legacy.id
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            workspaceAppearanceStore: appearanceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+        store.reloadRecentWorkspaces()
+        store.sessions = [
+            AgentSession(
+                id: "session-legacy",
+                projectID: legacy.id,
+                project: legacy.name,
+                dir: legacy.path,
+                title: "历史会话",
+                status: "history",
+                source: "codex",
+                resumeID: "thread-legacy",
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2)
+            )
+        ]
+        store.setSelectedProjectID(legacy.id)
+        store.setSessionWorkspaceIDs([legacy.id])
+        store.insertExpandedProjectID(legacy.id)
+
+        let remembered = store.rememberWorkspace(
+            canonical,
+            equivalentPaths: [legacy.path]
+        )
+
+        XCTAssertEqual(remembered.id, canonical.id)
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.sidebarProjects.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.selectedProjectID, canonical.id)
+        XCTAssertEqual(store.retainedWorkspaceID(for: legacy.id), canonical.id)
+        XCTAssertEqual(store.sessions.map(\.projectID), [canonical.id])
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([canonical.id]))
+        XCTAssertEqual(store.expandedProjectIDs, Set([canonical.id]))
+        XCTAssertEqual(
+            appearanceStore.customCharacterID(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: canonical.id
+            ),
+            "nezha"
+        )
+        XCTAssertNil(
+            appearanceStore.customCharacterID(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: legacy.id
+            )
+        )
+    }
+
+    func testColdLaunchWorkspaceMigrationPreservesPersistedWorkspaceFilter() throws {
+        let suiteName = "ColdLaunchWorkspaceIdentityMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(defaults: defaults)
+        let profileID = appStore.notificationRoutingProfileID
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive/",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let other = AgentWorkspace(
+            id: "ws_other",
+            name: "other",
+            path: "/Users/me/code/other",
+            lastOpenedAt: Date(timeIntervalSince1970: 5)
+        )
+        var rawStorage = ProfileScopedStorage<[AgentWorkspace]>()
+        rawStorage.byProfileID[profileID] = [legacy, canonical, other]
+        defaults.set(
+            try JSONEncoder().encode(rawStorage),
+            forKey: "agentd.recentWorkspaces"
+        )
+        let preferenceStore = SessionListPreferenceStore(defaults: defaults)
+        preferenceStore.save(
+            SessionListPreferences(sessionWorkspaceIDs: [legacy.id]),
+            profileID: profileID
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: RecentWorkspaceStore(defaults: defaults),
+            sessionListPreferenceStore: preferenceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([legacy.id]))
+        store.reloadRecentWorkspaces()
+
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([canonical.id]))
+        XCTAssertEqual(
+            preferenceStore.load(profileID: profileID).sessionWorkspaceIDs,
+            Set([canonical.id])
+        )
+    }
+
+    func testOpeningSameResolvedDirectoryTwiceReusesWorkspaceAndSelection() async {
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let typedPath = "/Users/me/code/chat-archive"
+        let workspace = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: typedPath,
+            rootProjectID: "project-root",
+            rootProjectName: "chat-archive",
+            rootProjectPath: typedPath
+        )
+        let recentStore = makeRecentWorkspaceStore(
+            workspaces: [],
+            endpoint: appStore.endpoint
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            workspaceSessions: [workspace.id: []],
+            resolveResults: [typedPath: .success(workspace)]
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            clientFactory: { client }
+        )
+
+        let firstOpenSucceeded = await store.openWorkspace(path: typedPath)
+        XCTAssertTrue(firstOpenSucceeded)
+        let firstOpenedAt = store.recentWorkspaces.first?.lastOpenedAt
+        let secondOpenSucceeded = await store.openWorkspace(path: typedPath)
+        XCTAssertTrue(secondOpenSucceeded)
+
+        XCTAssertEqual(client.requestedResolvePaths, [typedPath, typedPath])
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [workspace.id])
+        XCTAssertEqual(store.selectedProjectID, workspace.id)
+        XCTAssertNotNil(firstOpenedAt)
+        XCTAssertGreaterThanOrEqual(
+            store.recentWorkspaces.first?.lastOpenedAt ?? .distantPast,
+            firstOpenedAt ?? .distantFuture
+        )
+    }
+
 }
 
 private actor GitStatusResponseGate {

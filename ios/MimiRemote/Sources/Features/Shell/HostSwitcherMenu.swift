@@ -11,7 +11,18 @@ struct HostSwitcherMenu: View {
     @EnvironmentObject private var hostStatusStore: HostStatusStore
 
     let presentation: HostSwitcherPresentation
+    let usesCondensedSidebarMetrics: Bool
     let manageConnections: () -> Void
+
+    init(
+        presentation: HostSwitcherPresentation,
+        usesCondensedSidebarMetrics: Bool = false,
+        manageConnections: @escaping () -> Void
+    ) {
+        self.presentation = presentation
+        self.usesCondensedSidebarMetrics = usesCondensedSidebarMetrics
+        self.manageConnections = manageConnections
+    }
 
     @State private var failedProfileID: String?
     @State private var switchErrorMessage: String?
@@ -85,9 +96,13 @@ struct HostSwitcherMenu: View {
         switch presentation {
         case .sidebar:
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
+                HStack(spacing: usesCondensedSidebarMetrics ? 4 : 6) {
                     Text(profileName)
-                        .font(.headline.weight(.semibold))
+                        .font(
+                            usesCondensedSidebarMetrics
+                                ? .subheadline.weight(.semibold)
+                                : .headline.weight(.semibold)
+                        )
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2.weight(.semibold))
@@ -114,7 +129,7 @@ struct HostSwitcherMenu: View {
                         .lineLimit(1)
                 }
             }
-            .frame(maxWidth: 150, alignment: .leading)
+            .frame(maxWidth: usesCondensedSidebarMetrics ? 136 : 150, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(switcherAccessibilityLabel(
                 profileName: profileName,

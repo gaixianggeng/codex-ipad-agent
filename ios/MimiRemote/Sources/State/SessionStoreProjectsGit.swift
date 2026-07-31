@@ -1267,7 +1267,7 @@ extension SessionStore {
                 return
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: cursor)
             sessionProjectsWithAdditionalPages.insert(projectID)
             clearWorkspaceUnavailable(projectID)
             setErrorMessage(nil)

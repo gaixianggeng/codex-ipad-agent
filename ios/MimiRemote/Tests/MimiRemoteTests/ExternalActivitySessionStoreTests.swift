@@ -729,6 +729,82 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(store.isExternalReadOnlySession(completed))
     }
 
+    func testAgentDRestartEmptySnapshotClearsZombieTurnRuntimeActivityAndReadOnlyTombstone() async throws {
+        let project = makeProject(id: "proj_agentd_restart_reconcile")
+        let threadID = "thread-agentd-restart"
+        let turnID = "turn-managed-before-restart"
+        let running = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "重启前由 iPad 发起",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID,
+            activeTurnID: turnID
+        )
+        let authoritativeIdle = makeSession(
+            id: threadID,
+            projectID: project.id,
+            title: "重启后恢复",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: threadID
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [authoritativeIdle],
+            workspacePages: [
+                project.id: SessionsPage(sessions: [authoritativeIdle])
+            ],
+            historyPages: [
+                threadID: HistoryMessagesPage(messages: [])
+            ],
+            externalActivityResponses: [
+                ExternalActivityResponse(activities: [], scannedAt: Date())
+            ]
+        )
+        let store = makeExternalActivityStore(
+            project: project,
+            session: running,
+            client: client
+        )
+        store.selectedProjectID = project.id
+        store.selectedSessionID = threadID
+        store.sessionControlStateByID[threadID] = .takenOver
+        store.externalActivityBySessionID[threadID] = makeExternalActivity(
+            threadID: threadID,
+            projectID: project.id,
+            turnID: turnID,
+            revision: "rev-zombie-before-restart"
+        )
+        store.externalReadOnlySessionIDs.insert(threadID)
+        store.recordRuntimeActivity(
+            sessionID: threadID,
+            turnStartedAt: Date(timeIntervalSince1970: 100),
+            activityAt: Date(timeIntervalSince1970: 101)
+        )
+
+        let refreshed = await store.refreshExternalActivities(client: client)
+
+        XCTAssertTrue(refreshed)
+        let reconciled = try XCTUnwrap(store.sessionsByID[threadID])
+        XCTAssertEqual(reconciled.status, SessionStatus.history.rawValue)
+        XCTAssertNil(reconciled.activeTurnID)
+        XCTAssertNil(store.runtimeActivitySnapshot(for: threadID))
+        XCTAssertNil(store.externalActivityBySessionID[threadID])
+        XCTAssertFalse(store.externalReadOnlySessionIDs.contains(threadID))
+        XCTAssertFalse(store.isExternalReadOnlySession(reconciled))
+        XCTAssertEqual(store.controlState(for: reconciled), .takenOver)
+        XCTAssertTrue(store.canControlSession(reconciled))
+        XCTAssertEqual(
+            client.requestedMessageSessionIDs,
+            [threadID],
+            "权威空快照应自动完成一次最终历史对账，无需用户手动刷新"
+        )
+    }
+
     func testExternalActivityPollingStopsWhenOldAgentDDoesNotAdvertiseCapability() async {
         let project = makeProject(id: "proj_external_legacy")
         let history = makeSession(

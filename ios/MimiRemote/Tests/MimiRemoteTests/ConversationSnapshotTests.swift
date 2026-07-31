@@ -1384,14 +1384,14 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 Section {
                     WorkbenchSidebarDestinationButton(
                         title: "会话",
-                        systemImage: "bubble.left.and.bubble.right",
+                        icon: .sessions,
                         isSelected: true,
                         tokens: tokens,
                         action: {}
                     )
                     WorkbenchSidebarDestinationButton(
                         title: "工作区",
-                        systemImage: "folder",
+                        icon: .workspaces,
                         isSelected: false,
                         tokens: tokens,
                         action: {}
@@ -1426,6 +1426,33 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 340, height: 768)
                 )
             )
+        )
+    }
+
+    func testWorkbenchNavigationIconPairs() {
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.sessions.systemName(isSelected: false),
+            "bubble.left.and.bubble.right"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.sessions.systemName(isSelected: true),
+            "bubble.left.and.bubble.right.fill"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.workspaces.systemName(isSelected: false),
+            "folder"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.workspaces.systemName(isSelected: true),
+            "folder.fill"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.me.systemName(isSelected: false),
+            "person.crop.circle"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.me.systemName(isSelected: true),
+            "person.crop.circle.fill"
         )
     }
 

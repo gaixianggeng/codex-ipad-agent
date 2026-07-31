@@ -1076,7 +1076,7 @@ extension SessionStore {
             // 只替换当前项目的会话，避免一次项目点击误删其他项目已经加载好的列表。
             let pageSessions = sessions(page.sessions, in: workspace)
             replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
             if updateStatusMessage, canReportForeground() {
                 setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
@@ -1129,7 +1129,7 @@ extension SessionStore {
         for result in results {
             guard let page = result.page else { continue }
             mergeSessionPage(sessions(page.sessions, in: result.workspace))
-            updateSessionPageState(projectID: result.workspace.id, page: page)
+            updateSessionPageState(projectID: result.workspace.id, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(result.workspace.id)
         }
     }
@@ -1428,7 +1428,9 @@ extension SessionStore {
         // thread/read 校准。读取也失败时最多保留 3 个刷新周期，不能形成永久幽灵运行态。
         result.append(contentsOf: knownRunningSessions)
 
-        guard preserveAllLoaded || isShowingAllSessions(projectID: projectID) else {
+        guard preserveAllLoaded
+                || sessionProjectsWithAdditionalPages.contains(projectID)
+                || isShowingAllSessions(projectID: projectID) else {
             return result
         }
 
@@ -1624,7 +1626,20 @@ extension SessionStore {
         sessions = next
     }
 
-    func updateSessionPageState(projectID: String, page: SessionsPage) {
+    func updateSessionPageState(
+        projectID: String,
+        page: SessionsPage,
+        requestedCursor: String?
+    ) {
+        if requestedCursor == nil,
+           sessionProjectsWithAdditionalPages.contains(projectID),
+           sessionHasMoreByProjectID[projectID] != nil {
+            // 用户已经把工作区翻到更深窗口后，轮询/网络恢复/手动刷新只负责合并最新首屏。
+            // 若用首屏 cursor 覆盖深层 continuation，下一次“显示更多”会重复第二页；
+            // exhausted 也必须保留，否则已消失的入口会被错误恢复。
+            rebuildProjectSessionListSnapshot(forProjectID: projectID)
+            return
+        }
         if let cursor = page.nextCursor, page.hasMore {
             sessionPageCursorByProjectID[projectID] = cursor
             sessionHasMoreByProjectID[projectID] = true

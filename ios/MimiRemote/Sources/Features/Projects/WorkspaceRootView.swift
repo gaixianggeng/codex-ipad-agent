@@ -286,6 +286,7 @@ struct WorkspaceRootView: View {
 
     private func navigationContent(tokens: ThemeTokens) -> some View {
         workspaceBrowser(tokens: tokens)
+            .accessibilityIdentifier("workspace.browser")
             .navigationTitle(L10n.text("ui.workspace"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -294,22 +295,24 @@ struct WorkspaceRootView: View {
                         Button {
                             gitInspectionTarget = WorkspaceGitInspectionTarget(project: selectedProject)
                         } label: {
-                            Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
+                            WorkbenchChromeIcon(systemName: "doc.text.magnifyingglass")
                         }
                         .disabled(
                             sessionStore.workspaceGitSummaryByPath[selectedProject.path]?.isRepository == false
                         )
+                        .accessibilityLabel(L10n.text("ui.git_changes"))
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isPresentingOpenWorkspace = true
                     } label: {
-                        Label(L10n.text("ui.open_directory"), systemImage: "folder.badge.plus")
+                        WorkbenchChromeIcon(systemName: "folder.badge.plus")
                     }
                     // 顶栏的栏目选中态已经承担品牌识别；全局目录操作使用系统中性材质，
                     // 避免与选中工作区的梅紫填充形成两个大面积焦点。
                     .foregroundStyle(tokens.primaryText)
+                    .accessibilityLabel(L10n.text("ui.open_directory"))
                 }
             }
     }
@@ -628,6 +631,13 @@ struct WorkspaceRootView: View {
         if let selectedWorkspaceID,
            projects.contains(where: { $0.id == selectedWorkspaceID }) {
             return
+        }
+        if let selectedWorkspaceID {
+            let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
+            if projects.contains(where: { $0.id == retainedID }) {
+                self.selectedWorkspaceID = retainedID
+                return
+            }
         }
         selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
@@ -1376,6 +1386,7 @@ private struct WorkspaceDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var actionButtonHeight: CGFloat = 68
+    @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
     @State private var isLoadingMoreSessions = false
 
     let recentSessions: [AgentSession]
@@ -1509,8 +1520,11 @@ private struct WorkspaceDetailView: View {
                         }
                         Text(sessionLoadState.isLoading ? L10n.text("ui.loading") : L10n.text("ui.refresh"))
                     }
-                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .font(themeStore.uiFont(size: compactActionFontSize, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
+                    // 手动刷新与“显示更多”同属会话列表操作；即使 caption 很短，也保留 44pt 触控区。
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(sessionLoadState.isLoading)
@@ -1577,17 +1591,23 @@ private struct WorkspaceDetailView: View {
                                         .controlSize(.small)
                                 } else {
                                     Image(systemName: "chevron.down")
-                                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                        .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
                                 }
                                 Text(isLoadingMoreSessions ? L10n.text("ui.loading") : L10n.text("ui.show_more"))
                             }
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
                             .foregroundStyle(tokens.secondaryText)
                             .frame(maxWidth: .infinity, minHeight: 46)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .disabled(isLoadingMoreSessions)
+                        .accessibilityLabel(
+                            isLoadingMoreSessions
+                                ? L10n.text("ui.loading")
+                                : L10n.text("ui.show_more")
+                        )
+                        .accessibilityIdentifier("workspace.sessions.loadMore")
                     }
                 }
                 .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))

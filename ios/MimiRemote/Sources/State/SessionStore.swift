@@ -167,6 +167,7 @@ final class SessionStore: ObservableObject {
     let contextStore: SessionContextStore
     let eventReducer: EventReducer
     let recentWorkspaceStore: RecentWorkspaceStore
+    let workspaceAppearanceStore: WorkspaceAppearanceStore
     let sessionListPreferenceStore: SessionListPreferenceStore
     let sessionHistoryReadStateStore: SessionHistoryReadStateStore
     let sessionControlStateStore: SessionControlStateStore
@@ -284,6 +285,9 @@ final class SessionStore: ObservableObject {
     var queuedCommandActionRuns: [QueuedCommandActionRun] = []
     var projectsByID: [String: AgentProject] = [:]
     var workspacesByID: [String: AgentWorkspace] = [:]
+    // 工作区页维护独立的本地浏览选择；保留当前 Profile 内的旧→新 ID，
+    // 让卡片列表去重时能原位切换到幸存卡片，而不是跳到全局会话所在工作区。
+    var workspaceIdentityReplacementByOldID: [String: String] = [:]
     var sidebarProjectsByID: [String: AgentProject] = [:]
     var sessionsByID: [SessionID: AgentSession] = [:]
     var sessionIndexByID: [SessionID: Int] = [:]
@@ -370,6 +374,7 @@ final class SessionStore: ObservableObject {
         logStore: LogStore,
         contextStore: SessionContextStore? = nil,
         recentWorkspaceStore: RecentWorkspaceStore? = nil,
+        workspaceAppearanceStore: WorkspaceAppearanceStore? = nil,
         sessionListPreferenceStore: SessionListPreferenceStore? = nil,
         sessionHistoryReadStateStore: SessionHistoryReadStateStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
@@ -420,6 +425,16 @@ final class SessionStore: ObservableObject {
             self.recentWorkspaceStore = RecentWorkspaceStore(defaults: defaults)
         } else {
             self.recentWorkspaceStore = RecentWorkspaceStore()
+        }
+        if let workspaceAppearanceStore {
+            self.workspaceAppearanceStore = workspaceAppearanceStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(
+                suiteName: "SessionStore.WorkspaceAppearance.\(UUID().uuidString)"
+            ) ?? .standard
+            self.workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+        } else {
+            self.workspaceAppearanceStore = WorkspaceAppearanceStore()
         }
         if let sessionListPreferenceStore {
             self.sessionListPreferenceStore = sessionListPreferenceStore

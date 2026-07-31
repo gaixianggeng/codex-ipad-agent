@@ -309,7 +309,7 @@ extension SessionStore {
                 return
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
         } catch {
             // 活动 API 已给出可靠运行态；列表补拉失败时保留已有行，下一次轮询继续重试未知线程。

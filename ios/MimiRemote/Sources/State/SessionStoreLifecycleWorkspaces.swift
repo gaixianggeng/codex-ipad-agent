@@ -35,7 +35,7 @@ extension SessionStore {
         do {
             let page = try await sessionListFirstPage(workspace: workspace, limit: Self.initialSessionPageLimit, reuseRecent: true)
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: workspace.id, page: page)
+            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
         } catch {
             // 恢复快照仍须经过工作区授权校验；单次列表失败不应让用户丢掉上次阅读位置。
         }
@@ -419,7 +419,7 @@ extension SessionStore {
     /// 连接凭据已经安全提交后，统一等待首屏数据真正可用。
     ///
     /// 这里复用冷启动的重试逻辑，避免扫码、URL Scheme 和手动连接分别维护退避策略。
-    /// 超时只改变展示状态，不回滚已写入 Keychain 的 Token 或当前连接档案；一次性配对票据
+    /// 超时只改变展示状态，不回滚已写入 Keychain 的 Token 或当前连接档案；短期配对票据
     /// 已经兑换成功时，用户也可以直接重试加载，无需重新扫码。
     @discardableResult
     func refreshAfterConnectionCommit(maxWait: TimeInterval) async -> Bool {
@@ -550,7 +550,7 @@ extension SessionStore {
             }
             let pageSessions = sessions(page.sessions, in: workspace)
             replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
 
             if isSelectionLeaseCurrent(foregroundLease),
@@ -638,11 +638,11 @@ extension SessionStore {
                 }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
-        recentWorkspaceStore.save(
+        let reconciliation = recentWorkspaceStore.saveReconciled(
             nextWorkspaces,
             profileID: appStore.notificationRoutingProfileID
         )
-        setRecentWorkspacesIfChanged(nextWorkspaces)
+        applyRecentWorkspaceReconciliation(reconciliation)
     }
 
     /// 刷新工作区页正在浏览的会话，但不改变全局会话选择或 WebSocket。
@@ -687,7 +687,7 @@ extension SessionStore {
                 ),
                 projectID: workspace.id
             )
-            updateSessionPageState(projectID: workspace.id, page: page)
+            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(workspace.id)
         } catch {
             _ = terminateConnectionIfCredentialsInvalid(error)
@@ -706,8 +706,13 @@ extension SessionStore {
         do {
             // 走 clientFactory（与会话请求同一个注入点）而不是 appStore.client()，
             // 让 resolve 和后续会话加载共用一条可测试链路。
-            let workspace = try await clientFactory().resolveWorkspace(path: trimmed)
-            rememberWorkspace(workspace)
+            let resolvedWorkspace = try await clientFactory().resolveWorkspace(path: trimmed)
+            // resolve 的返回路径是 agentd realpath；同时带上用户输入路径，才能把旧版保存的
+            // 符号链接路径安全迁移到同一 canonical workspace，而不猜测其他同名目录。
+            let workspace = rememberWorkspace(
+                resolvedWorkspace,
+                equivalentPaths: [trimmed]
+            )
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
             let selectionLease = commitSelection(
@@ -751,9 +756,8 @@ extension SessionStore {
                 base: base?.trimmingCharacters(in: .whitespacesAndNewlines),
                 branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-            let workspace = response.workspace
+            let workspace = rememberWorkspace(response.workspace)
             // Worktree 成功创建后作为一个普通 workspace 接入，后续 thread/list 和 thread/start 复用现有 cwd 安全链路。
-            rememberWorkspace(workspace)
             upsertManagedWorktree(WorktreeListItem(workspace: workspace, worktree: response.worktree))
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
@@ -826,7 +830,7 @@ extension SessionStore {
             }
             guard appStore.activeHostScope == hostScope else { return false }
 
-            rememberWorkspace(workspace)
+            _ = rememberWorkspace(workspace)
             clearWorkspaceUnavailable(workspace.id)
             upsert(responseSession)
             insertExpandedProjectID(responseSession.projectID)
@@ -901,8 +905,7 @@ extension SessionStore {
                 base: normalizedOptional(base),
                 branch: normalizedOptional(branch)
             )
-            let workspace = response.workspace
-            rememberWorkspace(workspace)
+            let workspace = rememberWorkspace(response.workspace)
             upsertManagedWorktree(WorktreeListItem(workspace: workspace, worktree: response.worktree))
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
@@ -1206,8 +1209,7 @@ extension SessionStore {
 
     @discardableResult
     func openManagedWorktree(_ item: WorktreeListItem) async -> Bool {
-        let workspace = item.workspace
-        rememberWorkspace(workspace)
+        let workspace = rememberWorkspace(item.workspace)
         clearWorkspaceUnavailable(workspace.id)
         let selectionLease = commitSelection(
             projectID: workspace.id,

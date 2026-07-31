@@ -102,6 +102,85 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
+    func testWideIPadFloatingSidebarSurfaceKeepsNavigationUsable() throws {
+        rotate(to: .landscapeLeft)
+
+        if firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 3
+        ) == nil,
+           let showSidebar = firstExistingButton(
+               labels: ["显示边栏", "Show Sidebar"],
+               timeout: 5
+           ) {
+            showSidebar.tap()
+        }
+
+        guard let collapseSidebar = firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 8
+        ) else {
+            XCTFail("iPad 浮动侧栏应提供可访问的收起按钮")
+            return
+        }
+        XCTAssertTrue(
+            app.descendant(identifier: "hostSwitcher.menu").waitForExistence(timeout: 8),
+            "浮动侧栏应保留电脑切换入口"
+        )
+        assertMinimumTouchTarget(collapseSidebar, named: "浮动侧栏收起按钮")
+
+        let sessionFilter = app.descendant(identifier: "sessions.filter")
+        if sessionFilter.waitForExistence(timeout: 5) {
+            XCTAssertGreaterThanOrEqual(
+                sessionFilter.frame.minX,
+                collapseSidebar.frame.maxX,
+                "详情页 leading 工具栏不能被浮动侧栏覆盖"
+            )
+        }
+
+        guard let workspaces = firstExistingButton(
+            labels: ["工作区", "Workspace"],
+            timeout: 5
+        ) else {
+            XCTFail("浮动侧栏应保留工作区入口")
+            return
+        }
+        workspaces.tap()
+        let workspaceBrowser = app.descendant(identifier: "workspace.browser")
+        XCTAssertTrue(
+            workspaceBrowser.waitForExistence(timeout: 8),
+            "工作区主内容应保持可访问"
+        )
+        XCTAssertGreaterThanOrEqual(
+            workspaceBrowser.frame.minX,
+            collapseSidebar.frame.maxX,
+            "展开侧栏后工作区必须获得真实的右侧布局区域，不能只裁切原始整屏内容"
+        )
+
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "MIM-41-iPad-floating-sidebar-landscape"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        collapseSidebar.tap()
+        guard let showSidebar = firstExistingButton(
+            labels: ["显示边栏", "Show Sidebar"],
+            timeout: 8
+        ) else {
+            XCTFail("收起浮动侧栏后应保留原生显示边栏入口")
+            return
+        }
+        assertMinimumTouchTarget(showSidebar, named: "浮动侧栏显示按钮")
+        showSidebar.tap()
+        guard firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 8
+        ) != nil else {
+            XCTFail("重新展开侧栏后导航与选择状态应保持可用")
+            return
+        }
+    }
+
     func testVoiceProviderInlineSelectionSurvivesRotation() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
@@ -505,6 +584,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testWorkspaceIconStyleSwitchesBetweenEmojiAndJourney() throws {
+        // 直接进入工作区，避免恢复到会话详情时底部设置入口不在可访问性树中。
+        app.terminate()
+        app.launchArguments.append("--debug-open-workspaces")
+        app.launch()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 25),
+            "MimiRemote 应能直接进入工作区"
+        )
+
         try enterWorkbenchIfNeeded()
         try openWorkspaceAppearanceSettings()
 
@@ -517,11 +605,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "threeKingdoms",
             "waterMargin",
             "redChamber",
-            "greekMythology",
-            "sherlockHolmes",
-            "aliceWonderland",
+            "onePiece",
+            "naruto",
+            "digimon",
             "emoji"
         ]
+        var optionFrames: [CGRect] = []
         for styleID in expectedStyleIdentifiers {
             let option = app.descendant(
                 identifier: "settings.workspaceIconStyle.option.\(styleID)"
@@ -531,7 +620,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 "工作区图标风格应展示 \(styleID)"
             )
             assertMinimumTouchTarget(option, named: "\(styleID) 风格选项")
+            optionFrames.append(option.frame)
         }
+        assertWorkspaceStyleGridUsesFourColumns(optionFrames)
 
         guard firstExistingButton(
             labels: ["西游记", "Journey to the West"],
@@ -576,6 +667,21 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             originalEmoji.tap()
             XCTAssertTrue(waitUntilSelected(originalEmoji), "测试结束时应恢复原 Emoji 偏好")
         }
+    }
+
+    private func assertWorkspaceStyleGridUsesFourColumns(_ frames: [CGRect]) {
+        XCTAssertEqual(frames.count, 8)
+        guard frames.count == 8 else { return }
+
+        let firstRowY = frames[0].midY
+        let secondRowY = frames[4].midY
+        for frame in frames.prefix(4) {
+            XCTAssertEqual(frame.midY, firstRowY, accuracy: 2, "前四个风格应位于第一排")
+        }
+        for frame in frames.suffix(4) {
+            XCTAssertEqual(frame.midY, secondRowY, accuracy: 2, "后四个风格应位于第二排")
+        }
+        XCTAssertGreaterThan(secondRowY - firstRowY, 44, "两排风格不应重叠")
     }
 
     private func presentQRScanner() throws {
@@ -955,6 +1061,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let compact = app.descendant(identifier: "compactTab.me")
         if compact.exists {
             return compact
+        }
+        // 紧凑底栏首次恢复路由时，系统偶尔先发布 label、下一帧才发布 identifier。
+        // 使用同一系统 Tab 的双语 label 兜底，避免把可见“我的”入口误判为缺失。
+        let compactByLabel = app.tabBars.buttons.matching(
+            NSPredicate(format: "label IN %@", ["我的", "Me"])
+        ).firstMatch
+        if compactByLabel.exists {
+            return compactByLabel
         }
         return app.descendant(identifier: "sidebar.me")
     }
