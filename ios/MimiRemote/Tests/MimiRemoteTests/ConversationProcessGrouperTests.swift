@@ -49,6 +49,55 @@ final class ConversationProcessGrouperTests: XCTestCase {
         XCTAssertEqual(completedItems.count, 2)
     }
 
+    func testRepeatedLinearQueriesFoldButKeepEveryExpandedActionAndStatus() throws {
+        let turnID = "turn-linear-queries"
+        let reasoning = makeReasoning(id: "reasoning-linear", turnID: turnID, text: "核对 Linear 账本")
+        let tools = try [
+            ("linear-list-1", "list_issues", "completed"),
+            ("linear-list-2", "list_issues", "failed"),
+            ("linear-list-3", "list_issues", "timed_out"),
+        ].map { entry in
+            let (id, tool, status) = entry
+            let payload = try XCTUnwrap(ConversationActivityPayload(item: [
+                "type": .string("mcpToolCall"),
+                "id": .string(id),
+                "server": .string("linear"),
+                "tool": .string(tool),
+                "status": .string(status),
+            ]))
+            return makeActivity(
+                id: id,
+                turnID: turnID,
+                kind: .commandSummary,
+                payload: payload
+            )
+        }
+
+        let items = ConversationTimelineItemBuilder.items(from: [
+            reasoning,
+            tools[0],
+            tools[1],
+            tools[2],
+            makeAssistant(id: "linear-final", turnID: turnID),
+        ])
+
+        let workGroup = try workGroup(in: items, at: 0)
+        let processGroup = try processGroup(in: workGroup.entries, at: 0)
+        XCTAssertEqual(processGroup.activities.count, 3, "折叠只改变容器，不合并或丢弃重复查询")
+        XCTAssertEqual(
+            processGroup.activities.compactMap(\.activityPayload?.displayTitle),
+            Array(repeating: L10n.text("ui.query_linear_issues"), count: 3)
+        )
+        XCTAssertEqual(
+            processGroup.activities.compactMap(\.activityPayload?.displayStatusText),
+            [
+                L10n.text("ui.completed_status"),
+                L10n.text("ui.failed_status"),
+                L10n.text("ui.timed_out_status"),
+            ]
+        )
+    }
+
     func testCommentaryAndCommandFormOuterWorkGroupInSourceOrder() throws {
         let commentary = ConversationMessage(
             stableID: "commentary-1",

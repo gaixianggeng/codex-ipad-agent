@@ -146,6 +146,10 @@ struct ConversationActivityBatchRow: View, Equatable {
 struct ConversationActivityRow: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var activityTitleSize: CGFloat = 14
+    @ScaledMetric(relativeTo: .footnote) private var activityDetailSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .caption) private var activityMarkerSize: CGFloat = 11
     let message: ConversationMessage
     let layout: ConversationLayout
     let isExpanded: Bool
@@ -180,7 +184,7 @@ struct ConversationActivityRow: View, Equatable {
                 rowContent
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(activityTitle)
+            .accessibilityLabel(activityAccessibilityDescription)
             .accessibilityValue(isExpanded ? L10n.text("ui.expanded") : L10n.text("ui.collected"))
             .accessibilityHint(isExpanded ? L10n.text("ui.collapse_current_process_details") : L10n.text("ui.expand_current_process_details"))
         } else {
@@ -194,7 +198,7 @@ struct ConversationActivityRow: View, Equatable {
 
             if isReasoning {
                 Text(reasoningText)
-                    .font(themeStore.uiFont(size: 14))
+                    .font(themeStore.uiFont(size: activityTitleSize))
                     .italic()
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(isExpanded ? nil : 3)
@@ -203,15 +207,15 @@ struct ConversationActivityRow: View, Equatable {
             } else {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(activityTitle)
-                        .font(themeStore.uiFont(size: 14, weight: .medium))
+                        .font(themeStore.uiFont(size: activityTitleSize, weight: .medium))
                         .foregroundStyle(activityTint)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
                         .truncationMode(.middle)
                     if let detail = activityDetail {
                         Text(detail)
-                            .font(themeStore.uiFont(size: 12))
+                            .font(themeStore.uiFont(size: activityDetailSize))
                             .foregroundStyle(tokens.secondaryText.opacity(0.84))
-                            .lineLimit(1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
                             .truncationMode(.middle)
                     }
                     if isExpanded {
@@ -230,9 +234,11 @@ struct ConversationActivityRow: View, Equatable {
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
         }
-        .frame(minHeight: 28)
+        // 只有可展开行是操作控件；视觉仍保持紧凑，但触控区至少 44pt。
+        .frame(minHeight: hasExpandableDetails ? 44 : 28)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(activityAccessibilityDescription)
     }
 
     @ViewBuilder
@@ -290,7 +296,10 @@ struct ConversationActivityRow: View, Equatable {
                 .frame(width: 14, height: 16)
         } else {
             Image(systemName: markerSymbol)
-                .font(themeStore.uiFont(size: markerSymbol == "circle.fill" ? 5 : 11, weight: .semibold))
+                .font(themeStore.uiFont(
+                    size: markerSymbol == "circle.fill" ? activityMarkerSize * 0.45 : activityMarkerSize,
+                    weight: .semibold
+                ))
                 .foregroundStyle(activityTint)
                 .frame(width: 14, height: 16)
         }
@@ -345,7 +354,13 @@ struct ConversationActivityRow: View, Equatable {
             }
             return payload.cwd
         case .toolCall:
-            return payload.displayStatusText == L10n.text("ui.completed_status") ? nil : payload.displayStatusText
+            return [
+                payload.subtitle?.conversationActivityTrimmedNonEmpty,
+                payload.displayStatusText == L10n.text("ui.completed_status") ? nil : payload.displayStatusText,
+            ]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+                .conversationActivityTrimmedNonEmpty
         case .thinking, .plan, .error:
             return payload.subtitle.map(ConversationActivityPayload.plainProgressText)
         }
@@ -383,9 +398,25 @@ struct ConversationActivityRow: View, Equatable {
         message.activityPayload?.isFailure == true
     }
 
+    private var isInterrupted: Bool {
+        message.activityPayload?.isInterrupted == true
+    }
+
+    private var activityAccessibilityDescription: String {
+        message.activityPayload?.accessibilityDescription ?? [
+            activityTitle,
+            activityDetail,
+        ]
+            .compactMap { $0?.conversationActivityTrimmedNonEmpty }
+            .joined(separator: L10n.text("ui.list_separator"))
+    }
+
     private var markerSymbol: String {
         if isFailure {
             return "exclamationmark.circle.fill"
+        }
+        if isInterrupted {
+            return "stop.circle.fill"
         }
         if isApprovedInteraction || (message.kind == .userInput && !isSkippedInteraction) {
             return "checkmark.circle.fill"
@@ -395,6 +426,9 @@ struct ConversationActivityRow: View, Equatable {
         }
         if message.activityPayload?.category == .editFile {
             return "pencil"
+        }
+        if let toolKind = message.activityPayload?.toolPresentationKind {
+            return toolKind.systemImageName
         }
         return "circle.fill"
     }
@@ -437,6 +471,13 @@ struct ConversationActivityRow: View, Equatable {
 }
 
 enum ProcessedActivitySymbol {
+    static func symbolName(for payload: ConversationActivityPayload) -> String {
+        if let toolKind = payload.toolPresentationKind {
+            return toolKind.systemImageName
+        }
+        return symbolName(for: payload.category)
+    }
+
     static func symbolName(for category: ConversationActivityCategory) -> String {
         switch category {
         case .thinking:

@@ -166,7 +166,7 @@ struct RuntimeSummaryCard: View {
                 if let toolName = payload.toolName, payload.category == .toolCall {
                     activityDetailRow(L10n.text("ui.tools"), value: toolName, monospaced: true)
                 }
-                let statusText = [payload.status.map { L10n.format("ui.status_value", $0) }, payload.exitCode.map { L10n.format("ui.exit_code_value", $0) }]
+                let statusText = [payload.displayStatusText.map { L10n.format("ui.status_value", $0) }, payload.exitCode.map { L10n.format("ui.exit_code_value", $0) }]
                     .compactMap { $0 }
                     .joined(separator: " · ")
                 if !statusText.isEmpty {
@@ -273,8 +273,8 @@ struct RuntimeSummaryCard: View {
     }
 
     private var symbolName: String {
-        if let category = message.activityPayload?.category {
-            return ProcessedActivitySymbol.symbolName(for: category)
+        if let payload = message.activityPayload {
+            return ProcessedActivitySymbol.symbolName(for: payload)
         }
         switch message.kind {
         case .commentary:

@@ -3469,6 +3469,363 @@
         }
       }
     },
+    "ui.continue_subagent" : {
+      "comment" : "User-facing UI text for continuing an actual collaboration subagent, distinct from resuming an independent Codex task.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Continue subagent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续子 Agent"
+          }
+        }
+      }
+    },
+    "ui.interrupt_subagent" : {
+      "comment" : "User-facing UI text for interrupting an actual collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interrupt subagent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中断子 Agent"
+          }
+        }
+      }
+    },
+    "ui.interrupted_status" : {
+      "comment" : "User-facing terminal status for an interrupted activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interrupted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已中断"
+          }
+        }
+      }
+    },
+    "ui.perform_subagent_collaboration" : {
+      "comment" : "User-facing UI text for a collaboration subagent action whose exact operation is unavailable.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Coordinate subagents"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行子 Agent 协作"
+          }
+        }
+      }
+    },
+    "ui.query_linear" : {
+      "comment" : "User-facing UI text for a safe generic Linear query.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query Linear"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询 Linear"
+          }
+        }
+      }
+    },
+    "ui.query_linear_issues" : {
+      "comment" : "User-facing UI text for listing or searching Linear issues.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query Linear issues"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询 Linear Issue"
+          }
+        }
+      }
+    },
+    "ui.query_subagents" : {
+      "comment" : "User-facing UI text for listing actual collaboration subagents.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query subagents"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询子 Agent"
+          }
+        }
+      }
+    },
+    "ui.query_task_list" : {
+      "comment" : "User-facing UI text for listing independent Codex tasks.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query task list"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询任务列表"
+          }
+        }
+      }
+    },
+    "ui.read_independent_task" : {
+      "comment" : "User-facing UI text for reading an independent Codex task.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read independent task"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取独立任务"
+          }
+        }
+      }
+    },
+    "ui.read_issue_comments" : {
+      "comment" : "User-facing UI text for reading Linear issue comments.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read issue comments"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 Issue 评论"
+          }
+        }
+      }
+    },
+    "ui.read_linear" : {
+      "comment" : "User-facing UI text for a safe generic Linear read.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read Linear data"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 Linear"
+          }
+        }
+      }
+    },
+    "ui.read_linear_issue" : {
+      "comment" : "User-facing UI text for reading one Linear issue.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read Linear issue"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 Linear Issue"
+          }
+        }
+      }
+    },
+    "ui.resume_independent_task" : {
+      "comment" : "User-facing UI text for resuming or continuing an independent Codex task.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resume independent task"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复独立任务"
+          }
+        }
+      }
+    },
+    "ui.start_independent_task" : {
+      "comment" : "User-facing UI text for starting a separate Codex task, distinct from a collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start independent task"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动独立任务"
+          }
+        }
+      }
+    },
+    "ui.start_subagent" : {
+      "comment" : "User-facing UI text for starting an actual collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start subagent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动子 Agent"
+          }
+        }
+      }
+    },
+    "ui.timed_out_status" : {
+      "comment" : "User-facing terminal status for a timed-out activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timed out"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已超时"
+          }
+        }
+      }
+    },
+    "ui.update_issue_comments" : {
+      "comment" : "User-facing UI text for creating or updating Linear issue comments.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update issue comments"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新 Issue 评论"
+          }
+        }
+      }
+    },
+    "ui.update_linear" : {
+      "comment" : "User-facing UI text for a safe generic Linear write.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update Linear"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新 Linear"
+          }
+        }
+      }
+    },
+    "ui.update_linear_issue" : {
+      "comment" : "User-facing UI text for creating or updating a Linear issue.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update Linear issue"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新 Linear Issue"
+          }
+        }
+      }
+    },
+    "ui.wait_for_subagent_result" : {
+      "comment" : "User-facing UI text for waiting on an actual collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for subagent result"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待子 Agent 结果"
+          }
+        }
+      }
+    },
+    "ui.wait_for_task_results" : {
+      "comment" : "User-facing UI text for waiting on independent Codex tasks.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for task results"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待任务结果"
+          }
+        }
+      }
+    },
     "ui.can_be_used_for_session_tasks_after_configuration" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

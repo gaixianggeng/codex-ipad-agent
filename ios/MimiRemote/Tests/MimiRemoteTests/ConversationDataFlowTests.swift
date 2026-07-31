@@ -858,6 +858,7 @@ final class ConversationDataFlowTests: XCTestCase {
 
         XCTAssertEqual(payload.category, .runCommand)
         XCTAssertNil(payload.commandPresentationKind)
+        XCTAssertNil(payload.toolPresentationKind)
     }
 
     func testActivityPayloadToleratesFutureCommandPresentationKind() throws {
@@ -866,6 +867,14 @@ final class ConversationDataFlowTests: XCTestCase {
         let payload = try JSONDecoder().decode(ConversationActivityPayload.self, from: data)
 
         XCTAssertEqual(payload.commandPresentationKind, .execution)
+    }
+
+    func testActivityPayloadToleratesFutureToolPresentationKind() throws {
+        let data = Data(#"{"category":"tool_call","display_title":"调用工具","status":"completed","tool_name":"future_runtime.unknown_action","file_paths":[],"tool_presentation_kind":"future_kind"}"#.utf8)
+
+        let payload = try JSONDecoder().decode(ConversationActivityPayload.self, from: data)
+
+        XCTAssertEqual(payload.toolPresentationKind, .generic)
     }
 
     func testActivityPresentationHidesProtocolNoiseAndKeepsRawDiagnostics() throws {
@@ -900,12 +909,192 @@ final class ConversationDataFlowTests: XCTestCase {
         let futurePayload = try XCTUnwrap(ConversationActivityPayload(item: futureStatus))
 
         XCTAssertEqual(futurePayload.displayTitle, L10n.text("ui.call_tool"))
+        XCTAssertEqual(futurePayload.subtitle, "future_runtime.unknown_action")
+        XCTAssertEqual(futurePayload.toolName, "future_runtime.unknown_action")
         XCTAssertNil(futurePayload.displayStatusText)
         XCTAssertFalse(futurePayload.summaryText.lowercased().contains("unknown"))
         XCTAssertEqual(
             ConversationActivityPayload.plainProgressText("**Planning release build**\n`ENABLE_TESTABILITY=YES`"),
             "Planning release build\nENABLE_TESTABILITY=YES"
         )
+    }
+
+    func testToolActivityUsesTrustedLinearTaskAndSubagentSemantics() throws {
+        let cases: [(
+            type: String,
+            namespaceKey: String,
+            namespace: String,
+            tool: String,
+            titleKey: String,
+            kind: ConversationToolPresentationKind
+        )] = [
+            ("mcpToolCall", "server", "linear", "list_issues", "ui.query_linear_issues", .linearQuery),
+            ("mcpToolCall", "server", "linear", "get_issue", "ui.read_linear_issue", .linearQuery),
+            ("mcpToolCall", "server", "linear", "list_comments", "ui.read_issue_comments", .linearComment),
+            ("mcpToolCall", "server", "linear", "save_issue", "ui.update_linear_issue", .linearUpdate),
+            ("mcpToolCall", "server", "linear", "save_comment", "ui.update_issue_comments", .linearUpdate),
+            ("dynamicToolCall", "namespace", "codex_app", "list_threads", "ui.query_task_list", .independentTaskQuery),
+            ("dynamicToolCall", "namespace", "codex_app", "create_thread", "ui.start_independent_task", .independentTaskStart),
+            ("dynamicToolCall", "namespace", "codex_app", "send_message_to_thread", "ui.resume_independent_task", .independentTaskResume),
+            ("dynamicToolCall", "namespace", "codex_app", "wait_threads", "ui.wait_for_task_results", .independentTaskWait),
+            ("collabAgentToolCall", "namespace", "collaboration", "spawn_agent", "ui.start_subagent", .subagent),
+        ]
+
+        for testCase in cases {
+            let item: [String: CodexAppServerJSONValue] = [
+                "type": .string(testCase.type),
+                testCase.namespaceKey: .string(testCase.namespace),
+                "tool": .string(testCase.tool),
+                "status": .string("completed"),
+                // 真实样本包含 prompt/body/path 等参数；标题映射不得读取它们。
+                "arguments": .object([
+                    "prompt": .string("private user prompt"),
+                    "path": .string("/Users/private/project"),
+                    "token": .string("secret-token"),
+                ]),
+            ]
+
+            let payload = try XCTUnwrap(ConversationActivityPayload(item: item))
+
+            XCTAssertEqual(payload.displayTitle, L10n.text(testCase.titleKey), testCase.tool)
+            XCTAssertEqual(payload.toolPresentationKind, testCase.kind, testCase.tool)
+            XCTAssertEqual(payload.displayStatusText, L10n.text("ui.completed_status"), testCase.tool)
+            XCTAssertTrue(payload.accessibilityDescription.contains(L10n.text("ui.completed_status")), testCase.tool)
+            XCTAssertFalse(payload.summaryText.contains("private user prompt"), testCase.tool)
+            XCTAssertFalse(payload.summaryText.contains("secret-token"), testCase.tool)
+            XCTAssertFalse(payload.summaryText.contains("/Users/private"), testCase.tool)
+        }
+        XCTAssertNotEqual(
+            ConversationToolPresentationKind.independentTaskStart.systemImageName,
+            ConversationToolPresentationKind.subagent.systemImageName,
+            "独立 Codex 任务与真实子 Agent 必须有不同图标语义"
+        )
+    }
+
+    func testToolActivityKeepsSpecificFailureTimeoutAndInterruptionStates() throws {
+        let cases: [(tool: String, status: String, expectedKey: String, failure: Bool, interrupted: Bool)] = [
+            ("list_threads", "inProgress", "ui.in_progress", false, false),
+            ("create_thread", "failed", "ui.failed_status", true, false),
+            ("wait_threads", "timed_out", "ui.timed_out_status", true, false),
+            ("send_message_to_thread", "interrupted", "ui.interrupted_status", false, true),
+        ]
+
+        for testCase in cases {
+            let payload = try XCTUnwrap(ConversationActivityPayload(item: [
+                "type": .string("dynamicToolCall"),
+                "namespace": .string("codex_app"),
+                "tool": .string(testCase.tool),
+                "status": .string(testCase.status),
+            ]))
+
+            XCTAssertEqual(payload.displayStatusText, L10n.text(testCase.expectedKey), testCase.tool)
+            XCTAssertEqual(payload.isFailure, testCase.failure, testCase.tool)
+            XCTAssertEqual(payload.isInterrupted, testCase.interrupted, testCase.tool)
+            XCTAssertTrue(payload.accessibilityDescription.contains(L10n.text(testCase.expectedKey)), testCase.tool)
+            XCTAssertNotEqual(payload.displayTitle, L10n.text("ui.call_tool"), testCase.tool)
+        }
+    }
+
+    func testHistoryProjectionReplaysToolActionsAcrossAllLifecycleStates() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let cases: [(
+            item: [String: CodexAppServerJSONValue],
+            titleKey: String,
+            statusKey: String
+        )] = [
+            ([
+                "type": .string("mcpToolCall"),
+                "id": .string("linear_done"),
+                "server": .string("linear"),
+                "tool": .string("list_issues"),
+                "status": .string("completed"),
+            ], "ui.query_linear_issues", "ui.completed_status"),
+            ([
+                "type": .string("dynamicToolCall"),
+                "id": .string("tasks_running"),
+                "namespace": .string("codex_app"),
+                "tool": .string("list_threads"),
+                "status": .string("inProgress"),
+            ], "ui.query_task_list", "ui.in_progress"),
+            ([
+                "type": .string("dynamicToolCall"),
+                "id": .string("task_failed"),
+                "namespace": .string("codex_app"),
+                "tool": .string("create_thread"),
+                "status": .string("failed"),
+            ], "ui.start_independent_task", "ui.failed_status"),
+            ([
+                "type": .string("dynamicToolCall"),
+                "id": .string("task_timeout"),
+                "namespace": .string("codex_app"),
+                "tool": .string("wait_threads"),
+                "status": .string("timed_out"),
+            ], "ui.wait_for_task_results", "ui.timed_out_status"),
+            ([
+                "type": .string("dynamicToolCall"),
+                "id": .string("task_interrupted"),
+                "namespace": .string("codex_app"),
+                "tool": .string("send_message_to_thread"),
+                "status": .string("interrupted"),
+            ], "ui.resume_independent_task", "ui.interrupted_status"),
+        ]
+
+        for (index, testCase) in cases.enumerated() {
+            let projected = await runtime.historyMessage(
+                from: testCase.item,
+                sessionID: "history_tools",
+                turnID: "turn_tools",
+                timelineOrdinal: Int64(index),
+                isInjectedUserMessage: false,
+                startedAt: Date(timeIntervalSince1970: 100),
+                completedAt: Date(timeIntervalSince1970: 101),
+                estimatedAt: nil,
+                turnIsInProgress: testCase.statusKey == "ui.in_progress",
+                snapshotReadAt: Date(timeIntervalSince1970: 102)
+            )
+            let message = try XCTUnwrap(projected)
+
+            XCTAssertEqual(message.activityPayload?.displayTitle, L10n.text(testCase.titleKey))
+            XCTAssertEqual(message.activityPayload?.displayStatusText, L10n.text(testCase.statusKey))
+            XCTAssertTrue(message.activityPayload?.accessibilityDescription.contains(L10n.text(testCase.statusKey)) == true)
+        }
+    }
+
+    func testUnknownToolOnlyExposesSanitizedIdentifier() throws {
+        let safePayload = try XCTUnwrap(ConversationActivityPayload(item: [
+            "type": .string("dynamicToolCall"),
+            "namespace": .string("future_runtime"),
+            "tool": .string("unknown_action"),
+            "status": .string("completed"),
+            "arguments": .object(["account": .string("person@example.com")]),
+        ]))
+        XCTAssertEqual(safePayload.subtitle, "future_runtime.unknown_action")
+        XCTAssertFalse(safePayload.accessibilityDescription.contains("person@example.com"))
+
+        let unsafePayload = try XCTUnwrap(ConversationActivityPayload(item: [
+            "type": .string("dynamicToolCall"),
+            "namespace": .string("/Users/private/runtime"),
+            "tool": .string("read@person.example"),
+            "status": .string("completed"),
+            "arguments": .object(["token": .string("secret-token")]),
+        ]))
+        XCTAssertNil(unsafePayload.toolName)
+        XCTAssertNil(unsafePayload.subtitle)
+        XCTAssertEqual(unsafePayload.displayTitle, L10n.text("ui.call_tool"))
+        XCTAssertFalse(unsafePayload.summaryText.contains("private"))
+        XCTAssertFalse(unsafePayload.summaryText.contains("secret-token"))
+
+        let webSearchPayload = try XCTUnwrap(ConversationActivityPayload(item: [
+            "type": .string("webSearch"),
+            "query": .string("private account person@example.com token secret-token"),
+            "status": .string("completed"),
+        ]))
+        XCTAssertEqual(webSearchPayload.displayTitle, L10n.text("ui.web_search"))
+        XCTAssertFalse(webSearchPayload.summaryText.contains("person@example.com"))
+        XCTAssertFalse(webSearchPayload.accessibilityDescription.contains("secret-token"))
     }
 
     func testUnknownCommandActionUsesGenericTitleButKeepsCommandDetails() throws {

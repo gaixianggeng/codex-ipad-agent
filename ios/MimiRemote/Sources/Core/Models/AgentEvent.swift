@@ -771,7 +771,7 @@ struct CodexAppServerEventProjector {
             )
         case "item/started":
             rememberAgentMessageKind(from: params, metadata: metadata)
-            return startedCommandItemEvent(params: params, metadata: metadata)
+            return startedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
             let event = completedAgentMessageEvent(params: params, metadata: metadata)
@@ -1254,17 +1254,25 @@ struct CodexAppServerEventProjector {
         return .processItemCompleted(message, context, metadata)
     }
 
-    private func startedCommandItemEvent(
+    private func startedProcessItemEvent(
         params: [String: CodexAppServerJSONValue],
         metadata: AgentEventMetadata
     ) -> AgentEvent? {
         guard var item = params["item"]?.objectValue,
-              firstString(in: item, keys: ["type"]) == "commandExecution"
+              let type = firstString(in: item, keys: ["type"]),
+              [
+                "commandExecution",
+                "fileChange",
+                "mcpToolCall",
+                "dynamicToolCall",
+                "collabAgentToolCall",
+                "webSearch",
+              ].contains(type)
         else {
             return nil
         }
-        // started 可能早于 status 字段到达。先投影一条可见的运行中消息，completed 再用
-        // 同一 stable message ID 原位覆盖，避免长命令期间页面看起来没有反馈。
+        // started 可能早于 status 字段到达。命令、Tool 与子 Agent 都先投影可见的运行中消息，
+        // completed 再用同一 stable message ID 原位覆盖，避免查询或等待期间页面看起来卡住。
         if firstString(in: item, keys: ["status"]) == nil {
             item["status"] = .string("inProgress")
         }
