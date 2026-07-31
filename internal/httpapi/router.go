@@ -98,6 +98,12 @@ type Router struct {
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
 }
 
+// RouterOptions 只承载必须在构造时固定的进程级资源路径。
+// 空 GatewayTurnClaimStorePath 保持纯内存行为，供普通测试和嵌入式调用使用。
+type RouterOptions struct {
+	GatewayTurnClaimStorePath string
+}
+
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
 	handler, _ := NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
 	return handler
@@ -121,6 +127,37 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 // NewRouterWithRuntimeAndInstallationID 同时注入 runtime 与稳定安装身份。
 // 保留旧构造器作为兼容包装，现有测试和内部调用无需一次性迁移。
 func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string, runtime SessionRuntime) (http.Handler, *Router) {
+	return NewRouterWithRuntimeInstallationIDAndOptions(
+		cfg,
+		registry,
+		manager,
+		checker,
+		version,
+		installationID,
+		runtime,
+		RouterOptions{},
+	)
+}
+
+// NewRouterWithRuntimeInstallationIDAndOptions 由 agentd 生产入口显式注入私有状态路径。
+// 旧构造器保持纯内存默认值，避免单元测试意外读写当前用户目录。
+func NewRouterWithRuntimeInstallationIDAndOptions(
+	cfg config.Config,
+	registry *projects.Registry,
+	manager *session.Manager,
+	checker *doctor.Checker,
+	version string,
+	installationID string,
+	runtime SessionRuntime,
+	options RouterOptions,
+) (http.Handler, *Router) {
+	externalActivity := externalActivitySource(codexhistory.NewDefaultExternalActivityTracker(registry))
+	if strings.TrimSpace(options.GatewayTurnClaimStorePath) != "" {
+		externalActivity = codexhistory.NewDefaultExternalActivityTrackerWithClaimStore(
+			registry,
+			options.GatewayTurnClaimStorePath,
+		)
+	}
 	r := &Router{
 		cfg:            cfg,
 		projects:       registry,
@@ -138,7 +175,7 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
 		fileUploads:                 newFileUploadStore(defaultFileUploadRoot()),
-		externalActivity:            codexhistory.NewDefaultExternalActivityTracker(registry),
+		externalActivity:            externalActivity,
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
