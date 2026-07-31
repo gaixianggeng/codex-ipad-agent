@@ -446,8 +446,7 @@ struct SessionListView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
+            WorkbenchChromeIcon(systemName: systemImage)
         }
         // 顶部导航保留品牌紫；工具栏仅靠明度区分主次，避免刷新与新建重复着色。
         .foregroundStyle(isPrimary ? tokens.primaryText : tokens.secondaryText)

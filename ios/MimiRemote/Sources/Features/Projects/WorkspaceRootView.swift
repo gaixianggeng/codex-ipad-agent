@@ -295,22 +295,24 @@ struct WorkspaceRootView: View {
                         Button {
                             gitInspectionTarget = WorkspaceGitInspectionTarget(project: selectedProject)
                         } label: {
-                            Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
+                            WorkbenchChromeIcon(systemName: "doc.text.magnifyingglass")
                         }
                         .disabled(
                             sessionStore.workspaceGitSummaryByPath[selectedProject.path]?.isRepository == false
                         )
+                        .accessibilityLabel(L10n.text("ui.git_changes"))
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isPresentingOpenWorkspace = true
                     } label: {
-                        Label(L10n.text("ui.open_directory"), systemImage: "folder.badge.plus")
+                        WorkbenchChromeIcon(systemName: "folder.badge.plus")
                     }
                     // 顶栏的栏目选中态已经承担品牌识别；全局目录操作使用系统中性材质，
                     // 避免与选中工作区的梅紫填充形成两个大面积焦点。
                     .foregroundStyle(tokens.primaryText)
+                    .accessibilityLabel(L10n.text("ui.open_directory"))
                 }
             }
     }

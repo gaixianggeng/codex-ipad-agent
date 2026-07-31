@@ -459,15 +459,14 @@ struct WorkbenchSidebarFooter: View {
     private var compactMeButtonLabel: some View {
         Label {
             Text(L10n.text("ui.me"))
+                .font(themeStore.uiFont(.subheadline, weight: .medium))
         } icon: {
-            Image(
+            WorkbenchChromeIcon(
                 systemName: WorkbenchNavigationIcon.me.systemName(
                     isSelected: isMeSelected
                 )
             )
-            .symbolRenderingMode(.hierarchical)
         }
-        .font(themeStore.uiFont(.subheadline, weight: .medium))
     }
 
     @ViewBuilder
@@ -490,8 +489,7 @@ struct WorkbenchSidebarFooter: View {
                 .foregroundStyle(tokens.primaryActionForeground)
             } else {
                 Button(action: onNewSession) {
-                    Image(systemName: "plus")
-                        .font(themeStore.uiFont(size: 15, weight: .semibold))
+                    WorkbenchChromeIcon(systemName: "plus")
                         .frame(width: 36, height: 36)
                         .background(tokens.primaryAction, in: Circle())
                         .overlay {
