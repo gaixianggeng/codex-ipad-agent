@@ -13,12 +13,12 @@
     en: {
       "skip": "Skip to main content",
       "nav.features": "Features",
-      "nav.cta": "Get early access",
+      "nav.cta": "Join TestFlight",
 
       "hero.eyebrow": "Coding agents, on the go",
       "hero.title": "Your agents.<br>Within reach.",
-      "hero.lede": "Run Codex and Claude Code from iPad, iPhone, or Mac—without giving up the terminal at home.",
-      "hero.cta1": "Get early access",
+      "hero.lede": "Purpose-built for iPhone and iPad, with Codex and Claude Code continuing to run on your Mac.",
+      "hero.cta1": "Join TestFlight",
       "hero.cta2": "View on GitHub",
 
       "features.title": "Built to feel local, everywhere.",
@@ -28,8 +28,8 @@
       "features.stable.note": "Connections recover on their own. Queued messages and status stay intact across drops.",
       "features.multi.word": "Multi‑device.",
       "features.multi.note": "iPad, iPhone, and Mac share one workflow—pick up a session wherever you are.",
-      "features.native.word": "Native for iPad.",
-      "features.native.note": "Designed for touch, the sidebar, and a wide-screen workspace—not a shrunk-down desktop page.",
+      "features.native.word": "Native for iPhone and iPad.",
+      "features.native.note": "Designed for compact iPhone navigation and wide iPad workspaces—not one layout stretched across both.",
 
       "runtimes.title": "One client. Two runtimes.",
       "runtimes.lede": "Mimi Remote talks to the agents you already run. Your Mac keeps the session alive; every device is just a window onto it.",
@@ -45,7 +45,7 @@
 
       "footer.eyebrow": "Get early access",
       "footer.title": "Take your coding agents with you.",
-      "footer.cta1": "Get early access",
+      "footer.cta1": "Join TestFlight",
       "footer.cta2": "View on GitHub",
       "footer.docs": "Docs",
       "footer.privacy": "Privacy",
@@ -55,17 +55,17 @@
       "alt.iphoneWorkspace": "The same Mimi Remote workspace on iPhone, in a single column.",
       "alt.cropQueue": "A queue reading 2 items to send, saved on this device, with one item marked last send interrupted before confirmation.",
       "alt.cropSidebar": "The iPad sidebar listing session and workspace, an in-progress task, and recent history.",
-      "alt.cropFaces": "Two projects with personalized character icons, above quick actions to create a new Codex or Claude Code session."
+      "alt.cropFaces": "Multiple workspaces with distinct personalized character icons in the real iPad app."
     },
     zh: {
       "skip": "跳到主要内容",
       "nav.features": "特性",
-      "nav.cta": "抢先体验",
+      "nav.cta": "加入 TestFlight",
 
       "hero.eyebrow": "随身携带的编码 Agent",
       "hero.title": "你的 Agent，<br>触手可及。",
-      "hero.lede": "在 iPad、iPhone 或 Mac 上运行 Codex 与 Claude Code——同时保留家里那台终端。",
-      "hero.cta1": "抢先体验",
+      "hero.lede": "为 iPhone 和 iPad 分别优化，Codex 与 Claude Code 则继续运行在你的 Mac 上。",
+      "hero.cta1": "加入 TestFlight",
       "hero.cta2": "在 GitHub 查看",
 
       "features.title": "在哪都像在本地。",
@@ -75,8 +75,8 @@
       "features.stable.note": "断线自动恢复，待发送消息与状态在掉线后依然完整。",
       "features.multi.word": "多设备。",
       "features.multi.note": "iPad、iPhone、Mac 共用一套工作流——随时接着上一段会话。",
-      "features.native.word": "为 iPad 而生。",
-      "features.native.note": "为触控、侧栏与宽屏工作区专门设计——不是缩小版的桌面页面。",
+      "features.native.word": "为 iPhone 和 iPad 而生。",
+      "features.native.note": "iPhone 采用紧凑导航，iPad 展开宽屏工作区——不是把同一套布局拉伸到两块屏幕。",
 
       "runtimes.title": "一个客户端，两套运行时。",
       "runtimes.lede": "Mimi Remote 直连你已经在用的 Agent。会话由你的 Mac 保活，每台设备只是它的一扇窗。",
@@ -92,7 +92,7 @@
 
       "footer.eyebrow": "抢先体验",
       "footer.title": "把你的编码 Agent 带在身边。",
-      "footer.cta1": "抢先体验",
+      "footer.cta1": "加入 TestFlight",
       "footer.cta2": "在 GitHub 查看",
       "footer.docs": "文档",
       "footer.privacy": "隐私",
@@ -102,7 +102,7 @@
       "alt.iphoneWorkspace": "Mimi Remote 在 iPhone 上，以单列呈现同一工作区。",
       "alt.cropQueue": "一个待发送队列：2 条待发送、已保存在本设备，其中一条标记为上次发送在确认前中断。",
       "alt.cropSidebar": "iPad 侧栏，列出会话与工作区、一个进行中的任务和最近历史。",
-      "alt.cropFaces": "两个带有个性化角色图标的项目，下方是新建 Codex 或 Claude Code 会话的快捷操作。"
+      "alt.cropFaces": "真实 iPad App 中的多个工作区，分别使用不同的个性化角色图标。"
     }
   };
 
