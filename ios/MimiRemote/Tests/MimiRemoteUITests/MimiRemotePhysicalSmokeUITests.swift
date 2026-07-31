@@ -102,6 +102,85 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
+    func testWideIPadFloatingSidebarSurfaceKeepsNavigationUsable() throws {
+        rotate(to: .landscapeLeft)
+
+        if firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 3
+        ) == nil,
+           let showSidebar = firstExistingButton(
+               labels: ["显示边栏", "Show Sidebar"],
+               timeout: 5
+           ) {
+            showSidebar.tap()
+        }
+
+        guard let collapseSidebar = firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 8
+        ) else {
+            XCTFail("iPad 浮动侧栏应提供可访问的收起按钮")
+            return
+        }
+        XCTAssertTrue(
+            app.descendant(identifier: "hostSwitcher.menu").waitForExistence(timeout: 8),
+            "浮动侧栏应保留电脑切换入口"
+        )
+        assertMinimumTouchTarget(collapseSidebar, named: "浮动侧栏收起按钮")
+
+        let sessionFilter = app.descendant(identifier: "sessions.filter")
+        if sessionFilter.waitForExistence(timeout: 5) {
+            XCTAssertGreaterThanOrEqual(
+                sessionFilter.frame.minX,
+                collapseSidebar.frame.maxX,
+                "详情页 leading 工具栏不能被浮动侧栏覆盖"
+            )
+        }
+
+        guard let workspaces = firstExistingButton(
+            labels: ["工作区", "Workspace"],
+            timeout: 5
+        ) else {
+            XCTFail("浮动侧栏应保留工作区入口")
+            return
+        }
+        workspaces.tap()
+        let workspaceBrowser = app.descendant(identifier: "workspace.browser")
+        XCTAssertTrue(
+            workspaceBrowser.waitForExistence(timeout: 8),
+            "工作区主内容应保持可访问"
+        )
+        XCTAssertGreaterThanOrEqual(
+            workspaceBrowser.frame.minX,
+            collapseSidebar.frame.maxX,
+            "展开侧栏后工作区必须获得真实的右侧布局区域，不能只裁切原始整屏内容"
+        )
+
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "MIM-41-iPad-floating-sidebar-landscape"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        collapseSidebar.tap()
+        guard let showSidebar = firstExistingButton(
+            labels: ["显示边栏", "Show Sidebar"],
+            timeout: 8
+        ) else {
+            XCTFail("收起浮动侧栏后应保留原生显示边栏入口")
+            return
+        }
+        assertMinimumTouchTarget(showSidebar, named: "浮动侧栏显示按钮")
+        showSidebar.tap()
+        guard firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 8
+        ) != nil else {
+            XCTFail("重新展开侧栏后导航与选择状态应保持可用")
+            return
+        }
+    }
+
     func testVoiceProviderInlineSelectionSurvivesRotation() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()
