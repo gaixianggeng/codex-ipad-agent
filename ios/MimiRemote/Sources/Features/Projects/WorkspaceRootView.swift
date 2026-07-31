@@ -1383,6 +1383,7 @@ private struct WorkspaceDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var actionButtonHeight: CGFloat = 68
+    @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
     @State private var isLoadingMoreSessions = false
 
     let recentSessions: [AgentSession]
@@ -1516,8 +1517,11 @@ private struct WorkspaceDetailView: View {
                         }
                         Text(sessionLoadState.isLoading ? L10n.text("ui.loading") : L10n.text("ui.refresh"))
                     }
-                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .font(themeStore.uiFont(size: compactActionFontSize, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
+                    // 手动刷新与“显示更多”同属会话列表操作；即使 caption 很短，也保留 44pt 触控区。
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(sessionLoadState.isLoading)
@@ -1584,17 +1588,23 @@ private struct WorkspaceDetailView: View {
                                         .controlSize(.small)
                                 } else {
                                     Image(systemName: "chevron.down")
-                                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                        .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
                                 }
                                 Text(isLoadingMoreSessions ? L10n.text("ui.loading") : L10n.text("ui.show_more"))
                             }
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
                             .foregroundStyle(tokens.secondaryText)
                             .frame(maxWidth: .infinity, minHeight: 46)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .disabled(isLoadingMoreSessions)
+                        .accessibilityLabel(
+                            isLoadingMoreSessions
+                                ? L10n.text("ui.loading")
+                                : L10n.text("ui.show_more")
+                        )
+                        .accessibilityIdentifier("workspace.sessions.loadMore")
                     }
                 }
                 .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))

@@ -35,7 +35,7 @@ extension SessionStore {
         do {
             let page = try await sessionListFirstPage(workspace: workspace, limit: Self.initialSessionPageLimit, reuseRecent: true)
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: workspace.id, page: page)
+            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
         } catch {
             // 恢复快照仍须经过工作区授权校验；单次列表失败不应让用户丢掉上次阅读位置。
         }
@@ -550,7 +550,7 @@ extension SessionStore {
             }
             let pageSessions = sessions(page.sessions, in: workspace)
             replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
 
             if isSelectionLeaseCurrent(foregroundLease),
@@ -687,7 +687,7 @@ extension SessionStore {
                 ),
                 projectID: workspace.id
             )
-            updateSessionPageState(projectID: workspace.id, page: page)
+            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(workspace.id)
         } catch {
             _ = terminateConnectionIfCredentialsInvalid(error)
