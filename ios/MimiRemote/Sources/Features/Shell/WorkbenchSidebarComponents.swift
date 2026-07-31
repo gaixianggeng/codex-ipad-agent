@@ -1,11 +1,38 @@
 import SwiftUI
 
+/// 顶层导航只维护语义与 outline / fill 配对，避免 iPhone Tab 与 iPad 侧栏各自挑选图标。
+enum WorkbenchNavigationIcon {
+    case sessions
+    case workspaces
+    case me
+
+    var normalSystemName: String {
+        switch self {
+        case .sessions: return "bubble.left.and.bubble.right"
+        case .workspaces: return "folder"
+        case .me: return "person.crop.circle"
+        }
+    }
+
+    var selectedSystemName: String {
+        switch self {
+        case .sessions: return "bubble.left.and.bubble.right.fill"
+        case .workspaces: return "folder.fill"
+        case .me: return "person.crop.circle.fill"
+        }
+    }
+
+    func systemName(isSelected: Bool) -> String {
+        isSelected ? selectedSystemName : normalSystemName
+    }
+}
+
 /// 固定导航入口自绘选中态，避免 iOS 26 SidebarListStyle 自动套用过圆的胶囊背景。
 struct WorkbenchSidebarDestinationButton: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let title: String
-    let systemImage: String
+    let icon: WorkbenchNavigationIcon
     let isSelected: Bool
     let tokens: ThemeTokens
     let action: () -> Void
@@ -13,8 +40,9 @@ struct WorkbenchSidebarDestinationButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: systemImage)
+                Image(systemName: icon.systemName(isSelected: isSelected))
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.primaryAction)
                     .frame(width: 24)
 
@@ -89,7 +117,6 @@ struct WorkbenchSidebarContentLayout<Content: View, Footer: View>: View {
 struct WorkbenchSidebarFooter: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let tokens: ThemeTokens
     let usesFloatingSurface: Bool
@@ -119,12 +146,15 @@ struct WorkbenchSidebarFooter: View {
         // 同时仍把完整触控区域留在安全区之上。
         let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
 
-        HStack {
-            meButton
-
-            Spacer(minLength: 0)
-
-            newSessionButton
+        Group {
+            if usesFloatingSurface, !reduceTransparency {
+                // 两个按钮由系统统一合成，但间距足够大，不会在静止状态下粘连成一整块玻璃。
+                GlassEffectContainer(spacing: 16) {
+                    footerButtonRow
+                }
+            } else {
+                footerButtonRow
+            }
         }
         .offset(y: safeAreaVisualOffset)
         .padding(.horizontal, 12)
@@ -138,6 +168,16 @@ struct WorkbenchSidebarFooter: View {
         }
     }
 
+    private var footerButtonRow: some View {
+        HStack {
+            meButton
+
+            Spacer(minLength: 0)
+
+            newSessionButton
+        }
+    }
+
     @ViewBuilder
     private var meButton: some View {
         Group {
@@ -145,20 +185,9 @@ struct WorkbenchSidebarFooter: View {
                 Button(action: onOpenSettings) {
                     meButtonLabel
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
                 .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
-                .background(
-                    isMeSelected ? tokens.selectionFill.opacity(0.42) : Color.clear,
-                    in: Capsule()
-                )
-                .glassEffect(.clear.interactive(), in: Capsule())
-                .overlay {
-                    Capsule()
-                        .stroke(
-                            tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.42),
-                            lineWidth: colorSchemeContrast == .increased ? 1 : 0.75
-                        )
-                }
                 .contentShape(Capsule())
             } else {
                 Button(action: onOpenSettings) {
@@ -185,10 +214,19 @@ struct WorkbenchSidebarFooter: View {
     }
 
     private var meButtonLabel: some View {
-        Label(L10n.text("ui.me"), systemImage: "person.crop.circle")
-            .font(themeStore.uiFont(.subheadline, weight: .medium))
-            .padding(.horizontal, 12)
-            .frame(height: 44)
+        Label {
+            Text(L10n.text("ui.me"))
+        } icon: {
+            Image(
+                systemName: WorkbenchNavigationIcon.me.systemName(
+                    isSelected: isMeSelected
+                )
+            )
+            .symbolRenderingMode(.hierarchical)
+        }
+        .font(themeStore.uiFont(.subheadline, weight: .medium))
+        .padding(.horizontal, 12)
+        .frame(height: 44)
     }
 
     @ViewBuilder
@@ -198,22 +236,15 @@ struct WorkbenchSidebarFooter: View {
                 Button(action: onNewSession) {
                     Image(systemName: "plus")
                         .font(themeStore.uiFont(size: 15, weight: .semibold))
-                        .foregroundStyle(tokens.primaryActionForeground)
-                        .frame(width: 44, height: 44)
-                        // 不使用 glassProminent：它会为圆形按钮追加系统外边距，
-                        // 在 iPad mini 上把 44pt 控件膨胀成过强的主视觉。
-                        // 让主题紫成为玻璃本身的 tint，避免实色底板盖住折射与动态高光。
-                        .glassEffect(
-                            .regular.tint(tokens.primaryAction).interactive(),
-                            in: .circle
-                        )
-                        .overlay {
-                            Circle()
-                                .stroke(Color.white.opacity(0.22), lineWidth: 0.75)
-                        }
-                        .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
+                // 只让系统 ButtonStyle 绘制一层主题色玻璃，不再在 label 内叠材质和白色描边。
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
+                // 视觉尺寸交给系统控件，44pt 仅作为可点击区域，避免玻璃圆面被二次放大。
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Circle())
+                .tint(tokens.primaryAction)
+                .foregroundStyle(tokens.primaryActionForeground)
             } else {
                 Button(action: onNewSession) {
                     Image(systemName: "plus")

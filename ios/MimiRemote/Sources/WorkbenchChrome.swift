@@ -162,44 +162,10 @@ struct WorkbenchFloatingSidebarRevealButton: View {
     let tokens: ThemeTokens
     let action: () -> Void
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
-    @ViewBuilder
     var body: some View {
-        Group {
-            if reduceTransparency {
-                revealButton
-                    .background(tokens.elevatedSurface, in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(tokens.border, lineWidth: 1)
-                    }
-            } else {
-                revealButton
-                    .glassEffect(.clear.interactive(), in: .circle)
-                    .overlay {
-                        if colorSchemeContrast == .increased {
-                            Circle()
-                                .stroke(tokens.border, lineWidth: 1)
-                        }
-                    }
-            }
-        }
-        .accessibilityLabel(L10n.text("ui.show_sidebar"))
-        .accessibilityIdentifier("sidebar.show")
-    }
-
-    private var revealButton: some View {
-        Button(action: action) {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(tokens.primaryText)
-        .hoverEffect(.highlight)
+        WorkbenchFloatingSidebarToggleButton(tokens: tokens, action: action)
+            .accessibilityLabel(L10n.text("ui.show_sidebar"))
+            .accessibilityIdentifier("sidebar.show")
     }
 }
 
@@ -224,22 +190,51 @@ struct WorkbenchFloatingSidebarHeader<Brand: View>: View {
             brand
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button(action: onCollapse) {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(tokens.primaryText)
-            // 收起是低频结构操作，保持完整触控区但移除实体圆盘，给主机状态留出呼吸感。
-            .hoverEffect(.highlight)
-            .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
+            // 收起与展开共用同一个系统玻璃按钮，保证触摸、指针和按压反馈完全一致。
+            WorkbenchFloatingSidebarToggleButton(tokens: tokens, action: onCollapse)
+                .accessibilityLabel(L10n.text("ui.collapse_conversation_list"))
         }
         .padding(.leading, 10)
         .padding(.trailing, 8)
         .padding(.top, 10)
         .padding(.bottom, 6)
+    }
+}
+
+/// 结构切换只保留一层系统按钮玻璃；Reduce Transparency 使用等尺寸实色回退。
+private struct WorkbenchFloatingSidebarToggleButton: View {
+    let tokens: ThemeTokens
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    var body: some View {
+        if reduceTransparency {
+            button
+                .buttonStyle(.plain)
+                .background(tokens.elevatedSurface, in: Circle())
+                .overlay {
+                    Circle()
+                        .stroke(tokens.border, lineWidth: 1)
+                }
+        } else {
+            button
+                // 让 ButtonStyle 自己承载 touch-down 高光，避免 plain button 与 glassEffect 分层。
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+        }
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 15, weight: .semibold))
+        }
+        // 玻璃样式按系统图标控件尺寸绘制；外层只扩充命中区域，避免 44pt label 再叠加样式内边距。
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Circle())
+        .foregroundStyle(tokens.primaryText)
     }
 }
 
