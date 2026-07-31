@@ -1137,6 +1137,13 @@ extension ConversationDataFlowTests {
         XCTAssertNil(thirdPage.nextCursor)
         let claudeCloseCount = await claudeTransport.closeCallCount()
         XCTAssertEqual(claudeCloseCount, 0, "列表翻到末页不能回收可能被后台会话复用的 Claude Runtime")
+
+        let allSessions = firstPage.sessions + secondPage.sessions + thirdPage.sessions
+        XCTAssertEqual(Set(allSessions.map(\.id)).count, allSessions.count)
+        XCTAssertEqual(
+            allSessions.map(SessionIndexStore.orderingDate),
+            allSessions.map(SessionIndexStore.orderingDate).sorted(by: >)
+        )
     }
 
     func testDirectRuntimeRetriesNewSessionAfterStaleInitializationError() async throws {

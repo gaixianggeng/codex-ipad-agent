@@ -464,7 +464,7 @@ extension SessionStore {
         }
         let refreshedSessions = sessions(page.sessions, in: workspace)
         mergeSessionPage(refreshedSessions)
-        updateSessionPageState(projectID: workspace.id, page: page)
+        updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
         clearWorkspaceUnavailable(workspace.id)
 
         guard let target = sessionsByID[route.sessionID],
