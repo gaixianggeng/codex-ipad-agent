@@ -58,7 +58,7 @@ WebSocket 事件通过单一 Channel 顺序归并，避免多个协程并发修�
 
 ### 网络与安全接口
 
-后端公开接口不做破坏性修改，Android 复用现有 REST、25 个 app-server client method 和全部 7 类审批/用户输入反向请求。
+后端公开接口不做破坏性修改，Android 复用现有 REST、26 个 app-server client method 和全部 7 类审批/用户输入反向请求。
 
 - 继续支持 `mimiremote://connect?...` 与 `mimiremote://pair?...`，Android 注册对应 Intent Filter。
 - Android 17 私网连接前按需申请 `ACCESS_LOCAL_NETWORK`；拒绝后不清空档案，展示授权说明和系统设置入口。[Android 17 局域网权限](https://developer.android.com/privacy-and-security/local-network-permission)

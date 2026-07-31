@@ -75,6 +75,15 @@ bash ./scripts/test-conversation-regressions.sh
 字段演进、跨版本矩阵、失败语义和风险边界见
 [Mimi iOS / agentd 版本化契约](docs/mimi-protocol-contracts.md)。
 
+关键用户链路的风险、测试层和 PR Gate selector 映射见
+[关键用户链路分层回归](docs/critical-user-journey-regressions.md)。修改配对、Host
+切换、连接恢复、会话/turn、审批/中断或 Git/Worktree 链路时，先运行：
+
+```bash
+bash ./scripts/check-critical-regressions.sh
+bash ./scripts/test-conversation-regressions.sh
+```
+
 ## 快速 PR Gate
 
 每个 Pull Request 都会产生名称固定的 `PR Gate` check。该 workflow 本身不使用

@@ -78,6 +78,37 @@ extension SessionStore {
             creditsUnlimited: false,
             creditBalance: nil
         )
+        // 固定的年度活动仅用于 Debug 视觉回归，帮助同时检查 iPhone 纵向和 iPad
+        // 左右布局；生产环境始终使用 account/usage/read 的账号数据。
+        var debugCalendar = Calendar(identifier: .gregorian)
+        debugCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dayFormatter = DateFormatter()
+        dayFormatter.calendar = debugCalendar
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.timeZone = debugCalendar.timeZone
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        let debugDailyUsage = (0..<365).compactMap { daysAgo -> AccountTokenUsageDailyBucket? in
+            guard daysAgo % 4 != 0,
+                  daysAgo % 11 != 0,
+                  let date = debugCalendar.date(
+                      byAdding: .day,
+                      value: -daysAgo,
+                      to: now
+                  )
+            else {
+                return nil
+            }
+            let wave = Int64((daysAgo * 37) % 11 + 1)
+            return AccountTokenUsageDailyBucket(
+                startDate: dayFormatter.string(from: date),
+                tokens: wave * wave * 1_800_000
+            )
+        }
+        accountTokenUsage = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 50_160_000_000),
+            dailyUsageBuckets: debugDailyUsage
+        )
+        isAccountTokenUsageUnavailable = false
         let mimiDemo = AgentWorkspace(
             id: "debug-mimi-demo",
             name: "mimi-remote",
@@ -98,6 +129,7 @@ extension SessionStore {
         )
         let selectedSessionID = "debug-session-layout"
         let runningSessionID = "debug-session-running"
+        let historySessionID = "debug-session-workspace"
         // MCP 审批样例只在显式 Debug 参数下出现，用于真机检查 Codex 声明的
         // 一次、会话和永久信任入口；不连接真实 MCP，也不会写入用户授权配置。
         let mcpApproval = appStore.shouldSeedDebugMCPApprovalUI
@@ -145,7 +177,7 @@ extension SessionStore {
                 activeTurnID: "debug-turn-running"
             ),
             AgentSession(
-                id: "debug-session-workspace",
+                id: historySessionID,
                 projectID: sampleApp.id,
                 project: sampleApp.name,
                 dir: sampleApp.path,
@@ -207,11 +239,28 @@ extension SessionStore {
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
         replaceSessionsIfChanged(with: sessions, projectID: nil)
+        if appStore.shouldSeedDebugHistoryUnreadUI,
+           var unreadCandidate = sessions.first(where: { $0.id == historySessionID }) {
+            // 先让未选中的历史会话经历一次“运行中 → 新完成”，以复用生产判定链路。
+            // 该参数只服务 iPhone/iPad 运行态验收，不污染普通 Debug 种子与快照。
+            unreadCandidate.status = SessionStatus.running.rawValue
+            unreadCandidate.activeTurnID = "debug-turn-history-unread"
+            unreadCandidate.updatedAt = now.addingTimeInterval(-60)
+            unreadCandidate.recencyAt = now.addingTimeInterval(-60)
+            upsert(unreadCandidate)
+
+            unreadCandidate.status = SessionStatus.completed.rawValue
+            unreadCandidate.activeTurnID = nil
+            unreadCandidate.updatedAt = now.addingTimeInterval(-30)
+            unreadCandidate.recencyAt = now.addingTimeInterval(-30)
+            upsert(unreadCandidate)
+        }
         _ = commitSelection(
             projectID: mimiDemo.id,
             sessionID: appStore.shouldSeedDebugQueuedTurnsUI ? runningSessionID : selectedSessionID,
             reason: .userOpen
         )
+        markHistorySessionRead(selectedSessionID)
         if appStore.shouldSeedDebugQueuedTurnsUI {
             // 队列样例需要处于可控的运行中会话，才能同时验收“排队（默认）/引导”切换；
             // 普通 Debug 工作台仍保留原来的观察态样例，不改变其接管流程覆盖。
@@ -370,7 +419,7 @@ extension SessionStore {
     /// 连接凭据已经安全提交后，统一等待首屏数据真正可用。
     ///
     /// 这里复用冷启动的重试逻辑，避免扫码、URL Scheme 和手动连接分别维护退避策略。
-    /// 超时只改变展示状态，不回滚已写入 Keychain 的 Token 或当前连接档案；一次性配对票据
+    /// 超时只改变展示状态，不回滚已写入 Keychain 的 Token 或当前连接档案；短期配对票据
     /// 已经兑换成功时，用户也可以直接重试加载，无需重新扫码。
     @discardableResult
     func refreshAfterConnectionCommit(maxWait: TimeInterval) async -> Bool {
@@ -589,11 +638,11 @@ extension SessionStore {
                 }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
-        recentWorkspaceStore.save(
+        let reconciliation = recentWorkspaceStore.saveReconciled(
             nextWorkspaces,
             profileID: appStore.notificationRoutingProfileID
         )
-        setRecentWorkspacesIfChanged(nextWorkspaces)
+        applyRecentWorkspaceReconciliation(reconciliation)
     }
 
     /// 刷新工作区页正在浏览的会话，但不改变全局会话选择或 WebSocket。
@@ -657,8 +706,13 @@ extension SessionStore {
         do {
             // 走 clientFactory（与会话请求同一个注入点）而不是 appStore.client()，
             // 让 resolve 和后续会话加载共用一条可测试链路。
-            let workspace = try await clientFactory().resolveWorkspace(path: trimmed)
-            rememberWorkspace(workspace)
+            let resolvedWorkspace = try await clientFactory().resolveWorkspace(path: trimmed)
+            // resolve 的返回路径是 agentd realpath；同时带上用户输入路径，才能把旧版保存的
+            // 符号链接路径安全迁移到同一 canonical workspace，而不猜测其他同名目录。
+            let workspace = rememberWorkspace(
+                resolvedWorkspace,
+                equivalentPaths: [trimmed]
+            )
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
             let selectionLease = commitSelection(
@@ -702,9 +756,8 @@ extension SessionStore {
                 base: base?.trimmingCharacters(in: .whitespacesAndNewlines),
                 branch: branch?.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-            let workspace = response.workspace
+            let workspace = rememberWorkspace(response.workspace)
             // Worktree 成功创建后作为一个普通 workspace 接入，后续 thread/list 和 thread/start 复用现有 cwd 安全链路。
-            rememberWorkspace(workspace)
             upsertManagedWorktree(WorktreeListItem(workspace: workspace, worktree: response.worktree))
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
@@ -777,7 +830,7 @@ extension SessionStore {
             }
             guard appStore.activeHostScope == hostScope else { return false }
 
-            rememberWorkspace(workspace)
+            _ = rememberWorkspace(workspace)
             clearWorkspaceUnavailable(workspace.id)
             upsert(responseSession)
             insertExpandedProjectID(responseSession.projectID)
@@ -852,8 +905,7 @@ extension SessionStore {
                 base: normalizedOptional(base),
                 branch: normalizedOptional(branch)
             )
-            let workspace = response.workspace
-            rememberWorkspace(workspace)
+            let workspace = rememberWorkspace(response.workspace)
             upsertManagedWorktree(WorktreeListItem(workspace: workspace, worktree: response.worktree))
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
@@ -1157,8 +1209,7 @@ extension SessionStore {
 
     @discardableResult
     func openManagedWorktree(_ item: WorktreeListItem) async -> Bool {
-        let workspace = item.workspace
-        rememberWorkspace(workspace)
+        let workspace = rememberWorkspace(item.workspace)
         clearWorkspaceUnavailable(workspace.id)
         let selectionLease = commitSelection(
             projectID: workspace.id,

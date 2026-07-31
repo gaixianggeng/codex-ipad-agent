@@ -406,12 +406,10 @@ pub async fn handle_turn_start(
         return Err(TurnError::ClaudeRpc(e.to_string()));
     }
 
-    // Backfill the thread preview from the first user message. AppServer
-    // threads are created with an empty preview (thread/start) and, unlike
-    // codex, nothing else fills it in — so clients would fall back to the
-    // "Thread <id>" placeholder title. Mirror the on-disk hydrator, which
-    // uses the first user message's first line as the preview.
-    maybe_backfill_preview(state, &params.thread_id, &params.input).await;
+    // 标题回填只是列表体验，不能阻塞 turn/start ACK。Claude 已经收到输入后可能
+    // 立即产出甚至完成；若这里等待索引落盘，通知就会先于 ACK 很久到达，客户端
+    // 在 actor 重入窗口里容易被迟到 ACK 重新写回旧 active turn。
+    spawn_preview_backfill(state, &params.thread_id, &params.input);
 
     Ok(p::TurnStartResponse { turn })
 }
@@ -449,23 +447,28 @@ fn is_explicit_invalid_model_message(message: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
+/// Schedule preview persistence outside the `turn/start` response path.
+fn spawn_preview_backfill(state: &Arc<ConnectionState>, thread_id: &str, input: &[p::UserInput]) {
+    let Some(preview) = preview_from_input(input) else {
+        return;
+    };
+    let state = Arc::clone(state);
+    let thread_id = thread_id.to_string();
+    tokio::spawn(async move {
+        maybe_backfill_preview(&state, &thread_id, preview).await;
+    });
+}
+
 /// If the thread's preview is still empty, backfill it from the first line of
-/// the user's message. Fire-and-forget: any lookup/persist failure is ignored
-/// since a missing preview only degrades the title, never the turn.
-async fn maybe_backfill_preview(
-    state: &Arc<ConnectionState>,
-    thread_id: &str,
-    input: &[p::UserInput],
-) {
+/// the user's message. Any lookup/persist failure is ignored since a missing
+/// preview only degrades the title, never the turn.
+async fn maybe_backfill_preview(state: &Arc<ConnectionState>, thread_id: &str, preview: String) {
     let Some(entry) = state.thread_index().lookup(thread_id).await else {
         return;
     };
     if !entry.preview.trim().is_empty() {
         return;
     }
-    let Some(preview) = preview_from_input(input) else {
-        return;
-    };
     let _ = state
         .thread_index()
         .update_preview_and_updated_at(thread_id, preview, chrono::Utc::now())
@@ -1386,8 +1389,9 @@ mod tests {
             .unwrap();
 
         let input = vec![text_input("你好世界\n更多内容")];
-        maybe_backfill_preview(&state, "empty", &input).await;
-        maybe_backfill_preview(&state, "named", &input).await;
+        let preview = preview_from_input(&input).unwrap();
+        maybe_backfill_preview(&state, "empty", preview.clone()).await;
+        maybe_backfill_preview(&state, "named", preview).await;
 
         assert_eq!(
             state.thread_index().lookup("empty").await.unwrap().preview,

@@ -44,6 +44,27 @@ struct SessionRuntimePresentation: Equatable {
     }
 }
 
+/// 未读只是一条历史结果的轻量提示，不承担进行状态，也不参与点击命中区域。
+/// 视觉点隐藏给 VoiceOver，完整语义由会话行的 accessibilityValue 提供。
+struct SessionUnreadIndicator: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Circle()
+            .fill(tokens.primaryAction)
+            .frame(width: 7, height: 7)
+            .overlay {
+                Circle()
+                    .stroke(tokens.background.opacity(0.72), lineWidth: 0.75)
+            }
+            .fixedSize()
+            .accessibilityHidden(true)
+    }
+}
+
 /// 会话列表里的运行时标识使用中性胶囊承载品牌图标和名称。
 /// 它需要比普通元数据更容易扫读，但不能抢过会话标题和需要处理的状态。
 struct SessionRuntimeBadge: View {
@@ -84,6 +105,36 @@ struct SessionRuntimeBadge: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(presentation.title)
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// 置顶属于用户主动设置的稳定状态，用品牌紫实底与白色钉子提升扫读辨识度。
+/// 组件统一服务规划 Tab、工作区最近规划和侧栏，避免三个入口各自使用不同强调方式。
+struct SessionPinnedBadge: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var compact = false
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let side: CGFloat = compact ? 17 : 20
+
+        Image(systemName: "pin.fill")
+            .font(themeStore.uiFont(size: compact ? 8 : 10, weight: .bold))
+            .foregroundStyle(tokens.primaryActionForeground)
+            .frame(width: side, height: side)
+            .background(
+                tokens.primaryAction,
+                in: RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                    .stroke(tokens.primaryActionForeground.opacity(0.18), lineWidth: 0.5)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(L10n.text("ui.pinned"))
+            .fixedSize()
     }
 }
 
@@ -412,11 +463,20 @@ struct SessionListView: View {
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
                 isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+                isUnread: sessionStore.isHistorySessionUnread(session),
                 style: .library,
                 searchSnippet: sessionStore.sessionSearchSnippet(for: session.id)
             )
             .contentShape(Rectangle())
             .onTapGesture { select(session) }
+            .accessibilityElement(children: .combine)
+            .accessibilityValue(
+                sessionStore.isHistorySessionUnread(session)
+                    ? L10n.text("ui.unread_result")
+                    : ""
+            )
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { select(session) }
             .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
             .listRowInsets(.init(top: 4, leading: 20, bottom: 4, trailing: 20))
@@ -513,6 +573,7 @@ struct SessionIndexRow: View {
     let reminder: SessionReminder?
     let isObserving: Bool
     let isExternalReadOnly: Bool
+    var isUnread = false
     let style: SessionIndexRowStyle
     var searchSnippet: String? = nil
 
@@ -528,6 +589,10 @@ struct SessionIndexRow: View {
                     .truncationMode(.tail)
                     .layoutPriority(1)
 
+                if isUnread {
+                    SessionUnreadIndicator()
+                }
+
                 Spacer(minLength: 8)
 
                 if style == .library {
@@ -539,7 +604,9 @@ struct SessionIndexRow: View {
             }
 
             HStack(spacing: 6) {
-                if isPinned { Image(systemName: "pin.fill") }
+                if isPinned {
+                    SessionPinnedBadge(compact: style == .sidebar)
+                }
                 if isArchived { Image(systemName: "archivebox.fill") }
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
@@ -616,7 +683,8 @@ struct SessionIndexRow: View {
         }
         .padding(.horizontal, style == .sidebar ? 10 : 14)
         .padding(.vertical, style == .sidebar ? 6 : 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // 视觉仍保持紧凑，但整个会话行至少保留 44pt，兼顾触控、指针和全键盘访问。
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .background(rowBackground(tokens: tokens), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(alignment: .leading) {
             if isSelected {

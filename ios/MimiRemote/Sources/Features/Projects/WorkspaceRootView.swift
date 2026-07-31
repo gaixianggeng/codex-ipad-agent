@@ -112,10 +112,15 @@ enum WorkspaceStripLayout {
 enum WorkspaceSessionAgeBoundary {
     static let staleInterval: TimeInterval = 12 * 60 * 60
 
-    static func firstStaleIndex(in sessions: [AgentSession], now: Date = Date()) -> Int? {
+    static func firstStaleIndex(
+        in sessions: [AgentSession],
+        excludingSessionIDs: Set<SessionID> = [],
+        now: Date = Date()
+    ) -> Int? {
         // 工作区会话已经按 SessionIndexStore.orderingDate 倒序排列；
-        // 这里复用同一时间口径，避免列表顺序与 12 小时分组依据不一致。
+        // 置顶会话可以跨越时间分组，因此排除后再寻找普通会话的 12 小时边界。
         sessions.firstIndex { session in
+            !excludingSessionIDs.contains(session.id) &&
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
     }
@@ -171,7 +176,6 @@ struct WorkspaceRootView: View {
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     @State private var isPresentingOpenWorkspace = false
-    @State private var pendingWorkspaceRemoval: AgentProject?
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
 
     init(
@@ -268,29 +272,6 @@ struct WorkspaceRootView: View {
                     }
             }
             .presentationDetents([.large])
-        }
-        .confirmationDialog(
-            L10n.text("ui.remove_directory"),
-            isPresented: Binding(
-                get: { pendingWorkspaceRemoval != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        pendingWorkspaceRemoval = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let project = pendingWorkspaceRemoval {
-                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
-                    removeWorkspace(project)
-                }
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingWorkspaceRemoval = nil
-            }
-        } message: {
-            Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
     }
@@ -488,7 +469,7 @@ struct WorkspaceRootView: View {
                                     tokens: tokens,
                                     action: {},
                                     onOpenGitChanges: {},
-                                    onRemove: {}
+                                    onConfirmRemove: {}
                                 )
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .redacted(reason: .placeholder)
@@ -544,10 +525,8 @@ struct WorkspaceRootView: View {
                                     selectedWorkspaceID = project.id
                                 } onOpenGitChanges: {
                                     gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
-                                } onRemove: {
-                                    // 当前浏览中的卡片不允许移除；用户需先切到正确工作区，再处理误开的目录。
-                                    guard selectedWorkspaceID != project.id else { return }
-                                    pendingWorkspaceRemoval = project
+                                } onConfirmRemove: {
+                                    removeWorkspace(project)
                                 }
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .id(project.id)
@@ -587,6 +566,7 @@ struct WorkspaceRootView: View {
         return WorkspaceDetailView(
             // 工作区详情承担完整历史浏览，展示所有已加载页；项目侧栏才保留 5 条预览窗口。
             recentSessions: sessionStore.sessions(forProjectID: project.id),
+            unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
             canLoadMoreSessions: sessionStore.canLoadMoreSessions(projectID: project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
@@ -649,13 +629,19 @@ struct WorkspaceRootView: View {
            projects.contains(where: { $0.id == selectedWorkspaceID }) {
             return
         }
+        if let selectedWorkspaceID {
+            let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
+            if projects.contains(where: { $0.id == retainedID }) {
+                self.selectedWorkspaceID = retainedID
+                return
+            }
+        }
         selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
         } ?? projects.first?.id
     }
 
     private func removeWorkspace(_ project: AgentProject) {
-        pendingWorkspaceRemoval = nil
         guard selectedWorkspaceID != project.id else { return }
         sessionLoadStates.removeValue(forKey: project.id)
         sessionLoadInvocationTokens.remove(for: project.id)
@@ -787,8 +773,9 @@ private struct WorkspaceLibraryCard: View {
     let tokens: ThemeTokens
     let action: () -> Void
     let onOpenGitChanges: () -> Void
-    let onRemove: () -> Void
+    let onConfirmRemove: () -> Void
     @State private var isPresentingIconPicker = false
+    @State private var isPresentingRemoveConfirmation = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -813,9 +800,12 @@ private struct WorkspaceLibraryCard: View {
                 }
 
                 if !isSelected {
-                    Button(role: .destructive, action: onRemove) {
+                    Button(role: .destructive) {
+                        isPresentingRemoveConfirmation = true
+                    } label: {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
                     }
+                    .accessibilityIdentifier("workspace.remove.request.\(project.id)")
                 }
             } label: {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "ellipsis.circle")
@@ -826,6 +816,24 @@ private struct WorkspaceLibraryCard: View {
             }
             .menuStyle(.button)
             .accessibilityLabel(L10n.text("ui.workspace_actions"))
+            .accessibilityIdentifier("workspace.card.actions.\(project.id)")
+            // iPad 会把 confirmationDialog 适配成 popover；必须挂在真实的 44pt 操作源上，
+            // 让系统在旋转和分栏宽度变化时从当前卡片计算箭头与安全区域，而不是使用整页根视图。
+            .confirmationDialog(
+                L10n.text("ui.remove_directory"),
+                isPresented: $isPresentingRemoveConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
+                    onConfirmRemove()
+                }
+                .accessibilityIdentifier("workspace.remove.confirm.\(project.id)")
+                Button(L10n.text("ui.cancel"), role: .cancel) {
+                    isPresentingRemoveConfirmation = false
+                }
+            } message: {
+                Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
+            }
             .padding(.top, 4)
             .padding(.trailing, 2)
 
@@ -1369,6 +1377,7 @@ private struct WorkspaceEmojiPicker: View {
 }
 
 private struct WorkspaceDetailView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -1377,6 +1386,7 @@ private struct WorkspaceDetailView: View {
     @State private var isLoadingMoreSessions = false
 
     let recentSessions: [AgentSession]
+    let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
     let canLoadMoreSessions: Bool
     let claudeChannelAvailable: Bool
@@ -1534,6 +1544,7 @@ private struct WorkspaceDetailView: View {
                 VStack(spacing: 0) {
                     let firstStaleIndex = WorkspaceSessionAgeBoundary.firstStaleIndex(
                         in: recentSessions,
+                        excludingSessionIDs: sessionStore.pinnedSessionIDs,
                         now: currentDate()
                     )
 
@@ -1552,6 +1563,7 @@ private struct WorkspaceDetailView: View {
                             recentSessionRow(session, tokens: tokens)
                         }
                         .buttonStyle(.plain)
+                        .sessionRowActions(session)
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {
@@ -1671,10 +1683,21 @@ private struct WorkspaceDetailView: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.title)
-                    .font(themeStore.uiFont(.callout, weight: .medium))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if sessionStore.isSessionPinned(session.id) {
+                        SessionPinnedBadge(compact: true)
+                    }
+
+                    Text(session.title)
+                        .font(themeStore.uiFont(.callout, weight: .medium))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+
+                    if unreadHistorySessionIDs.contains(session.id) {
+                        SessionUnreadIndicator()
+                    }
+                }
 
                 HStack(spacing: 6) {
                     if let branch = session.gitBranchName {
@@ -1729,6 +1752,12 @@ private struct WorkspaceDetailView: View {
         .padding(.horizontal, 14)
         .frame(minHeight: 62)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(
+            unreadHistorySessionIDs.contains(session.id)
+                ? L10n.text("ui.unread_result")
+                : ""
+        )
     }
 
     private func shouldShowRecentSessionStatus(

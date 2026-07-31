@@ -22,7 +22,7 @@ Use the isolated review environment below. These credentials are created only fo
 - Access token: `<REVIEW_ACCESS_TOKEN>`
 - Environment availability: `<START_DATE_UTC>` through `<END_DATE_UTC>`
 
-Please use manual connection instead of QR pairing because normal QR tickets are intentionally short-lived and single-use.
+Please use manual connection because normal QR tickets expire after 10 minutes and are not suitable for a long-lived review environment. A QR ticket can be reused only during that window.
 
 ## Review steps
 

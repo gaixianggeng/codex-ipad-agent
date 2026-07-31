@@ -1,6 +1,53 @@
 import Foundation
 import UserNotifications
 
+extension SessionStore {
+    func refreshAccountTokenUsage() async {
+        let hostScope = appStore.activeHostScope
+        guard accountTokenUsageRefreshHostScope != hostScope else {
+            return
+        }
+
+        accountTokenUsageRefreshHostScope = hostScope
+        isRefreshingAccountTokenUsage = true
+        defer {
+            if accountTokenUsageRefreshHostScope == hostScope {
+                accountTokenUsageRefreshHostScope = nil
+                isRefreshingAccountTokenUsage = false
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        do {
+            let snapshot = try await clientFactory().refreshAccountTokenUsage()
+            guard !Task.isCancelled,
+                  appStore.activeHostScope == hostScope,
+                  accountTokenUsageRefreshHostScope == hostScope
+            else {
+                return
+            }
+            if let snapshot {
+                accountTokenUsage = snapshot
+                // summary 可用不代表日粒度历史可用；nil bucket 必须诚实显示“暂不可用”，
+                // 同时仍保留 lifetimeTokens 供卡片标题展示。
+                isAccountTokenUsageUnavailable = snapshot.dailyUsageBuckets == nil
+            } else if accountTokenUsage == nil {
+                isAccountTokenUsageUnavailable = true
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard appStore.activeHostScope == hostScope,
+                  accountTokenUsageRefreshHostScope == hostScope,
+                  accountTokenUsage == nil
+            else {
+                return
+            }
+            isAccountTokenUsageUnavailable = true
+        }
+    }
+}
+
 // SessionStore 的持久化、队列、提醒和历史预算辅助类型，不构成公开 API。
 struct QueuedCommandActionRun: Equatable {
     let path: String
@@ -227,6 +274,175 @@ enum ProfileScopedPersistence {
             AgentAPIClient.normalizedEndpoint($0.endpoint) == normalizedEndpoint
         }
         return matches.count == 1 && matches[0].id == profileID
+    }
+}
+
+/// 历史会话的“完成版本”只使用服务端会话快照里稳定、可跨刷新恢复的水位。
+///
+/// 比较时优先使用双方都具备的最高等级信号，而不是把所有字段拼成哈希：
+/// app-server 的轻量列表和实时事件携带字段不同，同一次完成在后续补齐 recencyAt / revision
+/// 时仍应视为同一版本；排序、分页和重连本身不会改变这些值。
+struct SessionCompletionVersion: Codable, Equatable {
+    var turnID: TurnID?
+    var recencyAt: Date?
+    var revision: ModelRevision?
+    var lastSeq: EventSequence?
+    var updatedAt: Date?
+
+    init(session: AgentSession, completedTurnID: TurnID? = nil) {
+        turnID = Self.normalizedID(completedTurnID)
+        recencyAt = session.recencyAt
+        revision = session.revision.flatMap { $0 > 0 ? $0 : nil }
+        lastSeq = session.lastSeq.flatMap { $0 > 0 ? $0 : nil }
+        updatedAt = session.updatedAt
+    }
+
+    var hasStableSignal: Bool {
+        turnID != nil || recencyAt != nil || revision != nil || lastSeq != nil || updatedAt != nil
+    }
+
+    func representsSameCompletion(as other: SessionCompletionVersion) -> Bool {
+        if let turnID, let otherTurnID = other.turnID {
+            return turnID == otherTurnID
+        }
+        if let recencyAt, let otherRecencyAt = other.recencyAt {
+            return recencyAt == otherRecencyAt
+        }
+        if let revision, let otherRevision = other.revision {
+            return revision == otherRevision
+        }
+        if let lastSeq, let otherLastSeq = other.lastSeq {
+            return lastSeq == otherLastSeq
+        }
+        if let updatedAt, let otherUpdatedAt = other.updatedAt {
+            return updatedAt == otherUpdatedAt
+        }
+        return false
+    }
+
+    /// 同一次完成从实时态过渡到完整列表快照时，把新出现的稳定字段并入同一水位。
+    func merging(_ other: SessionCompletionVersion) -> SessionCompletionVersion {
+        SessionCompletionVersion(
+            turnID: other.turnID ?? turnID,
+            recencyAt: other.recencyAt ?? recencyAt,
+            revision: other.revision ?? revision,
+            lastSeq: other.lastSeq ?? lastSeq,
+            updatedAt: other.updatedAt ?? updatedAt
+        )
+    }
+
+    private init(
+        turnID: TurnID?,
+        recencyAt: Date?,
+        revision: ModelRevision?,
+        lastSeq: EventSequence?,
+        updatedAt: Date?
+    ) {
+        self.turnID = turnID
+        self.recencyAt = recencyAt
+        self.revision = revision
+        self.lastSeq = lastSeq
+        self.updatedAt = updatedAt
+    }
+
+    private static func normalizedID(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized?.isEmpty == false ? normalized : nil
+    }
+}
+
+struct SessionHistoryReadState: Codable, Equatable {
+    var latestCompletion: SessionCompletionVersion?
+    var readCompletion: SessionCompletionVersion?
+    var observedRunning = false
+    var pendingTurnID: TurnID?
+
+    var isUnread: Bool {
+        guard let latestCompletion else {
+            return false
+        }
+        guard let readCompletion else {
+            return true
+        }
+        return !readCompletion.representsSameCompletion(as: latestCompletion)
+    }
+}
+
+/// 已读水位按连接 Profile 隔离，避免不同 Mac 上碰巧相同的 thread ID 串读。
+/// UserDefaults 只保存每个会话的几个标量水位，不引入数据库或服务端协议。
+struct SessionHistoryReadStateStore {
+    typealias Storage = ProfileScopedStorage<[SessionID: SessionHistoryReadState]>
+
+    let defaults: UserDefaults
+    let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = "agentd.sessionHistoryReadStates") {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func load(
+        profileID: String,
+        legacyEndpoint: String,
+        profiles: [ConnectionProfile]
+    ) -> [SessionID: SessionHistoryReadState] {
+        var storage = storage()
+        let didMigrate = storage.migrateLegacyValueIfUnique(
+            profileID: profileID,
+            endpoint: legacyEndpoint,
+            profiles: profiles
+        )
+        if didMigrate {
+            persist(storage)
+        }
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return profiles.isEmpty
+                ? storage.byEndpoint[AgentAPIClient.normalizedEndpoint(legacyEndpoint)] ?? [:]
+                : [:]
+        }
+        if let value = storage.byProfileID[profileKey] {
+            return value
+        }
+        if profiles.isEmpty {
+            return storage.byEndpoint[AgentAPIClient.normalizedEndpoint(legacyEndpoint)] ?? [:]
+        }
+        return [:]
+    }
+
+    func save(_ states: [SessionID: SessionHistoryReadState], profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        storage.byProfileID[profileKey] = states
+        persist(storage)
+    }
+
+    func remove(profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var storage = storage()
+        guard storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+            return
+        }
+        persist(storage)
+    }
+
+    private func storage() -> Storage {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(Storage.self, from: data)
+        else {
+            return Storage()
+        }
+        return decoded
+    }
+
+    private func persist(_ storage: Storage) {
+        guard let data = try? JSONEncoder().encode(storage) else {
+            return
+        }
+        defaults.set(data, forKey: key)
     }
 }
 

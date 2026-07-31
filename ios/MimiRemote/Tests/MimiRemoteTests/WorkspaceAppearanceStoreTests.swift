@@ -529,4 +529,58 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         store.setCustomCharacterID("unknown-character", profileID: "mac-a", projectID: "project-1")
         XCTAssertNil(store.customCharacterID(profileID: "mac-a", projectID: "project-1"))
     }
+
+    func testWorkspaceIdentityMigrationKeepsDestinationCustomPreferences() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        let profileID = "mac-a"
+        let oldID = "legacy-project"
+        let newID = "ws_canonical"
+        store.setCustomCharacterID("nezha", profileID: profileID, projectID: oldID)
+        store.setCustomCharacterID("guanyin", profileID: profileID, projectID: newID)
+        store.setCustomCharacterID(
+            "three-guan-yu",
+            style: .threeKingdoms,
+            profileID: profileID,
+            projectID: oldID
+        )
+        store.setCustomCharacterID(
+            "three-zhuge-liang",
+            style: .threeKingdoms,
+            profileID: profileID,
+            projectID: newID
+        )
+        store.setCustomEmoji("🐱", profileID: profileID, projectID: oldID)
+        store.setCustomEmoji("🤖", profileID: profileID, projectID: newID)
+
+        store.migrateProjectIdentity(
+            profileID: profileID,
+            from: oldID,
+            to: newID
+        )
+
+        XCTAssertEqual(
+            store.customCharacterID(style: .journey, profileID: profileID, projectID: newID),
+            "guanyin"
+        )
+        XCTAssertEqual(
+            store.customCharacterID(
+                style: .threeKingdoms,
+                profileID: profileID,
+                projectID: newID
+            ),
+            "three-zhuge-liang"
+        )
+        XCTAssertEqual(store.customEmoji(profileID: profileID, projectID: newID), "🤖")
+        XCTAssertNil(
+            store.customCharacterID(style: .journey, profileID: profileID, projectID: oldID)
+        )
+        XCTAssertNil(
+            store.customCharacterID(
+                style: .threeKingdoms,
+                profileID: profileID,
+                projectID: oldID
+            )
+        )
+        XCTAssertNil(store.customEmoji(profileID: profileID, projectID: oldID))
+    }
 }

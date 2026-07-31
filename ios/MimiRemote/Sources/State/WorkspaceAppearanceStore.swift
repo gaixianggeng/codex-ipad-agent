@@ -705,6 +705,45 @@ final class WorkspaceAppearanceStore: ObservableObject {
         save(preferences, profileKey: profileKey)
     }
 
+    /// 同一路径的旧 workspace ID 被稳定 ID 替代时迁移本机自定义头像。
+    ///
+    /// 新 ID 上已经存在的明确选择优先；否则复制旧 ID 的选择，随后删除旧键。
+    /// 自动分配值不落盘，无需迁移，后续会直接按稳定 ID 重新计算。
+    func migrateProjectIdentity(
+        profileID: String,
+        from oldProjectID: String,
+        to newProjectID: String
+    ) {
+        guard oldProjectID != newProjectID,
+              let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID),
+              var preferences = storage.byProfileID[profileKey]
+        else {
+            return
+        }
+
+        if preferences.characterIDsByProject[newProjectID] == nil {
+            preferences.characterIDsByProject[newProjectID] =
+                preferences.characterIDsByProject[oldProjectID]
+        }
+        preferences.characterIDsByProject.removeValue(forKey: oldProjectID)
+
+        if preferences.emojiByProject[newProjectID] == nil {
+            preferences.emojiByProject[newProjectID] = preferences.emojiByProject[oldProjectID]
+        }
+        preferences.emojiByProject.removeValue(forKey: oldProjectID)
+
+        for styleID in Array(preferences.characterIDsByStyleAndProject.keys) {
+            var choices = preferences.characterIDsByStyleAndProject[styleID] ?? [:]
+            if choices[newProjectID] == nil {
+                choices[newProjectID] = choices[oldProjectID]
+            }
+            choices.removeValue(forKey: oldProjectID)
+            preferences.characterIDsByStyleAndProject[styleID] =
+                choices.isEmpty ? nil : choices
+        }
+        save(preferences, profileKey: profileKey)
+    }
+
     func remove(profileID: String) {
         guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID),
               storage.byProfileID.removeValue(forKey: profileKey) != nil else {

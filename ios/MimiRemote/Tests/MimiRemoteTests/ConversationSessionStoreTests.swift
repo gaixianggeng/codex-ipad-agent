@@ -216,10 +216,12 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [newer.id, older.id])
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [newer.id, older.id])
 
         store.toggleSessionPinned(older)
         XCTAssertTrue(store.isSessionPinned(older.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [older.id, newer.id])
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [older.id, newer.id])
         XCTAssertEqual(
             preferences.load(profileID: appStore.notificationRoutingProfileID).pinnedSessionIDs,
             [older.id]
@@ -1038,7 +1040,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(operations, ["最新 Tab", "会话 Path"])
     }
 
-    func testWorkbenchVisibleSessionExcludesSettingsTabAndRootPages() {
+    func testWorkbenchVisibleSessionExcludesMeTabAndRootPages() {
         var state = WorkbenchNavigationState(
             route: .session(id: "session-visible", source: .sessions)
         )
@@ -1048,13 +1050,13 @@ extension ConversationDataFlowTests {
             "session-visible"
         )
         _ = state.reduce(
-            .compactTabChanged(.settings),
+            .compactTabChanged(.me),
             usesCompactNavigation: true,
             selectedSessionID: "session-visible"
         )
         XCTAssertNil(
             state.visibleSessionID(usesCompactNavigation: true),
-            "设置 Tab 会保留会话路由，但会话内容已经不可见"
+            "“我的”Tab 会保留会话路由，但会话内容已经不可见"
         )
 
         _ = state.reduce(
@@ -1074,6 +1076,194 @@ extension ConversationDataFlowTests {
         XCTAssertNil(
             state.visibleSessionID(usesCompactNavigation: true),
             "返回会话列表后不应再把 selectedSessionID 当作可见详情"
+        )
+    }
+
+    func testWorkbenchMePreservesCompactRouteAndNavigationStack() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "session-visible", source: .workspaces)
+        )
+        let preservedPath = state.compactWorkspacePath
+
+        let openEffect = state.reduce(
+            .compactTabChanged(.me),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+
+        XCTAssertNil(openEffect)
+        XCTAssertEqual(state.compactSelectedTab, .me)
+        XCTAssertEqual(state.selection, .me)
+        XCTAssertEqual(
+            state.route,
+            .session(id: "session-visible", source: .workspaces)
+        )
+        XCTAssertEqual(state.compactWorkspacePath, preservedPath)
+
+        let returnEffect = state.reduce(
+            .compactTabChanged(.workspaces),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+        XCTAssertNil(returnEffect)
+        XCTAssertEqual(state.selection, .session("session-visible"))
+        XCTAssertEqual(state.compactWorkspacePath, preservedPath)
+    }
+
+    func testWorkbenchMeSurvivesRestorationFeedbackInBothLayouts() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(route: .sessions)
+            _ = state.reduce(
+                .open(.me, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+
+            _ = state.reduce(
+                .synchronize(.workspaces),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+
+            XCTAssertEqual(state.selection, .me)
+            XCTAssertEqual(state.route, .workspaces)
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .me)
+            }
+            XCTAssertNil(
+                state.visibleSessionID(usesCompactNavigation: usesCompactNavigation)
+            )
+        }
+    }
+
+    func testWorkbenchMeSurvivesBackgroundSelectionCommits() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(
+                route: .session(id: "session-original", source: .workspaces)
+            )
+            _ = state.reduce(
+                .open(.me, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: "session-original"
+            )
+
+            _ = state.reduce(
+                .selectionCommitted(SessionSelectionCommit(
+                    sequence: 1,
+                    projectID: nil,
+                    sessionID: "session-replacement",
+                    reason: .identityReplacement(previousID: "session-original")
+                )),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: "session-replacement"
+            )
+            XCTAssertEqual(state.selection, .me)
+            XCTAssertEqual(
+                state.route,
+                .session(id: "session-replacement", source: .workspaces)
+            )
+
+            _ = state.reduce(
+                .selectionCommitted(SessionSelectionCommit(
+                    sequence: 2,
+                    projectID: nil,
+                    sessionID: nil,
+                    reason: .invalidation
+                )),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+            XCTAssertEqual(state.selection, .me)
+            XCTAssertEqual(state.route, .workspaces)
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .me)
+            }
+        }
+    }
+
+    func testAccountTokenUsageMarksNilDailyHistoryUnavailableButKeepsLifetime() async {
+        let snapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 50_160_000_000),
+            dailyUsageBuckets: nil
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageHandler: { snapshot }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAccountTokenUsage()
+
+        XCTAssertEqual(store.accountTokenUsage, snapshot)
+        XCTAssertTrue(
+            store.isAccountTokenUsageUnavailable,
+            "summary 可用但日历史为 nil 时，点格图必须诚实显示暂不可用"
+        )
+    }
+
+    func testAccountTokenUsageDropsLateResponseAfterHostSwitch() async throws {
+        let suiteName = "ConversationSessionStoreTests.TokenUsageHostScope.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let gate = AccountTokenUsageResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            accountTokenUsageHandler: {
+                await gate.response()
+            }
+        )
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations())
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let oldSnapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 1),
+            dailyUsageBuckets: []
+        )
+        let currentSnapshot = AccountTokenUsageSnapshot(
+            summary: AccountTokenUsageSummary(lifetimeTokens: 2),
+            dailyUsageBuckets: []
+        )
+
+        let refreshTask = Task { @MainActor in
+            await store.refreshAccountTokenUsage()
+        }
+        await gate.waitUntilStarted()
+
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "Mac B"),
+            installationID: "installation-b"
+        ))
+        let newScope = appStore.activeHostScope
+        store.accountTokenUsage = currentSnapshot
+        store.accountTokenUsageRefreshHostScope = newScope
+        store.isRefreshingAccountTokenUsage = true
+
+        await gate.resolve(oldSnapshot)
+        await refreshTask.value
+
+        XCTAssertEqual(store.accountTokenUsage, currentSnapshot)
+        XCTAssertEqual(store.accountTokenUsageRefreshHostScope, newScope)
+        XCTAssertTrue(
+            store.isRefreshingAccountTokenUsage,
+            "旧主机请求的 defer 不能清掉新主机正在进行的刷新"
         )
     }
 
@@ -1158,6 +1348,11 @@ extension ConversationDataFlowTests {
     func testWorkbenchNavigationNotificationOpensSessionsDetail() {
         for usesCompactNavigation in [true, false] {
             var state = WorkbenchNavigationState(route: .workspaces)
+            _ = state.reduce(
+                .open(.me, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
 
             let effect = state.reduce(
                 .selectionCommitted(SessionSelectionCommit(
@@ -1571,6 +1766,210 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedProjectID, project.id)
         XCTAssertEqual(store.selectedSessionID, history.id)
         XCTAssertEqual(sockets.count, 1)
+    }
+
+    func testCompletionVersionIgnoresHydrationAndOrderingOnlyChanges() {
+        let original = AgentSession(
+            id: "session-version",
+            projectID: "project-version",
+            project: "project-version",
+            dir: "/tmp/project-version",
+            title: "完成版本",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: "session-version",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 20),
+            recencyAt: Date(timeIntervalSince1970: 18)
+        )
+        let refreshedMetadata = AgentSession(
+            id: original.id,
+            projectID: original.projectID,
+            project: original.project,
+            dir: original.dir,
+            title: "刷新后标题",
+            status: original.status,
+            source: original.source,
+            resumeID: original.resumeID,
+            createdAt: original.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 99),
+            recencyAt: original.recencyAt
+        )
+        let newCompletion = AgentSession(
+            id: original.id,
+            projectID: original.projectID,
+            project: original.project,
+            dir: original.dir,
+            title: original.title,
+            status: original.status,
+            source: original.source,
+            resumeID: original.resumeID,
+            createdAt: original.createdAt,
+            updatedAt: Date(timeIntervalSince1970: 30),
+            recencyAt: Date(timeIntervalSince1970: 30)
+        )
+
+        let originalVersion = SessionCompletionVersion(session: original)
+        XCTAssertTrue(
+            originalVersion.representsSameCompletion(
+                as: SessionCompletionVersion(session: refreshedMetadata)
+            ),
+            "recencyAt 未变化时，标题刷新和 updatedAt 元数据变化不能制造未读"
+        )
+        XCTAssertFalse(
+            originalVersion.representsSameCompletion(
+                as: SessionCompletionVersion(session: newCompletion)
+            )
+        )
+
+        let sparse = AgentSession(
+            id: original.id,
+            projectID: original.projectID,
+            project: original.project,
+            dir: original.dir,
+            title: original.title,
+            status: original.status,
+            source: original.source,
+            resumeID: original.resumeID,
+            createdAt: original.createdAt,
+            updatedAt: original.updatedAt
+        )
+        XCTAssertTrue(
+            SessionCompletionVersion(session: sparse).representsSameCompletion(
+                as: originalVersion
+            ),
+            "轻量列表后续补齐 recencyAt 时，应通过双方共有的 updatedAt 识别为同一次完成"
+        )
+    }
+
+    func testHistoryUnreadPersistsReadAndReopensForNextCompletion() async {
+        let suiteName = "ConversationSessionStoreTests.HistoryUnread.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let readStateStore = SessionHistoryReadStateStore(defaults: defaults)
+        let appStore = AppStore(defaults: defaults)
+        let project = makeProject(id: "project-unread")
+        let initialHistory = makeSession(
+            id: "session-unread",
+            projectID: project.id,
+            title: "初始旧历史",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: "session-unread",
+            updatedAt: Date(timeIntervalSince1970: 10),
+            recencyAt: Date(timeIntervalSince1970: 10)
+        )
+        let conversationStore = ConversationStore()
+        conversationStore.setHistory([
+            CodexHistoryMessage(
+                id: "history-unread-message",
+                role: "assistant",
+                content: "已加载",
+                createdAt: Date(timeIntervalSince1970: 10)
+            )
+        ], sessionID: initialHistory.id)
+        let client = MockSessionStoreClient(projects: [project], sessions: [initialHistory])
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            sessionHistoryReadStateStore: readStateStore,
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+
+        store.sessions = [initialHistory]
+        XCTAssertFalse(store.isHistorySessionUnread(initialHistory), "升级后首次见到的旧历史应建立已读基线")
+
+        let running = makeSession(
+            id: initialHistory.id,
+            projectID: project.id,
+            title: "新一轮运行中",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            resumeID: initialHistory.resumeID,
+            activeTurnID: "turn-1",
+            updatedAt: Date(timeIntervalSince1970: 20),
+            recencyAt: Date(timeIntervalSince1970: 20)
+        )
+        store.sessions = [running]
+        XCTAssertFalse(store.isHistorySessionUnread(running), "进行中会话不能显示历史未读")
+
+        let firstCompletion = makeSession(
+            id: initialHistory.id,
+            projectID: project.id,
+            title: "第一轮完成",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: initialHistory.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 21),
+            recencyAt: Date(timeIntervalSince1970: 21)
+        )
+        store.sessions = [firstCompletion]
+        XCTAssertTrue(store.isHistorySessionUnread(firstCompletion))
+
+        await store.selectSession(firstCompletion)
+        XCTAssertFalse(store.isHistorySessionUnread(firstCompletion), "打开历史会话后应立即标记已读")
+
+        let persisted = readStateStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
+        XCTAssertFalse(try XCTUnwrap(persisted[firstCompletion.id]).isUnread)
+
+        let restartedStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionHistoryReadStateStore: readStateStore,
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        restartedStore.sessions = [firstCompletion]
+        XCTAssertFalse(
+            restartedStore.isHistorySessionUnread(firstCompletion),
+            "App 重启和列表重新加载后不能把已读状态回退"
+        )
+
+        restartedStore.returnToSessionList()
+        let secondRunning = makeSession(
+            id: firstCompletion.id,
+            projectID: project.id,
+            title: "第二轮运行中",
+            status: SessionStatus.running.rawValue,
+            source: "codex",
+            resumeID: firstCompletion.resumeID,
+            activeTurnID: "turn-2",
+            updatedAt: Date(timeIntervalSince1970: 30),
+            recencyAt: Date(timeIntervalSince1970: 30)
+        )
+        restartedStore.sessions = [secondRunning]
+        XCTAssertFalse(restartedStore.isHistorySessionUnread(secondRunning))
+
+        let secondCompletion = makeSession(
+            id: firstCompletion.id,
+            projectID: project.id,
+            title: "第二轮完成",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            resumeID: firstCompletion.resumeID,
+            updatedAt: Date(timeIntervalSince1970: 31),
+            recencyAt: Date(timeIntervalSince1970: 31)
+        )
+        restartedStore.sessions = [secondCompletion]
+        XCTAssertTrue(
+            restartedStore.isHistorySessionUnread(secondCompletion),
+            "同一会话产生新的完成结果后应重新进入未读"
+        )
+
+        restartedStore.sessions = [secondCompletion]
+        XCTAssertTrue(
+            restartedStore.isHistorySessionUnread(secondCompletion),
+            "相同完成版本的重复刷新不能改变未读判定"
+        )
     }
 
     func testSelectingHistorySessionKeepsSelectionWhenMessages404() async {
@@ -3117,6 +3516,204 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.capabilityErrorMessage)
     }
 
+    func testRememberWorkspaceMigratesLegacySelectionSessionsAndCustomAvatar() throws {
+        let suiteName = "WorkspaceIdentityMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(defaults: defaults)
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive-link",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let other = AgentWorkspace(
+            id: "ws_other",
+            name: "other",
+            path: "/Users/me/code/other",
+            lastOpenedAt: Date(timeIntervalSince1970: 5)
+        )
+        let recentStore = RecentWorkspaceStore(defaults: defaults)
+        recentStore.save(
+            [legacy, other],
+            profileID: appStore.notificationRoutingProfileID
+        )
+        let appearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+        appearanceStore.setCustomCharacterID(
+            "nezha",
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: legacy.id
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            workspaceAppearanceStore: appearanceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+        store.reloadRecentWorkspaces()
+        store.sessions = [
+            AgentSession(
+                id: "session-legacy",
+                projectID: legacy.id,
+                project: legacy.name,
+                dir: legacy.path,
+                title: "历史会话",
+                status: "history",
+                source: "codex",
+                resumeID: "thread-legacy",
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2)
+            )
+        ]
+        store.setSelectedProjectID(legacy.id)
+        store.setSessionWorkspaceIDs([legacy.id])
+        store.insertExpandedProjectID(legacy.id)
+
+        let remembered = store.rememberWorkspace(
+            canonical,
+            equivalentPaths: [legacy.path]
+        )
+
+        XCTAssertEqual(remembered.id, canonical.id)
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.sidebarProjects.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.selectedProjectID, canonical.id)
+        XCTAssertEqual(store.retainedWorkspaceID(for: legacy.id), canonical.id)
+        XCTAssertEqual(store.sessions.map(\.projectID), [canonical.id])
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([canonical.id]))
+        XCTAssertEqual(store.expandedProjectIDs, Set([canonical.id]))
+        XCTAssertEqual(
+            appearanceStore.customCharacterID(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: canonical.id
+            ),
+            "nezha"
+        )
+        XCTAssertNil(
+            appearanceStore.customCharacterID(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: legacy.id
+            )
+        )
+    }
+
+    func testColdLaunchWorkspaceMigrationPreservesPersistedWorkspaceFilter() throws {
+        let suiteName = "ColdLaunchWorkspaceIdentityMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(defaults: defaults)
+        let profileID = appStore.notificationRoutingProfileID
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive/",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let other = AgentWorkspace(
+            id: "ws_other",
+            name: "other",
+            path: "/Users/me/code/other",
+            lastOpenedAt: Date(timeIntervalSince1970: 5)
+        )
+        var rawStorage = ProfileScopedStorage<[AgentWorkspace]>()
+        rawStorage.byProfileID[profileID] = [legacy, canonical, other]
+        defaults.set(
+            try JSONEncoder().encode(rawStorage),
+            forKey: "agentd.recentWorkspaces"
+        )
+        let preferenceStore = SessionListPreferenceStore(defaults: defaults)
+        preferenceStore.save(
+            SessionListPreferences(sessionWorkspaceIDs: [legacy.id]),
+            profileID: profileID
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: RecentWorkspaceStore(defaults: defaults),
+            sessionListPreferenceStore: preferenceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([legacy.id]))
+        store.reloadRecentWorkspaces()
+
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([canonical.id]))
+        XCTAssertEqual(
+            preferenceStore.load(profileID: profileID).sessionWorkspaceIDs,
+            Set([canonical.id])
+        )
+    }
+
+    func testOpeningSameResolvedDirectoryTwiceReusesWorkspaceAndSelection() async {
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let typedPath = "/Users/me/code/chat-archive"
+        let workspace = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: typedPath,
+            rootProjectID: "project-root",
+            rootProjectName: "chat-archive",
+            rootProjectPath: typedPath
+        )
+        let recentStore = makeRecentWorkspaceStore(
+            workspaces: [],
+            endpoint: appStore.endpoint
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            workspaceSessions: [workspace.id: []],
+            resolveResults: [typedPath: .success(workspace)]
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            clientFactory: { client }
+        )
+
+        let firstOpenSucceeded = await store.openWorkspace(path: typedPath)
+        XCTAssertTrue(firstOpenSucceeded)
+        let firstOpenedAt = store.recentWorkspaces.first?.lastOpenedAt
+        let secondOpenSucceeded = await store.openWorkspace(path: typedPath)
+        XCTAssertTrue(secondOpenSucceeded)
+
+        XCTAssertEqual(client.requestedResolvePaths, [typedPath, typedPath])
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [workspace.id])
+        XCTAssertEqual(store.selectedProjectID, workspace.id)
+        XCTAssertNotNil(firstOpenedAt)
+        XCTAssertGreaterThanOrEqual(
+            store.recentWorkspaces.first?.lastOpenedAt ?? .distantPast,
+            firstOpenedAt ?? .distantFuture
+        )
+    }
+
 }
 
 private actor GitStatusResponseGate {
@@ -3144,6 +3741,34 @@ private actor GitStatusResponseGate {
 
     func resolve(_ response: GitStatusResponse) {
         continuation?.resume(returning: response)
+        continuation = nil
+    }
+}
+
+private actor AccountTokenUsageResponseGate {
+    private var continuation: CheckedContinuation<AccountTokenUsageSnapshot?, Never>?
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func response() async -> AccountTokenUsageSnapshot? {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            didStart = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func resolve(_ snapshot: AccountTokenUsageSnapshot?) {
+        continuation?.resume(returning: snapshot)
         continuation = nil
     }
 }

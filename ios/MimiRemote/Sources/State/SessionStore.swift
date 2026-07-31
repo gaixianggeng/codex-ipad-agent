@@ -51,6 +51,7 @@ final class SessionStore: ObservableObject {
     @Published var isLoadingMoreSessionSearchResults = false
     @Published var pinnedSessionIDs: Set<SessionID> = []
     @Published var archivedSessionIDs: Set<SessionID> = []
+    @Published private(set) var unreadHistorySessionIDs: Set<SessionID> = []
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
@@ -80,6 +81,9 @@ final class SessionStore: ObservableObject {
     @Published var appServerModelOptions: [CodexAppServerModelOption] = []
     @Published var isClaudeRuntimeChannelAvailable = false
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
+    @Published var accountTokenUsage: AccountTokenUsageSnapshot?
+    @Published var isRefreshingAccountTokenUsage = false
+    @Published var isAccountTokenUsageUnavailable = false
     // 使用量刷新跨设置页、个人页和侧栏共享，由 Store 按 runtime 去重。
     // 视图只观察自己的 provider，避免 Claude loading 禁用其他按钮，也避免
     // 页面关闭后由未结构化 Task 回写已销毁的局部 @State。
@@ -150,13 +154,22 @@ final class SessionStore: ObservableObject {
         connectionSwitchTargetProfileID = profileID
     }
 
+    func setUnreadHistorySessionIDs(_ value: Set<SessionID>) {
+        guard unreadHistorySessionIDs != value else {
+            return
+        }
+        unreadHistorySessionIDs = value
+    }
+
     let appStore: AppStore
     let conversationStore: ConversationStore
     let logStore: LogStore
     let contextStore: SessionContextStore
     let eventReducer: EventReducer
     let recentWorkspaceStore: RecentWorkspaceStore
+    let workspaceAppearanceStore: WorkspaceAppearanceStore
     let sessionListPreferenceStore: SessionListPreferenceStore
+    let sessionHistoryReadStateStore: SessionHistoryReadStateStore
     let sessionControlStateStore: SessionControlStateStore
     let sessionReminderStore: SessionReminderStore
     let sessionReminderScheduler: any SessionReminderScheduling
@@ -255,6 +268,7 @@ final class SessionStore: ObservableObject {
     var deliveredRuntimeNotificationIDs: Set<String> = []
     var locallyCompletedSessionIDs: Set<SessionID> = []
     var locallyCompletedGoalThreadIDs: Set<SessionID> = []
+    var historyReadStateBySessionID: [SessionID: SessionHistoryReadState] = [:]
     var listProjectionBySessionID: [SessionID: SessionListProjection] = [:]
     var recentActivityProjectionBySessionID: [SessionID: SessionRecentActivityProjection] = [:]
     // 队列订阅不依赖当前页面；用户切到其他会话后，原 thread 仍能在完成时继续 FIFO 派发。
@@ -271,6 +285,9 @@ final class SessionStore: ObservableObject {
     var queuedCommandActionRuns: [QueuedCommandActionRun] = []
     var projectsByID: [String: AgentProject] = [:]
     var workspacesByID: [String: AgentWorkspace] = [:]
+    // 工作区页维护独立的本地浏览选择；保留当前 Profile 内的旧→新 ID，
+    // 让卡片列表去重时能原位切换到幸存卡片，而不是跳到全局会话所在工作区。
+    var workspaceIdentityReplacementByOldID: [String: String] = [:]
     var sidebarProjectsByID: [String: AgentProject] = [:]
     var sessionsByID: [SessionID: AgentSession] = [:]
     var sessionIndexByID: [SessionID: Int] = [:]
@@ -318,6 +335,7 @@ final class SessionStore: ObservableObject {
     @Published var historySavingsNoticesBySessionID: [SessionID: HistorySavingsNotice] = [:]
     @Published var dismissedHistorySavingsNoticeEndpoints: Set<String> = []
     var appServerModelOptionsLastRefresh: Date?
+    var accountTokenUsageRefreshHostScope: HostScope?
     @Published var loadingEarlierHistorySessionIDs: Set<SessionID> = []
 
     let foregroundOutputIdleClearDelay: UInt64 = 8_000_000_000
@@ -356,7 +374,9 @@ final class SessionStore: ObservableObject {
         logStore: LogStore,
         contextStore: SessionContextStore? = nil,
         recentWorkspaceStore: RecentWorkspaceStore? = nil,
+        workspaceAppearanceStore: WorkspaceAppearanceStore? = nil,
         sessionListPreferenceStore: SessionListPreferenceStore? = nil,
+        sessionHistoryReadStateStore: SessionHistoryReadStateStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
         sessionReminderStore: SessionReminderStore? = nil,
         historySavingsNoticeStore: HistorySavingsNoticeStore? = nil,
@@ -406,6 +426,16 @@ final class SessionStore: ObservableObject {
         } else {
             self.recentWorkspaceStore = RecentWorkspaceStore()
         }
+        if let workspaceAppearanceStore {
+            self.workspaceAppearanceStore = workspaceAppearanceStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(
+                suiteName: "SessionStore.WorkspaceAppearance.\(UUID().uuidString)"
+            ) ?? .standard
+            self.workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+        } else {
+            self.workspaceAppearanceStore = WorkspaceAppearanceStore()
+        }
         if let sessionListPreferenceStore {
             self.sessionListPreferenceStore = sessionListPreferenceStore
         } else if clientFactory != nil {
@@ -413,6 +443,14 @@ final class SessionStore: ObservableObject {
             self.sessionListPreferenceStore = SessionListPreferenceStore(defaults: defaults)
         } else {
             self.sessionListPreferenceStore = SessionListPreferenceStore()
+        }
+        if let sessionHistoryReadStateStore {
+            self.sessionHistoryReadStateStore = sessionHistoryReadStateStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(suiteName: "SessionStore.HistoryReadStates.\(UUID().uuidString)") ?? .standard
+            self.sessionHistoryReadStateStore = SessionHistoryReadStateStore(defaults: defaults)
+        } else {
+            self.sessionHistoryReadStateStore = SessionHistoryReadStateStore()
         }
         if let sessionControlStateStore {
             self.sessionControlStateStore = sessionControlStateStore
@@ -492,6 +530,7 @@ final class SessionStore: ObservableObject {
         self.externalActivitySleep = externalActivitySleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
+        reloadHistoryReadStates()
         reloadSessionControlStates()
         reloadSessionReminders()
         reloadQueuedTurns()
@@ -1112,7 +1151,10 @@ final class SessionStore: ObservableObject {
 
     /// 会话库不跟随 selectedProjectID 过滤；根侧栏和会话页始终看到同一份跨工作区轻量索引。
     var sessionLibrarySessions: [AgentSession] {
-        sessionsMatchingSearch(sessionsIncludingRemoteSearch(Self.sortedSessions(sessions.filter(isListableSession))))
+        let merged = sessionsIncludingRemoteSearch(sessions.filter(isListableSession))
+        // 规划 Tab 必须直接依赖当前 pinnedSessionIDs 生成顺序，避免只有切换 Tab
+        // 触发整页重建后才看到置顶结果；搜索补入的远端会话也使用同一排序口径。
+        return sessionsMatchingSearch(sortedSessionsForList(merged))
     }
 
     /// 最近列表严格按活动时间排序，置顶只影响完整会话库，不改变“最近”的时间语义。

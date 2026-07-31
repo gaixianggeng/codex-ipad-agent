@@ -434,6 +434,65 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(sandbox["writableRoots"])
     }
 
+    func testAccountTokenUsageBuilderAndParserPreserveInt64AndNullableBuckets() async throws {
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [])
+        XCTAssertEqual(builder.accountUsageRead().method, "account/usage/read")
+        XCTAssertNil(builder.accountUsageRead().params)
+
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let payload = CodexAppServerJSONValue.object([
+            "summary": .object([
+                "lifetimeTokens": .int(50_160_000_000)
+            ]),
+            "dailyUsageBuckets": .array([
+                .object([
+                    "startDate": .string("2026-07-30"),
+                    "tokens": .int(9_223_372_036)
+                ]),
+                .object([
+                    "startDate": .string("2026-07-29"),
+                    "tokens": .int(-10)
+                ])
+            ])
+        ])
+
+        let parsedSnapshot = await runtime.accountTokenUsageSnapshot(fromPayload: payload)
+        let snapshot = try XCTUnwrap(parsedSnapshot)
+        XCTAssertEqual(snapshot.summary.lifetimeTokens, 50_160_000_000)
+        XCTAssertEqual(
+            snapshot.dailyUsageBuckets,
+            [
+                AccountTokenUsageDailyBucket(
+                    startDate: "2026-07-30",
+                    tokens: 9_223_372_036
+                ),
+                AccountTokenUsageDailyBucket(startDate: "2026-07-29", tokens: 0)
+            ]
+        )
+
+        let parsedNullBuckets = await runtime.accountTokenUsageSnapshot(
+            fromPayload: .object([
+                "summary": .object([:]),
+                "dailyUsageBuckets": .null
+            ])
+        )
+        let nullBuckets = try XCTUnwrap(parsedNullBuckets)
+        XCTAssertNil(nullBuckets.summary.lifetimeTokens)
+        XCTAssertNil(nullBuckets.dailyUsageBuckets)
+
+        let parsedEmptyBuckets = await runtime.accountTokenUsageSnapshot(
+            fromPayload: .object([
+                "summary": .object([:]),
+                "dailyUsageBuckets": .array([])
+            ])
+        )
+        let emptyBuckets = try XCTUnwrap(parsedEmptyBuckets)
+        XCTAssertEqual(emptyBuckets.dailyUsageBuckets, [])
+    }
+
     func testDeterministicGatewayPolicyFailureStopsReconnectOnlyForHardPolicyErrors() {
         // 硬策略拒绝：重连必然复现，应停止自动重连。
         XCTAssertTrue(SessionStore.isDeterministicGatewayPolicyFailure(
@@ -1943,6 +2002,66 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.questions.map(\.id), ["confirmed", "environment"])
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "confirmed" })?.options.map(\.label), ["true", "false"])
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "environment" })?.options.map(\.label), ["staging", "production"])
+    }
+
+    func testUnmarkedEmptyOrUnrenderableMcpSchemaFailsClosed() {
+        let requests = [
+            CodexAppServerServerRequest(
+                id: .string("mcp-empty"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow the linear MCP server to run tool \"save_issue\"?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([:])
+                    ])
+                ])
+            ),
+            CodexAppServerServerRequest(
+                id: .string("mcp-object"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow this MCP request?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "nested": .object(["type": .string("object")])
+                        ])
+                    ])
+                ])
+            )
+        ]
+
+        for request in requests {
+            var projector = CodexAppServerEventProjector()
+            XCTAssertNil(
+                projector.project(request),
+                "没有 Codex 工具审批标记的空或不可渲染表单不能暴露授权入口"
+            )
+        }
+    }
+
+    func testUnknownMcpElicitationModeDoesNotExposeApproval() {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-future"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "serverName": .string("unknown"),
+                "mode": .string("future-destructive-mode"),
+                "message": .string("Approve everything")
+            ])
+        )
+        var projector = CodexAppServerEventProjector()
+        XCTAssertNil(projector.project(request))
     }
 
     func testCodexMcpToolElicitationProjectsToApprovalWithDeclaredTrustChoices() throws {

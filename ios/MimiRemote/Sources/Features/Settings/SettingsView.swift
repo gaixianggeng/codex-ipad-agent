@@ -1,5 +1,219 @@
 import SwiftUI
 
+/// 设置首页只使用这一套尺寸基线，避免 NavigationLink、Picker、Toggle 和自定义摘要
+/// 各自决定行高与图标尺寸，导致真机滚动时出现不一致的视觉节奏。
+enum SettingsLayoutMetrics {
+    static let standardRowHeight: CGFloat = 52
+    static let accessibilityRowHeight: CGFloat = 76
+    static let rowHorizontalInset: CGFloat = 16
+    static let iconSlot: CGFloat = 28
+    static let symbolPointSize: CGFloat = 18
+    static let sectionSpacing: CGFloat = 24
+    static let statusModuleCornerRadius: CGFloat = 20
+}
+
+struct TokenActivityDay: Identifiable, Equatable {
+    let date: Date
+    let tokens: Int64
+    let intensity: Int
+    let isFuture: Bool
+
+    var id: Date { date }
+}
+
+struct TokenActivityWeek: Identifiable, Equatable {
+    let startDate: Date
+    let days: [TokenActivityDay]
+
+    var id: Date { startDate }
+}
+
+enum TokenActivityCalendar {
+    static func weeks(
+        buckets: [AccountTokenUsageDailyBucket],
+        endingAt: Date = Date(),
+        weekCount: Int = 53
+    ) -> [TokenActivityWeek] {
+        guard weekCount > 0 else { return [] }
+        let calendar = utcCalendar
+        let endDay = calendar.startOfDay(for: endingAt)
+        let weekday = calendar.component(.weekday, from: endDay)
+        let daysSinceMonday = (weekday - calendar.firstWeekday + 7) % 7
+        let currentWeekStart = calendar.date(
+            byAdding: .day,
+            value: -daysSinceMonday,
+            to: endDay
+        ) ?? endDay
+        let firstWeekStart = calendar.date(
+            byAdding: .weekOfYear,
+            value: -(weekCount - 1),
+            to: currentWeekStart
+        ) ?? currentWeekStart
+
+        var tokensByDate: [Date: Int64] = [:]
+        for bucket in buckets {
+            guard let date = date(from: bucket.startDate, calendar: calendar),
+                  date >= firstWeekStart,
+                  date <= endDay
+            else {
+                continue
+            }
+            let current = tokensByDate[date, default: 0]
+            let incoming = max(bucket.tokens, 0)
+            let (sum, overflowed) = current.addingReportingOverflow(incoming)
+            // 服务端可能返回同一天的多个桶；累计时饱和到 Int64.max，
+            // 避免异常大数让“我的”页面在渲染点格图时崩溃。
+            tokensByDate[date] = overflowed ? .max : sum
+        }
+        let maximum = tokensByDate.values.max() ?? 0
+
+        return (0..<weekCount).map { weekOffset in
+            let weekStart = calendar.date(
+                byAdding: .weekOfYear,
+                value: weekOffset,
+                to: firstWeekStart
+            ) ?? firstWeekStart
+            let days = (0..<7).map { dayOffset in
+                let date = calendar.date(
+                    byAdding: .day,
+                    value: dayOffset,
+                    to: weekStart
+                ) ?? weekStart
+                let tokens = tokensByDate[date] ?? 0
+                return TokenActivityDay(
+                    date: date,
+                    tokens: tokens,
+                    intensity: intensity(tokens: tokens, maximum: maximum),
+                    isFuture: date > endDay
+                )
+            }
+            return TokenActivityWeek(startDate: weekStart, days: days)
+        }
+    }
+
+    static func date(from dayKey: String, calendar: Calendar = utcCalendar) -> Date? {
+        let components = dayKey.split(separator: "-", omittingEmptySubsequences: false)
+        guard components.count == 3,
+              let year = Int(components[0]),
+              let month = Int(components[1]),
+              let day = Int(components[2]),
+              let date = calendar.date(from: DateComponents(year: year, month: month, day: day))
+        else {
+            return nil
+        }
+        let roundTrip = calendar.dateComponents([.year, .month, .day], from: date)
+        guard roundTrip.year == year, roundTrip.month == month, roundTrip.day == day else {
+            return nil
+        }
+        return date
+    }
+
+    private static func intensity(tokens: Int64, maximum: Int64) -> Int {
+        guard tokens > 0, maximum > 0 else { return 0 }
+        // 平方根尺度既能压住偶发超大日，又不会像 log 尺度那样把常用日期全部挤到最深一档。
+        let normalized = sqrt(Double(tokens) / Double(maximum))
+        switch normalized {
+        case ..<0.20: return 1
+        case ..<0.45: return 2
+        case ..<0.70: return 3
+        default: return 4
+        }
+    }
+
+    static var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        return calendar
+    }
+}
+
+enum TokenCountFormatter {
+    static func string(_ value: Int64?, language: AppLanguage = .stored()) -> String {
+        guard let value else { return "—" }
+        let isChinese = language == .simplifiedChinese
+            || (language == .system && Locale.preferredLanguages.first?.hasPrefix("zh") == true)
+        if isChinese {
+            if value >= 100_000_000 {
+                return compact(Double(value) / 100_000_000)
+                    + L10n.text(
+                        "ui.compact_number_hundred_million_suffix",
+                        language: .simplifiedChinese
+                    )
+            }
+            if value >= 10_000 {
+                return compact(Double(value) / 10_000)
+                    + L10n.text(
+                        "ui.compact_number_ten_thousand_suffix",
+                        language: .simplifiedChinese
+                    )
+            }
+            return decimal(value, locale: Locale(identifier: "zh-Hans"))
+        }
+        if value >= 1_000_000_000 {
+            return compact(Double(value) / 1_000_000_000) + "B"
+        }
+        if value >= 1_000_000 {
+            return compact(Double(value) / 1_000_000) + "M"
+        }
+        if value >= 1_000 {
+            return compact(Double(value) / 1_000) + "K"
+        }
+        return decimal(value, locale: Locale(identifier: "en"))
+    }
+
+    private static func compact(_ value: Double) -> String {
+        let rounded = (value * 10).rounded() / 10
+        return rounded.rounded() == rounded
+            ? String(Int(rounded))
+            : String(format: "%.1f", rounded)
+    }
+
+    private static func decimal(_ value: Int64, locale: Locale) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = locale
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
+    }
+}
+
+private extension View {
+    func settingsStandardListRow() -> some View {
+        listRowInsets(
+            EdgeInsets(
+                top: 0,
+                leading: SettingsLayoutMetrics.rowHorizontalInset,
+                bottom: 0,
+                trailing: SettingsLayoutMetrics.rowHorizontalInset
+            )
+        )
+    }
+
+    func settingsInlinePickerStyle() -> some View {
+        modifier(SettingsInlinePickerStyleModifier())
+    }
+}
+
+private struct SettingsInlinePickerStyleModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    func body(content: Content) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        content
+            .pickerStyle(.menu)
+            // Picker 的选中值属于说明层级：与 NavigationLink 的右侧值使用同一
+            // subheadline 和 secondaryText，不能跟随页面强调色抢过左侧标题。
+            .font(themeStore.uiFont(.subheadline))
+            .foregroundStyle(tokens.secondaryText)
+            .tint(tokens.secondaryText)
+    }
+}
+
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -16,8 +230,8 @@ struct SettingsView: View {
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
-    @State private var connectionSettingsDestination: ConnectionSettingsDestination?
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -58,12 +272,12 @@ struct SettingsView: View {
                 InitialPairingView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens)
-                    .frame(maxWidth: 720)
+                    .frame(maxWidth: 920)
                     .frame(maxWidth: .infinity)
                     .background(tokens.background.ignoresSafeArea())
             }
         }
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : L10n.text("ui.settings"))
+        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : L10n.text("ui.me"))
         .navigationBarTitleDisplayMode(initialNavigationTitleDisplayMode)
         .toolbar {
             if !isInitialSetup && showsDoneButton {
@@ -83,8 +297,8 @@ struct SettingsView: View {
     }
 
     private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
-        // 手机保留醒目的首配大标题；iPad 宽屏改用居中标题，避免标题贴左而表单居中造成断裂。
-        isInitialSetup && horizontalSizeClass == .compact ? .large : .inline
+        // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
+        horizontalSizeClass == .compact ? .large : .inline
     }
 
     private func settingsForm(tokens: ThemeTokens) -> some View {
@@ -93,179 +307,151 @@ struct SettingsView: View {
 
         return Form {
             Section {
-                CombinedUsageSettingsCard(
+                AccountTokenUsageCard(
                     codexDisplay: codexUsage,
                     claudeDisplay: claudeUsage,
-                    includesClaude: sessionStore.hasClaudeRuntimeChannel
+                    includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                    snapshot: sessionStore.accountTokenUsage,
+                    isRefreshing: sessionStore.isRefreshingAccountTokenUsage
+                        || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+                        || (
+                            sessionStore.hasClaudeRuntimeChannel
+                                && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
+                        ),
+                    isUnavailable: sessionStore.isAccountTokenUsageUnavailable,
+                    onRefresh: refreshAccountUsage
                 )
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("settings.tokenUsage")
             } header: {
-                HStack {
-                    Text(L10n.text("ui.token_quota"))
-                    Spacer()
-                    AIUsageRefreshButton(includesClaude: sessionStore.hasClaudeRuntimeChannel)
-                }
-                .textCase(nil)
-            }
-
-            Section(L10n.text("ui.mac_connection")) {
-                VStack(spacing: 8) {
-                    HStack(spacing: 10) {
-                        Button {
-                            connectionSettingsDestination = .management
-                        } label: {
-                            SettingsConnectionSummaryCell(
-                                title: L10n.plural(
-                                    "ui.saved_macs_count",
-                                    count: appStore.connectionProfileSettingsModel.savedCount
-                                ),
-                                value: L10n.format(
-                                    "ui.labeled_value",
-                                    L10n.text("ui.current_mac"),
-                                    compactConnectionStatusText
-                                ),
-                                tint: connectionStatusTone(tokens: tokens),
-                                systemImage: nil
-                            )
-                        }
-                        // Form 会把同一行里的默认 NavigationLink 合并为行级点击；
-                        // 使用独立 Button，并由单一路由状态 push，避免一次点击进入两个页面。
-                        .buttonStyle(.borderless)
-                        .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("settings.connectionManagement")
-
-                        Divider()
-                            .overlay(tokens.border.opacity(0.7))
-                            .frame(height: 32)
-
-                        Button {
-                            connectionSettingsDestination = .speedTest
-                        } label: {
-                            SettingsConnectionSummaryCell(
-                                title: L10n.text("ui.connection_speed_test"),
-                                value: connectionSpeedTestSummary,
-                                tint: connectionSpeedTestTone(tokens: tokens),
-                                systemImage: "bolt.horizontal.circle"
-                            )
-                        }
-                        .buttonStyle(.borderless)
-                        .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("settings.connectionSpeedTest")
-                    }
-
-                    if let warningText = connectionWarningText {
-                        Divider()
-                            .overlay(tokens.border.opacity(0.62))
-                        Label(warningText, systemImage: "exclamationmark.triangle")
-                            .font(themeStore.uiFont(.footnote))
-                            .foregroundStyle(tokens.warning)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .frame(minHeight: 32)
+                Text(L10n.text("ui.token_usage"))
             }
 
             Section {
+                NavigationLink {
+                    AppearanceView(profileID: appStore.activeHostScope.profileID)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.personalization"),
+                        value: themeStore.mode.title,
+                        systemImage: "circle.lefthalf.filled",
+                        symbolPointSize: 16
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.appearance")
+
                 Picker(selection: appLanguageSelection) {
                     ForEach(AppLanguage.allCases) { language in
                         Text(language.displayName)
                             .tag(language)
                     }
                 } label: {
-                    Label(L10n.text("ui.language"), systemImage: "globe")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.language"),
+                        systemImage: "globe"
+                    )
                 }
-                .pickerStyle(.menu)
+                .settingsInlinePickerStyle()
+                .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
-                NavigationLink {
-                    AppearanceView(profileID: appStore.activeHostScope.profileID)
-                } label: {
-                    Label(L10n.text("ui.personalization"), systemImage: "paintpalette")
-                }
-                .accessibilityIdentifier("settings.appearance")
-                NavigationLink {
-                    DefaultPermissionView()
-                } label: {
-                    Label(L10n.text("ui.default_permissions"), systemImage: "lock.shield")
-                }
-            } header: {
-                Text(L10n.text("ui.preference"))
-            }
 
-            Section {
-                ForEach(VoiceInputProvider.allCases) { provider in
-                    VoiceInputProviderRow(
-                        provider: provider,
-                        isSelected: voiceInputProviderSelection.wrappedValue == provider,
-                        tokens: tokens
-                    ) {
-                        voiceInputProviderSelection.wrappedValue = provider
+                Picker(selection: voiceInputProviderSelection) {
+                    ForEach(VoiceInputProvider.allCases) { provider in
+                        Text(provider.title)
+                            .tag(provider)
                     }
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.voice_input"),
+                        systemImage: "waveform"
+                    )
                 }
+                .settingsInlinePickerStyle()
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.voiceInput")
+
+                Picker(selection: defaultPermissionModeSelection) {
+                    ForEach(ComposerPermissionMode.allCases) { mode in
+                        Text(mode.title)
+                            .tag(mode)
+                    }
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.default_permissions"),
+                        systemImage: "lock.shield"
+                    )
+                }
+                .settingsInlinePickerStyle()
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
-                Text(L10n.text("ui.voice_input"))
+                Text(L10n.text("ui.my_preferences"))
             }
 
             Section {
-                Toggle(isOn: $developerModeEnabled) {
-                    Label(L10n.text("ui.developer_mode"), systemImage: "hammer")
-                }
                 NavigationLink {
-                    DoctorView(showsHistoryDiagnostics: developerModeEnabled)
+                    ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
                 } label: {
-                    Label(L10n.text("ui.diagnosis_and_support"), systemImage: "stethoscope")
+                    SettingsMacDevicesSummaryLabel(
+                        currentDevice: currentMacDisplayName,
+                        status: compactConnectionStatusText,
+                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
+                        statusTint: connectionStatusTone(tokens: tokens)
+                    )
                 }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.connectionManagement")
+
                 NavigationLink {
-                    CapabilitiesView()
+                    DiagnosticsAndSupportSettingsView(
+                        showsHistoryDiagnostics: developerModeEnabled
+                    )
                 } label: {
-                    Label(L10n.text("ui.competency_checklist"), systemImage: "wand.and.stars")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.diagnosis_and_support"),
+                        systemImage: "stethoscope"
+                    )
                 }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.diagnostics")
+
                 NavigationLink {
-                    ThirdPartyNoticesView()
+                    AdvancedDevelopmentSettingsView(
+                        developerModeEnabled: $developerModeEnabled
+                    )
                 } label: {
-                    Label(L10n.text("ui.open_source_license"), systemImage: "doc.text")
+                    SettingsValueLabel(
+                        title: L10n.text("ui.advanced_and_development"),
+                        systemImage: "hammer"
+                    )
                 }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.advancedDevelopment")
+
+                NavigationLink {
+                    AboutAndLegalSettingsView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.about_and_legal"),
+                        systemImage: "info.circle"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.aboutLegal")
             } header: {
-                Text(L10n.text("ui.advanced"))
+                Text(L10n.text("ui.more"))
             } footer: {
-                Text(developerModeEnabled ? L10n.text("ui.historical_diagnostics_may_display_the_local_machine_path") : L10n.text("ui.turn_on_to_use_advanced_operating_options_and"))
-            }
-
-            Section {
-                NavigationLink {
-                    LegalDocumentView(document: .privacyPolicy)
-                } label: {
-                    Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
+                if let connectionWarningText {
+                    Text(connectionWarningText)
                 }
-                .accessibilityIdentifier("settings.privacyPolicy")
-
-                NavigationLink {
-                    LegalDocumentView(document: .termsOfUse)
-                } label: {
-                    Label(L10n.text("ui.terms_of_use"), systemImage: "doc.text")
-                }
-                .accessibilityIdentifier("settings.termsOfUse")
-
-                NavigationLink {
-                    LegalDocumentView(document: .support)
-                } label: {
-                    Label(L10n.text("ui.support_and_contact"), systemImage: "questionmark.circle")
-                }
-                .accessibilityIdentifier("settings.support")
-            } header: {
-                Text(L10n.text("ui.legal_and_support"))
-            } footer: {
-                Text(L10n.text("ui.legal_documents_are_included_in_the_app"))
             }
         }
+        .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
         .themedSettingsForm(tokens: tokens)
-        .navigationDestination(item: $connectionSettingsDestination) { destination in
-            switch destination {
-            case .management:
-                ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
-            case .speedTest:
-                ConnectionSpeedTestView()
-            }
-        }
-        .task {
+        .task(id: appStore.activeHostScope) {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
                 return
@@ -288,6 +474,7 @@ struct SettingsView: View {
             if sessionStore.hasClaudeRuntimeChannel {
                 await sessionStore.refreshClaudeUsage()
             }
+            await sessionStore.refreshAccountTokenUsage()
             let hasNotLoadedInitialData = sessionStore.projects.isEmpty
                 && sessionStore.statusMessage == nil
             guard sessionStore.errorMessage != nil || hasNotLoadedInitialData else {
@@ -299,17 +486,13 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionSpeedTestSummary: String {
-        if case .testing = appStore.connectionStatus {
-            return L10n.text("ui.testing")
+    private func refreshAccountUsage() async {
+        async let codexQuota: Void = sessionStore.refreshCodexUsage()
+        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage()
+        if sessionStore.hasClaudeRuntimeChannel {
+            await sessionStore.refreshClaudeUsage()
         }
-        if appStore.lastConnectionTestReport?.failedStage != nil {
-            return L10n.text("ui.test_failed")
-        }
-        guard let milliseconds = appStore.lastConnectionTestDurationMillis else {
-            return L10n.text("ui.not_tested")
-        }
-        return AppStore.connectionTestDurationText(milliseconds: milliseconds)
+        _ = await (codexQuota, tokenActivity)
     }
 
     private var compactConnectionStatusText: String {
@@ -351,14 +534,9 @@ struct SettingsView: View {
         }
     }
 
-    private func connectionSpeedTestTone(tokens: ThemeTokens) -> Color {
-        if case .testing = appStore.connectionStatus {
-            return tokens.accent
-        }
-        if appStore.lastConnectionTestReport?.failedStage != nil {
-            return tokens.warning
-        }
-        return appStore.lastConnectionTestDurationMillis == nil ? tokens.secondaryText : tokens.success
+    private var currentMacDisplayName: String {
+        appStore.connectionProfileSettingsModel.current?.profile.displayName
+            ?? L10n.text("ui.current_mac")
     }
 
     private var appLanguageSelection: Binding<AppLanguage> {
@@ -371,139 +549,180 @@ struct SettingsView: View {
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
             get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
-            set: { provider in
-                voiceInputProviderRawValue = provider.rawValue
-            }
+            set: { voiceInputProviderRawValue = $0.rawValue }
+        )
+    }
+
+    private var defaultPermissionModeSelection: Binding<ComposerPermissionMode> {
+        Binding(
+            get: { ComposerPermissionMode.stored(defaultPermissionModeID) },
+            set: { defaultPermissionModeID = $0.rawValue }
         )
     }
 }
 
-private enum ConnectionSettingsDestination: Hashable {
-    case management
-    case speedTest
-}
-
-private struct VoiceInputProviderRow: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let provider: VoiceInputProvider
-    let isSelected: Bool
-    let tokens: ThemeTokens
-    let action: () -> Void
+private struct SettingsMacDevicesSummaryLabel: View {
+    let currentDevice: String
+    let status: String
+    let savedDeviceCount: Int
+    let statusTint: Color
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
-                    providerIcon
-                }
-                .frame(width: 42, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(provider.title)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(provider.subtitle)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue).description")
-                }
-
-                Spacer(minLength: 12)
-
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(isSelected ? tokens.accent : tokens.tertiaryText)
-                    .animation(
-                        reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1),
-                        value: isSelected
-                    )
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 4)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(provider.title)
-        .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
-        .accessibilityHint(provider.subtitle)
-        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue)")
+        SettingsStatusSummaryLabel(
+            title: L10n.text("ui.mac_devices"),
+            detail: "\(currentDevice) · \(status) · \(savedCount)",
+            systemImage: "desktopcomputer",
+            statusDotTint: statusTint,
+            symbolPointSize: 17
+        )
     }
 
-    @ViewBuilder
-    private var providerIcon: some View {
-        switch provider.icon {
-        case .asset(let name):
-            Image(name)
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                // 资源本身带透明安全边距，略微放大后才会真正填满 42pt 图标位。
-                .frame(width: 48, height: 48)
-                .accessibilityHidden(true)
-        case .system(let name):
-            Image(systemName: name)
-                .font(.system(size: 24, weight: .medium))
-                .symbolRenderingMode(.multicolor)
-                .foregroundStyle(tokens.accent)
-                .accessibilityHidden(true)
-        }
+    private var savedCount: String {
+        L10n.plural("ui.saved_macs_count", count: savedDeviceCount)
     }
 }
 
-private struct SettingsConnectionSummaryCell: View {
+/// 状态模块的两个入口共享同一套双行结构，避免设备行、测速行因内容不同
+/// 产生不一致的高度、图标大小和基线。
+private struct SettingsStatusSummaryLabel: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
 
     let title: String
-    let value: String
-    let tint: Color
-    let systemImage: String?
+    let detail: String
+    let systemImage: String
+    var detailTint: Color? = nil
+    var statusDotTint: Color? = nil
+    var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(spacing: 8) {
-            Group {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 18, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                } else {
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 8, height: 8)
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.accent)
+                .frame(
+                    width: SettingsLayoutMetrics.iconSlot,
+                    height: SettingsLayoutMetrics.iconSlot
+                )
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+
+                HStack(spacing: 5) {
+                    if let statusDotTint {
+                        Circle()
+                            .fill(statusDotTint)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(detail)
+                        .font(themeStore.uiFont(.footnote))
+                        .monospacedDigit()
+                        .foregroundStyle(detailTint ?? tokens.secondaryText)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .minimumScaleFactor(0.82)
+                        .truncationMode(.tail)
                 }
             }
-            .foregroundStyle(tint)
-            .frame(width: 22, height: 22)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Text(value)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            Spacer(minLength: 3)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(tokens.tertiaryText)
         }
-        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: rowHeight,
+            maxHeight: rowHeight,
+            alignment: .leading
+        )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var rowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? SettingsLayoutMetrics.accessibilityRowHeight
+            : SettingsLayoutMetrics.standardRowHeight
+    }
+}
+
+private struct SettingsValueLabel: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let title: String
+    var value: String? = nil
+    let systemImage: String
+    var valueTint: Color? = nil
+    var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.accent)
+                .frame(
+                    width: SettingsLayoutMetrics.iconSlot,
+                    height: SettingsLayoutMetrics.iconSlot
+                )
+                .accessibilityHidden(true)
+
+            if dynamicTypeSize.isAccessibilitySize, let value {
+                VStack(alignment: .leading, spacing: 2) {
+                    titleText(tokens: tokens)
+                    valueText(value, tokens: tokens)
+                }
+            } else if let value {
+                HStack(alignment: .center, spacing: 12) {
+                    titleText(tokens: tokens)
+                    Spacer(minLength: 12)
+                    valueText(value, tokens: tokens)
+                }
+            } else {
+                titleText(tokens: tokens)
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: rowHeight,
+            maxHeight: rowHeight,
+            alignment: .leading
+        )
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func titleText(tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(.body))
+            .foregroundStyle(tokens.primaryText)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            .layoutPriority(1)
+    }
+
+    private func valueText(_ value: String, tokens: ThemeTokens) -> some View {
+        Text(value)
+            .font(themeStore.uiFont(.subheadline))
+            .monospacedDigit()
+            .foregroundStyle(valueTint ?? tokens.secondaryText)
+            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            .minimumScaleFactor(0.82)
+            .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
+    }
+
+    private var rowHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? SettingsLayoutMetrics.accessibilityRowHeight
+            : SettingsLayoutMetrics.standardRowHeight
     }
 }
 
@@ -992,148 +1211,109 @@ private struct ConnectionSpeedMetricRow: View {
     }
 }
 
-/// 刷新入口属于“Token 额度”分区，而不是某一条额度数据；放在标题右侧可避免压缩卡片内容。
-private struct AIUsageRefreshButton: View {
+private struct AccountTokenUsageCard: View {
     @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var sessionStore: SessionStore
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let includesClaude: Bool
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let isRefreshing = sessionStore.isRefreshingUsage(runtimeProvider: "codex")
-            || (includesClaude && sessionStore.isRefreshingUsage(runtimeProvider: "claude"))
-
-        Button {
-            Task {
-                await sessionStore.refreshCodexUsage()
-                if includesClaude {
-                    await sessionStore.refreshClaudeUsage()
-                }
-            }
-        } label: {
-            Group {
-                if isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(tokens.secondaryText)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                }
-            }
-            .frame(width: 34, height: 34)
-            .background(tokens.secondaryText.opacity(0.08), in: Circle())
-            .overlay {
-                Circle()
-                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(tokens.secondaryText)
-        .disabled(isRefreshing)
-        .accessibilityLabel(
-            isRefreshing
-                ? L10n.format("ui.refreshing_value_usage", "AI")
-                : L10n.format("ui.refresh_value_usage", "AI")
-        )
-        .accessibilityIdentifier("settings.aiUsage.refresh")
-    }
-}
-
-private struct CombinedUsageSettingsCard: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
 
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
     let includesClaude: Bool
+    let snapshot: AccountTokenUsageSnapshot?
+    let isRefreshing: Bool
+    let isUnavailable: Bool
+    let onRefresh: () async -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        Group {
-            // 标准字号下无论 iPhone 或 iPad 都保持“左圆环、右额度”；只有无障碍
-            // 超大字号才回退到上下结构，避免 compact size class 错误改变产品布局。
-            if usesHorizontalLayout {
-                horizontalLayout(tokens: tokens)
-            } else {
-                verticalLayout(tokens: tokens)
+        ViewThatFits(in: .horizontal) {
+            if !dynamicTypeSize.isAccessibilitySize {
+                wideLayout(tokens: tokens)
+                    .frame(minWidth: 620)
             }
+            compactLayout(tokens: tokens)
         }
-        .padding(.vertical, 6)
+        .padding(18)
+        .frame(maxWidth: .infinity)
+        .background(
+            tokens.surface,
+            in: RoundedRectangle(
+                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                style: .continuous
+            )
+            .stroke(tokens.border.opacity(0.48), lineWidth: 0.5)
+        }
         .accessibilityElement(children: .contain)
     }
 
-    private var usesHorizontalLayout: Bool {
-        !dynamicTypeSize.isAccessibilitySize
-    }
-
-    @ViewBuilder
-    private func horizontalLayout(tokens: ThemeTokens) -> some View {
-        let isCompact = horizontalSizeClass == .compact
-
-        if isCompact {
-            // iPhone 的右栏完整容纳名称、百分比和重置时间；刷新入口位于分区标题，
-            // 圆环栏只承担视觉信息，保持三环在左栏中居中。
-            HStack(alignment: .center, spacing: 8) {
-                usageRings(diameter: 124, lineWidth: 10)
-                    .frame(width: 130)
-
-                Divider()
-                    .overlay(tokens.border.opacity(0.7))
-                    .frame(height: 150)
-
-                usageRows(rowVerticalPadding: 3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 150)
-        } else {
-            HStack(alignment: .center, spacing: 18) {
-                usageRings(diameter: 154, lineWidth: 11)
-                    .frame(width: 300)
-
-                Divider()
-                    .overlay(tokens.border.opacity(0.7))
-                    .frame(height: 142)
-
-                usageRows(rowVerticalPadding: 7)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 154)
-        }
-    }
-
-    private func verticalLayout(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            usageRings(diameter: 136, lineWidth: 10)
-                .frame(maxWidth: .infinity)
+    private func wideLayout(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .top, spacing: 20) {
+            quotaPanel(tokens: tokens)
+                .frame(width: 236)
 
             Divider()
-                .overlay(tokens.border.opacity(0.7))
+                .overlay(tokens.border.opacity(0.72))
 
-            usageRows(rowVerticalPadding: 7)
+            activityPanel(tokens: tokens)
+                .frame(maxWidth: .infinity)
+        }
+        .frame(minHeight: 156)
+    }
+
+    private func compactLayout(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            quotaPanel(tokens: tokens)
+
+            Divider()
+                .overlay(tokens.border.opacity(0.72))
+
+            activityPanel(tokens: tokens)
         }
     }
 
-    private func usageRings(diameter: CGFloat, lineWidth: CGFloat) -> some View {
+    private func quotaPanel(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.text("ui.current_remaining"))
+                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 14) {
+                    usageRings
+                    usageLegend(tokens: tokens)
+                }
+            } else {
+                HStack(alignment: .center, spacing: 16) {
+                    usageRings
+                    usageLegend(tokens: tokens)
+                }
+            }
+        }
+    }
+
+    private var usageRings: some View {
         CombinedUsageRingsGraphic(
             items: usageItems,
             expectedRingCount: 3,
-            diameter: diameter,
-            lineWidth: lineWidth
+            diameter: dynamicTypeSize.isAccessibilitySize ? 104 : 92,
+            lineWidth: 6
         )
+        .frame(
+            width: dynamicTypeSize.isAccessibilitySize ? 104 : 92,
+            height: dynamicTypeSize.isAccessibilitySize ? 104 : 92
+        )
+        .accessibilityLabel(L10n.text("ui.current_remaining"))
     }
 
     @ViewBuilder
-    private func usageRows(rowVerticalPadding: CGFloat) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
+    private func usageLegend(tokens: ThemeTokens) -> some View {
         let items = usageItems
 
         if items.isEmpty {
@@ -1147,13 +1327,114 @@ private struct CombinedUsageSettingsCard: View {
             .foregroundStyle(tokens.secondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 7) {
                 ForEach(items) { item in
-                    CombinedUsageWindowRow(item: item)
-                        .padding(.vertical, rowVerticalPadding)
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(item.tint)
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
+
+                        Text("\(item.providerName) · \(item.window.label)")
+                            .font(themeStore.uiFont(.caption, weight: .medium))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(1)
+
+                        Spacer(minLength: 4)
+
+                        Text(item.window.remainingPercentText ?? "—")
+                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(
+                                item.window.remainingProgress == nil
+                                    ? tokens.secondaryText
+                                    : item.tint
+                            )
+                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func activityPanel(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    activityTitle(tokens: tokens)
+
+                    Spacer(minLength: 4)
+
+                    lifetimeTokenLabel(tokens: tokens)
+                        .fixedSize(horizontal: true, vertical: false)
+
+                    AccountUsageRefreshButton(
+                        isRefreshing: isRefreshing,
+                        onRefresh: onRefresh
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        activityTitle(tokens: tokens)
+                        Spacer(minLength: 4)
+                        AccountUsageRefreshButton(
+                            isRefreshing: isRefreshing,
+                            onRefresh: onRefresh
+                        )
+                    }
+                    lifetimeTokenLabel(tokens: tokens)
+                }
+            }
+
+            if let buckets = snapshot?.dailyUsageBuckets {
+                TokenActivityDotGrid(buckets: buckets)
+            } else {
+                HStack(spacing: 10) {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "chart.dots.scatter")
+                            .foregroundStyle(tokens.tertiaryText)
+                    }
+                    Text(activityUnavailableText)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+                .frame(maxWidth: .infinity, minHeight: 74, alignment: .center)
+                .accessibilityIdentifier("settings.tokenActivity.unavailable")
+            }
+        }
+    }
+
+    private func activityTitle(tokens: ThemeTokens) -> some View {
+        Text(L10n.text("ui.token_activity"))
+            .font(themeStore.uiFont(.subheadline, weight: .semibold))
+            .foregroundStyle(tokens.primaryText)
+    }
+
+    private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
+        Text(
+            L10n.format(
+                "ui.lifetime_token_value",
+                TokenCountFormatter.string(snapshot?.summary.lifetimeTokens)
+            )
+        )
+        .font(themeStore.uiFont(.caption))
+        .foregroundStyle(tokens.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var activityUnavailableText: String {
+        if isRefreshing {
+            return L10n.text("ui.loading_token_activity")
+        }
+        if isUnavailable {
+            return L10n.text("ui.token_activity_unavailable")
+        }
+        return L10n.text("ui.token_activity_waiting")
     }
 
     /// 产品只需要 Codex 的长窗口，以及 Claude 的长、短两个窗口。
@@ -1168,73 +1449,282 @@ private struct CombinedUsageSettingsCard: View {
     }
 }
 
-private struct CombinedUsageWindowRow: View {
+private struct AccountUsageRefreshButton: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
-    let item: CombinedUsageItem
+    let isRefreshing: Bool
+    let onRefresh: () async -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        HStack(alignment: .center, spacing: 8) {
-            // 左列统一从服务名称起始位置对齐，右列百分比固定贴右；
-            // HStack 的 center 对齐让百分比位于两行文字的垂直中心。
-            HStack(alignment: .center, spacing: 6) {
-                Circle()
-                    .fill(item.tint)
-                    .frame(width: 8, height: 8)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(item.providerName) · \(item.window.label)")
-                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-
-                    Text(resetText)
-                        .font(themeStore.uiFont(.caption2))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
+        Button {
+            Task { await onRefresh() }
+        } label: {
+            Group {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text(item.window.remainingPercentText ?? "—")
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(
-                    item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
-                )
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+            .frame(width: 32, height: 32)
+            .background(tokens.secondaryText.opacity(0.08), in: Circle())
+            .overlay {
+                Circle().stroke(tokens.border.opacity(0.72), lineWidth: 1)
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
         }
-        .frame(minHeight: 44)
-        .accessibilityElement(children: .combine)
+        .buttonStyle(.plain)
+        .foregroundStyle(tokens.secondaryText)
+        .disabled(isRefreshing)
         .accessibilityLabel(
-            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
+            isRefreshing
+                ? L10n.format("ui.refreshing_value_usage", "Token")
+                : L10n.format("ui.refresh_value_usage", "Token")
         )
+        .accessibilityIdentifier("settings.tokenUsage.refresh")
+    }
+}
+
+private struct TokenActivityDotGrid: View {
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let buckets: [AccountTokenUsageDailyBucket]
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let weeks = TokenActivityCalendar.weeks(buckets: buckets)
+        let activeDayCount = weeks
+            .flatMap(\.days)
+            .filter { !$0.isFuture && $0.tokens > 0 }
+            .count
+
+        GeometryReader { proxy in
+            let spacing: CGFloat = 3
+            let availableCell = (proxy.size.width - spacing * 52) / 53
+            // 固定卡片高度内最多使用 7pt 点格；更宽的 iPad 只增加留白，
+            // 不放大到裁掉第七行或破坏左右模块的视觉平衡。
+            let cellSize = min(max(availableCell, 4), 7)
+            let contentWidth = cellSize * 53 + spacing * 52
+            let gridHeight = cellSize * 7 + spacing * 6
+
+            ScrollView(.horizontal) {
+                ZStack(alignment: .topLeading) {
+                    HStack(alignment: .top, spacing: spacing) {
+                        ForEach(weeks) { week in
+                            VStack(spacing: spacing) {
+                                ForEach(week.days) { day in
+                                    RoundedRectangle(
+                                        cornerRadius: min(2.2, cellSize * 0.3),
+                                        style: .continuous
+                                    )
+                                    .fill(fill(for: day, tokens: tokens))
+                                    .frame(width: cellSize, height: cellSize)
+                                }
+                            }
+                        }
+                    }
+                    .offset(y: 19)
+
+                    ForEach(Array(weeks.enumerated()), id: \.element.id) { index, week in
+                        if let monthDate = week.days.first(where: isFirstDayOfMonth)?.date {
+                            Text(monthText(monthDate))
+                                .font(themeStore.uiFont(size: 9, weight: .medium))
+                                .foregroundStyle(tokens.tertiaryText)
+                                .fixedSize()
+                                .offset(x: CGFloat(index) * (cellSize + spacing))
+                        }
+                    }
+                }
+                .frame(width: contentWidth, height: gridHeight + 19, alignment: .topLeading)
+            }
+            .scrollIndicators(.hidden)
+            .defaultScrollAnchor(.trailing)
+        }
+        .frame(height: 86)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.text("ui.token_activity"))
         .accessibilityValue(
             L10n.format(
-                "ui.usage_window_accessibility_value",
-                item.window.remainingText,
-                resetText
+                "ui.token_activity_accessibility_value",
+                activeDayCount
             )
         )
+        .accessibilityIdentifier("settings.tokenActivity.grid")
     }
 
-    private var resetText: String {
-        guard let resetDate = item.window.resetDate else {
-            return item.window.resetText
+    private func fill(for day: TokenActivityDay, tokens: ThemeTokens) -> Color {
+        guard !day.isFuture else { return .clear }
+        let contrastBoost = colorSchemeContrast == .increased ? 0.12 : 0
+        switch day.intensity {
+        case 1: return tokens.accent.opacity(0.24 + contrastBoost)
+        case 2: return tokens.accent.opacity(0.42 + contrastBoost)
+        case 3: return tokens.accent.opacity(0.64 + contrastBoost)
+        case 4: return tokens.accent.opacity(0.92)
+        default: return tokens.secondaryText.opacity(0.09 + contrastBoost)
         }
+    }
 
+    private func isFirstDayOfMonth(_ day: TokenActivityDay) -> Bool {
+        TokenActivityCalendar.utcCalendar.component(.day, from: day.date) == 1
+    }
+
+    private func monthText(_ date: Date) -> String {
         let formatter = DateFormatter()
+        formatter.calendar = TokenActivityCalendar.utcCalendar
+        formatter.timeZone = TokenActivityCalendar.utcCalendar.timeZone
         formatter.locale = AppLanguage.stored().locale
-        formatter.setLocalizedDateFormatFromTemplate(
-            Calendar.current.isDate(resetDate, inSameDayAs: Date()) ? "Hm" : "MdHm"
-        )
-        return L10n.format("ui.value_reset_english", formatter.string(from: resetDate))
+        formatter.setLocalizedDateFormatFromTemplate("MMM")
+        return formatter.string(from: date)
+    }
+}
+
+private struct DiagnosticsAndSupportSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let showsHistoryDiagnostics: Bool
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                NavigationLink {
+                    ConnectionSpeedTestView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.connection_speed_test"),
+                        systemImage: "gauge.with.dots.needle.67percent"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.connectionSpeedTest")
+
+                NavigationLink {
+                    DoctorView(showsHistoryDiagnostics: showsHistoryDiagnostics)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.diagnosis_and_support"),
+                        systemImage: "stethoscope"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.doctor")
+
+                NavigationLink {
+                    LegalDocumentView(document: .support)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.support_and_contact"),
+                        systemImage: "questionmark.circle"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.support")
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .navigationTitle(L10n.text("ui.diagnosis_and_support"))
+    }
+}
+
+private struct AdvancedDevelopmentSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Binding var developerModeEnabled: Bool
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                NavigationLink {
+                    CapabilitiesView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.competency_checklist"),
+                        systemImage: "wand.and.stars"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.capabilities")
+
+                Toggle(isOn: $developerModeEnabled) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.developer_mode"),
+                        systemImage: "hammer"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.developerMode")
+            } footer: {
+                Text(
+                    developerModeEnabled
+                        ? L10n.text("ui.historical_diagnostics_may_display_the_local_machine_path")
+                        : L10n.text("ui.turn_on_to_use_advanced_operating_options_and")
+                )
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .navigationTitle(L10n.text("ui.advanced_and_development"))
+    }
+}
+
+private struct AboutAndLegalSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        Form {
+            Section {
+                NavigationLink {
+                    LegalDocumentView(document: .privacyPolicy)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.privacy_policy"),
+                        systemImage: "hand.raised"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.privacyPolicy")
+
+                NavigationLink {
+                    LegalDocumentView(document: .termsOfUse)
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.terms_of_use"),
+                        systemImage: "doc.text"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.termsOfUse")
+
+                NavigationLink {
+                    ThirdPartyNoticesView()
+                } label: {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.open_source_license"),
+                        systemImage: "chevron.left.forwardslash.chevron.right"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.openSourceLicense")
+            } footer: {
+                Text(L10n.text("ui.legal_documents_are_included_in_the_app"))
+            }
+        }
+        .themedSettingsForm(tokens: tokens)
+        .navigationTitle(L10n.text("ui.about_and_legal"))
     }
 }
 
@@ -1254,84 +1744,6 @@ private struct InitialPairingView: View {
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
         .background(tokens.background.ignoresSafeArea())
-    }
-}
-
-private struct DefaultPermissionView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-    @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Form {
-            Section {
-                ForEach(ComposerPermissionMode.allCases) { mode in
-                    PermissionModeRow(
-                        mode: mode,
-                        isSelected: selectedMode == mode,
-                        tokens: tokens
-                    ) {
-                        defaultPermissionModeID = mode.rawValue
-                    }
-                }
-            } header: {
-                Text(L10n.text("ui.default_permissions_for_new_conversations"))
-            } footer: {
-                Text(L10n.text("ui.default_run_permissions_for_new_input_areas_and"))
-            }
-            .listRowBackground(tokens.elevatedSurface)
-        }
-        .themedSettingsForm(tokens: tokens)
-        .navigationTitle(L10n.text("ui.default_permissions"))
-        .tint(tokens.accent)
-    }
-
-    private var selectedMode: ComposerPermissionMode {
-        ComposerPermissionMode.stored(defaultPermissionModeID)
-    }
-}
-
-private struct PermissionModeRow: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    let mode: ComposerPermissionMode
-    let isSelected: Bool
-    let tokens: ThemeTokens
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
-                    Image(systemName: mode.systemImage)
-                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
-                }
-                .frame(width: 42, height: 42)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(mode.title)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(mode.detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(tokens.accent)
-                }
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 4)
-        }
-        .buttonStyle(.plain)
     }
 }
 

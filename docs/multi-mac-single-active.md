@@ -32,7 +32,7 @@ flowchart LR
 
 - `agentd` 首次启动生成随机 UUID v4，原子写入配置目录的 `installation-id`，权限固定为 `0600`。
 - 已存在的身份文件若权限、类型或格式异常，`agentd` 拒绝启动；不会静默换身份。
-- 认证后的 `GET /api/version` 从内存返回 `installation_id`，请求过程不读磁盘、不启动子进程、不连接 upstream。
+- 认证后的 `GET /api/version` 从内存返回 `installation_id` 和服务端 `platform`（`darwin` / `windows` / `linux`），请求过程不读磁盘、不启动子进程、不连接 upstream。
 - `HostScope` 由 `profileID + installationID + generation` 组成；异步结果回写前必须验证完整租约。
 - Session、Project、Message、Log、Context、Draft、分页、通知、Markdown Render、图片和本地路径缓存均按 Profile 隔离。
 - endpoint 旧数据只在唯一 Profile 匹配时复制一次；同地址存在歧义时不迁移。
@@ -70,6 +70,7 @@ flowchart LR
 菜单打开后：
 
 - 先展示缓存，再仅对过期 Profile 请求认证后的 `/api/version`。
+- iOS 将 `platform` 归一化并缓存到 Profile；多设备入口据此展示 Apple、Windows 11 或 Linux 图标，旧服务端和未知平台继续展示通用电脑图标。
 - 使用共享 ephemeral `URLSession`，关闭 Cookie 与 URLCache。
 - 全局并发最多 2，每轮最多 8 台，单请求 2 秒且不自动重试。
 - 成功至少缓存 60 秒；失败按 15、30、60、120、300 秒加约 20% jitter 退避。
