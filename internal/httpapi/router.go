@@ -71,10 +71,6 @@ type Router struct {
 	claudeRuntimeQuotaMu        sync.RWMutex
 	claudeRuntimeQuota          *runtimeRateLimits
 	claudeRuntimeQuotaCheckedAt time.Time
-	// pairingClaims 只记录短期票据的签名和过期时间，不保存长期 Token。
-	// 状态仅需覆盖当前进程内的短期重放窗口，服务重启后丢失是可接受的 MVP 取舍。
-	pairingClaimsMu sync.Mutex
-	pairingClaims   map[string]time.Time
 
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
@@ -145,7 +141,6 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
-		pairingClaims:               map[string]time.Time{},
 		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
 	r.refreshClaudeBridgeProbe(false)

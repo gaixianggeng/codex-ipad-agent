@@ -419,7 +419,7 @@ extension SessionStore {
     /// 连接凭据已经安全提交后，统一等待首屏数据真正可用。
     ///
     /// 这里复用冷启动的重试逻辑，避免扫码、URL Scheme 和手动连接分别维护退避策略。
-    /// 超时只改变展示状态，不回滚已写入 Keychain 的 Token 或当前连接档案；一次性配对票据
+    /// 超时只改变展示状态，不回滚已写入 Keychain 的 Token 或当前连接档案；短期配对票据
     /// 已经兑换成功时，用户也可以直接重试加载，无需重新扫码。
     @discardableResult
     func refreshAfterConnectionCommit(maxWait: TimeInterval) async -> Bool {
