@@ -83,6 +83,27 @@ enum WorkbenchSidebarSurfaceMetrics {
     static let cornerRadius: CGFloat = 18
 }
 
+/// iPad 工作台的图标型操作统一使用同一套光学尺寸；系统工具栏或 ButtonStyle 负责材质与按压反馈。
+enum WorkbenchChromeIconMetrics {
+    static let symbolSize: CGFloat = 15
+    static let symbolFrame: CGFloat = 18
+    static let minimumHitTarget: CGFloat = 44
+}
+
+struct WorkbenchChromeIcon: View {
+    let systemName: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: WorkbenchChromeIconMetrics.symbolSize, weight: .semibold))
+            .symbolRenderingMode(.hierarchical)
+            .frame(
+                width: WorkbenchChromeIconMetrics.symbolFrame,
+                height: WorkbenchChromeIconMetrics.symbolFrame
+            )
+    }
+}
+
 /// 把 iPad 浮动侧栏的纯视觉层级集中在 Chrome 层，业务 Shell 只负责提供内容和路由。
 struct WorkbenchSidebarContainer<
     Content: View,
@@ -228,11 +249,13 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
 
     private var button: some View {
         Button(action: action) {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 15, weight: .semibold))
+            WorkbenchChromeIcon(systemName: "sidebar.left")
         }
         // 玻璃样式按系统图标控件尺寸绘制；外层只扩充命中区域，避免 44pt label 再叠加样式内边距。
-        .frame(minWidth: 44, minHeight: 44)
+        .frame(
+            minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+            minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
         .contentShape(Circle())
         .foregroundStyle(tokens.primaryText)
     }
