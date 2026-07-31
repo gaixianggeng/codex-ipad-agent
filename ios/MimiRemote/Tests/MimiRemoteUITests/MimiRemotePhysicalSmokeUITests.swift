@@ -584,6 +584,15 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testWorkspaceIconStyleSwitchesBetweenEmojiAndJourney() throws {
+        // 直接进入工作区，避免恢复到会话详情时底部设置入口不在可访问性树中。
+        app.terminate()
+        app.launchArguments.append("--debug-open-workspaces")
+        app.launch()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 25),
+            "MimiRemote 应能直接进入工作区"
+        )
+
         try enterWorkbenchIfNeeded()
         try openWorkspaceAppearanceSettings()
 
@@ -596,11 +605,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "threeKingdoms",
             "waterMargin",
             "redChamber",
-            "greekMythology",
-            "sherlockHolmes",
-            "aliceWonderland",
+            "onePiece",
+            "naruto",
+            "digimon",
             "emoji"
         ]
+        var optionFrames: [CGRect] = []
         for styleID in expectedStyleIdentifiers {
             let option = app.descendant(
                 identifier: "settings.workspaceIconStyle.option.\(styleID)"
@@ -610,7 +620,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 "工作区图标风格应展示 \(styleID)"
             )
             assertMinimumTouchTarget(option, named: "\(styleID) 风格选项")
+            optionFrames.append(option.frame)
         }
+        assertWorkspaceStyleGridUsesFourColumns(optionFrames)
 
         guard firstExistingButton(
             labels: ["西游记", "Journey to the West"],
@@ -655,6 +667,21 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             originalEmoji.tap()
             XCTAssertTrue(waitUntilSelected(originalEmoji), "测试结束时应恢复原 Emoji 偏好")
         }
+    }
+
+    private func assertWorkspaceStyleGridUsesFourColumns(_ frames: [CGRect]) {
+        XCTAssertEqual(frames.count, 8)
+        guard frames.count == 8 else { return }
+
+        let firstRowY = frames[0].midY
+        let secondRowY = frames[4].midY
+        for frame in frames.prefix(4) {
+            XCTAssertEqual(frame.midY, firstRowY, accuracy: 2, "前四个风格应位于第一排")
+        }
+        for frame in frames.suffix(4) {
+            XCTAssertEqual(frame.midY, secondRowY, accuracy: 2, "后四个风格应位于第二排")
+        }
+        XCTAssertGreaterThan(secondRowY - firstRowY, 44, "两排风格不应重叠")
     }
 
     private func presentQRScanner() throws {
@@ -1034,6 +1061,14 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let compact = app.descendant(identifier: "compactTab.me")
         if compact.exists {
             return compact
+        }
+        // 紧凑底栏首次恢复路由时，系统偶尔先发布 label、下一帧才发布 identifier。
+        // 使用同一系统 Tab 的双语 label 兜底，避免把可见“我的”入口误判为缺失。
+        let compactByLabel = app.tabBars.buttons.matching(
+            NSPredicate(format: "label IN %@", ["我的", "Me"])
+        ).firstMatch
+        if compactByLabel.exists {
+            return compactByLabel
         }
         return app.descendant(identifier: "sidebar.me")
     }
