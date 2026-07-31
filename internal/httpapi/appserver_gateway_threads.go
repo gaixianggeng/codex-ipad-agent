@@ -448,23 +448,50 @@ func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, t
 }
 
 func (p *appServerGatewayPolicy) authorizedProjectsByGitCommonDir(ctx context.Context) map[string]projects.Project {
+	grouped := map[string][]projects.Project{}
 	out := map[string]projects.Project{}
-	ambiguous := map[string]struct{}{}
 	for _, project := range p.router.projects.List() {
 		commonDir, ok := gitCommonDirectory(ctx, project.RealPath)
 		if !ok {
 			continue
 		}
-		if existing, exists := out[commonDir]; exists && existing.ID != project.ID {
-			delete(out, commonDir)
-			ambiguous[commonDir] = struct{}{}
-			continue
-		}
-		if _, exists := ambiguous[commonDir]; !exists {
+		grouped[commonDir] = append(grouped[commonDir], project)
+	}
+	for commonDir, candidates := range grouped {
+		if project, ok := selectAuthorizedProjectForGitCommonDir(commonDir, candidates); ok {
 			out[commonDir] = project
 		}
 	}
 	return out
+}
+
+func selectAuthorizedProjectForGitCommonDir(commonDir string, candidates []projects.Project) (projects.Project, bool) {
+	if len(candidates) == 1 {
+		return candidates[0], true
+	}
+
+	var primary projects.Project
+	primaryCount := 0
+	for _, project := range candidates {
+		// linked worktree 的 .git 是指向 common-dir/worktrees/* 的文件；只有普通
+		// 主工作树的 .git 目录（或其目录 symlink）会解析到仓库 common-dir。
+		// 多 Project 共仓时据此稳定归属到唯一主项目，缺失或重复主项目仍 fail-closed。
+		gitMarker := filepath.Join(project.RealPath, ".git")
+		info, err := os.Stat(gitMarker)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		realGitMarker, err := filepath.EvalSymlinks(gitMarker)
+		if err != nil || filepath.Clean(realGitMarker) != filepath.Clean(commonDir) {
+			continue
+		}
+		primary = project
+		primaryCount++
+	}
+	if primaryCount != 1 {
+		return projects.Project{}, false
+	}
+	return primary, true
 }
 
 func projectForGlobalThread(

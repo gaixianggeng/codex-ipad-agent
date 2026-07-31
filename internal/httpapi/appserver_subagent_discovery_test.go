@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -10,12 +12,91 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
 )
+
+func TestAuthorizedProjectsByGitCommonDirUsesUniquePrimaryProject(t *testing.T) {
+	browseRoot := t.TempDir()
+	projectDir := filepath.Join(browseRoot, "repository")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, projectDir, "init")
+	runGitTestCommand(t, projectDir, "config", "user.email", "mim24@example.invalid")
+	runGitTestCommand(t, projectDir, "config", "user.name", "MIM-24")
+	if err := os.WriteFile(filepath.Join(projectDir, "README.md"), []byte("mim24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, projectDir, "add", "README.md")
+	runGitTestCommand(t, projectDir, "commit", "-m", "initial")
+
+	configuredWorktreeA := filepath.Join(browseRoot, "configured-worktree-a")
+	configuredWorktreeB := filepath.Join(browseRoot, "configured-worktree-b")
+	externalWorktree := filepath.Join(browseRoot, "external-worktree")
+	for index, worktree := range []string{configuredWorktreeA, configuredWorktreeB, externalWorktree} {
+		runGitTestCommand(t, projectDir, "worktree", "add", "-b", fmt.Sprintf("mim24-%d", index), worktree)
+	}
+	t.Cleanup(func() {
+		for _, worktree := range []string{configuredWorktreeA, configuredWorktreeB, externalWorktree} {
+			_ = exec.Command("git", "-C", projectDir, "worktree", "remove", "--force", worktree).Run()
+		}
+	})
+
+	newPolicy := func(t *testing.T, configured []config.ProjectConfig) *appServerGatewayPolicy {
+		t.Helper()
+		registry, err := projects.NewRegistry(configured)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &appServerGatewayPolicy{
+			router: &Router{
+				cfg:      config.Config{BrowseRoots: []string{browseRoot}},
+				projects: registry,
+			},
+		}
+	}
+	projectConfigs := []config.ProjectConfig{
+		{ID: "root", Name: "Root", Path: projectDir},
+		{ID: "worktree-a", Name: "Worktree A", Path: configuredWorktreeA},
+		{ID: "worktree-b", Name: "Worktree B", Path: configuredWorktreeB},
+	}
+	policy := newPolicy(t, projectConfigs)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	projectByCommonDir := policy.authorizedProjectsByGitCommonDir(ctx)
+	got, ok := projectForGlobalThread(ctx, gatewayScope{
+		id:       workspaceIDForRealPath(externalWorktree),
+		realPath: externalWorktree,
+		browse:   true,
+	}, projectByCommonDir)
+	if !ok || got.ID != "root" {
+		t.Fatalf("同仓多个 Project 必须稳定映射到唯一主工作树项目，got=%+v ok=%v", got, ok)
+	}
+
+	t.Run("multiple worktrees without primary fail closed", func(t *testing.T) {
+		ambiguous := newPolicy(t, projectConfigs[1:])
+		if got := ambiguous.authorizedProjectsByGitCommonDir(ctx); len(got) != 0 {
+			t.Fatalf("缺少主工作树时不得猜测 Project 归属：%+v", got)
+		}
+	})
+	t.Run("duplicate primary project IDs fail closed", func(t *testing.T) {
+		duplicate := newPolicy(t, []config.ProjectConfig{
+			{ID: "root-a", Name: "Root A", Path: projectDir},
+			{ID: "root-b", Name: "Root B", Path: projectDir},
+			projectConfigs[1],
+		})
+		if got := duplicate.authorizedProjectsByGitCommonDir(ctx); len(got) != 0 {
+			t.Fatalf("同一路径重复配置为多个 Project 时不得猜测归属：%+v", got)
+		}
+	})
+}
 
 func TestAppServerGatewayGlobalDiscoveryFiltersByRepositoryAndUsesOpaquePaging(t *testing.T) {
 	browseRoot := t.TempDir()
