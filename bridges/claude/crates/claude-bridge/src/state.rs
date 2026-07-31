@@ -512,7 +512,7 @@ impl ConnectionState {
                 .enumerate()
                 .filter(|(index, _)| !matched_live[*index])
                 .filter_map(|(index, live)| {
-                    let score = turn_match_score(&persisted_turn.items, &live.items);
+                    let score = turn_match_score(&persisted_turn, live);
                     (score > 0).then_some((index, score))
                 })
                 .min_by_key(|(index, score)| (Reverse(*score), *index))
@@ -521,6 +521,11 @@ impl ConnectionState {
             if let Some(index) = matched {
                 matched_live[index] = true;
                 let mut live = slot[index].clone();
+                if turn_user_key(&persisted_turn.items).is_some()
+                    && turn_user_key(&live.items).is_none()
+                {
+                    report.reanchored_turns += 1;
+                }
                 if live.status == TurnStatus::Completed
                     && persisted_has_successful_output(&persisted_turn.items)
                     && !persisted_has_successful_output(&live.items)
@@ -630,6 +635,67 @@ mod tests {
         }
     }
 
+    fn completed_turn(
+        id: &str,
+        user_text: Option<&str>,
+        output: &str,
+        started_at_ms: i64,
+        completed_at_ms: i64,
+    ) -> Turn {
+        let mut items = Vec::new();
+        if let Some(text) = user_text {
+            items.push(user(&format!("{id}-user"), text));
+        }
+        items.push(ThreadItem::AgentMessage {
+            id: format!("{id}-agent"),
+            text: output.into(),
+            phase: None,
+            memory_citation: None,
+        });
+        Turn {
+            id: id.into(),
+            items,
+            items_view: alleycat_codex_proto::default_items_view(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(started_at_ms),
+            completed_at: Some(completed_at_ms),
+            duration_ms: Some(completed_at_ms - started_at_ms),
+        }
+    }
+
+    fn record_completed_live_turn(
+        state: &ConnectionState,
+        thread_id: &str,
+        turn_id: &str,
+        user_text: Option<&str>,
+        output: &str,
+        started_at: i64,
+        completed_at: i64,
+    ) {
+        state.record_turn_started(thread_id, turn_id.into(), started_at);
+        if let Some(text) = user_text {
+            state.record_item(thread_id, turn_id, user(&format!("{turn_id}-user"), text));
+        }
+        state.record_item(
+            thread_id,
+            turn_id,
+            ThreadItem::AgentMessage {
+                id: format!("{turn_id}-agent"),
+                text: output.into(),
+                phase: None,
+                memory_citation: None,
+            },
+        );
+        state.record_turn_completed(
+            thread_id,
+            turn_id,
+            completed_at,
+            TurnStatus::Completed,
+            None,
+        );
+    }
+
     #[tokio::test]
     async fn persisted_success_repairs_completed_live_turn() {
         let state = test_state().await;
@@ -734,6 +800,150 @@ mod tests {
             .iter()
             .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains("14:06:06"))));
     }
+
+    #[tokio::test]
+    async fn steered_turn_reconciliation_keeps_anchorless_live_output_in_historical_position() {
+        let state = test_state().await;
+        record_completed_live_turn(
+            &state,
+            "thread",
+            "live-original",
+            Some("先检查 MIM-53"),
+            "正在检查验收标准",
+            100,
+            110,
+        );
+        // turn/steer 可能在前一轮刚完成时才被 Claude 消费。事件驱动会把后续
+        // 输出记录为无 user item 的 autonomous turn，但 JSONL 会用 steer 输入
+        // 开启一个普通历史 turn；两者其实是同一轮回复。
+        record_completed_live_turn(
+            &state,
+            "thread",
+            "live-steered",
+            None,
+            "MIM-53 的验收标准已更新",
+            121,
+            180,
+        );
+        record_completed_live_turn(
+            &state,
+            "thread",
+            "live-current",
+            Some("继续处理当前任务"),
+            "当前任务回复",
+            300,
+            320,
+        );
+
+        let report = state.reconcile_thread_log(
+            "thread",
+            vec![
+                completed_turn(
+                    "disk-original",
+                    Some("先检查 MIM-53"),
+                    "正在检查验收标准",
+                    100_000,
+                    110_000,
+                ),
+                completed_turn(
+                    "disk-steered",
+                    Some("更新下 issue"),
+                    "MIM-53 的验收标准已更新",
+                    115_000,
+                    180_000,
+                ),
+                completed_turn(
+                    "disk-current",
+                    Some("继续处理当前任务"),
+                    "当前任务回复",
+                    300_000,
+                    320_000,
+                ),
+            ],
+        );
+
+        assert_eq!(report.seeded_turns, 0);
+        assert_eq!(report.reanchored_turns, 1);
+        let turns = state.thread_log("thread");
+        assert_eq!(turns.len(), 3, "steer 回复不应在当前回合后再追加一份");
+        assert_eq!(
+            turns
+                .iter()
+                .map(|turn| turn.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["live-original", "live-steered", "live-current"]
+        );
+    }
+
+    #[tokio::test]
+    async fn anchorless_live_output_outside_persisted_window_stays_independent() {
+        let state = test_state().await;
+        record_completed_live_turn(
+            &state,
+            "thread",
+            "live-later",
+            None,
+            "相同但很常见的完成提示",
+            300,
+            310,
+        );
+
+        let report = state.reconcile_thread_log(
+            "thread",
+            vec![completed_turn(
+                "disk-earlier",
+                Some("较早的用户请求"),
+                "相同但很常见的完成提示",
+                100_000,
+                110_000,
+            )],
+        );
+
+        assert_eq!(report.reanchored_turns, 0);
+        assert_eq!(report.seeded_turns, 1);
+        assert_eq!(
+            state
+                .thread_log("thread")
+                .iter()
+                .map(|turn| turn.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["disk-earlier", "live-later"]
+        );
+    }
+
+    #[tokio::test]
+    async fn active_anchorless_live_turn_is_not_absorbed_by_persisted_history() {
+        let state = test_state().await;
+        state.record_turn_started("thread", "live-active".into(), 105);
+        state.record_item(
+            "thread",
+            "live-active",
+            ThreadItem::AgentMessage {
+                id: "live-active-agent".into(),
+                text: "仍在生成的相同输出".into(),
+                phase: None,
+                memory_citation: None,
+            },
+        );
+
+        let report = state.reconcile_thread_log(
+            "thread",
+            vec![completed_turn(
+                "disk-completed",
+                Some("已经完成的请求"),
+                "仍在生成的相同输出",
+                100_000,
+                110_000,
+            )],
+        );
+
+        assert_eq!(report.reanchored_turns, 0);
+        let turns = state.thread_log("thread");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].id, "disk-completed");
+        assert_eq!(turns[1].id, "live-active");
+        assert_eq!(turns[1].status, TurnStatus::InProgress);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -743,6 +953,7 @@ pub struct ReconcileReport {
     pub seeded_turns: usize,
     pub repaired_turns: usize,
     pub protected_turns: usize,
+    pub reanchored_turns: usize,
 }
 
 impl From<Turn> for RecordedTurn {
@@ -766,24 +977,52 @@ fn turn_user_key(items: &[ThreadItem]) -> Option<String> {
 }
 
 // 先以用户输入锚定普通 turn；自主 turn 没有 user item，则使用不含临时 id
-// 的可见内容指纹匹配。没有任何可见内容重合时不能仅凭顺序合并，否则两个
-// 相邻但不同的自主 turn 会被误当成同一条并覆盖 live 数据。
-fn turn_match_score(persisted: &[ThreadItem], live: &[ThreadItem]) -> u8 {
-    match (turn_user_key(persisted), turn_user_key(live)) {
-        (Some(left), Some(right)) => return u8::from(left == right) * 3,
-        (Some(_), None) | (None, Some(_)) => return 0,
+// 的可见内容指纹匹配。turn/steer 有一个特殊竞态：Claude 可能在原 client
+// turn 收口后才消费 steer，live cache 因此记录成无 user 的 autonomous turn，
+// 但 JSONL 会用 steer 输入开启普通 turn。此时只在完成态、时间窗口重合且
+// 可见输出相同时恢复关联，避免把真正独立的自主任务误合并。
+fn turn_match_score(persisted: &Turn, live: &RecordedTurn) -> u8 {
+    let persisted_user = turn_user_key(&persisted.items);
+    let live_user = turn_user_key(&live.items);
+    let persisted_has_user = persisted_user.is_some();
+    match (persisted_user.as_deref(), live_user.as_deref()) {
+        (Some(left), Some(right)) => return u8::from(left == right) * 4,
+        (Some(_), None) => {
+            if live.status != TurnStatus::Completed
+                || !completed_turn_windows_overlap(persisted, live)
+            {
+                return 0;
+            }
+        }
+        (None, Some(_)) => return 0,
         (None, None) => {}
     }
-    let persisted_visible = turn_visible_signatures(persisted);
-    let live_visible = turn_visible_signatures(live);
+    let persisted_visible = turn_visible_signatures(&persisted.items);
+    let live_visible = turn_visible_signatures(&live.items);
     if persisted_visible
         .iter()
         .any(|signature| live_visible.contains(signature))
     {
-        2
+        if persisted_has_user { 2 } else { 3 }
     } else {
         0
     }
+}
+
+fn completed_turn_windows_overlap(persisted: &Turn, live: &RecordedTurn) -> bool {
+    let (Some(persisted_start), Some(persisted_end), Some(live_end)) = (
+        persisted.started_at,
+        persisted.completed_at,
+        live.completed_at,
+    ) else {
+        return false;
+    };
+    // JSONL 的 RFC 3339 时间由 translate/items 记录为毫秒；实时回合使用
+    // now_unix_secs。只在这个对账边界把权威历史归一到秒，避免改动协议字段
+    // 的既有语义，也避免毫秒值与秒值直接比较导致 steer 回合永远无法重锚。
+    let persisted_start_secs = persisted_start.div_euclid(1_000);
+    let persisted_end_secs = persisted_end.div_euclid(1_000);
+    persisted_start_secs <= live_end && live.started_at <= persisted_end_secs
 }
 
 fn turn_visible_signatures(items: &[ThreadItem]) -> Vec<String> {

@@ -806,7 +806,11 @@ pub(super) async fn cached_thread_turns(
         Err(err) => return Err(err),
     };
     let report = state.reconcile_thread_log(&entry.thread_id, persisted);
-    if report.seeded_turns > 0 || report.repaired_turns > 0 || report.protected_turns > 0 {
+    if report.seeded_turns > 0
+        || report.repaired_turns > 0
+        || report.protected_turns > 0
+        || report.reanchored_turns > 0
+    {
         tracing::info!(
             thread_id = %entry.thread_id,
             live_turns = report.live_turns,
@@ -814,6 +818,7 @@ pub(super) async fn cached_thread_turns(
             seeded_turns = report.seeded_turns,
             repaired_turns = report.repaired_turns,
             protected_turns = report.protected_turns,
+            reanchored_turns = report.reanchored_turns,
             "reconciled claude transcript with live thread cache"
         );
     }
