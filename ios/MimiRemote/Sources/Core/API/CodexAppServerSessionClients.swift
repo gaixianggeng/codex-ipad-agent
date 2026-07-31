@@ -521,13 +521,12 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     }
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
-        let decoded = MultiRuntimeSessionsCursor.decode(cursor)
-        let codexPage = try await page(runtime: bundle.codex, projectID: projectID, continuation: decoded.codex, limit: limit, buffer: decoded.codexBuffer, consistency: consistency)
-        let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
-        let claudePage = claudeAvailable
-            ? try await page(runtime: bundle.claude, projectID: projectID, continuation: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
-            : preservedPage(continuation: decoded.claude, buffer: decoded.claudeBuffer)
-        return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
+        try await sessionsPage(
+            scope: .projectID(projectID),
+            cursor: cursor,
+            limit: limit,
+            consistency: consistency
+        )
     }
 
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
@@ -535,13 +534,12 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     }
 
     func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?, consistency: SessionListConsistency) async throws -> SessionsPage {
-        let decoded = MultiRuntimeSessionsCursor.decode(cursor)
-        let codexPage = try await page(runtime: bundle.codex, workspace: workspace, continuation: decoded.codex, limit: limit, buffer: decoded.codexBuffer, consistency: consistency)
-        let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
-        let claudePage = claudeAvailable
-            ? try await page(runtime: bundle.claude, workspace: workspace, continuation: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
-            : preservedPage(continuation: decoded.claude, buffer: decoded.claudeBuffer)
-        return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
+        try await sessionsPage(
+            scope: .workspace(workspace),
+            cursor: cursor,
+            limit: limit,
+            consistency: consistency
+        )
     }
 
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
@@ -668,50 +666,146 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         var continuation: RuntimeSessionsContinuation
     }
 
-    private func page(runtime: CodexAppServerSessionRuntime, projectID: String?, continuation: RuntimeSessionsContinuation, limit: Int?, buffer: [AgentSession], consistency: SessionListConsistency) async throws -> RuntimePage {
-        if !buffer.isEmpty {
-            return RuntimePage(sessions: buffer, continuation: continuation)
+    private enum SessionListScope {
+        case projectID(String?)
+        case workspace(AgentWorkspace)
+    }
+
+    private func sessionsPage(
+        scope: SessionListScope,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        let decoded = MultiRuntimeSessionsCursor.decode(cursor)
+        var codex = RuntimePage(
+            sessions: SessionIndexStore.sortedSessions(decoded.codexBuffer),
+            continuation: decoded.codex
+        )
+        var claude = RuntimePage(
+            sessions: SessionIndexStore.sortedSessions(decoded.claudeBuffer),
+            continuation: decoded.claude
+        )
+
+        codex = try await refilledCandidate(
+            codex,
+            runtime: bundle.codex,
+            scope: scope,
+            limit: limit,
+            consistency: consistency,
+            available: true
+        )
+        let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
+        claude = try await refilledCandidate(
+            claude,
+            runtime: bundle.claude,
+            scope: scope,
+            limit: limit,
+            consistency: consistency,
+            available: claudeAvailable
+        )
+
+        // limit=nil 沿用旧语义：只返回本轮首次取得的候选窗口，不扫描完整历史。
+        let outputLimit = limit.flatMap { $0 > 0 ? $0 : nil }
+            ?? (codex.sessions.count + claude.sessions.count)
+        var emitted: [AgentSession] = []
+        emitted.reserveCapacity(outputLimit)
+
+        mergeLoop: while emitted.count < outputLimit {
+            // 某侧 buffer 用完但仍有 continuation 时，必须在输出另一侧更旧记录前补齐候选。
+            // 否则未知的下一条可能比另一侧当前 head 更新，形成跨页逆序。
+            if codex.sessions.isEmpty, !claude.sessions.isEmpty {
+                codex = try await refilledCandidate(
+                    codex,
+                    runtime: bundle.codex,
+                    scope: scope,
+                    limit: limit,
+                    consistency: consistency,
+                    available: true
+                )
+            }
+            if claude.sessions.isEmpty, !codex.sessions.isEmpty {
+                claude = try await refilledCandidate(
+                    claude,
+                    runtime: bundle.claude,
+                    scope: scope,
+                    limit: limit,
+                    consistency: consistency,
+                    available: claudeAvailable
+                )
+            }
+
+            switch (codex.sessions.first, claude.sessions.first) {
+            case let (codexHead?, claudeHead?):
+                if Self.session(codexHead, sortsBefore: claudeHead) {
+                    emitted.append(codex.sessions.removeFirst())
+                } else {
+                    emitted.append(claude.sessions.removeFirst())
+                }
+            case (_?, nil):
+                emitted.append(codex.sessions.removeFirst())
+            case (nil, _?):
+                emitted.append(claude.sessions.removeFirst())
+            case (nil, nil):
+                break mergeLoop
+            }
+        }
+
+        bundle.routes.remember(emitted + codex.sessions + claude.sessions)
+        let next = MultiRuntimeSessionsCursor(
+            codex: codex.continuation,
+            claude: claude.continuation,
+            codexBuffer: codex.sessions,
+            claudeBuffer: claude.sessions
+        )
+        let nextCursor = next.encodedIfNeeded()
+        return SessionsPage(sessions: emitted, nextCursor: nextCursor, hasMore: nextCursor != nil)
+    }
+
+    private func refilledCandidate(
+        _ current: RuntimePage,
+        runtime: CodexAppServerSessionRuntime,
+        scope: SessionListScope,
+        limit: Int?,
+        consistency: SessionListConsistency,
+        available: Bool
+    ) async throws -> RuntimePage {
+        guard available, current.sessions.isEmpty else {
+            return current
         }
         let cursor: String?
-        switch continuation.state {
+        switch current.continuation.state {
         case .notStarted:
             cursor = nil
         case .canContinue:
-            guard let nextCursor = continuation.cursor else {
+            guard let nextCursor = current.continuation.cursor else {
                 return RuntimePage(sessions: [], continuation: .exhausted)
             }
             cursor = nextCursor
         case .exhausted:
             // nil cursor 对上游表示“第一页”，不能拿它同时表示“已经耗尽”。
-            // 显式终态让另一 Runtime 继续翻页时不会把本侧首屏重新混入全局结果。
             return RuntimePage(sessions: [], continuation: .exhausted)
         }
-        let page = try await runtime.sessionsPage(projectID: projectID, cursor: cursor, limit: limit, consistency: consistency)
-        return RuntimePage(
-            sessions: page.sessions,
-            continuation: Self.continuation(after: page)
-        )
-    }
 
-    private func page(runtime: CodexAppServerSessionRuntime, workspace: AgentWorkspace, continuation: RuntimeSessionsContinuation, limit: Int?, buffer: [AgentSession], consistency: SessionListConsistency) async throws -> RuntimePage {
-        if !buffer.isEmpty {
-            return RuntimePage(sessions: buffer, continuation: continuation)
+        let page: SessionsPage
+        switch scope {
+        case let .projectID(projectID):
+            page = try await runtime.sessionsPage(
+                projectID: projectID,
+                cursor: cursor,
+                limit: limit,
+                consistency: consistency
+            )
+        case let .workspace(workspace):
+            page = try await runtime.sessionsPage(
+                workspace: workspace,
+                cursor: cursor,
+                limit: limit,
+                consistency: consistency
+            )
         }
-        let cursor: String?
-        switch continuation.state {
-        case .notStarted:
-            cursor = nil
-        case .canContinue:
-            guard let nextCursor = continuation.cursor else {
-                return RuntimePage(sessions: [], continuation: .exhausted)
-            }
-            cursor = nextCursor
-        case .exhausted:
-            return RuntimePage(sessions: [], continuation: .exhausted)
-        }
-        let page = try await runtime.sessionsPage(workspace: workspace, cursor: cursor, limit: limit, consistency: consistency)
         return RuntimePage(
-            sessions: page.sessions,
+            sessions: SessionIndexStore.sortedSessions(page.sessions),
             continuation: Self.continuation(after: page)
         )
     }
@@ -723,29 +817,13 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         return .canContinue(from: nextCursor)
     }
 
-    private func preservedPage(continuation: RuntimeSessionsContinuation, buffer: [AgentSession]) -> RuntimePage {
-        RuntimePage(sessions: buffer, continuation: continuation)
-    }
-
-    private func mergedPage(codex: RuntimePage, claude: RuntimePage, limit: Int?) -> SessionsPage {
-        var sessions = codex.sessions + claude.sessions
-        bundle.routes.remember(sessions)
-        sessions = SessionIndexStore.sortedSessions(sessions)
-        let bounded: [AgentSession]
-        if let limit, limit > 0, sessions.count > limit {
-            bounded = Array(sessions.prefix(limit))
-        } else {
-            bounded = sessions
+    private static func session(_ lhs: AgentSession, sortsBefore rhs: AgentSession) -> Bool {
+        let left = SessionIndexStore.orderingDate(for: lhs)
+        let right = SessionIndexStore.orderingDate(for: rhs)
+        if left == right {
+            return lhs.id > rhs.id
         }
-        let emittedIDs = Set(bounded.map(\.id))
-        let next = MultiRuntimeSessionsCursor(
-            codex: codex.continuation,
-            claude: claude.continuation,
-            codexBuffer: codex.sessions.filter { !emittedIDs.contains($0.id) },
-            claudeBuffer: claude.sessions.filter { !emittedIDs.contains($0.id) }
-        )
-        let nextCursor = next.encodedIfNeeded()
-        return SessionsPage(sessions: bounded, nextCursor: nextCursor, hasMore: nextCursor != nil)
+        return left > right
     }
 }
 
