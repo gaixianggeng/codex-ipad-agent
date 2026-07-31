@@ -2,6 +2,18 @@ import Foundation
 
 // turn/start ACK 等待窗口的终态观察独立维护，避免通知投影继续膨胀。
 extension CodexAppServerSessionRuntime {
+    func isTerminalHistoryStatus(_ value: CodexAppServerJSONValue?) -> Bool {
+        let raw = value?.stringValue
+            ?? value?.objectValue?["type"]?.stringValue
+            ?? value?.objectValue?["status"]?.stringValue
+        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "completed", "complete", "succeeded", "success", "failed", "failure", "interrupted", "cancelled", "canceled", "aborted":
+            return true
+        default:
+            return false
+        }
+    }
+
     func recordPendingTurnStartBoundary(from notification: CodexAppServerNotification) {
         guard notification.method == "turn/completed"
                 || notification.method == "thread/closed" else {

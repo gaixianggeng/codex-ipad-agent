@@ -1008,7 +1008,29 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
 
-	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, installationID, nil)
+	configDir, err := config.UserConfigDir()
+	if err != nil {
+		manager.Shutdown()
+		if appServerWSProcess != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), serveRuntimeShutdownTimeout)
+			_ = appServerWSProcess.Shutdown(ctx)
+			cancel()
+		}
+		return fmt.Errorf("解析 agentd 私有状态目录失败：%w", err)
+	}
+	gatewayTurnClaimStorePath := filepath.Join(configDir, "state", "gateway-turn-claims.json")
+	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeInstallationIDAndOptions(
+		cfg,
+		registry,
+		manager,
+		checker,
+		version,
+		installationID,
+		nil,
+		httpapi.RouterOptions{
+			GatewayTurnClaimStorePath: gatewayTurnClaimStorePath,
+		},
+	)
 	if appServerWSProcess != nil {
 		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
 	}

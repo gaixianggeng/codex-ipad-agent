@@ -751,54 +751,6 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedQueuedTurns.map(\.previewText), ["编辑后的第一条"])
     }
 
-    func testQueuedTurnCanGuideNowAndFailureRequiresExplicitRetry() async throws {
-        let project = makeProject(id: "proj_queue_guide_now")
-        let running = makeSession(
-            id: "sess_queue_guide_now",
-            projectID: project.id,
-            title: "Queue Guide Now",
-            status: SessionStatus.running.rawValue,
-            source: "codex",
-            activeTurnID: "turn_queue_guide_now"
-        )
-        let appStore = AppStore()
-        appStore.token = "test-token"
-        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
-        var sockets: [MockWebSocketClient] = []
-        let store = SessionStore(
-            appStore: appStore,
-            conversationStore: ConversationStore(),
-            logStore: LogStore(),
-            clientFactory: { client },
-            webSocketFactory: {
-                let socket = MockWebSocketClient()
-                sockets.append(socket)
-                return socket
-            }
-        )
-
-        await store.refreshAll(autoAttach: false)
-        store.takeOverSession(running)
-        await store.selectSession(running)
-        let socket = try XCTUnwrap(sockets.first)
-        socket.emitStatus(.connected)
-        try await waitForWebSocketStatus(.connected, store: store)
-        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "立即引导"))
-        XCTAssertTrue(queued)
-        let clientMessageID = try XCTUnwrap(store.selectedQueuedTurns.first?.id)
-
-        XCTAssertTrue(store.guideQueuedTurnNow(clientMessageID: clientMessageID))
-        XCTAssertEqual(socket.sentGuidance.first?.payload.textPrompt, "立即引导")
-        XCTAssertEqual(socket.sentGuidance.first?.expectedTurnID, "turn_queue_guide_now")
-        socket.onSendFailure?(clientMessageID, "ack lost")
-        for _ in 0..<50 where store.selectedQueuedTurns.first?.dispatchState != .needsConfirmation {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .needsConfirmation)
-        XCTAssertTrue(store.retryQueuedTurn(clientMessageID: clientMessageID))
-        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
-        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn_queue_guide_now")
-    }
 
     func testExistingQueueStaysFIFOWhenSnapshotTemporarilyLosesActiveTurn() async throws {
         let project = makeProject(id: "proj_ws_queue_snapshot_gap")

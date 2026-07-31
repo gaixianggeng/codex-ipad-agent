@@ -181,7 +181,8 @@ struct MimiRemoteApp: App {
             appStore: appStore,
             conversationStore: conversationStore,
             logStore: logStore,
-            contextStore: contextStore
+            contextStore: contextStore,
+            workspaceAppearanceStore: workspaceAppearanceStore
         ))
         // 尽早注册 delegate；冷启动点击会先进入 adapter 的 pendingRoute，等 RootView 消费。
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
