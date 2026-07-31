@@ -1159,8 +1159,7 @@ struct UnifiedWorkbenchShell: View {
                             )
                         }
                     } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
+                        WorkbenchChromeIcon(systemName: "ellipsis")
                             .foregroundStyle(tokens.secondaryText)
                     }
                     .accessibilityLabel(L10n.text("ui.options"))
@@ -1174,8 +1173,7 @@ struct UnifiedWorkbenchShell: View {
                                 presentation: $sessionActionPresentation
                             )
                         } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 16, weight: .semibold))
+                            WorkbenchChromeIcon(systemName: "ellipsis")
                                 .foregroundStyle(tokens.secondaryText)
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
@@ -1388,9 +1386,7 @@ struct UnifiedWorkbenchShell: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
+            WorkbenchChromeIcon(systemName: systemImage)
         }
         .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
         .disabled(isDisabled)
@@ -1444,241 +1440,6 @@ struct UnifiedWorkbenchShell: View {
         case .terminated: return .red
         case .disconnected: return tokens.tertiaryText
         }
-    }
-}
-
-/// 侧栏标题旁的 AI 账号剩余用量入口。与设置页共享三环和窗口选择规则，
-/// 在窄侧栏里只缩小图形，仍保留完整的 44pt 点击区。
-private struct AIUsageRingsControl: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    let codexDisplay: CodexUsageWindowsDisplay
-    let claudeDisplay: CodexUsageWindowsDisplay
-    let includesClaude: Bool
-    let usesCondensedVisual: Bool
-    let onRefresh: () async -> Void
-
-    init(
-        codexDisplay: CodexUsageWindowsDisplay,
-        claudeDisplay: CodexUsageWindowsDisplay,
-        includesClaude: Bool,
-        usesCondensedVisual: Bool = false,
-        onRefresh: @escaping () async -> Void
-    ) {
-        self.codexDisplay = codexDisplay
-        self.claudeDisplay = claudeDisplay
-        self.includesClaude = includesClaude
-        self.usesCondensedVisual = usesCondensedVisual
-        self.onRefresh = onRefresh
-    }
-
-    @State private var showsDetails = false
-    @State private var isRefreshing = false
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let metrics = CodexUsageRingMetrics(
-            isCompact: horizontalSizeClass == .compact,
-            usesCondensedVisual: usesCondensedVisual
-        )
-        let items = usageItems(tokens: tokens)
-
-        CombinedUsageRingsGraphic(
-            items: items,
-            // 三环也是稳定的品牌识别；额度未接入时保留灰色轨道，不退化成单环。
-            expectedRingCount: 3,
-            diameter: metrics.diameter,
-            lineWidth: metrics.lineWidth,
-            ringSpacing: metrics.ringSpacing
-        )
-        .frame(width: metrics.hitSize, height: metrics.hitSize)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            showsDetails.toggle()
-        }
-        .hoverEffect(.highlight)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(L10n.text("ui.token_quota"))
-        .accessibilityValue(accessibilityValue(items: items))
-        .accessibilityIdentifier("sidebar.codexUsageRings")
-        .accessibilityAction {
-            showsDetails.toggle()
-        }
-        .popover(isPresented: $showsDetails, arrowEdge: .top) {
-            usageDetails(tokens: tokens)
-                .presentationCompactAdaptation(.sheet)
-                .presentationDetents([.height(360), .medium])
-                .presentationDragIndicator(.visible)
-        }
-    }
-
-    private func usageDetails(tokens: ThemeTokens) -> some View {
-        let items = usageItems(tokens: tokens)
-
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.text("ui.token_quota"))
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(windowSummaryText)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    Task { await refreshUsage() }
-                } label: {
-                    Group {
-                        if isRefreshing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                    }
-                    .frame(width: 34, height: 34)
-                    .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tokens.secondaryText)
-                .background(tokens.surface.opacity(0.72), in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border.opacity(0.72), lineWidth: 1)
-                }
-                .disabled(isRefreshing)
-                .accessibilityLabel(L10n.format("ui.refresh_value_usage", "AI"))
-            }
-
-            VStack(spacing: 14) {
-                if items.isEmpty {
-                    Text(L10n.text("ui.after_refreshing_the_account_window_currently_returned_by"))
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        if index > 0 {
-                            Divider().overlay(tokens.border.opacity(0.72))
-                        }
-                        usageWindowRow(item: item, tokens: tokens)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                usageCreditLine(name: "Codex", display: codexDisplay)
-                if includesClaude {
-                    usageCreditLine(name: "Claude", display: claudeDisplay)
-                }
-            }
-            .foregroundStyle(tokens.secondaryText)
-        }
-        .padding(16)
-        .frame(width: horizontalSizeClass == .compact ? nil : 320)
-        .frame(maxWidth: horizontalSizeClass == .compact ? .infinity : nil, alignment: .leading)
-    }
-
-    private func usageWindowRow(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
-        let progress = item.window.remainingProgress ?? 0
-
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle()
-                    .stroke(item.tint, lineWidth: 2.5)
-                    .frame(width: 12, height: 12)
-                Text("\(item.providerName) · \(item.window.label)")
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .monospacedDigit()
-                Text(item.window.title)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-
-                Spacer(minLength: 8)
-
-                Text(item.window.remainingText)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(
-                        item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
-                    )
-                    .monospacedDigit()
-            }
-
-            ProgressView(value: progress)
-                .tint(item.tint)
-                .opacity(item.window.remainingProgress == nil ? 0.3 : 1)
-
-            Text(item.window.resetText)
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
-        )
-        .accessibilityValue(
-            L10n.format(
-                "ui.usage_window_accessibility_value",
-                item.window.remainingText,
-                item.window.resetText
-            )
-        )
-    }
-
-    private func refreshUsage() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
-        await onRefresh()
-    }
-
-    private func usageItems(tokens: ThemeTokens) -> [CombinedUsageItem] {
-        CombinedUsageItem.make(
-            codexDisplay: codexDisplay,
-            claudeDisplay: claudeDisplay,
-            includesClaude: includesClaude,
-            claudeShortTint: tokens.accent
-        )
-    }
-
-    private var windowSummaryText: String {
-        var summaries = [codexDisplay.windowSummaryText]
-        if includesClaude {
-            summaries.append(claudeDisplay.windowSummaryText)
-        }
-        return summaries.joined(separator: " · ")
-    }
-
-    private func usageCreditLine(
-        name: String,
-        display: CodexUsageWindowsDisplay
-    ) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                .font(.system(size: 12, weight: .semibold))
-            // name 与 creditText 已分别完成本地化；按原文组合，避免 Xcode 抽取裸 `%@: %@` key。
-            Text(verbatim: "\(name): \(display.creditText)")
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .lineLimit(2)
-        }
-    }
-
-    private func accessibilityValue(items: [CombinedUsageItem]) -> String {
-        guard !items.isEmpty else {
-            return L10n.text("ui.account_usage_has_not_been_obtained_yet")
-        }
-        return items
-            .map { "\($0.providerName)\($0.window.accessibilityName)\($0.window.remainingText)" }
-            .joined(separator: L10n.text("ui.list_separator"))
     }
 }
 
