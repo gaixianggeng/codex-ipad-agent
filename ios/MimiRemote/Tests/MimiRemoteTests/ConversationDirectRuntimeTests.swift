@@ -1059,7 +1059,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(summary?.primaryResetsAt, 1_780_494_300)
     }
 
-    func testMultiRuntimeCompositeCursorCarriesBuffersAndContinuesRuntimeCursors() async throws {
+    func testMultiRuntimeCompositeCursorRefillsShortBufferBeforeEmittingOlderRuntimeRows() async throws {
         let project = AgentProject(id: "proj_multi_cursor", name: "Multi Cursor", path: "/tmp/multi-cursor")
         let config = makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()])
         let codexTransport = FakeCodexAppServerTransport()
@@ -1090,7 +1090,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(codexFirstParams["limit"]?.intValue, 2)
         transportResponse(codexTransport, id: codexFirstList.id, result: appServerThreadListResult([
             appServerThreadJSON(id: "codex-new", cwd: project.path, source: "appServer", updatedAt: 1780493000),
-            appServerThreadJSON(id: "codex-buffer", cwd: project.path, source: "appServer", updatedAt: 1780491000)
+            appServerThreadJSON(id: "codex-buffer", cwd: project.path, source: "appServer", updatedAt: 1780491500)
         ], nextCursor: "codex-next"))
 
         let claudeInitialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
@@ -1098,45 +1098,45 @@ extension ConversationDataFlowTests {
         let claudeFirstList = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: 1)
         transportResponse(claudeTransport, id: claudeFirstList.id, result: appServerThreadListResult([
             appServerThreadJSON(id: "claude-new", cwd: project.path, source: "claude", updatedAt: 1780492000),
-            appServerThreadJSON(id: "claude-buffer", cwd: project.path, source: "claude", updatedAt: 1780490000)
-        ], nextCursor: "claude-next"))
+            appServerThreadJSON(id: "claude-old-buffer", cwd: project.path, source: "claude", updatedAt: 1780490000)
+        ], nextCursor: nil))
 
         let firstPage = try await firstTask.value
         XCTAssertEqual(firstPage.sessions.map(\.id), ["codex-new", "claude-new"])
         let firstCursor = try XCTUnwrap(firstPage.nextCursor)
 
-        // 第二页来自 composite cursor 中的 buffer，不应重复请求任一 runtime。
+        // 第一页只消费 Codex 的最新项，留下一个很短的 Codex buffer 和一个更旧的 Claude buffer。
+        // 第二页在输出旧 Claude 前必须补取 Codex continuation，否则较新的 Codex 下一页会落到第三页。
         let codexMessageCount = (await codexTransport.sentMessages()).count
         let claudeMessageCount = (await claudeTransport.sentMessages()).count
-        let secondPage = try await client.sessionsPage(projectID: project.id, cursor: firstCursor, limit: 2)
-        XCTAssertEqual(secondPage.sessions.map(\.id), ["codex-buffer", "claude-buffer"])
-        let codexMessageCountAfterBuffer = (await codexTransport.sentMessages()).count
-        let claudeMessageCountAfterBuffer = (await claudeTransport.sentMessages()).count
-        XCTAssertEqual(codexMessageCountAfterBuffer, codexMessageCount)
-        XCTAssertEqual(claudeMessageCountAfterBuffer, claudeMessageCount)
-        let secondCursor = try XCTUnwrap(secondPage.nextCursor)
-
-        let thirdTask = Task { try await client.sessionsPage(projectID: project.id, cursor: secondCursor, limit: 2) }
+        let secondTask = Task { try await client.sessionsPage(projectID: project.id, cursor: firstCursor, limit: 2) }
         let codexSecondList = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: codexMessageCount)
         let codexSecondParams = try XCTUnwrap(codexSecondList.params?.objectValue)
         XCTAssertEqual(codexSecondParams["cursor"]?.stringValue, "codex-next")
         transportResponse(codexTransport, id: codexSecondList.id, result: appServerThreadListResult([
-            appServerThreadJSON(id: "codex-old", cwd: project.path, source: "appServer", updatedAt: 1780489000)
+            appServerThreadJSON(id: "codex-next-newer", cwd: project.path, source: "appServer", updatedAt: 1780491400)
         ], nextCursor: nil))
 
-        let claudeSecondList = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/list", after: claudeMessageCount)
-        let claudeSecondParams = try XCTUnwrap(claudeSecondList.params?.objectValue)
-        XCTAssertEqual(claudeSecondParams["cursor"]?.stringValue, "claude-next")
-        transportResponse(claudeTransport, id: claudeSecondList.id, result: appServerThreadListResult([
-            appServerThreadJSON(id: "claude-old", cwd: project.path, source: "claude", updatedAt: 1780488000)
-        ], nextCursor: nil))
+        let secondPage = try await secondTask.value
+        XCTAssertEqual(secondPage.sessions.map(\.id), ["codex-buffer", "codex-next-newer"])
+        XCTAssertTrue(secondPage.hasMore)
+        let secondCursor = try XCTUnwrap(secondPage.nextCursor)
+        let claudeMessageCountAfterSecond = (await claudeTransport.sentMessages()).count
+        XCTAssertEqual(claudeMessageCountAfterSecond, claudeMessageCount, "Claude 已 exhausted，不能重拉首屏")
 
-        let thirdPage = try await thirdTask.value
-        XCTAssertEqual(thirdPage.sessions.map(\.id), ["codex-old", "claude-old"])
+        let thirdPage = try await client.sessionsPage(projectID: project.id, cursor: secondCursor, limit: 2)
+        XCTAssertEqual(thirdPage.sessions.map(\.id), ["claude-old-buffer"])
         XCTAssertFalse(thirdPage.hasMore)
         XCTAssertNil(thirdPage.nextCursor)
         let claudeCloseCount = await claudeTransport.closeCallCount()
         XCTAssertEqual(claudeCloseCount, 0, "列表翻到末页不能回收可能被后台会话复用的 Claude Runtime")
+
+        let allSessions = firstPage.sessions + secondPage.sessions + thirdPage.sessions
+        XCTAssertEqual(Set(allSessions.map(\.id)).count, allSessions.count)
+        XCTAssertEqual(
+            allSessions.map(SessionIndexStore.orderingDate),
+            allSessions.map(SessionIndexStore.orderingDate).sorted(by: >)
+        )
     }
 
     func testDirectRuntimeRetriesNewSessionAfterStaleInitializationError() async throws {
