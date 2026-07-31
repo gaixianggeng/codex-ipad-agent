@@ -1,11 +1,38 @@
 import SwiftUI
 
+/// 顶层导航只维护语义与 outline / fill 配对，避免 iPhone Tab 与 iPad 侧栏各自挑选图标。
+enum WorkbenchNavigationIcon {
+    case sessions
+    case workspaces
+    case me
+
+    var normalSystemName: String {
+        switch self {
+        case .sessions: return "bubble.left.and.bubble.right"
+        case .workspaces: return "folder"
+        case .me: return "person.crop.circle"
+        }
+    }
+
+    var selectedSystemName: String {
+        switch self {
+        case .sessions: return "bubble.left.and.bubble.right.fill"
+        case .workspaces: return "folder.fill"
+        case .me: return "person.crop.circle.fill"
+        }
+    }
+
+    func systemName(isSelected: Bool) -> String {
+        isSelected ? selectedSystemName : normalSystemName
+    }
+}
+
 /// 固定导航入口自绘选中态，避免 iOS 26 SidebarListStyle 自动套用过圆的胶囊背景。
 struct WorkbenchSidebarDestinationButton: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let title: String
-    let systemImage: String
+    let icon: WorkbenchNavigationIcon
     let isSelected: Bool
     let tokens: ThemeTokens
     let action: () -> Void
@@ -13,8 +40,9 @@ struct WorkbenchSidebarDestinationButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: systemImage)
+                Image(systemName: icon.systemName(isSelected: isSelected))
                     .font(themeStore.uiFont(size: 18, weight: isSelected ? .semibold : .medium))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(tokens.primaryAction)
                     .frame(width: 24)
 
@@ -81,21 +109,35 @@ struct WorkbenchSidebarFooter: View {
 
         HStack {
             Button(action: onOpenSettings) {
-                Label(L10n.text("ui.me"), systemImage: "person.crop.circle")
-                    .font(themeStore.uiFont(.subheadline, weight: .medium))
-                    .padding(.horizontal, 12)
-                    .frame(height: 44)
+                HStack(spacing: 10) {
+                    Image(
+                        systemName: WorkbenchNavigationIcon.me.systemName(
+                            isSelected: isMeSelected
+                        )
+                    )
+                    .font(themeStore.uiFont(size: 18, weight: isMeSelected ? .semibold : .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tokens.primaryAction)
+                    .frame(width: 24)
+
+                    Text(L10n.text("ui.me"))
+                        .font(
+                            themeStore.uiFont(
+                                .body,
+                                weight: isMeSelected ? .semibold : .medium
+                            )
+                        )
+                        .foregroundStyle(tokens.primaryText)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 44)
+                .background(
+                    isMeSelected ? tokens.selectionFill : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
-            .background(
-                isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72),
-                in: Capsule()
-            )
-            .overlay {
-                Capsule()
-                    .stroke(tokens.border.opacity(0.6), lineWidth: 1)
-            }
             .accessibilityLabel(L10n.text("ui.me"))
             .accessibilityValue(
                 isMeSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected")

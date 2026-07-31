@@ -57,10 +57,14 @@ enum CompactWorkbenchTab: Hashable {
     }
 
     var systemImage: String {
+        navigationIcon.normalSystemName
+    }
+
+    var navigationIcon: WorkbenchNavigationIcon {
         switch self {
-        case .sessions: return "bubble.left.and.bubble.right"
-        case .workspaces: return "folder"
-        case .me: return "person.crop.circle"
+        case .sessions: return .sessions
+        case .workspaces: return .workspaces
+        case .me: return .me
         }
     }
 }
@@ -740,14 +744,14 @@ struct UnifiedWorkbenchShell: View {
                     sidebarDestinationRow(
                         destination: .sessions,
                         title: L10n.text("ui.session"),
-                        systemImage: "bubble.left.and.bubble.right",
+                        icon: .sessions,
                         tokens: tokens,
                         layout: layout
                     )
                     sidebarDestinationRow(
                         destination: .workspaces,
                         title: L10n.text("ui.workspace"),
-                        systemImage: "folder",
+                        icon: .workspaces,
                         tokens: tokens,
                         layout: layout
                     )
@@ -885,7 +889,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarDestinationRow(
         destination: AppDestination,
         title: String,
-        systemImage: String,
+        icon: WorkbenchNavigationIcon,
         tokens: ThemeTokens,
         layout: WorkbenchLayout
     ) -> some View {
@@ -893,7 +897,7 @@ struct UnifiedWorkbenchShell: View {
 
         return WorkbenchSidebarDestinationButton(
             title: title,
-            systemImage: systemImage,
+            icon: icon,
             isSelected: isSelected,
             tokens: tokens,
             action: { open(destination, layout: layout) }
