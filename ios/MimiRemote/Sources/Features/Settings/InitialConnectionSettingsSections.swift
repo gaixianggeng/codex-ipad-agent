@@ -128,7 +128,6 @@ struct InitialConnectionSettingsSections: View {
     @State private var isAddingConnectionProfile = false
     @State private var profileDisplayName = ""
     @State private var profileOperationID: String?
-    @State private var profileRenameTarget: ConnectionProfile?
     @State private var pendingRemovalConfirmation: ConnectionCredentialRemovalConfirmation?
     @State private var isShowingAdvancedManualConnection = false
     @State private var localError: String?
@@ -136,6 +135,8 @@ struct InitialConnectionSettingsSections: View {
     @State private var copiedConnectionProfileID: String?
     @State private var copyConnectionTask: Task<Void, Never>?
     @State private var copyFeedbackTask: Task<Void, Never>?
+
+    let onRequestProfileRename: (ConnectionProfile) -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -397,12 +398,6 @@ struct InitialConnectionSettingsSections: View {
         }
         // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
         .onAppear(perform: configureQRCodeScannerPresentation)
-        .sheet(item: $profileRenameTarget) { profile in
-            ConnectionProfileRenameSheet(profile: profile) { displayName in
-                try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
-                localError = nil
-            }
-        }
         .confirmationDialog(
             pendingRemovalConfirmation?.title ?? L10n.text("ui.confirm_to_delete_connection_credentials"),
             isPresented: removalConfirmationBinding,
@@ -611,7 +606,8 @@ struct InitialConnectionSettingsSections: View {
 
             Menu {
                 Button(L10n.text("ui.rename")) {
-                    profileRenameTarget = item.profile
+                    localError = nil
+                    onRequestProfileRename(item.profile)
                 }
                 .accessibilityIdentifier("settings.profile.rename.\(item.id)")
 
