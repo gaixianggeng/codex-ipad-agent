@@ -2329,6 +2329,40 @@
         }
       }
     },
+    "ui.apple_voice_input_stopped_please_try_again" : {
+      "comment" : "Shown when the on-device speech result stream becomes unhealthy while microphone audio is still arriving.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On-device voice input stopped. Tap the microphone to try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备端语音输入已停止，请点击麦克风重试。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_was_interrupted_please_try_again" : {
+      "comment" : "Shown after iOS interrupts an active on-device voice input session.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice input was interrupted by the system. Tap the microphone to try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音输入被系统中断，请点击麦克风重试。"
+          }
+        }
+      }
+    },
     "ui.application" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
