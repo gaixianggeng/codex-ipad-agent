@@ -947,7 +947,7 @@ extension SessionStore {
 
     @discardableResult
     func toggleSessionArchivedRemote(_ session: AgentSession) async -> Bool {
-        guard !isExternalReadOnlySession(session) else {
+        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
             setStatusMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
@@ -973,7 +973,7 @@ extension SessionStore {
     }
 
     func supportsCodexThreadManagement(_ session: AgentSession) -> Bool {
-        !isExternalReadOnlySession(session)
+        !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
             && !session.isLocalDraft
             && Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex"
     }
@@ -1303,7 +1303,7 @@ extension SessionStore {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
             }
         }
-        // 全局“最近历史”最终只展示 8 条，但“进行中”不能沿用这个数量限制。
+        // 全局“最近历史”以 8 条为基础，并有界补入派生只读会话；“进行中”不能沿用数量限制。
         // 每个工作区读取标准 20 条轻量索引，不加载消息正文，在可见性和弱网成本间取 MVP 平衡。
         let workspaces = recentWorkspaces.filter { workspace in
             if authoritative {
@@ -1313,13 +1313,86 @@ extension SessionStore {
             // 再发一次相同 thread/list 只会重复占用 gateway 预算。
             return !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
         }
-        guard !workspaces.isEmpty else { return }
         let generation = appStore.connectionGeneration
         let consistency: SessionListConsistency = authoritative ? .authoritative : .fastIndexed
         guard let client = try? clientFactory() else {
             return
         }
 
+        // 先用最多 4 页、每页 50 条的有界全局发现补齐 Codex 外部 Worktree。
+        // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
+        // iOS 只消费 opaque cursor，不接触上游全局 cursor。
+        if !controlledGlobalDiscoveryUnavailable {
+            let controlledIDsBeforeTraversal = controlledGlobalSessionIDs
+            var cursor: String?
+            var discoveredSessionIDs: Set<SessionID> = []
+            var reachedTraversalEnd = false
+            for pageIndex in 0..<4 {
+                guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                do {
+                    let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
+                    guard appStore.connectionGeneration == generation else { return }
+                    let pageSessionIDs = Set(page.sessions.map(\.id))
+                    discoveredSessionIDs.formUnion(pageSessionIDs)
+                    // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
+                    // sessions 更新里即可进入根侧栏补充集，不依赖后续精确 cwd 刷新。
+                    let expandedControlledIDs = controlledGlobalSessionIDs.union(pageSessionIDs)
+                    if expandedControlledIDs != controlledGlobalSessionIDs {
+                        controlledGlobalSessionIDs = expandedControlledIDs
+                    }
+                    mergeSessionPage(page.sessions)
+                    guard page.hasMore,
+                          let nextCursor = page.nextCursor,
+                          nextCursor != cursor else {
+                        reachedTraversalEnd = !page.hasMore
+                        break
+                    }
+                    cursor = nextCursor
+                } catch {
+                    if pageIndex == 0, isControlledGlobalDiscoveryUnavailable(error) {
+                        controlledGlobalDiscoveryUnavailable = true
+                    }
+                    break
+                }
+            }
+            guard appStore.activeHostScope == hostScope,
+                  appStore.connectionGeneration == generation,
+                  !Task.isCancelled else { return }
+            if reachedTraversalEnd {
+                // 完整遍历是删除旧授权 ID 的唯一证据；分页上限、重复 cursor 或错误时
+                // 只合并本次已见项，避免把尚未扫到的外部 Worktree 从列表误删。
+                let revokedSessionIDs = controlledIDsBeforeTraversal.subtracting(discoveredSessionIDs)
+                if !revokedSessionIDs.isEmpty {
+                    let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
+                    if retainedSessions != sessions {
+                        // 授权撤销与列表删除必须在同一轮完成。不能等待精确 cwd 刷新：
+                        // Host 可能没有工作区，外部 Worktree 也可能已经被删除。
+                        sessions = retainedSessions
+                    }
+                    // 远端搜索是独立于 canonical sessions 的增强缓存。若不同时清理，
+                    // 激活搜索后会把已撤权的外部 Worktree Thread 再投影回完整列表。
+                    let retainedRemoteSearchResults = remoteSessionSearchResults.filter {
+                        !revokedSessionIDs.contains($0.id)
+                    }
+                    if retainedRemoteSearchResults != remoteSessionSearchResults {
+                        remoteSessionSearchResults = retainedRemoteSearchResults
+                    }
+                    for sessionID in revokedSessionIDs {
+                        remoteSessionSearchSnippetByID.removeValue(forKey: sessionID)
+                    }
+                }
+                if controlledGlobalSessionIDs != discoveredSessionIDs {
+                    controlledGlobalSessionIDs = discoveredSessionIDs
+                }
+            } else {
+                let expandedControlledIDs = controlledGlobalSessionIDs.union(discoveredSessionIDs)
+                if expandedControlledIDs != controlledGlobalSessionIDs {
+                    controlledGlobalSessionIDs = expandedControlledIDs
+                }
+            }
+        }
+
+        guard !workspaces.isEmpty else { return }
         // 全局会话库属于后台发现流量，按工作区串行读取。高负载时宁可逐步补齐侧栏，
         // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
         for workspace in workspaces {
@@ -1333,6 +1406,15 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
             mergeSessionLibraryPages([result], generation: generation)
         }
+    }
+
+    func isControlledGlobalDiscoveryUnavailable(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("thread/list")
+            && (message.contains("cwd")
+                || message.contains("method")
+                || message.contains("unsupported")
+                || message.contains("not supported"))
     }
 
     func applyNetworkReachabilityStatus(_ update: NetworkPathStatusUpdate) {

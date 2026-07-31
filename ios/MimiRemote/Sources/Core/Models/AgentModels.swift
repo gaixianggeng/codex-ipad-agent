@@ -102,6 +102,11 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var pendingApproval: ApprovalSummary?
     var pendingUserInput: AgentUserInputRequest?
     var goal: ThreadGoal?
+    var appServerSessionID: String?
+    var parentThreadID: String?
+    var agentNickname: String?
+    var agentRole: String?
+    var canAcceptDirectInput: Bool?
     let context: SessionContextSnapshot?
 
     /// 会话列表只认有名称的分支；空白值和 detached HEAD 不应伪装成可读分支。
@@ -124,6 +129,12 @@ struct AgentSession: Identifiable, Codable, Hashable {
 
     var isRunning: Bool {
         status == "running" || status == "waiting_for_approval" || status == "waiting_for_input"
+    }
+
+    /// 旧 App Server 的普通顶层 thread 没有 capability 字段，继续沿用既有可写行为；
+    /// 子会话缺字段则 fail-closed，避免把协议未知误当成可直接输入。
+    var allowsDirectInput: Bool {
+        canAcceptDirectInput ?? (parentThreadID == nil)
     }
 
     var displayStatusText: String {
@@ -152,6 +163,11 @@ struct AgentSession: Identifiable, Codable, Hashable {
         pendingApproval: ApprovalSummary? = nil,
         pendingUserInput: AgentUserInputRequest? = nil,
         goal: ThreadGoal? = nil,
+        appServerSessionID: String? = nil,
+        parentThreadID: String? = nil,
+        agentNickname: String? = nil,
+        agentRole: String? = nil,
+        canAcceptDirectInput: Bool? = nil,
         context: SessionContextSnapshot? = nil
     ) {
         self.id = id
@@ -178,6 +194,11 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.pendingApproval = status == "waiting_for_approval" ? pendingApproval : nil
         self.pendingUserInput = status == "waiting_for_input" ? pendingUserInput : nil
         self.goal = goal ?? context?.goal
+        self.appServerSessionID = appServerSessionID
+        self.parentThreadID = parentThreadID
+        self.agentNickname = agentNickname
+        self.agentRole = agentRole
+        self.canAcceptDirectInput = canAcceptDirectInput
         self.context = context
     }
 
@@ -231,6 +252,11 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case pendingApproval = "pending_approval"
         case pendingUserInput = "pending_user_input"
         case goal
+        case appServerSessionID = "app_server_session_id"
+        case parentThreadID = "parent_thread_id"
+        case agentNickname = "agent_nickname"
+        case agentRole = "agent_role"
+        case canAcceptDirectInput = "can_accept_direct_input"
         case context
     }
 }

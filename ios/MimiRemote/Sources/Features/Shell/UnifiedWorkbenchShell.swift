@@ -5,6 +5,7 @@ enum AppDestination: Hashable {
     case workspaces
     case me
     case session(SessionID)
+    case subagent(parentID: SessionID, childID: SessionID)
 }
 
 private enum AppSheetDestination: String, Identifiable {
@@ -83,390 +84,6 @@ enum WorkbenchNavigationEvent: Equatable {
     case sessionSelectionFinished(SessionID)
 }
 
-/// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
-/// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
-struct WorkbenchNavigationState: Equatable {
-    private(set) var route: WorkbenchRestorationRoute
-    private(set) var selection: AppDestination?
-    private(set) var compactSessionPath: [AppDestination]
-    private(set) var compactWorkspacePath: [AppDestination]
-    private(set) var compactSelectedTab: CompactWorkbenchTab
-    private(set) var pendingSessionSelectionID: SessionID?
-
-    init(route: WorkbenchRestorationRoute = .sessions) {
-        self.route = route
-        selection = Self.destination(for: route)
-        compactSessionPath = []
-        compactWorkspacePath = []
-        pendingSessionSelectionID = nil
-
-        switch route {
-        case .sessions:
-            compactSelectedTab = .sessions
-        case .workspaces:
-            compactSelectedTab = .workspaces
-        case .session(let id, let source):
-            let destination = AppDestination.session(id)
-            switch source {
-            case .sessions:
-                compactSelectedTab = .sessions
-                compactSessionPath = [destination]
-            case .workspaces:
-                compactSelectedTab = .workspaces
-                compactWorkspacePath = [destination]
-            }
-        }
-    }
-
-    /// selectedSessionID 可能在“我的”或列表页继续保留，不能据此判断会话是否真的可见。
-    func visibleSessionID(usesCompactNavigation: Bool) -> SessionID? {
-        if usesCompactNavigation, compactSelectedTab == .me {
-            return nil
-        }
-        guard case .session(let sessionID) = selection else {
-            return nil
-        }
-        return sessionID
-    }
-
-    @discardableResult
-    mutating func reduce(
-        _ event: WorkbenchNavigationEvent,
-        usesCompactNavigation: Bool,
-        selectedSessionID: SessionID?
-    ) -> WorkbenchNavigationEffect? {
-        switch event {
-        case .open(let destination, let requestedSource):
-            return open(
-                destination,
-                requestedSource: requestedSource,
-                usesCompactNavigation: usesCompactNavigation,
-                selectedSessionID: selectedSessionID
-            )
-
-        case .synchronize(let restoredRoute):
-            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
-            let preservedPendingSessionID = restoredRoute.detailSessionID == pendingSessionSelectionID
-                ? pendingSessionSelectionID
-                : nil
-            route = restoredRoute
-            selection = Self.destination(for: restoredRoute)
-            pendingSessionSelectionID = preservedPendingSessionID
-            guard usesCompactNavigation else {
-                if preservesMe {
-                    selection = .me
-                }
-                return nil
-            }
-            restoreCompactPath(for: restoredRoute)
-            if preservesMe {
-                compactSelectedTab = .me
-                selection = .me
-            }
-            return nil
-
-        case .selectionCommitted(let commit):
-            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
-            pendingSessionSelectionID = nil
-            switch commit.reason {
-            case .invalidation:
-                guard route.detailSessionID != nil else { return nil }
-                applyRoot(route.rootPage, usesCompactNavigation: usesCompactNavigation)
-                restoreMeIfNeeded(
-                    preservesMe,
-                    usesCompactNavigation: usesCompactNavigation
-                )
-
-            case .identityReplacement(let previousID):
-                guard route.detailSessionID == previousID,
-                      let sessionID = commit.sessionID else { return nil }
-                applySession(
-                    sessionID,
-                    source: route.rootPage,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: true
-                )
-                restoreMeIfNeeded(
-                    preservesMe,
-                    usesCompactNavigation: usesCompactNavigation
-                )
-
-            case .restoration:
-                // Root 只允许仍与启动快照一致的恢复提交；这里再约束一次，
-                // 防止恢复结果把用户后来进入的列表或其他详情重新覆盖。
-                guard let sessionID = commit.sessionID,
-                      route.detailSessionID == sessionID else { return nil }
-                applySession(
-                    sessionID,
-                    source: route.rootPage,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: true
-                )
-                restoreMeIfNeeded(
-                    preservesMe,
-                    usesCompactNavigation: usesCompactNavigation
-                )
-
-            case .notification:
-                guard let sessionID = commit.sessionID else { return nil }
-                applySession(
-                    sessionID,
-                    source: .sessions,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: false
-                )
-
-            case .userOpen:
-                guard let sessionID = commit.sessionID else { return nil }
-                let source = route.detailSessionID == sessionID
-                    ? route.rootPage
-                    : (usesCompactNavigation ? activeRootPage : route.rootPage)
-                applySession(
-                    sessionID,
-                    source: source,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: false
-                )
-            }
-            return nil
-
-        case .compactPathChanged(let tab, let path):
-            guard tab != .me else { return nil }
-            compactSelectedTab = tab
-            switch tab {
-            case .sessions:
-                compactSessionPath = path
-            case .workspaces:
-                compactWorkspacePath = path
-            case .me:
-                break
-            }
-
-            let destination = path.last ?? Self.rootDestination(for: tab)
-            selection = destination
-            switch destination {
-            case .sessions:
-                route = .sessions
-                pendingSessionSelectionID = nil
-            case .workspaces:
-                route = .workspaces
-                pendingSessionSelectionID = nil
-            case .me:
-                break
-            case .session(let sessionID):
-                route = .session(id: sessionID, source: Self.rootPage(for: tab))
-            }
-            return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
-
-        case .compactTabChanged(let tab):
-            compactSelectedTab = tab
-            guard tab != .me else {
-                // “我的”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
-                selection = .me
-                return nil
-            }
-            let path = tab == .sessions ? compactSessionPath : compactWorkspacePath
-            let destination = path.last ?? Self.rootDestination(for: tab)
-            selection = destination
-            switch destination {
-            case .sessions:
-                route = .sessions
-                pendingSessionSelectionID = nil
-            case .workspaces:
-                route = .workspaces
-                pendingSessionSelectionID = nil
-            case .me:
-                break
-            case .session(let sessionID):
-                route = .session(id: sessionID, source: Self.rootPage(for: tab))
-            }
-            return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
-
-        case .sessionSelectionFinished(let sessionID):
-            if pendingSessionSelectionID == sessionID {
-                pendingSessionSelectionID = nil
-            }
-            return nil
-        }
-    }
-
-    /// “我的”是覆盖在工作台路由之上的全局页面。后台恢复、失效或会话 ID 替换
-    /// 可以更新隐藏路由，但不能在没有用户导航意图时把当前页面抢走。
-    private mutating func restoreMeIfNeeded(
-        _ shouldRestore: Bool,
-        usesCompactNavigation: Bool
-    ) {
-        guard shouldRestore else { return }
-        selection = .me
-        if usesCompactNavigation {
-            compactSelectedTab = .me
-        }
-    }
-
-    private mutating func open(
-        _ destination: AppDestination,
-        requestedSource: WorkbenchRootPage?,
-        usesCompactNavigation: Bool,
-        selectedSessionID: SessionID?
-    ) -> WorkbenchNavigationEffect? {
-        switch destination {
-        case .sessions:
-            applyRoot(.sessions, usesCompactNavigation: usesCompactNavigation)
-        case .workspaces:
-            applyRoot(.workspaces, usesCompactNavigation: usesCompactNavigation)
-        case .me:
-            selection = .me
-            if usesCompactNavigation {
-                compactSelectedTab = .me
-            }
-            return nil
-        case .session(let sessionID):
-            applySession(
-                sessionID,
-                source: requestedSource ?? (usesCompactNavigation ? activeRootPage : route.rootPage),
-                usesCompactNavigation: usesCompactNavigation,
-                replacesCompactPath: false
-            )
-        }
-        return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
-    }
-
-    private mutating func applyRoot(
-        _ page: WorkbenchRootPage,
-        usesCompactNavigation: Bool
-    ) {
-        pendingSessionSelectionID = nil
-        switch page {
-        case .sessions:
-            route = .sessions
-            selection = .sessions
-            guard usesCompactNavigation else { return }
-            compactSelectedTab = .sessions
-            compactSessionPath = []
-        case .workspaces:
-            route = .workspaces
-            selection = .workspaces
-            guard usesCompactNavigation else { return }
-            compactSelectedTab = .workspaces
-            compactWorkspacePath = []
-        }
-    }
-
-    private mutating func applySession(
-        _ sessionID: SessionID,
-        source: WorkbenchRootPage,
-        usesCompactNavigation: Bool,
-        replacesCompactPath: Bool
-    ) {
-        let destination = AppDestination.session(sessionID)
-        route = .session(id: sessionID, source: source)
-        selection = destination
-        guard usesCompactNavigation else { return }
-
-        switch source {
-        case .sessions:
-            compactSelectedTab = .sessions
-            compactSessionPath = replacesCompactPath
-                ? [destination]
-                : Self.sessionPath(afterOpening: destination, currentPath: compactSessionPath)
-        case .workspaces:
-            compactSelectedTab = .workspaces
-            compactWorkspacePath = replacesCompactPath
-                ? [destination]
-                : Self.sessionPath(afterOpening: destination, currentPath: compactWorkspacePath)
-        }
-    }
-
-    private mutating func restoreCompactPath(for restoredRoute: WorkbenchRestorationRoute) {
-        switch restoredRoute {
-        case .sessions:
-            compactSelectedTab = .sessions
-            compactSessionPath = []
-        case .workspaces:
-            compactSelectedTab = .workspaces
-            compactWorkspacePath = []
-        case .session(let sessionID, let source):
-            applySession(
-                sessionID,
-                source: source,
-                usesCompactNavigation: true,
-                replacesCompactPath: true
-            )
-        }
-    }
-
-    private mutating func effectForUserNavigation(
-        to destination: AppDestination,
-        selectedSessionID: SessionID?
-    ) -> WorkbenchNavigationEffect? {
-        switch destination {
-        case .sessions, .workspaces:
-            // 返回列表本身就是显式用户意图；即使当前 ID 已为空也要推进选择代次，
-            // 让仍在等待的恢复、通知和创建任务立即失效。
-            return .returnToSessionList
-        case .me:
-            return nil
-        case .session(let sessionID):
-            guard selectedSessionID != sessionID,
-                  pendingSessionSelectionID != sessionID else { return nil }
-            // selectSession 包含网络恢复，可能跨帧；记录在途 ID，阻止同一个 UI 事件链重复启动。
-            pendingSessionSelectionID = sessionID
-            return .selectSession(sessionID)
-        }
-    }
-
-    private var activeRootPage: WorkbenchRootPage {
-        switch compactSelectedTab {
-        case .sessions:
-            return .sessions
-        case .workspaces:
-            return .workspaces
-        case .me:
-            return route.rootPage
-        }
-    }
-
-    private func isShowingMe(usesCompactNavigation: Bool) -> Bool {
-        usesCompactNavigation ? compactSelectedTab == .me : selection == .me
-    }
-
-    private static func destination(for route: WorkbenchRestorationRoute) -> AppDestination {
-        switch route {
-        case .sessions:
-            return .sessions
-        case .workspaces:
-            return .workspaces
-        case .session(let id, _):
-            return .session(id)
-        }
-    }
-
-    private static func rootDestination(for tab: CompactWorkbenchTab) -> AppDestination {
-        tab == .workspaces ? .workspaces : .sessions
-    }
-
-    private static func rootPage(for tab: CompactWorkbenchTab) -> WorkbenchRootPage {
-        tab == .workspaces ? .workspaces : .sessions
-    }
-
-    private static func sessionPath(
-        afterOpening destination: AppDestination,
-        currentPath: [AppDestination]
-    ) -> [AppDestination] {
-        guard currentPath.last != destination else { return currentPath }
-
-        var updatedPath = currentPath
-        if let currentDestination = updatedPath.last,
-           case .session = currentDestination {
-            // local:* 占位切到真实 ID 时替换当前详情，不能再 push 一层。
-            updatedPath[updatedPath.index(before: updatedPath.endIndex)] = destination
-        } else {
-            updatedPath.append(destination)
-        }
-        return updatedPath
-    }
-}
-
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
@@ -490,6 +107,8 @@ struct UnifiedWorkbenchShell: View {
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
     @State private var didApplyDebugLaunchRoute = false
+    @State private var selectedRelatedSubagent: SessionContextSubagent?
+    @State private var relatedSubagentParentID: SessionID?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -546,6 +165,9 @@ struct UnifiedWorkbenchShell: View {
                     layout: layout
                 )
             }
+            .onChange(of: layout.usesAttachedInspector) { _, _ in
+                handleRelatedPresentationChange(layout: layout)
+            }
             .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
                 guard let commit else { return }
                 handleSelectionCommit(commit, layout: layout)
@@ -585,8 +207,7 @@ struct UnifiedWorkbenchShell: View {
               let visibleSessionID = navigationState.visibleSessionID(
                   usesCompactNavigation: layout.usesCompactNavigation
               ),
-              let session = sessionStore.selectedSession,
-              session.id == visibleSessionID
+              let session = sessionStore.sessionsByID[visibleSessionID]
         else {
             return nil
         }
@@ -1048,6 +669,23 @@ struct UnifiedWorkbenchShell: View {
             )
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
+        case .subagent(let parentID, let childID):
+            if let relation = selectedRelatedSubagent,
+               relation.id == childID,
+               relatedSubagentParentID == parentID {
+                RelatedSessionConversationView(
+                    relation: relation,
+                    parentSessionID: parentID,
+                    showsCloseButton: false,
+                    onClose: {}
+                )
+            } else {
+                ContentUnavailableView(
+                    L10n.text("ui.sub_agent"),
+                    systemImage: "person.2.slash",
+                    description: Text(L10n.text("ui.sub_agent_unavailable"))
+                )
+            }
         }
     }
 
@@ -1068,9 +706,9 @@ struct UnifiedWorkbenchShell: View {
                     embedsNavigationStack: false
                 )
             }
-        case .session:
+        case .session, .subagent:
             if layout.usesFloatingSidebarSurface {
-                // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，显式使用原生 NavigationStack。
+                // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，父会话与子会话路由都显式使用原生导航栈。
                 NavigationStack {
                     sessionDetail(layout: layout, tokens: tokens)
                 }
@@ -1151,7 +789,7 @@ struct UnifiedWorkbenchShell: View {
                         .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
                         Button {
-                            showingInspector.toggle()
+                            toggleInspector()
                         } label: {
                             Label(
                                 showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
@@ -1200,7 +838,7 @@ struct UnifiedWorkbenchShell: View {
                         tokens: tokens,
                         isActive: showingInspector
                     ) {
-                        showingInspector.toggle()
+                        toggleInspector()
                     }
                 }
             }
@@ -1209,7 +847,24 @@ struct UnifiedWorkbenchShell: View {
         .toolbar(.hidden, for: .tabBar)
         .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .sessionActionSheets(presentation: $sessionActionPresentation)
-        .sessionInspectorPresentation(isPresented: $showingInspector, layout: layout)
+        .environment(
+            \.openSubagentSession,
+            OpenSubagentSessionAction { subagent in
+                openRelatedSubagent(subagent, layout: layout)
+            }
+        )
+        .sessionInspectorPresentation(
+            isPresented: $showingInspector,
+            layout: layout,
+            relatedSubagent: $selectedRelatedSubagent,
+            parentSessionID: $relatedSubagentParentID,
+            onOpenSubagent: { subagent in
+                openRelatedSubagent(subagent, layout: layout)
+            },
+            onCloseRelatedSubagent: {
+                closeRelatedSubagent(keepInspectorVisible: true)
+            }
+        )
     }
 
     private func selectionBinding(layout: WorkbenchLayout) -> Binding<AppDestination?> {
@@ -1241,6 +896,13 @@ struct UnifiedWorkbenchShell: View {
             set: { path in
                 let expectedPath = compactPath(for: tab)
                 guard path != expectedPath else { return }
+                if case .subagent = expectedPath.last,
+                   !path.contains(where: {
+                       if case .subagent = $0 { return true }
+                       return false
+                   }) {
+                    closeRelatedSubagent(keepInspectorVisible: false)
+                }
                 let lane: WorkbenchNavigationBindingScheduler.Lane = tab == .workspaces
                     ? .compactWorkspacesPath
                     : .compactSessionsPath
@@ -1278,6 +940,11 @@ struct UnifiedWorkbenchShell: View {
         source: WorkbenchRootPage? = nil,
         layout: WorkbenchLayout
     ) {
+        if case .subagent = destination {
+            // 由 openRelatedSubagent 先保存展示元数据。
+        } else if selectedRelatedSubagent != nil {
+            closeRelatedSubagent(keepInspectorVisible: false)
+        }
         applyNavigation(.open(destination, source: source), layout: layout)
     }
 
@@ -1299,10 +966,9 @@ struct UnifiedWorkbenchShell: View {
 
     private func applyDebugLaunchRouteIfNeeded(layout: WorkbenchLayout) {
 #if DEBUG
-        guard !didApplyDebugLaunchRoute,
-              ProcessInfo.processInfo.arguments.contains("--debug-open-workspaces") else {
-            return
-        }
+        guard !didApplyDebugLaunchRoute else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("--debug-open-workspaces") else { return }
         didApplyDebugLaunchRoute = true
         // 真机视觉验证可直接抵达目标页；仅 Debug 生效，不改变正常或 Release 启动路径。
         open(.workspaces, layout: layout)
@@ -1314,6 +980,18 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout
     ) {
         if usesCompactNavigation {
+            if let relation = selectedRelatedSubagent,
+               let parentID = relatedSubagentParentID {
+                showingInspector = false
+                applyNavigation(
+                    .open(
+                        .subagent(parentID: parentID, childID: relation.id),
+                        source: navigationState.route.rootPage
+                    ),
+                    layout: layout
+                )
+                return
+            }
             if navigationState.selection == .me {
                 applyNavigation(.compactTabChanged(.me), layout: layout)
             } else {
@@ -1322,10 +1000,63 @@ struct UnifiedWorkbenchShell: View {
             return
         }
 
+        if selectedRelatedSubagent != nil {
+            showingInspector = true
+        }
+
         if navigationState.compactSelectedTab == .me {
             open(.me, layout: layout)
         } else {
             synchronizeNavigation(for: layout)
+        }
+    }
+
+    private func handleRelatedPresentationChange(layout: WorkbenchLayout) {
+        guard selectedRelatedSubagent != nil, !layout.usesCompactNavigation else { return }
+        showingInspector = true
+    }
+
+    private func toggleInspector() {
+        if showingInspector {
+            closeRelatedSubagent(keepInspectorVisible: false)
+            showingInspector = false
+        } else {
+            showingInspector = true
+        }
+    }
+
+    private func openRelatedSubagent(
+        _ relation: SessionContextSubagent,
+        layout: WorkbenchLayout
+    ) {
+        guard !relation.id.isEmpty, let parentID = sessionStore.selectedSessionID else { return }
+        selectedRelatedSubagent = relation
+        relatedSubagentParentID = parentID
+
+        if layout.usesCompactNavigation {
+            showingInspector = false
+            DispatchQueue.main.async {
+                open(
+                    .subagent(parentID: parentID, childID: relation.id),
+                    source: navigationState.route.rootPage,
+                    layout: layout
+                )
+            }
+        } else {
+            // 宽屏替换附着检查器；中等宽度复用当前系统 sheet 并在其中 push，
+            // 两种形态都保留父会话上下文。
+            showingInspector = true
+        }
+    }
+
+    private func closeRelatedSubagent(keepInspectorVisible: Bool) {
+        if let childID = selectedRelatedSubagent?.id {
+            sessionStore.stopRelatedSessionObservation(sessionID: childID)
+        }
+        selectedRelatedSubagent = nil
+        relatedSubagentParentID = nil
+        if keepInspectorVisible {
+            showingInspector = true
         }
     }
 

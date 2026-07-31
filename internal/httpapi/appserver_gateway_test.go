@@ -1597,6 +1597,7 @@ func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
 		"limit":          json.Number("50"),
 		"sortKey":        "recency_at",
 		"sortDirection":  "desc",
+		"sourceKinds":    []any{"cli", "vscode", "appServer", "subAgent"},
 		"useStateDbOnly": true,
 		"unsafe":         "drop-me",
 	}
@@ -1605,7 +1606,7 @@ func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
 	}
 
 	sanitized := sanitizedGatewayThreadListParams(params)
-	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "sortKey", "sortDirection", "useStateDbOnly")
+	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "sortKey", "sortDirection", "sourceKinds", "useStateDbOnly")
 	if sanitized["useStateDbOnly"] != true {
 		t.Fatalf("thread/list 应保留 useStateDbOnly：%v", sanitized)
 	}
@@ -1640,6 +1641,8 @@ func TestGatewayThreadListRejectsUnsafeFastPathParams(t *testing.T) {
 	}{
 		{name: "limit over hard max", params: map[string]any{"limit": json.Number("51")}, want: "不能超过 50"},
 		{name: "state db flag must be bool", params: map[string]any{"useStateDbOnly": "true"}, want: "必须是布尔值"},
+		{name: "source kinds must be array", params: map[string]any{"sourceKinds": "subAgent"}, want: "必须是字符串数组"},
+		{name: "source kinds reject internal source", params: map[string]any{"sourceKinds": []any{"exec"}}, want: "sourceKinds 不支持"},
 	}
 
 	for _, tt := range tests {

@@ -1,16 +1,5 @@
 import Foundation
 
-enum QueuedTurnAcceptedDisposition {
-    case awaitingStart(turnID: TurnID?)
-    case guidance
-    case terminal(turnID: TurnID?)
-    case superseded(
-        turnID: TurnID?,
-        activeTurnID: TurnID
-    )
-    case threadClosed(turnID: TurnID?)
-}
-
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
     func refreshCodexUsage() async {
@@ -281,7 +270,12 @@ extension SessionStore {
     }
 
     func loadEarlierHistoryForSelectedSession() async {
-        guard let session = selectedSession,
+        guard let selectedSessionID else { return }
+        await loadEarlierHistory(sessionID: selectedSessionID)
+    }
+
+    func loadEarlierHistory(sessionID: SessionID) async {
+        guard let session = sessionsByID[sessionID],
               let cursor = historyPreviousCursorBySessionID[session.id],
               canLoadEarlierHistory(sessionID: session.id),
               !loadingEarlierHistorySessionIDs.contains(session.id)
@@ -603,7 +597,8 @@ extension SessionStore {
         tokenBudget: Int64? = nil,
         runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
@@ -695,7 +690,8 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
@@ -1151,78 +1147,6 @@ extension SessionStore {
                 queue[index].lastError = message
             }
             queuedRunningTurnsBySessionID[sessionID] = queue
-        }
-    }
-
-    func reconciledAcceptedDisposition(
-        sessionID: SessionID,
-        disposition: QueuedTurnAcceptedDisposition,
-        ignoringActiveTurnID: TurnID? = nil
-    ) -> QueuedTurnAcceptedDisposition {
-        let reportedActiveTurnID = sessionsByID[sessionID]?.activeTurnID
-        // guidance fallback 的前提是 Runtime 已在 RPC 前确认旧 expected turn 不存在。
-        // 只忽略这一个精确 ID；期间若出现其它 active turn，仍按 superseded 保护。
-        let currentActiveTurnID = reportedActiveTurnID == ignoringActiveTurnID
-            ? nil
-            : reportedActiveTurnID
-        func isTerminal(_ turnID: TurnID) -> Bool {
-            conversationStore.turnLifecycle(
-                sessionID: sessionID,
-                turnID: turnID
-            )?.isTerminal == true
-        }
-
-        switch disposition {
-        case .awaitingStart(let turnID):
-            if let turnID, isTerminal(turnID) {
-                return .terminal(turnID: turnID)
-            }
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .terminal(let turnID):
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .superseded(let turnID, let reportedActiveTurnID):
-            let effectiveActiveTurnID: TurnID
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID,
-               currentActiveTurnID != reportedActiveTurnID {
-                effectiveActiveTurnID = currentActiveTurnID
-            } else {
-                effectiveActiveTurnID = reportedActiveTurnID
-            }
-            if isTerminal(effectiveActiveTurnID) {
-                // completed(B) 可能先于 superseded(A,B) 落到 MainActor；lifecycle 是
-                // 不会随 activeTurnID 清空而丢失的终态证据，禁止再次复活 B。
-                return .terminal(turnID: effectiveActiveTurnID)
-            }
-            return .superseded(
-                turnID: turnID,
-                activeTurnID: effectiveActiveTurnID
-            )
-        case .threadClosed(let turnID):
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .guidance:
-            return disposition
         }
     }
 
@@ -1900,7 +1824,8 @@ extension SessionStore {
         status: ThreadGoalStatus?,
         tokenBudget: Int64?
     ) async -> Bool {
-        if let session = sessionsByID[threadID], isExternalReadOnlySession(session) {
+        if let session = sessionsByID[threadID],
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
@@ -1959,7 +1884,8 @@ extension SessionStore {
         guard let sessionID = selectedSessionID else {
             return
         }
-        if let session = sessionsByID[sessionID], isExternalReadOnlySession(session) {
+        if let session = sessionsByID[sessionID],
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return
         }

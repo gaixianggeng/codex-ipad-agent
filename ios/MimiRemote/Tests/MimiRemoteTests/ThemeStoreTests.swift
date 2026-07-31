@@ -498,6 +498,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         ))
         XCTAssertTrue(layout.prefersDetailOnly)
         XCTAssertFalse(layout.usesAttachedInspector)
+        XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
@@ -516,7 +517,22 @@ final class ResponsiveLayoutTests: XCTestCase {
         ))
         XCTAssertTrue(layout.prefersDetailOnly)
         XCTAssertFalse(layout.usesAttachedInspector)
+        XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+    }
+
+    func testWorkbenchLayoutUsesSheetNavigationOnMediumIPadWidth() {
+        let layout = WorkbenchLayout(
+            containerWidth: 1_032,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
+
+        XCTAssertFalse(layout.usesCompactNavigation)
+        XCTAssertFalse(layout.prefersDetailOnly)
+        XCTAssertFalse(layout.usesAttachedInspector)
+        XCTAssertTrue(layout.usesSheetInspectorNavigation)
+        XCTAssertTrue(layout.usesFloatingSidebarSurface)
     }
 
     func testWorkbenchLayoutKeepsSplitNavigationOnWidePadWidth() {
@@ -532,6 +548,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         ))
         XCTAssertFalse(layout.prefersDetailOnly)
         XCTAssertTrue(layout.usesAttachedInspector)
+        XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
         XCTAssertEqual(layout.projectColumn.ideal, 330)
         XCTAssertEqual(layout.titleMaxWidth, 340)

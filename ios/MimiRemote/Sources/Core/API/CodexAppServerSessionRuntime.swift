@@ -409,6 +409,27 @@ actor CodexAppServerSessionRuntime {
         return page
     }
 
+    func controlledGlobalSessionsPage(
+        cursor: String?,
+        limit: Int?
+    ) async throws -> SessionsPage {
+        let projects = try await projects()
+        let result = try await sendRecoveringFromStaleInitialization(
+            CodexAppServerRequestBuilder(allowlistedProjects: projects)
+                .controlledGlobalThreadList(limit: limit, cursor: cursor),
+            timeout: longRunningRequestTimeout
+        )
+        let page = threadListPage(from: result, projects: projects, fallbackProject: nil)
+        for session in page.sessions {
+            contextsBySessionID[session.id] = CodexAppServerSessionContext(
+                session: session,
+                cwd: session.dir,
+                activeTurnID: session.activeTurnID
+            )
+        }
+        return page
+    }
+
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
         let searchTerm = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !searchTerm.isEmpty else {
@@ -907,14 +928,19 @@ actor CodexAppServerSessionRuntime {
         guard let thread = threadObject(from: result) else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
-        let turns = thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        let messages = historyMessages(from: thread, sessionID: sessionID, snapshotReadAt: Date())
+        let turns = childOwnedHistoryTurns(
+            in: thread,
+            turns: thread["turns"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        )
+        var historyThread = thread
+        historyThread["turns"] = .array(turns.map { .object($0) })
+        let messages = historyMessages(from: historyThread, sessionID: sessionID, snapshotReadAt: Date())
         let authoritativeCompletedTurnItems = Self.authoritativeCompletedTurnItems(fromTurns: turns)
         var context: SessionContextSnapshot?
-        if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
+        if let session = try? agentSession(from: historyThread, projects: projects, fallbackProject: nil) {
             let recoveredTerminalTurn = storeAuthoritativeTurnsSnapshot(
                 session,
-                thread: thread,
+                thread: historyThread,
                 recoveringInterruptedTurnID: recoveringInterruptedTurnID
             )
             context = session.context
@@ -956,6 +982,7 @@ actor CodexAppServerSessionRuntime {
             projects: projects,
             shouldRefresh: contextsBySessionID[sessionID] == nil
         )
+        var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
         let result = try await sendRecoveringFromStaleInitialization(
             builder.threadTurnsList(
                 threadID: sessionID,
@@ -967,8 +994,11 @@ actor CodexAppServerSessionRuntime {
             timeout: longRunningRequestTimeout
         )
         let object = result?.objectValue ?? [:]
-        let turns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
-        let chronologicalTurns = Array(turns.reversed())
+        let rawTurns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let chronologicalTurns = childOwnedHistoryTurns(
+            in: thread,
+            turns: Array(rawTurns.reversed())
+        )
         // iPad 在 turn 结束后才恢复连接时，会错过实时 turn/completed，但分页历史已经能看到
         // 对应 turn 的终态。这里用最新一页的权威 turn 结果补回完成事件，避免消息已显示完成，
         // runtime 仍保留陈旧 activeTurnID，进而让后续输入永久卡在本地队列。
@@ -979,7 +1009,6 @@ actor CodexAppServerSessionRuntime {
                 recoveringInterruptedTurnID: recoveringInterruptedTurnID
             )
             : nil
-        var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
         thread["turns"] = .array(chronologicalTurns.map { .object($0) })
         let messages = historyMessages(
             fromTurns: chronologicalTurns,
@@ -1101,6 +1130,41 @@ actor CodexAppServerSessionRuntime {
         return contextsBySessionID[sessionID]?.session.context
     }
 
+    /// Codex 子 Agent 的 Thread 会带上 spawn/fork 时继承的父 Turn，供模型建立上下文。
+    /// 这段前缀不属于子 Agent 自己的执行历史；只有父子身份和时间边界都明确时才裁剪，
+    /// 任何字段缺失或秒级时间戳相等都 fail-open，避免误删普通会话和真实子 Turn。
+    func childOwnedHistoryTurns(
+        in thread: [String: CodexAppServerJSONValue],
+        turns: [[String: CodexAppServerJSONValue]]
+    ) -> [[String: CodexAppServerJSONValue]] {
+        let hasParentThread = nonEmpty(
+            thread["parentThreadId"]?.stringValue,
+            thread["parent_thread_id"]?.stringValue
+        ) != nil
+        let threadSource = nonEmpty(
+            thread["threadSource"]?.stringValue,
+            thread["thread_source"]?.stringValue
+        )?.lowercased()
+        let source = thread["source"]?.objectValue
+        let hasSubagentSource = threadSource?.hasPrefix("subagent") == true
+            || source?["subAgent"]?.objectValue != nil
+            || source?["subagent"]?.objectValue != nil
+            || nonEmpty(source?["subAgent"]?.stringValue, source?["subagent"]?.stringValue) != nil
+
+        guard hasParentThread || hasSubagentSource,
+              let threadCreatedAt = firstDate(in: thread, keys: ["createdAt", "created_at"])
+        else {
+            return turns
+        }
+
+        return turns.filter { turn in
+            guard let turnStartedAt = firstDate(in: turn, keys: ["startedAt", "started_at"]) else {
+                return true
+            }
+            return turnStartedAt >= threadCreatedAt
+        }
+    }
+
     func historyThreadShell(
         sessionID: SessionID,
         projects: [AgentProject]
@@ -1115,7 +1179,10 @@ actor CodexAppServerSessionRuntime {
                 "status": .object(["type": .string(cached.isRunning ? "active" : "notLoaded")]),
                 "modelProvider": .string("openai"),
                 "createdAt": cached.createdAt.map { .double($0.timeIntervalSince1970) } ?? .null,
-                "updatedAt": cached.updatedAt.map { .double($0.timeIntervalSince1970) } ?? .null
+                "updatedAt": cached.updatedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+                // prepareRelatedSession 会先 thread/read，再走 turns/list；缓存壳层必须保留
+                // 父子身份，否则分页历史会因缺 metadata 而错误 fail-open。
+                "parentThreadId": cached.parentThreadID.map { .string($0) } ?? .null
             ]
         }
         let project = projects.first
