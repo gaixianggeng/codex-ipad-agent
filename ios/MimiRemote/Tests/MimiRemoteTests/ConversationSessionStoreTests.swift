@@ -176,6 +176,91 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceRefreshPreservesControlledGlobalWorktreeAndLoadedPaginationWindow() async throws {
+        let project = makeProject(id: "proj_global_paginated_refresh")
+        let recent = [
+            makeSession(
+                id: "thread-recent-a",
+                projectID: project.id,
+                title: "Recent A",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 400)
+            ),
+            makeSession(
+                id: "thread-recent-b",
+                projectID: project.id,
+                title: "Recent B",
+                status: "history",
+                source: "claude",
+                updatedAt: Date(timeIntervalSince1970: 300)
+            )
+        ]
+        let external = AgentSession(
+            id: "thread-external-worktree",
+            projectID: project.id,
+            project: project.name,
+            dir: "/tmp/codex-worktrees/external",
+            title: "External Worktree",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-worktree",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 250),
+            canAcceptDirectInput: false
+        )
+        let older = makeSession(
+            id: "thread-older-page",
+            projectID: project.id,
+            title: "Older Page",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            projectPages: [
+                project.id: SessionsPage(
+                    sessions: recent,
+                    nextCursor: "workspace-next",
+                    hasMore: true
+                )
+            ],
+            cursorPages: [
+                "workspace-next": SessionsPage(sessions: [older])
+            ],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: [external])
+            }
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.reloadRecentWorkspaces()
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        await store.loadMoreSessions(projectID: project.id)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            recent.map(\.id) + [external.id, older.id],
+            "首屏刷新必须同时保留受控全局外部 Worktree 和用户已经加载的旧分页窗口"
+        )
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertFalse(store.sessionsByID[external.id]?.allowsDirectInput ?? true)
+    }
+
     func testProtocolReadOnlySessionRejectsPromptBeforeClientCall() async {
         let project = makeProject(id: "proj_read_only")
         var child = makeSession(
