@@ -639,8 +639,8 @@ mod tests {
         id: &str,
         user_text: Option<&str>,
         output: &str,
-        started_at: i64,
-        completed_at: i64,
+        started_at_ms: i64,
+        completed_at_ms: i64,
     ) -> Turn {
         let mut items = Vec::new();
         if let Some(text) = user_text {
@@ -658,9 +658,9 @@ mod tests {
             items_view: alleycat_codex_proto::default_items_view(),
             status: TurnStatus::Completed,
             error: None,
-            started_at: Some(started_at),
-            completed_at: Some(completed_at),
-            duration_ms: Some((completed_at - started_at) * 1_000),
+            started_at: Some(started_at_ms),
+            completed_at: Some(completed_at_ms),
+            duration_ms: Some(completed_at_ms - started_at_ms),
         }
     }
 
@@ -842,22 +842,22 @@ mod tests {
                     "disk-original",
                     Some("先检查 MIM-53"),
                     "正在检查验收标准",
-                    100,
-                    110,
+                    100_000,
+                    110_000,
                 ),
                 completed_turn(
                     "disk-steered",
                     Some("更新下 issue"),
                     "MIM-53 的验收标准已更新",
-                    115,
-                    180,
+                    115_000,
+                    180_000,
                 ),
                 completed_turn(
                     "disk-current",
                     Some("继续处理当前任务"),
                     "当前任务回复",
-                    300,
-                    320,
+                    300_000,
+                    320_000,
                 ),
             ],
         );
@@ -894,8 +894,8 @@ mod tests {
                 "disk-earlier",
                 Some("较早的用户请求"),
                 "相同但很常见的完成提示",
-                100,
-                110,
+                100_000,
+                110_000,
             )],
         );
 
@@ -932,8 +932,8 @@ mod tests {
                 "disk-completed",
                 Some("已经完成的请求"),
                 "仍在生成的相同输出",
-                100,
-                110,
+                100_000,
+                110_000,
             )],
         );
 
@@ -1017,7 +1017,12 @@ fn completed_turn_windows_overlap(persisted: &Turn, live: &RecordedTurn) -> bool
     ) else {
         return false;
     };
-    persisted_start <= live_end && live.started_at <= persisted_end
+    // JSONL 的 RFC 3339 时间由 translate/items 记录为毫秒；实时回合使用
+    // now_unix_secs。只在这个对账边界把权威历史归一到秒，避免改动协议字段
+    // 的既有语义，也避免毫秒值与秒值直接比较导致 steer 回合永远无法重锚。
+    let persisted_start_secs = persisted_start.div_euclid(1_000);
+    let persisted_end_secs = persisted_end.div_euclid(1_000);
+    persisted_start_secs <= live_end && live.started_at <= persisted_end_secs
 }
 
 fn turn_visible_signatures(items: &[ThreadItem]) -> Vec<String> {
