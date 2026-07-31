@@ -2717,6 +2717,86 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.load(endpoint: "http://mac-b.local:8787").map(\.id), [second.id])
     }
 
+    func testRecentWorkspaceStoreMigratesDuplicatePathToCanonicalWorkspaceID() throws {
+        let suiteName = "RecentWorkspaceStoreTests.DuplicatePath.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let profileID = "mac-a"
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "旧名称",
+            path: "/Users/me/code/chat-archive/",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        var rawStorage = ProfileScopedStorage<[AgentWorkspace]>()
+        rawStorage.byProfileID[profileID] = [legacy, canonical]
+        defaults.set(
+            try JSONEncoder().encode(rawStorage),
+            forKey: "agentd.recentWorkspaces"
+        )
+        let store = RecentWorkspaceStore(defaults: defaults)
+
+        let migration = store.loadReconciled(profileID: profileID)
+
+        // ws_<path hash> 是 agentd 的稳定 identity，即使旧 project ID 时间更晚也不能反向降级。
+        XCTAssertEqual(migration.workspaces.map(\.id), [canonical.id])
+        XCTAssertEqual(
+            migration.workspaces.first?.lastOpenedAt,
+            legacy.lastOpenedAt,
+            "合并后仍保留两条记录中的最近打开时间"
+        )
+        XCTAssertEqual(migration.replacedWorkspaceIDs, [legacy.id: canonical.id])
+        XCTAssertEqual(store.load(profileID: profileID), migration.workspaces)
+    }
+
+    func testRecentWorkspaceStoreTreatsDarwinVarAliasAsSamePath() {
+        let profileID = "mac-a"
+        let store = makeRecentWorkspaceStore(workspaces: [], endpoint: "http://mac-a.local:8787")
+        let legacy = AgentWorkspace(
+            id: "legacy-var",
+            name: "缓存",
+            path: "/var/folders/example"
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_var",
+            name: "缓存",
+            path: "/private/var/folders/example"
+        )
+
+        store.save([legacy, canonical], profileID: profileID)
+
+        let loaded = store.load(profileID: profileID)
+        XCTAssertEqual(loaded.map(\.id), [canonical.id])
+        XCTAssertEqual(loaded.first?.path, "/private/var/folders/example")
+    }
+
+    func testRecentWorkspaceStoreDoesNotMergeSameNameAtDifferentPaths() {
+        let profileID = "mac-a"
+        let store = makeRecentWorkspaceStore(workspaces: [], endpoint: "http://mac-a.local:8787")
+        let first = AgentWorkspace(
+            id: "ws_first",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive"
+        )
+        let second = AgentWorkspace(
+            id: "ws_second",
+            name: "chat-archive",
+            path: "/Users/me/archive/chat-archive"
+        )
+
+        store.save([first, second], profileID: profileID)
+
+        XCTAssertEqual(Set(store.load(profileID: profileID).map(\.id)), [first.id, second.id])
+    }
+
     func testSessionListPreferenceStoreScopesByEndpoint() {
         let store = makeSessionListPreferenceStore()
         store.save(
