@@ -774,7 +774,8 @@ struct CodexAppServerEventProjector {
             return startedCommandItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
-            let event = completedAgentMessageEvent(params: params, metadata: metadata)
+            let event = completedUserMessageEvent(params: params, metadata: metadata)
+                ?? completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
                 // collabAgentToolCall 的 receiverThreadIds 是子会话关系的唯一可信来源。
                 // 必须先于通用工具活动投影处理，否则它会被 processItemCompleted 吞掉。
@@ -886,7 +887,8 @@ struct CodexAppServerEventProjector {
             turnID: turnID,
             itemID: itemID,
             messageID: messageID,
-            clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"]),
+            clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"])
+                ?? item?["clientId"]?.stringValue,
             revision: Int(seq),
             createdAt: nil
         )
@@ -937,6 +939,64 @@ struct CodexAppServerEventProjector {
             role: .assistant,
             kind: kind,
             content: text,
+            createdAt: Date(),
+            seq: metadata.seq,
+            revision: metadata.revision ?? 0,
+            sendStatus: .confirmed
+        )
+        return .messageCompleted(message, metadata)
+    }
+
+    private func completedUserMessageEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue,
+              item["type"]?.stringValue == "userMessage",
+              let clientMessageID = metadata.clientMessageID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !clientMessageID.isEmpty else {
+            return nil
+        }
+        let content = (item["content"]?.arrayValue ?? []).compactMap { value -> String? in
+            guard let part = value.objectValue else {
+                return nil
+            }
+            switch part["type"]?.stringValue {
+            case "text":
+                return part["text"]?.stringValue
+            case "image":
+                return L10n.text("ui.image_attachment")
+            case "localImage":
+                guard let path = part["path"]?.stringValue else {
+                    return L10n.text("ui.image_attachment")
+                }
+                return L10n.format("ui.image_value", URL(fileURLWithPath: path).lastPathComponent)
+            case "skill":
+                return part["name"]?.stringValue.map { "[$\($0)]" }
+            case "mention":
+                return part["name"]?.stringValue.map { "[@\($0)]" }
+            default:
+                return nil
+            }
+        }
+        .joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            return nil
+        }
+        let itemID = metadata.itemID ?? item["id"]?.stringValue
+        let messageID = metadata.messageID
+            ?? appServerMessageID(turnID: metadata.turnID, itemID: itemID)
+            ?? itemID
+            ?? UUID().uuidString
+        let message = AgentMessage(
+            id: messageID,
+            sessionID: metadata.sessionID ?? "",
+            clientMessageID: clientMessageID,
+            turnID: metadata.turnID,
+            itemID: itemID,
+            role: .user,
+            content: content,
             createdAt: Date(),
             seq: metadata.seq,
             revision: metadata.revision ?? 0,

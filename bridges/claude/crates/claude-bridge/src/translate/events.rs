@@ -1938,15 +1938,13 @@ pub fn turn_status_from_result(error_message: Option<&str>) -> (TurnStatus, Opti
 pub(crate) const CLAUDE_AUTHENTICATION_REQUIRED_CODE: &str = "claude_authentication_required";
 
 /// 只识别 Claude 顶层认证失败，不把工具内部或普通网络错误误判为登录失效。
-/// 旧版 Claude Code 的文案并不完全稳定，因此同时覆盖 OAuth 过期、刷新失败和
-/// 明确的 authenticate failure；协议向客户端只暴露稳定 code。
+/// 旧版 Claude Code 的文案并不完全稳定，因此同时覆盖 OAuth 过期与刷新失败；
+/// 协议向客户端只暴露稳定 code。普通工具返回的 authentication 文案不能命中。
 pub(crate) fn is_claude_authentication_failure(message: &str) -> bool {
     let normalized = message.trim().to_ascii_lowercase();
-    (normalized.contains("failed to authenticate")
-        && (normalized.contains("oauth") || normalized.contains("authentication")))
+    (normalized.contains("failed to authenticate") && normalized.contains("oauth"))
         || (normalized.contains("oauth session expired")
             && normalized.contains("could not be refreshed"))
-        || normalized.contains("invalid authentication credentials")
 }
 
 fn claude_error_code(message: &str) -> Option<&'static str> {
@@ -2538,6 +2536,15 @@ mod tests {
             turn_error.and_then(|error| error.code).as_deref(),
             Some(CLAUDE_AUTHENTICATION_REQUIRED_CODE)
         );
+
+        for unrelated_error in [
+            "Invalid authentication credentials",
+            "Failed to authenticate third-party tool request",
+        ] {
+            assert!(!is_claude_authentication_failure(unrelated_error));
+            let (_, turn_error) = turn_status_from_result(Some(unrelated_error));
+            assert_eq!(turn_error.and_then(|error| error.code), None);
+        }
     }
 
     #[test]

@@ -1882,6 +1882,40 @@ extension ConversationDataFlowTests {
             XCTFail("Expected messageCompleted")
         }
 
+        let completedUser = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"userMessage","id":"user_1","clientId":"client_1","content":[{"type":"text","text":"继续原请求","text_elements":[]}]}}}"#)
+        if case .messageCompleted(let message, let meta) = try XCTUnwrap(projector.project(completedUser)) {
+            XCTAssertEqual(message.id, "appserver:turn_demo:user_1")
+            XCTAssertEqual(message.role, .user)
+            XCTAssertEqual(message.content, "继续原请求")
+            XCTAssertEqual(message.clientMessageID, "client_1")
+            XCTAssertEqual(message.turnID, "turn_demo")
+            XCTAssertEqual(meta.clientMessageID, "client_1")
+        } else {
+            XCTFail("Expected user messageCompleted")
+        }
+
+        let imageUser = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_image","item":{"type":"userMessage","id":"user_image","clientId":"client_image","content":[{"type":"image","url":"data:image/png;base64,AA=="}]}}}"#)
+        let imageEvent = try XCTUnwrap(projector.project(imageUser))
+        guard case .messageCompleted(let imageMessage, let imageMetadata) = imageEvent else {
+            return XCTFail("Expected image user messageCompleted")
+        }
+        let imagePayload = CodexAppServerTurnPayload(input: [
+            .image(url: "data:image/png;base64,AA==")
+        ])
+        let imageStore = ConversationStore()
+        imageStore.appendLocalUser(
+            imagePayload.previewText,
+            sessionID: "thr_demo",
+            clientMessageID: "client_image",
+            sendStatus: .sending,
+            turnPayload: imagePayload
+        )
+        imageStore.completeMessage(imageMessage, metadata: imageMetadata, fallbackSessionID: "thr_demo")
+        let mergedImage = try XCTUnwrap(imageStore.messages(for: "thr_demo").first)
+        XCTAssertEqual(mergedImage.turnID, "turn_image")
+        XCTAssertEqual(mergedImage.turnPayload, imagePayload)
+        XCTAssertEqual(mergedImage.content, imagePayload.previewText)
+
         let commentary = try decodeAppServerNotification(#"{"method":"item/completed","params":{"threadId":"thr_demo","turnId":"turn_demo","item":{"type":"agentMessage","id":"commentary_1","text":"我先检查上下文。","phase":"commentary"}}}"#)
         if case .messageCompleted(let message, _) = try XCTUnwrap(projector.project(commentary)) {
             XCTAssertEqual(message.role, .assistant)

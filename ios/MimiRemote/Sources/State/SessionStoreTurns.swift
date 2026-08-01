@@ -1685,13 +1685,17 @@ extension SessionStore {
             return false
         }
 
-        let messages = conversationStore.messages(for: session.id)
-        guard let failureIndex = messages.firstIndex(where: { $0.id == failure.id }),
-              let original = messages[..<failureIndex].last(where: {
-                  $0.role == .user
-                      && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-              })
-        else {
+        let failedTurnID = failure.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let matchingRequests = conversationStore.messages(for: session.id).filter {
+            $0.role == .user
+                && $0.turnID == failedTurnID
+                && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        // 认证错误可能迟到，期间用户也可能已经发出下一条请求。只重发与错误事件
+        // 同 turn 且唯一的用户消息；身份缺失或歧义时 fail closed，绝不猜“最近一条”。
+        guard !failedTurnID.isEmpty,
+              matchingRequests.count == 1,
+              let original = matchingRequests.first else {
             setErrorMessage(L10n.text("ui.original_request_for_retry_was_not_found"))
             return false
         }

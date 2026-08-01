@@ -1993,6 +1993,52 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertNil(runtime.clientMessageID)
     }
 
+    func testCompletedUserEchoBindsLocalMessageToAuthoritativeTurn() throws {
+        let store = ConversationStore()
+        let sessionID = "sess-user-turn-binding"
+        let clientMessageID = "client-user-turn-binding"
+        let turnID = "turn-user-turn-binding"
+        store.appendLocalUser(
+            "继续原请求",
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            sendStatus: .sending,
+            turnPayload: CodexAppServerTurnPayload(prompt: "继续原请求")
+        )
+
+        store.completeMessage(
+            AgentMessage(
+                id: "runtime-user-item",
+                sessionID: sessionID,
+                clientMessageID: clientMessageID,
+                turnID: turnID,
+                itemID: "runtime-user-item",
+                role: .user,
+                content: "继续原请求",
+                revision: 1
+            ),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: turnID,
+                itemID: "runtime-user-item",
+                messageID: "runtime-user-item",
+                clientMessageID: clientMessageID,
+                revision: 1,
+                createdAt: Date(timeIntervalSince1970: 10)
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        let user = try XCTUnwrap(store.messages(for: sessionID).first)
+        XCTAssertEqual(user.turnID, turnID)
+        XCTAssertEqual(user.itemID, "runtime-user-item")
+        XCTAssertEqual(user.sendStatus, .confirmed)
+        XCTAssertTrue(store.bindTurnID(turnID, clientMessageID: clientMessageID, sessionID: sessionID))
+        XCTAssertFalse(store.bindTurnID("other-turn", clientMessageID: clientMessageID, sessionID: sessionID))
+        XCTAssertEqual(store.messages(for: sessionID).first?.turnID, turnID)
+    }
+
     func testMessageRenderPlanCacheReusesAppendOnlyStreamingPrefix() {
         let cache = MessageRenderPlanCache(limit: 4)
         var message = ConversationMessage(
