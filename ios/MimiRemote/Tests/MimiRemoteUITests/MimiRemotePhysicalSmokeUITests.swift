@@ -16,6 +16,10 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         if name.contains("testMCPToolApprovalShowsScopedTrustActions") {
             app.launchArguments.append("--debug-seed-mcp-approval-ui")
         }
+        if name.contains("testWideIPadFloatingSidebarDragDoesNotStealSessionRowGestures") {
+            // 13-inch iPad 竖屏仍是 regular width，同时避开横屏自由窗口对屏幕左缘拖动的系统仲裁。
+            XCUIDevice.shared.orientation = .portrait
+        }
         app.launch()
         XCTAssertTrue(
             app.wait(for: .runningForeground, timeout: 25),
@@ -186,7 +190,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             UIDevice.current.userInterfaceIdiom == .pad,
             "浮动侧栏拖动只在 iPad regular width 下验收。"
         )
-        rotate(to: .landscapeLeft)
+        try enterWorkbenchIfNeeded()
 
         if firstExistingButton(
             labels: ["收起会话列表", "Collapse conversation list"],
@@ -256,24 +260,47 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             return XCTFail("trailing 22pt 拖动带关闭后应显示等价的展开按钮")
         }
 
+        let height = max(window.frame.height, 1)
+        let protectedZoneOpenEndX = 310 / width
+        let protectedY = CGFloat(65)
+        let protectedStart = window.coordinate(
+            // 65pt 仍严格位于顶部 72pt 保护区内，同时避开 reveal 按钮和系统极端顶缘。
+            withNormalizedOffset: CGVector(dx: 1 / width, dy: protectedY / height)
+        )
+        let protectedEnd = window.coordinate(
+            withNormalizedOffset: CGVector(dx: protectedZoneOpenEndX, dy: protectedY / height)
+        )
+        protectedStart.press(forDuration: 0.1, thenDragTo: protectedEnd)
+        guard firstExistingButton(
+            labels: ["显示边栏", "Show Sidebar"],
+            timeout: 2
+        ) != nil else {
+            return XCTFail("leading edge 顶部 72pt 保护区不得触发侧栏重开")
+        }
+        // 底部 72pt 会被 iPadOS 窗口管理器优先接管并改变窗口几何；对应拒绝边界由纯布局测试覆盖。
+
         let openStart = window.coordinate(
-            withNormalizedOffset: CGVector(dx: 11 / width, dy: 0.5)
+            // 20pt 仍位于应用的 leading 22pt 命中带内，同时避开 iPadOS 绝对屏幕边缘仲裁。
+            withNormalizedOffset: CGVector(dx: 20 / width, dy: 0.5)
         )
         let openEnd = window.coordinate(
             withNormalizedOffset: CGVector(dx: 310 / width, dy: 0.5)
         )
         openStart.press(forDuration: 0.1, thenDragTo: openEnd)
 
-        guard let reopenedCollapseSidebar = firstExistingButton(
-            labels: ["收起会话列表", "Collapse conversation list"],
+        let collapseSidebarLabels = ["收起会话列表", "Collapse conversation list"]
+        guard firstExistingButton(
+            labels: collapseSidebarLabels,
             timeout: 8
-        ) else {
+        ) != nil else {
             return XCTFail("leading 22pt edge 应能直接重新展开侧栏")
         }
-        XCTAssertEqual(
-            reopenedCollapseSidebar.frame.maxX,
-            sidebarTrailingX,
-            accuracy: 2,
+        XCTAssertTrue(
+            waitForFreshButtonHorizontalPosition(
+                labels: collapseSidebarLabels,
+                maxX: sidebarTrailingX,
+                accuracy: 2
+            ),
             "重新展开后侧栏应回到原始展开位置"
         )
 
@@ -1121,6 +1148,31 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             object: element
         )
         return XCTWaiter.wait(for: [expectation], timeout: 6) == .completed
+    }
+
+    private func waitForFreshButtonHorizontalPosition(
+        labels: [String],
+        maxX expectedMaxX: CGFloat,
+        accuracy: CGFloat,
+        timeout: TimeInterval = 6
+    ) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                block: { _, _ in
+                    // 每轮重新构造查询，避免 XCUIElement 句柄缓存动画前的 frame。
+                    for label in labels {
+                        let candidate = self.app.buttons[label]
+                        if candidate.exists,
+                           abs(candidate.frame.maxX - expectedMaxX) <= accuracy {
+                            return true
+                        }
+                    }
+                    return false
+                }
+            ),
+            object: app
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
     private func waitForControlValue(

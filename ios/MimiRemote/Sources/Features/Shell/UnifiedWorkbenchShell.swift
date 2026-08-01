@@ -377,15 +377,35 @@ struct UnifiedWorkbenchShell: View {
                 .accessibilitySortPriority(10)
             }
         }
-        .overlay(alignment: .leading) {
+        .overlay(alignment: .topLeading) {
             if keepsClosedEdgeInteractive {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.001))
-                    .frame(width: WorkbenchSidebarSurfaceMetrics.closedEdgeDragWidth)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(floatingSidebarDragGesture())
-                    .accessibilityHidden(true)
+                GeometryReader { proxy in
+                    let hitFrame = FloatingSidebarGestureHitRegion.closedEdgeFrame(
+                        containerSize: proxy.size,
+                        edgeWidth: WorkbenchSidebarSurfaceMetrics.closedEdgeDragWidth,
+                        verticalInset: WorkbenchSidebarSurfaceMetrics.closedEdgeDragVerticalInset
+                    )
+
+                    if !hitFrame.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            // 用真实布局占出顶部保护区，不依赖 offset 的命中变换语义。
+                            Spacer()
+                                .frame(height: hitFrame.minY)
+                                .allowsHitTesting(false)
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.001))
+                                // 只让 Rectangle 命中；GeometryReader 与上下 Spacer 都没有 recognizer。
+                                .frame(width: hitFrame.width, height: hitFrame.height)
+                                .contentShape(Rectangle())
+                                .allowsHitTesting(true)
+                                .simultaneousGesture(floatingSidebarDragGesture())
+                                .accessibilityHidden(true)
+                            Spacer(minLength: 0)
+                                .allowsHitTesting(false)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                }
             }
         }
     }
@@ -399,7 +419,7 @@ struct UnifiedWorkbenchShell: View {
         }
         settleFloatingSidebar(
             to: currentVisibility.toggled,
-            initialVelocity: 0
+            progressVelocity: 0
         )
     }
 
@@ -453,25 +473,34 @@ struct UnifiedWorkbenchShell: View {
 
             settleFloatingSidebar(
                 to: decision.target,
-                initialVelocity: decision.initialVelocity
+                progressVelocity: decision.progressVelocity
             )
         }
     }
 
     private func settleFloatingSidebar(
         to target: FloatingSidebarVisibility,
-        initialVelocity: CGFloat
+        progressVelocity: CGFloat
     ) {
+        // 必须先读取屏幕当前插值，再递增 revision/进入 settling；否则会用目标值归一化速度。
+        let currentPresentationProgress = floatingSidebarRenderedProgress.value
+        let springInitialVelocity = reduceMotion
+            ? 0
+            : FloatingSidebarProjection.springInitialVelocity(
+                progressVelocity: progressVelocity,
+                currentPresentationProgress: currentPresentationProgress,
+                targetProgress: target.progress
+            )
         let settling = floatingSidebarPresentation.prepareSettling(
             target: target,
-            initialVelocity: initialVelocity
+            springInitialVelocity: springInitialVelocity
         )
         storedFloatingSidebarVisible = target == .open
 
         withAnimation(
             MimiMotion.gestureSettling.animation(
                 reduceMotion: reduceMotion,
-                initialVelocity: settling.initialVelocity
+                initialVelocity: settling.springInitialVelocity
             ),
             completionCriteria: .logicallyComplete
         ) {

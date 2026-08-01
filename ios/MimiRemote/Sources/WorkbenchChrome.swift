@@ -529,6 +529,7 @@ enum WorkbenchSidebarSurfaceMetrics {
     static let openDragStripWidth: CGFloat = 22
     static let openDragStripVerticalInset: CGFloat = 72
     static let closedEdgeDragWidth: CGFloat = 22
+    static let closedEdgeDragVerticalInset: CGFloat = 72
 }
 
 /// iPad 工作台的图标型操作统一使用同一套光学尺寸；系统工具栏或 ButtonStyle 负责材质与按压反馈。

@@ -21,7 +21,7 @@ enum FloatingSidebarGestureAxis: Equatable {
 struct FloatingSidebarSettling: Equatable {
     let target: FloatingSidebarVisibility
     let revision: UInt
-    let initialVelocity: CGFloat
+    let springInitialVelocity: CGFloat
 }
 
 struct FloatingSidebarInteraction: Equatable {
@@ -147,13 +147,13 @@ struct FloatingSidebarPresentationState: Equatable {
 
     mutating func prepareSettling(
         target: FloatingSidebarVisibility,
-        initialVelocity: CGFloat
+        springInitialVelocity: CGFloat
     ) -> FloatingSidebarSettling {
         revision &+= 1
         return FloatingSidebarSettling(
             target: target,
             revision: revision,
-            initialVelocity: FloatingSidebarProjection.clampInitialVelocity(initialVelocity)
+            springInitialVelocity: springInitialVelocity
         )
     }
 
@@ -235,16 +235,49 @@ enum FloatingSidebarGestureHitRegion {
             && start.y <= surfaceSize.height - verticalInset
     }
 
-    static func acceptsClosedEdge(startX: CGFloat, edgeWidth: CGFloat) -> Bool {
-        guard edgeWidth > 0 else { return false }
-        return startX >= 0 && startX <= edgeWidth
+    static func closedEdgeFrame(
+        containerSize: CGSize,
+        edgeWidth: CGFloat,
+        verticalInset: CGFloat
+    ) -> CGRect {
+        guard containerSize.width > 0,
+              containerSize.height > verticalInset * 2,
+              edgeWidth > 0,
+              edgeWidth <= containerSize.width,
+              verticalInset >= 0 else {
+            return .zero
+        }
+        return CGRect(
+            x: 0,
+            y: verticalInset,
+            width: edgeWidth,
+            height: containerSize.height - verticalInset * 2
+        )
+    }
+
+    static func acceptsClosedEdge(
+        start: CGPoint,
+        containerSize: CGSize,
+        edgeWidth: CGFloat,
+        verticalInset: CGFloat
+    ) -> Bool {
+        let frame = closedEdgeFrame(
+            containerSize: containerSize,
+            edgeWidth: edgeWidth,
+            verticalInset: verticalInset
+        )
+        guard !frame.isEmpty else { return false }
+        return start.x >= frame.minX
+            && start.x <= frame.maxX
+            && start.y >= frame.minY
+            && start.y <= frame.maxY
     }
 }
 
 struct FloatingSidebarReleaseDecision: Equatable {
     let target: FloatingSidebarVisibility
     let projectedLanding: CGFloat
-    let initialVelocity: CGFloat
+    let progressVelocity: CGFloat
 }
 
 enum FloatingSidebarProjection {
@@ -252,7 +285,9 @@ enum FloatingSidebarProjection {
     static let highVelocityThreshold: CGFloat = 700
     static let minimumProjectedLanding: CGFloat = -0.25
     static let maximumProjectedLanding: CGFloat = 1.25
-    static let maximumInitialVelocity: CGFloat = 4
+    static let maximumProgressVelocity: CGFloat = 4
+    static let springDistanceEpsilon: CGFloat = 0.001
+    static let maximumSpringInitialVelocity = maximumProgressVelocity / springDistanceEpsilon
     static let decelerationRate: CGFloat = 0.99
 
     static func clampedLayoutProgress(_ progress: CGFloat) -> CGFloat {
@@ -263,8 +298,34 @@ enum FloatingSidebarProjection {
         min(max(progress, minimumProjectedLanding), maximumProjectedLanding)
     }
 
-    static func clampInitialVelocity(_ velocity: CGFloat) -> CGFloat {
-        min(max(velocity, -maximumInitialVelocity), maximumInitialVelocity)
+    static func clampProgressVelocity(_ velocity: CGFloat) -> CGFloat {
+        min(max(velocity, -maximumProgressVelocity), maximumProgressVelocity)
+    }
+
+    static func springInitialVelocity(
+        progressVelocity: CGFloat,
+        currentPresentationProgress: CGFloat,
+        targetProgress: CGFloat
+    ) -> CGFloat {
+        guard progressVelocity.isFinite,
+              currentPresentationProgress.isFinite,
+              targetProgress.isFinite else {
+            return 0
+        }
+
+        let delta = targetProgress - currentPresentationProgress
+        guard delta.isFinite, delta != 0 else { return 0 }
+
+        // SwiftUI 的 initialVelocity 以“完整动画位移/秒”为单位；先保留绝对 progress/s，
+        // 再按真实 presentation 到 target 的剩余距离换算，才能连续交接释放速度。
+        let effectiveDistance = max(abs(delta), springDistanceEpsilon)
+        let signedEffectiveDistance = delta < 0 ? -effectiveDistance : effectiveDistance
+        let relativeVelocity = clampProgressVelocity(progressVelocity) / signedEffectiveDistance
+        guard relativeVelocity.isFinite else { return 0 }
+        return min(
+            max(relativeVelocity, -maximumSpringInitialVelocity),
+            maximumSpringInitialVelocity
+        )
     }
 
     static func rubberBandedProgress(
@@ -295,13 +356,13 @@ enum FloatingSidebarProjection {
             return FloatingSidebarReleaseDecision(
                 target: target,
                 projectedLanding: target.progress,
-                initialVelocity: 0
+                progressVelocity: 0
             )
         }
 
         let currentProgress = baseProgress + translation / sidebarWidth
         let predictedProgress = baseProgress + predictedEndTranslation / sidebarWidth
-        let normalizedVelocity = clampInitialVelocity(velocity / sidebarWidth)
+        let normalizedVelocity = clampProgressVelocity(velocity / sidebarWidth)
         let velocityProjection = projectedDistance(velocity: velocity) / sidebarWidth
         let projectedByVelocity = currentProgress + velocityProjection
 
@@ -326,7 +387,7 @@ enum FloatingSidebarProjection {
         return FloatingSidebarReleaseDecision(
             target: target,
             projectedLanding: landing,
-            initialVelocity: normalizedVelocity
+            progressVelocity: normalizedVelocity
         )
     }
 

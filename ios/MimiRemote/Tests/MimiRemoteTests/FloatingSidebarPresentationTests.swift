@@ -94,13 +94,36 @@ final class FloatingSidebarPresentationTests: XCTestCase {
             trailingInset: 12
         ))
 
+        let closedContainer = CGSize(width: 1_024, height: 800)
+        let closedFrame = FloatingSidebarGestureHitRegion.closedEdgeFrame(
+            containerSize: closedContainer,
+            edgeWidth: 22,
+            verticalInset: 72
+        )
+        XCTAssertEqual(closedFrame, CGRect(x: 0, y: 72, width: 22, height: 656))
+        XCTAssertFalse(FloatingSidebarGestureHitRegion.acceptsClosedEdge(
+            start: CGPoint(x: 11, y: 71.9),
+            containerSize: closedContainer,
+            edgeWidth: 22,
+            verticalInset: 72
+        ))
         XCTAssertTrue(FloatingSidebarGestureHitRegion.acceptsClosedEdge(
-            startX: 22,
-            edgeWidth: 22
+            start: CGPoint(x: 11, y: 400),
+            containerSize: closedContainer,
+            edgeWidth: 22,
+            verticalInset: 72
         ))
         XCTAssertFalse(FloatingSidebarGestureHitRegion.acceptsClosedEdge(
-            startX: 23,
-            edgeWidth: 22
+            start: CGPoint(x: 11, y: 728.1),
+            containerSize: closedContainer,
+            edgeWidth: 22,
+            verticalInset: 72
+        ))
+        XCTAssertFalse(FloatingSidebarGestureHitRegion.acceptsClosedEdge(
+            start: CGPoint(x: 23, y: 400),
+            containerSize: closedContainer,
+            edgeWidth: 22,
+            verticalInset: 72
         ))
     }
 
@@ -161,11 +184,75 @@ final class FloatingSidebarPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(opens.target, .open)
-        XCTAssertEqual(opens.initialVelocity, 4)
+        XCTAssertEqual(opens.progressVelocity, 4)
         XCTAssertLessThanOrEqual(opens.projectedLanding, 1.25)
         XCTAssertEqual(closes.target, .closed)
-        XCTAssertEqual(closes.initialVelocity, -4)
+        XCTAssertEqual(closes.progressVelocity, -4)
         XCTAssertGreaterThanOrEqual(closes.projectedLanding, -0.25)
+    }
+
+    func testSpringInitialVelocityUsesRemainingPresentationDistance() {
+        let closing = FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: -2,
+            currentPresentationProgress: 0.8,
+            targetProgress: 0
+        )
+        let opening = FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: 2,
+            currentPresentationProgress: 0.2,
+            targetProgress: 1
+        )
+        let closingAwayFromTarget = FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: 1,
+            currentPresentationProgress: 0.8,
+            targetProgress: 0
+        )
+        let overEdgeTowardTarget = FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: -1,
+            currentPresentationProgress: 1.1,
+            targetProgress: 1
+        )
+        let overEdgeAwayFromTarget = FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: 1,
+            currentPresentationProgress: 1.1,
+            targetProgress: 1
+        )
+
+        XCTAssertEqual(closing, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(opening, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(closingAwayFromTarget, -1.25, accuracy: 0.0001)
+        XCTAssertEqual(overEdgeTowardTarget, 10, accuracy: 0.0001)
+        XCTAssertEqual(overEdgeAwayFromTarget, -10, accuracy: 0.0001)
+    }
+
+    func testSpringInitialVelocityIsFiniteAtShortOrInvalidDistances() {
+        let shortDistance = FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: 4,
+            currentPresentationProgress: 0.9995,
+            targetProgress: 1
+        )
+
+        XCTAssertTrue(shortDistance.isFinite)
+        XCTAssertEqual(
+            shortDistance,
+            FloatingSidebarProjection.maximumSpringInitialVelocity,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: 4,
+            currentPresentationProgress: 1,
+            targetProgress: 1
+        ), 0)
+        XCTAssertEqual(FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: .infinity,
+            currentPresentationProgress: 0.5,
+            targetProgress: 1
+        ), 0)
+        XCTAssertEqual(FloatingSidebarProjection.springInitialVelocity(
+            progressVelocity: 1,
+            currentPresentationProgress: .nan,
+            targetProgress: 1
+        ), 0)
     }
 
     func testAnimatableModifierSynchronouslyCachesRenderedProgress() {
@@ -181,7 +268,7 @@ final class FloatingSidebarPresentationTests: XCTestCase {
     func testReverseTakeoverStartsAtRenderedProgressAndFencesOldCompletion() {
         let tracker = FloatingSidebarRenderedProgressTracker(initialValue: 1)
         var state = FloatingSidebarPresentationState()
-        let closing = state.prepareSettling(target: .closed, initialVelocity: -2)
+        let closing = state.prepareSettling(target: .closed, springInitialVelocity: -2)
         state.startSettling(closing)
 
         tracker.record(0.42)
@@ -205,7 +292,7 @@ final class FloatingSidebarPresentationTests: XCTestCase {
         let tracker = FloatingSidebarRenderedProgressTracker(initialValue: 0)
         var state = FloatingSidebarPresentationState()
         state.restore(.closed)
-        let opening = state.prepareSettling(target: .open, initialVelocity: 2)
+        let opening = state.prepareSettling(target: .open, springInitialVelocity: 2)
         state.startSettling(opening)
 
         tracker.record(0.58)
@@ -227,12 +314,12 @@ final class FloatingSidebarPresentationTests: XCTestCase {
 
     func testButtonOrKeyboardCommitRejectsOldSettlingCompletion() {
         var state = FloatingSidebarPresentationState()
-        let closing = state.prepareSettling(target: .closed, initialVelocity: -1)
+        let closing = state.prepareSettling(target: .closed, springInitialVelocity: -1)
         state.startSettling(closing)
         // 按钮和 Control-Command-S 都按 committed visibility 调用同一 settling 入口。
         let opening = state.prepareSettling(
             target: state.committedVisibility.toggled,
-            initialVelocity: 1
+            springInitialVelocity: 1
         )
         state.startSettling(opening)
 
@@ -290,7 +377,7 @@ final class FloatingSidebarPresentationTests: XCTestCase {
         )
         XCTAssertTrue(state.keepsClosedEdgeInteractive)
 
-        let opening = state.prepareSettling(target: .open, initialVelocity: 1)
+        let opening = state.prepareSettling(target: .open, springInitialVelocity: 1)
         state.startSettling(opening)
         XCTAssertFalse(state.keepsClosedEdgeInteractive)
     }
