@@ -136,8 +136,8 @@ struct HostSwitcherMenu: View {
                 connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
             )))
         case .toolbar:
-            // 多设备时用服务端真实平台增强辨识度；单设备和未知平台继续使用通用电脑，
-            // 避免客户端根据名称或地址猜测系统。
+            // 顶栏只表达当前主机可切换；多设备时用服务端真实平台增强辨识度，
+            // 单设备和未知平台继续使用通用电脑，避免根据名称或地址猜测系统。
             ZStack(alignment: .bottomTrailing) {
                 HostPlatformGlyph(kind: currentHostIconKind)
                     .frame(width: 18, height: 18)

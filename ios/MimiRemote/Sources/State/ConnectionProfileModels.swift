@@ -78,6 +78,9 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     let id: String
     var displayName: String
     var endpoint: String
+    var tailscaleDNSName: String?
+    var tailscaleDeviceName: String?
+    var isDisplayNameCustomized: Bool
     var lastSuccessfulAt: Date?
     var installationID: String?
     var hostPlatform: HostPlatform
@@ -87,6 +90,9 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         case id
         case displayName
         case endpoint
+        case tailscaleDNSName
+        case tailscaleDeviceName
+        case isDisplayNameCustomized
         case lastSuccessfulAt
         case installationID
         case hostPlatform
@@ -97,14 +103,35 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         id: String,
         displayName: String,
         endpoint: String,
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil,
+        isDisplayNameCustomized: Bool? = nil,
         lastSuccessfulAt: Date?,
         installationID: String? = nil,
         hostPlatform: HostPlatform = .unknown,
         revision: UInt64 = 0
     ) {
         self.id = id
-        self.displayName = displayName
+        let acceptsTailscaleMetadata = Self.isTailscaleIPEndpoint(endpoint)
+        let normalizedDNSName = acceptsTailscaleMetadata
+            ? Self.normalizedTailscaleDNSName(tailscaleDNSName)
+            : nil
+        let normalizedDeviceName = acceptsTailscaleMetadata
+            ? Self.normalizedTailscaleDeviceName(
+                tailscaleDeviceName,
+                dnsName: normalizedDNSName
+            )
+            : nil
+        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let inferredCustomization = !trimmedDisplayName.isEmpty &&
+            trimmedDisplayName != Self.fallbackDisplayName(endpoint: endpoint)
+        self.isDisplayNameCustomized = isDisplayNameCustomized ?? inferredCustomization
+        self.displayName = self.isDisplayNameCustomized
+            ? trimmedDisplayName
+            : (normalizedDeviceName ?? Self.fallbackDisplayName(endpoint: endpoint))
         self.endpoint = endpoint
+        self.tailscaleDNSName = normalizedDNSName
+        self.tailscaleDeviceName = normalizedDeviceName
         self.lastSuccessfulAt = lastSuccessfulAt
         self.installationID = installationID
         self.hostPlatform = hostPlatform
@@ -114,12 +141,133 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
-        displayName = try container.decode(String.self, forKey: .displayName)
+        let decodedDisplayName = try container.decode(String.self, forKey: .displayName)
         endpoint = try container.decode(String.self, forKey: .endpoint)
+        // LAN 档案即使从新版 agentd 的 /api/version 看到名称，也不启用 Tailscale
+        // 路由；只有保留了 Tailscale IP 回退地址的档案才接受 MagicDNS 元数据。
+        tailscaleDNSName = Self.isTailscaleIPEndpoint(endpoint)
+            ? Self.normalizedTailscaleDNSName(
+                try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
+            )
+            : nil
+        tailscaleDeviceName = Self.isTailscaleIPEndpoint(endpoint)
+            ? Self.normalizedTailscaleDeviceName(
+                try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName),
+                dnsName: tailscaleDNSName
+            )
+            : nil
+        let trimmedDisplayName = decodedDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        isDisplayNameCustomized = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isDisplayNameCustomized
+        ) ?? (
+            !trimmedDisplayName.isEmpty &&
+                trimmedDisplayName != Self.fallbackDisplayName(endpoint: endpoint)
+        )
+        displayName = isDisplayNameCustomized
+            ? trimmedDisplayName
+            : (tailscaleDeviceName ?? Self.fallbackDisplayName(endpoint: endpoint))
         lastSuccessfulAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulAt)
         installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
         hostPlatform = try container.decodeIfPresent(HostPlatform.self, forKey: .hostPlatform) ?? .unknown
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
+    }
+
+    /// DNS 路由优先，扫码得到的 IP Endpoint 永远保留为回退地址。
+    /// 两者都只是路由候选，不能参与 Profile 身份或数据分区。
+    var connectionCandidates: [String] {
+        Self.connectionCandidates(endpoint: endpoint, tailscaleDNSName: tailscaleDNSName)
+    }
+
+    static func connectionCandidates(endpoint: String, tailscaleDNSName: String?) -> [String] {
+        var values: [String] = []
+        if let tailscaleDNSName,
+           let preferred = Self.endpoint(endpoint, replacingHostWith: tailscaleDNSName) {
+            values.append(preferred)
+        }
+        values.append(endpoint)
+        var seen = Set<String>()
+        return values.filter {
+            seen.insert(AgentAPIClient.normalizedEndpoint($0)).inserted
+        }
+    }
+
+    var preferredEndpoint: String {
+        connectionCandidates.first ?? endpoint
+    }
+
+    static func endpoint(_ fallbackEndpoint: String, replacingHostWith dnsName: String?) -> String? {
+        guard let dnsName = normalizedTailscaleDNSName(dnsName),
+              var components = URLComponents(string: fallbackEndpoint) else {
+            return nil
+        }
+        components.host = dnsName
+        guard let candidate = components.url?.absoluteString else {
+            return nil
+        }
+        return try? EndpointTransportPolicy.validatedEndpoint(candidate)
+    }
+
+    static func normalizedTailscaleDNSName(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let value = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        guard value.count <= 253, value.hasSuffix(".ts.net") else {
+            return nil
+        }
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 3, labels.allSatisfy({ label in
+            guard !label.isEmpty, label.count <= 63,
+                  label.first != "-", label.last != "-" else {
+                return false
+            }
+            return label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        }) else {
+            return nil
+        }
+        return value
+    }
+
+    static func normalizedTailscaleDeviceName(_ raw: String?, dnsName: String?) -> String? {
+        let derived = dnsName?.split(separator: ".", maxSplits: 1).first.map(String.init)
+        let value = raw?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty, value.count <= 63,
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return derived
+        }
+        return value
+    }
+
+    static func isTailscaleIPEndpoint(_ endpoint: String) -> Bool {
+        guard let host = URLComponents(string: endpoint)?.host?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+        else {
+            return false
+        }
+        if host.hasPrefix("fd7a:115c:a1e0:") {
+            return true
+        }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+            .compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ 0...255 ~= $0 }) else {
+            return false
+        }
+        return octets[0] == 100 && 64...127 ~= octets[1]
+    }
+
+    static func fallbackDisplayName(endpoint: String) -> String {
+        guard let host = URLComponents(string: endpoint)?.host,
+              !host.isEmpty else {
+            return L10n.text("ui.my_mac")
+        }
+        if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+            return L10n.text("ui.this_mac")
+        }
+        return host
     }
 }
 
@@ -314,30 +462,48 @@ enum PreparedConnectionProfileTarget: Equatable {
 
 /// 已完成目标电脑验证、等待事务提交的值对象。
 struct PreparedConnectionSettings: Equatable {
+    /// 扫码或手动配置的可恢复地址；配对时通常是 Tailscale IP。
     let endpoint: String
+    /// 本次已完成 REST/WebSocket 验证的真实路由，提交后供所有请求复用。
+    let activeEndpoint: String
     let token: String
     let profileTarget: PreparedConnectionProfileTarget
     let validatedAt: Date
     let installationID: String?
+    let tailscaleDNSName: String?
+    let tailscaleDeviceName: String?
     let hostPlatform: HostPlatform
     let hostContext: PreparedHostContext?
     let capabilityNegotiation: HostCapabilityNegotiation
 
     init(
         endpoint: String,
+        activeEndpoint: String? = nil,
         token: String,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         validatedAt: Date = Date(),
         installationID: String? = nil,
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil,
         hostPlatform: HostPlatform = .unknown,
         hostContext: PreparedHostContext? = nil,
         capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated
     ) {
         self.endpoint = endpoint
+        self.activeEndpoint = activeEndpoint ?? endpoint
         self.token = token
         self.profileTarget = profileTarget
         self.validatedAt = validatedAt
         self.installationID = installationID
+        self.tailscaleDNSName = ConnectionProfile.isTailscaleIPEndpoint(endpoint)
+            ? ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
+            : nil
+        self.tailscaleDeviceName = ConnectionProfile.isTailscaleIPEndpoint(endpoint)
+            ? ConnectionProfile.normalizedTailscaleDeviceName(
+                tailscaleDeviceName,
+                dnsName: self.tailscaleDNSName
+            )
+            : nil
         self.hostPlatform = hostPlatform
         self.hostContext = hostContext
         self.capabilityNegotiation = capabilityNegotiation
@@ -345,10 +511,13 @@ struct PreparedConnectionSettings: Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.endpoint == rhs.endpoint &&
+            lhs.activeEndpoint == rhs.activeEndpoint &&
             lhs.token == rhs.token &&
             lhs.profileTarget == rhs.profileTarget &&
             lhs.validatedAt == rhs.validatedAt &&
             lhs.installationID == rhs.installationID &&
+            lhs.tailscaleDNSName == rhs.tailscaleDNSName &&
+            lhs.tailscaleDeviceName == rhs.tailscaleDeviceName &&
             lhs.hostPlatform == rhs.hostPlatform &&
             lhs.hostContext === rhs.hostContext &&
             lhs.capabilityNegotiation == rhs.capabilityNegotiation

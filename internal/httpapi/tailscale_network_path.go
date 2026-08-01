@@ -5,18 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/netip"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 const tailscaleStatusOutputLimit = 2 * 1024 * 1024
-
-var (
-	tailscaleIPv4Prefix = netip.MustParsePrefix("100.64.0.0/10")
-	tailscaleIPv6Prefix = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-)
 
 type tailscaleNetworkPathKind string
 
@@ -128,25 +124,13 @@ func tailscalePeerContainsIP(peer tailscalePeerStatus, target netip.Addr) bool {
 }
 
 func isTailscaleAddress(ip netip.Addr) bool {
-	return tailscaleIPv4Prefix.Contains(ip) || tailscaleIPv6Prefix.Contains(ip)
+	return tailscaleinfo.IsTailscaleAddress(ip)
 }
 
 func runTailscaleStatus(ctx context.Context) ([]byte, error) {
-	bin, err := findTailscaleCLI()
+	bin, err := tailscaleinfo.FindCLI()
 	if err != nil {
 		return nil, err
 	}
 	return exec.CommandContext(ctx, bin, "status", "--json").Output()
-}
-
-func findTailscaleCLI() (string, error) {
-	if bin, err := exec.LookPath("tailscale"); err == nil {
-		return bin, nil
-	}
-	// macOS GUI 安装不一定把 CLI 放进后台服务的 PATH；固定应用路径是官方安装包的入口。
-	const macOSAppCLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-	if info, err := os.Stat(macOSAppCLI); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-		return macOSAppCLI, nil
-	}
-	return exec.LookPath("tailscale")
 }

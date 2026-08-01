@@ -57,6 +57,32 @@ final class ProtocolContractTests: XCTestCase {
         )
     }
 
+    func testVersionAndPairingResponsesDecodeOptionalTailscaleMetadata() throws {
+        let current = try AgentAPIClient.decoder.decode(
+            VersionResponse.self,
+            from: Data(
+                #"{"name":"agentd","version":"test","installation_id":"installation-a","tailscale_dns_name":"Studio.tailnet.ts.net.","tailscale_device_name":"Studio","protocol_revision":2,"minimum_client_protocol_revision":1,"capabilities":[]}"#.utf8
+            )
+        )
+        let legacy = try AgentAPIClient.decoder.decode(
+            VersionResponse.self,
+            from: Data(#"{"name":"agentd","version":"old"}"#.utf8)
+        )
+        let claim = try AgentAPIClient.decoder.decode(
+            PairingClaimResponse.self,
+            from: Data(
+                #"{"endpoint":"http://100.64.0.10:8787","token":"secret","tailscale_dns_name":"studio.tailnet.ts.net","tailscale_device_name":"studio"}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(current.tailscaleDNSName, "studio.tailnet.ts.net")
+        XCTAssertEqual(current.tailscaleDeviceName, "Studio")
+        XCTAssertNil(legacy.tailscaleDNSName)
+        XCTAssertNil(legacy.tailscaleDeviceName)
+        XCTAssertEqual(claim.tailscaleDNSName, "studio.tailnet.ts.net")
+        XCTAssertEqual(claim.tailscaleDeviceName, "studio")
+    }
+
     func testSharedClientMatrixMatchesGeneratedRESTAndWebSocketHeaders() throws {
         let matrix = try JSONDecoder().decode(
             [ClientCompatibilityFixture].self,

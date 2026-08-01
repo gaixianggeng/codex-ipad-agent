@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 const (
@@ -22,8 +23,10 @@ type pairingClaimRequest struct {
 }
 
 type pairingClaimResponse struct {
-	Endpoint string `json:"endpoint"`
-	Token    string `json:"token"`
+	Endpoint            string `json:"endpoint"`
+	Token               string `json:"token"`
+	TailscaleDNSName    string `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName string `json:"tailscale_device_name,omitempty"`
 }
 
 func (r *Router) localPairingClaimHandler(w http.ResponseWriter, req *http.Request) {
@@ -98,8 +101,16 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 	// 配对票据在签名覆盖的 expires_at 之前可重复兑换，便于同一二维码或复制链接
 	// 连续配对多台设备及安全重试。这里保持无状态，过期、篡改和未来时间仍由
 	// ValidatePairingTicket 统一 fail-closed；设备身份与传输边界继续由客户端后续校验。
-	writeJSON(w, http.StatusOK, pairingClaimResponse{
+	response := pairingClaimResponse{
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
-	})
+	}
+	// 票据仍只签名短期 IP Endpoint；名称来自当前本机 CLI，避免把可变 DNSName
+	// 放进二维码或当作信任依据。LAN/loopback 票据不会附带 Tailscale 路由。
+	if tailscaleinfo.IsTailscaleEndpoint(response.Endpoint) && r.tailscaleHostLookup != nil {
+		host := r.tailscaleHostLookup(req.Context())
+		response.TailscaleDNSName = host.DNSName
+		response.TailscaleDeviceName = host.DeviceName
+	}
+	writeJSON(w, http.StatusOK, response)
 }

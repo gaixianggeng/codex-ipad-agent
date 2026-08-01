@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 func TestPairingEndpointSelectsTailscaleOrLANWithoutChangingToken(t *testing.T) {
@@ -50,6 +51,40 @@ func TestPairingEndpointSelectsTailscaleOrLANWithoutChangingToken(t *testing.T) 
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "同一局域网") {
 		t.Fatalf("局域网配对应包含范围提示：%v", warnings)
+	}
+}
+
+func TestPairingResultAdvertisesMagicDNSWithoutChangingSignedQRCode(t *testing.T) {
+	cfg := config.Config{
+		Listen: "100.100.20.30:8787",
+		Auth:   config.AuthConfig{Token: "secret"},
+	}
+	result, err := resultFromConfigForNetwork(
+		context.Background(),
+		"/tmp/config.json",
+		cfg,
+		PairingNetworkTailscale,
+		pairingNetworkLookups{
+			tailscaleIP: func(context.Context) string { return "100.100.20.30" },
+			tailscaleHost: func(context.Context) tailscaleinfo.Host {
+				return tailscaleinfo.Host{
+					DNSName:    "studio-mac.tailnet.ts.net",
+					DeviceName: "studio-mac",
+				}
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TailscaleDNSName != "studio-mac.tailnet.ts.net" ||
+		result.TailscaleDeviceName != "studio-mac" {
+		t.Fatalf("配对输出缺少 Tailscale 名称：%+v", result)
+	}
+	if strings.Contains(result.PairURL, "tailscale_dns_name") ||
+		strings.Contains(result.PairURL, "studio-mac") ||
+		strings.Contains(result.PairURL, "secret") {
+		t.Fatalf("短期二维码不能携带可变名称或长期 Token：%s", result.PairURL)
 	}
 }
 

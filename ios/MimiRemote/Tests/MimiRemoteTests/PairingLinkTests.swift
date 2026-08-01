@@ -2122,7 +2122,7 @@ final class PairingLinkTests: XCTestCase {
     }
 }
 
-private actor ConnectionRouteProbeRecorder {
+actor ConnectionRouteProbeRecorder {
     private var recordedEndpoints: [String] = []
 
     func record(_ endpoint: String) {

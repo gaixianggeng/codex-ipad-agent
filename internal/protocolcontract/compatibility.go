@@ -16,6 +16,8 @@ type VersionResponse struct {
 	MinimumClientProtocolRevision int                `json:"minimum_client_protocol_revision"`
 	Capabilities                  []string           `json:"capabilities"`
 	CapabilityStatuses            []CapabilityStatus `json:"capability_statuses"`
+	TailscaleDNSName              string             `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName           string             `json:"tailscale_device_name,omitempty"`
 }
 
 // CapabilityStatus 解释某个已知能力为什么被声明或被服务端关闭。
@@ -42,6 +44,20 @@ func CurrentVersionResponse(
 		Capabilities:                  append([]string(nil), capabilities...),
 		CapabilityStatuses:            append([]CapabilityStatus(nil), statuses...),
 	}
+}
+
+func CurrentVersionResponseWithTailscale(
+	version string,
+	installationID string,
+	dnsName string,
+	deviceName string,
+	capabilities []string,
+	statuses []CapabilityStatus,
+) VersionResponse {
+	response := CurrentVersionResponse(version, installationID, capabilities, statuses)
+	response.TailscaleDNSName = dnsName
+	response.TailscaleDeviceName = deviceName
+	return response
 }
 
 type ClientMetadata struct {

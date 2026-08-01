@@ -22,11 +22,13 @@ final class AgentModelsTests: XCTestCase {
     }
 
     func testPairingPayloadContainsOnlyShortLivedFields() throws {
-        let raw = Data(#"{"endpoint":"http://100.64.0.8:8787","pair_url":"mimiremote://pair?pair_sig=abc","pair_expires_at":"2026-07-22T12:00:00Z","warnings":[]}"#.utf8)
+        let raw = Data(#"{"endpoint":"http://100.64.0.8:8787","tailscale_dns_name":"studio.tailnet.ts.net","tailscale_device_name":"studio","pair_url":"mimiremote://pair?pair_sig=abc","pair_expires_at":"2026-07-22T12:00:00Z","warnings":[]}"#.utf8)
         let payload = try JSONDecoder().decode(PairingInfo.self, from: raw)
 
         XCTAssertEqual(payload.endpoint, "http://100.64.0.8:8787")
         XCTAssertEqual(payload.network, .tailscale)
+        XCTAssertEqual(payload.tailscaleDNSName, "studio.tailnet.ts.net")
+        XCTAssertEqual(payload.tailscaleDeviceName, "studio")
         XCTAssertTrue(payload.pairURL.contains("pair_sig"))
         XCTAssertFalse(String(decoding: raw, as: UTF8.self).contains("token"))
     }
@@ -36,6 +38,8 @@ final class AgentModelsTests: XCTestCase {
         let payload = try JSONDecoder().decode(PairingInfo.self, from: raw)
 
         XCTAssertEqual(payload.warnings, [])
+        XCTAssertNil(payload.tailscaleDNSName)
+        XCTAssertNil(payload.tailscaleDeviceName)
     }
 
     func testPairingPayloadDecodesReportedNetworkAndInfersOldLANPayload() throws {

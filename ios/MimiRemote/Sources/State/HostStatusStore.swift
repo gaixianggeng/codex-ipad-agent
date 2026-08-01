@@ -34,6 +34,11 @@ private struct HostProbeResult {
     let error: Error?
 }
 
+private enum HostProbeCandidateError: Error {
+    case installationIdentityRequired
+    case installationIdentityMismatch
+}
+
 /// 只由 Mac 选择器观察。这里的 `@Published` 更新不会经过 AppStore/SessionStore，
 /// 因而非当前主机状态变化不会让 Timeline 或工作台重算。
 @MainActor
@@ -175,16 +180,49 @@ final class HostStatusStore: ObservableObject {
             let results = await withTaskGroup(of: HostProbeResult.self, returning: [HostProbeResult].self) { group in
                 for descriptor in batch {
                     group.addTask { [session] in
-                        do {
-                            let version = try await AgentAPIClient(
-                                endpoint: descriptor.endpoint,
-                                token: descriptor.token,
-                                session: session
-                            ).version(timeout: 2)
-                            return HostProbeResult(descriptor: descriptor, version: version, error: nil)
-                        } catch {
-                            return HostProbeResult(descriptor: descriptor, version: nil, error: error)
+                        var finalError: Error?
+                        for endpoint in descriptor.endpoints {
+                            do {
+                                let version = try await AgentAPIClient(
+                                    endpoint: endpoint,
+                                    token: descriptor.token,
+                                    session: session
+                                ).version(timeout: 2)
+                                let actualID = version.installationID?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .lowercased()
+                                guard let actualID, !actualID.isEmpty else {
+                                    throw HostProbeCandidateError.installationIdentityRequired
+                                }
+                                if let expectedID = descriptor.expectedInstallationID?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .lowercased(),
+                                   !expectedID.isEmpty,
+                                   expectedID != actualID {
+                                    // MagicDNS 可能已指向另一台主机；逐候选校验身份后才能决定是否回退到保存的 IP。
+                                    throw HostProbeCandidateError.installationIdentityMismatch
+                                }
+                                return HostProbeResult(
+                                    descriptor: descriptor,
+                                    version: version,
+                                    error: nil
+                                )
+                            } catch {
+                                if Task.isCancelled || error is CancellationError {
+                                    return HostProbeResult(
+                                        descriptor: descriptor,
+                                        version: nil,
+                                        error: error
+                                    )
+                                }
+                                finalError = error
+                            }
                         }
+                        return HostProbeResult(
+                            descriptor: descriptor,
+                            version: nil,
+                            error: finalError ?? URLError(.cannotConnectToHost)
+                        )
                     }
                 }
                 var values: [HostProbeResult] = []
@@ -233,15 +271,20 @@ final class HostStatusStore: ObservableObject {
             applyTerminal(.identityMismatch, profile: profile)
             return
         }
+        let refreshedProfile = appStore.refreshConnectionProfileHostMetadata(
+            profileID: profile.id,
+            expectedRevision: profile.revision,
+            version: version
+        ) ?? profile
         appStore.rememberHostPlatform(
             HostPlatform(serverValue: version.platform),
             profileID: profile.id,
-            expectedRevision: profile.revision
+            expectedRevision: refreshedProfile.revision
         )
         let date = now()
         statusesByProfileID[profile.id] = HostProbeStatus(
             state: .available,
-            profileRevision: profile.revision,
+            profileRevision: refreshedProfile.revision,
             checkedAt: date,
             nextEligibleAt: date.addingTimeInterval(60),
             failureCount: 0
@@ -259,6 +302,15 @@ final class HostStatusStore: ObservableObject {
         }
         if error as? ConnectionProfileError == .missingToken || isCredentialInvalidatingError(error) {
             applyTerminal(.authenticationRequired, profile: profile)
+            return
+        }
+        if let candidateError = error as? HostProbeCandidateError {
+            switch candidateError {
+            case .installationIdentityRequired:
+                applyTerminal(.upgradeRequired, profile: profile)
+            case .installationIdentityMismatch:
+                applyTerminal(.identityMismatch, profile: profile)
+            }
             return
         }
         if error is ProtocolCompatibilityError {

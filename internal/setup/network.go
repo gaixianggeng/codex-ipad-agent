@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 type PairingNetwork string
@@ -22,14 +23,16 @@ const (
 )
 
 type pairingNetworkLookups struct {
-	tailscaleIP func(context.Context) string
-	lanIP       func() string
+	tailscaleIP   func(context.Context) string
+	tailscaleHost func(context.Context) tailscaleinfo.Host
+	lanIP         func() string
 }
 
 func defaultPairingNetworkLookups() pairingNetworkLookups {
 	return pairingNetworkLookups{
-		tailscaleIP: firstTailscaleIP,
-		lanIP:       firstLANIPv4,
+		tailscaleIP:   firstTailscaleIP,
+		tailscaleHost: tailscaleinfo.Discover,
+		lanIP:         firstLANIPv4,
 	}
 }
 

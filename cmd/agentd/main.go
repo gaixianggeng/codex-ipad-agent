@@ -1031,6 +1031,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			GatewayTurnClaimStorePath: gatewayTurnClaimStorePath,
 		},
 	)
+	apiRouter.EnableTailscaleHostMetadata()
 	if appServerWSProcess != nil {
 		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
 	}
@@ -1660,21 +1661,25 @@ func printPairResult(w io.Writer, result agentsetup.Result) {
 }
 
 type qrOnlyPairOutput struct {
-	Endpoint      string                    `json:"endpoint"`
-	Network       agentsetup.PairingNetwork `json:"network,omitempty"`
-	PairURL       string                    `json:"pair_url"`
-	PairExpiresAt string                    `json:"pair_expires_at"`
-	Warnings      []string                  `json:"warnings,omitempty"`
+	Endpoint            string                    `json:"endpoint"`
+	Network             agentsetup.PairingNetwork `json:"network,omitempty"`
+	TailscaleDNSName    string                    `json:"tailscale_dns_name,omitempty"`
+	TailscaleDeviceName string                    `json:"tailscale_device_name,omitempty"`
+	PairURL             string                    `json:"pair_url"`
+	PairExpiresAt       string                    `json:"pair_expires_at"`
+	Warnings            []string                  `json:"warnings,omitempty"`
 }
 
 func qrOnlyPairResult(result agentsetup.Result) qrOnlyPairOutput {
 	// 安装日志可能被终端或 CI 留存；安全模式只暴露短期票据，绝不复制长期 Token/connect URL。
 	return qrOnlyPairOutput{
-		Endpoint:      result.Endpoint,
-		Network:       result.Network,
-		PairURL:       result.PairURL,
-		PairExpiresAt: result.PairExpiresAt,
-		Warnings:      result.Warnings,
+		Endpoint:            result.Endpoint,
+		Network:             result.Network,
+		TailscaleDNSName:    result.TailscaleDNSName,
+		TailscaleDeviceName: result.TailscaleDeviceName,
+		PairURL:             result.PairURL,
+		PairExpiresAt:       result.PairExpiresAt,
+		Warnings:            result.Warnings,
 	}
 }
 

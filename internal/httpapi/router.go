@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/session"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 type Router struct {
@@ -46,6 +48,9 @@ type Router struct {
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
+	// tailscaleHostResolver 只缓存 MagicDNS 路由元数据。installationID 仍是唯一身份边界；
+	// 名称变化只会影响下一次候选连接，不会创建或合并 ConnectionProfile。
+	tailscaleHostLookup func(context.Context) tailscaleinfo.Host
 	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
 	upstreamReadiness *appServerReadinessProbe
 	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
@@ -245,6 +250,16 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }
 
+// EnableTailscaleHostMetadata 只由生产 serve 入口启用。测试构造器默认不启动外部 CLI，
+// 保证协议 golden fixture 和无 Tailscale 环境仍然稳定、快速。
+func (r *Router) EnableTailscaleHostMetadata() {
+	if r == nil || r.tailscaleHostLookup != nil {
+		return
+	}
+	resolver := tailscaleinfo.NewResolver(time.Minute)
+	r.tailscaleHostLookup = resolver.Lookup
+}
+
 // Shutdown releases the long-lived runtimes the router started. Call it after
 // the HTTP server has drained: the resident Claude bridge spawns Claude Code
 // children of its own, and killing it earlier would cut turns that in-flight
@@ -391,9 +406,15 @@ func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponse(
+	host := tailscaleinfo.Host{}
+	if r.tailscaleHostLookup != nil {
+		host = r.tailscaleHostLookup(req.Context())
+	}
+	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponseWithTailscale(
 		r.version,
 		r.installationID,
+		host.DNSName,
+		host.DeviceName,
 		r.capabilities.enabledNames(),
 		r.capabilities.statuses(),
 	))

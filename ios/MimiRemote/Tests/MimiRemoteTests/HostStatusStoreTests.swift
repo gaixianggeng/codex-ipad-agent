@@ -48,6 +48,51 @@ final class HostStatusStoreTests: XCTestCase {
         XCTAssertEqual(HostStatusURLProtocol.requestedHosts().count, 1)
     }
 
+    func testProbeFallsBackFromDNSNameToIPAndSafelyRefreshesMetadata() async throws {
+        let fixture = try makeFixture(
+            inactiveExpectedInstallationID: "installation-b",
+            returnedInstallationID: "installation-b",
+            inactiveTailscaleDNSName: "old-mac.tailnet.ts.net",
+            returnedTailscaleDNSName: "new-mac.tailnet.ts.net",
+            failingHosts: ["old-mac.tailnet.ts.net"]
+        )
+
+        fixture.statusStore.refreshIfNeeded(appStore: fixture.appStore, sessionStore: fixture.sessionStore)
+        await fixture.statusStore.waitForRefreshForTesting()
+
+        let refreshed = try XCTUnwrap(
+            fixture.appStore.connectionProfiles.first(where: { $0.id == fixture.inactiveProfile.id })
+        )
+        XCTAssertEqual(
+            HostStatusURLProtocol.requestedHosts(),
+            ["old-mac.tailnet.ts.net", "100.64.0.20"]
+        )
+        XCTAssertEqual(refreshed.tailscaleDNSName, "new-mac.tailnet.ts.net")
+        XCTAssertEqual(refreshed.displayName, "Mac B", "用户自定义名称不能被 Tailscale 改名覆盖")
+        XCTAssertEqual(fixture.statusStore.status(for: refreshed).state, .available)
+    }
+
+    func testProbeFallsBackToIPAfterDNSIdentityMismatch() async throws {
+        let fixture = try makeFixture(
+            inactiveExpectedInstallationID: "installation-b",
+            returnedInstallationID: "installation-b",
+            inactiveTailscaleDNSName: "old-mac.tailnet.ts.net",
+            installationIDsByHost: [
+                "old-mac.tailnet.ts.net": "unexpected-installation",
+                "100.64.0.20": "installation-b",
+            ]
+        )
+
+        fixture.statusStore.refreshIfNeeded(appStore: fixture.appStore, sessionStore: fixture.sessionStore)
+        await fixture.statusStore.waitForRefreshForTesting()
+
+        XCTAssertEqual(
+            HostStatusURLProtocol.requestedHosts(),
+            ["old-mac.tailnet.ts.net", "100.64.0.20"]
+        )
+        XCTAssertEqual(fixture.statusStore.status(for: fixture.inactiveProfile).state, .available)
+    }
+
     func testProbeBackfillsPlatformForLegacyActiveProfile() async throws {
         let fixture = try makeFixture(
             inactiveExpectedInstallationID: "installation-b",
@@ -68,6 +113,10 @@ final class HostStatusStoreTests: XCTestCase {
     private func makeFixture(
         inactiveExpectedInstallationID: String,
         returnedInstallationID: String,
+        inactiveTailscaleDNSName: String? = nil,
+        returnedTailscaleDNSName: String? = nil,
+        failingHosts: Set<String> = [],
+        installationIDsByHost: [String: String] = [:],
         activeHostPlatform: HostPlatform = .apple
     ) throws -> (
         appStore: AppStore,
@@ -93,6 +142,8 @@ final class HostStatusStoreTests: XCTestCase {
             id: "mac-b",
             displayName: "Mac B",
             endpoint: "http://100.64.0.20:8787",
+            tailscaleDNSName: inactiveTailscaleDNSName,
+            tailscaleDeviceName: inactiveTailscaleDNSName == nil ? nil : "old-mac",
             lastSuccessfulAt: nil,
             installationID: inactiveExpectedInstallationID
         )
@@ -115,6 +166,10 @@ final class HostStatusStoreTests: XCTestCase {
         )
 
         HostStatusURLProtocol.installationID = returnedInstallationID
+        HostStatusURLProtocol.tailscaleDNSName = returnedTailscaleDNSName
+        HostStatusURLProtocol.tailscaleDeviceName = returnedTailscaleDNSName == nil ? nil : "new-mac"
+        HostStatusURLProtocol.failingHosts = failingHosts
+        HostStatusURLProtocol.installationIDsByHost = installationIDsByHost
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HostStatusURLProtocol.self]
         let statusStore = HostStatusStore(
@@ -130,6 +185,10 @@ private final class HostStatusURLProtocol: URLProtocol {
     private static var hosts: [String] = []
     private static var paths: [String] = []
     static var installationID = "installation-b"
+    static var tailscaleDNSName: String?
+    static var tailscaleDeviceName: String?
+    static var failingHosts: Set<String> = []
+    static var installationIDsByHost: [String: String] = [:]
     static var platform = "windows"
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -148,13 +207,33 @@ private final class HostStatusURLProtocol: URLProtocol {
         Self.lock.lock()
         Self.hosts.append(url.host ?? "")
         Self.paths.append(url.path)
-        let installationID = url.host == "100.64.0.10" ? "installation-a" : Self.installationID
+        let host = url.host ?? ""
+        let installationID = host == "100.64.0.10"
+            ? "installation-a"
+            : (Self.installationIDsByHost[host] ?? Self.installationID)
+        let tailscaleDNSName = Self.tailscaleDNSName
+        let tailscaleDeviceName = Self.tailscaleDeviceName
         let platform = Self.platform
+        let shouldFail = Self.failingHosts.contains(url.host ?? "")
         Self.lock.unlock()
 
-        let body = Data(
-            #"{"name":"agentd","version":"test","installation_id":"\#(installationID)","platform":"\#(platform)"}"#.utf8
-        )
+        if shouldFail {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotFindHost))
+            return
+        }
+        var payload: [String: Any] = [
+            "name": "agentd",
+            "version": "test",
+            "installation_id": installationID,
+            "platform": platform,
+        ]
+        if let tailscaleDNSName {
+            payload["tailscale_dns_name"] = tailscaleDNSName
+        }
+        if let tailscaleDeviceName {
+            payload["tailscale_device_name"] = tailscaleDeviceName
+        }
+        let body = try! JSONSerialization.data(withJSONObject: payload)
         let response = HTTPURLResponse(
             url: url,
             statusCode: 200,
@@ -185,6 +264,10 @@ private final class HostStatusURLProtocol: URLProtocol {
         hosts = []
         paths = []
         installationID = "installation-b"
+        tailscaleDNSName = nil
+        tailscaleDeviceName = nil
+        failingHosts = []
+        installationIDsByHost = [:]
         platform = "windows"
         lock.unlock()
     }
