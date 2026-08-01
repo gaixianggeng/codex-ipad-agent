@@ -969,6 +969,10 @@ struct InitialConnectionSettingsSections: View {
         if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {
             return L10n.text("ui.the_current_device_cannot_find_this_mac_at")
         }
+        if let credentialDiagnostic = TokenStoreError.validatedUserFacingDescription(raw) {
+            // 凭据存储失败属于本机签名/系统权限问题，保留受信任模板中的原始 OSStatus。
+            return credentialDiagnostic
+        }
         if raw == L10n.text("ui.the_connection_credentials_have_been_saved_safely_but") ||
             raw.contains("连接凭据已安全保存") {
             // Old builds persisted this message in Chinese. Always return the current locale's

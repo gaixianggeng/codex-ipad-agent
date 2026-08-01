@@ -1,6 +1,41 @@
 import Foundation
 import os
 
+struct HostConnectionTimingPolicy: Equatable {
+    let initialConnectionPreparationTimeout: TimeInterval
+    let hostSwitchPreparationTimeout: TimeInterval
+    let preparedRuntimeCommitLifetime: TimeInterval
+
+    init(
+        initialConnectionPreparationTimeout: TimeInterval = 20,
+        hostSwitchPreparationTimeout: TimeInterval = 8,
+        preparedRuntimeCommitLifetime: TimeInterval = 8
+    ) {
+        self.initialConnectionPreparationTimeout = initialConnectionPreparationTimeout
+        self.hostSwitchPreparationTimeout = hostSwitchPreparationTimeout
+        self.preparedRuntimeCommitLifetime = preparedRuntimeCommitLifetime
+    }
+
+    /// 真正没有活动档案的首次连接允许 Codex app-server 冷启动；任何已有主机切换
+    /// 都维持较短边界，包括 App 冷启动后尚未恢复 active profile 的情况。
+    func preparationTimeout(
+        hasActiveProfile: Bool,
+        profileTarget: PreparedConnectionProfileTarget
+    ) -> TimeInterval {
+        if case .existingProfile = profileTarget {
+            return hostSwitchPreparationTimeout
+        }
+        return hasActiveProfile
+            ? hostSwitchPreparationTimeout
+            : initialConnectionPreparationTimeout
+    }
+
+    /// 候选 Runtime 初始化成功才开始计算提交租约，避免准备阶段消耗提交窗口。
+    func preparedRuntimeExpirationDate(runtimeReadyAt: Date) -> Date {
+        runtimeReadyAt.addingTimeInterval(preparedRuntimeCommitLifetime)
+    }
+}
+
 struct PreparedHostLease: Equatable {
     let endpoint: String
     let installationID: String
@@ -129,7 +164,7 @@ final class PreparedHostContext {
         self.runtimeBundle = runtimeBundle
         self.expiresAt = expiresAt
         // Task 强持有 context 到 deadline；即使调用方直接丢弃 PreparedConnectionSettings，
-        // 候选 Runtime 也会在 8 秒内显式 shutdown，而不是只依赖 deinit。
+        // 候选 Runtime 也会在提交租约内显式 shutdown，而不是只依赖 deinit。
         expirationTask = Task { [self] in
             let delay = max(0, expiresAt.timeIntervalSinceNow)
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

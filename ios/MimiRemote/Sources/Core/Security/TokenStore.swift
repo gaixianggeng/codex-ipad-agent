@@ -31,11 +31,15 @@ enum TokenStoreError: LocalizedError {
     case saveFailed(OSStatus)
     case deleteFailed(OSStatus)
 
-    var isMissingEntitlement: Bool {
+    private var status: OSStatus {
         switch self {
         case .loadFailed(let status), .saveFailed(let status), .deleteFailed(let status):
-            return status == errSecMissingEntitlement
+            return status
         }
+    }
+
+    var isMissingEntitlement: Bool {
+        status == errSecMissingEntitlement
     }
 
     var errorDescription: String? {
@@ -47,6 +51,34 @@ enum TokenStoreError: LocalizedError {
         case .deleteFailed(let status):
             return L10n.format("ui.failed_to_delete_token_value", status)
         }
+    }
+
+    /// 只允许展示由本地受信任模板生成的 Keychain 诊断。
+    ///
+    /// 不能仅凭字符串包含 “token”/“keychain” 就透传原文；服务端错误或历史缓存文本
+    /// 可能把真实访问码拼进消息。这里要求整段文本与某个 OSStatus 的本地化模板完全一致，
+    /// 既保留 -34018 等原始诊断码，也不会带出 Keychain 内容。
+    static func validatedUserFacingDescription(_ raw: String) -> String? {
+        let statusValues = raw
+            .split(whereSeparator: { !$0.isNumber && $0 != "-" })
+            .compactMap { value -> Int32? in
+                guard let parsed = Int(value) else {
+                    return nil
+                }
+                return Int32(exactly: parsed)
+            }
+
+        for status in Set(statusValues) {
+            let trustedDescriptions = [
+                TokenStoreError.loadFailed(status).localizedDescription,
+                TokenStoreError.saveFailed(status).localizedDescription,
+                TokenStoreError.deleteFailed(status).localizedDescription
+            ]
+            if trustedDescriptions.contains(raw) {
+                return raw
+            }
+        }
+        return nil
     }
 }
 
