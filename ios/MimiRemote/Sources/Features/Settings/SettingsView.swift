@@ -445,8 +445,9 @@ struct SettingsView: View {
     }
 
     private var currentMacDisplayName: String {
-        appStore.connectionProfileSettingsModel.current?.profile.displayName
-            ?? L10n.text("ui.current_mac")
+        appStore.connectionProfileSettingsModel.current.map {
+            ConnectionOverviewPresentation.profileTitle(for: $0.profile)
+        } ?? L10n.text("ui.current_mac")
     }
 
     private var appLanguageSelection: Binding<AppLanguage> {

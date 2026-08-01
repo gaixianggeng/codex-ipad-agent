@@ -281,6 +281,10 @@ enum ConnectionOverviewPresentation {
         guard let profile else {
             return L10n.text("ui.connection_profile_automatic_address")
         }
+        return profileTitle(for: profile)
+    }
+
+    static func profileTitle(for profile: ConnectionProfile) -> String {
         if let displayName = humanReadableDisplayName(for: profile) {
             return displayName
         }
@@ -320,6 +324,23 @@ enum ConnectionOverviewPresentation {
             return nil
         }
         return value
+    }
+}
+
+/// 设置列表的普通展示模型。所有可见与 VoiceOver 文案都从同一个安全标题派生，
+/// 避免旧 Profile 把 IP 型 displayName 从辅助标签重新暴露出来。
+struct ConnectionProfileRowPresentation: Equatable {
+    let title: String
+    let routeDetail: String
+    let copyAccessibilityLabel: String
+    let manageAccessibilityLabel: String
+
+    init(profile: ConnectionProfile) {
+        let title = ConnectionOverviewPresentation.profileTitle(for: profile)
+        self.title = title
+        routeDetail = ConnectionOverviewPresentation.routeDetail(for: profile)
+        copyAccessibilityLabel = L10n.format("ui.copy_connection_info_for_value", title)
+        manageAccessibilityLabel = L10n.format("ui.manage_value", title)
     }
 }
 
@@ -412,14 +433,14 @@ struct ConnectionCredentialRemovalConfirmation: Identifiable, Equatable {
     static func forgettingCurrent(_ profile: ConnectionProfile?) -> Self {
         Self(
             target: .current(profileID: profile?.id),
-            displayName: profile?.displayName
+            displayName: profile.map(ConnectionOverviewPresentation.profileTitle(for:))
         )
     }
 
     static func deletingSavedProfile(_ profile: ConnectionProfile) -> Self {
         Self(
             target: .savedProfile(profileID: profile.id),
-            displayName: profile.displayName
+            displayName: ConnectionOverviewPresentation.profileTitle(for: profile)
         )
     }
 

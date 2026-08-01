@@ -45,6 +45,7 @@ final class AppStore: ObservableObject {
     private let allowsEphemeralLocalCredentialFallback: Bool
     private let localAgentProbe: LocalAgentProbe
     private let localAgentPairingClaim: LocalAgentPairingClaim
+    private let pairingTicketClaim: PairingTicketClaim
     let routeProbe: ConnectionRouteProbe
     private let routeVersionProbe: ConnectionRouteVersionProbe?
     let usesDefaultRouteProbe: Bool
@@ -72,6 +73,7 @@ final class AppStore: ObservableObject {
         prefersLocalConnection: Bool? = nil,
         localAgentProbe: LocalAgentProbe? = nil,
         localAgentPairingClaim: LocalAgentPairingClaim? = nil,
+        pairingTicketClaim: PairingTicketClaim? = nil,
         routeProbe: ConnectionRouteProbe? = nil,
         routeVersionProbe: ConnectionRouteVersionProbe? = nil,
         allowsEphemeralLocalCredentialFallback: Bool? = nil
@@ -87,6 +89,7 @@ final class AppStore: ObservableObject {
                 HostConnectionEndpointPolicy.allowsDevelopmentEphemeralCredentialFallback
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
+        self.pairingTicketClaim = pairingTicketClaim ?? Self.defaultPairingTicketClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
         usesDefaultRouteProbe = routeProbe == nil
         self.routeVersionProbe = routeProbe == nil
@@ -534,6 +537,7 @@ final class AppStore: ObservableObject {
     }
 
     func prepareConnectionProfileSwitch(id: String) async throws -> PreparedConnectionSettings {
+        let attemptGeneration = beginConnectionAttempt()
         guard let profile = connectionProfiles.first(where: { $0.id == id }) else {
             throw ConnectionProfileError.notFound
         }
@@ -546,7 +550,8 @@ final class AppStore: ObservableObject {
             token: profileToken,
             profileTarget: .existingProfile(id: id),
             tailscaleDNSName: profile.tailscaleDNSName,
-            tailscaleDeviceName: profile.tailscaleDeviceName
+            tailscaleDeviceName: profile.tailscaleDeviceName,
+            attemptGeneration: attemptGeneration
         )
     }
 
@@ -554,14 +559,16 @@ final class AppStore: ObservableObject {
         _ url: URL,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil)
     ) async throws -> PreparedConnectionSettings {
+        let attemptGeneration = beginConnectionAttempt()
         if let ticket = try Self.pairingTicket(from: url) {
-            let credentials = try await claimPairing(ticket)
+            let credentials = try await pairingTicketClaim(ticket)
             return try await prepareConnectionSettings(
                 endpoint: credentials.endpoint,
                 token: credentials.token,
                 profileTarget: profileTarget,
                 tailscaleDNSName: credentials.tailscaleDNSName,
-                tailscaleDeviceName: credentials.tailscaleDeviceName
+                tailscaleDeviceName: credentials.tailscaleDeviceName,
+                attemptGeneration: attemptGeneration
             )
         }
         let credentials = try Self.pairingCredentials(from: url)
@@ -570,7 +577,8 @@ final class AppStore: ObservableObject {
             token: credentials.token,
             profileTarget: profileTarget,
             tailscaleDNSName: credentials.tailscaleDNSName,
-            tailscaleDeviceName: credentials.tailscaleDeviceName
+            tailscaleDeviceName: credentials.tailscaleDeviceName,
+            attemptGeneration: attemptGeneration
         )
     }
 
@@ -846,7 +854,7 @@ final class AppStore: ObservableObject {
 
     func validatePairingURL(_ url: URL) async throws -> PairingCredentials {
         if let ticket = try Self.pairingTicket(from: url) {
-            let credentials = try await claimPairing(ticket)
+            let credentials = try await pairingTicketClaim(ticket)
             let normalized = try await validateConnection(endpoint: credentials.endpoint, token: credentials.token)
             return PairingCredentials(
                 endpoint: normalized,
@@ -1421,16 +1429,6 @@ final class AppStore: ObservableObject {
     private static func elapsedMilliseconds(since startDate: Date) -> Int {
         let elapsed = Date().timeIntervalSince(startDate)
         return max(0, Int((elapsed * 1_000).rounded()))
-    }
-
-    private func claimPairing(_ ticket: PairingTicket) async throws -> PairingCredentials {
-        let response = try await AgentAPIClient(endpoint: ticket.endpoint, token: "").claimPairing(ticket.claimRequest)
-        return PairingCredentials(
-            endpoint: try Self.validatedEndpoint(response.endpoint.isEmpty ? ticket.endpoint : response.endpoint),
-            token: response.token,
-            tailscaleDNSName: response.tailscaleDNSName,
-            tailscaleDeviceName: response.tailscaleDeviceName
-        )
     }
 
     static func pairingCredentials(from url: URL) throws -> PairingCredentials {

@@ -435,16 +435,31 @@ typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout
 typealias ConnectionRouteVersionProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> VersionResponse
 typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async throws -> Void
 typealias LocalAgentPairingClaim = (_ endpoint: String, _ timeout: TimeInterval) async throws -> String
+typealias PairingTicketClaim = (_ ticket: PairingTicket) async throws -> PairingCredentials
 
 extension AppStore {
+    static func defaultPairingTicketClaim(_ ticket: PairingTicket) async throws -> PairingCredentials {
+        let response = try await AgentAPIClient(endpoint: ticket.endpoint, token: "")
+            .claimPairing(ticket.claimRequest)
+        return PairingCredentials(
+            endpoint: try validatedEndpoint(response.endpoint.isEmpty ? ticket.endpoint : response.endpoint),
+            token: response.token,
+            tailscaleDNSName: response.tailscaleDNSName,
+            tailscaleDeviceName: response.tailscaleDeviceName
+        )
+    }
+
     func prepareConnectionSettings(
         endpoint: String,
         token: String,
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         tailscaleDNSName: String? = nil,
-        tailscaleDeviceName: String? = nil
+        tailscaleDeviceName: String? = nil,
+        attemptGeneration: UInt64? = nil
     ) async throws -> PreparedConnectionSettings {
-        let attemptGeneration = beginConnectionAttempt()
+        // Profile 切换与 ticket 配对会在任何 await 前先清旧终态；这里复用同一代，
+        // 避免真正进入候选探测时再次 begin，破坏迟到结果 fencing。
+        let activeAttemptGeneration = attemptGeneration ?? beginConnectionAttempt()
         let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
         let normalizedDNSName = ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
         let normalizedDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
@@ -471,7 +486,7 @@ extension AppStore {
                     attempts.append(ConnectionRouteAttempt(endpoint: candidate, result: .succeeded))
                     // 路由验证成功不代表 Keychain/Profile 已提交；成功摘要由 commit 发布。
                     return prepared.recordingConnectionAttempt(
-                        generation: attemptGeneration,
+                        generation: activeAttemptGeneration,
                         attempts: attempts
                     )
                 }
@@ -486,12 +501,12 @@ extension AppStore {
                     profileTarget: profileTarget,
                     tailscaleDNSName: normalizedDNSName,
                     tailscaleDeviceName: normalizedDeviceName,
-                    connectionAttemptGeneration: attemptGeneration,
+                    connectionAttemptGeneration: activeAttemptGeneration,
                     connectionAttempts: attempts
                 )
             } catch {
                 if Task.isCancelled || error is CancellationError {
-                    cancelConnectionAttempt(generation: attemptGeneration)
+                    cancelConnectionAttempt(generation: activeAttemptGeneration)
                     throw error
                 }
                 attempts.append(ConnectionRouteAttempt(
@@ -502,7 +517,7 @@ extension AppStore {
             }
         }
         finishConnectionAttempt(
-            generation: attemptGeneration,
+            generation: activeAttemptGeneration,
             attempts: attempts,
             outcome: .failed
         )

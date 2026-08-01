@@ -563,6 +563,7 @@ struct InitialConnectionSettingsSections: View {
 
     @ViewBuilder
     private func connectionProfileRow(_ item: ConnectionProfileSettingsItem) -> some View {
+        let presentation = ConnectionProfileRowPresentation(profile: item.profile)
         HStack(spacing: 12) {
             // 设置页与工作台复用服务端上报的平台语义；未知平台继续显示通用电脑。
             HostPlatformGlyph(kind: item.profile.hostPlatform.iconKind)
@@ -571,11 +572,11 @@ struct InitialConnectionSettingsSections: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.profile.displayName)
+                Text(presentation.title)
                     .font(themeStore.uiFont(.body, weight: item.isCurrent ? .semibold : .regular))
                 // 主列表只表达普通用户需要理解的可用范围；真实候选和 endpoint
                 // 留在连接诊断中，避免把 LAN / Tailscale 术语变成用户选择题。
-                Text(ConnectionOverviewPresentation.routeDetail(for: item.profile))
+                Text(presentation.routeDetail)
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -625,7 +626,7 @@ struct InitialConnectionSettingsSections: View {
             .accessibilityLabel(
                 copiedConnectionProfileID == item.id
                     ? L10n.text("ui.connection_info_copied")
-                    : L10n.format("ui.copy_connection_info_for_value", item.profile.displayName)
+                    : presentation.copyAccessibilityLabel
             )
             .accessibilityHint(L10n.text("ui.connection_info_copy_security_notice"))
             .accessibilityIdentifier("settings.profile.copy.\(item.id)")
@@ -659,7 +660,7 @@ struct InitialConnectionSettingsSections: View {
                     .frame(width: 30, height: 30)
             }
             .disabled(isSavingConnection || profileOperationID != nil)
-            .accessibilityLabel(L10n.format("ui.manage_value", item.profile.displayName))
+            .accessibilityLabel(presentation.manageAccessibilityLabel)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
