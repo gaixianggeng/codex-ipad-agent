@@ -168,6 +168,59 @@ final class SessionListLifecycleCoordinatorTests: XCTestCase {
         XCTAssertNil(feedback)
     }
 
+    func testWorkspaceChangeResetsFeedbackBaselineForSameSessionID() {
+        let coordinator = SessionListLifecycleCoordinator()
+        _ = coordinator.observe(input(
+            membership: .empty,
+            observations: [observation("session", .waiting)],
+            workspaceID: "workspace-a"
+        ))
+
+        let feedback = coordinator.observe(input(
+            membership: .empty,
+            observations: [observation("session", .completion)],
+            workspaceID: "workspace-b"
+        ))
+        XCTAssertNil(feedback)
+    }
+
+    func testSearchChangeCommitsImmediatelyAndClearsPendingSnapshot() {
+        let coordinator = SessionListLifecycleCoordinator()
+        let initial = membership(active: ["a"], history: ["b"])
+        _ = coordinator.observe(input(membership: initial))
+        coordinator.setUserScrolling(true, latestMembership: initial)
+
+        let pending = membership(active: [], history: ["a", "b"])
+        _ = coordinator.observe(input(membership: pending))
+        XCTAssertEqual(coordinator.pendingMembership, pending)
+
+        let searchResult = membership(active: [], history: ["b"])
+        _ = coordinator.observe(input(membership: searchResult, searchQuery: "target"))
+        XCTAssertEqual(coordinator.membership, searchResult)
+        XCTAssertNil(coordinator.pendingMembership)
+    }
+
+    func testRecreatedCoordinatorDoesNotReplayTerminalHaptic() {
+        let firstCoordinator = SessionListLifecycleCoordinator()
+        _ = firstCoordinator.observe(input(
+            membership: .empty,
+            observations: [observation("session", .waiting)]
+        ))
+        XCTAssertEqual(
+            firstCoordinator.observe(input(
+                membership: .empty,
+                observations: [observation("session", .completion)]
+            ))?.pattern,
+            MimiHapticPattern.notificationSuccess
+        )
+
+        let recreatedCoordinator = SessionListLifecycleCoordinator()
+        XCTAssertNil(recreatedCoordinator.observe(input(
+            membership: .empty,
+            observations: [observation("session", .completion)]
+        )))
+    }
+
     private func observation(_ id: SessionID, _ phase: SessionLifecyclePhase) -> SessionLifecycleObservation {
         SessionLifecycleObservation(id: id, phase: phase)
     }
@@ -180,16 +233,18 @@ final class SessionListLifecycleCoordinatorTests: XCTestCase {
         membership: SessionListMembership,
         observations: [SessionLifecycleObservation] = [],
         profileID: String = "profile-a",
-        statusFilterID: String = "all"
+        workspaceID: String = "all",
+        statusFilterID: String = "all",
+        searchQuery: String = ""
     ) -> SessionListLifecycleInput {
         SessionListLifecycleInput(
             membership: membership,
             feedbackObservations: observations,
             context: SessionListLifecycleContext(
                 profileID: profileID,
-                workspaceID: "all",
+                workspaceID: workspaceID,
                 statusFilterID: statusFilterID,
-                searchQuery: ""
+                searchQuery: searchQuery
             )
         )
     }

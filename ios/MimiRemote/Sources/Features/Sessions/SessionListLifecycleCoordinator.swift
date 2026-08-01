@@ -176,11 +176,12 @@ final class SessionListLifecycleCoordinator: ObservableObject {
 
     /// 合并最新展示快照并返回本批次唯一的 Haptic；失败与完成同批时失败优先。
     func observe(_ input: SessionListLifecycleInput) -> MimiHapticEvent? {
-        let profileChanged = context?.profileID != input.context.profileID
         let displayContextChanged = context != input.context
 
         let feedback: MimiHapticEvent?
-        if !hasObservedInput || profileChanged {
+        if !hasObservedInput || displayContextChanged {
+            // 用户切换 Profile、工作区、筛选或搜索时重新建立反馈基线，
+            // 防止同 ID 的旧上下文等待态影响新内容，也不补发切换期间已经结束的会话。
             feedbackTracker.reset(with: input.feedbackObservations)
             feedback = nil
         } else {
