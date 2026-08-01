@@ -1692,6 +1692,43 @@ enum ConversationCommandPresentationKind: String, Codable, Hashable {
     case execution
 }
 
+/// Tool 活动的用户语义只来自受信任的 namespace / tool 白名单。
+/// 不从 arguments、prompt 或原始输出拼标题，避免把 Token、账号、路径和用户内容带进时间线。
+enum ConversationToolPresentationKind: String, Codable, Hashable {
+    case linearQuery = "linear_query"
+    case linearComment = "linear_comment"
+    case linearUpdate = "linear_update"
+    case independentTaskQuery = "independent_task_query"
+    case independentTaskStart = "independent_task_start"
+    case independentTaskResume = "independent_task_resume"
+    case independentTaskWait = "independent_task_wait"
+    case subagent
+    case generic
+
+    var systemImageName: String {
+        switch self {
+        case .linearQuery:
+            return "checklist"
+        case .linearComment:
+            return "text.bubble"
+        case .linearUpdate:
+            return "square.and.pencil"
+        case .independentTaskQuery:
+            return "list.bullet.rectangle"
+        case .independentTaskStart:
+            return "arrow.up.right.square"
+        case .independentTaskResume:
+            return "arrow.clockwise"
+        case .independentTaskWait:
+            return "hourglass"
+        case .subagent:
+            return "person.2.fill"
+        case .generic:
+            return "wrench.and.screwdriver"
+        }
+    }
+}
+
 struct ConversationActivityPayload: Codable, Hashable {
     let category: ConversationActivityCategory
     let displayTitle: String
@@ -1706,6 +1743,7 @@ struct ConversationActivityPayload: Codable, Hashable {
     let outputDigest: UInt64?
     let outputByteCount: Int?
     let commandPresentationKind: ConversationCommandPresentationKind?
+    let toolPresentationKind: ConversationToolPresentationKind?
 
     enum CodingKeys: String, CodingKey {
         case category
@@ -1721,6 +1759,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         case outputDigest = "output_digest"
         case outputByteCount = "output_byte_count"
         case commandPresentationKind = "command_presentation_kind"
+        case toolPresentationKind = "tool_presentation_kind"
     }
 
     init(
@@ -1736,7 +1775,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         outputPreview: String? = nil,
         outputDigest: UInt64? = nil,
         outputByteCount: Int? = nil,
-        commandPresentationKind: ConversationCommandPresentationKind? = nil
+        commandPresentationKind: ConversationCommandPresentationKind? = nil,
+        toolPresentationKind: ConversationToolPresentationKind? = nil
     ) {
         self.category = category
         self.displayTitle = displayTitle
@@ -1751,6 +1791,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         self.outputDigest = outputDigest
         self.outputByteCount = outputByteCount
         self.commandPresentationKind = commandPresentationKind
+        self.toolPresentationKind = toolPresentationKind
     }
 
     init(from decoder: Decoder) throws {
@@ -1772,6 +1813,11 @@ struct ConversationActivityPayload: Codable, Hashable {
             commandPresentationKind = ConversationCommandPresentationKind(rawValue: rawKind) ?? .execution
         } else {
             commandPresentationKind = nil
+        }
+        if let rawKind = try container.decodeIfPresent(String.self, forKey: .toolPresentationKind) {
+            toolPresentationKind = ConversationToolPresentationKind(rawValue: rawKind) ?? .generic
+        } else {
+            toolPresentationKind = nil
         }
     }
 
@@ -1826,14 +1872,15 @@ struct ConversationActivityPayload: Codable, Hashable {
 
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":
             let identifier = Self.toolIdentifier(from: item, type: type)
-            let title = Self.toolTitle(from: item, type: type)
+            let presentation = Self.toolPresentation(from: item, type: type, identifier: identifier)
             let status = Self.firstString(in: item, keys: ["status"])?.trimmedNonEmpty
             self.init(
                 category: .toolCall,
-                displayTitle: title,
-                subtitle: nil,
+                displayTitle: presentation.title,
+                subtitle: presentation.subtitle,
                 status: status,
-                toolName: identifier
+                toolName: identifier,
+                toolPresentationKind: presentation.kind
             )
 
         default:
@@ -1885,6 +1932,10 @@ struct ConversationActivityPayload: Codable, Hashable {
             return L10n.text("ui.waiting")
         case "cancelled", "canceled":
             return L10n.text("ui.canceled")
+        case "interrupted", "aborted", "stopped":
+            return L10n.text("ui.interrupted_status")
+        case "timeout", "timedout":
+            return L10n.text("ui.timed_out_status")
         case "modified":
             return L10n.text("ui.modified")
         case "added", "created":
@@ -1910,11 +1961,32 @@ struct ConversationActivityPayload: Codable, Hashable {
             return true
         }
         switch normalizedStatus {
-        case "failed", "failure", "error":
+        case "failed", "failure", "error", "timeout", "timedout":
             return true
         default:
             return false
         }
+    }
+
+    var isInterrupted: Bool {
+        switch normalizedStatus {
+        case "interrupted", "aborted", "stopped", "cancelled", "canceled":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// VoiceOver 始终读出具体动作、安全目标摘要和终态；完成态不能因为视觉上省略状态而丢失语义。
+    var accessibilityDescription: String {
+        var parts = [displayTitle]
+        if let subtitle = subtitle?.trimmedNonEmpty, subtitle != displayTitle {
+            parts.append(subtitle)
+        }
+        if let displayStatusText {
+            parts.append(displayStatusText)
+        }
+        return parts.joined(separator: L10n.text("ui.list_separator"))
     }
 
     /// 过程行不是 Markdown 正文。这里移除最常见的强调和行内代码标记，
@@ -1959,6 +2031,7 @@ struct ConversationActivityPayload: Codable, Hashable {
             && lhs.outputDigest == rhs.outputDigest
             && lhs.outputByteCount == rhs.outputByteCount
             && lhs.commandPresentationKind == rhs.commandPresentationKind
+            && lhs.toolPresentationKind == rhs.toolPresentationKind
     }
 
     func hash(into hasher: inout Hasher) {
@@ -1974,6 +2047,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         hasher.combine(outputDigest)
         hasher.combine(outputByteCount)
         hasher.combine(commandPresentationKind)
+        hasher.combine(toolPresentationKind)
     }
 
     private var commandSummaryText: String {
@@ -2129,81 +2203,211 @@ struct ConversationActivityPayload: Codable, Hashable {
             .trimmedNonEmpty
     }
 
-    private static func toolTitle(from item: [String: CodexAppServerJSONValue], type: String) -> String {
+    private struct ToolPresentation {
+        let title: String
+        let subtitle: String?
+        let kind: ConversationToolPresentationKind
+    }
+
+    private static func toolPresentation(
+        from item: [String: CodexAppServerJSONValue],
+        type: String,
+        identifier: String?
+    ) -> ToolPresentation {
         if type == "webSearch" {
-            if let query = firstString(in: item, keys: ["query"])?.trimmedNonEmpty {
-                return L10n.format("ui.internet_search_value", query)
-            }
-            return L10n.text("ui.web_search")
+            // 搜索词属于用户内容，过程时间线只说明动作，不回显原始 query。
+            return ToolPresentation(title: L10n.text("ui.web_search"), subtitle: nil, kind: .generic)
         }
 
         let namespace = firstString(in: item, keys: ["server", "namespace"])?.trimmedNonEmpty
         let tool = firstString(in: item, keys: ["tool", "name"])?.trimmedNonEmpty
-        switch tool?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "-", with: "_") {
-        case "session_set_defaults": return L10n.text("ui.configure_an_xcode_session")
-        case "test_sim": return L10n.text("ui.run_emulator_tests")
-        case "test_device": return L10n.text("ui.run_real_device_tests")
-        case "build_sim": return L10n.text("ui.build_emulator_version")
-        case "build_device": return L10n.text("ui.build_a_real_device_version")
-        case "build_run_sim": return L10n.text("ui.build_and_run_the_app")
-        case "launch_app_sim": return L10n.text("ui.launch_the_app")
-        case "stop_app_sim": return L10n.text("ui.stop_app")
-        case "clean": return L10n.text("ui.clean_build_artifacts")
-        case "screenshot": return L10n.text("ui.interception_interface")
-        case "ui_describe_all": return L10n.text("ui.read_interface_structure")
-        case "tap": return L10n.text("ui.click_interface")
-        case "swipe": return L10n.text("ui.sliding_interface")
-        case "type_text": return L10n.text("ui.enter_text")
-        case "key_press": return L10n.text("ui.press_button")
-        case "open", "navigate": return namespace?.lowercased() == "browser" ? L10n.text("ui.open_web_page") : L10n.text("ui.open_content")
-        case "click": return L10n.text("ui.click_page")
-        case "find": return L10n.text("ui.find_page_content")
-        case "search", "search_query": return L10n.text("ui.search_the_web")
-        case "view_image": return L10n.text("ui.view_pictures")
-        case "imagegen": return L10n.text("ui.generate_pictures")
-        case "apply_patch": return L10n.text("ui.modify_files_action")
-        case "exec_command": return L10n.text("ui.run_command")
-        case "wait": return L10n.text("ui.wait_for_task_to_complete")
-        case "update_plan": return L10n.text("ui.update_plan")
-        case "request_user_input": return L10n.text("ui.request_additional_information")
-        case "read_mcp_resource": return L10n.text("ui.read_resources")
-        case "list_mcp_resources", "list_mcp_resource_templates": return L10n.text("ui.list_resources")
-        case "spawn_agent": return L10n.text("ui.start_subtask")
-        case "send_message": return L10n.text("ui.send_collaboration_message")
+        let normalizedNamespace = normalizedToolComponent(namespace)
+        let normalizedTool = normalizedToolComponent(tool)
+
+        // collabAgentToolCall 与 collaboration namespace 表示真实子 Agent；
+        // create_thread 等 Codex App 工具表示独立任务，两者必须先于通用工具映射判断。
+        let isSubagentTool = type == "collabAgentToolCall"
+            || normalizedNamespace == "collaboration"
+            || normalizedTool.map {
+                [
+                    "spawn_agent",
+                    "followup_task",
+                    "wait_agent",
+                    "list_agents",
+                    "interrupt_agent",
+                ].contains($0)
+            } == true
+        if isSubagentTool {
+            let title: String
+            switch normalizedTool {
+            case "spawn_agent":
+                title = L10n.text("ui.start_subagent")
+            case "followup_task", "send_message":
+                title = L10n.text("ui.continue_subagent")
+            case "wait_agent":
+                title = L10n.text("ui.wait_for_subagent_result")
+            case "list_agents":
+                title = L10n.text("ui.query_subagents")
+            case "interrupt_agent":
+                title = L10n.text("ui.interrupt_subagent")
+            default:
+                title = type == "collabAgentToolCall"
+                    ? L10n.text("ui.start_subagent")
+                    : L10n.text("ui.perform_subagent_collaboration")
+            }
+            return ToolPresentation(title: title, subtitle: nil, kind: .subagent)
+        }
+
+        if normalizedNamespace == "linear" || normalizedNamespace?.hasSuffix("__linear") == true {
+            switch normalizedTool {
+            case "list_issues", "search_issues":
+                return ToolPresentation(title: L10n.text("ui.query_linear_issues"), subtitle: nil, kind: .linearQuery)
+            case "get_issue":
+                return ToolPresentation(title: L10n.text("ui.read_linear_issue"), subtitle: nil, kind: .linearQuery)
+            case "list_comments", "get_comment":
+                return ToolPresentation(title: L10n.text("ui.read_issue_comments"), subtitle: nil, kind: .linearComment)
+            case "save_issue", "create_issue", "update_issue":
+                return ToolPresentation(title: L10n.text("ui.update_linear_issue"), subtitle: nil, kind: .linearUpdate)
+            case "save_comment", "create_comment", "update_comment", "delete_comment":
+                return ToolPresentation(title: L10n.text("ui.update_issue_comments"), subtitle: nil, kind: .linearUpdate)
+            default:
+                if normalizedTool?.hasPrefix("list_") == true {
+                    return ToolPresentation(title: L10n.text("ui.query_linear"), subtitle: nil, kind: .linearQuery)
+                }
+                if normalizedTool?.hasPrefix("get_") == true {
+                    return ToolPresentation(title: L10n.text("ui.read_linear"), subtitle: nil, kind: .linearQuery)
+                }
+                if ["save_", "create_", "update_", "delete_"].contains(where: { normalizedTool?.hasPrefix($0) == true }) {
+                    return ToolPresentation(title: L10n.text("ui.update_linear"), subtitle: nil, kind: .linearUpdate)
+                }
+            }
+        }
+
+        switch normalizedTool {
+        case "list_threads":
+            return ToolPresentation(title: L10n.text("ui.query_task_list"), subtitle: nil, kind: .independentTaskQuery)
+        case "create_thread":
+            return ToolPresentation(title: L10n.text("ui.start_independent_task"), subtitle: nil, kind: .independentTaskStart)
+        case "read_thread":
+            return ToolPresentation(title: L10n.text("ui.read_independent_task"), subtitle: nil, kind: .independentTaskQuery)
+        case "send_message_to_thread":
+            return ToolPresentation(title: L10n.text("ui.resume_independent_task"), subtitle: nil, kind: .independentTaskResume)
+        case "wait_threads":
+            return ToolPresentation(title: L10n.text("ui.wait_for_task_results"), subtitle: nil, kind: .independentTaskWait)
+        case "session_set_defaults":
+            return ToolPresentation(title: L10n.text("ui.configure_an_xcode_session"), subtitle: nil, kind: .generic)
+        case "test_sim":
+            return ToolPresentation(title: L10n.text("ui.run_emulator_tests"), subtitle: nil, kind: .generic)
+        case "test_device":
+            return ToolPresentation(title: L10n.text("ui.run_real_device_tests"), subtitle: nil, kind: .generic)
+        case "build_sim":
+            return ToolPresentation(title: L10n.text("ui.build_emulator_version"), subtitle: nil, kind: .generic)
+        case "build_device":
+            return ToolPresentation(title: L10n.text("ui.build_a_real_device_version"), subtitle: nil, kind: .generic)
+        case "build_run_sim":
+            return ToolPresentation(title: L10n.text("ui.build_and_run_the_app"), subtitle: nil, kind: .generic)
+        case "launch_app_sim":
+            return ToolPresentation(title: L10n.text("ui.launch_the_app"), subtitle: nil, kind: .generic)
+        case "stop_app_sim":
+            return ToolPresentation(title: L10n.text("ui.stop_app"), subtitle: nil, kind: .generic)
+        case "clean":
+            return ToolPresentation(title: L10n.text("ui.clean_build_artifacts"), subtitle: nil, kind: .generic)
+        case "screenshot":
+            return ToolPresentation(title: L10n.text("ui.interception_interface"), subtitle: nil, kind: .generic)
+        case "ui_describe_all":
+            return ToolPresentation(title: L10n.text("ui.read_interface_structure"), subtitle: nil, kind: .generic)
+        case "tap":
+            return ToolPresentation(title: L10n.text("ui.click_interface"), subtitle: nil, kind: .generic)
+        case "swipe":
+            return ToolPresentation(title: L10n.text("ui.sliding_interface"), subtitle: nil, kind: .generic)
+        case "type_text":
+            return ToolPresentation(title: L10n.text("ui.enter_text"), subtitle: nil, kind: .generic)
+        case "key_press":
+            return ToolPresentation(title: L10n.text("ui.press_button"), subtitle: nil, kind: .generic)
+        case "open", "navigate":
+            let title = normalizedNamespace == "browser" ? L10n.text("ui.open_web_page") : L10n.text("ui.open_content")
+            return ToolPresentation(title: title, subtitle: nil, kind: .generic)
+        case "click":
+            return ToolPresentation(title: L10n.text("ui.click_page"), subtitle: nil, kind: .generic)
+        case "find":
+            return ToolPresentation(title: L10n.text("ui.find_page_content"), subtitle: nil, kind: .generic)
+        case "search", "search_query":
+            return ToolPresentation(title: L10n.text("ui.search_the_web"), subtitle: nil, kind: .generic)
+        case "view_image":
+            return ToolPresentation(title: L10n.text("ui.view_pictures"), subtitle: nil, kind: .generic)
+        case "imagegen":
+            return ToolPresentation(title: L10n.text("ui.generate_pictures"), subtitle: nil, kind: .generic)
+        case "apply_patch":
+            return ToolPresentation(title: L10n.text("ui.modify_files_action"), subtitle: nil, kind: .generic)
+        case "exec_command":
+            return ToolPresentation(title: L10n.text("ui.run_command"), subtitle: nil, kind: .generic)
+        case "wait":
+            return ToolPresentation(title: L10n.text("ui.wait_for_task_to_complete"), subtitle: nil, kind: .generic)
+        case "update_plan":
+            return ToolPresentation(title: L10n.text("ui.update_plan"), subtitle: nil, kind: .generic)
+        case "request_user_input":
+            return ToolPresentation(title: L10n.text("ui.request_additional_information"), subtitle: nil, kind: .generic)
+        case "read_mcp_resource":
+            return ToolPresentation(title: L10n.text("ui.read_resources"), subtitle: nil, kind: .generic)
+        case "list_mcp_resources", "list_mcp_resource_templates":
+            return ToolPresentation(title: L10n.text("ui.list_resources"), subtitle: nil, kind: .generic)
         default:
             break
         }
 
-        switch namespace?.lowercased() {
-        case "xcodebuildmcp": return L10n.text("ui.run_xcode_tools")
-        case "browser": return L10n.text("ui.manipulate_the_web_page")
-        case "image_gen", "imagegen": return L10n.text("ui.generate_pictures")
-        default: return type == "collabAgentToolCall" ? L10n.text("ui.perform_collaborative_tasks") : L10n.text("ui.call_tool")
+        switch normalizedNamespace {
+        case "xcodebuildmcp":
+            return ToolPresentation(title: L10n.text("ui.run_xcode_tools"), subtitle: nil, kind: .generic)
+        case "browser":
+            return ToolPresentation(title: L10n.text("ui.manipulate_the_web_page"), subtitle: nil, kind: .generic)
+        case "image_gen", "imagegen":
+            return ToolPresentation(title: L10n.text("ui.generate_pictures"), subtitle: nil, kind: .generic)
+        default:
+            // 未知工具只展示严格白名单后的 namespace/tool 标识，不显示 arguments 或结果。
+            return ToolPresentation(title: L10n.text("ui.call_tool"), subtitle: identifier, kind: .generic)
         }
     }
 
     private static func toolIdentifier(from item: [String: CodexAppServerJSONValue], type: String) -> String? {
+        let components: [String?]
         switch type {
         case "mcpToolCall":
-            return [firstString(in: item, keys: ["server"]), firstString(in: item, keys: ["tool"])]
-                .compactMap { $0?.trimmedNonEmpty }
-                .joined(separator: ".")
-                .trimmedNonEmpty
+            components = [firstString(in: item, keys: ["server"]), firstString(in: item, keys: ["tool"])]
         case "dynamicToolCall":
-            return [firstString(in: item, keys: ["namespace"]), firstString(in: item, keys: ["tool"])]
-                .compactMap { $0?.trimmedNonEmpty }
-                .joined(separator: ".")
-                .trimmedNonEmpty
+            components = [firstString(in: item, keys: ["namespace"]), firstString(in: item, keys: ["tool"])]
         case "collabAgentToolCall":
-            return firstString(in: item, keys: ["tool", "agentNickname", "nickname"])?.trimmedNonEmpty
+            components = ["collaboration", firstString(in: item, keys: ["tool"])]
         case "webSearch":
             return "web.search"
         default:
             return nil
         }
+        return components
+            .compactMap(safeToolIdentifierComponent)
+            .joined(separator: ".")
+            .trimmedNonEmpty
+    }
+
+    private static func normalizedToolComponent(_ value: String?) -> String? {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .trimmedNonEmpty
+    }
+
+    private static func safeToolIdentifierComponent(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.utf8.count <= 64
+        else {
+            return nil
+        }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
+        guard value.unicodeScalars.allSatisfy(allowed.contains) else {
+            return nil
+        }
+        return value
     }
 
     private static func filePaths(from changes: [[String: CodexAppServerJSONValue]]) -> [String] {
