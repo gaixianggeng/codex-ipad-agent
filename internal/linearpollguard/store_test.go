@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -163,6 +164,11 @@ func TestManualUnlockRequiresMatchingOwnerAndReason(t *testing.T) {
 }
 
 func TestLeasePermissionsArePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows 的 FileMode.Perm 不表示 ACL；这里仅验证 POSIX 权限收紧语义。
+		t.Skip("Windows 不提供可比较的 POSIX 权限位")
+	}
+
 	now := time.Date(2026, 7, 31, 2, 25, 0, 0, time.UTC)
 	dir := filepath.Join(t.TempDir(), "guard")
 	store := NewStore(dir)

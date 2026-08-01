@@ -14,7 +14,7 @@ Linear 自动巡检不能再因为 Codex Desktop 的一次任务列表查询不�
 MIM-55 对应的持久化 rollout 显示：
 
 ```text
-/Users/gaixiaotongxue/.codex/sessions/2026/07/29/rollout-2026-07-29T21-49-38-019fae23-53ba-7e33-bf10-cad6d2debc69.jsonl
+$CODEX_HOME/sessions/2026/07/29/rollout-2026-07-29T21-49-38-<session-id>.jsonl
 ```
 
 - 2026-07-31 02:25:11（Asia/Shanghai）协调心跳开始；
@@ -43,7 +43,7 @@ MIM-55 对应的持久化 rollout 显示：
 后一个样本只在 `remote control app-server stream became unknown` 后才失败并 partial-return。因此问题不是 timeout 配置过长，而是远端请求没有 deadline：连接处于半开状态时可以无限等待。
 
 ```text
-/Users/gaixiaotongxue/Library/Logs/com.openai.codex/2026/07/31/codex-desktop-4ccbd33d-bbf2-4d65-837c-fe00c5b6cd99-87930-t0-i1-010030-0.log
+$HOME/Library/Logs/com.openai.codex/2026/07/31/codex-desktop-<instance-id>.log
 ```
 
 当前 `list_threads` 工具 schema 只有 `limit`，语义是聚合 local、已连接 remote 和登录历史；没有 `hostId` 过滤、per-host timeout 或 cancellation 参数。因此，本次故障的已证实触发源是远端 remote-control app-server 连接/握手不健康；阻塞被放大到 6.5 小时的架构根因是全局 fan-out 缺少 per-source deadline / partial fail-open，且 Turn 中断没有传播到未决工具调用。远端设备为何掉线可能涉及睡眠、网络或远端进程，但现有本机日志不足以继续细分，不能猜测。
@@ -93,7 +93,7 @@ bash ./scripts/install-linear-poll-guard.sh
 "${CODEX_HOME:-$HOME/.codex}/automations/mimi-linear-issue/bin/linear-poll-guard" version
 ```
 
-状态目录权限为 `0700`，状态文件为 `0600`。只记录 run ID、阶段、工具名和时间，不记录 Prompt、用户输入、工具输出、Token 或账号信息。
+在支持 POSIX 权限位的系统上，状态目录权限为 `0700`，状态文件为 `0600`。只记录 run ID、阶段、工具名和时间，不记录 Prompt、用户输入、工具输出、Token 或账号信息。
 
 ### 运维命令
 
