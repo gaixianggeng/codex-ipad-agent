@@ -1966,6 +1966,26 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(state.compactWorkspacePath.isEmpty)
     }
 
+    func testWorkbenchNavigationWorkspaceEmptyStateActionOpensWorkspaceInBothLayouts() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(route: .sessions)
+
+            let effect = state.reduce(
+                .open(.workspaces, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+
+            XCTAssertEqual(effect, .returnToSessionList)
+            XCTAssertEqual(state.route, .workspaces)
+            XCTAssertEqual(state.selection, .workspaces)
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .workspaces)
+                XCTAssertTrue(state.compactWorkspacePath.isEmpty)
+            }
+        }
+    }
+
     func testWorkbenchNavigationRestoresSessionIntoItsSourceStack() {
         var state = WorkbenchNavigationState()
         let route = WorkbenchRestorationRoute.session(

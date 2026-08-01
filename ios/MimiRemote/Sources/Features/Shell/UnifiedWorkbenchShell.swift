@@ -728,6 +728,10 @@ struct UnifiedWorkbenchShell: View {
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
             },
+            onOpenWorkspaces: {
+                // 首次使用空态与侧栏共用同一路由，紧凑布局切 Tab，宽屏切换详情列。
+                open(.workspaces, layout: layout)
+            },
             manageConnections: manageConnections,
             placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface
         )

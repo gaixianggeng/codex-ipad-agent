@@ -1066,6 +1066,99 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[2]))
     }
 
+    func testSessionListPresentationRequiresOpenedWorkspaceOnlyAfterConnectionSucceeds() {
+        let state = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: false,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: false,
+            errorMessage: nil,
+            connectionStatus: .connected("Mac")
+        )
+
+        XCTAssertEqual(state, .needsWorkspace)
+    }
+
+    func testSessionListPresentationKeepsNoSessionsDistinctFromMissingWorkspace() {
+        let state = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: true,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: false,
+            errorMessage: nil,
+            connectionStatus: .connected("Mac")
+        )
+
+        XCTAssertEqual(state, .noSessions)
+    }
+
+    func testSessionListPresentationDoesNotCoverLoadingOrFailuresWithWorkspaceGuidance() {
+        let loading = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: false,
+            isLoading: true,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: false,
+            errorMessage: nil,
+            connectionStatus: .connected("Mac")
+        )
+        let loadFailure = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: false,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: false,
+            errorMessage: "thread/list failed",
+            connectionStatus: .connected("Mac")
+        )
+        let runtimeFailure = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: false,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: false,
+            errorMessage: "stale list error",
+            connectionStatus: .failed("Runtime unavailable")
+        )
+        let networkFailure = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: false,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: true,
+            errorMessage: nil,
+            connectionStatus: .connected("Mac")
+        )
+
+        XCTAssertEqual(loading, .loading)
+        XCTAssertEqual(loadFailure, .loadFailed("thread/list failed"))
+        XCTAssertEqual(runtimeFailure, .runtimeUnavailable("Runtime unavailable"))
+        XCTAssertEqual(networkFailure, .networkUnavailable)
+    }
+
+    func testSessionListPresentationKeepsFilteredEmptyStateDistinct() {
+        let state = SessionListPresentationState.resolve(
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: true,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: true,
+            isNetworkUnavailable: false,
+            errorMessage: nil,
+            connectionStatus: .connected("Mac")
+        )
+
+        XCTAssertEqual(state, .noMatches)
+    }
+
     func testConversationFileReferenceDetectorFindsPreviewableAbsolutePaths() {
         let text = """
         已生成：
