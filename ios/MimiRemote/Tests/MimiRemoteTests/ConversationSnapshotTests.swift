@@ -198,6 +198,62 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 1024, height: 768)
     }
 
+    private func makeCrossSessionContinuationConversation() -> some View {
+        let sessionID = "snapshot_cross_session_continuation"
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let issueURL = "https://linear.app/code89757/issue/MIM-24/在-ios-中查看并进入-codex-子-agent-会话"
+
+        conversationStore.appendUser(
+            "[\(issueURL)](\(issueURL)) 帮我继续修复一下这个问题。\n[$delegate-to-chatgpt-pro](/Users/demo/.codex/skills/delegate-to-chatgpt-pro/SKILL.md)",
+            sessionID: sessionID,
+            createdAt: snapshotMessageDate
+        )
+        conversationStore.applyAssistantDelta(
+            AgentDelta(
+                text: """
+                已完成 MIM-24 的本地修复，问题来自继承会话历史的投影逻辑。
+
+                验证结果：
+                - 固定 M5 iPad 模拟器测试通过
+                - 普通会话消息排版保持不变
+
+                ::git-stage{cwd="/Users/demo/code/codex-ipad-agent"}
+                ::git-commit{cwd="/Users/demo/code/codex-ipad-agent"}
+                ::git-push{cwd="/Users/demo/code/codex-ipad-agent" branch="codex/mim-24-fix"}
+                """,
+                role: .assistant,
+                kind: .message
+            ),
+            metadata: AgentEventMetadata(
+                seq: 1,
+                sessionID: sessionID,
+                turnID: "turn_cross_session",
+                itemID: "item_cross_session",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: 1,
+                createdAt: snapshotMessageDate
+            ),
+            fallbackSessionID: sessionID
+        )
+
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.selectedSessionID = sessionID
+
+        return ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, .dark)
+            .frame(width: 1024, height: 768)
+    }
+
     private func makeMixedActivityConversation() async -> some View {
         let sessionID = "snapshot_mixed_activity"
         let turnID = "turn_mixed_activity"
@@ -700,6 +756,19 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeRichMarkdownConversation(),
             as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+        )
+    }
+
+    func testCrossSessionContinuationHidesInternalAddresses() {
+        assertSnapshot(
+            of: makeCrossSessionContinuationConversation(),
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -1384,14 +1453,14 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 Section {
                     WorkbenchSidebarDestinationButton(
                         title: "会话",
-                        systemImage: "bubble.left.and.bubble.right",
+                        icon: .sessions,
                         isSelected: true,
                         tokens: tokens,
                         action: {}
                     )
                     WorkbenchSidebarDestinationButton(
                         title: "工作区",
-                        systemImage: "folder",
+                        icon: .workspaces,
                         isSelected: false,
                         tokens: tokens,
                         action: {}
@@ -1426,6 +1495,33 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 340, height: 768)
                 )
             )
+        )
+    }
+
+    func testWorkbenchNavigationIconPairs() {
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.sessions.systemName(isSelected: false),
+            "bubble.left.and.bubble.right"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.sessions.systemName(isSelected: true),
+            "bubble.left.and.bubble.right.fill"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.workspaces.systemName(isSelected: false),
+            "folder"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.workspaces.systemName(isSelected: true),
+            "folder.fill"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.me.systemName(isSelected: false),
+            "person.crop.circle"
+        )
+        XCTAssertEqual(
+            WorkbenchNavigationIcon.me.systemName(isSelected: true),
+            "person.crop.circle.fill"
         )
     }
 

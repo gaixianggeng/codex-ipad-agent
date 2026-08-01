@@ -137,6 +137,68 @@ extension CodexAppServerSessionRuntime {
             .lowercased() == "url"
     }
 
+    func discardBufferedResolvedInteractionRequests(
+        sessionID: SessionID?,
+        requestIDs: Set<String>
+    ) {
+        guard !requestIDs.isEmpty else {
+            return
+        }
+        let sessionIDs = sessionID.map { [$0] } ?? Array(bufferedEventsBySessionID.keys)
+        for candidateSessionID in sessionIDs {
+            guard var events = bufferedEventsBySessionID[candidateSessionID] else {
+                continue
+            }
+            events.removeAll { event in
+                switch event {
+                case .approvalRequest(let request, let metadata):
+                    return requestIDs.contains(request.id)
+                        || metadata.itemID.map(requestIDs.contains) == true
+                case .userInputRequest(let request, let metadata):
+                    return requestIDs.contains(request.id)
+                        || metadata.itemID.map(requestIDs.contains) == true
+                default:
+                    return false
+                }
+            }
+            if events.isEmpty {
+                bufferedEventsBySessionID.removeValue(forKey: candidateSessionID)
+            } else {
+                bufferedEventsBySessionID[candidateSessionID] = events
+            }
+        }
+    }
+
+    func isApprovalLikeServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
+        let lower = request.method.lowercased()
+        if lower.contains("approval") {
+            return true
+        }
+        // URL 与带精确协议标记的 Codex MCP 工具调用使用明确的授权交互。
+        return request.method == "mcpServer/elicitation/request"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .confirmation
+    }
+
+    func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
+        if request.method == "item/tool/requestUserInput" {
+            return true
+        }
+        // 只有能被当前 UI 完整表达的 form 才进入补充信息卡。
+        return request.method == "mcpServer/elicitation/request"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .form
+    }
+
+    func isUnsupportedMCPElicitation(_ request: CodexAppServerServerRequest) -> Bool {
+        request.method == "mcpServer/elicitation/request"
+            && codexMCPElicitationPresentation(
+                params: request.params?.objectValue ?? [:]
+            ) == .unsupported
+    }
+
     func resolvedRequestTombstoneKey(sessionID: SessionID?, requestID: String) -> String {
         "\(sessionID ?? "*")#\(requestID)"
     }

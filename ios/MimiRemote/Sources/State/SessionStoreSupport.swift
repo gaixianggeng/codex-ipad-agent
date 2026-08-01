@@ -1,6 +1,53 @@
 import Foundation
 import UserNotifications
 
+extension SessionStore {
+    func refreshAccountTokenUsage() async {
+        let hostScope = appStore.activeHostScope
+        guard accountTokenUsageRefreshHostScope != hostScope else {
+            return
+        }
+
+        accountTokenUsageRefreshHostScope = hostScope
+        isRefreshingAccountTokenUsage = true
+        defer {
+            if accountTokenUsageRefreshHostScope == hostScope {
+                accountTokenUsageRefreshHostScope = nil
+                isRefreshingAccountTokenUsage = false
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        do {
+            let snapshot = try await clientFactory().refreshAccountTokenUsage()
+            guard !Task.isCancelled,
+                  appStore.activeHostScope == hostScope,
+                  accountTokenUsageRefreshHostScope == hostScope
+            else {
+                return
+            }
+            if let snapshot {
+                accountTokenUsage = snapshot
+                // summary 可用不代表日粒度历史可用；nil bucket 必须诚实显示“暂不可用”，
+                // 同时仍保留 lifetimeTokens 供卡片标题展示。
+                isAccountTokenUsageUnavailable = snapshot.dailyUsageBuckets == nil
+            } else if accountTokenUsage == nil {
+                isAccountTokenUsageUnavailable = true
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard appStore.activeHostScope == hostScope,
+                  accountTokenUsageRefreshHostScope == hostScope,
+                  accountTokenUsage == nil
+            else {
+                return
+            }
+            isAccountTokenUsageUnavailable = true
+        }
+    }
+}
+
 // SessionStore 的持久化、队列、提醒和历史预算辅助类型，不构成公开 API。
 struct QueuedCommandActionRun: Equatable {
     let path: String

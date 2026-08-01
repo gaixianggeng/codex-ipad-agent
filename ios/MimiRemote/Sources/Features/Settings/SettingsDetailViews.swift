@@ -1,67 +1,51 @@
 import SwiftUI
 import UIKit
 
-// 设置详情组件保持值、Binding 与回调输入，不额外引入状态层。
-struct ConnectionProfileRenameSheet: View {
-    @Environment(\.dismiss) private var dismiss
+struct ConnectionProfileRenameRoute: Identifiable, Equatable {
+    let profileID: String
+    let initialDisplayName: String
 
-    let profile: ConnectionProfile
-    let onRename: (String) throws -> Void
-    @State private var displayName: String
-    @State private var submitError: String?
+    var id: String { profileID }
 
-    init(profile: ConnectionProfile, onRename: @escaping (String) throws -> Void) {
-        self.profile = profile
-        self.onRename = onRename
-        _displayName = State(initialValue: profile.displayName)
+    init(profile: ConnectionProfile) {
+        profileID = profile.id
+        initialDisplayName = profile.displayName
+    }
+}
+
+struct ConnectionProfileRenamePresentationState: Equatable {
+    private(set) var route: ConnectionProfileRenameRoute?
+
+    mutating func present(_ profile: ConnectionProfile) {
+        // 一个根级 item 只对应一个 presenter；Sheet 未关闭前不替换编辑目标。
+        guard route == nil else { return }
+        route = ConnectionProfileRenameRoute(profile: profile)
     }
 
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField(L10n.text("ui.mac_name"), text: $displayName)
-                        .textInputAutocapitalization(.words)
-                        .submitLabel(.done)
-                        .onSubmit(rename)
-                        .accessibilityIdentifier("settings.profile.rename.name")
-                } footer: {
-                    Text(validationMessage ?? L10n.format("ui.up_to_value_characters_only_the_local_display", AppStore.connectionProfileDisplayNameLimit))
-                        .foregroundStyle(validationMessage == nil ? Color.secondary : Color.red)
-                }
+    mutating func dismiss() {
+        route = nil
+    }
+}
 
-                if let submitError {
-                    Section {
-                        Text(submitError)
-                            .foregroundStyle(.red)
-                            .accessibilityIdentifier("settings.profile.rename.error")
-                    }
-                }
-            }
-            .navigationTitle(L10n.text("ui.rename_mac"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L10n.text("ui.cancel")) { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(L10n.text("ui.save"), action: rename)
-                        .disabled(validationMessage != nil)
-                        .accessibilityIdentifier("settings.profile.rename.save")
-                }
-            }
-            .onChange(of: displayName) { _, _ in
-                submitError = nil
-            }
-        }
-        .presentationDetents([.medium])
+enum ConnectionProfileRenameAction {
+    case cancel
+    case save
+}
+
+@MainActor
+struct ConnectionProfileRenameDraft: Equatable {
+    private(set) var displayName: String
+    private(set) var submitError: String?
+
+    init(displayName: String) {
+        self.displayName = displayName
     }
 
-    private var normalizedDisplayName: String {
+    var normalizedDisplayName: String {
         displayName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var validationMessage: String? {
+    var validationMessage: String? {
         if normalizedDisplayName.isEmpty {
             return ConnectionProfileError.invalidDisplayName.localizedDescription
         }
@@ -73,14 +57,163 @@ struct ConnectionProfileRenameSheet: View {
         return nil
     }
 
-    private func rename() {
-        guard validationMessage == nil else { return }
-        do {
-            try onRename(displayName)
+    var canSubmit: Bool {
+        validationMessage == nil
+    }
+
+    mutating func updateDisplayName(_ nextValue: String) {
+        displayName = nextValue
+        submitError = nil
+    }
+
+    /// 返回值只表示 Sheet 是否应关闭；取消不会触发保存，保存失败则保留草稿和错误。
+    mutating func perform(
+        _ action: ConnectionProfileRenameAction,
+        onRename: (String) throws -> Void
+    ) -> Bool {
+        switch action {
+        case .cancel:
+            return true
+        case .save:
+            guard canSubmit else { return false }
+            do {
+                try onRename(displayName)
+                return true
+            } catch {
+                submitError = error.localizedDescription
+                return false
+            }
+        }
+    }
+}
+
+// 设置详情组件只持有局部值草稿、Binding 与回调，不引入额外引用状态层。
+struct ConnectionProfileRenameSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let route: ConnectionProfileRenameRoute
+    let onRename: (String) throws -> Void
+    @State private var draft: ConnectionProfileRenameDraft
+
+    init(route: ConnectionProfileRenameRoute, onRename: @escaping (String) throws -> Void) {
+        self.route = route
+        self.onRename = onRename
+        _draft = State(initialValue: ConnectionProfileRenameDraft(displayName: route.initialDisplayName))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ConnectionProfileNameTextField(
+                        placeholder: L10n.text("ui.mac_name"),
+                        text: Binding(
+                            get: { draft.displayName },
+                            set: { draft.updateDisplayName($0) }
+                        ),
+                        onSubmit: { perform(.save) }
+                    )
+                        .frame(minHeight: 28)
+                        .accessibilityIdentifier("settings.profile.rename.name")
+                } footer: {
+                    Text(draft.validationMessage ?? L10n.format("ui.up_to_value_characters_only_the_local_display", AppStore.connectionProfileDisplayNameLimit))
+                        .foregroundStyle(draft.validationMessage == nil ? Color.secondary : Color.red)
+                }
+
+                if let submitError = draft.submitError {
+                    Section {
+                        Text(submitError)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("settings.profile.rename.error")
+                    }
+                }
+            }
+            .navigationTitle(L10n.text("ui.rename_mac"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L10n.text("ui.cancel")) { perform(.cancel) }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("ui.save")) { perform(.save) }
+                        .disabled(!draft.canSubmit)
+                        .accessibilityIdentifier("settings.profile.rename.save")
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func perform(_ action: ConnectionProfileRenameAction) {
+        if draft.perform(action, onRename: onRename) {
             dismiss()
-        } catch {
-            // 档案若在 Sheet 展示期间被其它操作移除，保留输入并明确展示失败原因。
-            submitError = error.localizedDescription
+        }
+    }
+}
+
+/// 只服务 Mac 名称重命名：editingChanged 会包含输入法仍在组合中的可见文本。
+/// Coordinator 先写回 SwiftUI 草稿，并阻止 updateUIView 反写 marked text，避免打断候选输入。
+struct ConnectionProfileNameTextField: UIViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+    let onSubmit: () -> Void
+
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField()
+        textField.placeholder = placeholder
+        textField.text = text
+        textField.font = .preferredFont(forTextStyle: .body)
+        textField.adjustsFontForContentSizeCategory = true
+        textField.autocapitalizationType = .words
+        textField.returnKeyType = .done
+        textField.clearButtonMode = .whileEditing
+        textField.delegate = context.coordinator
+        textField.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.textDidChange(_:)),
+            for: .editingChanged
+        )
+        context.coordinator.lastSyncedText = text
+        return textField
+    }
+
+    func updateUIView(_ textField: UITextField, context: Context) {
+        context.coordinator.parent = self
+        textField.placeholder = placeholder
+
+        // 拼音等输入法的预编辑文本已经可见，但系统尚未提交；此时反写会破坏 marked range。
+        guard textField.markedTextRange == nil,
+              context.coordinator.lastSyncedText != text
+        else {
+            return
+        }
+        textField.text = text
+        context.coordinator.lastSyncedText = text
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: ConnectionProfileNameTextField
+        var lastSyncedText = ""
+
+        init(_ parent: ConnectionProfileNameTextField) {
+            self.parent = parent
+        }
+
+        @objc func textDidChange(_ textField: UITextField) {
+            let visibleText = textField.text ?? ""
+            guard visibleText != lastSyncedText else { return }
+            lastSyncedText = visibleText
+            parent.text = visibleText
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            parent.onSubmit()
+            textField.resignFirstResponder()
+            return true
         }
     }
 }
@@ -449,10 +582,10 @@ struct AppearanceView: View {
             Section {
                 LazyVGrid(
                     columns: workspaceIconStyleColumns,
-                    alignment: .leading,
-                    spacing: 10
+                    alignment: .center,
+                    spacing: dynamicTypeSize.isAccessibilitySize ? 14 : 10
                 ) {
-                    ForEach(WorkspaceIconStyle.allCases) { style in
+                    ForEach(selectableWorkspaceIconStyles) { style in
                         let isSelected =
                             workspaceAppearanceStore.style(profileID: profileID) == style
                         Button {
@@ -475,8 +608,8 @@ struct AppearanceView: View {
                         )
                     }
                 }
-                // 八种选项在 iPhone 上自动降为两列或单列，避免固定列数挤压大字体。
-                .padding(.vertical, 4)
+                // 常规字号固定四列快速扫读；新增风格自然换行，辅助功能字号减少列数。
+                .padding(.vertical, 6)
                 .accessibilityIdentifier("settings.workspaceIconStyle")
             } header: {
                 Text(L10n.text("ui.workspace_avatar_style"))
@@ -582,15 +715,18 @@ struct AppearanceView: View {
     }
 
     private var workspaceIconStyleColumns: [GridItem] {
-        // 辅助功能字号直接减少列数，避免只放大文字却把长作品名挤进窄卡片。
-        let minimumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 300 : 190
-        let maximumWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 520 : 260
-        return [
-            GridItem(
-                .adaptive(minimum: minimumWidth, maximum: maximumWidth),
-                spacing: 10
-            )
-        ]
+        let columnCount = dynamicTypeSize.isAccessibilitySize ? 2 : 4
+        let spacing: CGFloat = dynamicTypeSize.isAccessibilitySize ? 12 : 6
+        return Array(
+            repeating: GridItem(.flexible(minimum: 44, maximum: 160), spacing: spacing),
+            count: columnCount
+        )
+    }
+
+    private var selectableWorkspaceIconStyles: [WorkspaceIconStyle] {
+        WorkspaceIconStyle.selectableStyles(
+            currentStyle: workspaceAppearanceStore.style(profileID: profileID)
+        )
     }
 
     private var workspaceIconStyleBinding: Binding<WorkspaceIconStyle> {
@@ -620,74 +756,89 @@ struct AppearanceView: View {
 }
 
 private struct WorkspaceIconStyleOptionLabel: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
-    @ScaledMetric(relativeTo: .callout) private var dynamicCalloutSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .caption) private var dynamicCaptionSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .body) private var dynamicAvatarSize: CGFloat = 56
 
     let style: WorkspaceIconStyle
     let isSelected: Bool
     let tokens: ThemeTokens
 
     var body: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: dynamicTypeSize.isAccessibilitySize ? 9 : 7) {
             representativeImage
 
-            Text(style.title)
-                // 叠加系统 Dynamic Type 与 App 内字体缩放，避免辅助功能字号下
-                // 只有页面标题变大、作品名称仍停留在固定字号。
-                .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .medium))
-                .foregroundStyle(tokens.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Spacer(minLength: 4)
-
-            if isSelected {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(themeStore.uiFont(size: dynamicCalloutSize, weight: .semibold))
-                    .foregroundStyle(tokens.primaryAction)
-                    .accessibilityHidden(true)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-        .background(
-            isSelected
-                ? tokens.primaryAction.opacity(0.10)
-                : tokens.contentPanelBackground.opacity(0.58),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(
-                    isSelected ? tokens.primaryAction.opacity(0.72) : tokens.border.opacity(0.5),
-                    lineWidth: isSelected ? 1.25 : 0.75
+            Text(style.compactTitle)
+                .font(
+                    themeStore.uiFont(
+                        size: dynamicCaptionSize,
+                        weight: isSelected ? .semibold : .medium
+                    )
                 )
+                .foregroundStyle(isSelected ? tokens.primaryAction : tokens.primaryText)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.72)
+                .allowsTightening(true)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
         }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 4)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 112 : 88,
+            alignment: .top
+        )
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
     private var representativeImage: some View {
-        if let assetName = style.representativeAssetName {
-            Image(assetName)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(tokens.border.opacity(0.5), lineWidth: 0.75)
+        ZStack(alignment: .bottomTrailing) {
+            Group {
+                if let assetName = style.representativeAssetName {
+                    Image(assetName)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Text(verbatim: "🦧")
+                        .font(.system(size: avatarDiameter * 0.58))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(
+                            Color(red: 0.88, green: 0.72, blue: 0.34).opacity(0.22)
+                        )
                 }
-                .accessibilityHidden(true)
-        } else {
-            Text(verbatim: "🦧")
-                .font(.system(size: 28))
-                .frame(width: 44, height: 44)
-                .background(
-                    Color(red: 0.88, green: 0.72, blue: 0.34).opacity(0.22),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-                .accessibilityHidden(true)
+            }
+            .frame(width: avatarDiameter, height: avatarDiameter)
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(
+                        isSelected ? tokens.primaryAction : tokens.border.opacity(0.55),
+                        lineWidth: isSelected ? 2.5 : 0.75
+                    )
+            }
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(tokens.primaryAction, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(tokens.elevatedSurface, lineWidth: 2)
+                    }
+                    .offset(x: 2, y: 2)
+            }
         }
+        .accessibilityHidden(true)
+    }
+
+    private var avatarDiameter: CGFloat {
+        min(dynamicAvatarSize, dynamicTypeSize.isAccessibilitySize ? 68 : 60)
     }
 }
 

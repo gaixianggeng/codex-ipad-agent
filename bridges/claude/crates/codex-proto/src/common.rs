@@ -133,6 +133,8 @@ pub enum TurnStatus {
 pub struct TurnError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_error_info: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_details: Option<String>,

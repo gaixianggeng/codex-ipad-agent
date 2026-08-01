@@ -387,6 +387,26 @@ final class ConversationStore: ObservableObject {
         replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
     }
 
+    /// turn/start 的 ACK 是本地用户消息与运行时 turn 的第一条权威关联。
+    /// 只允许首次绑定或重复写入同一个 ID，避免迟到 ACK 把消息重新归到别的 turn。
+    @discardableResult
+    func bindTurnID(_ turnID: TurnID, clientMessageID: ClientMessageID, sessionID: String) -> Bool {
+        let normalizedTurnID = turnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTurnID.isEmpty,
+              var list = messagesByScopedSessionID[scopedSessionID(for: sessionID)],
+              let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID),
+              list[index].turnID == nil || list[index].turnID == normalizedTurnID else {
+            return false
+        }
+        if list[index].turnID == normalizedTurnID {
+            return true
+        }
+        list[index].turnID = normalizedTurnID
+        list[index].turnLifecycle = turnLifecycleBySessionID[scopedSessionID(for: sessionID)]?[normalizedTurnID]
+        replaceMessagesWithoutEquivalenceCheck(list, sessionID: sessionID, rebuildIndexes: false)
+        return true
+    }
+
     func appendSystem(
         _ text: String,
         sessionID: String,
@@ -741,6 +761,14 @@ final class ConversationStore: ObservableObject {
         if let index = messageIndex(stableID: stableID, sessionID: sessionID) ?? clientMessageID.flatMap({ messageIndex(clientMessageID: $0, sessionID: sessionID) }) {
             let previous = list[index]
             list[index].stableID = stableID
+            // 服务端 user item 回显可能早于或晚于 turn/start ACK。两条链路都要把
+            // 本地气泡升级成 turn-scoped 身份，认证失败等迟到终态才能精确找到原请求。
+            if list[index].turnID == nil, let turnID = message.turnID {
+                list[index].turnID = turnID
+            }
+            if list[index].itemID == nil, let itemID = message.itemID {
+                list[index].itemID = itemID
+            }
             list[index].role = role
             list[index].kind = displayKind
             list[index].content = message.content

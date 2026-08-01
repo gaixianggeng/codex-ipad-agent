@@ -222,9 +222,35 @@ final class SessionContextStore: ObservableObject {
         _ base: [SessionContextSubagent],
         _ update: [SessionContextSubagent]
     ) -> [SessionContextSubagent] {
-        mergeUnique(update + base) { subagent in
-            subagent.id.isEmpty ? subagent.displayName : subagent.id
+        var result: [SessionContextSubagent] = []
+        var indexByKey: [String: Int] = [:]
+        for subagent in update + base {
+            let key = subagent.id.isEmpty ? subagent.displayName : subagent.id
+            guard !key.isEmpty else { continue }
+            if let index = indexByKey[key] {
+                var current = result[index]
+                current.id = nonEmpty(current.id, subagent.id) ?? ""
+                current.parentThreadID = nonEmpty(current.parentThreadID, subagent.parentThreadID)
+                current.sessionID = nonEmpty(current.sessionID, subagent.sessionID)
+                current.nickname = nonEmpty(current.nickname, subagent.nickname)
+                current.role = nonEmpty(current.role, subagent.role)
+                current.status = nonEmpty(current.status, subagent.status)
+                current.statusMessage = nonEmpty(current.statusMessage, subagent.statusMessage)
+                switch (current.canAcceptDirectInput, subagent.canAcceptDirectInput) {
+                case (.some(false), _), (_, .some(false)):
+                    current.canAcceptDirectInput = false
+                case (nil, let fallback):
+                    current.canAcceptDirectInput = fallback
+                default:
+                    break
+                }
+                result[index] = current
+            } else {
+                indexByKey[key] = result.count
+                result.append(subagent)
+            }
         }
+        return result
     }
 
     private static func mergeUnique<T>(_ values: [T], key: (T) -> String) -> [T] {

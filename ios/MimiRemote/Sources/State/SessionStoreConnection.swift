@@ -2,6 +2,112 @@ import Foundation
 
 // WebSocket 生命周期、事件投影与通知保持在同一 MainActor 隔离域。
 extension SessionStore {
+    func prepareRelatedSession(
+        _ relation: SessionContextSubagent,
+        parentSessionID: SessionID
+    ) async -> AgentSession? {
+        let hostScope = appStore.activeHostScope
+        guard !relation.id.isEmpty else { return nil }
+
+        // gateway 重启后连接级 receiver 授权会丢失。先刷新父历史，现代
+        // thread/turns/list 与旧版 thread/read 都会重新登记 receiverThreadIds。
+        if let parent = sessionsByID[parentSessionID] {
+            _ = await loadHistory(for: parent, quiet: true, force: true)
+        }
+        guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return nil }
+
+        do {
+            let response = try await clientFactory().session(
+                id: relation.id,
+                afterSeq: replayWatermark(for: relation.id)
+            )
+            guard appStore.activeHostScope == hostScope else { return nil }
+            var child = response.session
+            if let parent = sessionsByID[parentSessionID],
+               projectsByID[child.projectID] == nil,
+               sidebarProjectsByID[child.projectID] == nil {
+                child = session(child, in: workspaceForSession(parent))
+            }
+            child.parentThreadID = child.parentThreadID ?? relation.parentThreadID ?? parentSessionID
+            child.appServerSessionID = child.appServerSessionID ?? relation.sessionID
+            child.agentNickname = child.agentNickname ?? relation.nickname
+            child.agentRole = child.agentRole ?? relation.role
+            // 父事件与 child read 任一来源明确只读时都取更严格值；两边都明确
+            // 可写才允许普通会话控制链路重新开放写入，未知则 fail-closed。
+            child.canAcceptDirectInput = child.canAcceptDirectInput == true
+                && relation.canAcceptDirectInput == true
+            upsert(child)
+            _ = await loadHistory(for: child, quiet: true, force: true)
+            guard appStore.activeHostScope == hostScope else { return nil }
+            let current = sessionsByID[child.id] ?? child
+            observeRelatedSession(current)
+            return current
+        } catch {
+            guard appStore.activeHostScope == hostScope else { return nil }
+            setErrorMessage(error.localizedDescription)
+            return nil
+        }
+    }
+
+    func observeRelatedSession(_ session: AgentSession) {
+        guard !session.isLocalDraft,
+              !isAppInBackground,
+              !isNetworkUnavailable,
+              connectionTermination == nil,
+              !appStore.requiresRePairing
+        else {
+            return
+        }
+        if relatedSessionSocketID == session.id, relatedSessionSocket != nil {
+            return
+        }
+        stopRelatedSessionObservation()
+        relatedSessionSocketGeneration &+= 1
+        let generation = relatedSessionSocketGeneration
+        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: session.id)
+        let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
+        socket.onStatus = { [weak self] status in
+            guard case .terminated(let reason) = status else { return }
+            Task { @MainActor in
+                guard let self,
+                      self.relatedSessionSocketGeneration == generation,
+                      self.relatedSessionSocketID == session.id else { return }
+                if reason == .credentialsInvalid {
+                    self.terminateConnection(reason)
+                }
+            }
+        }
+        socket.onEvent = { [weak self] event in
+            Task { @MainActor in
+                guard let self,
+                      self.relatedSessionSocketGeneration == generation,
+                      self.relatedSessionSocketID == session.id else { return }
+                await self.applyRuntimeEvent(event, lease: lease)
+            }
+        }
+        // 次级阅读区绝不发送 turn/control；失败回调只需保持 no-op。
+        socket.onSendAccepted = { _ in }
+        socket.onSendFailure = { _, _ in }
+        socket.onTurnSendOutcome = { _, _ in }
+        socket.onApprovalDecisionFailure = { _, _ in }
+        socket.onUserInputResponseFailure = { _, _ in }
+        socket.onControlFailure = { _ in }
+        relatedSessionSocket = socket
+        relatedSessionSocketID = session.id
+        socket.connect(sessionID: session.id, replayBufferedEvents: false)
+    }
+
+    func stopRelatedSessionObservation(sessionID: SessionID? = nil) {
+        if let sessionID, relatedSessionSocketID != sessionID {
+            return
+        }
+        relatedSessionSocketGeneration &+= 1
+        relatedSessionSocketID = nil
+        let socket = relatedSessionSocket
+        relatedSessionSocket = nil
+        socket?.disconnect()
+    }
+
     func connectWebSocket(
         _ session: AgentSession,
         isReconnectAttempt: Bool = false,
@@ -1048,11 +1154,16 @@ extension SessionStore {
             )
         case .error(let payload, let metadata):
             let sessionID = metadata.sessionID ?? fallbackSessionID
+            let isClaudeAuthenticationFailure = ClaudeAuthenticationRecovery.matches(payload)
             return SessionRuntimeNotification(
                 id: "failed:\(sessionID):\(payload.message)",
                 sessionID: sessionID,
-                title: L10n.text("ui.session_error"),
-                body: payload.message,
+                title: isClaudeAuthenticationFailure
+                    ? ClaudeAuthenticationRecovery.title
+                    : L10n.text("ui.session_error"),
+                body: isClaudeAuthenticationFailure
+                    ? ClaudeAuthenticationRecovery.recoveryMessage
+                    : payload.message,
                 kind: .failed
             )
         default:
@@ -1234,8 +1345,8 @@ extension SessionStore {
     }
 
     func reloadRecentWorkspaces() {
-        setRecentWorkspacesIfChanged(
-            recentWorkspaceStore.load(
+        applyRecentWorkspaceReconciliation(
+            recentWorkspaceStore.loadReconciled(
                 profileID: appStore.notificationRoutingProfileID,
                 legacyEndpoint: appStore.endpoint,
                 profiles: appStore.connectionProfiles
@@ -1247,13 +1358,159 @@ extension SessionStore {
         reloadSessionReminders()
     }
 
+    /// 最近工作区合并后，所有仍在内存中的 workspace ID 引用必须在同一个 MainActor
+    /// 事务里一起迁移。否则卡片虽然去重，当前选择、已加载会话或头像仍会留在旧 ID。
+    func applyRecentWorkspaceReconciliation(
+        _ reconciliation: RecentWorkspaceReconciliation
+    ) {
+        let replacements = reconciliation.replacedWorkspaceIDs
+        let previousSessionWorkspaceIDs = sessionWorkspaceIDs.map {
+            remappedWorkspaceIDs($0, replacements: replacements)
+        }
+        let previousSelectedProjectID = selectedProjectID.map {
+            replacements[$0] ?? $0
+        }
+        let migratedExpandedProjectIDs = remappedWorkspaceIDs(
+            expandedProjectIDs,
+            replacements: replacements
+        )
+        let migratedShowingAllProjectIDs = remappedWorkspaceIDs(
+            showingAllSessionProjectIDs,
+            replacements: replacements
+        )
+        let migratedVisibleLimits = remappedWorkspaceValues(
+            sessionVisibleLimitByProjectID,
+            replacements: replacements
+        )
+
+        for (oldID, newID) in replacements.sorted(by: { $0.key < $1.key }) {
+            let chainedOldIDs = workspaceIdentityReplacementByOldID.compactMap {
+                existingOldID,
+                existingNewID in
+                existingNewID == oldID ? existingOldID : nil
+            }
+            for chainedOldID in chainedOldIDs {
+                workspaceIdentityReplacementByOldID[chainedOldID] = newID
+            }
+            workspaceIdentityReplacementByOldID[oldID] = newID
+            workspaceAppearanceStore.migrateProjectIdentity(
+                profileID: appStore.notificationRoutingProfileID,
+                from: oldID,
+                to: newID
+            )
+        }
+
+        setRecentWorkspacesIfChanged(reconciliation.workspaces)
+        guard !replacements.isEmpty else {
+            return
+        }
+
+        setSelectedProjectID(previousSelectedProjectID)
+        setExpandedProjectIDs(migratedExpandedProjectIDs)
+        setShowingAllSessionProjectIDs(migratedShowingAllProjectIDs)
+        sessionVisibleLimitByProjectID = migratedVisibleLimits.filter {
+            migratedShowingAllProjectIDs.contains($0.key)
+        }
+        setSessionWorkspaceIDs(previousSessionWorkspaceIDs)
+
+        unavailableWorkspaceIDs = remappedWorkspaceIDs(
+            unavailableWorkspaceIDs,
+            replacements: replacements
+        )
+        sessionPageCursorByProjectID = remappedWorkspaceValues(
+            sessionPageCursorByProjectID,
+            replacements: replacements
+        )
+        sessionHasMoreByProjectID = remappedWorkspaceValues(
+            sessionHasMoreByProjectID,
+            replacements: replacements
+        )
+        sessionProjectsWithAdditionalPages = remappedWorkspaceIDs(
+            sessionProjectsWithAdditionalPages,
+            replacements: replacements
+        )
+
+        // 旧 identity 下正在进行的列表请求不能改名后继续回写；取消并丢弃即可，
+        // 随后的显式 open/refresh 会针对保留 ID 建立新请求。
+        for oldID in replacements.keys {
+            sessionPageRequestTokenByProjectID.removeValue(forKey: oldID)
+            sessionPageLoadingTokenByProjectID.removeValue(forKey: oldID)
+            sessionListReconciliationTasksByProjectID.removeValue(forKey: oldID)?.cancel()
+        }
+        let obsoleteFirstPageRequestKeys = sessionListFirstPageInFlightByKey.keys.filter {
+            replacements[$0.workspaceID] != nil
+        }
+        for key in obsoleteFirstPageRequestKeys {
+            sessionListFirstPageInFlightByKey[key]?.task.cancel()
+            sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+        }
+        sessionListFirstPageCacheByKey = sessionListFirstPageCacheByKey.filter {
+            replacements[$0.key.workspaceID] == nil
+        }
+
+        let workspacesByID = Dictionary(
+            uniqueKeysWithValues: reconciliation.workspaces.map { ($0.id, $0) }
+        )
+        let migratedSessions = sessions.map { item in
+            guard let newID = replacements[item.projectID],
+                  let workspace = workspacesByID[newID] else {
+                return item
+            }
+            return session(item, in: workspace)
+        }
+        if migratedSessions != sessions {
+            sessions = migratedSessions
+        }
+
+        let migratedRemoteSessions = remoteSessionSearchResults.map { item in
+            guard let newID = replacements[item.projectID],
+                  let workspace = workspacesByID[newID] else {
+                return item
+            }
+            return session(item, in: workspace)
+        }
+        if migratedRemoteSessions != remoteSessionSearchResults {
+            remoteSessionSearchResults = migratedRemoteSessions
+        }
+
+        externalActivityBySessionID = externalActivityBySessionID.mapValues { activity in
+            guard let newID = replacements[activity.projectID] else {
+                return activity
+            }
+            return ExternalSessionActivity(
+                threadID: activity.threadID,
+                projectID: newID,
+                source: activity.source,
+                state: activity.state,
+                turnID: activity.turnID,
+                revision: activity.revision,
+                lastActivityAt: activity.lastActivityAt
+            )
+        }
+        missingRunningSessionStateByID = missingRunningSessionStateByID.mapValues { state in
+            MissingRunningSessionState(
+                projectID: replacements[state.projectID] ?? state.projectID,
+                consecutiveRefreshMisses: state.consecutiveRefreshMisses
+            )
+        }
+    }
+
+    func retainedWorkspaceID(for workspaceID: String) -> String {
+        workspaceIdentityReplacementByOldID[workspaceID] ?? workspaceID
+    }
+
     func reloadSessionListPreferences() {
         let preferences = sessionListPreferenceStore.load(
             profileID: appStore.notificationRoutingProfileID,
             legacyEndpoint: appStore.endpoint,
             profiles: appStore.connectionProfiles
         )
-        let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(preferences.sessionWorkspaceIDs)
+        // 冷启动升级时 recent workspace 会先完成去重，筛选偏好随后才读取。
+        // 在校验有效 ID 前先迁移，否则旧 ID 会被误判为已删除并静默丢失。
+        let migratedSessionWorkspaceIDs = preferences.sessionWorkspaceIDs.map { workspaceIDs in
+            Set(workspaceIDs.map(retainedWorkspaceID))
+        }
+        let loadedSessionWorkspaceIDs = normalizedSessionWorkspaceIDs(migratedSessionWorkspaceIDs)
         guard pinnedSessionIDs != preferences.pinnedSessionIDs
             || archivedSessionIDs != preferences.archivedSessionIDs
             || sessionWorkspaceIDs != loadedSessionWorkspaceIDs
@@ -1419,6 +1676,11 @@ extension SessionStore {
         guard let value else {
             return nil
         }
+        // SessionStore 初始化时 recent workspaces 尚未加载；此时不能把持久化筛选当作
+        // 无效 ID 清空。等工作区索引就绪后再做交集和“全选 = nil”归一化。
+        guard !validProjectIDs.isEmpty else {
+            return value.isEmpty ? nil : value
+        }
         let selectedIDs = value.intersection(validProjectIDs)
         // 全选和默认显示全部是同一个语义，归一成 nil，避免 UI 出现多余的“恢复全部显示”按钮。
         return selectedIDs == validProjectIDs ? nil : selectedIDs
@@ -1523,12 +1785,28 @@ extension SessionStore {
         saveSessionReminders()
     }
 
-    func rememberWorkspace(_ workspace: AgentWorkspace) {
-        let next = recentWorkspaceStore.upsert(
+    @discardableResult
+    func rememberWorkspace(
+        _ workspace: AgentWorkspace,
+        equivalentPaths: [String] = [],
+        prefersIncomingIdentity: Bool = true
+    ) -> AgentWorkspace {
+        let reconciliation = recentWorkspaceStore.upsertReconciled(
             workspace,
-            profileID: appStore.notificationRoutingProfileID
+            profileID: appStore.notificationRoutingProfileID,
+            equivalentPaths: equivalentPaths,
+            prefersIncomingIdentity: prefersIncomingIdentity
         )
-        setRecentWorkspacesIfChanged(next)
+        applyRecentWorkspaceReconciliation(reconciliation)
+
+        let matchingPaths = Set(
+            ([workspace.path] + equivalentPaths)
+                .map(WorkspacePathIdentity.normalizedPath)
+        )
+        return reconciliation.workspaces.first {
+            $0.id == workspace.id
+                || matchingPaths.contains(WorkspacePathIdentity.normalizedPath($0.path))
+        } ?? workspace
     }
 
     func upsertManagedWorktree(_ item: WorktreeListItem) {
@@ -1595,8 +1873,7 @@ extension SessionStore {
             return workspace
         }
         let workspace = AgentWorkspace(project: project)
-        rememberWorkspace(workspace)
-        return workspacesByID[workspace.id] ?? workspace
+        return rememberWorkspace(workspace, prefersIncomingIdentity: false)
     }
 
     func ensureWorkspaceForKnownProjectID(_ projectID: String) -> AgentWorkspace? {
@@ -1639,6 +1916,11 @@ extension SessionStore {
         error: Error,
         reportForeground: Bool = true
     ) async {
+        // 页面生命周期、凭据后台挂起和旧 host waiter 的取消都不是工作区故障；
+        // 这里必须先静默收口，不能二次 resolve 后把 Swift.CancellationError 写入全局错误。
+        guard !isCancellationError(error) else {
+            return
+        }
         if terminateConnectionIfCredentialsInvalid(error) {
             return
         }
@@ -1898,6 +2180,9 @@ extension SessionStore {
     }
 
     func clearConnectionData() {
+        controlledGlobalDiscoveryUnavailable = false
+        controlledGlobalSessionIDs = []
+        stopRelatedSessionObservation()
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
         networkSuspendedSessionID = nil
@@ -1929,6 +2214,7 @@ extension SessionStore {
         )
         setProjectsIfChanged([])
         setRecentWorkspacesIfChanged([])
+        workspaceIdentityReplacementByOldID = [:]
         setSidebarProjectsIfChanged([])
         sessionWorkspaceIDs = nil
         pinnedSessionIDs = []
@@ -2488,4 +2774,25 @@ extension SessionStore {
             foregroundActivityBySessionID.removeValue(forKey: sessionID)
         }
     }
+}
+
+private func remappedWorkspaceIDs(
+    _ ids: Set<String>,
+    replacements: [String: String]
+) -> Set<String> {
+    Set(ids.map { replacements[$0] ?? $0 })
+}
+
+/// 目标 ID 已有状态时保留目标值；只有目标为空才承接旧 ID 的值。
+private func remappedWorkspaceValues<Value>(
+    _ values: [String: Value],
+    replacements: [String: String]
+) -> [String: Value] {
+    var remapped = values.filter { replacements[$0.key] == nil }
+    for (oldID, newID) in replacements.sorted(by: { $0.key < $1.key }) {
+        if remapped[newID] == nil, let value = values[oldID] {
+            remapped[newID] = value
+        }
+    }
+    return remapped
 }

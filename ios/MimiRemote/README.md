@@ -58,7 +58,7 @@ agentd doctor
 - Endpoint，例如 `http://100.x.y.z:8787` 或 MagicDNS 的 `http://<mac-hostname>.<tailnet>.ts.net:8787`
 - Token，也就是 `AGENTD_TOKEN`
 - 连接链接，例如 `mimiremote://connect?endpoint=...&token=...`
-- 配对二维码使用 `mimiremote://pair?endpoint=...&issued_at=...&expires_at=...&pair_sig=...`，不直接携带长期 Token；短期票据只能成功兑换一次，失败或已使用时在 Mac 重新运行 `agentd pair`
+- 配对二维码使用 `mimiremote://pair?endpoint=...&issued_at=...&expires_at=...&pair_sig=...`，不直接携带长期 Token；同一票据和复制链接可在生成后的 10 分钟内重复兑换，超过 `expires_at` 后统一拒绝
 
 相机权限被拒绝或受设备限制时，扫码页会提供“前往系统设置”和“改用手动连接”；相机不可用或配置失败时也可选择手动连接，回到当前连接页后自动展开已有的手动连接区域。App 只在用户主动打开扫码页时申请相机权限，不增加后台相机能力。
 
@@ -74,7 +74,7 @@ direct 模式下，iPad 仍只连接 `agentd`，不会直接保存 app-server up
 
 1. 推荐用 `agentd setup` 生成配置；`agentd serve` 会在 `app_server.managed=true` 时自动托管 loopback `codex app-server`。
 2. 设置页扫码连接会先用短期配对票据兑换 Endpoint/Token，再校验 `/api/app-server/config` 和 gateway 可用性。
-3. 点击“保存并加载”会先原子提交新 Endpoint/Keychain Token；只有提交成功才断开旧 WebSocket 并切换 client，失败时完整保留旧连接和会话。凭据提交后会复用冷启动退避加载项目和会话：首次配对最多等待 45 秒，修复或切换已有档案最多等待 10 秒；超时保留已提交凭据并提示直接重试，不会误报“已连接”，一次性票据也无需重新扫码。
+3. 点击“保存并加载”会先原子提交新 Endpoint/Keychain Token；只有提交成功才断开旧 WebSocket 并切换 client，失败时完整保留旧连接和会话。凭据提交后会复用冷启动退避加载项目和会话：首次配对最多等待 45 秒，修复或切换已有档案最多等待 10 秒；超时保留已提交凭据并提示直接重试，不会误报“已连接”。配对票据未过期时可以直接重试，无需重新扫码。
 4. 网络不可用时暂停可见轮询和 WebSocket 重连；恢复后只触发一次受 connection generation 保护的重连。瞬时失败使用带 jitter 的指数退避，401/403 凭据终态不会继续重试。
 5. 切换已保存 Mac 时先读取目标档案 Token 并完成连接验证，再提交档案、退役旧 WebSocket 和清理旧 Mac 会话；不同时维持两台 Mac 的连接。
 

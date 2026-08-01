@@ -27,10 +27,12 @@ const (
 	gatewayTurnRegistrationLimit = 512
 	gatewayTurnRegistrationIDMax = 256
 	gatewayTurnEventClockSkew    = 2 * time.Second
-	// task_started 与 user_message 是同一次 turn/start 的相邻生命周期事件。
-	// 除了都要落在 registration TTL 内，两者还必须足够接近，避免失败请求的
-	// user_message 证据错误归属给稍后真正由 Mac 发起的 turn。
-	gatewayTurnLifecycleWindow = 10 * time.Second
+	// gateway 在写入 upstream 前登记；task_started 应很快出现。真实 app-server
+	// 冷启动时 user_message 可能比 task_started 晚十几秒落盘，因此不能再用
+	// 两个 rollout 事件的短间隔判断归属。改为要求 task_started 靠近登记时刻，
+	// 同时保留精确 Thread+client ID 和 2 分钟总 TTL。
+	gatewayTurnStartWindow     = 30 * time.Second
+	gatewayTurnLifecycleWindow = gatewayTurnRegistrationTTL
 )
 
 // ExternalActivity 是允许返回给移动端的最小只读快照。
@@ -51,6 +53,8 @@ type ExternalActivityDiagnostics struct {
 	CacheHits        int `json:"cache_hits"`
 	MalformedLines   int `json:"malformed_lines"`
 	OversizedLines   int `json:"oversized_lines"`
+	ClaimStoreWrites int `json:"claim_store_writes"`
+	ClaimStoreErrors int `json:"claim_store_errors"`
 }
 
 type externalActivityCandidate struct {
@@ -121,25 +125,54 @@ type ExternalActivityTracker struct {
 	candidates   []externalActivityCandidate
 	files        map[string]externalRolloutCacheEntry
 	gatewayTurns map[string]gatewayTurnRegistration
-	diagnostics  ExternalActivityDiagnostics
+	// ownedGatewayTurns 是精确的 Thread+Turn 归属证据。生产环境可为它配置
+	// 私有 claim store，使 managed app-server 被重启强杀后，新 Tracker 仍能
+	// 区分旧 iPad turn 与真正的新 Mac turn。
+	ownedGatewayTurns   map[string]gatewayOwnedTurnClaim
+	gatewayClaimStore   *gatewayTurnClaimStore
+	gatewayClaimsLoaded bool
+	gatewayClaimsDirty  bool
+	diagnostics         ExternalActivityDiagnostics
 }
 
 func NewExternalActivityTracker(db string, registry *projects.Registry) *ExternalActivityTracker {
 	return &ExternalActivityTracker{
-		store:        NewThreadStore(db),
-		registry:     registry,
-		staleAfter:   defaultExternalActivityStaleAfter,
-		now:          time.Now,
-		stat:         os.Stat,
-		open:         os.Open,
-		query:        sqliteQueryFunc,
-		files:        map[string]externalRolloutCacheEntry{},
-		gatewayTurns: map[string]gatewayTurnRegistration{},
+		store:               NewThreadStore(db),
+		registry:            registry,
+		staleAfter:          defaultExternalActivityStaleAfter,
+		now:                 time.Now,
+		stat:                os.Stat,
+		open:                os.Open,
+		query:               sqliteQueryFunc,
+		files:               map[string]externalRolloutCacheEntry{},
+		gatewayTurns:        map[string]gatewayTurnRegistration{},
+		ownedGatewayTurns:   map[string]gatewayOwnedTurnClaim{},
+		gatewayClaimsLoaded: true,
 	}
 }
 
 func NewDefaultExternalActivityTracker(registry *projects.Registry) *ExternalActivityTracker {
 	return NewExternalActivityTracker("", registry)
+}
+
+// NewExternalActivityTrackerWithClaimStore 只为生产入口和重启回归测试启用持久化。
+// 普通 Router/单元测试继续使用纯内存构造器，避免污染当前用户的状态目录。
+func NewExternalActivityTrackerWithClaimStore(
+	db string,
+	registry *projects.Registry,
+	claimStorePath string,
+) *ExternalActivityTracker {
+	tracker := NewExternalActivityTracker(db, registry)
+	tracker.gatewayClaimStore = newGatewayTurnClaimStore(claimStorePath)
+	tracker.gatewayClaimsLoaded = tracker.gatewayClaimStore == nil
+	return tracker
+}
+
+func NewDefaultExternalActivityTrackerWithClaimStore(
+	registry *projects.Registry,
+	claimStorePath string,
+) *ExternalActivityTracker {
+	return NewExternalActivityTrackerWithClaimStore("", registry, claimStorePath)
 }
 
 func (t *ExternalActivityTracker) Diagnostics() ExternalActivityDiagnostics {
@@ -165,13 +198,17 @@ func (t *ExternalActivityTracker) RegisterGatewayTurnStart(threadID string, clie
 	defer t.mu.Unlock()
 
 	now := t.now().UTC()
+	t.ensureGatewayTurnClaimsLoaded(now)
 	t.pruneGatewayTurnRegistrations(now)
+	t.pruneGatewayOwnedTurnClaims(now)
 	if t.gatewayTurns == nil {
 		t.gatewayTurns = map[string]gatewayTurnRegistration{}
 	}
 	key := gatewayTurnRegistrationKey(threadID, clientUserMessageID)
 	t.gatewayTurns[key] = gatewayTurnRegistration{registeredAt: now}
-	t.trimGatewayTurnRegistrations()
+	t.gatewayClaimsDirty = true
+	t.trimGatewayTurnClaims()
+	t.persistGatewayTurnClaims()
 }
 
 // Snapshot 只返回仍有外部 turn 运行证据的白名单项目线程。
@@ -183,13 +220,17 @@ func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 	if t.registry == nil {
 		return []ExternalActivity{}, nil
 	}
+	now := t.now().UTC()
+	t.ensureGatewayTurnClaimsLoaded(now)
+	t.pruneGatewayTurnRegistrations(now)
+	t.pruneGatewayOwnedTurnClaims(now)
+	defer t.persistGatewayTurnClaims()
+
 	candidates, err := t.loadCandidates()
 	if err != nil {
 		return nil, err
 	}
 
-	now := t.now()
-	t.pruneGatewayTurnRegistrations(now.UTC())
 	activities := make([]ExternalActivity, 0, len(candidates))
 	knownPaths := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
@@ -210,8 +251,23 @@ func (t *ExternalActivityTracker) Snapshot() ([]ExternalActivity, error) {
 		if err != nil {
 			continue
 		}
-		if expireGatewayTurnPending(&entry, now.UTC()) {
+		if entry.gatewayOwned &&
+			!t.hasGatewayOwnedTurnClaim(entry.metaThreadID, entry.turnID) {
+			// claim TTL/容量裁剪已经失效时，不能让内存 rollout cache 继续隐藏 turn。
+			// 此时若文件仍新鲜，安全降级为 external；若文件也已 stale，则自然不返回。
+			entry.gatewayOwned = false
 			t.files[path] = entry
+		}
+		if expireGatewayTurnPending(&entry, now) {
+			t.files[path] = entry
+		}
+		if entry.active && entry.gatewayOwned {
+			t.refreshGatewayOwnedTurnClaim(
+				entry.metaThreadID,
+				entry.turnID,
+				info.ModTime().UTC(),
+				now,
+			)
 		}
 		if !isCodexDesktopOriginator(entry.originator) ||
 			entry.metaThreadID != candidate.ThreadID ||
@@ -473,6 +529,11 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 				entry.active &&
 				gatewayTurnEvidenceMatchesTaskStart(evidence, entry.turnStartedAt) {
 				entry.gatewayOwned = true
+				t.setGatewayOwnedTurnClaim(
+					entry.metaThreadID,
+					entry.turnID,
+					evidence.eventAt,
+				)
 			} else if matched && !entry.active {
 				entry.gatewayTurnPending = true
 				entry.gatewayTurnPendingAt = evidence.eventAt
@@ -483,7 +544,7 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 			entry.active = true
 			entry.turnID = turnID
 			entry.turnStartedAt = turnStartedAt
-			entry.gatewayOwned = entry.gatewayTurnPending &&
+			pendingOwned := entry.gatewayTurnPending &&
 				gatewayTurnEvidenceMatchesTaskStart(
 					gatewayTurnEvidence{
 						registeredAt: entry.gatewayTurnPendingRegisteredAt,
@@ -491,8 +552,30 @@ func (t *ExternalActivityTracker) applyExternalRolloutLine(entry *externalRollou
 					},
 					turnStartedAt,
 				)
+			if pendingOwned {
+				t.setGatewayOwnedTurnClaim(
+					entry.metaThreadID,
+					turnID,
+					entry.gatewayTurnPendingAt,
+				)
+			}
+			entry.gatewayOwned = pendingOwned ||
+				t.hasGatewayOwnedTurnClaim(entry.metaThreadID, turnID)
+			// 全量重扫会先经过历史 turn，不能让历史 task_started 删除时间更晚的
+			// 持久化 claim。只有时间上不早于 claim 的不同 turn 才能证明控制边界
+			// 已前进；没有 exact claim 的新 Mac turn 仍会恢复 external 只读保护。
+			t.removeSupersededGatewayOwnedTurnClaims(
+				entry.metaThreadID,
+				turnID,
+				turnStartedAt,
+			)
 			clearGatewayTurnPending(entry)
 		case "task_complete", "turn_aborted":
+			terminalTurnID := turnID
+			if terminalTurnID == "" {
+				terminalTurnID = entry.turnID
+			}
+			t.removeGatewayOwnedTurnClaim(entry.metaThreadID, terminalTurnID)
 			// 旧 turn 的迟到 terminal 不能终止已经开始的新 turn。
 			if turnID == "" || entry.turnID == "" || turnID == entry.turnID {
 				entry.active = false
@@ -546,6 +629,7 @@ func (t *ExternalActivityTracker) consumeGatewayTurnRegistration(
 	// 同一个 client id 只能消费一次。即使时间校验失败也删除，避免恶意或损坏
 	// rollout 在稍后的重复行中重新尝试命中。
 	delete(t.gatewayTurns, key)
+	t.gatewayClaimsDirty = true
 	if eventAt.Before(registration.registeredAt.Add(-gatewayTurnEventClockSkew)) {
 		return gatewayTurnEvidence{}, false
 	}
@@ -571,7 +655,7 @@ func gatewayTurnEvidenceMatchesTaskStart(evidence gatewayTurnEvidence, turnStart
 		return false
 	}
 	if turnStartedAt.Before(evidence.registeredAt.Add(-gatewayTurnEventClockSkew)) ||
-		turnStartedAt.After(evidence.registeredAt.Add(gatewayTurnRegistrationTTL)) {
+		turnStartedAt.After(evidence.registeredAt.Add(gatewayTurnStartWindow)) {
 		return false
 	}
 	delta := turnStartedAt.Sub(evidence.eventAt)
@@ -585,26 +669,8 @@ func (t *ExternalActivityTracker) pruneGatewayTurnRegistrations(now time.Time) {
 	for key, registration := range t.gatewayTurns {
 		if now.After(registration.registeredAt.Add(gatewayTurnRegistrationTTL)) {
 			delete(t.gatewayTurns, key)
+			t.gatewayClaimsDirty = true
 		}
-	}
-}
-
-func (t *ExternalActivityTracker) trimGatewayTurnRegistrations() {
-	for len(t.gatewayTurns) > gatewayTurnRegistrationLimit {
-		var oldestKey string
-		var oldestAt time.Time
-		for key, registration := range t.gatewayTurns {
-			if oldestKey == "" ||
-				registration.registeredAt.Before(oldestAt) ||
-				(registration.registeredAt.Equal(oldestAt) && key < oldestKey) {
-				oldestKey = key
-				oldestAt = registration.registeredAt
-			}
-		}
-		if oldestKey == "" {
-			return
-		}
-		delete(t.gatewayTurns, oldestKey)
 	}
 }
 

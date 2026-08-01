@@ -118,18 +118,20 @@ struct SessionPinnedBadge: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let side: CGFloat = compact ? 17 : 20
+        // 色块只承担置顶强调，不应比同一列表中的运行时图标更抢眼。
+        let side: CGFloat = compact ? 14 : 17
+        let cornerRadius: CGFloat = compact ? 4 : 5
 
         Image(systemName: "pin.fill")
-            .font(themeStore.uiFont(size: compact ? 8 : 10, weight: .bold))
+            .font(themeStore.uiFont(size: compact ? 7 : 8, weight: .bold))
             .foregroundStyle(tokens.primaryActionForeground)
             .frame(width: side, height: side)
             .background(
                 tokens.primaryAction,
-                in: RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: compact ? 5 : 6, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(tokens.primaryActionForeground.opacity(0.18), lineWidth: 0.5)
             }
             .accessibilityElement(children: .ignore)
@@ -281,8 +283,66 @@ struct SessionListPartition: Equatable {
     }
 }
 
+/// 会话页空态必须依赖“已打开工作区”与连接状态，不能用会话数量反推目录是否存在。
+/// 这里集中定义优先级，避免加载或错误被首次使用引导覆盖。
+enum SessionListPresentationState: Equatable {
+    case content
+    case loading
+    case searching
+    case needsWorkspace
+    case noSessions
+    case noMatches
+    case networkUnavailable
+    case runtimeUnavailable(String)
+    case loadFailed(String)
+
+    static func resolve(
+        hasVisibleSessions: Bool,
+        hasOpenedWorkspace: Bool,
+        isLoading: Bool,
+        isSearching: Bool,
+        isFiltering: Bool,
+        isNetworkUnavailable: Bool,
+        errorMessage: String?,
+        connectionStatus: ConnectionStatus
+    ) -> Self {
+        guard !hasVisibleSessions else { return .content }
+
+        if case .failed(let message) = connectionStatus {
+            return .runtimeUnavailable(message)
+        }
+        if isNetworkUnavailable {
+            return .networkUnavailable
+        }
+        if let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !message.isEmpty {
+            return .loadFailed(message)
+        }
+        if isLoading {
+            return .loading
+        }
+        switch connectionStatus {
+        case .idle, .testing:
+            return .loading
+        case .connected, .failed:
+            break
+        }
+        if isSearching {
+            return .searching
+        }
+        if isFiltering {
+            return .noMatches
+        }
+        if !hasOpenedWorkspace {
+            return .needsWorkspace
+        }
+        return .noSessions
+    }
+}
+
 /// 完整会话库只展示轻量索引；消息历史仍在用户选中会话后按需加载。
 struct SessionListView: View {
+    @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -291,39 +351,15 @@ struct SessionListView: View {
 
     var onNewSession: (() -> Void)?
     var onSelectSession: ((AgentSession) -> Void)?
+    var onOpenWorkspaces: (() -> Void)?
     var manageConnections: (() -> Void)?
+    var placesFilterInTrailingToolbar = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         List {
-            if visibleSessions.isEmpty && !sessionStore.isLoading {
-                if sessionStore.isSessionSearchActive && sessionStore.isSearchingRemoteSessionResults {
-                    VStack(spacing: 10) {
-                        ProgressView()
-                        Text(L10n.text("ui.searching_historical_conversations"))
-                            .font(themeStore.uiFont(size: 13, weight: .medium))
-                            .foregroundStyle(tokens.secondaryText)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-                    .accessibilityIdentifier("sessions.search.initialLoading")
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                } else {
-                    ContentUnavailableView {
-                        Label(L10n.text("ui.no_matching_session"), systemImage: "bubble.left.and.bubble.right")
-                    } description: {
-                        Text(sessionStore.isSessionSearchActive ? L10n.text("ui.try_changing_keywords_or_filter_conditions") : L10n.text("ui.new_sessions_created_from_a_workspace_appear_here"))
-                    } actions: {
-                        Button(L10n.text("ui.new_session"), action: presentNewSession)
-                            .buttonStyle(.borderedProminent)
-                            .tint(tokens.primaryAction)
-                    }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                }
-            } else {
+            if presentationState == .content {
                 if !sessionPartition.active.isEmpty {
                     Section {
                         sessionRows(sessionPartition.active)
@@ -349,6 +385,11 @@ struct SessionListView: View {
                         )
                     }
                 }
+            } else {
+                sessionListUnavailableContent(state: presentationState, tokens: tokens)
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
 
             // Gateway 过滤后当前页可能没有可见结果但仍给出 nextCursor，入口必须独立于空态展示。
@@ -395,31 +436,45 @@ struct SessionListView: View {
                 // 全局 Mac 入口与列表筛选是不同作用域，固定间隔让系统分别生成圆形材质。
                 ToolbarSpacer(.fixed, placement: .topBarLeading)
             }
-            ToolbarItem(placement: .topBarLeading) {
-                filterMenu(tokens: tokens)
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                sessionListToolbarButton(
-                    systemImage: "arrow.clockwise",
-                    accessibilityLabel: L10n.text("ui.refresh_session_library"),
-                    tokens: tokens
-                ) {
-                    Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
+            if placesFilterInTrailingToolbar {
+                // 真浮层只会改变详情内容的 leading safe area，系统 topBarLeading 仍按整窗放置。
+                // 将筛选并入右侧工具组，避免其圆形玻璃底板被侧栏盖住。
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    filterMenu(tokens: tokens)
+                    sessionListTrailingToolbarActions(tokens: tokens)
                 }
-
-                sessionListToolbarButton(
-                    systemImage: "plus",
-                    accessibilityLabel: L10n.text("ui.new_session_3da224c4"),
-                    tokens: tokens,
-                    isPrimary: true,
-                    action: presentNewSession
-                )
-                .accessibilityIdentifier("sessions.newSession")
+            } else {
+                ToolbarItem(placement: .topBarLeading) {
+                    filterMenu(tokens: tokens)
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    sessionListTrailingToolbarActions(tokens: tokens)
+                }
             }
         }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
         }
+    }
+
+    @ViewBuilder
+    private func sessionListTrailingToolbarActions(tokens: ThemeTokens) -> some View {
+        sessionListToolbarButton(
+            systemImage: "arrow.clockwise",
+            accessibilityLabel: L10n.text("ui.refresh_session_library"),
+            tokens: tokens
+        ) {
+            Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
+        }
+
+        sessionListToolbarButton(
+            systemImage: "plus",
+            accessibilityLabel: L10n.text("ui.new_session_3da224c4"),
+            tokens: tokens,
+            isPrimary: true,
+            action: presentNewSession
+        )
+        .accessibilityIdentifier("sessions.newSession")
     }
 
     /// 使用系统工具栏按钮，让不同系统版本自行处理材质、按下反馈和命中区域。
@@ -431,8 +486,7 @@ struct SessionListView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
+            WorkbenchChromeIcon(systemName: systemImage)
         }
         // 顶部导航保留品牌紫；工具栏仅靠明度区分主次，避免刷新与新建重复着色。
         .foregroundStyle(isPrimary ? tokens.primaryText : tokens.secondaryText)
@@ -449,6 +503,131 @@ struct SessionListView: View {
 
     private var sessionPartition: SessionListPartition {
         SessionListPartition(sessions: visibleSessions)
+    }
+
+    private var presentationState: SessionListPresentationState {
+        SessionListPresentationState.resolve(
+            hasVisibleSessions: !visibleSessions.isEmpty,
+            // sidebarProjects 只包含 rememberWorkspace 记录的已打开目录，不包含后端候选项目。
+            hasOpenedWorkspace: !sessionStore.sidebarProjects.isEmpty,
+            isLoading: sessionStore.isLoading,
+            isSearching: sessionStore.isSessionSearchActive && sessionStore.isSearchingRemoteSessionResults,
+            isFiltering: sessionStore.isSessionSearchActive || selectedWorkspaceID != "all" || selectedStatus != .all,
+            isNetworkUnavailable: sessionStore.isNetworkUnavailable,
+            errorMessage: sessionStore.errorMessage,
+            connectionStatus: appStore.connectionStatus
+        )
+    }
+
+    @ViewBuilder
+    private func sessionListUnavailableContent(
+        state: SessionListPresentationState,
+        tokens: ThemeTokens
+    ) -> some View {
+        switch state {
+        case .content:
+            EmptyView()
+        case .loading:
+            VStack(spacing: 10) {
+                ProgressView()
+                Text(L10n.text("ui.loading_sessions"))
+                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .padding(.vertical, 32)
+            .accessibilityIdentifier("sessions.loading")
+        case .searching:
+            VStack(spacing: 10) {
+                ProgressView()
+                Text(L10n.text("ui.searching_historical_conversations"))
+                    .font(themeStore.uiFont(size: 13, weight: .medium))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+            .padding(.vertical, 24)
+            .accessibilityIdentifier("sessions.search.initialLoading")
+        case .needsWorkspace:
+            ContentUnavailableView {
+                Label(L10n.text("ui.no_workspace_has_been_opened_yet"), systemImage: "folder.badge.plus")
+            } description: {
+                Text(L10n.text("ui.open_a_workspace_to_load_its_sessions"))
+            } actions: {
+                Button(L10n.text("ui.go_to_work_area")) {
+                    onOpenWorkspaces?()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(tokens.primaryAction)
+                .accessibilityIdentifier("sessions.empty.openWorkspaces")
+            }
+            .accessibilityIdentifier("sessions.empty.needsWorkspace")
+        case .noSessions:
+            ContentUnavailableView {
+                Label(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right")
+            } description: {
+                Text(L10n.text("ui.new_sessions_created_from_a_workspace_appear_here"))
+            } actions: {
+                Button(L10n.text("ui.new_session"), action: presentNewSession)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(tokens.primaryAction)
+            }
+            .accessibilityIdentifier("sessions.empty.noSessions")
+        case .noMatches:
+            ContentUnavailableView {
+                Label(L10n.text("ui.no_matching_session"), systemImage: "magnifyingglass")
+            } description: {
+                Text(L10n.text("ui.try_changing_keywords_or_filter_conditions"))
+            }
+            .accessibilityIdentifier("sessions.empty.noMatches")
+        case .networkUnavailable:
+            sessionFailureContent(
+                title: L10n.text("ui.network_is_unavailable"),
+                message: L10n.text("ui.the_network_is_unavailable_and_synchronization_has_been"),
+                systemImage: "wifi.slash",
+                tokens: tokens
+            )
+        case .runtimeUnavailable(let message):
+            sessionFailureContent(
+                title: L10n.text("ui.session_runtime_unavailable"),
+                message: message,
+                systemImage: "exclamationmark.triangle",
+                tokens: tokens
+            )
+        case .loadFailed(let message):
+            sessionFailureContent(
+                title: L10n.text("ui.session_loading_failed"),
+                message: message,
+                systemImage: "exclamationmark.triangle",
+                tokens: tokens
+            )
+        }
+    }
+
+    private func sessionFailureContent(
+        title: String,
+        message: String,
+        systemImage: String,
+        tokens: ThemeTokens
+    ) -> some View {
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            Text(message)
+        } actions: {
+            Button(L10n.text("ui.try_again"), action: retrySessionList)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(tokens.primaryAction)
+                .accessibilityIdentifier("sessions.empty.retry")
+        }
+        .accessibilityIdentifier("sessions.empty.failure")
+    }
+
+    private func retrySessionList() {
+        Task {
+            await appStore.preflightConnection()
+            await sessionStore.refreshSessionLibraryIndex(authoritative: true)
+        }
     }
 
     @ViewBuilder
@@ -534,6 +713,7 @@ struct SessionListView: View {
                 .foregroundStyle(tokens.secondaryText)
         }
         .accessibilityLabel(L10n.text("ui.filter_sessions"))
+        .accessibilityIdentifier("sessions.filter")
     }
 
     private var filterTitle: String {

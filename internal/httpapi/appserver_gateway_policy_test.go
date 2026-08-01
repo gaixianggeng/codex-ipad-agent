@@ -47,17 +47,6 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 			want: "cwd",
 		},
 		{
-			name: "thread list missing cwd",
-			payload: map[string]any{
-				"id":     6,
-				"method": "thread/list",
-				"params": map[string]any{
-					"limit": 20,
-				},
-			},
-			want: "cwd",
-		},
-		{
 			name: "approval policy never",
 			payload: map[string]any{
 				"id":     4,

@@ -3,6 +3,20 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+enum InitialConnectionErrorClassifier {
+    static func isCredentialRejection(_ raw: String) -> Bool {
+        let lowercased = raw.lowercased()
+        if lowercased.contains("unauthorized") {
+            return true
+        }
+        // 401 必须是独立状态码；Keychain 的 -34018 等 OSStatus 不能被子串误判为鉴权失败。
+        return raw.range(
+            of: #"(^|\D)401(\D|$)"#,
+            options: .regularExpression
+        ) != nil
+    }
+}
+
 enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
     case initialConnection
     case addConnectionProfile
@@ -128,7 +142,6 @@ struct InitialConnectionSettingsSections: View {
     @State private var isAddingConnectionProfile = false
     @State private var profileDisplayName = ""
     @State private var profileOperationID: String?
-    @State private var profileRenameTarget: ConnectionProfile?
     @State private var pendingRemovalConfirmation: ConnectionCredentialRemovalConfirmation?
     @State private var isShowingAdvancedManualConnection = false
     @State private var localError: String?
@@ -136,6 +149,8 @@ struct InitialConnectionSettingsSections: View {
     @State private var copiedConnectionProfileID: String?
     @State private var copyConnectionTask: Task<Void, Never>?
     @State private var copyFeedbackTask: Task<Void, Never>?
+
+    let onRequestProfileRename: (ConnectionProfile) -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -397,12 +412,6 @@ struct InitialConnectionSettingsSections: View {
         }
         // 真正的相机 Cover 由 SettingsView 根层呈现，避免 Form.Section 重建后丢失 presenter。
         .onAppear(perform: configureQRCodeScannerPresentation)
-        .sheet(item: $profileRenameTarget) { profile in
-            ConnectionProfileRenameSheet(profile: profile) { displayName in
-                try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
-                localError = nil
-            }
-        }
         .confirmationDialog(
             pendingRemovalConfirmation?.title ?? L10n.text("ui.confirm_to_delete_connection_credentials"),
             isPresented: removalConfirmationBinding,
@@ -611,7 +620,8 @@ struct InitialConnectionSettingsSections: View {
 
             Menu {
                 Button(L10n.text("ui.rename")) {
-                    profileRenameTarget = item.profile
+                    localError = nil
+                    onRequestProfileRename(item.profile)
                 }
                 .accessibilityIdentifier("settings.profile.rename.\(item.id)")
 
@@ -963,7 +973,7 @@ struct InitialConnectionSettingsSections: View {
         if lowercased.contains("expired") || raw.contains("过期") {
             return L10n.text("ui.the_pairing_qr_code_has_expired_please_re")
         }
-        if lowercased.contains("unauthorized") || lowercased.contains("401") {
+        if InitialConnectionErrorClassifier.isCredentialRejection(raw) {
             return L10n.text("ui.this_device_has_not_been_verified_by_mac")
         }
         if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {
@@ -1250,7 +1260,7 @@ struct InitialConnectionSettingsSections: View {
             token = appStore.token
             isAddingConnectionProfile = false
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
-            // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描一次性配对码。
+            // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
             Task { @MainActor in
                 defer { isSavingConnection = false }
                 _ = await refreshCommittedConnection(maxWait: wasConfigured ? 10 : 45)

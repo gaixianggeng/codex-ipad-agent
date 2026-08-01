@@ -43,6 +43,42 @@ func TestValidateRejectsEmptyToken(t *testing.T) {
 	}
 }
 
+func TestCapabilityDisableListAcceptsKnownAndFutureVersionedNames(t *testing.T) {
+	cfg := defaults()
+	cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
+	cfg.Capabilities.Disabled = []string{"file_upload_v1", "future_safe_path_v2"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("本地开关应允许已知能力和未来合法能力名：%v", err)
+	}
+	if !cfg.Capabilities.IsDisabled("file_upload_v1") ||
+		!cfg.Capabilities.IsDisabled("future_safe_path_v2") {
+		t.Fatalf("能力禁用列表没有被稳定识别：%+v", cfg.Capabilities.Disabled)
+	}
+}
+
+func TestCapabilityDisableListRejectsDuplicateOrUnversionedNames(t *testing.T) {
+	base := func() Config {
+		cfg := defaults()
+		cfg.Auth.Token = "0123456789abcdef0123456789abcdef"
+		cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}
+		return cfg
+	}
+
+	duplicate := base()
+	duplicate.Capabilities.Disabled = []string{"file_upload_v1", "file_upload_v1"}
+	if err := duplicate.Validate(); err == nil {
+		t.Fatal("重复 capability 必须被拒绝，避免开关语义含糊")
+	}
+
+	unversioned := base()
+	unversioned.Capabilities.Disabled = []string{"file_upload"}
+	if err := unversioned.Validate(); err == nil {
+		t.Fatal("没有 _vN 版本后缀的 capability 必须被拒绝")
+	}
+}
+
 // An installed app ships its own bridge next to agentd, so an empty
 // claude.bridge_bin is a complete configuration there — that is what lets a
 // fresh install work with no per-machine setup. Without a bundled copy it is

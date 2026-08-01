@@ -1,6 +1,267 @@
 import Foundation
 import Markdown
 
+enum ConversationMarkdownPresentation {
+    static func containsLink(in content: String) -> Bool {
+        // 用户普通消息继续沿用原有 Text 渲染；仅真正包含 Markdown 链接语法时进入富文本路径。
+        // 这里不只判断 `](`，避免用户讨论 Markdown 语法时无意改变原有气泡排版。
+        content.range(
+            of: #"\[[^\]\r\n]+\]\([^\)\r\n]+\)"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    static func displayContent(from content: String) -> String {
+        // Codex 桌面端会在最终回复末尾附加内部 Git 动作标记，并由自己的富文本层消费。
+        // iOS 暂不执行这些动作，只在展示层移除受支持标记，避免泄露 cwd 等本机路径。
+        guard content.contains("::git-") else {
+            return content
+        }
+
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+        var visibleLines: [String] = []
+        var activeFence: MarkdownFence?
+        var removedDirective = false
+
+        for line in lines {
+            if let fence = markdownFence(in: line) {
+                if let currentFence = activeFence {
+                    if fence.marker == currentFence.marker,
+                       fence.length >= currentFence.length,
+                       fence.trailingText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        activeFence = nil
+                    }
+                } else {
+                    activeFence = fence
+                }
+                visibleLines.append(String(line))
+                continue
+            }
+
+            if activeFence != nil || isIndentedCodeLine(line) {
+                visibleLines.append(String(line))
+                continue
+            }
+
+            let sanitized = removingSupportedGitDirectives(from: String(line))
+            removedDirective = removedDirective || sanitized.removedDirective
+            if !sanitized.content.trimmingCharacters(in: .whitespaces).isEmpty || !sanitized.removedDirective {
+                visibleLines.append(sanitized.content)
+            }
+        }
+
+        guard removedDirective else {
+            return content
+        }
+        while visibleLines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            visibleLines.removeLast()
+        }
+        return visibleLines.joined(separator: "\n")
+    }
+
+    private struct MarkdownFence {
+        let marker: Character
+        let length: Int
+        let trailingText: String
+    }
+
+    private struct SanitizedLine {
+        let content: String
+        let removedDirective: Bool
+    }
+
+    private static func markdownFence(in line: Substring) -> MarkdownFence? {
+        var index = line.startIndex
+        var indentation = 0
+        while index < line.endIndex, line[index] == " ", indentation < 4 {
+            indentation += 1
+            index = line.index(after: index)
+        }
+        guard indentation < 4, index < line.endIndex else {
+            return nil
+        }
+
+        let marker = line[index]
+        guard marker == "`" || marker == "~" else {
+            return nil
+        }
+        var end = index
+        var length = 0
+        while end < line.endIndex, line[end] == marker {
+            length += 1
+            end = line.index(after: end)
+        }
+        guard length >= 3 else {
+            return nil
+        }
+        return MarkdownFence(
+            marker: marker,
+            length: length,
+            trailingText: String(line[end...])
+        )
+    }
+
+    private static func isIndentedCodeLine(_ line: Substring) -> Bool {
+        var spaces = 0
+        for character in line {
+            if character == "\t" {
+                return true
+            }
+            guard character == " " else {
+                return false
+            }
+            spaces += 1
+            if spaces >= 4 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func removingSupportedGitDirectives(from line: String) -> SanitizedLine {
+        var result = ""
+        var index = line.startIndex
+        var inlineCodeDelimiterLength: Int?
+        var removedDirective = false
+
+        while index < line.endIndex {
+            if line[index] == "`" {
+                let run = backtickRun(in: line, from: index)
+                if let delimiterLength = inlineCodeDelimiterLength {
+                    if run.length == delimiterLength {
+                        inlineCodeDelimiterLength = nil
+                    }
+                } else {
+                    inlineCodeDelimiterLength = run.length
+                }
+                result.append(contentsOf: line[index..<run.endIndex])
+                index = run.endIndex
+                continue
+            }
+
+            if inlineCodeDelimiterLength == nil,
+               let directiveEnd = supportedGitDirectiveEnd(in: line, from: index) {
+                removedDirective = true
+                index = directiveEnd
+                continue
+            }
+
+            // 流式消息可能只到 `::git-push{...`。若尾部已明确是受支持动作，先隐藏未闭合片段，
+            // 完成事件仍会用完整正文重新生成渲染计划，避免内部路径在流式阶段短暂闪现。
+            if inlineCodeDelimiterLength == nil,
+               isIncompleteSupportedGitDirectiveTail(in: line, from: index) {
+                removedDirective = true
+                break
+            }
+
+            result.append(line[index])
+            index = line.index(after: index)
+        }
+
+        if removedDirective {
+            result = result.trimmingCharacters(in: .whitespaces)
+        }
+        return SanitizedLine(content: result, removedDirective: removedDirective)
+    }
+
+    private static func backtickRun(in line: String, from start: String.Index) -> (length: Int, endIndex: String.Index) {
+        var end = start
+        var length = 0
+        while end < line.endIndex, line[end] == "`" {
+            length += 1
+            end = line.index(after: end)
+        }
+        return (length, end)
+    }
+
+    private static func supportedGitDirectiveEnd(in line: String, from start: String.Index) -> String.Index? {
+        guard let openingBrace = supportedGitDirectiveOpeningBrace(in: line, from: start) else {
+            return nil
+        }
+
+        var index = line.index(after: openingBrace)
+        var quote: Character?
+        var isEscaped = false
+        while index < line.endIndex {
+            let character = line[index]
+            if isEscaped {
+                isEscaped = false
+            } else if character == "\\", quote != nil {
+                isEscaped = true
+            } else if character == "\"" || character == "'" {
+                if quote == character {
+                    quote = nil
+                } else if quote == nil {
+                    quote = character
+                }
+            } else if character == "}", quote == nil {
+                return line.index(after: index)
+            }
+            index = line.index(after: index)
+        }
+        return nil
+    }
+
+    private static func isIncompleteSupportedGitDirectiveTail(in line: String, from start: String.Index) -> Bool {
+        guard supportedGitDirectiveOpeningBrace(in: line, from: start) != nil else {
+            return false
+        }
+        return supportedGitDirectiveEnd(in: line, from: start) == nil
+    }
+
+    private static func supportedGitDirectiveOpeningBrace(
+        in line: String,
+        from start: String.Index
+    ) -> String.Index? {
+        for action in ["stage", "commit", "push"] {
+            let prefix = "::git-\(action){"
+            guard let end = line.index(start, offsetBy: prefix.count, limitedBy: line.endIndex),
+                  line[start..<end] == prefix else {
+                continue
+            }
+            return line.index(before: end)
+        }
+        return nil
+    }
+}
+
+enum ConversationOriginPresentation {
+    static func isCreatedFromAnotherConversation(
+        session: AgentSession?,
+        initialUserContent: String
+    ) -> Bool {
+        if let parentThreadID = session?.parentThreadID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !parentThreadID.isEmpty {
+            return true
+        }
+
+        if session?.context?.sources.contains(where: isCrossSessionSource) == true {
+            return true
+        }
+
+        // 部分 Codex Desktop 历史会话只落库为普通 vscode/user thread，没有 parent/fork 元数据。
+        // 兼容这类旧记录时使用生成提示的强特征组合；单独出现 Linear 链接不会被误标。
+        let normalized = initialUserContent.lowercased()
+        let hasURLAsMarkdownLabel = normalized.contains("[https://") || normalized.contains("[http://")
+        let hasMarkdownURLDestination = normalized.contains("](https://") || normalized.contains("](http://")
+        let hasInjectedSkillReference = initialUserContent.contains("[$") && normalized.contains("skill.md)")
+        return hasURLAsMarkdownLabel && hasMarkdownURLDestination && hasInjectedSkillReference
+    }
+
+    private static func isCrossSessionSource(_ source: SessionContextSource) -> Bool {
+        let values = [source.id, source.kind, source.label].map {
+            $0.lowercased().replacingOccurrences(of: "-", with: "_")
+        }
+        return values.contains { value in
+            value.contains("forked_from")
+                || value == "fork"
+                || value.contains("subagent")
+                || value.contains("sub_agent")
+                || value.contains("handoff")
+        }
+    }
+}
+
 struct MarkdownParser {
     static let shared = MarkdownParser()
 
@@ -450,7 +711,15 @@ private struct InlineTextBuilder {
             let safeLink = markdownLink.destination.flatMap(URL.init(string:)).flatMap { url in
                 MarkdownLinkPolicy.isAllowed(url) ? url : nil
             }
-            markdownLink.children.forEach { append($0, intent: intent, link: safeLink ?? link) }
+            if let safeLink,
+               let compactLabel = MarkdownLinkPolicy.compactDisplayLabel(
+                   for: safeLink,
+                   sourceLabel: markdownLink.plainText
+               ) {
+                append(compactLabel, intent: intent, link: safeLink)
+            } else {
+                markdownLink.children.forEach { append($0, intent: intent, link: safeLink ?? link) }
+            }
         case let image as Markdown.Image:
             let beforeCount = plain.count
             image.children.forEach { append($0, intent: intent, link: link) }
@@ -498,6 +767,29 @@ private enum MarkdownLinkPolicy {
             return false
         }
         return scheme == "http" || scheme == "https" || scheme == "mailto"
+    }
+
+    static func compactDisplayLabel(for url: URL, sourceLabel: String) -> String? {
+        // 生成的新会话常把 Linear URL 同时放进 Markdown 的 label 与 destination。
+        // 只压缩“label 本身就是 URL”的已知 Issue 链接，保留用户主动写下的描述性标题。
+        let label = sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard label.lowercased().hasPrefix("https://") || label.lowercased().hasPrefix("http://"),
+              url.host?.lowercased() == "linear.app"
+        else {
+            return nil
+        }
+
+        let components = url.pathComponents.filter { $0 != "/" }
+        guard let issueIndex = components.firstIndex(where: { $0.lowercased() == "issue" }),
+              components.indices.contains(issueIndex + 1)
+        else {
+            return nil
+        }
+        let identifier = components[issueIndex + 1].uppercased()
+        guard identifier.range(of: #"^[A-Z]+-[0-9]+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return identifier
     }
 }
 

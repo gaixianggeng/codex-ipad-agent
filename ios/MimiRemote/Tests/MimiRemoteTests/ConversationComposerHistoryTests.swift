@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import Combine
 import Security
 import SwiftUI
@@ -7,6 +8,90 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testAppleSpeechHealthMonitorOnlyArmsAfterSustainedAudibleInput() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.7), 1)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+    }
+
+    func testAppleSpeechHealthMonitorResetsAfterGapAndAfterResult() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.2))
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1.6))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.7), 1)
+
+        monitor.observeResult()
+
+        XCTAssertFalse(monitor.isAwaitingResult(generation: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 3))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 3.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 3.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 3.7), 2)
+    }
+
+    func testAppleSpeechHealthMonitorDisarmsAfterSilenceAndCanRearm() {
+        var monitor = AppleSpeechHealthMonitor()
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.25))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 1.5))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 1.7), 1)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+
+        XCTAssertNil(monitor.observeLevel(0.05, at: 1.8))
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 1))
+        XCTAssertNil(monitor.observeLevel(0.05, at: 2.1))
+        XCTAssertFalse(monitor.isAwaitingResult(generation: 1))
+
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.2))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.45))
+        XCTAssertNil(monitor.observeLevel(0.8, at: 2.7))
+        XCTAssertEqual(monitor.observeLevel(0.8, at: 2.9), 2)
+        XCTAssertTrue(monitor.isAwaitingResult(generation: 2))
+    }
+
+    func testAppleSpeechAudioSessionEventParsesInterruptionNotifications() {
+        let began = Notification(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue,
+                AVAudioSessionInterruptionReasonKey: UInt(1)
+            ]
+        )
+        let ended = Notification(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue
+            ]
+        )
+
+        XCTAssertEqual(
+            AppleSpeechAudioSessionEvent.interruption(from: began),
+            .interruptionBegan(reasonRawValue: 1)
+        )
+        XCTAssertEqual(
+            AppleSpeechAudioSessionEvent.interruption(from: ended),
+            .interruptionEnded
+        )
+        XCTAssertNil(
+            AppleSpeechAudioSessionEvent.interruption(
+                from: Notification(name: AVAudioSession.routeChangeNotification)
+            )
+        )
+    }
+
     func testImageAttachmentEncoderDownsamplesLargeScreenshotAndProducesJPEGDataURL() throws {
         let sourceSize = CGSize(width: 2_732, height: 2_048)
         let rendererFormat = UIGraphicsImageRendererFormat.default()
@@ -2715,6 +2800,86 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(store.load(endpoint: "http://mac-a.local:8787").isEmpty)
         XCTAssertEqual(store.load(endpoint: "http://mac-b.local:8787").map(\.id), [second.id])
+    }
+
+    func testRecentWorkspaceStoreMigratesDuplicatePathToCanonicalWorkspaceID() throws {
+        let suiteName = "RecentWorkspaceStoreTests.DuplicatePath.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let profileID = "mac-a"
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "旧名称",
+            path: "/Users/me/code/chat-archive/",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        var rawStorage = ProfileScopedStorage<[AgentWorkspace]>()
+        rawStorage.byProfileID[profileID] = [legacy, canonical]
+        defaults.set(
+            try JSONEncoder().encode(rawStorage),
+            forKey: "agentd.recentWorkspaces"
+        )
+        let store = RecentWorkspaceStore(defaults: defaults)
+
+        let migration = store.loadReconciled(profileID: profileID)
+
+        // ws_<path hash> 是 agentd 的稳定 identity，即使旧 project ID 时间更晚也不能反向降级。
+        XCTAssertEqual(migration.workspaces.map(\.id), [canonical.id])
+        XCTAssertEqual(
+            migration.workspaces.first?.lastOpenedAt,
+            legacy.lastOpenedAt,
+            "合并后仍保留两条记录中的最近打开时间"
+        )
+        XCTAssertEqual(migration.replacedWorkspaceIDs, [legacy.id: canonical.id])
+        XCTAssertEqual(store.load(profileID: profileID), migration.workspaces)
+    }
+
+    func testRecentWorkspaceStoreTreatsDarwinVarAliasAsSamePath() {
+        let profileID = "mac-a"
+        let store = makeRecentWorkspaceStore(workspaces: [], endpoint: "http://mac-a.local:8787")
+        let legacy = AgentWorkspace(
+            id: "legacy-var",
+            name: "缓存",
+            path: "/var/folders/example"
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_var",
+            name: "缓存",
+            path: "/private/var/folders/example"
+        )
+
+        store.save([legacy, canonical], profileID: profileID)
+
+        let loaded = store.load(profileID: profileID)
+        XCTAssertEqual(loaded.map(\.id), [canonical.id])
+        XCTAssertEqual(loaded.first?.path, "/private/var/folders/example")
+    }
+
+    func testRecentWorkspaceStoreDoesNotMergeSameNameAtDifferentPaths() {
+        let profileID = "mac-a"
+        let store = makeRecentWorkspaceStore(workspaces: [], endpoint: "http://mac-a.local:8787")
+        let first = AgentWorkspace(
+            id: "ws_first",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive"
+        )
+        let second = AgentWorkspace(
+            id: "ws_second",
+            name: "chat-archive",
+            path: "/Users/me/archive/chat-archive"
+        )
+
+        store.save([first, second], profileID: profileID)
+
+        XCTAssertEqual(Set(store.load(profileID: profileID).map(\.id)), [first.id, second.id])
     }
 
     func testSessionListPreferenceStoreScopesByEndpoint() {
