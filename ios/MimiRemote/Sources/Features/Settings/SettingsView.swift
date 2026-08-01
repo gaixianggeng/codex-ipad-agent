@@ -12,124 +12,6 @@ enum SettingsLayoutMetrics {
     static let statusModuleCornerRadius: CGFloat = 20
 }
 
-struct TokenActivityDay: Identifiable, Equatable {
-    let date: Date
-    let tokens: Int64
-    let intensity: Int
-    let isFuture: Bool
-
-    var id: Date { date }
-}
-
-struct TokenActivityWeek: Identifiable, Equatable {
-    let startDate: Date
-    let days: [TokenActivityDay]
-
-    var id: Date { startDate }
-}
-
-enum TokenActivityCalendar {
-    static func weeks(
-        buckets: [AccountTokenUsageDailyBucket],
-        endingAt: Date = Date(),
-        weekCount: Int = 53
-    ) -> [TokenActivityWeek] {
-        guard weekCount > 0 else { return [] }
-        let calendar = utcCalendar
-        let endDay = calendar.startOfDay(for: endingAt)
-        let weekday = calendar.component(.weekday, from: endDay)
-        let daysSinceMonday = (weekday - calendar.firstWeekday + 7) % 7
-        let currentWeekStart = calendar.date(
-            byAdding: .day,
-            value: -daysSinceMonday,
-            to: endDay
-        ) ?? endDay
-        let firstWeekStart = calendar.date(
-            byAdding: .weekOfYear,
-            value: -(weekCount - 1),
-            to: currentWeekStart
-        ) ?? currentWeekStart
-
-        var tokensByDate: [Date: Int64] = [:]
-        for bucket in buckets {
-            guard let date = date(from: bucket.startDate, calendar: calendar),
-                  date >= firstWeekStart,
-                  date <= endDay
-            else {
-                continue
-            }
-            let current = tokensByDate[date, default: 0]
-            let incoming = max(bucket.tokens, 0)
-            let (sum, overflowed) = current.addingReportingOverflow(incoming)
-            // 服务端可能返回同一天的多个桶；累计时饱和到 Int64.max，
-            // 避免异常大数让“我的”页面在渲染点格图时崩溃。
-            tokensByDate[date] = overflowed ? .max : sum
-        }
-        let maximum = tokensByDate.values.max() ?? 0
-
-        return (0..<weekCount).map { weekOffset in
-            let weekStart = calendar.date(
-                byAdding: .weekOfYear,
-                value: weekOffset,
-                to: firstWeekStart
-            ) ?? firstWeekStart
-            let days = (0..<7).map { dayOffset in
-                let date = calendar.date(
-                    byAdding: .day,
-                    value: dayOffset,
-                    to: weekStart
-                ) ?? weekStart
-                let tokens = tokensByDate[date] ?? 0
-                return TokenActivityDay(
-                    date: date,
-                    tokens: tokens,
-                    intensity: intensity(tokens: tokens, maximum: maximum),
-                    isFuture: date > endDay
-                )
-            }
-            return TokenActivityWeek(startDate: weekStart, days: days)
-        }
-    }
-
-    static func date(from dayKey: String, calendar: Calendar = utcCalendar) -> Date? {
-        let components = dayKey.split(separator: "-", omittingEmptySubsequences: false)
-        guard components.count == 3,
-              let year = Int(components[0]),
-              let month = Int(components[1]),
-              let day = Int(components[2]),
-              let date = calendar.date(from: DateComponents(year: year, month: month, day: day))
-        else {
-            return nil
-        }
-        let roundTrip = calendar.dateComponents([.year, .month, .day], from: date)
-        guard roundTrip.year == year, roundTrip.month == month, roundTrip.day == day else {
-            return nil
-        }
-        return date
-    }
-
-    private static func intensity(tokens: Int64, maximum: Int64) -> Int {
-        guard tokens > 0, maximum > 0 else { return 0 }
-        // 平方根尺度既能压住偶发超大日，又不会像 log 尺度那样把常用日期全部挤到最深一档。
-        let normalized = sqrt(Double(tokens) / Double(maximum))
-        switch normalized {
-        case ..<0.20: return 1
-        case ..<0.45: return 2
-        case ..<0.70: return 3
-        default: return 4
-        }
-    }
-
-    static var utcCalendar: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.locale = Locale(identifier: "en_US_POSIX")
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        calendar.firstWeekday = 2
-        calendar.minimumDaysInFirstWeek = 4
-        return calendar
-    }
-}
-
 enum TokenCountFormatter {
     static func string(_ value: Int64?, language: AppLanguage = .stored()) -> String {
         guard let value else { return "—" }
@@ -1264,7 +1146,7 @@ private struct AccountTokenUsageCard: View {
                 wideLayout(tokens: tokens)
                     .frame(minWidth: 620)
             }
-            compactLayout(tokens: tokens)
+            phoneSideBySideLayout(tokens: tokens)
         }
         .padding(18)
         .frame(maxWidth: .infinity)
@@ -1287,7 +1169,7 @@ private struct AccountTokenUsageCard: View {
 
     private func wideLayout(tokens: ThemeTokens) -> some View {
         HStack(alignment: .top, spacing: 20) {
-            quotaPanel(tokens: tokens)
+            quotaPanel(tokens: tokens, usesVerticalContent: false)
                 .frame(width: 236)
 
             Divider()
@@ -1299,48 +1181,52 @@ private struct AccountTokenUsageCard: View {
         .frame(minHeight: 156)
     }
 
-    private func compactLayout(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            quotaPanel(tokens: tokens)
+    private func phoneSideBySideLayout(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            quotaPanel(tokens: tokens, usesVerticalContent: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
 
             Divider()
                 .overlay(tokens.border.opacity(0.72))
 
             activityPanel(tokens: tokens)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    private func quotaPanel(tokens: ThemeTokens) -> some View {
+    private func quotaPanel(tokens: ThemeTokens, usesVerticalContent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.text("ui.current_remaining"))
                 .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
 
-            if dynamicTypeSize.isAccessibilitySize {
+            if usesVerticalContent || dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 14) {
-                    usageRings
+                    usageRings(diameter: compactRingDiameter)
                     usageLegend(tokens: tokens)
                 }
             } else {
                 HStack(alignment: .center, spacing: 16) {
-                    usageRings
+                    usageRings(diameter: 92)
                     usageLegend(tokens: tokens)
                 }
             }
         }
+        .accessibilityIdentifier("settings.tokenUsage.quota")
     }
 
-    private var usageRings: some View {
+    private var compactRingDiameter: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 92 : 84
+    }
+
+    private func usageRings(diameter: CGFloat) -> some View {
         CombinedUsageRingsGraphic(
             items: usageItems,
             expectedRingCount: 3,
-            diameter: dynamicTypeSize.isAccessibilitySize ? 104 : 92,
+            diameter: diameter,
             lineWidth: 6
         )
-        .frame(
-            width: dynamicTypeSize.isAccessibilitySize ? 104 : 92,
-            height: dynamicTypeSize.isAccessibilitySize ? 104 : 92
-        )
+        .frame(width: diameter, height: diameter)
         .accessibilityLabel(L10n.text("ui.current_remaining"))
     }
 
@@ -1370,7 +1256,8 @@ private struct AccountTokenUsageCard: View {
                         Text("\(item.providerName) · \(item.window.label)")
                             .font(themeStore.uiFont(.caption, weight: .medium))
                             .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         Spacer(minLength: 4)
 
@@ -1439,6 +1326,7 @@ private struct AccountTokenUsageCard: View {
                 .accessibilityIdentifier("settings.tokenActivity.unavailable")
             }
         }
+        .accessibilityIdentifier("settings.tokenUsage.activity")
     }
 
     private func activityTitle(tokens: ThemeTokens) -> some View {
@@ -1520,101 +1408,6 @@ private struct AccountUsageRefreshButton: View {
                 : L10n.format("ui.refresh_value_usage", "Token")
         )
         .accessibilityIdentifier("settings.tokenUsage.refresh")
-    }
-}
-
-private struct TokenActivityDotGrid: View {
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let buckets: [AccountTokenUsageDailyBucket]
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let weeks = TokenActivityCalendar.weeks(buckets: buckets)
-        let activeDayCount = weeks
-            .flatMap(\.days)
-            .filter { !$0.isFuture && $0.tokens > 0 }
-            .count
-
-        GeometryReader { proxy in
-            let spacing: CGFloat = 3
-            let availableCell = (proxy.size.width - spacing * 52) / 53
-            // 固定卡片高度内最多使用 7pt 点格；更宽的 iPad 只增加留白，
-            // 不放大到裁掉第七行或破坏左右模块的视觉平衡。
-            let cellSize = min(max(availableCell, 4), 7)
-            let contentWidth = cellSize * 53 + spacing * 52
-            let gridHeight = cellSize * 7 + spacing * 6
-
-            ScrollView(.horizontal) {
-                ZStack(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: spacing) {
-                        ForEach(weeks) { week in
-                            VStack(spacing: spacing) {
-                                ForEach(week.days) { day in
-                                    RoundedRectangle(
-                                        cornerRadius: min(2.2, cellSize * 0.3),
-                                        style: .continuous
-                                    )
-                                    .fill(fill(for: day, tokens: tokens))
-                                    .frame(width: cellSize, height: cellSize)
-                                }
-                            }
-                        }
-                    }
-                    .offset(y: 19)
-
-                    ForEach(Array(weeks.enumerated()), id: \.element.id) { index, week in
-                        if let monthDate = week.days.first(where: isFirstDayOfMonth)?.date {
-                            Text(monthText(monthDate))
-                                .font(themeStore.uiFont(size: 9, weight: .medium))
-                                .foregroundStyle(tokens.tertiaryText)
-                                .fixedSize()
-                                .offset(x: CGFloat(index) * (cellSize + spacing))
-                        }
-                    }
-                }
-                .frame(width: contentWidth, height: gridHeight + 19, alignment: .topLeading)
-            }
-            .scrollIndicators(.hidden)
-            .defaultScrollAnchor(.trailing)
-        }
-        .frame(height: 86)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(L10n.text("ui.token_activity"))
-        .accessibilityValue(
-            L10n.format(
-                "ui.token_activity_accessibility_value",
-                activeDayCount
-            )
-        )
-        .accessibilityIdentifier("settings.tokenActivity.grid")
-    }
-
-    private func fill(for day: TokenActivityDay, tokens: ThemeTokens) -> Color {
-        guard !day.isFuture else { return .clear }
-        let contrastBoost = colorSchemeContrast == .increased ? 0.12 : 0
-        switch day.intensity {
-        case 1: return tokens.accent.opacity(0.24 + contrastBoost)
-        case 2: return tokens.accent.opacity(0.42 + contrastBoost)
-        case 3: return tokens.accent.opacity(0.64 + contrastBoost)
-        case 4: return tokens.accent.opacity(0.92)
-        default: return tokens.secondaryText.opacity(0.09 + contrastBoost)
-        }
-    }
-
-    private func isFirstDayOfMonth(_ day: TokenActivityDay) -> Bool {
-        TokenActivityCalendar.utcCalendar.component(.day, from: day.date) == 1
-    }
-
-    private func monthText(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = TokenActivityCalendar.utcCalendar
-        formatter.timeZone = TokenActivityCalendar.utcCalendar.timeZone
-        formatter.locale = AppLanguage.stored().locale
-        formatter.setLocalizedDateFormatFromTemplate("MMM")
-        return formatter.string(from: date)
     }
 }
 
