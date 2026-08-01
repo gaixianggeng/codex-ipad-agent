@@ -118,7 +118,7 @@ extension ComposerView {
                 accessibilityLabel: L10n.text("ui.add_content")
             )
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.add_content"))
         .accessibilityIdentifier("composer.addContent")
         .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
@@ -600,7 +600,7 @@ extension ComposerView {
             )
             .contentShape(RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!enabled)
         .accessibilityLabel(isGoalMode ? L10n.text("ui.send_target_task") : (composerState.voiceDraftNeedsReview ? L10n.text("ui.confirm_sending_voice_draft") : L10n.text("ui.send")))
@@ -625,7 +625,7 @@ extension ComposerView {
             .frame(width: 44, height: 44)
             .contentShape(Circle())
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(!canInterruptSelectedSession)
         .opacity(canInterruptSelectedSession ? 1 : 0.52)
         .accessibilityLabel(L10n.text("ui.stop_current_reply"))

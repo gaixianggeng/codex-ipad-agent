@@ -195,7 +195,7 @@ struct SkillSelectionContent: View {
                     .frame(width: 44, height: 44)
                     .background(tokens.selectionFill, in: Circle())
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(L10n.text("ui.return_to_add_content"))
         } else {
             SkillIconView(
@@ -233,7 +233,7 @@ struct SkillSelectionContent: View {
             .frame(width: 44, height: 44)
             .background(tokens.selectionFill.opacity(0.72), in: Circle())
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isRefreshing)
         .accessibilityLabel(L10n.text("ui.refresh_skill_list"))
     }
@@ -387,7 +387,7 @@ private struct SkillSelectionRow: View {
             .scaleEffect(isSelected && !reduceMotion ? 1.012 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.32, dampingFraction: 0.86), value: isSelected)
         .accessibilityLabel(L10n.format("ui.skill_named", metadata.displayName))
         .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))

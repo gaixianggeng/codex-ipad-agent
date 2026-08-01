@@ -815,23 +815,6 @@ private enum WorkspaceSessionLoadState: Equatable {
     }
 }
 
-private struct WorkspaceActionPressButtonStyle: ButtonStyle {
-    let reduceMotion: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            // 按下反馈直接跟随触点；减少动态效果时仅改变透明度，避免不必要的缩放运动。
-            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
-            .opacity(configuration.isPressed ? 0.84 : 1)
-            .animation(
-                reduceMotion
-                    ? .easeOut(duration: 0.08)
-                    : .spring(response: 0.22, dampingFraction: 1),
-                value: configuration.isPressed
-            )
-    }
-}
-
 private struct WorkspaceLibraryCard: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -864,7 +847,7 @@ private struct WorkspaceLibraryCard: View {
             Button(action: action) {
                 cardContent
             }
-            .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(accessibilitySummary)
 
             Menu {
@@ -1306,7 +1289,7 @@ private struct WorkspaceCharacterPicker: View {
                             }
                         }
                     }
-                    .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                     .disabled(isUnavailable)
                     .opacity(isUnavailable ? 0.36 : 1)
                     .accessibilityIdentifier("workspace.character.\(character.id)")
@@ -1387,7 +1370,7 @@ private struct WorkspaceEmojiPicker: View {
                             }
                         }
                     }
-                    .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                     .disabled(isUnavailable)
                     .opacity(isUnavailable ? 0.36 : 1)
                     .accessibilityLabel(emoji)
@@ -1558,7 +1541,7 @@ private struct WorkspaceDetailView: View {
             .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
     }
 
     @ViewBuilder

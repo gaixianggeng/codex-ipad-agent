@@ -557,7 +557,7 @@ struct AddContentPanel: View {
                         .frame(width: 44, height: 44)
                         .background(tokens.selectionFill, in: Circle())
                 }
-                .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                 .accessibilityLabel(L10n.text("ui.return_to_add_content"))
             } else {
                 Image(systemName: "plus")
@@ -588,7 +588,7 @@ struct AddContentPanel: View {
                     .frame(width: 44, height: 44)
                     .background(tokens.selectionFill.opacity(0.72), in: Circle())
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(L10n.text("ui.close_adding_content"))
         }
     }
@@ -786,7 +786,7 @@ struct AddContentPanel: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(title)
         .accessibilityHint(subtitle)
         .accessibilityIdentifier(accessibilityIdentifier)
@@ -828,7 +828,7 @@ struct AddContentPanel: View {
             .frame(maxWidth: .infinity, minHeight: 56)
             .contentShape(Rectangle())
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(accessibilityIdentifier)
@@ -873,7 +873,7 @@ struct AddContentPanel: View {
             .frame(maxWidth: .infinity, minHeight: 64)
             .contentShape(Rectangle())
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(accessibilityIdentifier)
@@ -921,7 +921,7 @@ struct AddContentPanel: View {
                                 .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
-                            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                             .disabled(!plugin.enabled)
                             .opacity(plugin.enabled ? 1 : 0.58)
                         }
@@ -974,7 +974,7 @@ struct AddContentPanel: View {
                         )
                         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
-                    .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                     .accessibilityHint(mode.detail)
                 }
             }
@@ -1008,7 +1008,7 @@ struct AddContentPanel: View {
                         .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
-                    .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                 }
             }
         }
