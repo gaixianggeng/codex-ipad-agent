@@ -3,6 +3,172 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testWorkspaceCatalogCoordinatorRollsCurrentCancellationBackWithoutLeavingLoading() {
+        var coordinator = WorkspaceCatalogLoadCoordinator()
+
+        let emptyInvocation = coordinator.begin()
+        XCTAssertEqual(coordinator.state, .loading)
+        XCTAssertTrue(coordinator.complete(emptyInvocation, result: .cancelled, hasCachedProjects: false))
+        XCTAssertEqual(coordinator.state, .idle)
+
+        let cachedInvocation = coordinator.begin()
+        XCTAssertTrue(coordinator.complete(cachedInvocation, result: .cancelled, hasCachedProjects: true))
+        XCTAssertEqual(coordinator.state, .loaded)
+    }
+
+    func testWorkspaceCatalogCoordinatorRejectsOldFailureAndCancellationAfterNewInvocation() {
+        var coordinator = WorkspaceCatalogLoadCoordinator()
+        let first = coordinator.begin()
+        let latest = coordinator.begin()
+
+        XCTAssertFalse(coordinator.complete(first, result: .cancelled, hasCachedProjects: false))
+        XCTAssertEqual(coordinator.state, .loading, "旧取消不能替最新 invocation 回退状态")
+        XCTAssertTrue(coordinator.complete(latest, result: .loaded, hasCachedProjects: true))
+        XCTAssertFalse(coordinator.complete(first, result: .failed("旧请求失败"), hasCachedProjects: false))
+        XCTAssertEqual(coordinator.state, .loaded, "旧失败不能覆盖最新成功")
+    }
+
+    func testWorkspaceCatalogRefreshScopeTracksCredentialSuspensionWithoutChangingHost() {
+        let hostScope = AppStore().activeHostScope
+
+        XCTAssertNotEqual(
+            WorkspaceCatalogRefreshScope(hostScope: hostScope, credentialsSuspended: false),
+            WorkspaceCatalogRefreshScope(hostScope: hostScope, credentialsSuspended: true)
+        )
+    }
+
+    func testCancelledWorkspaceCatalogRequestCannotCommitLateProjects() async {
+        let staleProject = makeProject(id: "stale-catalog-project")
+        let gate = WorkspaceProjectsGate()
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            projectsHandler: { await gate.projects() }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let refresh = Task { @MainActor in
+            try await store.refreshWorkspaceCatalog()
+        }
+        await gate.waitUntilStarted()
+        refresh.cancel()
+        await gate.succeed(with: [staleProject])
+
+        do {
+            try await refresh.value
+            XCTFail("已取消的 catalog 调用应拒绝提交")
+        } catch {
+            XCTAssertTrue(isCancellationError(error))
+        }
+        XCTAssertTrue(store.projects.isEmpty)
+        XCTAssertTrue(store.sidebarProjects.isEmpty)
+    }
+
+    func testWorkspaceCancellationClassifierDoesNotHideRealNetworkFailures() {
+        XCTAssertTrue(isCancellationError(CancellationError()))
+        XCTAssertTrue(isCancellationError(URLError(.cancelled)))
+        XCTAssertFalse(isCancellationError(URLError(.timedOut)))
+        XCTAssertFalse(isCancellationError(URLError(.notConnectedToInternet)))
+        XCTAssertFalse(isCancellationError(AgentAPIError.server(status: 500, message: "server failed")))
+    }
+
+    func testOpenWorkspaceCancellationReturnsNeutralOutcomeWithoutPublishingError() async {
+        let path = "/Users/me/cancelled-workspace"
+        for error in [CancellationError(), URLError(.cancelled)] as [Error] {
+            let client = MockSessionStoreClient(
+                projects: [],
+                sessions: [],
+                resolveResults: [path: .failure(error)]
+            )
+            let store = SessionStore(
+                appStore: AppStore(),
+                conversationStore: ConversationStore(),
+                logStore: LogStore(),
+                clientFactory: { client }
+            )
+
+            let outcome = await store.openWorkspaceOutcome(path: path)
+            XCTAssertEqual(outcome, .cancelled)
+            XCTAssertNil(store.errorMessage)
+            XCTAssertTrue(store.sidebarProjects.isEmpty)
+        }
+    }
+
+    func testOpenWorkspaceRealFailureRemainsUserVisible() async {
+        let path = "/Users/me/forbidden-workspace"
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            resolveResults: [path: .failure(AgentAPIError.server(status: 403, message: "forbidden"))]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        guard case .failed(let message) = await store.openWorkspaceOutcome(path: path) else {
+            return XCTFail("403 必须保持为可展示失败")
+        }
+        XCTAssertTrue(message.contains("403"))
+        XCTAssertEqual(store.errorMessage, message)
+    }
+
+    func testWorkspaceLoadCancellationSkipsAvailabilityProbeAndGlobalErrorMutation() async {
+        let workspace = AgentWorkspace(project: makeProject(id: "workspace-cancelled-load"))
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            resolveResults: [workspace.path: .success(workspace)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.handleWorkspaceLoadFailure(workspace: workspace, error: CancellationError())
+
+        XCTAssertTrue(client.requestedResolvePaths.isEmpty, "取消不应再发 availability probe")
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testOpenWorkspaceLosingSelectionIntentBeforeResolveReturnsCannotPersistStaleWorkspace() async {
+        let project = makeProject(id: "workspace-stale-open")
+        let workspace = AgentWorkspace(project: project)
+        let gate = WorkspaceResolveGate()
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            resolveWorkspaceHandler: { _ in try await gate.resolve() }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        let opening = Task { @MainActor in
+            await store.openWorkspaceOutcome(path: workspace.path)
+        }
+        await gate.waitUntilStarted()
+        store.setSelectedProjectID("newer-selection")
+        await gate.succeed(with: workspace)
+
+        let outcome = await opening.value
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertTrue(store.sidebarProjects.isEmpty, "失去 ownership 的 resolve 结果不能写入最近工作区")
+        XCTAssertEqual(store.selectedProjectID, "newer-selection")
+    }
+
     func testWorkspaceSessionLoadInvocationTokensKeepOnlyLatestABAReturnEligible() {
         var tokens = WorkspaceSessionLoadInvocationTokens()
         let firstA = tokens.begin(for: "workspace-a")
@@ -130,5 +296,61 @@ extension ConversationDataFlowTests {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Claude workspace list failed"))
         }
+    }
+}
+
+private actor WorkspaceResolveGate {
+    private var continuation: CheckedContinuation<AgentWorkspace, Error>?
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func resolve() async throws -> AgentWorkspace {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            didStart = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func succeed(with workspace: AgentWorkspace) {
+        continuation?.resume(returning: workspace)
+        continuation = nil
+    }
+}
+
+private actor WorkspaceProjectsGate {
+    private var continuation: CheckedContinuation<[AgentProject], Never>?
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func projects() async -> [AgentProject] {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            didStart = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func succeed(with projects: [AgentProject]) {
+        continuation?.resume(returning: projects)
+        continuation = nil
     }
 }
