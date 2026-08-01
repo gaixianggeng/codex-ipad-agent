@@ -50,6 +50,52 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceSessionAgeBoundaryIgnoresPinnedStaleSession() {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let project = makeProject(id: "workspace-pinned")
+        let pinnedStale = makeSession(
+            id: "pinned-stale",
+            projectID: project.id,
+            title: "置顶旧规划",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-WorkspaceSessionAgeBoundary.staleInterval - 60)
+        )
+        let recent = makeSession(
+            id: "recent",
+            projectID: project.id,
+            title: "最近规划",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-60)
+        )
+        let stale = makeSession(
+            id: "stale",
+            projectID: project.id,
+            title: "普通旧规划",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-WorkspaceSessionAgeBoundary.staleInterval - 120)
+        )
+
+        XCTAssertEqual(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(
+                in: [pinnedStale, recent, stale],
+                excludingSessionIDs: [pinnedStale.id],
+                now: now
+            ),
+            2
+        )
+        XCTAssertNil(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(
+                in: [pinnedStale, recent],
+                excludingSessionIDs: [pinnedStale.id],
+                now: now
+            ),
+            "置顶旧会话不应单独制造“12 小时前”分组"
+        )
+    }
+
     func testRecentSessionSortUsesUserRecencyInsteadOfAgentUpdatedAt() {
         let project = makeProject(id: "proj_recency_sort")
         let first = makeSession(
@@ -1454,6 +1500,185 @@ extension ConversationDataFlowTests {
             (firstPage + olderPage).map(\.id),
             "工作区下拉刷新首屏后必须保留已经加载的旧页"
         )
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id), "手动刷新不能用首屏 cursor 覆盖已经耗尽的深层分页状态")
+    }
+
+    func testWorkspaceBackgroundRefreshPreservesPagesLoadedOutsideSidebarExpansion() async {
+        let project = makeProject(id: "proj_workspace_background_pages")
+        let firstPage = (0..<8).map { index in
+            makeSession(
+                id: "workspace_background_recent_\(index)",
+                projectID: project.id,
+                title: "最近会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let olderPage = [
+            makeSession(
+                id: "workspace_background_older",
+                projectID: project.id,
+                title: "更早会话",
+                status: "history",
+                source: "claude",
+                updatedAt: Date(timeIntervalSince1970: 10)
+            )
+        ]
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: firstPage, nextCursor: "workspace_background_cursor", hasMore: true),
+            cursorPages: ["workspace_background_cursor": SessionsPage(sessions: olderPage, hasMore: false)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.loadMoreSessions(projectID: project.id)
+        XCTAssertFalse(store.isShowingAllSessions(projectID: project.id), "工作区翻页不能改变侧栏默认 5 条预览")
+
+        await store.refreshSelectedProjectSessions(showLoading: false)
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            (firstPage + olderPage).map(\.id),
+            "后台轻量轮询刷新首屏后必须保留工作区已经加载的旧页"
+        )
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id), "后台刷新不能把已耗尽窗口恢复成首屏可翻页状态")
+    }
+
+    func testWorkspaceBackgroundRefreshPreservesDeepContinuation() async {
+        let project = makeProject(id: "proj_workspace_deep_cursor")
+        let firstPage = [
+            makeSession(
+                id: "workspace_deep_recent",
+                projectID: project.id,
+                title: "最近会话",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 400)
+            )
+        ]
+        let secondPage = [
+            makeSession(
+                id: "workspace_deep_middle",
+                projectID: project.id,
+                title: "第二页会话",
+                status: "history",
+                source: "claude",
+                updatedAt: Date(timeIntervalSince1970: 300)
+            )
+        ]
+        let thirdPage = [
+            makeSession(
+                id: "workspace_deep_oldest",
+                projectID: project.id,
+                title: "第三页会话",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 200)
+            )
+        ]
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: firstPage, nextCursor: "deep_cursor_1", hasMore: true),
+            cursorPages: [
+                "deep_cursor_1": SessionsPage(
+                    sessions: secondPage,
+                    nextCursor: "deep_cursor_2",
+                    hasMore: true
+                ),
+                "deep_cursor_2": SessionsPage(sessions: thirdPage, hasMore: false)
+            ]
+        )
+        var now = Date(timeIntervalSince1970: 1_000)
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListNow: { now }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.loadMoreSessions(projectID: project.id)
+        now = now.addingTimeInterval(3)
+
+        await store.refreshSelectedProjectSessions(showLoading: false)
+        await store.loadMoreSessions(projectID: project.id)
+
+        let sessions = store.sessions(forProjectID: project.id)
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "deep_cursor_1", nil, "deep_cursor_2"])
+        XCTAssertEqual(sessions.map(\.id), (firstPage + secondPage + thirdPage).map(\.id))
+        XCTAssertEqual(Set(sessions.map(\.id)).count, sessions.count)
+        XCTAssertEqual(
+            sessions.map(SessionIndexStore.orderingDate),
+            sessions.map(SessionIndexStore.orderingDate).sorted(by: >)
+        )
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertFalse(store.isShowingAllSessions(projectID: project.id), "工作区翻页仍不能改变侧栏 5 条预览语义")
+    }
+
+    func testWorkspaceNetworkRecoveryPreservesPagesLoadedOutsideSidebarExpansion() async {
+        let project = makeProject(id: "proj_workspace_network_recovery_pages")
+        let firstPage = [
+            makeSession(
+                id: "workspace_network_recent",
+                projectID: project.id,
+                title: "网络恢复前的最近会话",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 200)
+            )
+        ]
+        let olderPage = [
+            makeSession(
+                id: "workspace_network_older",
+                projectID: project.id,
+                title: "网络恢复前加载的旧会话",
+                status: "history",
+                source: "claude",
+                updatedAt: Date(timeIntervalSince1970: 100)
+            )
+        ]
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: firstPage, nextCursor: "network_cursor", hasMore: true),
+            cursorPages: ["network_cursor": SessionsPage(sessions: olderPage, hasMore: false)]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let pathSource = TestNetworkPathStatusSource(initialStatus: .satisfied)
+        var now = Date(timeIntervalSince1970: 1_000)
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            networkPathStatusSource: pathSource,
+            sessionListNow: { now }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.loadMoreSessions(projectID: project.id)
+        now = now.addingTimeInterval(3)
+
+        await store.recoverAfterNetworkBecameAvailable(
+            pathGeneration: store.networkPathGeneration,
+            hostScope: appStore.activeHostScope
+        )
+
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "network_cursor", nil])
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (firstPage + olderPage).map(\.id))
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertFalse(store.isShowingAllSessions(projectID: project.id), "网络恢复刷新不能改变侧栏 5 条预览语义")
     }
 
     func testWorkspaceManualRefreshUsesAuthoritativeSessionList() async throws {

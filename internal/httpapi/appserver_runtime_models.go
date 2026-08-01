@@ -534,16 +534,34 @@ func mergeContextSources(base []session.ContextSource, update []session.ContextS
 
 func mergeContextSubagents(base []session.ContextSubagent, update []session.ContextSubagent) []session.ContextSubagent {
 	out := make([]session.ContextSubagent, 0, len(base)+len(update))
-	seen := map[string]struct{}{}
+	indexByKey := map[string]int{}
 	for _, subagent := range append(append([]session.ContextSubagent(nil), update...), base...) {
 		key := firstNonEmpty(subagent.ID, subagent.Nickname+":"+subagent.Role)
 		if key == "" {
 			continue
 		}
-		if _, ok := seen[key]; ok {
+		if index, ok := indexByKey[key]; ok {
+			current := out[index]
+			current.ID = firstNonEmpty(current.ID, subagent.ID)
+			current.ParentThreadID = firstNonEmpty(current.ParentThreadID, subagent.ParentThreadID)
+			current.SessionID = firstNonEmpty(current.SessionID, subagent.SessionID)
+			current.Nickname = firstNonEmpty(current.Nickname, subagent.Nickname)
+			current.Role = firstNonEmpty(current.Role, subagent.Role)
+			current.Status = firstNonEmpty(current.Status, subagent.Status)
+			current.StatusMessage = firstNonEmpty(current.StatusMessage, subagent.StatusMessage)
+			if current.CanAcceptDirectInput == nil {
+				current.CanAcceptDirectInput = subagent.CanAcceptDirectInput
+			} else if subagent.CanAcceptDirectInput != nil &&
+				(!*current.CanAcceptDirectInput || !*subagent.CanAcceptDirectInput) {
+				// 任一已知来源明确只读时取更严格结果，避免后到的稀疏
+				// 状态事件把已有权限边界升级为可写。
+				denied := false
+				current.CanAcceptDirectInput = &denied
+			}
+			out[index] = current
 			continue
 		}
-		seen[key] = struct{}{}
+		indexByKey[key] = len(out)
 		out = append(out, subagent)
 	}
 	return out
@@ -654,23 +672,24 @@ type appServerTurnEnvelope struct {
 }
 
 type appServerThread struct {
-	ID             string                `json:"id"`
-	SessionID      string                `json:"sessionId"`
-	ForkedFromID   string                `json:"forkedFromId"`
-	ParentThreadID string                `json:"parentThreadId"`
-	Preview        string                `json:"preview"`
-	CWD            string                `json:"cwd"`
-	Name           string                `json:"name"`
-	ModelProvider  string                `json:"modelProvider"`
-	Source         any                   `json:"source"`
-	ThreadSource   string                `json:"threadSource"`
-	AgentNickname  string                `json:"agentNickname"`
-	AgentRole      string                `json:"agentRole"`
-	GitInfo        *appServerGitInfo     `json:"gitInfo"`
-	CreatedAt      int64                 `json:"createdAt"`
-	UpdatedAt      int64                 `json:"updatedAt"`
-	Status         appServerThreadStatus `json:"status"`
-	Turns          []appServerTurn       `json:"turns"`
+	ID                   string                `json:"id"`
+	SessionID            string                `json:"sessionId"`
+	ForkedFromID         string                `json:"forkedFromId"`
+	ParentThreadID       string                `json:"parentThreadId"`
+	Preview              string                `json:"preview"`
+	CWD                  string                `json:"cwd"`
+	Name                 string                `json:"name"`
+	ModelProvider        string                `json:"modelProvider"`
+	Source               any                   `json:"source"`
+	ThreadSource         string                `json:"threadSource"`
+	AgentNickname        string                `json:"agentNickname"`
+	AgentRole            string                `json:"agentRole"`
+	CanAcceptDirectInput *bool                 `json:"canAcceptDirectInput"`
+	GitInfo              *appServerGitInfo     `json:"gitInfo"`
+	CreatedAt            int64                 `json:"createdAt"`
+	UpdatedAt            int64                 `json:"updatedAt"`
+	Status               appServerThreadStatus `json:"status"`
+	Turns                []appServerTurn       `json:"turns"`
 }
 
 type appServerThreadStatus struct {
@@ -711,24 +730,33 @@ type appServerTurn struct {
 }
 
 type appServerThreadItem struct {
-	Type           string                   `json:"type"`
-	ID             string                   `json:"id"`
-	ClientID       string                   `json:"clientId"`
-	Content        []appServerUserInput     `json:"content"`
-	Text           string                   `json:"text"`
-	Command        string                   `json:"command"`
-	CWD            string                   `json:"cwd"`
-	ProcessID      string                   `json:"processId"`
-	Source         string                   `json:"source"`
-	Status         string                   `json:"status"`
-	CommandActions []appServerCommandAction `json:"commandActions"`
-	ExitCode       *int                     `json:"exitCode"`
-	Changes        []appServerFileChange    `json:"changes"`
-	Server         string                   `json:"server"`
-	Tool           string                   `json:"tool"`
-	Namespace      string                   `json:"namespace"`
-	PluginID       string                   `json:"pluginId"`
-	Arguments      any                      `json:"arguments"`
+	Type              string                               `json:"type"`
+	ID                string                               `json:"id"`
+	ClientID          string                               `json:"clientId"`
+	Content           []appServerUserInput                 `json:"content"`
+	Text              string                               `json:"text"`
+	Command           string                               `json:"command"`
+	CWD               string                               `json:"cwd"`
+	ProcessID         string                               `json:"processId"`
+	Source            string                               `json:"source"`
+	Status            string                               `json:"status"`
+	CommandActions    []appServerCommandAction             `json:"commandActions"`
+	ExitCode          *int                                 `json:"exitCode"`
+	Changes           []appServerFileChange                `json:"changes"`
+	Server            string                               `json:"server"`
+	Tool              string                               `json:"tool"`
+	Namespace         string                               `json:"namespace"`
+	PluginID          string                               `json:"pluginId"`
+	Arguments         any                                  `json:"arguments"`
+	ReceiverThreadIDs []string                             `json:"receiverThreadIds"`
+	AgentsStates      map[string]appServerCollabAgentState `json:"agentsStates"`
+}
+
+type appServerCollabAgentState struct {
+	Status               string `json:"status"`
+	Message              string `json:"message"`
+	SessionID            string `json:"sessionId"`
+	CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
 }
 
 type appServerUserInput struct {

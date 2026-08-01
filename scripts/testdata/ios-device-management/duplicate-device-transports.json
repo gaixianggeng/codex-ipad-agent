@@ -1,0 +1,38 @@
+{
+  "result": {
+    "devices": [
+      {
+        "connectionProperties": {
+          "transportType": "localNetwork",
+          "tunnelState": "connected",
+          "pairingState": "paired"
+        },
+        "hardwareProperties": {
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "SHARED-TRANSPORT-UDID"
+        },
+        "deviceProperties": {
+          "name": "Shared iPad"
+        }
+      },
+      {
+        "properties": {
+          "connection": {
+            "transportType": "wired",
+            "state": "connected",
+            "pairingState": "paired"
+          },
+          "hardware": {
+            "platform": "iOS",
+            "reality": "physical",
+            "udid": "SHARED-TRANSPORT-UDID"
+          },
+          "state": {
+            "name": "Shared iPad"
+          }
+        }
+      }
+    ]
+  }
+}

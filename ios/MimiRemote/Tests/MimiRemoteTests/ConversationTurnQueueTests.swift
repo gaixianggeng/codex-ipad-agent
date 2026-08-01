@@ -221,6 +221,165 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(sockets[0].sentTurns.map(\.payload.textPrompt), ["下一轮第一条", "下一轮第二条"])
     }
 
+    func testTerminalBeforeStartACKImmediatelyAdvancesQueuedFIFO() async throws {
+        let project = makeProject(id: "proj_terminal_before_ack_queue")
+        let running = makeSession(
+            id: "sess_terminal_before_ack_queue",
+            projectID: project.id,
+            title: "Terminal Before ACK",
+            status: SessionStatus.running.rawValue,
+            source: "claude",
+            activeTurnID: "turn_existing"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let acceptedFirst = await store.sendTurn(CodexAppServerTurnPayload(prompt: "快速第一条"))
+        let acceptedSecond = await store.sendTurn(CodexAppServerTurnPayload(prompt: "紧接第二条"))
+        XCTAssertTrue(acceptedFirst)
+        XCTAssertTrue(acceptedSecond)
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn_existing",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSentTurnCount(1, socket: sockets[0])
+        let firstClientMessageID = try XCTUnwrap(sockets[0].sentTurns.first?.clientMessageID)
+
+        // Claude 的 completion 先到，随后 ACK 才确认这条消息已接受且已终态。
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 2,
+            sessionID: running.id,
+            turnID: "turn_fast",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: firstClientMessageID,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        sockets[0].onTurnSendOutcome?(
+            firstClientMessageID,
+            .acceptedTerminal(turnID: "turn_fast")
+        )
+
+        try await waitForSentTurnCount(2, socket: sockets[0])
+        XCTAssertEqual(
+            sockets[0].sentTurns.map(\.payload.textPrompt),
+            ["快速第一条", "紧接第二条"]
+        )
+        XCTAssertFalse(store.selectedQueuedTurns.first?.waitsForAcceptedTurnStart == true)
+    }
+
+    func testNewTurnBeforeOldACKBindsQueuedFIFOToNewestTurn() async throws {
+        let project = makeProject(id: "proj_new_turn_before_old_ack")
+        let running = makeSession(
+            id: "sess_new_turn_before_old_ack",
+            projectID: project.id,
+            title: "New Turn Before Old ACK",
+            status: SessionStatus.running.rawValue,
+            source: "claude",
+            activeTurnID: "turn_existing"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let acceptedOldACKMessage = await store.sendTurn(CodexAppServerTurnPayload(prompt: "旧 ACK 消息"))
+        let acceptedWaitingMessage = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等待新轮次"))
+        XCTAssertTrue(acceptedOldACKMessage)
+        XCTAssertTrue(acceptedWaitingMessage)
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn_existing",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSentTurnCount(1, socket: sockets[0])
+        let firstClientMessageID = try XCTUnwrap(sockets[0].sentTurns.first?.clientMessageID)
+        sockets[0].emitEvent(.turnStarted(AgentEventMetadata(
+            seq: 2,
+            sessionID: running.id,
+            turnID: "turn_newest",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID("turn_newest", store: store)
+        // B 的完成先落地，随后旧的 superseded(A,B) outcome 才切到 MainActor。
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 3,
+            sessionID: running.id,
+            turnID: "turn_newest",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedActiveTurnID(nil, store: store)
+        sockets[0].onTurnSendOutcome?(
+            firstClientMessageID,
+            .acceptedSuperseded(
+                turnID: "turn_old_ack",
+                activeTurnID: "turn_newest"
+            )
+        )
+        try await waitForSentTurnCount(2, socket: sockets[0])
+        XCTAssertNil(store.selectedSession?.activeTurnID, "迟到 superseded outcome 不得复活已完成的 B")
+        XCTAssertEqual(sockets[0].sentTurns.last?.payload.textPrompt, "等待新轮次")
+    }
+
     func testQueuedTurnPersistsAcrossStoreRestartAndAmbiguousDispatchRequiresConfirmation() async throws {
         let project = makeProject(id: "proj_queue_restart")
         let running = makeSession(
@@ -592,54 +751,6 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.selectedQueuedTurns.map(\.previewText), ["编辑后的第一条"])
     }
 
-    func testQueuedTurnCanGuideNowAndFailureRequiresExplicitRetry() async throws {
-        let project = makeProject(id: "proj_queue_guide_now")
-        let running = makeSession(
-            id: "sess_queue_guide_now",
-            projectID: project.id,
-            title: "Queue Guide Now",
-            status: SessionStatus.running.rawValue,
-            source: "codex",
-            activeTurnID: "turn_queue_guide_now"
-        )
-        let appStore = AppStore()
-        appStore.token = "test-token"
-        let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
-        var sockets: [MockWebSocketClient] = []
-        let store = SessionStore(
-            appStore: appStore,
-            conversationStore: ConversationStore(),
-            logStore: LogStore(),
-            clientFactory: { client },
-            webSocketFactory: {
-                let socket = MockWebSocketClient()
-                sockets.append(socket)
-                return socket
-            }
-        )
-
-        await store.refreshAll(autoAttach: false)
-        store.takeOverSession(running)
-        await store.selectSession(running)
-        let socket = try XCTUnwrap(sockets.first)
-        socket.emitStatus(.connected)
-        try await waitForWebSocketStatus(.connected, store: store)
-        let queued = await store.sendTurn(CodexAppServerTurnPayload(prompt: "立即引导"))
-        XCTAssertTrue(queued)
-        let clientMessageID = try XCTUnwrap(store.selectedQueuedTurns.first?.id)
-
-        XCTAssertTrue(store.guideQueuedTurnNow(clientMessageID: clientMessageID))
-        XCTAssertEqual(socket.sentGuidance.first?.payload.textPrompt, "立即引导")
-        XCTAssertEqual(socket.sentGuidance.first?.expectedTurnID, "turn_queue_guide_now")
-        socket.onSendFailure?(clientMessageID, "ack lost")
-        for _ in 0..<50 where store.selectedQueuedTurns.first?.dispatchState != .needsConfirmation {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .needsConfirmation)
-        XCTAssertTrue(store.retryQueuedTurn(clientMessageID: clientMessageID))
-        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
-        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn_queue_guide_now")
-    }
 
     func testExistingQueueStaysFIFOWhenSnapshotTemporarilyLosesActiveTurn() async throws {
         let project = makeProject(id: "proj_ws_queue_snapshot_gap")

@@ -27,6 +27,7 @@ SELECTED_ID=""
 SELECTED_NAME=""
 SELECTED_DESTINATION=""
 SELECTED_DERIVED_DATA=""
+SELECTED_TRANSPORT=""
 
 usage() {
   cat <<'EOF'
@@ -39,15 +40,15 @@ usage() {
   bash ./scripts/ios-dev.sh leases
 
 默认目标：
-  build/run: USB 真机优先；设备已占用时跳过，最后回退固定 iPad Simulator
+  build/run: USB 真机 → 本地网络真机 → 固定 iPad Simulator
   test:      精确固定 iPad Pro 13-inch (M5)，忙或缺失时明确失败
   Scheme:    MimiRemote
   Config:    Debug
 
 可选覆盖：
   IOS_TARGET_MODE         auto（默认）、device 或 simulator
-  IOS_DEVICE_NAME         普通 build/run 优先的 USB 真机名，默认 iPad Pro
-  IOS_DEVICE_ID           用 UDID 明确选择普通 build/run 的 USB 真机
+  IOS_DEVICE_NAME         用名称明确选择 USB 或本地网络真机；默认排序优先 iPad Pro
+  IOS_DEVICE_ID           用 UDID 明确选择 USB 或本地网络真机
   IOS_SIMULATOR_NAME      普通 build/run 显式选择兼容性 Simulator
   IOS_SIMULATOR_ID        普通 build/run 用 UDID 选择 Simulator
   IOS_TEST_DESTINATION    CI 解析一次的测试 destination；设备必须仍是固定 M5 iPad
@@ -165,28 +166,54 @@ physical_device_records() {
       restrict_name = ENV.fetch("IOS_RESTRICT_DEVICE_NAME") == "1"
       devices = JSON.parse(STDIN.read).fetch("result").fetch("devices")
       candidates = devices.map do |device|
-        properties = device.fetch("properties", {})
-        connection = properties.fetch("connection", {})
-        hardware = properties.fetch("hardware", {})
-        state = properties.fetch("state", {})
-        next unless hardware["platform"] == "iOS" && hardware["reality"] == "physical"
-        next unless connection["transportType"] == "wired"
-        next unless connection["state"] == "connected" && connection["pairingState"] == "paired"
-        udid = hardware["udid"]
-        name = state["name"]
+        legacy = device.fetch("properties", {})
+        legacy_connection = legacy.fetch("connection", {})
+        legacy_hardware = legacy.fetch("hardware", {})
+        legacy_state = legacy.fetch("state", {})
+        connection = device.fetch("connectionProperties", {})
+        hardware = device.fetch("hardwareProperties", {})
+        state = device.fetch("deviceProperties", {})
+        first_value = ->(*values) { values.find { |value| !value.nil? && !value.to_s.empty? } }
+
+        # Xcode 26 新版 devicectl 把字段提到顶层，旧版则放在
+        # properties.* 下。只在传输已连接且已配对时才视为可达。
+        platform = first_value.call(hardware["platform"], legacy_hardware["platform"])
+        reality = first_value.call(hardware["reality"], legacy_hardware["reality"])
+        transport = first_value.call(connection["transportType"], legacy_connection["transportType"])
+        connection_state = first_value.call(
+          connection["tunnelState"], connection["state"],
+          legacy_connection["tunnelState"], legacy_connection["state"]
+        )
+        pairing_state = first_value.call(connection["pairingState"], legacy_connection["pairingState"])
+        next unless ["iOS", "iPadOS"].include?(platform) && reality == "physical"
+        next unless ["wired", "localNetwork"].include?(transport)
+        next unless connection_state == "connected" && pairing_state == "paired"
+        udid = first_value.call(hardware["udid"], legacy_hardware["udid"])
+        name = first_value.call(state["name"], legacy_state["name"])
         next if udid.to_s.empty? || name.to_s.empty?
         next if !requested_id.empty? && udid != requested_id
         next if requested_id.empty? && restrict_name && name != requested_name
-        [udid, name]
+        [udid, name, transport]
       end.compact
-      candidates.sort_by! { |udid, name| [name == requested_name ? 0 : 1, name, udid] }
-      candidates.each { |udid, name| puts [udid, name].join("\t") }
+      # 同一 UDID 可能在连接切换期间出现多条记录；先排序再去重，
+      # 确保 wired 始终优先，同时共用该 UDID 的租约和 DerivedData。
+      transport_rank = { "wired" => 0, "localNetwork" => 1 }
+      candidates.sort_by! do |udid, name, transport|
+        [transport_rank.fetch(transport), name == requested_name ? 0 : 1, name, udid]
+      end
+      seen = {}
+      candidates.each do |udid, name, transport|
+        next if seen[udid]
+        seen[udid] = true
+        puts [udid, name, transport].join("\t")
+      end
     '
 }
 
 observable_device_records() {
-  physical_device_records 1 | while IFS=$'\t' read -r device_id device_name; do
-    [[ -n "$device_id" ]] && printf 'device\t%s\t%s\n' "$device_id" "$device_name"
+  physical_device_records 1 | while IFS=$'\t' read -r device_id device_name device_transport; do
+    [[ -n "$device_id" ]] && printf 'device\t%s\t%s\t%s\n' \
+      "$device_id" "$device_name" "$device_transport"
   done
   "$XCRUN_BIN" simctl list devices available -j | ruby -rjson -e '
     records = JSON.parse(STDIN.read).fetch("devices").flat_map do |runtime, devices|
@@ -226,9 +253,11 @@ select_target() {
   local kind="$1"
   local device_id="$2"
   local device_name="$3"
+  local device_transport="${4:-}"
   SELECTED_KIND="$kind"
   SELECTED_ID="$device_id"
   SELECTED_NAME="$device_name"
+  SELECTED_TRANSPORT="$device_transport"
   if [[ "$kind" == "device" ]]; then
     SELECTED_DESTINATION="platform=iOS,id=$device_id"
     SELECTED_DERIVED_DATA="$(device_derived_data_path "$device_id")"
@@ -257,7 +286,7 @@ effective_target_mode() {
 }
 
 select_available_build_target() {
-  local effective_mode physical_records record device_id device_name simulator_record_value
+  local effective_mode physical_records device_id device_name device_transport simulator_record_value
   effective_mode="$(effective_target_mode)" || return
 
   if [[ "$effective_mode" == "simulator" ]]; then
@@ -274,18 +303,20 @@ select_available_build_target() {
 
   physical_records="$(physical_device_records)"
   if [[ -n "$DEVICE_ID" && -z "$physical_records" ]]; then
-    echo "找不到 available、paired、USB 连接的真机：$DEVICE_ID" >&2
+    echo "指定真机不可达或未配对（USB 或本地网络）：$DEVICE_ID" >&2
+    echo "设备可能已断开，或只保留了历史配对记录。" >&2
     return 4
   fi
   if [[ -n "${IOS_DEVICE_NAME:-}" && -z "$physical_records" ]]; then
-    echo "找不到 available、paired、USB 连接的真机：$IOS_DEVICE_NAME" >&2
+    echo "指定真机不可达或未配对（USB 或本地网络）：$IOS_DEVICE_NAME" >&2
+    echo "设备可能已断开，或只保留了历史配对记录。" >&2
     return 4
   fi
 
-  while IFS=$'\t' read -r device_id device_name; do
+  while IFS=$'\t' read -r device_id device_name device_transport; do
     [[ -n "$device_id" ]] || continue
     if ios_lease_device_is_available device "$device_id" "$device_name"; then
-      select_target device "$device_id" "$device_name"
+      select_target device "$device_id" "$device_name" "$device_transport"
       return
     fi
     echo "==> 跳过占用设备：$device_name ($device_id) · $IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
@@ -293,9 +324,9 @@ select_available_build_target() {
 
   if [[ "$effective_mode" == "device" ]]; then
     if [[ -z "$physical_records" ]]; then
-      echo "没有检测到 available、paired、USB 连接的 iOS 真机。" >&2
+      echo "没有检测到 available、paired、可达的 iOS 真机（USB 或本地网络）。" >&2
     else
-      echo "所有匹配的 USB 真机都在使用中。" >&2
+      echo "所有匹配的 USB 或本地网络真机都在使用中。" >&2
     fi
     return 75
   fi
@@ -303,7 +334,7 @@ select_available_build_target() {
   simulator_record_value="$(resolve_simulator_record "" "$DEFAULT_SIMULATOR_NAME" 1)" || return
   IFS=$'\t' read -r device_id device_name <<< "$simulator_record_value"
   if ! ios_lease_device_is_available simulator "$device_id" "$device_name"; then
-    echo "USB 真机不可用，固定 fallback Simulator 也正在使用：$device_name ($device_id)" >&2
+    echo "USB 和本地网络真机不可用，固定 fallback Simulator 也正在使用：$device_name ($device_id)" >&2
     echo "$IOS_DEVICE_LEASE_BUSY_DETAIL" >&2
     return 75
   fi
@@ -383,7 +414,9 @@ run_xcodebuild() {
 run_device_action() {
   local action="$1"
   shift
-  echo "==> 使用已租用 USB 真机：$SELECTED_NAME ($SELECTED_ID)"
+  local transport_label="USB"
+  [[ "$SELECTED_TRANSPORT" == "localNetwork" ]] && transport_label="本地网络"
+  echo "==> 使用已租用${transport_label}真机：$SELECTED_NAME ($SELECTED_ID)"
   if [[ "$action" == "build" ]]; then
     DEVICE_ID="$SELECTED_ID" \
       DEVICE_NAME="$SELECTED_NAME" \
@@ -402,11 +435,13 @@ run_device_action() {
 }
 
 print_lease_status() {
-  local record kind device_id device_name found=0
-  while IFS=$'\t' read -r kind device_id device_name; do
+  local record kind device_id device_name device_transport found=0
+  while IFS=$'\t' read -r kind device_id device_name device_transport; do
     [[ -n "$device_id" ]] || continue
     found=1
     ios_lease_print_status "$kind" "$device_id" "$device_name"
+    [[ "$kind" == "device" && -n "$device_transport" ]] \
+      && printf '  connection:  %s\n' "$device_transport"
   done < <(observable_device_records)
   [[ "$found" -eq 1 ]] || echo "当前没有可观察的 iOS 真机或 Simulator。"
 }
@@ -431,6 +466,7 @@ case "$command_name" in
     require_command ruby
     select_available_build_target
     printf '%s: %s (%s)\n' "$SELECTED_KIND" "$SELECTED_NAME" "$SELECTED_ID"
+    [[ "$SELECTED_KIND" == "device" ]] && printf 'Connection: %s\n' "$SELECTED_TRANSPORT"
     printf 'DerivedData: %s\n' "$SELECTED_DERIVED_DATA"
     ;;
   derived-data-path)

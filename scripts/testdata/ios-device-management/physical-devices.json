@@ -2,20 +2,18 @@
   "result": {
     "devices": [
       {
-        "properties": {
-          "connection": {
-            "transportType": "wired",
-            "state": "connected",
-            "pairingState": "paired"
-          },
-          "hardware": {
-            "platform": "iOS",
-            "reality": "physical",
-            "udid": "PHYSICAL-PRO-UDID"
-          },
-          "state": {
-            "name": "iPad Pro"
-          }
+        "connectionProperties": {
+          "transportType": "wired",
+          "tunnelState": "connected",
+          "pairingState": "paired"
+        },
+        "hardwareProperties": {
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "PHYSICAL-PRO-UDID"
+        },
+        "deviceProperties": {
+          "name": "iPad Pro"
         }
       },
       {
@@ -36,6 +34,21 @@
         }
       },
       {
+        "connectionProperties": {
+          "transportType": "localNetwork",
+          "tunnelState": "connected",
+          "pairingState": "paired"
+        },
+        "hardwareProperties": {
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "NETWORK-PRO-UDID"
+        },
+        "deviceProperties": {
+          "name": "iPad Pro"
+        }
+      },
+      {
         "properties": {
           "connection": {
             "transportType": "localNetwork",
@@ -50,6 +63,35 @@
           "state": {
             "name": "Network iPhone"
           }
+        }
+      },
+      {
+        "connectionProperties": {
+          "pairingState": "paired",
+          "tunnelState": "unavailable"
+        },
+        "hardwareProperties": {
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "OFFLINE-PAIRED-UDID"
+        },
+        "deviceProperties": {
+          "name": "Offline paired iPad"
+        }
+      },
+      {
+        "connectionProperties": {
+          "transportType": "localNetwork",
+          "tunnelState": "connected",
+          "pairingState": "unpaired"
+        },
+        "hardwareProperties": {
+          "platform": "iOS",
+          "reality": "physical",
+          "udid": "UNPAIRED-NETWORK-UDID"
+        },
+        "deviceProperties": {
+          "name": "Unpaired network iPad"
         }
       }
     ]

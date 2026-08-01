@@ -72,10 +72,6 @@ type Router struct {
 	claudeRuntimeQuotaMu        sync.RWMutex
 	claudeRuntimeQuota          *runtimeRateLimits
 	claudeRuntimeQuotaCheckedAt time.Time
-	// pairingClaims 只记录短期票据的签名和过期时间，不保存长期 Token。
-	// 状态仅需覆盖当前进程内的短期重放窗口，服务重启后丢失是可接受的 MVP 取舍。
-	pairingClaimsMu sync.Mutex
-	pairingClaims   map[string]time.Time
 
 	gatewayThreadsMu              sync.Mutex
 	gatewayThreads                map[string]appServerGatewayAllowedThread
@@ -97,6 +93,12 @@ type Router struct {
 	// TestFlight 发布会持续数分钟，使用内存任务保存当前进度，避免让移动端 HTTP 请求长时间挂起。
 	gitTestFlightMu   sync.Mutex
 	gitTestFlightJobs map[string]*gitTestFlightReleaseJob
+}
+
+// RouterOptions 只承载必须在构造时固定的进程级资源路径。
+// 空 GatewayTurnClaimStorePath 保持纯内存行为，供普通测试和嵌入式调用使用。
+type RouterOptions struct {
+	GatewayTurnClaimStorePath string
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
@@ -122,6 +124,37 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 // NewRouterWithRuntimeAndInstallationID 同时注入 runtime 与稳定安装身份。
 // 保留旧构造器作为兼容包装，现有测试和内部调用无需一次性迁移。
 func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string, runtime SessionRuntime) (http.Handler, *Router) {
+	return NewRouterWithRuntimeInstallationIDAndOptions(
+		cfg,
+		registry,
+		manager,
+		checker,
+		version,
+		installationID,
+		runtime,
+		RouterOptions{},
+	)
+}
+
+// NewRouterWithRuntimeInstallationIDAndOptions 由 agentd 生产入口显式注入私有状态路径。
+// 旧构造器保持纯内存默认值，避免单元测试意外读写当前用户目录。
+func NewRouterWithRuntimeInstallationIDAndOptions(
+	cfg config.Config,
+	registry *projects.Registry,
+	manager *session.Manager,
+	checker *doctor.Checker,
+	version string,
+	installationID string,
+	runtime SessionRuntime,
+	options RouterOptions,
+) (http.Handler, *Router) {
+	externalActivity := externalActivitySource(codexhistory.NewDefaultExternalActivityTracker(registry))
+	if strings.TrimSpace(options.GatewayTurnClaimStorePath) != "" {
+		externalActivity = codexhistory.NewDefaultExternalActivityTrackerWithClaimStore(
+			registry,
+			options.GatewayTurnClaimStorePath,
+		)
+	}
 	fileUploads := newFileUploadStore(defaultFileUploadRoot())
 	r := &Router{
 		cfg:            cfg,
@@ -141,14 +174,13 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 		historyMedia:                newAppServerHistoryMediaStore(),
 		fileUploads:                 fileUploads,
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
-		externalActivity:            codexhistory.NewDefaultExternalActivityTracker(registry),
+		externalActivity:            externalActivity,
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
 		managedWorktreeCleanupPlans: map[string]worktreeCleanupPlan{},
 		managedWorktreePendingUses:  map[string]int{},
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
-		pairingClaims:               map[string]time.Time{},
 		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
 	r.refreshClaudeBridgeProbe(false)

@@ -4,6 +4,58 @@ import Security
 
 @MainActor
 final class PairingLinkTests: XCTestCase {
+    func testHostPlatformNormalizesServerValuesAndKeepsLegacyProfilesCompatible() throws {
+        XCTAssertEqual(HostPlatform(serverValue: "darwin"), .apple)
+        XCTAssertEqual(HostPlatform(serverValue: "macOS"), .apple)
+        XCTAssertEqual(HostPlatform(serverValue: "windows"), .windows)
+        XCTAssertEqual(HostPlatform(serverValue: "linux"), .linux)
+        XCTAssertEqual(HostPlatform(serverValue: "freebsd"), .unknown)
+        XCTAssertEqual(HostPlatform.windows.iconKind, .windows11)
+        XCTAssertEqual(HostPlatform.linux.iconKind, .linuxTux)
+        XCTAssertEqual(HostPlatform.unknown.iconKind, .genericComputer)
+
+        let legacyProfile = try JSONDecoder().decode(
+            ConnectionProfile.self,
+            from: Data(
+                #"{"id":"legacy","displayName":"旧设备","endpoint":"http://127.0.0.1:8787"}"#.utf8
+            )
+        )
+        XCTAssertEqual(legacyProfile.hostPlatform, .unknown)
+
+        let futureProfile = try JSONDecoder().decode(
+            ConnectionProfile.self,
+            from: Data(
+                #"{"id":"future","displayName":"新设备","endpoint":"http://127.0.0.1:8787","hostPlatform":"freebsd"}"#.utf8
+            )
+        )
+        XCTAssertEqual(futureProfile.hostPlatform, .unknown)
+    }
+
+    func testConnectionCommitPersistsNormalizedHostPlatform() async throws {
+        let suiteName = "PairingLinkTests.HostPlatform.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in }
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.30:8787",
+            token: "windows-token",
+            installationID: "windows-installation",
+            hostPlatform: .windows
+        ))
+
+        XCTAssertEqual(store.activeConnectionProfile?.hostPlatform, .windows)
+        let persistedData = try XCTUnwrap(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        let persistedProfiles = try JSONDecoder().decode([ConnectionProfile].self, from: persistedData)
+        XCTAssertEqual(persistedProfiles.first?.hostPlatform, .windows)
+    }
+
     func testQRCodeScanIntentKeepsPresentationAndSubmissionModeTogether() {
         XCTAssertTrue(ConnectionQRCodeScanIntent.initialConnection.isValid(activeProfileID: nil))
         XCTAssertFalse(ConnectionQRCodeScanIntent.initialConnection.isValid(activeProfileID: "current"))
@@ -2152,5 +2204,114 @@ final class TestKeychainOperations: KeychainOperating {
     private func account(from dictionary: CFDictionary) -> String {
         let values = dictionary as NSDictionary
         return values[kSecAttrAccount as String] as? String ?? ""
+    }
+}
+
+final class DoctorDiagnosticsTests: XCTestCase {
+    func testParsesStructuredDoctorResponseAndKeepsPrettyRawJSON() throws {
+        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ))
+        let data = Data(#"{"ok":false,"version":"1.4.0","listen":"127.0.0.1:8787","checks":[{"name":"token","ok":true,"level":"ok","message":"Token 已配置"},{"name":"tailscale","ok":false,"level":"warning","message":"未检测到 Tailscale"},{"name":"codex","ok":false,"level":"error","message":"未找到 Codex CLI","fix":"安装 Codex CLI"}],"future":{"ignored":true}}"#.utf8)
+
+        let document = try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response)
+
+        XCTAssertFalse(document.report.ok)
+        XCTAssertEqual(document.report.version, "1.4.0")
+        XCTAssertEqual(document.report.listen, "127.0.0.1:8787")
+        XCTAssertEqual(document.report.checks.count, 3)
+        XCTAssertEqual(document.report.checks[0].displayName, L10n.text("ui.access_token"))
+        XCTAssertEqual(document.report.checks[0].displayMessage, L10n.text("ui.doctor_access_token_ready"))
+        XCTAssertNil(document.report.checks[0].displayFix)
+        XCTAssertTrue(document.report.checks[1].isWarning)
+        XCTAssertEqual(document.report.checks[2].displayMessage, L10n.text("ui.doctor_codex_cli_needs_attention"))
+        XCTAssertEqual(document.report.checks[2].displayFix, L10n.text("ui.doctor_fix_codex"))
+        XCTAssertTrue(document.rawJSON.contains("\n"))
+        XCTAssertTrue(document.rawJSON.contains(#""version" : "1.4.0""#))
+    }
+
+    func testUnknownDoctorCheckUsesLocalizedSummaryAndKeepsRawDetails() {
+        let check = DoctorDiagnosticCheck(
+            name: "future-check",
+            ok: false,
+            level: "warning",
+            message: "服务端新增的诊断详情：/private/path",
+            fix: "运行 future-fix --repair"
+        )
+
+        XCTAssertEqual(check.displayMessage, L10n.text("ui.doctor_check_warning"))
+        XCTAssertEqual(check.displayFix, L10n.text("ui.doctor_fix_generic"))
+        XCTAssertTrue(check.hasRawDiagnosticDetails)
+        XCTAssertEqual(check.message, "服务端新增的诊断详情：/private/path")
+        XCTAssertEqual(check.fix, "运行 future-fix --repair")
+    }
+
+    func testRejectsNonSuccessHTTPResponseWithServerMessage() throws {
+        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 401,
+            httpVersion: nil,
+            headerFields: nil
+        ))
+        let data = Data(#"{"error":{"message":"token 无效"}}"#.utf8)
+
+        XCTAssertThrowsError(try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response)) { error in
+            XCTAssertEqual(
+                error as? DoctorDiagnosticError,
+                .httpStatus(code: 401, message: "token 无效")
+            )
+            XCTAssertEqual(error.localizedDescription, "诊断请求失败（HTTP 401）：token 无效")
+        }
+    }
+
+    func testRejectsNonHTTPResponseAndMalformedPayload() throws {
+        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
+        let nonHTTP = URLResponse(
+            url: url,
+            mimeType: "application/json",
+            expectedContentLength: 2,
+            textEncodingName: "utf-8"
+        )
+        XCTAssertThrowsError(
+            try DoctorDiagnosticsParser.parseDoctorResponse(data: Data("{}".utf8), response: nonHTTP)
+        ) { error in
+            XCTAssertEqual(error as? DoctorDiagnosticError, .invalidHTTPResponse)
+        }
+
+        let okResponse = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        ))
+        XCTAssertThrowsError(
+            try DoctorDiagnosticsParser.parseDoctorResponse(data: Data(#"{"ok":true}"#.utf8), response: okResponse)
+        ) { error in
+            guard case .invalidPayload = error as? DoctorDiagnosticError else {
+                return XCTFail("expected invalidPayload, got \(error)")
+            }
+        }
+    }
+
+    func testBuildsDoctorURLAndFormatsFallbackPayload() throws {
+        let url = try DoctorDiagnosticsParser.doctorURL(endpoint: " https://mac.example:8787/old/path?token=ignored ")
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "mac.example")
+        XCTAssertEqual(url.port, 8787)
+        XCTAssertEqual(url.path, "/api/doctor")
+        XCTAssertNil(url.query)
+
+        XCTAssertThrowsError(try DoctorDiagnosticsParser.doctorURL(endpoint: "not a URL")) { error in
+            XCTAssertEqual(error as? DoctorDiagnosticError, .invalidEndpoint)
+        }
+        XCTAssertEqual(
+            DoctorDiagnosticsParser.formatDiagnosticPayload(Data([0xFF]), fallback: "无法解码"),
+            "无法解码"
+        )
     }
 }

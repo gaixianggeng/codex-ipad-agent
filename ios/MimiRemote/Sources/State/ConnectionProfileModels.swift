@@ -1,5 +1,75 @@
 import Foundation
 
+/// 服务端运行平台的稳定客户端分类。
+///
+/// agentd 返回 Go 的 `runtime.GOOS`；这里先归一化再持久化，避免 UI 直接依赖服务端字符串，
+/// 同时让旧服务端、未来新平台和异常值都安全退回通用电脑图标。
+enum HostPlatform: String, Codable, Equatable {
+    case apple
+    case windows
+    case linux
+    case unknown
+
+    init(serverValue: String?) {
+        let normalized = serverValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch normalized {
+        case "apple", "darwin", "mac", "macos", "osx":
+            self = .apple
+        case "windows", "win32", "win64":
+            self = .windows
+        case "linux":
+            self = .linux
+        default:
+            self = .unknown
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(serverValue: try container.decode(String.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    var displayName: String? {
+        switch self {
+        case .apple:
+            return "macOS"
+        case .windows:
+            return "Windows"
+        case .linux:
+            return "Linux"
+        case .unknown:
+            return nil
+        }
+    }
+
+    var iconKind: HostPlatformIconKind {
+        switch self {
+        case .apple:
+            return .apple
+        case .windows:
+            return .windows11
+        case .linux:
+            return .linuxTux
+        case .unknown:
+            return .genericComputer
+        }
+    }
+}
+
+enum HostPlatformIconKind: Equatable {
+    case apple
+    case windows11
+    case linuxTux
+    case genericComputer
+}
+
 /// 一台已保存电脑的本地连接档案。
 ///
 /// `id` 是客户端数据隔离命名空间；`installationID` 是 agentd 返回的稳定安装身份；
@@ -10,6 +80,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     var endpoint: String
     var lastSuccessfulAt: Date?
     var installationID: String?
+    var hostPlatform: HostPlatform
     var revision: UInt64
 
     enum CodingKeys: String, CodingKey {
@@ -18,6 +89,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         case endpoint
         case lastSuccessfulAt
         case installationID
+        case hostPlatform
         case revision
     }
 
@@ -27,6 +99,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         endpoint: String,
         lastSuccessfulAt: Date?,
         installationID: String? = nil,
+        hostPlatform: HostPlatform = .unknown,
         revision: UInt64 = 0
     ) {
         self.id = id
@@ -34,6 +107,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         self.endpoint = endpoint
         self.lastSuccessfulAt = lastSuccessfulAt
         self.installationID = installationID
+        self.hostPlatform = hostPlatform
         self.revision = revision
     }
 
@@ -44,6 +118,7 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
         endpoint = try container.decode(String.self, forKey: .endpoint)
         lastSuccessfulAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulAt)
         installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
+        hostPlatform = try container.decodeIfPresent(HostPlatform.self, forKey: .hostPlatform) ?? .unknown
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision) ?? 0
     }
 }
@@ -244,6 +319,7 @@ struct PreparedConnectionSettings: Equatable {
     let profileTarget: PreparedConnectionProfileTarget
     let validatedAt: Date
     let installationID: String?
+    let hostPlatform: HostPlatform
     let hostContext: PreparedHostContext?
     let capabilityNegotiation: HostCapabilityNegotiation
 
@@ -253,6 +329,7 @@ struct PreparedConnectionSettings: Equatable {
         profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
         validatedAt: Date = Date(),
         installationID: String? = nil,
+        hostPlatform: HostPlatform = .unknown,
         hostContext: PreparedHostContext? = nil,
         capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated
     ) {
@@ -261,6 +338,7 @@ struct PreparedConnectionSettings: Equatable {
         self.profileTarget = profileTarget
         self.validatedAt = validatedAt
         self.installationID = installationID
+        self.hostPlatform = hostPlatform
         self.hostContext = hostContext
         self.capabilityNegotiation = capabilityNegotiation
     }
@@ -271,6 +349,7 @@ struct PreparedConnectionSettings: Equatable {
             lhs.profileTarget == rhs.profileTarget &&
             lhs.validatedAt == rhs.validatedAt &&
             lhs.installationID == rhs.installationID &&
+            lhs.hostPlatform == rhs.hostPlatform &&
             lhs.hostContext === rhs.hostContext &&
             lhs.capabilityNegotiation == rhs.capabilityNegotiation
     }

@@ -20,7 +20,8 @@ type PairingTicket struct {
 func NewPairingTicket(endpoint string, secret string, issuedAt time.Time, expiresAt time.Time) PairingTicket {
 	ticket := PairingTicket{
 		Endpoint: strings.TrimSpace(endpoint),
-		// 保留亚秒精度，避免用户连续刷新二维码时在同一秒得到完全相同、无法独立消费的票据。
+		// 保留亚秒精度，确保用户连续刷新二维码时仍生成可区分的新票据，
+		// 也便于按每张票据自己的签发和过期时间审计生命周期。
 		// time.Parse(RFC3339Nano) 仍兼容旧版本生成的不含小数秒 RFC3339 时间。
 		IssuedAt:  issuedAt.UTC().Format(time.RFC3339Nano),
 		ExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano),

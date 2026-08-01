@@ -230,6 +230,17 @@ extension CodexAppServerSessionRuntime {
             guard let threadID = params["threadId"]?.stringValue else {
                 return
             }
+            let turnID = completedTurnID(from: params)
+            if runtimeProvider == "claude", turnID == nil {
+                // 无法关联 turn 的完成通知不能直接清理当前 active；handle() 会改走权威历史对账。
+                return
+            }
+            if let activeTurnID = contextsBySessionID[threadID]?.activeTurnID,
+               let turnID,
+               activeTurnID != turnID {
+                // 旧 turn 的完成通知可能晚于下一轮 turn/started；不能因此清掉当前新 turn。
+                return
+            }
             _ = withUpdatedSession(threadID) { item in
                 item.activeTurnID = nil
                 item.status = "running"
@@ -491,7 +502,9 @@ extension CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidResponse
         }
         let cwd = thread["cwd"]?.stringValue ?? fallbackProject?.path ?? ""
-        let project = projectFor(cwd: cwd, projects: projects) ?? fallbackProject
+        let project = gatewayAnnotatedProject(from: thread, projects: projects)
+            ?? projectFor(cwd: cwd, projects: projects)
+            ?? fallbackProject
         let projectID = project?.id ?? fallbackProject?.id ?? cwd
         let projectName = project?.name ?? fallbackProject?.name ?? cwd
         let status = sessionStatus(from: thread["status"], forceRunning: forceRunning)
@@ -550,8 +563,31 @@ extension CodexAppServerSessionRuntime {
             usage: cached?.usage,
             rateLimit: rateLimit,
             goal: goal,
+            appServerSessionID: nonEmpty(thread["sessionId"]?.stringValue),
+            parentThreadID: nonEmpty(thread["parentThreadId"]?.stringValue),
+            agentNickname: nonEmpty(thread["agentNickname"]?.stringValue),
+            agentRole: nonEmpty(thread["agentRole"]?.stringValue),
+            canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
             context: context
         )
+    }
+
+    func gatewayAnnotatedProject(
+        from thread: [String: CodexAppServerJSONValue],
+        projects: [AgentProject]
+    ) -> AgentProject? {
+        guard let annotation = thread["mimiRemote"]?.objectValue,
+              annotation["discovery"]?.stringValue == "global",
+              let projectID = nonEmpty(annotation["projectId"]?.stringValue),
+              let projectPath = nonEmpty(annotation["projectPath"]?.stringValue)
+        else {
+            return nil
+        }
+        // agentd 已做 repo identity 裁剪；iOS 再与当前 config.projects 交叉验证，
+        // 避免陈旧连接或协议混用把会话投影到不存在的项目。
+        return projects.first {
+            $0.id == projectID && $0.path == projectPath
+        }
     }
 
     func sessionContext(
@@ -983,16 +1019,22 @@ extension CodexAppServerSessionRuntime {
         status: String
     ) -> [SessionContextSubagent] {
         var subagents: [SessionContextSubagent] = []
+        var seenThreadIDs = Set<String>()
         if let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) {
-            subagents.append(
-                SessionContextSubagent(
-                    id: thread["id"]?.stringValue ?? UUID().uuidString,
+            if let childThreadID = nonEmpty(thread["id"]?.stringValue) {
+                subagents.append(
+                    SessionContextSubagent(
+                    id: childThreadID,
                     parentThreadID: parentThreadID,
+                    sessionID: nonEmpty(thread["sessionId"]?.stringValue),
                     nickname: nonEmpty(thread["agentNickname"]?.stringValue),
                     role: nonEmpty(thread["agentRole"]?.stringValue),
-                    status: status
+                    status: status,
+                    canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue
+                    )
                 )
-            )
+                seenThreadIDs.insert(childThreadID)
+            }
         }
         guard let threadID = nonEmpty(thread["id"]?.stringValue) else {
             return subagents
@@ -1001,24 +1043,47 @@ extension CodexAppServerSessionRuntime {
         for turn in turns.reversed() {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             for item in items.reversed() where item["type"]?.stringValue == "collabAgentToolCall" {
-                let id = nonEmpty(
+                let receiverThreadIDs: [String] = item["receiverThreadIds"]?.arrayValue?
+                    .compactMap(\.stringValue)
+                    .compactMap { rawID in
+                        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return !trimmed.isEmpty && trimmed == rawID ? rawID : nil
+                    }
+                    ?? []
+                let legacyThreadID = nonEmpty(
                     item["childThreadId"]?.stringValue,
                     item["agentThreadId"]?.stringValue,
                     item["subagentThreadId"]?.stringValue,
-                    item["threadId"]?.stringValue,
-                    item["id"]?.stringValue
-                ) ?? UUID().uuidString
-                subagents.append(
-                    SessionContextSubagent(
-                        id: id,
+                    item["threadId"]?.stringValue
+                )
+                let childThreadIDs: [String]
+                if receiverThreadIDs.isEmpty {
+                    childThreadIDs = legacyThreadID.map { [$0] } ?? []
+                } else {
+                    childThreadIDs = receiverThreadIDs
+                }
+                let agentStates = item["agentsStates"]?.objectValue ?? [:]
+                for childThreadID in childThreadIDs where seenThreadIDs.insert(childThreadID).inserted {
+                    let agentState = agentStates[childThreadID]?.objectValue
+                    let stateStatus = nonEmpty(
+                        agentState?["status"]?.stringValue,
+                        agentStates[childThreadID]?.stringValue
+                    )
+                    subagents.append(
+                        SessionContextSubagent(
+                        id: childThreadID,
                         parentThreadID: threadID,
+                        sessionID: nonEmpty(agentState?["sessionId"]?.stringValue),
                         nickname: nonEmpty(item["agentNickname"]?.stringValue, item["nickname"]?.stringValue, item["tool"]?.stringValue),
                         role: nonEmpty(item["agentRole"]?.stringValue, item["role"]?.stringValue),
-                        status: nonEmpty(item["status"]?.stringValue, turn["status"]?.stringValue, status)
+                        status: nonEmpty(stateStatus, item["status"]?.stringValue, turn["status"]?.stringValue, status),
+                        statusMessage: nonEmpty(agentState?["message"]?.stringValue),
+                        canAcceptDirectInput: agentState?["canAcceptDirectInput"]?.boolValue
+                        )
                     )
-                )
-                if subagents.count >= 8 {
-                    return subagents
+                    if subagents.count >= 32 {
+                        return subagents
+                    }
                 }
             }
         }
@@ -1384,18 +1449,6 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
-    func isTerminalHistoryStatus(_ value: CodexAppServerJSONValue?) -> Bool {
-        let raw = value?.stringValue
-            ?? value?.objectValue?["type"]?.stringValue
-            ?? value?.objectValue?["status"]?.stringValue
-        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "completed", "complete", "succeeded", "success", "failed", "failure", "interrupted", "cancelled", "canceled", "aborted":
-            return true
-        default:
-            return false
-        }
-    }
-
     func estimatedHistoryItemDate(startedAt: Date?, completedAt: Date?, itemIndex: Int, itemCount: Int) -> Date? {
         guard let startedAt else {
             return completedAt
@@ -1562,6 +1615,13 @@ extension CodexAppServerSessionRuntime {
             params["itemId"]?.stringValue,
             params["item_id"]?.stringValue
         ].compactMap { $0 })
+        let tombstoneTime = Date()
+        for id in ids {
+            resolvedServerRequestTombstonesByKey[
+                resolvedRequestTombstoneKey(sessionID: sessionID, requestID: id)
+            ] = tombstoneTime
+        }
+        pruneInteractionTombstones()
 
         var resolved = CodexAppServerResolvedServerRequests()
         for id in ids {
@@ -1584,9 +1644,11 @@ extension CodexAppServerSessionRuntime {
         }
         if let sessionID,
            !resolved.approvalSessionIDs.contains(sessionID),
-           !resolved.userInputSessionIDs.contains(sessionID) {
+           !resolved.userInputSessionIDs.contains(sessionID),
+           terminalSessionBarriers[sessionID] == nil {
             resolved.approvalSessionIDs.append(sessionID)
         }
+        discardBufferedResolvedInteractionRequests(sessionID: sessionID, requestIDs: Set(ids))
         return resolved
     }
 
@@ -1688,30 +1750,6 @@ extension CodexAppServerSessionRuntime {
             ?? params["conversationId"]?.stringValue
             ?? params["sessionId"]?.stringValue
             ?? params["session_id"]?.stringValue
-    }
-
-    func isApprovalLikeServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
-        let lower = request.method.lowercased()
-        if lower.contains("approval") {
-            return true
-        }
-        let params = request.params?.objectValue ?? [:]
-        // URL 型 elicitation 和 Codex 明确标记的工具调用都走审批；普通 form 仍是补充信息。
-        return request.method == "mcpServer/elicitation/request"
-            && (params["mode"]?.stringValue == "url"
-                || CodexMCPToolApprovalProtocol.isToolCall(params))
-    }
-
-    func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
-        if request.method == "item/tool/requestUserInput" {
-            return true
-        }
-        let params = request.params?.objectValue ?? [:]
-        // form/openai-form 都投影到现有补充信息卡；Codex 工具审批例外，避免空 schema
-        // 被渲染成虚假的“补充信息”输入框。
-        return request.method == "mcpServer/elicitation/request"
-            && params["mode"]?.stringValue != "url"
-            && !CodexMCPToolApprovalProtocol.isToolCall(params)
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {

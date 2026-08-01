@@ -2010,51 +2010,6 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(context.subagents.first?.parentThreadID, "thr_parent")
     }
 
-    func testSessionContextStoreMergesUpdatesAndAttachesSubagents() {
-        let store = SessionContextStore()
-        store.upsert(
-            SessionContextSnapshot(
-                sessionID: "thr_parent",
-                threadID: "thr_parent",
-                status: SessionContextStatus(type: "idle"),
-                environment: SessionContextEnvironment(id: "local", kind: "local", label: "本地", cwd: "/tmp/parent", provider: "openai"),
-                sources: [SessionContextSource(id: "session_source", kind: "session", label: "appServer")]
-            ),
-            fallbackSessionID: nil
-        )
-        store.upsert(
-            SessionContextSnapshot(
-                sessionID: "thr_parent",
-                status: SessionContextStatus(type: "active", activeFlags: ["waitingOnApproval"]),
-                tasks: [SessionContextTask(id: "cmd_1", kind: "command", title: "go test ./...", subtitle: "/tmp/parent", status: "running")]
-            ),
-            fallbackSessionID: nil
-        )
-        store.upsert(
-            SessionContextSnapshot(
-                sessionID: "thr_child",
-                threadID: "thr_child",
-                subagents: [
-                    SessionContextSubagent(
-                        id: "thr_child",
-                        parentThreadID: "thr_parent",
-                        nickname: "Noether",
-                        role: "review",
-                        status: "running"
-                    )
-                ]
-            ),
-            fallbackSessionID: nil
-        )
-
-        let parent = store.context(for: "thr_parent")
-        XCTAssertEqual(parent?.status?.activeFlags, ["waitingOnApproval"])
-        XCTAssertEqual(parent?.environment?.cwd, "/tmp/parent")
-        XCTAssertEqual(parent?.tasks.first?.title, "go test ./...")
-        XCTAssertEqual(parent?.subagents.first?.displayName, "Noether")
-        XCTAssertEqual(store.context(for: "codex_thr_parent")?.subagents.first?.id, "thr_child")
-    }
-
     func testSessionContextStoreClearsPendingApprovalTasks() {
         let store = SessionContextStore()
         store.upsert(
@@ -2344,6 +2299,15 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(iPhone.lineWidth, 3)
         XCTAssertEqual(iPhone.ringSpacing, 1.5)
         XCTAssertEqual(iPhone.hitSize, 44)
+
+        let floatingSidebar = CodexUsageRingMetrics(
+            isCompact: false,
+            usesCondensedVisual: true
+        )
+        XCTAssertEqual(floatingSidebar.diameter, 30)
+        XCTAssertEqual(floatingSidebar.lineWidth, 3)
+        XCTAssertEqual(floatingSidebar.ringSpacing, 1.4)
+        XCTAssertEqual(floatingSidebar.hitSize, 44)
     }
 
     func testPhotoLibraryPickerConfigurationSupportsOrderedMultipleSelection() {

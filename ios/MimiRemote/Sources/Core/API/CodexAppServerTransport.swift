@@ -2,6 +2,13 @@ import Foundation
 
 enum TurnSendOutcome: Equatable {
     case accepted(turnID: TurnID?)
+    case guidanceAccepted
+    case acceptedTerminal(turnID: TurnID?)
+    case acceptedSuperseded(
+        turnID: TurnID?,
+        activeTurnID: TurnID
+    )
+    case acceptedThreadClosed(turnID: TurnID?)
     case activeTurnConflict(activeTurnID: TurnID, message: String)
     case rejected(message: String)
     case uncertain(message: String)

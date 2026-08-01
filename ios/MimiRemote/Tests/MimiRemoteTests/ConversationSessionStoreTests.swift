@@ -26,6 +26,527 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(client.requestedProjectIDs.isEmpty)
     }
 
+    func testSessionLibraryControlledGlobalDiscoveryPaginatesAndMergesExternalWorktrees() async {
+        let project = makeProject(id: "proj_global")
+        var first = makeSession(
+            id: "child-global-a",
+            projectID: project.id,
+            title: "External A",
+            status: "history",
+            source: "codex",
+            resumeID: "child-global-a"
+        )
+        first.parentThreadID = "parent-global"
+        first.canAcceptDirectInput = false
+        var second = makeSession(
+            id: "child-global-b",
+            projectID: project.id,
+            title: "External B",
+            status: "history",
+            source: "codex",
+            resumeID: "child-global-b"
+        )
+        second.parentThreadID = "parent-global"
+        second.canAcceptDirectInput = false
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { cursor, limit in
+                XCTAssertEqual(limit, 50)
+                if cursor == nil {
+                    return SessionsPage(
+                        sessions: [first],
+                        nextCursor: "mimi_next",
+                        hasMore: true
+                    )
+                }
+                XCTAssertEqual(cursor, "mimi_next")
+                return SessionsPage(sessions: [second])
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertEqual(client.requestedControlledGlobalCursors.count, 2)
+        XCTAssertNil(client.requestedControlledGlobalCursors[0])
+        XCTAssertEqual(client.requestedControlledGlobalCursors[1], "mimi_next")
+        XCTAssertEqual(Set(store.sessions.map(\.id)), ["child-global-a", "child-global-b"])
+        XCTAssertTrue(store.sessions.allSatisfy { !$0.allowsDirectInput })
+    }
+
+    func testControlledGlobalDerivedReadOnlySessionsReceiveBoundedStableRecentHistoryVisibility() async {
+        let project = makeProject(id: "proj_derived_visibility")
+        var newestStructuralChild = makeSession(
+            id: "derived-newest",
+            projectID: project.id,
+            title: "Newest structural child",
+            status: "history",
+            source: "codex",
+            recencyAt: Date(timeIntervalSince1970: 300)
+        )
+        newestStructuralChild.parentThreadID = "parent-thread"
+        newestStructuralChild.canAcceptDirectInput = false
+
+        var secondDelegation = makeSession(
+            id: "derived-second",
+            projectID: project.id,
+            title: "Second delegation",
+            status: "history",
+            source: "codex",
+            preview: "\n  <codex_delegation>\nSecond",
+            recencyAt: Date(timeIntervalSince1970: 299)
+        )
+        secondDelegation.canAcceptDirectInput = false
+
+        let ordinaryHistory = (0..<11).map { index in
+            makeSession(
+                id: "ordinary-\(index)",
+                projectID: project.id,
+                title: "Ordinary \(index)",
+                status: "history",
+                source: "codex",
+                recencyAt: Date(timeIntervalSince1970: TimeInterval(298 - index))
+            )
+        }
+
+        var targetDelegation = makeSession(
+            id: "019fb5fd-b2e1-77b0-9427-79723979c7ef",
+            projectID: project.id,
+            title: "完善 MIM-56 工具活动语义",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nMIM-56",
+            recencyAt: Date(timeIntervalSince1970: 287)
+        )
+        targetDelegation.canAcceptDirectInput = false
+
+        var fourthDelegation = makeSession(
+            id: "derived-fourth",
+            projectID: project.id,
+            title: "Older delegation",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nOlder",
+            recencyAt: Date(timeIntervalSince1970: 286)
+        )
+        fourthDelegation.canAcceptDirectInput = false
+
+        var globalSessions = [
+            newestStructuralChild,
+            secondDelegation
+        ] + ordinaryHistory + [
+            targetDelegation,
+            fourthDelegation
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        let initialVisibleIDs = store.recentHistorySessions.map(\.id)
+        XCTAssertEqual(initialVisibleIDs.count, 9, "普通前 8 与重复的派生前 3 去重后应保持有界")
+        XCTAssertEqual(Set(initialVisibleIDs).count, initialVisibleIDs.count)
+        XCTAssertTrue(initialVisibleIDs.contains(targetDelegation.id), "全局第 14、派生第 3 的 MIM-56 应进入默认侧栏")
+        XCTAssertFalse(initialVisibleIDs.contains(fourthDelegation.id), "派生补充集不得突破 3 条上限")
+        XCTAssertTrue(
+            store.visibleSessions(forProjectID: project.id).contains { $0.id == targetDelegation.id },
+            "展开当前目录时也应在普通预览之外看到派生第 3 条"
+        )
+        XCTAssertTrue(
+            store.sessionListSnapshot(forProjectID: project.id).visibleSessions.contains {
+                $0.id == targetDelegation.id
+            }
+        )
+        XCTAssertFalse(
+            store.visibleSessions(forProjectID: project.id).contains { $0.id == fourthDelegation.id }
+        )
+
+        store.setSessionVisibleLimit(
+            SessionStore.sessionPreviewLimit + SessionStore.sessionExpansionStep,
+            forProjectID: project.id
+        )
+        XCTAssertTrue(
+            store.visibleSessions(forProjectID: project.id).contains { $0.id == targetDelegation.id },
+            "显示更多后派生补充行不能从当前目录消失"
+        )
+
+        // Agent 输出只会推进 updatedAt；recencyAt 不变时，可见 ID 与顺序都不能抖动。
+        for index in globalSessions.indices {
+            globalSessions[index].updatedAt = Date(timeIntervalSince1970: TimeInterval(10_000 + index))
+        }
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertEqual(store.recentHistorySessions.map(\.id), initialVisibleIDs)
+
+        let restartedClient = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let restartedStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { restartedClient }
+        )
+        await restartedStore.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertEqual(
+            restartedStore.recentHistorySessions.map(\.id),
+            initialVisibleIDs,
+            "重启后应由同一受控全局数据恢复，不依赖内存置顶时间"
+        )
+
+        store.sessionSearchQuery = "MIM-56"
+        store.remoteSessionSearchResults = [targetDelegation]
+        store.remoteSessionSearchSnippetByID[targetDelegation.id] = "MIM-56"
+        globalSessions.removeAll {
+            $0.id == targetDelegation.id || $0.id == newestStructuralChild.id
+        }
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        XCTAssertNil(store.sessionsByID[newestStructuralChild.id])
+        XCTAssertNil(store.sessionsByID[targetDelegation.id])
+        XCTAssertFalse(store.remoteSessionSearchResults.contains { $0.id == targetDelegation.id })
+        XCTAssertNil(store.remoteSessionSearchSnippetByID[targetDelegation.id])
+        XCTAssertFalse(store.sessionLibrarySessions.contains { $0.id == newestStructuralChild.id })
+        XCTAssertFalse(store.sessionLibrarySessions.contains { $0.id == targetDelegation.id })
+        XCTAssertFalse(
+            store.recentHistorySessions.contains { $0.id == newestStructuralChild.id },
+            "即使旧会话原本位于普通最近 8 条，授权撤销后也必须立即删除"
+        )
+        XCTAssertFalse(
+            store.recentHistorySessions.contains { $0.id == targetDelegation.id },
+            "完整全局遍历确认消失后，旧 Session 不得靠补充状态残留"
+        )
+    }
+
+    func testDerivedRecentHistorySupplementFailsClosedForWritableArchivedAndNonCodexSessions() async {
+        let project = makeProject(id: "proj_derived_boundaries")
+        let ordinaryHistory = (0..<8).map { index in
+            makeSession(
+                id: "recent-\(index)",
+                projectID: project.id,
+                title: "Recent \(index)",
+                status: "history",
+                source: "codex",
+                recencyAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+
+        var structuralChild = makeSession(
+            id: "structural-child",
+            projectID: project.id,
+            title: "Structural child",
+            status: "history",
+            source: "codex",
+            recencyAt: Date(timeIntervalSince1970: 20)
+        )
+        structuralChild.parentThreadID = "parent-thread"
+        structuralChild.canAcceptDirectInput = false
+
+        var envelopeChild = makeSession(
+            id: "envelope-child",
+            projectID: project.id,
+            title: "Envelope child",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nRead-only",
+            recencyAt: Date(timeIntervalSince1970: 19)
+        )
+        envelopeChild.canAcceptDirectInput = false
+
+        let writableEnvelope = makeSession(
+            id: "writable-envelope",
+            projectID: project.id,
+            title: "User text",
+            status: "history",
+            source: "codex",
+            preview: "<codex_delegation>\nUser-controlled text",
+            recencyAt: Date(timeIntervalSince1970: 18)
+        )
+        var claudeEnvelope = makeSession(
+            id: "claude-envelope",
+            projectID: project.id,
+            title: "Claude",
+            status: "history",
+            source: "claude",
+            preview: "<codex_delegation>\nNot Codex",
+            recencyAt: Date(timeIntervalSince1970: 17)
+        )
+        claudeEnvelope.canAcceptDirectInput = false
+        var runningChild = makeSession(
+            id: "running-child",
+            projectID: project.id,
+            title: "Running child",
+            status: "running",
+            source: "codex",
+            preview: "<codex_delegation>\nRunning",
+            recencyAt: Date(timeIntervalSince1970: 16)
+        )
+        runningChild.canAcceptDirectInput = false
+
+        let globalSessions = ordinaryHistory + [
+            structuralChild,
+            envelopeChild,
+            writableEnvelope,
+            claudeEnvelope,
+            runningChild
+        ]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == structuralChild.id })
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == envelopeChild.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == writableEnvelope.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == claudeEnvelope.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == runningChild.id })
+        XCTAssertTrue(store.activeSessions.contains { $0.id == runningChild.id })
+
+        store.toggleSessionArchived(envelopeChild)
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == envelopeChild.id })
+    }
+
+    func testSessionLibraryFallsBackAfterControlledGlobalCapabilityRejection() async {
+        let project = makeProject(id: "proj_fallback")
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in
+                throw AgentAPIError.server(
+                    status: 400,
+                    message: "thread/list.cwd 必须来自已授权工作区"
+                )
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        await store.refreshSessionLibraryIndex(authoritative: true)
+
+        XCTAssertTrue(store.controlledGlobalDiscoveryUnavailable)
+        XCTAssertEqual(
+            client.requestedControlledGlobalCursors.count,
+            1,
+            "旧 agentd 的能力拒绝只探测一次，之后继续使用精确 workspace 列表"
+        )
+    }
+
+    func testWorkspaceRefreshPreservesControlledGlobalWorktreeUntilCompleteTraversalRemovesIt() async throws {
+        let project = makeProject(id: "proj_global_refresh")
+        let workspaceSession = makeSession(
+            id: "thread-workspace",
+            projectID: project.id,
+            title: "Workspace",
+            status: "history",
+            source: "codex"
+        )
+        let externalSession = AgentSession(
+            id: "thread-external-worktree",
+            projectID: project.id,
+            project: project.name,
+            dir: "/tmp/codex-worktrees/external",
+            title: "External Worktree",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-worktree",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 3),
+            canAcceptDirectInput: false
+        )
+        var globalSessions = [externalSession]
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            workspaceSessions: [project.id: [workspaceSession]],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: globalSessions)
+            }
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.reloadRecentWorkspaces()
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            Set(store.sessions(forProjectID: project.id).map(\.id)),
+            [workspaceSession.id, externalSession.id],
+            "精确 cwd 刷新不得删除已通过受控全局发现授权的外部 Worktree"
+        )
+        XCTAssertFalse(store.sessionsByID[externalSession.id]?.allowsDirectInput ?? true)
+
+        globalSessions = []
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            [workspaceSession.id],
+            "完整全局遍历确认消失后，下一次工作区刷新应清除旧外部会话"
+        )
+    }
+
+    func testWorkspaceRefreshPreservesControlledGlobalWorktreeAndLoadedPaginationWindow() async throws {
+        let project = makeProject(id: "proj_global_paginated_refresh")
+        let recent = [
+            makeSession(
+                id: "thread-recent-a",
+                projectID: project.id,
+                title: "Recent A",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: 400)
+            ),
+            makeSession(
+                id: "thread-recent-b",
+                projectID: project.id,
+                title: "Recent B",
+                status: "history",
+                source: "claude",
+                updatedAt: Date(timeIntervalSince1970: 300)
+            )
+        ]
+        let external = AgentSession(
+            id: "thread-external-worktree",
+            projectID: project.id,
+            project: project.name,
+            dir: "/tmp/codex-worktrees/external",
+            title: "External Worktree",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: "thread-external-worktree",
+            createdAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 250),
+            canAcceptDirectInput: false
+        )
+        let older = makeSession(
+            id: "thread-older-page",
+            projectID: project.id,
+            title: "Older Page",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            projectPages: [
+                project.id: SessionsPage(
+                    sessions: recent,
+                    nextCursor: "workspace-next",
+                    hasMore: true
+                )
+            ],
+            cursorPages: [
+                "workspace-next": SessionsPage(sessions: [older])
+            ],
+            controlledGlobalSessionsHandler: { _, _ in
+                SessionsPage(sessions: [external])
+            }
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(
+                workspaces: [AgentWorkspace(project: project)],
+                endpoint: appStore.endpoint
+            ),
+            clientFactory: { client }
+        )
+        store.reloadRecentWorkspaces()
+
+        await store.refreshSessionLibraryIndex(authoritative: true)
+        await store.loadMoreSessions(projectID: project.id)
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            recent.map(\.id) + [external.id, older.id],
+            "首屏刷新必须同时保留受控全局外部 Worktree 和用户已经加载的旧分页窗口"
+        )
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertFalse(store.sessionsByID[external.id]?.allowsDirectInput ?? true)
+    }
+
+    func testProtocolReadOnlySessionRejectsPromptBeforeClientCall() async {
+        let project = makeProject(id: "proj_read_only")
+        var child = makeSession(
+            id: "child-read-only",
+            projectID: project.id,
+            title: "Read Only Child",
+            status: "history",
+            source: "codex",
+            resumeID: "child-read-only"
+        )
+        child.parentThreadID = "parent-thread"
+        child.canAcceptDirectInput = false
+        let client = MockSessionStoreClient(projects: [project], sessions: [])
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [child]
+        store.selectedSessionID = child.id
+
+        let sent = await store.sendPrompt("must not be sent")
+
+        XCTAssertFalse(sent)
+        XCTAssertTrue(client.createPayloads.isEmpty)
+        XCTAssertEqual(store.controlState(for: child), .observing)
+        XCTAssertFalse(store.canControlSession(child))
+    }
+
     func testWorkspaceRecentMapsRootProjectSessionsToWorkspaceID() async {
         let rootProject = makeProject(id: "proj_root")
         let workspace = AgentWorkspace(
@@ -216,10 +737,12 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [newer.id, older.id])
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [newer.id, older.id])
 
         store.toggleSessionPinned(older)
         XCTAssertTrue(store.isSessionPinned(older.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [older.id, newer.id])
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [older.id, newer.id])
         XCTAssertEqual(
             preferences.load(profileID: appStore.notificationRoutingProfileID).pinnedSessionIDs,
             [older.id]
@@ -1295,6 +1818,55 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(state.compactWorkspacePath, [.session("session-1")])
     }
 
+    func testWorkbenchNavigationPushesSubagentWhileKeepingParentSelected() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "parent-thread", source: .sessions)
+        )
+
+        let effect = state.reduce(
+            .open(
+                .subagent(parentID: "parent-thread", childID: "child-thread"),
+                source: .sessions
+            ),
+            usesCompactNavigation: true,
+            selectedSessionID: "parent-thread"
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertEqual(state.selection, .session("parent-thread"))
+        XCTAssertEqual(
+            state.route,
+            .session(id: "parent-thread", source: .sessions)
+        )
+        XCTAssertEqual(
+            state.compactSessionPath,
+            [
+                .session("parent-thread"),
+                .subagent(parentID: "parent-thread", childID: "child-thread"),
+            ]
+        )
+        XCTAssertEqual(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "child-thread",
+            "通知可见性必须以屏幕正在阅读的 child Thread 为准"
+        )
+
+        let popEffect = state.reduce(
+            .compactPathChanged(
+                tab: .sessions,
+                path: [.session("parent-thread")]
+            ),
+            usesCompactNavigation: true,
+            selectedSessionID: "parent-thread"
+        )
+        XCTAssertNil(popEffect)
+        XCTAssertEqual(state.selection, .session("parent-thread"))
+        XCTAssertEqual(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "parent-thread"
+        )
+    }
+
     func testWorkbenchNavigationCreatedSessionCallbackDoesNotOpenTwice() {
         var state = WorkbenchNavigationState(route: .workspaces)
 
@@ -1392,6 +1964,26 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(state.selection, .workspaces)
         XCTAssertEqual(state.compactSelectedTab, .workspaces)
         XCTAssertTrue(state.compactWorkspacePath.isEmpty)
+    }
+
+    func testWorkbenchNavigationWorkspaceEmptyStateActionOpensWorkspaceInBothLayouts() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(route: .sessions)
+
+            let effect = state.reduce(
+                .open(.workspaces, source: nil),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: nil
+            )
+
+            XCTAssertEqual(effect, .returnToSessionList)
+            XCTAssertEqual(state.route, .workspaces)
+            XCTAssertEqual(state.selection, .workspaces)
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .workspaces)
+                XCTAssertTrue(state.compactWorkspacePath.isEmpty)
+            }
+        }
     }
 
     func testWorkbenchNavigationRestoresSessionIntoItsSourceStack() {
@@ -3512,6 +4104,204 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedCapabilityForceReloads, [false, true])
         XCTAssertEqual(store.capabilityList, response)
         XCTAssertNil(store.capabilityErrorMessage)
+    }
+
+    func testRememberWorkspaceMigratesLegacySelectionSessionsAndCustomAvatar() throws {
+        let suiteName = "WorkspaceIdentityMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(defaults: defaults)
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive-link",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let other = AgentWorkspace(
+            id: "ws_other",
+            name: "other",
+            path: "/Users/me/code/other",
+            lastOpenedAt: Date(timeIntervalSince1970: 5)
+        )
+        let recentStore = RecentWorkspaceStore(defaults: defaults)
+        recentStore.save(
+            [legacy, other],
+            profileID: appStore.notificationRoutingProfileID
+        )
+        let appearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+        appearanceStore.setCustomCharacterID(
+            "nezha",
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: legacy.id
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            workspaceAppearanceStore: appearanceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+        store.reloadRecentWorkspaces()
+        store.sessions = [
+            AgentSession(
+                id: "session-legacy",
+                projectID: legacy.id,
+                project: legacy.name,
+                dir: legacy.path,
+                title: "历史会话",
+                status: "history",
+                source: "codex",
+                resumeID: "thread-legacy",
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: 2)
+            )
+        ]
+        store.setSelectedProjectID(legacy.id)
+        store.setSessionWorkspaceIDs([legacy.id])
+        store.insertExpandedProjectID(legacy.id)
+
+        let remembered = store.rememberWorkspace(
+            canonical,
+            equivalentPaths: [legacy.path]
+        )
+
+        XCTAssertEqual(remembered.id, canonical.id)
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.sidebarProjects.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.selectedProjectID, canonical.id)
+        XCTAssertEqual(store.retainedWorkspaceID(for: legacy.id), canonical.id)
+        XCTAssertEqual(store.sessions.map(\.projectID), [canonical.id])
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([canonical.id]))
+        XCTAssertEqual(store.expandedProjectIDs, Set([canonical.id]))
+        XCTAssertEqual(
+            appearanceStore.customCharacterID(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: canonical.id
+            ),
+            "nezha"
+        )
+        XCTAssertNil(
+            appearanceStore.customCharacterID(
+                profileID: appStore.notificationRoutingProfileID,
+                projectID: legacy.id
+            )
+        )
+    }
+
+    func testColdLaunchWorkspaceMigrationPreservesPersistedWorkspaceFilter() throws {
+        let suiteName = "ColdLaunchWorkspaceIdentityMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(defaults: defaults)
+        let profileID = appStore.notificationRoutingProfileID
+        let legacy = AgentWorkspace(
+            id: "legacy-project-id",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive/",
+            lastOpenedAt: Date(timeIntervalSince1970: 20)
+        )
+        let canonical = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: "/Users/me/code/chat-archive",
+            lastOpenedAt: Date(timeIntervalSince1970: 10)
+        )
+        let other = AgentWorkspace(
+            id: "ws_other",
+            name: "other",
+            path: "/Users/me/code/other",
+            lastOpenedAt: Date(timeIntervalSince1970: 5)
+        )
+        var rawStorage = ProfileScopedStorage<[AgentWorkspace]>()
+        rawStorage.byProfileID[profileID] = [legacy, canonical, other]
+        defaults.set(
+            try JSONEncoder().encode(rawStorage),
+            forKey: "agentd.recentWorkspaces"
+        )
+        let preferenceStore = SessionListPreferenceStore(defaults: defaults)
+        preferenceStore.save(
+            SessionListPreferences(sessionWorkspaceIDs: [legacy.id]),
+            profileID: profileID
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: RecentWorkspaceStore(defaults: defaults),
+            sessionListPreferenceStore: preferenceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([legacy.id]))
+        store.reloadRecentWorkspaces()
+
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [canonical.id, other.id])
+        XCTAssertEqual(store.sessionWorkspaceIDs, Set([canonical.id]))
+        XCTAssertEqual(
+            preferenceStore.load(profileID: profileID).sessionWorkspaceIDs,
+            Set([canonical.id])
+        )
+    }
+
+    func testOpeningSameResolvedDirectoryTwiceReusesWorkspaceAndSelection() async {
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let typedPath = "/Users/me/code/chat-archive"
+        let workspace = AgentWorkspace(
+            id: "ws_canonical",
+            name: "chat-archive",
+            path: typedPath,
+            rootProjectID: "project-root",
+            rootProjectName: "chat-archive",
+            rootProjectPath: typedPath
+        )
+        let recentStore = makeRecentWorkspaceStore(
+            workspaces: [],
+            endpoint: appStore.endpoint
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            workspaceSessions: [workspace.id: []],
+            resolveResults: [typedPath: .success(workspace)]
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentStore,
+            clientFactory: { client }
+        )
+
+        let firstOpenSucceeded = await store.openWorkspace(path: typedPath)
+        XCTAssertTrue(firstOpenSucceeded)
+        let firstOpenedAt = store.recentWorkspaces.first?.lastOpenedAt
+        let secondOpenSucceeded = await store.openWorkspace(path: typedPath)
+        XCTAssertTrue(secondOpenSucceeded)
+
+        XCTAssertEqual(client.requestedResolvePaths, [typedPath, typedPath])
+        XCTAssertEqual(store.recentWorkspaces.map(\.id), [workspace.id])
+        XCTAssertEqual(store.selectedProjectID, workspace.id)
+        XCTAssertNotNil(firstOpenedAt)
+        XCTAssertGreaterThanOrEqual(
+            store.recentWorkspaces.first?.lastOpenedAt ?? .distantPast,
+            firstOpenedAt ?? .distantFuture
+        )
     }
 
 }

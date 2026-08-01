@@ -167,6 +167,7 @@ final class SessionStore: ObservableObject {
     let contextStore: SessionContextStore
     let eventReducer: EventReducer
     let recentWorkspaceStore: RecentWorkspaceStore
+    let workspaceAppearanceStore: WorkspaceAppearanceStore
     let sessionListPreferenceStore: SessionListPreferenceStore
     let sessionHistoryReadStateStore: SessionHistoryReadStateStore
     let sessionControlStateStore: SessionControlStateStore
@@ -229,6 +230,11 @@ final class SessionStore: ObservableObject {
     var connectedSessionID: String?
     var connectedHostScope: HostScope?
     var connectedCredentialFingerprint: String?
+    // iPad 同时保留父会话与一个子会话阅读区；子会话使用独立只读订阅，
+    // 不复用 selectedSession 的前台 socket，避免切换右栏时断开父会话。
+    var relatedSessionSocket: (any SessionWebSocketClient)?
+    var relatedSessionSocketID: SessionID?
+    var relatedSessionSocketGeneration = 0
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     var webSocketReconnectTask: Task<Void, Never>?
@@ -253,6 +259,21 @@ final class SessionStore: ObservableObject {
     var locallyStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
     var isRefreshingExternalActivity = false
     var externalActivityCapabilityUnavailable = false
+    // 旧 agentd 不接受无 cwd thread/list 时，本 Host 生命周期只探测一次；
+    // 精确工作区列表仍继续工作，形成明确能力检测与兼容回退。
+    var controlledGlobalDiscoveryUnavailable = false
+    // 记录当前 Host 经 agentd 受控全局发现授权过的 Thread。精确 cwd 的工作区刷新
+    // 不会返回外部 Worktree，必须保留这些 ID；完整全局遍历确认消失后再收缩集合。
+    // 这组 ID 也参与根侧栏的派生会话补充投影；授权集合变化必须通知 SwiftUI，
+    // 否则全局页只更新既有 Session 时，外部 Worktree 会等到下一次刷新才出现。
+    @Published var controlledGlobalSessionIDs: Set<SessionID> = [] {
+        didSet {
+            guard oldValue != controlledGlobalSessionIDs else { return }
+            // 项目预览是缓存快照；即使 Session 本身早已由精确 cwd 加载，
+            // 新确认的受控全局身份也必须立即更新派生会话补充行。
+            rebuildProjectSessionListSnapshots()
+        }
+    }
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
@@ -284,6 +305,9 @@ final class SessionStore: ObservableObject {
     var queuedCommandActionRuns: [QueuedCommandActionRun] = []
     var projectsByID: [String: AgentProject] = [:]
     var workspacesByID: [String: AgentWorkspace] = [:]
+    // 工作区页维护独立的本地浏览选择；保留当前 Profile 内的旧→新 ID，
+    // 让卡片列表去重时能原位切换到幸存卡片，而不是跳到全局会话所在工作区。
+    var workspaceIdentityReplacementByOldID: [String: String] = [:]
     var sidebarProjectsByID: [String: AgentProject] = [:]
     var sessionsByID: [SessionID: AgentSession] = [:]
     var sessionIndexByID: [SessionID: Int] = [:]
@@ -353,6 +377,9 @@ final class SessionStore: ObservableObject {
     /// 项目侧栏只承担快速切换职责；每个项目固定展示最近 5 条，完整历史在工作区页分页查看。
     static let sessionPreviewLimit = 5
     static let sessionExpansionStep = 5
+    /// 根侧栏在普通最近 8 条之外，最多稳定补入 3 条 Codex 派生只读会话。
+    /// 保持有界可见性，避免为了发现外部 Worktree 而退回无界全局列表。
+    static let derivedReadOnlyHistorySupplementLimit = 3
     // Tailscale 在弱网下可能经 Peer Relay 或 DERP 转发 thread/list 的较大响应。
     // 首屏先拿较小窗口，避免为了预览历史会话而卡住整个工作台。
     static let initialSessionPageLimit = 20
@@ -370,6 +397,7 @@ final class SessionStore: ObservableObject {
         logStore: LogStore,
         contextStore: SessionContextStore? = nil,
         recentWorkspaceStore: RecentWorkspaceStore? = nil,
+        workspaceAppearanceStore: WorkspaceAppearanceStore? = nil,
         sessionListPreferenceStore: SessionListPreferenceStore? = nil,
         sessionHistoryReadStateStore: SessionHistoryReadStateStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
@@ -420,6 +448,16 @@ final class SessionStore: ObservableObject {
             self.recentWorkspaceStore = RecentWorkspaceStore(defaults: defaults)
         } else {
             self.recentWorkspaceStore = RecentWorkspaceStore()
+        }
+        if let workspaceAppearanceStore {
+            self.workspaceAppearanceStore = workspaceAppearanceStore
+        } else if clientFactory != nil {
+            let defaults = UserDefaults(
+                suiteName: "SessionStore.WorkspaceAppearance.\(UUID().uuidString)"
+            ) ?? .standard
+            self.workspaceAppearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+        } else {
+            self.workspaceAppearanceStore = WorkspaceAppearanceStore()
         }
         if let sessionListPreferenceStore {
             self.sessionListPreferenceStore = sessionListPreferenceStore
@@ -1136,7 +1174,10 @@ final class SessionStore: ObservableObject {
 
     /// 会话库不跟随 selectedProjectID 过滤；根侧栏和会话页始终看到同一份跨工作区轻量索引。
     var sessionLibrarySessions: [AgentSession] {
-        sessionsMatchingSearch(sessionsIncludingRemoteSearch(Self.sortedSessions(sessions.filter(isListableSession))))
+        let merged = sessionsIncludingRemoteSearch(sessions.filter(isListableSession))
+        // 规划 Tab 必须直接依赖当前 pinnedSessionIDs 生成顺序，避免只有切换 Tab
+        // 触发整页重建后才看到置顶结果；搜索补入的远端会话也使用同一排序口径。
+        return sessionsMatchingSearch(sortedSessionsForList(merged))
     }
 
     /// 最近列表严格按活动时间排序，置顶只影响完整会话库，不改变“最近”的时间语义。
@@ -1149,9 +1190,16 @@ final class SessionStore: ObservableObject {
         Self.sortedSessions(sessions.filter { isListableSession($0) && ($0.isRunning || $0.isLocalDraft) })
     }
 
-    /// 历史区单独保留最近 8 条，避免运行任务占掉历史预览名额。
+    /// 历史区保留普通最近 8 条，并从 agentd 已裁剪授权的全局结果中稳定补入少量
+    /// Codex 派生只读会话。补充集仍按 recencyAt 排序，不读取 updatedAt 制造列表跳动。
     var recentHistorySessions: [AgentSession] {
-        Array(Self.sortedSessions(sessions.filter { isListableSession($0) && !$0.isRunning && !$0.isLocalDraft }).prefix(8))
+        let sortedHistory = Self.sortedSessions(
+            sessions.filter { isListableSession($0) && !$0.isRunning && !$0.isLocalDraft }
+        )
+        return sessionsIncludingDerivedReadOnlySupplements(
+            base: Array(sortedHistory.prefix(8)),
+            candidates: sortedHistory
+        )
     }
 
     var filteredSidebarProjects: [AgentProject] {
@@ -1249,9 +1297,12 @@ final class SessionStore: ObservableObject {
 
     func visibleSessions(forProjectID projectID: String) -> [AgentSession] {
         let sessions = sessions(forProjectID: projectID)
-        return Self.lifecycleVisibleSessions(
-            sessions,
-            limit: sessionVisibleLimit(forProjectID: projectID)
+        return sessionsIncludingDerivedReadOnlySupplements(
+            base: Self.lifecycleVisibleSessions(
+                sessions,
+                limit: sessionVisibleLimit(forProjectID: projectID)
+            ),
+            candidates: sessions
         )
     }
 
@@ -1269,7 +1320,7 @@ final class SessionStore: ObservableObject {
     }
 
     func controlState(for session: AgentSession) -> SessionControlState {
-        if isExternalReadOnlySession(session) {
+        if isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             return .observing
         }
         if let state = sessionControlStateByID[session.id] {
@@ -1285,7 +1336,7 @@ final class SessionStore: ObservableObject {
         guard let session else {
             return true
         }
-        guard !isExternalReadOnlySession(session) else {
+        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
             return false
         }
         guard session.isRunning else {
@@ -1355,7 +1406,8 @@ final class SessionStore: ObservableObject {
         guard isSelectedSessionObserving else {
             return nil
         }
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             return L10n.text("ui.mac_observe_only")
         }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
@@ -1365,15 +1417,19 @@ final class SessionStore: ObservableObject {
         guard let session = selectedSession else {
             return false
         }
-        return !isExternalReadOnlySession(session)
+        return !isExternalReadOnlySession(session) && !isProtocolReadOnlySession(session)
     }
 
     func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
         externalReadOnlySessionIDs.contains(session.id)
     }
 
+    func isProtocolReadOnlySession(_ session: AgentSession) -> Bool {
+        !session.allowsDirectInput
+    }
+
     func takeOverSession(_ session: AgentSession) {
-        guard !isExternalReadOnlySession(session) else {
+        guard !isExternalReadOnlySession(session), !isProtocolReadOnlySession(session) else {
             setStatusMessage(L10n.text("ui.mac_observe_only"))
             return
         }

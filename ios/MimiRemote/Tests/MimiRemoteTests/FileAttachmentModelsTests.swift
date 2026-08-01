@@ -105,12 +105,14 @@ final class FileAttachmentModelsTests: XCTestCase {
             from: Data(#"{"name":"agentd","version":"1.0.0"}"#.utf8)
         )
         XCTAssertEqual(legacy.capabilities, [])
+        XCTAssertNil(legacy.platform)
 
         let current = try AgentAPIClient.decoder.decode(
             VersionResponse.self,
-            from: Data(#"{"name":"agentd","version":"1.1.0","installation_id":"mac-installation","capabilities":["file_upload_v1"]}"#.utf8)
+            from: Data(#"{"name":"agentd","version":"1.1.0","installation_id":"host-installation","platform":"windows","capabilities":["file_upload_v1"]}"#.utf8)
         )
-        XCTAssertEqual(current.installationID, "mac-installation")
+        XCTAssertEqual(current.installationID, "host-installation")
+        XCTAssertEqual(current.platform, "windows")
         XCTAssertEqual(current.capabilities, ["file_upload_v1"])
     }
 

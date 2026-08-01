@@ -458,6 +458,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let runtimeChannelAvailability: [String: Bool]
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
+    let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
     let accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let externalActivityResponses: [ExternalActivityResponse?]
@@ -475,6 +476,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         requestLogLock.withLock { requestedThreadSearchCursorsStorage }
     }
     private var requestedThreadSearchCursorsStorage: [String?] = []
+    var requestedControlledGlobalCursors: [String?] {
+        requestLogLock.withLock { requestedControlledGlobalCursorsStorage }
+    }
+    private var requestedControlledGlobalCursorsStorage: [String?] = []
     var requestedCapabilityPaths: [String?] = []
     var requestedCapabilityForceReloads: [Bool] = []
     var requestedResolvePaths: [String] = []
@@ -558,6 +563,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         runtimeChannelAvailability: [String: Bool] = [:],
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
+        controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)? = nil,
         accountTokenUsageHandler: (() async throws -> AccountTokenUsageSnapshot?)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
         externalActivityResponses: [ExternalActivityResponse?] = []
@@ -610,6 +616,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.runtimeChannelAvailability = runtimeChannelAvailability
         self.rateLimitsByRuntime = rateLimitsByRuntime
         self.rateLimitHandler = rateLimitHandler
+        self.controlledGlobalSessionsHandler = controlledGlobalSessionsHandler
         self.accountTokenUsageHandler = accountTokenUsageHandler
         self.threadSearchHandler = threadSearchHandler
         self.externalActivityResponses = externalActivityResponses
@@ -956,6 +963,16 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         return SessionsPage(sessions: sessionsResult)
     }
 
+    func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        requestLogLock.withLock {
+            requestedControlledGlobalCursorsStorage.append(cursor)
+        }
+        guard let controlledGlobalSessionsHandler else {
+            return SessionsPage(sessions: [])
+        }
+        return try await controlledGlobalSessionsHandler(cursor, limit)
+    }
+
     func searchSessions(query: String, cursor: String?, limit: Int?) async throws -> ThreadSearchPage {
         requestLogLock.withLock {
             requestedThreadSearchQueriesStorage.append(query)
@@ -1104,6 +1121,7 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     var historyPages: [SessionID: HistoryMessagesPage]
     var historyCursorPages: [String: HistoryMessagesPage]
     var requestedMessageCursors: [String?] = []
+    var requestedSessionCursors: [String?] = []
     var requestedSessionListConsistencies: [SessionListConsistency] = []
 
     init(
@@ -1134,6 +1152,7 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     }
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        requestedSessionCursors.append(cursor)
         if let cursor, let page = cursorPages[cursor] {
             return page
         }

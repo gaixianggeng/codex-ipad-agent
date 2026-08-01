@@ -39,6 +39,7 @@ const (
 	appServerGatewayThreadSearchMaxLimit     = appServerGatewayThreadListMaxLimit
 	appServerGatewayThreadSearchTermMaxBytes = 512
 	appServerGatewayInitialTurnsMaxLimit     = 5
+	appServerGatewayGlobalCursorMax          = 128
 )
 
 var (
@@ -53,13 +54,13 @@ var (
 	appServerGatewayPendingServerRequestMax             = 256
 	appServerGatewayPendingHistoryRequestTTL            = 2 * time.Minute
 	appServerGatewayPendingHistoryRequestMax            = 256
-	appServerGatewayHistoryResponseCapBytes             = 2 << 20
+	appServerGatewayHistoryResponseCapBytes             = 5 << 20
 	appServerGatewayHistoryBudgetWindow                 = 15 * time.Second
 	appServerGatewayHistoryBudgetMaxRequests            = 6
 	appServerGatewayHistoryBudgetMaxRequestBytes        = int64(64 << 10)
 	appServerGatewayHistoryBudgetMaxResponseBytes       = int64(8 << 20)
-	// 5 Mbps 链路 15 秒理论可传约 8.9 MiB；取 8 MiB 给协议和控制流量留出余量。
-	// 单次历史响应仍受 2 MiB cap 约束，避免一个大响应独占链路。
+	// 5 Mbps 链路下单次 5 MiB payload 理论约需 8.4 秒；15 秒窗口保留协议和弱网余量。
+	// 8 MiB 总预算继续限制同一窗口内的重复大响应，避免放宽单次 cap 后独占链路。
 	appServerGatewayHistoryGlobalMaxResponseBytes int64 = 8 << 20
 	appServerGatewayHistoryGlobalWindow                 = appServerGatewayHistoryBudgetWindow
 )
@@ -229,6 +230,7 @@ type appServerGatewayPolicy struct {
 	pendingHistory        map[string]appServerGatewayPendingHistoryRequest
 	historyBudgets        map[string]appServerGatewayHistoryBudget
 	allowedThreads        map[string]appServerGatewayAllowedThread
+	globalListCursors     map[string]string
 	beforePendingRemember func()
 	beforeManagedComplete func()
 }
@@ -239,6 +241,8 @@ type appServerGatewayPendingThreadRequest struct {
 	scopeID             string
 	responseLimit       int64
 	responseLimitSet    bool
+	globalDiscovery     bool
+	threadID            string
 	managedWorktreePath string
 	createdAt           time.Time
 }
@@ -250,6 +254,9 @@ type appServerGatewayPendingClientRequest struct {
 
 type appServerGatewayPendingServerRequest struct {
 	method    string
+	threadID  string
+	turnID    string
+	itemID    string
 	createdAt time.Time
 }
 
@@ -302,20 +309,32 @@ type gatewayScope struct {
 }
 
 type appServerGatewayAllowedThread struct {
-	id                string
-	runtimeID         string
-	cwd               string
-	scopeID           string
-	autoTitleEligible bool
-	lastSeen          time.Time
+	id                   string
+	runtimeID            string
+	cwd                  string
+	scopeID              string
+	canAcceptDirectInput bool
+	directInputKnown     bool
+	readOnly             bool
+	autoTitleEligible    bool
+	lastSeen             time.Time
 }
 
 type appServerGatewayThreadWire struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	SessionID string `json:"sessionId"`
-	CWD       string `json:"cwd"`
-	Path      string `json:"path"`
+	ID                   string `json:"id"`
+	ThreadID             string `json:"threadId"`
+	SessionID            string `json:"sessionId"`
+	CWD                  string `json:"cwd"`
+	Path                 string `json:"path"`
+	ParentThreadID       string `json:"parentThreadId"`
+	CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
+	Turns                []struct {
+		Items []struct {
+			Type              string         `json:"type"`
+			ReceiverThreadIDs []string       `json:"receiverThreadIds"`
+			AgentsStates      map[string]any `json:"agentsStates"`
+		} `json:"items"`
+	} `json:"turns"`
 }
 
 func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request) {
