@@ -277,6 +277,11 @@ struct SessionListPartition: Equatable {
     let active: [AgentSession]
     let history: [AgentSession]
 
+    init(active: [AgentSession], history: [AgentSession]) {
+        self.active = active
+        self.history = history
+    }
+
     init(sessions: [AgentSession]) {
         active = sessions.filter(\.isRunning)
         history = sessions.filter { !$0.isRunning }
@@ -346,6 +351,8 @@ struct SessionListView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
 
@@ -362,7 +369,7 @@ struct SessionListView: View {
             if presentationState == .content {
                 if !sessionPartition.active.isEmpty {
                     Section {
-                        sessionRows(sessionPartition.active)
+                        sessionRows(sessionPartition.active, isActiveSection: true)
                     } header: {
                         sessionSectionHeader(
                             title: L10n.text("ui.in_progress"),
@@ -375,7 +382,7 @@ struct SessionListView: View {
 
                 if !sessionPartition.history.isEmpty {
                     Section {
-                        sessionRows(sessionPartition.history)
+                        sessionRows(sessionPartition.history, isActiveSection: false)
                     } header: {
                         sessionSectionHeader(
                             title: L10n.text("ui.history"),
@@ -422,6 +429,13 @@ struct SessionListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(tokens.background.ignoresSafeArea())
+        .onScrollPhaseChange { _, newPhase in
+            lifecycleCoordinator.setScrollPhase(
+                newPhase,
+                latestMembership: lifecycleInput.membership
+            )
+        }
+        .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         .navigationTitle(L10n.text("ui.session"))
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $sessionStore.sessionSearchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: L10n.text("ui.search_session"))
@@ -454,6 +468,12 @@ struct SessionListView: View {
         }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
+        }
+        .onAppear {
+            synchronizeLifecycle(lifecycleInput)
+        }
+        .onChange(of: lifecycleInput) { _, newInput in
+            synchronizeLifecycle(newInput)
         }
     }
 
@@ -502,7 +522,49 @@ struct SessionListView: View {
     }
 
     private var sessionPartition: SessionListPartition {
-        SessionListPartition(sessions: visibleSessions)
+        let membership = lifecycleCoordinator.hasObservedInput
+            ? lifecycleCoordinator.membership
+            : SessionListMembership(sessions: visibleSessions)
+        var latestByID: [SessionID: AgentSession] = [:]
+        for session in visibleSessions {
+            latestByID[session.id] = session
+        }
+        return SessionListPartition(
+            active: membership.activeIDs.compactMap { latestByID[$0] },
+            history: membership.historyIDs.compactMap { latestByID[$0] }
+        )
+    }
+
+    private var lifecycleInput: SessionListLifecycleInput {
+        SessionListLifecycleInput(
+            membership: SessionListMembership(sessions: visibleSessions),
+            // Haptic 不跟随搜索和筛选结果裁剪，否则切换筛选会把同一终态误当成新事件。
+            feedbackObservations: sessionStore.sessions.map { session in
+                SessionLifecycleObservation(
+                    session: session,
+                    foregroundActivity: sessionStore.foregroundActivity(for: session.id)
+                )
+            },
+            context: SessionListLifecycleContext(
+                profileID: appStore.activeHostScope.profileID,
+                workspaceID: selectedWorkspaceID,
+                statusFilterID: selectedStatus.id,
+                searchQuery: sessionStore.sessionSearchQuery
+            )
+        )
+    }
+
+    private var sessionRegroupAnimation: Animation? {
+        guard !reduceMotion, !lifecycleCoordinator.isUserScrolling else {
+            return nil
+        }
+        return MimiMotion.stateTransition.animation(reduceMotion: false)
+    }
+
+    private func synchronizeLifecycle(_ input: SessionListLifecycleInput) {
+        if let feedback = lifecycleCoordinator.observe(input) {
+            MimiHaptics.fire(feedback)
+        }
     }
 
     private var presentationState: SessionListPresentationState {
@@ -631,7 +693,7 @@ struct SessionListView: View {
     }
 
     @ViewBuilder
-    private func sessionRows(_ sessions: [AgentSession]) -> some View {
+    private func sessionRows(_ sessions: [AgentSession], isActiveSection: Bool) -> some View {
         ForEach(sessions) { session in
             SessionIndexRow(
                 session: session,
@@ -644,7 +706,9 @@ struct SessionListView: View {
                 isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                 isUnread: sessionStore.isHistorySessionUnread(session),
                 style: .library,
-                searchSnippet: sessionStore.sessionSearchSnippet(for: session.id)
+                searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
+                // 滚动冻结期间已结束的会话仍留在“进行中”原位，必须显式展示最新终态。
+                showsNeutralHistoryStatus: isActiveSection && !session.isRunning
             )
             .contentShape(Rectangle())
             .onTapGesture { select(session) }
@@ -745,6 +809,7 @@ struct SessionListView: View {
 struct SessionIndexRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let session: AgentSession
     let foregroundActivity: SessionForegroundActivity?
@@ -757,6 +822,7 @@ struct SessionIndexRow: View {
     var isUnread = false
     let style: SessionIndexRowStyle
     var searchSnippet: String? = nil
+    var showsNeutralHistoryStatus = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -822,9 +888,17 @@ struct SessionIndexRow: View {
                 }
 
                 // “历史”已经由列表分区表达；只有实时、异常或其他有区分度的状态才进入行内。
-                if shouldShowStatusLabel {
-                    statusLabel(tokens: tokens)
+                ZStack(alignment: .leading) {
+                    if shouldShowStatusLabel {
+                        statusLabel(tokens: tokens)
+                            .id(status)
+                            .transition(.opacity)
+                    }
                 }
+                .animation(
+                    MimiMotion.stateTransition.animation(reduceMotion: reduceMotion),
+                    value: status
+                )
 
                 if isObserving {
                     Image(systemName: "eye")
@@ -889,7 +963,8 @@ struct SessionIndexRow: View {
     }
 
     private var shouldShowStatusLabel: Bool {
-        !(session.status == SessionStatus.history.rawValue && status.tone == .neutral)
+        showsNeutralHistoryStatus ||
+            !(session.status == SessionStatus.history.rawValue && status.tone == .neutral)
     }
 
     @ViewBuilder
