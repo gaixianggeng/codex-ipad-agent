@@ -67,6 +67,181 @@ final class MarkdownRenderingTests: XCTestCase {
         XCTAssertFalse(inline.attributed.runs.contains { $0.link?.scheme == "javascript" })
     }
 
+    func testCrossSessionLinearURLLabelCompactsToIssueIdentifier() throws {
+        let result = MarkdownParser.shared.parse(
+            "[https://linear.app/code89757/issue/MIM-24/example](https://linear.app/code89757/issue/MIM-24/example) 帮我继续修复。"
+        )
+        let inline = try XCTUnwrap(result.blocks.compactMap { block -> MarkdownInlineText? in
+            if case let .paragraph(inline) = block.kind {
+                return inline
+            }
+            return nil
+        }.first)
+
+        XCTAssertEqual(inline.plain, "MIM-24 帮我继续修复。")
+        XCTAssertTrue(inline.attributed.runs.contains { run in
+            run.link?.absoluteString.contains("/issue/MIM-24/") == true
+        })
+    }
+
+    func testLocalSkillMarkdownLinkKeepsNameWithoutExposingPath() throws {
+        let result = MarkdownParser.shared.parse(
+            "[$delegate-to-chatgpt-pro](/Users/demo/.codex/skills/delegate-to-chatgpt-pro/SKILL.md)"
+        )
+        let inline = try XCTUnwrap(result.blocks.compactMap { block -> MarkdownInlineText? in
+            if case let .paragraph(inline) = block.kind {
+                return inline
+            }
+            return nil
+        }.first)
+
+        XCTAssertEqual(inline.plain, "$delegate-to-chatgpt-pro")
+        XCTAssertFalse(inline.plain.contains("/Users/"))
+        XCTAssertFalse(inline.attributed.runs.contains { $0.link != nil })
+    }
+
+    func testConversationPresentationRemovesInternalGitDirectives() {
+        let content = """
+        已提交并推送完成。
+
+        ::git-stage{cwd="/Users/demo/repo"}
+        ::git-commit{cwd="/Users/demo/repo"}
+        ::git-push{cwd="/Users/demo/repo" branch="codex/mim-24-fix"}
+        """
+
+        XCTAssertEqual(
+            ConversationMarkdownPresentation.displayContent(from: content),
+            "已提交并推送完成。"
+        )
+    }
+
+    func testConversationPresentationOnlyPromotesUserTextContainingMarkdownLinks() {
+        XCTAssertTrue(
+            ConversationMarkdownPresentation.containsLink(
+                in: "[MIM-24](https://linear.app/code89757/issue/MIM-24/example)"
+            )
+        )
+        XCTAssertFalse(ConversationMarkdownPresentation.containsLink(in: "普通用户消息保持原有气泡排版"))
+        XCTAssertFalse(ConversationMarkdownPresentation.containsLink(in: "这里讨论的是 ]( 两个 Markdown 符号"))
+    }
+
+    func testCrossSessionOriginUsesStrongLegacyHandoffSignature() {
+        let generated = """
+        [https://linear.app/example](https://linear.app/example) 继续处理。
+        [$delegate](/Users/demo/.codex/skills/delegate/SKILL.md)
+        """
+
+        XCTAssertTrue(
+            ConversationOriginPresentation.isCreatedFromAnotherConversation(
+                session: nil,
+                initialUserContent: generated
+            )
+        )
+        XCTAssertFalse(
+            ConversationOriginPresentation.isCreatedFromAnotherConversation(
+                session: nil,
+                initialUserContent: "[MIM-24](https://linear.app/example) 请检查这个问题。"
+            )
+        )
+        XCTAssertFalse(
+            ConversationOriginPresentation.isCreatedFromAnotherConversation(
+                session: nil,
+                initialUserContent: "[$delegate](/Users/demo/.codex/skills/delegate/SKILL.md)"
+            )
+        )
+    }
+
+    func testCrossSessionOriginPrefersParentThreadMetadata() {
+        let session = AgentSession(
+            id: "child-thread",
+            projectID: "project",
+            project: "Project",
+            dir: "/tmp/project",
+            title: "Child",
+            status: "history",
+            source: "codex",
+            resumeID: "child-thread",
+            createdAt: nil,
+            updatedAt: nil,
+            parentThreadID: "parent-thread"
+        )
+
+        XCTAssertTrue(
+            ConversationOriginPresentation.isCreatedFromAnotherConversation(
+                session: session,
+                initialUserContent: "普通首条消息"
+            )
+        )
+    }
+
+    func testConversationPresentationPreservesGitDirectiveExamplesInsideCodeFence() {
+        let content = """
+        示例：
+
+        ```text
+        ::git-stage{cwd="/Users/demo/repo"}
+        ```
+        """
+
+        XCTAssertEqual(ConversationMarkdownPresentation.displayContent(from: content), content)
+    }
+
+    func testConversationPresentationPreservesIndentedGitDirectiveExample() {
+        let content = "示例：\n\n    ::git-stage{cwd=\"/Users/demo/repo\"}"
+
+        XCTAssertEqual(ConversationMarkdownPresentation.displayContent(from: content), content)
+    }
+
+    func testConversationPresentationRemovesSameLineGitDirectivesAndTrailingWhitespace() {
+        let content = """
+        已提交并推送完成。
+
+        ::git-stage{cwd="/Users/demo/repo"} ::git-commit{cwd="/Users/demo/repo"} ::git-push{cwd="/Users/demo/repo" branch="codex/mim-64-fix"}
+
+
+        """
+
+        XCTAssertEqual(
+            ConversationMarkdownPresentation.displayContent(from: content),
+            "已提交并推送完成。"
+        )
+    }
+
+    func testConversationPresentationRemovesInlineAndIncompleteStreamingGitDirectives() {
+        XCTAssertEqual(
+            ConversationMarkdownPresentation.displayContent(
+                from: "已完成。 ::git-stage{cwd=\"/Users/demo/repo\"}"
+            ),
+            "已完成。"
+        )
+        XCTAssertEqual(
+            ConversationMarkdownPresentation.displayContent(
+                from: "已完成。\n\n::git-push{cwd=\"/Users/demo/repo"
+            ),
+            "已完成。"
+        )
+    }
+
+    func testConversationPresentationPreservesInlineAndLongFenceGitDirectiveExamples() {
+        let inline = "示例：`::git-stage{cwd=\"/Users/demo/repo\"}`"
+        XCTAssertEqual(ConversationMarkdownPresentation.displayContent(from: inline), inline)
+
+        let fenced = """
+        ````text
+        ```text
+        ::git-stage{cwd="/Users/demo/repo"}
+        ```
+        ````
+        """
+        XCTAssertEqual(ConversationMarkdownPresentation.displayContent(from: fenced), fenced)
+    }
+
+    func testConversationPresentationPreservesUnsupportedGitDirective() {
+        let content = "::git-reset{cwd=\"/Users/demo/repo\"}"
+
+        XCTAssertEqual(ConversationMarkdownPresentation.displayContent(from: content), content)
+    }
+
     func testStandaloneImageKeepsRenderableReference() {
         let result = MarkdownParser.shared.parse("![架构图](/Users/me/project/diagram.png \"当前方案\")")
         let image = result.blocks.compactMap { block -> MarkdownImageReference? in

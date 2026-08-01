@@ -7,6 +7,7 @@ struct MessageRow: View, Equatable {
     let themeVersion: Int
     let layout: ConversationLayout
     let showsActiveDeliveryStatus: Bool
+    let showsCrossSessionOrigin: Bool
     let skills: [SkillCapability]
     let retry: (ConversationMessage) -> Void
     let stop: () -> Void
@@ -28,6 +29,7 @@ struct MessageRow: View, Equatable {
             && lhs.themeVersion == rhs.themeVersion
             && lhs.layout == rhs.layout
             && lhs.showsActiveDeliveryStatus == rhs.showsActiveDeliveryStatus
+            && lhs.showsCrossSessionOrigin == rhs.showsCrossSessionOrigin
             && lhs.skills == rhs.skills
     }
 
@@ -49,6 +51,9 @@ struct MessageRow: View, Equatable {
         HStack(spacing: 0) {
             Spacer(minLength: layout.messageSideSpacer)
             VStack(alignment: .trailing, spacing: 3) {
+                if showsCrossSessionOrigin {
+                    crossSessionOriginBadge
+                }
                 ConversationMessageContent(
                     message: message,
                     layout: layout,
@@ -60,6 +65,19 @@ struct MessageRow: View, Equatable {
                 statusCaption
             }
         }
+    }
+
+    private var crossSessionOriginBadge: some View {
+        Label(L10n.text("ui.created_from_another_conversation"), systemImage: "arrow.triangle.branch")
+            .font(themeStore.uiFont(.caption2, weight: .semibold))
+            .foregroundStyle(themeStore.tokens(for: colorScheme).secondaryText)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                themeStore.tokens(for: colorScheme).selectionFill,
+                in: Capsule(style: .continuous)
+            )
+            .accessibilityElement(children: .combine)
     }
 
     private var assistantRow: some View {
