@@ -1323,6 +1323,14 @@ final class SessionStore: ObservableObject {
         if isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             return .observing
         }
+        if session.isRunning,
+           session.id.hasPrefix("local:"),
+           session.source == Self.optimisticSessionSource,
+           session.resumeID == nil {
+            // 新会话首发时会先发布 local:* 的 running 占位，再等待 thread/start 返回真实 ID。
+            // 该占位由本机刚刚创建，应保持可控；这里只做内存态判定，避免把临时 ID 持久化到控制权存储。
+            return .ipadOwned
+        }
         if let state = sessionControlStateByID[session.id] {
             return state
         }

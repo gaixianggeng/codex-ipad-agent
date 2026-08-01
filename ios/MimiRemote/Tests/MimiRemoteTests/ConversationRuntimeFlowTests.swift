@@ -1898,7 +1898,12 @@ extension ConversationDataFlowTests {
         await client.waitForCreateRequestCount(1)
 
         let optimisticSessionID = try XCTUnwrap(store.selectedSessionID)
+        let optimisticSession = try XCTUnwrap(store.selectedSession)
         XCTAssertTrue(optimisticSessionID.hasPrefix("local:"))
+        XCTAssertEqual(store.controlState(for: optimisticSession), .ipadOwned)
+        XCTAssertTrue(store.canControlSession(optimisticSession))
+        XCTAssertFalse(store.isSelectedSessionObserving)
+        XCTAssertNil(store.selectedSessionControlNotice)
         XCTAssertEqual(conversationStore.messages(for: optimisticSessionID).map(\.content), ["帮我检查项目"])
         XCTAssertEqual(conversationStore.messages(for: optimisticSessionID).first?.sendStatus, .sending)
 
@@ -1920,6 +1925,9 @@ extension ConversationDataFlowTests {
         let sendSucceeded = await sendTask.value
         XCTAssertTrue(sendSucceeded)
         XCTAssertEqual(store.selectedSessionID, created.id)
+        XCTAssertEqual(store.controlState(for: try XCTUnwrap(store.selectedSession)), .ipadOwned)
+        XCTAssertFalse(store.isSelectedSessionObserving)
+        XCTAssertNil(store.selectedSessionControlNotice)
         XCTAssertEqual(
             store.lastSelectionCommit?.reason,
             .identityReplacement(previousID: optimisticSessionID)

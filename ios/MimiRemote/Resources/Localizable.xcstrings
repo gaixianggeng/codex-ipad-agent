@@ -26487,13 +26487,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The complete history failed to load. The content may be too large."
+            "value" : "The complete history failed to load. Please try again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "完整历史加载失败，可能是内容过大。"
+            "value" : "完整历史加载失败，请重试。"
           }
         }
       }
