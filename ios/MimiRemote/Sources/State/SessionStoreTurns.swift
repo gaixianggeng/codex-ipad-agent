@@ -21,7 +21,7 @@ extension SessionStore {
         refreshingUsageRuntimeProviders.contains(Self.normalizedRuntimeProvider(runtimeProvider))
     }
 
-    func refreshUsage(runtimeProvider: String) async {
+    func refreshUsage(runtimeProvider: String, reportsErrors: Bool = true) async {
         let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
         guard !refreshingUsageRuntimeProviders.contains(normalizedProvider) else {
             return
@@ -58,8 +58,22 @@ extension SessionStore {
         } catch is CancellationError {
             return
         } catch {
-            setErrorMessage(error.localizedDescription)
+            if reportsErrors {
+                setErrorMessage(error.localizedDescription)
+            }
         }
+    }
+
+    /// 进入 Claude 会话时在后台触发 bridge 的 OAuth 单飞检查。bridge 自带 5 分钟缓存，
+    /// 因此切换会话不会重复拉取；这里也不把预热失败升级成页面错误，真正发送仍保留
+    /// 权威的 runtime 结果。
+    func warmSelectedClaudeAuthentication() async {
+        guard let session = selectedSession,
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude"
+        else {
+            return
+        }
+        await refreshUsage(runtimeProvider: "claude", reportsErrors: false)
     }
 
     func refreshCurrentContext() async {
@@ -1660,6 +1674,42 @@ extension SessionStore {
 
         // 会话已经结束或失败时，沿用普通发送路径重新创建/恢复后端 thread。
         return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
+    }
+
+    @discardableResult
+    func retryClaudeAuthenticationFailure(_ failure: ConversationMessage) async -> Bool {
+        guard failure.activityPayload?.isClaudeAuthenticationRecovery == true,
+              let session = selectedSession,
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude"
+        else {
+            return false
+        }
+
+        let failedTurnID = failure.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let matchingRequests = conversationStore.messages(for: session.id).filter {
+            $0.role == .user
+                && $0.turnID == failedTurnID
+                && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        // 认证错误可能迟到，期间用户也可能已经发出下一条请求。只重发与错误事件
+        // 同 turn 且唯一的用户消息；身份缺失或歧义时 fail closed，绝不猜“最近一条”。
+        guard !failedTurnID.isEmpty,
+              matchingRequests.count == 1,
+              let original = matchingRequests.first else {
+            setErrorMessage(L10n.text("ui.original_request_for_retry_was_not_found"))
+            return false
+        }
+
+        // 用户明确点击后才重发。先复用 bridge 的凭据续期检查，再沿普通 sendTurn
+        // 恢复 thread；认证失败进程已由 bridge 淘汰，因此新进程会读取最新登录状态。
+        await refreshUsage(runtimeProvider: "claude", reportsErrors: false)
+        setErrorMessage(nil)
+        let payload = original.turnPayload ?? CodexAppServerTurnPayload(prompt: original.content)
+        let sent = await sendTurn(payload)
+        if sent {
+            setStatusMessage(L10n.text("ui.claude_request_sent_again"))
+        }
+        return sent
     }
 
     func suspendForBackground() {

@@ -1453,6 +1453,104 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.accountRateLimitsByRuntime["claude"]?.primaryUsedPercent, 30)
     }
 
+    func testClaudeAuthenticationWarmupFailureStaysSilent() async {
+        let project = makeProject(id: "proj_claude_warm_silent")
+        let session = makeSession(
+            id: "sess_claude_warm_silent",
+            projectID: project.id,
+            title: "Claude 预热失败",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            messagesResult: [],
+            rateLimitHandler: { _ in throw MockError.unimplemented }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(session)
+        await store.warmSelectedClaudeAuthentication()
+
+        XCTAssertEqual(client.requestedRateLimitProviders, ["claude"])
+        XCTAssertNil(store.errorMessage, "后台预热失败不得污染当前会话错误横幅")
+        XCTAssertEqual(store.selectedSession?.status, "history")
+    }
+
+    func testClaudeTurnCanSendWhileAuthenticationWarmupIsInFlight() async throws {
+        let project = makeProject(id: "proj_claude_warm_send")
+        let history = makeSession(
+            id: "sess_claude_warm_send",
+            projectID: project.id,
+            title: "Claude 预热并发送",
+            status: "closed",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "thread-claude-warm-send"
+        )
+        let resumed = makeSession(
+            id: "sess_claude_warm_send_resumed",
+            projectID: project.id,
+            title: "Claude 预热并发送",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "thread-claude-warm-send"
+        )
+        let gate = UsageRefreshGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [history],
+            createSessionResponse: try makeCreateSessionResponse(session: resumed),
+            messagesResult: [],
+            modelOptions: [
+                CodexAppServerModelOption(
+                    id: "sonnet",
+                    title: "Claude Sonnet 5",
+                    provider: "anthropic",
+                    runtimeProvider: "claude",
+                    isDefault: true
+                )
+            ],
+            rateLimitHandler: { provider in
+                await gate.response(for: provider)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+
+        let warmup = Task { await store.warmSelectedClaudeAuthentication() }
+        await gate.waitForRequest(provider: "claude")
+        XCTAssertTrue(store.isRefreshingUsage(runtimeProvider: "claude"))
+
+        let sent = await store.sendTurn(CodexAppServerTurnPayload(prompt: "预热期间继续发送"))
+        XCTAssertTrue(sent)
+        let createPayload = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(createPayload.resumeID, "thread-claude-warm-send")
+        XCTAssertEqual(createPayload.prompt, "预热期间继续发送")
+        XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
+
+        await gate.finishClaude()
+        await warmup.value
+        XCTAssertFalse(store.isRefreshingUsage(runtimeProvider: "claude"))
+    }
+
     func testHealthyUsageRefreshClearsStaleQuotaError() async {
         let client = MockSessionStoreClient(
             projects: [],
@@ -2289,6 +2387,102 @@ extension ConversationDataFlowTests {
             messages.contains { $0.clientMessageID == "client-retry" && $0.sendStatus == .sent }
         }
         XCTAssertEqual(acceptedMessages.first { $0.clientMessageID == "client-retry" }?.sendStatus, .sent)
+    }
+
+    func testClaudeAuthenticationRecoveryRetriesOriginalRequestOnlyAfterExplicitAction() async throws {
+        let project = makeProject(id: "proj_claude_auth_retry")
+        let failed = makeSession(
+            id: "claude_auth_failed",
+            projectID: project.id,
+            title: "Claude 登录失效",
+            status: "failed",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "claude_auth_failed"
+        )
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [failed])
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let originalPayload = CodexAppServerTurnPayload(prompt: "继续完成原来的任务")
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(failed)
+        conversationStore.appendLocalUser(
+            originalPayload.previewText,
+            sessionID: failed.id,
+            clientMessageID: "original-client-message",
+            sendStatus: .sent,
+            turnPayload: originalPayload
+        )
+        XCTAssertTrue(conversationStore.bindTurnID(
+            "failed-turn",
+            clientMessageID: "original-client-message",
+            sessionID: failed.id
+        ))
+        conversationStore.appendLocalUser(
+            "认证错误到达前发送的另一条请求",
+            sessionID: failed.id,
+            clientMessageID: "newer-client-message",
+            sendStatus: .sent,
+            turnPayload: CodexAppServerTurnPayload(prompt: "认证错误到达前发送的另一条请求")
+        )
+        XCTAssertTrue(conversationStore.bindTurnID(
+            "newer-turn",
+            clientMessageID: "newer-client-message",
+            sessionID: failed.id
+        ))
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: failed.id,
+            turnID: "failed-turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        conversationStore.completeMessage(
+            AgentMessage(
+                id: "runtime-error:failed-turn",
+                sessionID: failed.id,
+                turnID: "failed-turn",
+                role: .system,
+                kind: .error,
+                content: ClaudeAuthenticationRecovery.recoveryMessage,
+                activityPayload: ClaudeAuthenticationRecovery.activityPayload
+            ),
+            metadata: metadata,
+            fallbackSessionID: failed.id
+        )
+        let failure = try XCTUnwrap(conversationStore.messages(for: failed.id).first {
+            $0.activityPayload?.isClaudeAuthenticationRecovery == true
+        })
+
+        XCTAssertTrue(client.createPayloads.isEmpty, "认证错误不能自动重复用户请求")
+        let retryTask = Task { await store.retryClaudeAuthenticationFailure(failure) }
+        await client.waitForCreateRequestCount(1)
+
+        XCTAssertEqual(client.createPayloads[0].input, originalPayload.input)
+        XCTAssertEqual(client.createPayloads[0].turnOptions.runtimeProvider, "claude")
+        client.resolveCreate(with: .failure(MockError.unimplemented))
+        let didRetry = await retryTask.value
+        XCTAssertFalse(didRetry)
+
+        let unmatchedFailure = ConversationMessage(
+            turnID: "unmatched-turn",
+            role: .system,
+            kind: .error,
+            content: ClaudeAuthenticationRecovery.recoveryMessage,
+            activityPayload: ClaudeAuthenticationRecovery.activityPayload
+        )
+        let didRetryUnmatchedFailure = await store.retryClaudeAuthenticationFailure(unmatchedFailure)
+        XCTAssertFalse(didRetryUnmatchedFailure)
+        XCTAssertEqual(client.createPayloads.count, 1, "没有精确 turn 绑定时不得猜测并重发最近请求")
     }
 
     func testFailedRunningMessageRetryDoesNotResumeWhenWebSocketIsConnecting() async throws {

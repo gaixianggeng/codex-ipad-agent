@@ -448,6 +448,108 @@
         }
       }
     },
+    "ui.claude_code_login_expired" : {
+      "comment" : "Title shown when Claude Code OAuth can no longer refresh automatically.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude Code login expired"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude Code 登录已过期"
+          }
+        }
+      }
+    },
+    "ui.claude_code_login_expired_recovery" : {
+      "comment" : "Recovery instructions shown after Claude Code OAuth expires.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On the Mac running Mimi Remote, open Terminal and run claude to sign in again. Then return here and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude 并按提示重新登录，然后回到这里重试。"
+          }
+        }
+      }
+    },
+    "ui.claude_login_command_copied" : {
+      "comment" : "Confirmation after copying the Claude Code login command.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied claude. Run it in Terminal on your Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制 claude，请在 Mac 的终端运行。"
+          }
+        }
+      }
+    },
+    "ui.claude_request_sent_again" : {
+      "comment" : "Confirmation after explicitly retrying a request that failed because Claude Code authentication expired.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Request sent again"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求已重新发送"
+          }
+        }
+      }
+    },
+    "ui.copy_login_command" : {
+      "comment" : "Button that copies the Claude Code login command for use on the Mac host.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy login command"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制登录命令"
+          }
+        }
+      }
+    },
+    "ui.original_request_for_retry_was_not_found" : {
+      "comment" : "Shown when an authentication error card can no longer find the original user request to retry.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The original request could not be found. Please send it again from the composer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到本次失败对应的原始请求，请直接在输入框重新发送。"
+          }
+        }
+      }
+    },
     "ui.access_api_version_with_token" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

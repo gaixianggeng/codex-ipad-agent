@@ -1176,9 +1176,11 @@ impl EventTranslatorState {
     }
 
     fn error_notification(&self, message: String, will_retry: bool) -> ServerNotification {
+        let code = claude_error_code(&message).map(str::to_string);
         ServerNotification::Error(ErrorNotification {
             error: TurnError {
                 message,
+                code,
                 codex_error_info: None,
                 additional_details: None,
             },
@@ -1923,6 +1925,7 @@ pub fn turn_status_from_result(error_message: Option<&str>) -> (TurnStatus, Opti
             TurnStatus::Failed,
             Some(TurnError {
                 message: message.to_string(),
+                code: claude_error_code(message).map(str::to_string),
                 codex_error_info: None,
                 additional_details: None,
             }),
@@ -1930,6 +1933,20 @@ pub fn turn_status_from_result(error_message: Option<&str>) -> (TurnStatus, Opti
     } else {
         (TurnStatus::Completed, None)
     }
+}
+
+pub(crate) const CLAUDE_AUTHENTICATION_REQUIRED_CODE: &str = "claude_authentication_required";
+
+/// 只识别 Claude Code 已知的 OAuth 会话过期且刷新失败组合，不把工具、MCP、
+/// 代理或第三方 OAuth 的普通认证失败误判为 Claude 登录失效。协议向客户端只
+/// 暴露稳定 code；未同时包含两个权威片段时 fail closed，继续走通用错误提示。
+pub(crate) fn is_claude_authentication_failure(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("oauth session expired") && normalized.contains("could not be refreshed")
+}
+
+fn claude_error_code(message: &str) -> Option<&'static str> {
+    is_claude_authentication_failure(message).then_some(CLAUDE_AUTHENTICATION_REQUIRED_CODE)
 }
 
 fn tool_started_item(
@@ -2474,6 +2491,62 @@ mod tests {
         });
         let out = s.translate(result);
         assert!(matches!(&out[0], ServerNotification::Error(_)));
+    }
+
+    #[test]
+    fn oauth_expiry_emits_stable_authentication_code() {
+        let mut s = state();
+        let result = ClaudeOutbound::Result(ResultEnvelope {
+            subtype: "error_during_execution".into(),
+            is_error: true,
+            duration_ms: None,
+            duration_api_ms: None,
+            num_turns: None,
+            result: Some(
+                "Failed to authenticate: OAuth session expired and could not be refreshed".into(),
+            ),
+            stop_reason: None,
+            session_id: "s1".into(),
+            uuid: "u1".into(),
+            total_cost_usd: None,
+            usage: None,
+            model_usage: None,
+            permission_denials: vec![],
+            terminal_reason: None,
+            api_error_status: None,
+            extra: Default::default(),
+        });
+
+        let out = s.translate(result);
+        let ServerNotification::Error(error) = &out[0] else {
+            panic!("expected error notification");
+        };
+        assert_eq!(
+            error.error.code.as_deref(),
+            Some(CLAUDE_AUTHENTICATION_REQUIRED_CODE)
+        );
+
+        let (status, turn_error) = turn_status_from_result(Some(
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+        ));
+        assert_eq!(status, TurnStatus::Failed);
+        assert_eq!(
+            turn_error.and_then(|error| error.code).as_deref(),
+            Some(CLAUDE_AUTHENTICATION_REQUIRED_CODE)
+        );
+
+        for unrelated_error in [
+            "Invalid authentication credentials",
+            "Failed to authenticate third-party tool request",
+            "Failed to authenticate: OAuth provider rejected proxy request",
+            "Failed to authenticate MCP OAuth token",
+            "OAuth session expired",
+            "Could not be refreshed after a third-party OAuth failure",
+        ] {
+            assert!(!is_claude_authentication_failure(unrelated_error));
+            let (_, turn_error) = turn_status_from_result(Some(unrelated_error));
+            assert_eq!(turn_error.and_then(|error| error.code), None);
+        }
     }
 
     #[test]

@@ -426,6 +426,14 @@ extension SessionStore {
         } else {
             recoveredExternalMisclassification = false
         }
+        if let clientMessageID,
+           let turnID = acceptedTurnID(from: outcome) {
+            conversationStore.bindTurnID(
+                turnID,
+                clientMessageID: clientMessageID,
+                sessionID: sessionID
+            )
+        }
         guard let clientMessageID else { return }
 
         func finishAccepted(_ disposition: QueuedTurnAcceptedDisposition) {

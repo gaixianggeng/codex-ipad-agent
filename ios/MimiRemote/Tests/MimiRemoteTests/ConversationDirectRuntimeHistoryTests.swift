@@ -1999,10 +1999,11 @@ extension ConversationDataFlowTests {
             XCTFail("Expected warning")
         }
 
-        let error = try decodeAppServerNotification(#"{"method":"error","params":{"threadId":"thr_demo","turnId":"turn_demo","error":{"message":"boom","code":"authentication_failed"}}}"#)
+        let error = try decodeAppServerNotification(#"{"method":"error","params":{"threadId":"thr_demo","turnId":"turn_demo","error":{"message":"Failed to authenticate","code":"claude_authentication_required"},"willRetry":false}}"#)
         if case .error(let payload, let meta) = try XCTUnwrap(projector.project(error)) {
-            XCTAssertEqual(payload.message, "boom")
-            XCTAssertEqual(payload.code, "authentication_failed")
+            XCTAssertEqual(payload.message, "Failed to authenticate")
+            XCTAssertEqual(payload.code, ClaudeAuthenticationRecovery.errorCode)
+            XCTAssertEqual(payload.retryable, false)
             XCTAssertEqual(meta.sessionID, "thr_demo")
             XCTAssertEqual(meta.turnID, "turn_demo")
         } else {

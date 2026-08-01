@@ -79,7 +79,9 @@ pub async fn handle_account_rate_limits_read(
 ) -> p::GetAccountRateLimitsResponse {
     const OAUTH_CACHE_SECS: i64 = 5 * 60;
     const OAUTH_RETRY_SECS: i64 = 15;
-    const OAUTH_REFRESH_BUDGET: Duration = Duration::from_secs(6);
+    // 内层 Claude CLI 委托续期最多等待 8 秒；总预算必须留出冷启动和随后
+    // usage 查询的余量，否则慢机器会在续期即将完成时被外层提前取消。
+    const OAUTH_REFRESH_BUDGET: Duration = Duration::from_secs(12);
     let now = chrono::Utc::now().timestamp();
     if let Some(snapshot) = state.cached_oauth_rate_limit(now, OAUTH_CACHE_SECS) {
         return p::GetAccountRateLimitsResponse {
@@ -88,7 +90,7 @@ pub async fn handle_account_rate_limits_read(
         };
     }
     // 设置页和菜单栏可能同时触发刷新。包括等待 single-flight 锁在内，整条
-    // Keychain/OAuth 链路最多占用 6 秒；超时会取消隐藏的 Claude CLI/curl，
+    // Keychain/OAuth 链路最多占用 12 秒；超时会取消隐藏的 Claude CLI/curl，
     // 避免断开的菜单客户端在 bridge 内留下长达数十秒的工作。
     let refresh_result = timeout(OAUTH_REFRESH_BUDGET, async {
         let _refresh_guard = state.lock_oauth_rate_limit_refresh().await;
