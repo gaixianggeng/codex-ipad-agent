@@ -100,8 +100,8 @@
       "purpose": "workspace-size-validation",
       "width": 1242,
       "height": 2688,
-      "bytes": 645211,
-      "sha256": "4030a1df6edd3f1d011c9413091fee60c75d099a5aedfc5736bfe82ab0147c0e"
+      "bytes": 625554,
+      "sha256": "7128cc7fb239caed83a1a6b3e18fe88f9cdfadf1b4b32522f9b13ae7fc2716e4"
     },
     {
       "path": "iphone-6.5-sized/iphone-6.5-conversation.png",
@@ -109,8 +109,8 @@
       "purpose": "completed-conversation-size-validation",
       "width": 1242,
       "height": 2688,
-      "bytes": 885428,
-      "sha256": "f734d015a2d4c9eca6e7ebd0f3d6ba54626e63da324054d3cc4888d7a8065a96"
+      "bytes": 867861,
+      "sha256": "23a5a09976c47efb23505ac72e7058a3b22cc7590ce38c6348c9183730c1fe4d"
     },
     {
       "path": "iphone-6.5-sized/iphone-6.5-sessions.png",
@@ -118,8 +118,8 @@
       "purpose": "sessions-size-validation",
       "width": 1242,
       "height": 2688,
-      "bytes": 325064,
-      "sha256": "13efafee5fa49b9a147c7284cd8a233c3e4ac8b67210b86b74eda8fcbe2d7a67"
+      "bytes": 327406,
+      "sha256": "a0547e2e9addc71c947c58dc28db5a36525127c7d646799a3620d5f22ab1c5d8"
     }
   ]
 }
