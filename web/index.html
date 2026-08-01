@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mimi Remote — Your agents. Within reach.</title>
+  <meta name="description" content="Run Codex and Claude Code from iPad, iPhone, or Mac — without giving up the terminal at home. Mimi Remote is a native client for your coding agents." />
+  <meta name="color-scheme" content="light" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Mimi Remote — Your agents. Within reach." />
+  <meta property="og:description" content="Run Codex and Claude Code from iPad, iPhone, or Mac — without giving up the terminal at home." />
+  <meta property="og:image" content="./assets/app-icon.png" />
+
+  <link rel="icon" type="image/png" href="./assets/app-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Noto+Serif+SC:wght@500;600&family=Noto+Sans+SC:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="skip">Skip to main content</a>
+
+  <header class="site-header" id="top">
+    <div class="page">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="#top" aria-label="Mimi Remote — home">
+          <img class="brand__icon" src="./assets/app-icon.png" alt="" width="28" height="28" />
+          <span class="brand__name">Mimi Remote</span>
+        </a>
+        <div class="nav__links">
+          <a class="nav__link" href="#features" data-i18n="nav.features">Features</a>
+          <a class="nav__link" href="#ipad">iPad</a>
+          <a class="nav__link nav__link--github" href="https://github.com/gaixianggeng/codex-ipad-agent">GitHub</a>
+        </div>
+        <div class="nav__actions">
+          <button type="button" class="lang-toggle" data-lang-toggle aria-label="切换到中文">中文</button>
+          <a class="btn btn--ghost" href="https://github.com/gaixianggeng/codex-ipad-agent" aria-label="Mimi Remote on GitHub">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <path fill="currentColor" fill-rule="evenodd" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.23 1.87.87 2.33.67.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.96 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.52.56.83 1.28.83 2.15 0 3.08-1.87 3.76-3.66 3.96.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/>
+            </svg>
+            <span>GitHub</span>
+          </a>
+          <a class="btn btn--solid" href="#access" data-i18n="nav.cta">Get early access</a>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- 01 / 05 — HERO -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="page hero__grid">
+        <div class="hero__copy">
+          <p class="eyebrow"><span class="eyebrow__num" aria-hidden="true">01 / 05</span> <span data-i18n="hero.eyebrow">Coding agents, on the go</span></p>
+          <h1 class="display" id="hero-title" data-i18n="hero.title">Your agents.<br />Within reach.</h1>
+          <p class="lede" data-i18n="hero.lede">Run Codex and Claude Code from iPad, iPhone, or Mac&mdash;without giving up the terminal at home.</p>
+          <div class="hero__cta">
+            <a class="btn btn--solid btn--lg" href="#access" data-i18n="hero.cta1">Get early access</a>
+            <a class="btn btn--ghost btn--lg" href="https://github.com/gaixianggeng/codex-ipad-agent" data-i18n="hero.cta2">View on GitHub</a>
+          </div>
+        </div>
+        <figure class="hero__device">
+          <div class="device device--tablet">
+            <img data-shot="ipad-workspace" src="./assets/ipad-workspace-en.png" width="2064" height="2752"
+                 data-i18n-alt="alt.ipadWorkspace"
+                 alt="Mimi Remote's workspace on iPad, showing the session and workspace sidebar alongside running projects and recent conversations." />
+          </div>
+          <div class="device device--phone">
+            <img data-shot="iphone-workspace" src="./assets/iphone-workspace-en.png" width="1206" height="2622"
+                 data-i18n-alt="alt.iphoneWorkspace"
+                 alt="The same Mimi Remote workspace on iPhone, in a single column." />
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- 02 / 05 — MANIFESTO / FEATURES -->
+    <section class="manifesto" id="features" aria-labelledby="features-title">
+      <div class="page">
+        <h2 class="section-title" id="features-title">
+          <span class="section-title__num" aria-hidden="true">02 / 05</span>
+          <span data-i18n="features.title">Built to feel local, everywhere.</span>
+        </h2>
+        <ul class="claims" role="list">
+          <li class="claim">
+            <h3 class="claim__word" data-i18n="features.fast.word">Fast.</h3>
+            <p class="claim__note" data-i18n="features.fast.note">Local-first execution on your own Mac. Responses arrive without a cloud round-trip.</p>
+          </li>
+          <li class="claim">
+            <h3 class="claim__word" data-i18n="features.stable.word">Stable.</h3>
+            <p class="claim__note" data-i18n="features.stable.note">Connections recover on their own. Queued messages and status stay intact across drops.</p>
+          </li>
+          <li class="claim">
+            <h3 class="claim__word" data-i18n="features.multi.word">Multi&#8209;device.</h3>
+            <p class="claim__note" data-i18n="features.multi.note">iPad, iPhone, and Mac share one workflow&mdash;pick up a session wherever you are.</p>
+          </li>
+          <li class="claim">
+            <h3 class="claim__word" data-i18n="features.native.word">Native for iPad.</h3>
+            <p class="claim__note" data-i18n="features.native.note">Designed for touch, the sidebar, and a wide-screen workspace&mdash;not a shrunk-down desktop page.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 03 / 05 — RUNTIMES -->
+    <section class="runtimes" aria-labelledby="runtimes-title">
+      <div class="page">
+        <h2 class="section-title" id="runtimes-title">
+          <span class="section-title__num" aria-hidden="true">03 / 05</span>
+          <span data-i18n="runtimes.title">One client. Two runtimes.</span>
+        </h2>
+        <p class="runtimes__lede" data-i18n="runtimes.lede">Mimi Remote talks to the agents you already run. Your Mac keeps the session alive; every device is just a window onto it.</p>
+        <div class="chain" role="img" data-i18n-label="runtimes.chainLabel" aria-label="Codex and Claude Code both connect through Mac agentd.">
+          <span class="chain__node">Codex</span>
+          <span class="chain__rule" aria-hidden="true"></span>
+          <span class="chain__node">Claude Code</span>
+          <span class="chain__rule" aria-hidden="true"></span>
+          <span class="chain__node chain__node--host">Mac agentd</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 / 05 — PRODUCT DETAILS -->
+    <section class="details" id="ipad" aria-labelledby="details-title">
+      <div class="page">
+        <h2 class="section-title" id="details-title">
+          <span class="section-title__num" aria-hidden="true">04 / 05</span>
+          <span data-i18n="details.title">The details, from the real app.</span>
+        </h2>
+
+        <div class="detail">
+          <div class="detail__text">
+            <p class="detail__index" aria-hidden="true">01</p>
+            <h3 class="detail__head" data-i18n="details.d1.head">Recover without losing the thread.</h3>
+            <p class="detail__body" data-i18n="details.d1.body">When the link drops, nothing is lost. Unsent instructions wait in a local queue, saved on the device, and re-send the moment the connection returns.</p>
+          </div>
+          <figure class="detail__shot">
+            <span class="crop" style="--iw:2064; --ih:2752; --cx:58; --cy:1912; --cw:1948; --ch:322;">
+              <img data-shot="ipad-conversation" src="./assets/ipad-conversation-en.png" width="2064" height="2752"
+                   data-i18n-alt="alt.cropQueue"
+                   alt="A queue reading 2 items to send, saved on this device, with one item marked last send interrupted before confirmation." />
+            </span>
+          </figure>
+        </div>
+
+        <div class="detail detail--reverse">
+          <div class="detail__text">
+            <p class="detail__index" aria-hidden="true">02</p>
+            <h3 class="detail__head" data-i18n="details.d2.head">Built around iPad.</h3>
+            <p class="detail__body" data-i18n="details.d2.body">A real sidebar, not a hamburger afterthought. Sessions and workspaces sit side by side, with in-progress and recent history always one glance away.</p>
+          </div>
+          <figure class="detail__shot">
+            <span class="crop" style="--iw:2064; --ih:2752; --cx:22; --cy:158; --cw:596; --ch:735;">
+              <img data-shot="ipad-workspace" src="./assets/ipad-workspace-en.png" width="2064" height="2752"
+                   data-i18n-alt="alt.cropSidebar"
+                   alt="The iPad sidebar listing session and workspace, an in-progress task, and recent history." />
+            </span>
+          </figure>
+        </div>
+
+        <div class="detail">
+          <div class="detail__text">
+            <p class="detail__index" aria-hidden="true">03</p>
+            <h3 class="detail__head" data-i18n="details.d3.head">Every workspace gets a face.</h3>
+            <p class="detail__body" data-i18n="details.d3.body">Personalized icons make projects recognizable at a glance, and a Codex or Claude Code session is always one tap away.</p>
+          </div>
+          <figure class="detail__shot">
+            <span class="crop" style="--iw:2064; --ih:2752; --cx:652; --cy:178; --cw:1372; --ch:590;">
+              <img data-shot="ipad-workspace" src="./assets/ipad-workspace-en.png" width="2064" height="2752"
+                   data-i18n-alt="alt.cropFaces"
+                   alt="Two projects with personalized character icons, above quick actions to create a new Codex or Claude Code session." />
+            </span>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 05 / 05 — CTA / FOOTER -->
+  <footer class="footer" id="access" aria-labelledby="cta-title">
+    <div class="page footer__inner">
+      <img class="footer__icon" src="./assets/app-icon.png" alt="" width="44" height="44" />
+      <p class="eyebrow eyebrow--invert"><span class="eyebrow__num" aria-hidden="true">05 / 05</span> <span data-i18n="footer.eyebrow">Get early access</span></p>
+      <h2 class="display display--footer" id="cta-title" data-i18n="footer.title">Take your coding agents with you.</h2>
+      <div class="footer__cta">
+        <a class="btn btn--paper btn--lg" href="https://github.com/gaixianggeng/codex-ipad-agent" data-i18n="footer.cta1">Get early access</a>
+        <a class="btn btn--outline btn--lg" href="https://github.com/gaixianggeng/codex-ipad-agent" data-i18n="footer.cta2">View on GitHub</a>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="https://github.com/gaixianggeng/codex-ipad-agent">GitHub</a>
+        <a href="https://github.com/gaixianggeng/codex-ipad-agent#readme" data-i18n="footer.docs">Docs</a>
+        <a href="https://github.com/gaixianggeng/codex-ipad-agent/blob/main/SECURITY.md" data-i18n="footer.privacy">Privacy</a>
+      </nav>
+      <p class="footer__fine" data-i18n="footer.fine">An open-source client for Codex and Claude Code.</p>
+    </div>
+  </footer>
+
+  <script src="./i18n.js"></script>
+</body>
+</html>
