@@ -424,6 +424,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let createSessionResponse: CreateSessionResponse?
     var createSessionResults: [Result<CreateSessionResponse, Error>]
     let sessionArchiveResults: [String: Result<Void, Error>]
+    let sessionArchiveHandler: ((String, Bool) async throws -> Void)?
     let sessionForkResults: [String: Result<AgentSession, Error>]
     let threadGoalSetResults: [String: Result<ThreadGoal, Error>]
     let sessionResponses: [String: SessionResponse]
@@ -506,7 +507,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedGitPullRequestStatusPaths: [String] = []
     var requestedSessionIDs: [String] = []
     var requestedSessionAfterSeqs: [EventSequence?] = []
-    var requestedSessionArchives: [RequestedSessionArchive] = []
+    var requestedSessionArchives: [RequestedSessionArchive] {
+        requestLogLock.withLock { requestedSessionArchivesStorage }
+    }
+    private var requestedSessionArchivesStorage: [RequestedSessionArchive] = []
     var requestedSessionForks: [RequestedSessionFork] = []
     var requestedThreadNames: [RequestedThreadName] = []
     var requestedThreadGoalSets: [RequestedThreadGoalSet] = []
@@ -531,6 +535,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         createSessionResponse: CreateSessionResponse? = nil,
         createSessionResults: [Result<CreateSessionResponse, Error>] = [],
         sessionArchiveResults: [String: Result<Void, Error>] = [:],
+        sessionArchiveHandler: ((String, Bool) async throws -> Void)? = nil,
         sessionForkResults: [String: Result<AgentSession, Error>] = [:],
         threadGoalSetResults: [String: Result<ThreadGoal, Error>] = [:],
         sessionResponses: [String: SessionResponse] = [:],
@@ -583,6 +588,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.createSessionResponse = createSessionResponse
         self.createSessionResults = createSessionResults
         self.sessionArchiveResults = sessionArchiveResults
+        self.sessionArchiveHandler = sessionArchiveHandler
         self.sessionForkResults = sessionForkResults
         self.threadGoalSetResults = threadGoalSetResults
         self.sessionResponses = sessionResponses
@@ -1048,7 +1054,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func setSessionArchived(id: String, archived: Bool) async throws {
-        requestedSessionArchives.append(RequestedSessionArchive(id: id, archived: archived))
+        requestLogLock.withLock {
+            requestedSessionArchivesStorage.append(RequestedSessionArchive(id: id, archived: archived))
+        }
+        if let sessionArchiveHandler {
+            try await sessionArchiveHandler(id, archived)
+            return
+        }
         switch sessionArchiveResults[id] {
         case .success:
             return

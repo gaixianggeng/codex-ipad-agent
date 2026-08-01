@@ -766,6 +766,484 @@ extension ConversationDataFlowTests {
         ])
     }
 
+    func testArchiveFailureRollsBackPinnedStateOrderingAndPreservesProjections() async throws {
+        let project = makeProject(id: "proj_archive_rollback")
+        let older = makeSession(
+            id: "session_archive_failure",
+            projectID: project.id,
+            title: "归档失败会话",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let newer = makeSession(
+            id: "session_archive_newer",
+            projectID: project.id,
+            title: "较新会话",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let gate = SessionArchiveResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [older, newer],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [older, newer]
+        store.toggleSessionPinned(older)
+        store.setSessionListProjection(
+            sessionID: older.id,
+            preview: "本地待确认预览",
+            source: .localUser,
+            clientMessageID: "archive-projection"
+        )
+
+        let task = Task { await store.setSessionArchivedRemote(older, archived: true) }
+        await gate.waitForRequestCount(1)
+
+        XCTAssertTrue(store.isSessionArchiveMutationPending(older.id))
+        XCTAssertTrue(store.isSessionArchived(older.id))
+        XCTAssertFalse(store.isSessionPinned(older.id))
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [newer.id])
+        XCTAssertNotNil(store.listProjectionBySessionID[older.id], "乐观归档不能提前释放预览投影")
+        XCTAssertNotNil(store.recentActivityProjectionBySessionID[older.id], "乐观归档不能提前释放最近排序投影")
+
+        await gate.fail(
+            id: older.id,
+            archived: true,
+            error: AgentAPIError.server(status: 500, message: "archive rejected")
+        )
+        let didArchive = await task.value
+        XCTAssertFalse(didArchive)
+
+        XCTAssertFalse(store.isSessionArchiveMutationPending(older.id))
+        XCTAssertFalse(store.isSessionArchived(older.id))
+        XCTAssertTrue(store.isSessionPinned(older.id))
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [older.id, newer.id])
+        XCTAssertNotNil(store.listProjectionBySessionID[older.id])
+        XCTAssertNotNil(store.recentActivityProjectionBySessionID[older.id])
+        XCTAssertNotNil(store.errorMessage)
+    }
+
+    func testUnarchiveFailureRollsBackToArchivedVisibility() async {
+        let project = makeProject(id: "proj_unarchive_rollback")
+        let session = makeSession(
+            id: "session_unarchive_failure",
+            projectID: project.id,
+            title: "取消归档失败会话",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.toggleSessionArchived(session)
+        XCTAssertTrue(store.sessionLibrarySessions.isEmpty)
+
+        let task = Task { await store.setSessionArchivedRemote(session, archived: false) }
+        await gate.waitForRequestCount(1)
+        XCTAssertFalse(store.isSessionArchived(session.id))
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [session.id])
+
+        await gate.fail(
+            id: session.id,
+            archived: false,
+            error: AgentAPIError.server(status: 500, message: "unarchive rejected")
+        )
+        let didUnarchive = await task.value
+        XCTAssertFalse(didUnarchive)
+
+        XCTAssertTrue(store.isSessionArchived(session.id))
+        XCTAssertTrue(store.sessionLibrarySessions.isEmpty)
+        XCTAssertFalse(store.isSessionArchiveMutationPending(session.id))
+        XCTAssertNotNil(store.errorMessage)
+    }
+
+    func testArchivePendingSuppressesDuplicateButAllowsDifferentSessionsConcurrently() async {
+        let project = makeProject(id: "proj_archive_pending")
+        let first = makeSession(
+            id: "session_archive_first",
+            projectID: project.id,
+            title: "第一条",
+            status: "history",
+            source: "codex"
+        )
+        let second = makeSession(
+            id: "session_archive_second",
+            projectID: project.id,
+            title: "第二条",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [first, second],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [first, second]
+        store.setSessionListProjection(
+            sessionID: first.id,
+            preview: "成功后释放",
+            source: .localUser,
+            clientMessageID: "archive-success-projection"
+        )
+
+        let firstTask = Task { await store.setSessionArchivedRemote(first, archived: true) }
+        await gate.waitForRequestCount(1)
+        let duplicateResult = await store.setSessionArchivedRemote(first, archived: true)
+        let secondTask = Task { await store.setSessionArchivedRemote(second, archived: true) }
+        await gate.waitForRequestCount(2)
+
+        XCTAssertFalse(duplicateResult)
+        XCTAssertTrue(store.isSessionArchiveMutationPending(first.id))
+        XCTAssertTrue(store.isSessionArchiveMutationPending(second.id))
+        XCTAssertEqual(client.requestedSessionArchives.count, 2)
+
+        await gate.resolve(id: first.id, archived: true)
+        await gate.resolve(id: second.id, archived: true)
+        let firstResult = await firstTask.value
+        let secondResult = await secondTask.value
+        XCTAssertTrue(firstResult)
+        XCTAssertTrue(secondResult)
+        XCTAssertFalse(store.isSessionArchiveMutationPending(first.id))
+        XCTAssertFalse(store.isSessionArchiveMutationPending(second.id))
+        XCTAssertNil(store.listProjectionBySessionID[first.id])
+        XCTAssertNil(store.recentActivityProjectionBySessionID[first.id])
+    }
+
+    func testArchivePendingPreferenceSaveAndRestartKeepCommittedStateUntilSuccess() async throws {
+        let project = makeProject(id: "proj_archive_persistence_boundary")
+        let session = makeSession(
+            id: "session_archive_persistence_boundary",
+            projectID: project.id,
+            title: "归档持久化边界",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let appStore = AppStore()
+        let preferences = makeSessionListPreferenceStore()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.toggleSessionPinned(session)
+
+        let task = Task { await store.setSessionArchivedRemote(session, archived: true) }
+        await gate.waitForRequestCount(1)
+        XCTAssertTrue(store.isSessionArchived(session.id), "内存应立即显示乐观归档")
+        XCTAssertFalse(store.isSessionPinned(session.id))
+
+        // 模拟 pending 期间另一项偏好触发整份保存；磁盘仍必须保留远端已确认的 before。
+        store.saveSessionListPreferences()
+        let pendingPreferences = preferences.load(profileID: appStore.notificationRoutingProfileID)
+        XCTAssertFalse(pendingPreferences.archivedSessionIDs.contains(session.id))
+        XCTAssertTrue(pendingPreferences.pinnedSessionIDs.contains(session.id))
+
+        let restartedStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        restartedStore.reloadSessionListPreferences()
+        XCTAssertFalse(restartedStore.isSessionArchived(session.id), "重启只能恢复远端已确认状态")
+        XCTAssertTrue(restartedStore.isSessionPinned(session.id))
+
+        await gate.resolve(id: session.id, archived: true)
+        let didArchive = await task.value
+        XCTAssertTrue(didArchive)
+        let committedPreferences = preferences.load(profileID: appStore.notificationRoutingProfileID)
+        XCTAssertTrue(committedPreferences.archivedSessionIDs.contains(session.id))
+        XCTAssertFalse(committedPreferences.pinnedSessionIDs.contains(session.id))
+    }
+
+    func testConnectionClearKeepsArchivePendingAndStaleHostFailureRollsBackPersistedProfile() async throws {
+        let project = makeProject(id: "proj_archive_switch")
+        let session = makeSession(
+            id: "session_archive_switch",
+            projectID: project.id,
+            title: "连接切换中的归档",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let appStore = AppStore()
+        let preferences = makeSessionListPreferenceStore()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.toggleSessionPinned(session)
+        let oldHostScope = appStore.activeHostScope
+        let oldProfileID = appStore.notificationRoutingProfileID
+        let oldKey = ScopedSessionID(profileID: oldProfileID, sessionID: session.id)
+
+        let task = Task { await store.setSessionArchivedRemote(session, archived: true) }
+        await gate.waitForRequestCount(1)
+        XCTAssertFalse(
+            preferences.load(profileID: oldProfileID)
+                .archivedSessionIDs.contains(session.id)
+        )
+        XCTAssertTrue(
+            preferences.load(profileID: oldProfileID)
+                .pinnedSessionIDs.contains(session.id),
+            "远端确认前磁盘必须保留 committed before"
+        )
+
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "Mac B"),
+            installationID: "installation-b"
+        ))
+        XCTAssertNotEqual(appStore.activeHostScope, oldHostScope)
+        store.clearConnectionData()
+        XCTAssertTrue(
+            store.pendingSessionArchiveMutationKeys.contains(oldKey),
+            "连接清理不能释放旧 Profile+Session 的远端事务锁"
+        )
+        XCTAssertEqual(client.requestedSessionArchives.count, 1)
+
+        await gate.fail(
+            id: session.id,
+            archived: true,
+            error: AgentAPIError.server(status: 500, message: "stale host failure")
+        )
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(store.pendingSessionArchiveMutationKeys.contains(oldKey))
+        let rolledBack = preferences.load(profileID: oldProfileID)
+        XCTAssertFalse(rolledBack.archivedSessionIDs.contains(session.id))
+        XCTAssertTrue(rolledBack.pinnedSessionIDs.contains(session.id))
+        XCTAssertNil(store.errorMessage, "旧 Profile 的失败不能污染当前 Host UI")
+    }
+
+    func testStaleHostArchiveSuccessKeepsOldProfileCommitAndDoesNotPolluteCurrentProfile() async throws {
+        let project = makeProject(id: "proj_archive_switch_success")
+        let session = makeSession(
+            id: "session_archive_switch_success",
+            projectID: project.id,
+            title: "切换连接后的归档成功",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let appStore = AppStore()
+        let preferences = makeSessionListPreferenceStore()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        let oldProfileID = appStore.notificationRoutingProfileID
+        let oldKey = ScopedSessionID(profileID: oldProfileID, sessionID: session.id)
+
+        let task = Task { await store.setSessionArchivedRemote(session, archived: true) }
+        await gate.waitForRequestCount(1)
+
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.21:8787",
+            token: "token-c",
+            profileTarget: .newProfile(id: "mac-c", displayName: "Mac C"),
+            installationID: "installation-c"
+        ))
+        let currentProfileID = appStore.notificationRoutingProfileID
+        store.clearConnectionData()
+        XCTAssertTrue(store.pendingSessionArchiveMutationKeys.contains(oldKey))
+
+        await gate.resolve(id: session.id, archived: true)
+        let didApplyToCurrentHost = await task.value
+
+        XCTAssertFalse(didApplyToCurrentHost, "旧 Host 成功不能被当成当前 Host 的 UI 提交")
+        XCTAssertFalse(store.pendingSessionArchiveMutationKeys.contains(oldKey))
+        XCTAssertTrue(
+            preferences.load(profileID: oldProfileID).archivedSessionIDs.contains(session.id),
+            "服务端成功后旧 Profile 的乐观归档应成为最终持久状态"
+        )
+        XCTAssertFalse(
+            preferences.load(profileID: currentProfileID).archivedSessionIDs.contains(session.id),
+            "旧 Host 成功不能污染当前 Profile"
+        )
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin() async {
+        let project = makeProject(id: "proj_archive_token")
+        let session = makeSession(
+            id: "session_archive_token",
+            projectID: project.id,
+            title: "事务代次",
+            status: "history",
+            source: "codex"
+        )
+        let casSession = makeSession(
+            id: "session_archive_cas",
+            projectID: project.id,
+            title: "CAS 回滚",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session, casSession],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session, casSession]
+
+        let oldTask = Task { await store.setSessionArchivedRemote(session, archived: true) }
+        await gate.waitForRequestCount(1)
+        let key = ScopedSessionID(
+            profileID: store.appStore.notificationRoutingProfileID,
+            sessionID: session.id
+        )
+        guard let oldMutation = store.sessionArchiveMutationsByKey[key] else {
+            XCTFail("应记录首个归档事务")
+            return
+        }
+        let newerMutation = SessionArchiveMutation(
+            token: oldMutation.token + 1,
+            hostScope: oldMutation.hostScope,
+            before: oldMutation.before,
+            target: oldMutation.target
+        )
+        store.sessionArchiveMutationToken = newerMutation.token
+        store.sessionArchiveMutationsByKey[key] = newerMutation
+
+        await gate.resolve(id: session.id, archived: true)
+        let oldResult = await oldTask.value
+        XCTAssertFalse(oldResult, "被新 token 取代的旧结果不能再写状态")
+        XCTAssertTrue(store.isSessionArchiveMutationPending(session.id), "旧 defer 不能清除新事务 pending")
+        store.sessionArchiveMutationsByKey.removeValue(forKey: key)
+        store.removePendingSessionArchiveMutationKey(key)
+
+        let casTask = Task { await store.setSessionArchivedRemote(casSession, archived: true) }
+        await gate.waitForRequestCount(2)
+        store.toggleSessionPinned(casSession)
+        XCTAssertFalse(store.isSessionPinned(casSession.id), "pending 期间不能用本地置顶覆盖远端归档事务")
+        XCTAssertTrue(store.isSessionArchived(casSession.id))
+        await gate.fail(
+            id: casSession.id,
+            archived: true,
+            error: AgentAPIError.server(status: 500, message: "late archive failure")
+        )
+        let casResult = await casTask.value
+        XCTAssertFalse(casResult)
+        XCTAssertFalse(store.isSessionPinned(casSession.id))
+        XCTAssertFalse(store.isSessionArchived(casSession.id))
+    }
+
+    func testArchivedSessionMustUnarchiveRemotelyBeforePinning() async {
+        let project = makeProject(id: "proj_archive_before_pin")
+        let session = makeSession(
+            id: "session_archive_before_pin",
+            projectID: project.id,
+            title: "先取消归档再置顶",
+            status: "history",
+            source: "codex"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveResults: [session.id: .success(())]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+
+        let didArchive = await store.setSessionArchivedRemote(session, archived: true)
+        XCTAssertTrue(didArchive)
+        store.toggleSessionPinned(session)
+        XCTAssertTrue(store.isSessionArchived(session.id))
+        XCTAssertFalse(store.isSessionPinned(session.id), "已归档时置顶必须保持为无操作")
+
+        let didUnarchive = await store.setSessionArchivedRemote(session, archived: false)
+        XCTAssertTrue(didUnarchive)
+        store.toggleSessionPinned(session)
+        XCTAssertFalse(store.isSessionArchived(session.id))
+        XCTAssertTrue(store.isSessionPinned(session.id))
+        XCTAssertEqual(client.requestedSessionArchives, [
+            RequestedSessionArchive(id: session.id, archived: true),
+            RequestedSessionArchive(id: session.id, archived: false)
+        ])
+    }
+
     func testSessionStoreSchedulesAndClearsLocalReminder() async throws {
         let project = makeProject(id: "proj_reminder")
         let session = makeSession(
@@ -2562,6 +3040,72 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testMarkHistorySessionUnreadPersistsCompletionWatermark() throws {
+        let suiteName = "ConversationSessionStoreTests.MarkUnread.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let readStateStore = SessionHistoryReadStateStore(defaults: defaults)
+        let appStore = AppStore(defaults: defaults)
+        let project = makeProject(id: "project-mark-unread")
+        let session = makeSession(
+            id: "session-mark-unread",
+            projectID: project.id,
+            title: "手动未读",
+            status: SessionStatus.history.rawValue,
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 40),
+            recencyAt: Date(timeIntervalSince1970: 40)
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [session])
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionHistoryReadStateStore: readStateStore,
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        XCTAssertFalse(store.isHistorySessionUnread(session))
+
+        store.markHistorySessionUnread(session.id)
+
+        XCTAssertTrue(store.isHistorySessionUnread(session))
+        XCTAssertNil(try XCTUnwrap(store.historyReadStateBySessionID[session.id]).readCompletion)
+        let persisted = readStateStore.load(
+            profileID: appStore.notificationRoutingProfileID,
+            legacyEndpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
+        XCTAssertTrue(try XCTUnwrap(persisted[session.id]).isUnread)
+
+        store.selectedSessionID = session.id
+        store.synchronizeHistoryReadStates()
+        XCTAssertTrue(
+            store.isHistorySessionUnread(session),
+            "当前选中会话的手动未读不能被普通快照同步覆盖"
+        )
+
+        // Published Set 只是派生结果；即使被清空，重新同步也必须从 completion 水位恢复。
+        store.setUnreadHistorySessionIDs([])
+        XCTAssertFalse(store.isHistorySessionUnread(session))
+        store.synchronizeHistoryReadStates()
+        XCTAssertTrue(store.isHistorySessionUnread(session))
+
+        var nextCompletion = session
+        nextCompletion.updatedAt = Date(timeIntervalSince1970: 41)
+        nextCompletion.recencyAt = Date(timeIntervalSince1970: 41)
+        store.sessions = [nextCompletion]
+        XCTAssertFalse(
+            store.isHistorySessionUnread(nextCompletion),
+            "当前可见的新完成结果应视为已读，不能继承上一完成版本的手动未读"
+        )
+        XCTAssertNil(
+            try XCTUnwrap(store.historyReadStateBySessionID[session.id]).manualUnreadCompletion
+        )
+    }
+
     func testSelectingHistorySessionKeepsSelectionWhenMessages404() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(id: "codex_missing", projectID: project.id, title: "缺失 rollout", status: "history", source: "codex", resumeID: "missing")
@@ -4332,6 +4876,62 @@ private actor GitStatusResponseGate {
     func resolve(_ response: GitStatusResponse) {
         continuation?.resume(returning: response)
         continuation = nil
+    }
+}
+
+private struct SessionArchiveGateRequest: Hashable {
+    let id: SessionID
+    let archived: Bool
+}
+
+private actor SessionArchiveResponseGate {
+    private var requests: [SessionArchiveGateRequest] = []
+    private var continuations: [SessionArchiveGateRequest: [CheckedContinuation<Void, Error>]] = [:]
+    private var requestCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func response(id: SessionID, archived: Bool) async throws {
+        let request = SessionArchiveGateRequest(id: id, archived: archived)
+        try await withCheckedThrowingContinuation { continuation in
+            requests.append(request)
+            continuations[request, default: []].append(continuation)
+            let ready = requestCountWaiters.filter { requests.count >= $0.count }
+            requestCountWaiters.removeAll { requests.count >= $0.count }
+            ready.forEach { $0.continuation.resume() }
+        }
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        if requests.count >= count {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            requestCountWaiters.append((count, continuation))
+        }
+    }
+
+    func resolve(id: SessionID, archived: Bool) {
+        takeContinuation(id: id, archived: archived)?.resume()
+    }
+
+    func fail(id: SessionID, archived: Bool, error: Error) {
+        takeContinuation(id: id, archived: archived)?.resume(throwing: error)
+    }
+
+    private func takeContinuation(
+        id: SessionID,
+        archived: Bool
+    ) -> CheckedContinuation<Void, Error>? {
+        let request = SessionArchiveGateRequest(id: id, archived: archived)
+        guard var pending = continuations[request], !pending.isEmpty else {
+            return nil
+        }
+        let continuation = pending.removeFirst()
+        if pending.isEmpty {
+            continuations.removeValue(forKey: request)
+        } else {
+            continuations[request] = pending
+        }
+        return continuation
     }
 }
 

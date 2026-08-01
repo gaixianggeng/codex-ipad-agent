@@ -14792,6 +14792,42 @@
         }
       }
     },
+    "ui.mark_as_read" : {
+      "comment" : "Stateful session-row action that marks a completed history session as read.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mark as Read"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标记为已读"
+          }
+        }
+      }
+    },
+    "ui.mark_as_unread" : {
+      "comment" : "Stateful session-row action that marks a completed history session as unread.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mark as Unread"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标记为未读"
+          }
+        }
+      }
+    },
     "ui.mark_complete" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

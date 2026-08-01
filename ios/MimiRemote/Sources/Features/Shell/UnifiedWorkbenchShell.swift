@@ -591,6 +591,7 @@ struct UnifiedWorkbenchShell: View {
                 : ""
         )
         .sessionRowActions(session)
+        .sessionRowSwipeActions(session)
         .listRowInsets(.init(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)

@@ -355,12 +355,17 @@ struct SessionCompletionVersion: Codable, Equatable {
 struct SessionHistoryReadState: Codable, Equatable {
     var latestCompletion: SessionCompletionVersion?
     var readCompletion: SessionCompletionVersion?
+    /// 区分用户显式“标为未读”和新完成自然产生的未读，避免选中态同步把前者覆盖。
+    var manualUnreadCompletion: SessionCompletionVersion?
     var observedRunning = false
     var pendingTurnID: TurnID?
 
     var isUnread: Bool {
         guard let latestCompletion else {
             return false
+        }
+        if manualUnreadCompletion?.representsSameCompletion(as: latestCompletion) == true {
+            return true
         }
         guard let readCompletion else {
             return true

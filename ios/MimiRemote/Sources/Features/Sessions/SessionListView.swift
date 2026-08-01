@@ -658,6 +658,7 @@ struct SessionListView: View {
             .accessibilityAction { select(session) }
             .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
+            .sessionRowSwipeActions(session)
             .listRowInsets(.init(top: 4, leading: 20, bottom: 4, trailing: 20))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
