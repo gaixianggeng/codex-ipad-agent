@@ -998,7 +998,6 @@ final class AppStore: ObservableObject {
         }
         connectionProfiles = nextProfiles
     }
-
     @discardableResult
     func validateConnection(endpoint: String, token: String) async throws -> String {
         let startedAt = Date()
