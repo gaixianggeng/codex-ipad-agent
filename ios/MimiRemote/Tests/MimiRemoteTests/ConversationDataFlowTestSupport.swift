@@ -414,6 +414,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private var requestedWorkspaceIDsStorage: [String] = []
 
     let projectsResult: [AgentProject]
+    let projectsHandler: (() async throws -> [AgentProject])?
     let sessionsResult: [AgentSession]
     let projectSessions: [String: [AgentSession]]
     let workspaceSessions: [String: [AgentSession]]
@@ -432,6 +433,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let workspaceSessionsError: [String: Error]
     let capabilityResults: [String: Result<CapabilityListResponse, Error>]
     let resolveResults: [String: Result<AgentWorkspace, Error>]
+    let resolveWorkspaceHandler: ((String) async throws -> AgentWorkspace)?
     let worktreeCreateResults: [String: Result<WorktreeCreateResponse, Error>]
     let worktreeBranchResults: [String: Result<WorktreeBranchListResponse, Error>]
     let worktreeListResult: Result<[WorktreeListItem], Error>?
@@ -520,6 +522,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     init(
         projects: [AgentProject],
         sessions: [AgentSession],
+        projectsHandler: (() async throws -> [AgentProject])? = nil,
         projectSessions: [String: [AgentSession]] = [:],
         workspaceSessions: [String: [AgentSession]] = [:],
         projectPages: [String: SessionsPage] = [:],
@@ -537,6 +540,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         workspaceSessionsError: [String: Error] = [:],
         capabilityResults: [String: Result<CapabilityListResponse, Error>] = [:],
         resolveResults: [String: Result<AgentWorkspace, Error>] = [:],
+        resolveWorkspaceHandler: ((String) async throws -> AgentWorkspace)? = nil,
         worktreeCreateResults: [String: Result<WorktreeCreateResponse, Error>] = [:],
         worktreeBranchResults: [String: Result<WorktreeBranchListResponse, Error>] = [:],
         worktreeListResult: Result<[WorktreeListItem], Error>? = nil,
@@ -569,6 +573,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         externalActivityResponses: [ExternalActivityResponse?] = []
     ) {
         self.projectsResult = projects
+        self.projectsHandler = projectsHandler
         self.sessionsResult = sessions
         self.projectSessions = projectSessions
         self.workspaceSessions = workspaceSessions
@@ -590,6 +595,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.workspaceSessionsError = workspaceSessionsError
         self.capabilityResults = capabilityResults
         self.resolveResults = resolveResults
+        self.resolveWorkspaceHandler = resolveWorkspaceHandler
         self.worktreeCreateResults = worktreeCreateResults
         self.worktreeBranchResults = worktreeBranchResults
         self.worktreeListResult = worktreeListResult
@@ -623,7 +629,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func projects() async throws -> [AgentProject] {
-        projectsResult
+        if let projectsHandler {
+            return try await projectsHandler()
+        }
+        return projectsResult
     }
 
     func externalActivities() async throws -> ExternalActivityResponse? {
@@ -675,6 +684,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func resolveWorkspace(path: String) async throws -> AgentWorkspace {
         requestedResolvePaths.append(path)
+        if let resolveWorkspaceHandler {
+            return try await resolveWorkspaceHandler(path)
+        }
         switch resolveResults[path] {
         case .success(let workspace):
             return workspace

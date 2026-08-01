@@ -1916,6 +1916,11 @@ extension SessionStore {
         error: Error,
         reportForeground: Bool = true
     ) async {
+        // 页面生命周期、凭据后台挂起和旧 host waiter 的取消都不是工作区故障；
+        // 这里必须先静默收口，不能二次 resolve 后把 Swift.CancellationError 写入全局错误。
+        guard !isCancellationError(error) else {
+            return
+        }
         if terminateConnectionIfCredentialsInvalid(error) {
             return
         }

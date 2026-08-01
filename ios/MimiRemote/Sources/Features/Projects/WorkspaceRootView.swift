@@ -146,6 +146,72 @@ struct WorkspaceSessionLoadInvocationTokens {
     }
 }
 
+enum WorkspaceCatalogLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
+enum WorkspaceCatalogLoadResult: Equatable {
+    case loaded
+    case cancelled
+    case failed(String)
+}
+
+enum WorkspaceSessionLoadFailureDisposition: Equatable {
+    case cancelled
+    case failed(String)
+}
+
+/// Session 首屏和 catalog/open 使用同一套明确取消分类，避免 URL transport 取消落入用户错误态。
+func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionLoadFailureDisposition {
+    isCancellationError(error) ? .cancelled : .failed(error.localizedDescription)
+}
+
+struct WorkspaceCatalogRefreshScope: Equatable {
+    let hostScope: HostScope
+    let credentialsSuspended: Bool
+}
+
+/// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
+struct WorkspaceCatalogLoadCoordinator {
+    private(set) var state: WorkspaceCatalogLoadState = .idle
+    private var currentInvocationID: UUID?
+
+    @discardableResult
+    mutating func begin() -> UUID {
+        let invocationID = UUID()
+        currentInvocationID = invocationID
+        state = .loading
+        return invocationID
+    }
+
+    func isCurrent(_ invocationID: UUID) -> Bool {
+        currentInvocationID == invocationID
+    }
+
+    @discardableResult
+    mutating func complete(
+        _ invocationID: UUID,
+        result: WorkspaceCatalogLoadResult,
+        hasCachedProjects: Bool
+    ) -> Bool {
+        guard isCurrent(invocationID) else {
+            return false
+        }
+        switch result {
+        case .loaded:
+            state = .loaded
+        case .cancelled:
+            state = hasCachedProjects ? .loaded : .idle
+        case .failed(let message):
+            state = .failed(message)
+        }
+        return true
+    }
+}
+
 private struct WorkspaceGitInspectionTarget: Identifiable {
     let id: String
     let name: String
@@ -172,7 +238,7 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
-    @State private var catalogState: CatalogState = .idle
+    @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     @State private var isPresentingOpenWorkspace = false
@@ -202,6 +268,10 @@ struct WorkspaceRootView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let catalogRefreshScope = WorkspaceCatalogRefreshScope(
+            hostScope: appStore.activeHostScope,
+            credentialsSuspended: appStore.isCredentialMemorySuspended
+        )
 
         Group {
             if embedsNavigationStack {
@@ -214,7 +284,11 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
-        .task(id: appStore.activeHostScope) {
+        .task(id: catalogRefreshScope) {
+            // 后台会主动清空内存凭据；恢复完成发布 false 后，完整 scope 会确定性触发一次新刷新。
+            guard !catalogRefreshScope.credentialsSuspended else {
+                return
+            }
             migrateLegacyWorkspaceAppearance()
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
@@ -247,9 +321,6 @@ struct WorkspaceRootView: View {
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeSelection()
-            if !sessionStore.sidebarProjects.isEmpty {
-                catalogState = .loaded
-            }
         }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet { workspaceID in
@@ -320,7 +391,7 @@ struct WorkspaceRootView: View {
     @ViewBuilder
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {
         if sessionStore.sidebarProjects.isEmpty {
-            if catalogState == .loading {
+            if catalogLoad.state == .loading {
                 workspaceLoadingState(tokens: tokens)
             } else {
                 workspaceEmptyState(tokens: tokens)
@@ -366,7 +437,7 @@ struct WorkspaceRootView: View {
 
     private func workspaceEmptyState(tokens: ThemeTokens) -> some View {
         let isFailure: Bool
-        if case .failed = catalogState {
+        if case .failed = catalogLoad.state {
             isFailure = true
         } else {
             isFailure = false
@@ -443,7 +514,7 @@ struct WorkspaceRootView: View {
             GeometryReader { geometry in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 12) {
-                        if catalogState == .loading && sessionStore.sidebarProjects.isEmpty {
+                        if catalogLoad.state == .loading && sessionStore.sidebarProjects.isEmpty {
                             ForEach(0..<4, id: \.self) { index in
                                 WorkspaceLibraryCard(
                                     project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
@@ -608,17 +679,17 @@ struct WorkspaceRootView: View {
     }
 
     private var emptyWorkspaceTitle: String {
-        if case .failed = catalogState { return L10n.text("ui.unable_to_load_workspace") }
+        if case .failed = catalogLoad.state { return L10n.text("ui.unable_to_load_workspace") }
         return L10n.text("ui.no_workspace_yet")
     }
 
     private var emptyWorkspaceSymbol: String {
-        if case .failed = catalogState { return "exclamationmark.triangle" }
+        if case .failed = catalogLoad.state { return "exclamationmark.triangle" }
         return "folder.badge.plus"
     }
 
     private var emptyWorkspaceMessage: String {
-        if case .failed(let message) = catalogState { return message }
+        if case .failed(let message) = catalogLoad.state { return message }
         return L10n.text("ui.once_the_directory_is_open_you_can_browse")
     }
 
@@ -652,21 +723,35 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshCatalog(forceGitSummary: Bool = false) async {
-        catalogState = .loading
+        let invocationID = catalogLoad.begin()
         do {
             try await sessionStore.refreshWorkspaceCatalog()
-            guard !Task.isCancelled else {
+            guard catalogLoad.isCurrent(invocationID) else {
                 return
             }
-            catalogState = .loaded
+            guard !Task.isCancelled else {
+                catalogLoad.complete(
+                    invocationID,
+                    result: .cancelled,
+                    hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
+                )
+                return
+            }
+            catalogLoad.complete(
+                invocationID,
+                result: .loaded,
+                hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
+            )
             await sessionStore.refreshWorkspaceGitSummaries(
                 for: sessionStore.sidebarProjects,
                 force: forceGitSummary
             )
-        } catch is CancellationError {
-            return
         } catch {
-            catalogState = .failed(error.localizedDescription)
+            catalogLoad.complete(
+                invocationID,
+                result: isCancellationError(error) ? .cancelled : .failed(error.localizedDescription),
+                hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
+            )
         }
     }
 
@@ -696,16 +781,16 @@ struct WorkspaceRootView: View {
                 return
             }
             sessionLoadStates[projectID] = .loaded
-        } catch is CancellationError {
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
-                return
-            }
-            sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
         } catch {
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
                 return
             }
-            sessionLoadStates[projectID] = .failed(error.localizedDescription)
+            switch workspaceSessionLoadFailureDisposition(error) {
+            case .cancelled:
+                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+            case .failed(let message):
+                sessionLoadStates[projectID] = .failed(message)
+            }
         }
     }
 
@@ -717,12 +802,6 @@ struct WorkspaceRootView: View {
         sessionStore.sessions(forProjectID: projectID).isEmpty ? .idle : .loaded
     }
 
-    private enum CatalogState: Equatable {
-        case idle
-        case loading
-        case loaded
-        case failed(String)
-    }
 }
 
 private enum WorkspaceSessionLoadState: Equatable {
