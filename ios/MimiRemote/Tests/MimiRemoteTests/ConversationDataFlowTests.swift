@@ -2188,6 +2188,45 @@ final class ConversationDataFlowTests: XCTestCase {
         }
     }
 
+    func testEventReducerPresentsClaudeAuthenticationFailureAsRecoverableChineseNotice() async throws {
+        let reducer = EventReducer()
+        let metadata = AgentEventMetadata(
+            seq: 46,
+            sessionID: "claude_thread",
+            turnID: "claude_turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let rawError = "Failed to authenticate: OAuth session expired and could not be refreshed"
+
+        let output = await reducer.reduce(
+            .error(
+                AgentErrorPayload(
+                    message: rawError,
+                    code: ClaudeAuthenticationRecovery.errorCode,
+                    retryable: false
+                ),
+                metadata
+            ),
+            fallbackSessionID: "wrong_fallback",
+            outputIdleClearDelay: 80_000_000
+        )
+
+        XCTAssertEqual(output.errorMessage, ClaudeAuthenticationRecovery.title)
+        XCTAssertTrue(output.logAppends.contains { $0.text.contains(rawError) })
+        guard case .completed(let message, _, _) = try XCTUnwrap(output.messageMutations.first) else {
+            return XCTFail("Expected structured authentication recovery message")
+        }
+        XCTAssertEqual(message.role, .system)
+        XCTAssertEqual(message.kind, .error)
+        XCTAssertEqual(message.content, ClaudeAuthenticationRecovery.recoveryMessage)
+        XCTAssertTrue(message.activityPayload?.isClaudeAuthenticationRecovery == true)
+        XCTAssertFalse(message.content.contains(rawError))
+    }
+
     func testLargeDiffPanelItemsDeduplicateAndCollapseTail() throws {
         let fileChangePrefix = L10n.text("ui.file_changes_766e4292")
         let old = ConversationMessage(

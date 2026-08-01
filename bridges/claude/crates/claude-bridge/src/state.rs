@@ -727,6 +727,7 @@ mod tests {
                     status,
                     Some(TurnError {
                         message: "真实失败".into(),
+                        code: None,
                         codex_error_info: None,
                         additional_details: None,
                     }),

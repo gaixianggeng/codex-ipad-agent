@@ -1154,11 +1154,16 @@ extension SessionStore {
             )
         case .error(let payload, let metadata):
             let sessionID = metadata.sessionID ?? fallbackSessionID
+            let isClaudeAuthenticationFailure = ClaudeAuthenticationRecovery.matches(payload)
             return SessionRuntimeNotification(
                 id: "failed:\(sessionID):\(payload.message)",
                 sessionID: sessionID,
-                title: L10n.text("ui.session_error"),
-                body: payload.message,
+                title: isClaudeAuthenticationFailure
+                    ? ClaudeAuthenticationRecovery.title
+                    : L10n.text("ui.session_error"),
+                body: isClaudeAuthenticationFailure
+                    ? ClaudeAuthenticationRecovery.recoveryMessage
+                    : payload.message,
                 kind: .failed
             )
         default:

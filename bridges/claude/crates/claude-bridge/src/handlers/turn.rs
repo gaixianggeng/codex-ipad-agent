@@ -43,7 +43,9 @@ use crate::pool::ClaudeProcessHandle;
 use crate::pool::claude_protocol::{ClaudeEvent, ClaudeOutbound, ControlRequestBody};
 use crate::pool::process::ClaudeProcessError;
 use crate::state::ConnectionState;
-use crate::translate::events::{EventTranslatorState, turn_status_from_result};
+use crate::translate::events::{
+    EventTranslatorState, is_claude_authentication_failure, turn_status_from_result,
+};
 use crate::translate::input::translate_user_input;
 
 /// Time the bridge gives claude to acknowledge a `control_request{interrupt}`.
@@ -1033,6 +1035,12 @@ async fn run_event_driver(mut args: EventDriverArgs) {
             _ => {}
         }
         let is_terminal = matches!(payload, ClaudeOutbound::Result(_));
+        let authentication_failed = matches!(
+            &payload,
+            ClaudeOutbound::Result(result)
+                if (result.is_error || result.subtype != "success")
+                    && result.result.as_deref().is_some_and(is_claude_authentication_failure)
+        );
         if let ClaudeOutbound::Result(ref r) = payload {
             if r.is_error || r.subtype != "success" {
                 turn.error_message = Some(
@@ -1070,6 +1078,13 @@ async fn run_event_driver(mut args: EventDriverArgs) {
         if is_terminal {
             let completed = current.take().unwrap();
             finish_driven_turn(&args, completed, &mut background).await;
+            if authentication_failed {
+                // Claude 进程可能缓存了启动时的旧 access token。先完整发布失败边界，
+                // 再淘汰这一代进程；用户在 Mac 重新登录后显式重试会通过 --resume
+                // 拉起新进程并读取最新凭据，不会继续命中旧认证状态。
+                process_unhealthy = true;
+                break;
+            }
         }
     }
 

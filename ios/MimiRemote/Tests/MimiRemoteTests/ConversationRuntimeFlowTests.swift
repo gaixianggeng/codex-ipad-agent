@@ -2283,6 +2283,72 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(acceptedMessages.first { $0.clientMessageID == "client-retry" }?.sendStatus, .sent)
     }
 
+    func testClaudeAuthenticationRecoveryRetriesOriginalRequestOnlyAfterExplicitAction() async throws {
+        let project = makeProject(id: "proj_claude_auth_retry")
+        let failed = makeSession(
+            id: "claude_auth_failed",
+            projectID: project.id,
+            title: "Claude 登录失效",
+            status: "failed",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "claude_auth_failed"
+        )
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [failed])
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        let originalPayload = CodexAppServerTurnPayload(prompt: "继续完成原来的任务")
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(failed)
+        conversationStore.appendLocalUser(
+            originalPayload.previewText,
+            sessionID: failed.id,
+            clientMessageID: "original-client-message",
+            sendStatus: .sent,
+            turnPayload: originalPayload
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: failed.id,
+            turnID: "failed-turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        conversationStore.completeMessage(
+            AgentMessage(
+                id: "runtime-error:failed-turn",
+                sessionID: failed.id,
+                turnID: "failed-turn",
+                role: .system,
+                kind: .error,
+                content: ClaudeAuthenticationRecovery.recoveryMessage,
+                activityPayload: ClaudeAuthenticationRecovery.activityPayload
+            ),
+            metadata: metadata,
+            fallbackSessionID: failed.id
+        )
+        let failure = try XCTUnwrap(conversationStore.messages(for: failed.id).last)
+
+        XCTAssertTrue(client.createPayloads.isEmpty, "认证错误不能自动重复用户请求")
+        let retryTask = Task { await store.retryClaudeAuthenticationFailure(failure) }
+        await client.waitForCreateRequestCount(1)
+
+        XCTAssertEqual(client.createPayloads[0].input, originalPayload.input)
+        XCTAssertEqual(client.createPayloads[0].turnOptions.runtimeProvider, "claude")
+        client.resolveCreate(with: .failure(MockError.unimplemented))
+        let didRetry = await retryTask.value
+        XCTAssertFalse(didRetry)
+    }
+
     func testFailedRunningMessageRetryDoesNotResumeWhenWebSocketIsConnecting() async throws {
         let project = makeProject(id: "proj_retry_connecting_guard")
         let running = makeSession(id: "sess_retry_connecting_guard", projectID: project.id, title: "运行中", status: "running", source: "codex")

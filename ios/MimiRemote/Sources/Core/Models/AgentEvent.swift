@@ -1498,7 +1498,7 @@ struct CodexAppServerEventProjector {
                 ?? fallback,
             code: firstString(in: params, keys: ["code"])
                 ?? nestedString(in: params, key: "error", nestedKey: "code"),
-            retryable: params["retryable"]?.boolValue
+            retryable: params["retryable"]?.boolValue ?? params["willRetry"]?.boolValue
         )
     }
 

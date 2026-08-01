@@ -1182,6 +1182,45 @@ struct AgentErrorPayload: Codable, Hashable {
     let retryable: Bool?
 }
 
+enum ClaudeAuthenticationRecovery {
+    static let errorCode = "claude_authentication_required"
+    static let loginCommand = "claude"
+
+    static func matches(_ payload: AgentErrorPayload) -> Bool {
+        if payload.code?.caseInsensitiveCompare(errorCode) == .orderedSame {
+            return true
+        }
+        // 兼容尚未升级 bridge 的宿主，只识别 Claude Code 这条足够具体的旧英文错误，
+        // 避免把 Codex 或某个 MCP 工具的普通 authentication failure 错标成 Claude 登录过期。
+        let normalized = payload.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.contains("oauth session expired")
+            && normalized.contains("could not be refreshed")
+    }
+
+    static var title: String {
+        L10n.text("ui.claude_code_login_expired")
+    }
+
+    static var recoveryMessage: String {
+        L10n.text("ui.claude_code_login_expired_recovery")
+    }
+
+    static var activityPayload: ConversationActivityPayload {
+        ConversationActivityPayload(
+            category: .error,
+            displayTitle: title,
+            subtitle: recoveryMessage,
+            status: errorCode
+        )
+    }
+}
+
+extension ConversationActivityPayload {
+    var isClaudeAuthenticationRecovery: Bool {
+        category == .error && status?.caseInsensitiveCompare(ClaudeAuthenticationRecovery.errorCode) == .orderedSame
+    }
+}
+
 enum ConnectionTerminationStatus: Equatable {
     case credentialsInvalid
 

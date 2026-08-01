@@ -72,6 +72,9 @@ struct ConversationView: View {
                 // 自己承担唯一的功能材质层，底部视觉不会与消息系统切成两块。
             }
             .background(tokens.background.ignoresSafeArea())
+            .task(id: sessionStore.selectedSession?.id) {
+                await sessionStore.warmSelectedClaudeAuthentication()
+            }
         }
     }
 
