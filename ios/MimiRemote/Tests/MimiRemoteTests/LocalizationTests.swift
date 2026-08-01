@@ -55,6 +55,26 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(L10n.text("ui.settings", language: .simplifiedChinese), "设置")
     }
 
+    func testToolActivitySemanticLabelsAreLocalized() {
+        let expectedValues: [(String, String, String)] = [
+            ("ui.query_linear_issues", "Query Linear issues", "查询 Linear Issue"),
+            ("ui.read_issue_comments", "Read issue comments", "读取 Issue 评论"),
+            ("ui.update_linear_issue", "Update Linear issue", "更新 Linear Issue"),
+            ("ui.query_task_list", "Query task list", "查询任务列表"),
+            ("ui.start_independent_task", "Start independent task", "启动独立任务"),
+            ("ui.resume_independent_task", "Resume independent task", "恢复独立任务"),
+            ("ui.wait_for_task_results", "Wait for task results", "等待任务结果"),
+            ("ui.start_subagent", "Start subagent", "启动子 Agent"),
+            ("ui.timed_out_status", "Timed out", "已超时"),
+            ("ui.interrupted_status", "Interrupted", "已中断"),
+        ]
+
+        for (key, english, simplifiedChinese) in expectedValues {
+            XCTAssertEqual(L10n.text(key, language: .english), english)
+            XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
+    }
+
     func testSettingsInformationArchitectureLabelsAreLocalized() {
         let expectedValues: [(String, String, String)] = [
             ("ui.me", "Me", "我的"),
