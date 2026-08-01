@@ -74,6 +74,22 @@ final class LocalizationTests: XCTestCase {
         }
     }
 
+    func testSessionRowStatefulActionLabelsAreLocalized() {
+        let expectedValues: [(String, String, String)] = [
+            ("ui.pin_to_top", "pin to top", "置顶"),
+            ("ui.unpin", "Unpin", "取消置顶"),
+            ("ui.mark_as_read", "Mark as Read", "标记为已读"),
+            ("ui.mark_as_unread", "Mark as Unread", "标记为未读"),
+            ("ui.archive", "Archive", "归档"),
+            ("ui.unarchive", "Unarchive", "取消归档")
+        ]
+
+        for (key, english, simplifiedChinese) in expectedValues {
+            XCTAssertEqual(L10n.text(key, language: .english), english)
+            XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
+    }
+
     func testSettingsLayoutMetricsUseOneVisualSystem() {
         XCTAssertEqual(SettingsLayoutMetrics.standardRowHeight, 52)
         XCTAssertEqual(SettingsLayoutMetrics.accessibilityRowHeight, 76)

@@ -13,6 +13,18 @@ struct FileUploadCompletionEvent: Equatable {
     let targetScope: ComposerDraftScopeKey
 }
 
+struct SessionArchivePreferenceState: Equatable {
+    let isPinned: Bool
+    let isArchived: Bool
+}
+
+struct SessionArchiveMutation: Equatable {
+    let token: UInt64
+    let hostScope: HostScope
+    let before: SessionArchivePreferenceState
+    let target: SessionArchivePreferenceState
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published var projects: [AgentProject] = [] {
@@ -51,6 +63,9 @@ final class SessionStore: ObservableObject {
     @Published var isLoadingMoreSessionSearchResults = false
     @Published var pinnedSessionIDs: Set<SessionID> = []
     @Published var archivedSessionIDs: Set<SessionID> = []
+    /// UI 只通过 `isSessionArchiveMutationPending` 查询当前 Profile；这里保留完整作用域，
+    /// 避免两台 Mac 上碰巧相同的 Session ID 互相禁用操作。
+    @Published private(set) var pendingSessionArchiveMutationKeys: Set<ScopedSessionID> = []
     @Published private(set) var unreadHistorySessionIDs: Set<SessionID> = []
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
@@ -159,6 +174,14 @@ final class SessionStore: ObservableObject {
             return
         }
         unreadHistorySessionIDs = value
+    }
+
+    func insertPendingSessionArchiveMutationKey(_ key: ScopedSessionID) {
+        pendingSessionArchiveMutationKeys.insert(key)
+    }
+
+    func removePendingSessionArchiveMutationKey(_ key: ScopedSessionID) {
+        pendingSessionArchiveMutationKeys.remove(key)
     }
 
     let appStore: AppStore
@@ -289,6 +312,8 @@ final class SessionStore: ObservableObject {
     var locallyCompletedSessionIDs: Set<SessionID> = []
     var locallyCompletedGoalThreadIDs: Set<SessionID> = []
     var historyReadStateBySessionID: [SessionID: SessionHistoryReadState] = [:]
+    var sessionArchiveMutationToken: UInt64 = 0
+    var sessionArchiveMutationsByKey: [ScopedSessionID: SessionArchiveMutation] = [:]
     var listProjectionBySessionID: [SessionID: SessionListProjection] = [:]
     var recentActivityProjectionBySessionID: [SessionID: SessionRecentActivityProjection] = [:]
     // 队列订阅不依赖当前页面；用户切到其他会话后，原 thread 仍能在完成时继续 FIFO 派发。
