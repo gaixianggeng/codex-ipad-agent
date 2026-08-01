@@ -239,7 +239,7 @@ struct PendingApprovalActionCard: View {
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityIdentifier("approval.details")
             .accessibilityHint(L10n.text(isDetailsExpanded ? "ui.hide_details" : "ui.show_details"))
 
@@ -328,7 +328,7 @@ struct PendingApprovalActionCard: View {
                 .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .disabled(isSendingDecision || !approval.hasDecisionContext)
             .accessibilityIdentifier("approval.alwaysAllow")
             .accessibilityHint(L10n.text("ui.after_confirmation_write_the_precise_rules_suggested_by"))
@@ -382,7 +382,7 @@ struct PendingApprovalActionCard: View {
                 .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isSendingDecision || !approval.hasDecisionContext)
         .accessibilityIdentifier(identifier)
         .accessibilityHint(L10n.text("ui.codex_saves_this_choice_on_the_mac"))
@@ -403,7 +403,7 @@ struct PendingApprovalActionCard: View {
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isSendingDecision)
         .accessibilityIdentifier("approval.reject")
         .accessibilityLabel(L10n.text("ui.deny_approval"))
@@ -428,7 +428,7 @@ struct PendingApprovalActionCard: View {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(!isEnabled)
         .accessibilityIdentifier("approval.approveOnce")
         .accessibilityLabel(L10n.text("ui.approval_36f0d72e"))
@@ -689,7 +689,7 @@ struct PendingUserInputResumeButton: View {
                 borderColor: tokens.accent.opacity(colorScheme == .dark ? 0.38 : 0.28)
             )
         )
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isSubmitting)
         .accessibilityLabel(L10n.text("ui.continue_filling_supplementary_information"))
         .accessibilityValue(request.title)
