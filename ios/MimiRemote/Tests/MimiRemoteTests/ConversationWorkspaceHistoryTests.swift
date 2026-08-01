@@ -3224,6 +3224,187 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
+    func testReopeningTerminalSessionWithLocalWaitingForcesAuthoritativeHistoryReconciliation() async {
+        let project = makeProject(id: "proj_detached_completion")
+        let unchangedTimestamp = Date(timeIntervalSince1970: 100)
+        let running = makeSession(
+            id: "thread_detached_completion",
+            projectID: project.id,
+            title: "讲一个简短笑话",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn_detached_completion",
+            updatedAt: unchangedTimestamp
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [running])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        store.projects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.sidebarProjects = [project]
+        store.sessions = [running]
+        store.takeOverSession(running)
+        XCTAssertTrue(store.activeSessions.contains { $0.id == running.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == running.id })
+
+        let initialOpen = Task { await store.selectSession(running) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+        await initialOpen.value
+
+        // 固定时序：发送 -> 立即切走 -> detached 期间完成。列表终态故意保留与离开前
+        // 相同的 updatedAt/revision/lastSeq，复现旧实现错误复用局部历史签名的条件。
+        conversationStore.appendLocalUser(
+            "讲个笑话",
+            sessionID: running.id,
+            clientMessageID: "client_detached_completion",
+            sendStatus: .confirmed
+        )
+        store.setForegroundActivity(.waitingForAssistant, sessionID: running.id)
+        store.returnToSessionList()
+
+        let completed = makeSession(
+            id: running.id,
+            projectID: project.id,
+            title: running.title,
+            status: "history",
+            source: "codex",
+            updatedAt: unchangedTimestamp
+        )
+        store.upsert(completed)
+        XCTAssertFalse(store.activeSessions.contains { $0.id == running.id })
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == running.id })
+
+        let reopen = Task { await store.selectSession(completed) }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(
+            client.requestedMessageLoadModes,
+            [.full, .full],
+            "终态重开必须绕过相同签名的局部缓存，发出一次权威首屏读取"
+        )
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "user_detached_completion",
+                    role: "user",
+                    content: "讲个笑话",
+                    createdAt: Date(timeIntervalSince1970: 101),
+                    clientMessageID: "client_detached_completion",
+                    turnID: "turn_detached_completion",
+                    sendStatus: .confirmed
+                ),
+                CodexHistoryMessage(
+                    id: "assistant_detached_completion",
+                    role: "assistant",
+                    content: "程序员去海边，发现浪都是递归的。",
+                    createdAt: Date(timeIntervalSince1970: 102),
+                    turnID: "turn_detached_completion",
+                    sendStatus: .confirmed,
+                    turnLifecycle: .completed
+                )
+            ])
+        )
+        await reopen.value
+
+        XCTAssertTrue(
+            conversationStore.messages(for: running.id).contains {
+                $0.role == .assistant && $0.content == "程序员去海边，发现浪都是递归的。"
+            }
+        )
+        XCTAssertNil(store.foregroundActivityBySessionID[running.id])
+        XCTAssertFalse(store.activeSessions.contains { $0.id == running.id })
+        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == running.id })
+    }
+
+    func testEmptyAuthoritativeReopenKeepsWaitingUntilTerminalHistoryArrives() async {
+        let project = makeProject(id: "proj_empty_authoritative_reopen")
+        let completed = makeSession(
+            id: "thread_empty_authoritative_reopen",
+            projectID: project.id,
+            title: "等待权威历史",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [completed])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        store.projects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.sidebarProjects = [project]
+        store.sessions = [completed]
+        conversationStore.appendLocalUser(
+            "讲个笑话",
+            sessionID: completed.id,
+            clientMessageID: "client_empty_authoritative_reopen",
+            sendStatus: .confirmed
+        )
+        store.setForegroundActivity(.waitingForAssistant, sessionID: completed.id)
+
+        let firstReopen = Task { await store.selectSession(completed) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+        await firstReopen.value
+
+        XCTAssertEqual(store.foregroundActivityBySessionID[completed.id], .waitingForAssistant)
+        XCTAssertEqual(conversationStore.messages(for: completed.id).map(\.content), ["讲个笑话"])
+
+        store.returnToSessionList()
+        let secondReopen = Task { await store.selectSession(completed) }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "user_empty_authoritative_reopen",
+                    role: "user",
+                    content: "讲个笑话",
+                    createdAt: Date(timeIntervalSince1970: 101),
+                    clientMessageID: "client_empty_authoritative_reopen",
+                    turnID: "turn_empty_authoritative_reopen",
+                    sendStatus: .confirmed
+                ),
+                CodexHistoryMessage(
+                    id: "assistant_empty_authoritative_reopen",
+                    role: "assistant",
+                    content: "第二次对账拿到了回复。",
+                    createdAt: Date(timeIntervalSince1970: 102),
+                    turnID: "turn_empty_authoritative_reopen",
+                    sendStatus: .confirmed,
+                    turnLifecycle: .completed
+                )
+            ])
+        )
+        await secondReopen.value
+
+        XCTAssertNil(store.foregroundActivityBySessionID[completed.id])
+        XCTAssertTrue(
+            conversationStore.messages(for: completed.id).contains {
+                $0.role == .assistant && $0.content == "第二次对账拿到了回复。"
+            }
+        )
+    }
+
     func testQuietHistoryRefreshFailureKeepsCachedMessagesWithoutShowingFailureBanner() async throws {
         let project = makeProject(id: "proj_quiet_history")
         let history = makeSession(
