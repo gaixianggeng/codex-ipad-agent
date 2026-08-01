@@ -159,6 +159,16 @@ enum WorkspaceCatalogLoadResult: Equatable {
     case failed(String)
 }
 
+enum WorkspaceSessionLoadFailureDisposition: Equatable {
+    case cancelled
+    case failed(String)
+}
+
+/// Session 首屏和 catalog/open 使用同一套明确取消分类，避免 URL transport 取消落入用户错误态。
+func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionLoadFailureDisposition {
+    isCancellationError(error) ? .cancelled : .failed(error.localizedDescription)
+}
+
 struct WorkspaceCatalogRefreshScope: Equatable {
     let hostScope: HostScope
     let credentialsSuspended: Bool
@@ -771,16 +781,16 @@ struct WorkspaceRootView: View {
                 return
             }
             sessionLoadStates[projectID] = .loaded
-        } catch is CancellationError {
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
-                return
-            }
-            sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
         } catch {
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
                 return
             }
-            sessionLoadStates[projectID] = .failed(error.localizedDescription)
+            switch workspaceSessionLoadFailureDisposition(error) {
+            case .cancelled:
+                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+            case .failed(let message):
+                sessionLoadStates[projectID] = .failed(message)
+            }
         }
     }
 

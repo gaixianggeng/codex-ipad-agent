@@ -77,6 +77,20 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(isCancellationError(AgentAPIError.server(status: 500, message: "server failed")))
     }
 
+    func testWorkspaceSessionLoadFailureDispositionUsesFallbackOnlyForExplicitCancellation() {
+        XCTAssertEqual(
+            workspaceSessionLoadFailureDisposition(URLError(.cancelled)),
+            .cancelled
+        )
+
+        let timeout = URLError(.timedOut)
+        XCTAssertEqual(
+            workspaceSessionLoadFailureDisposition(timeout),
+            .failed(timeout.localizedDescription),
+            "超时仍必须进入可重试的真实失败态"
+        )
+    }
+
     func testOpenWorkspaceCancellationReturnsNeutralOutcomeWithoutPublishingError() async {
         let path = "/Users/me/cancelled-workspace"
         for error in [CancellationError(), URLError(.cancelled)] as [Error] {
