@@ -164,6 +164,44 @@ final class ConversationStore: ObservableObject {
         loadedHistorySessionIDs.contains(scopedSessionID(for: sessionID))
     }
 
+    func hasLocallyUnreconciledUserDelivery(sessionID: String) -> Bool {
+        // 与时间线“等待回复”判定保持同一边界：只检查最后一个普通 assistant 气泡之后的
+        // 用户发送态。切换目录丢掉 completion 时，这能触发一次权威历史对账；已完整展示
+        // assistant 的历史会话不会因此反复绕过缓存。
+        for message in messages(for: sessionID).reversed() {
+            if message.role == .assistant, message.kind == .message {
+                return false
+            }
+            guard message.role == .user, message.kind == .message else {
+                continue
+            }
+            switch message.sendStatus {
+            case .sending, .sent, .failed:
+                return true
+            case .local, .confirmed:
+                return false
+            }
+        }
+        return false
+    }
+
+    func hasTerminalTurnAfterLatestUserMessage(sessionID: String) -> Bool {
+        // authoritative reopen 只有在历史明确带回终态 turn 后才能清理“等待回复”。
+        // 空首屏会保留本地消息；本地 waiting/partial assistant 都没有终态 lifecycle，
+        // 因而不会被误当成已经对账完成。
+        var sawTerminalAssistant = false
+        for message in messages(for: sessionID).reversed() where message.kind == .message {
+            if message.role == .assistant {
+                sawTerminalAssistant = sawTerminalAssistant || message.turnLifecycle?.isTerminal == true
+                continue
+            }
+            if message.role == .user {
+                return message.turnLifecycle?.isTerminal == true || sawTerminalAssistant
+            }
+        }
+        return false
+    }
+
     func lastSeenSeq(for sessionID: String?) -> EventSequence? {
         guard let sessionID else {
             return nil

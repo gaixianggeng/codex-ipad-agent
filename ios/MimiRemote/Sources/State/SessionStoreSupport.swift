@@ -129,6 +129,7 @@ enum HistoryFirstPageCachePolicy: Equatable {
 
 enum HistoryLoadReason: Equatable {
     case automatic
+    case authoritativeReopen
     case manualFull
     case summaryChoice
 }
