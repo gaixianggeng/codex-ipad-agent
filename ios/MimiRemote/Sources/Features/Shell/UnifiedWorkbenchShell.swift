@@ -8,13 +8,6 @@ enum AppDestination: Hashable {
     case subagent(parentID: SessionID, childID: SessionID)
 }
 
-private enum AppSheetDestination: String, Identifiable {
-    case newSession
-    case settings
-
-    var id: String { rawValue }
-}
-
 /// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
 /// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
 @MainActor
@@ -96,6 +89,7 @@ struct UnifiedWorkbenchShell: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var presentationNamespace
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
@@ -107,7 +101,7 @@ struct UnifiedWorkbenchShell: View {
         initialValue: FloatingSidebarVisibility.open.progress
     )
     @State private var didRestoreFloatingSidebarVisibility = false
-    @State private var presentedSheet: AppSheetDestination?
+    @State private var sheetPresentationState = WorkbenchSheetPresentationState()
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
@@ -145,16 +139,15 @@ struct UnifiedWorkbenchShell: View {
                     )
                 }
             }
-            .sheet(item: $presentedSheet) { sheet in
-                switch sheet {
+            .sheet(
+                item: sheetPresentationBinding,
+                onDismiss: dismissSheet
+            ) { presentation in
+                switch presentation.destination {
                 case .newSession:
-                    NewSessionSheet(
-                        onCreated: { sessionID in
-                            open(.session(sessionID), layout: layout)
-                        },
-                        onOpenWorkspaces: {
-                            open(.workspaces, layout: layout)
-                        }
+                    newSessionSheet(
+                        presentation: presentation,
+                        layout: layout
                     )
                 case .settings:
                     SettingsView(isInitialSetup: false)
@@ -209,11 +202,58 @@ struct UnifiedWorkbenchShell: View {
         }
     }
 
+    private var sheetPresentationBinding: Binding<WorkbenchSheetPresentation?> {
+        Binding(
+            get: { sheetPresentationState.presentation },
+            set: { sheetPresentationState.replace(with: $0) }
+        )
+    }
+
+    private func presentSheet(
+        _ destination: WorkbenchSheetDestination,
+        source: NewSessionPresentationSource? = nil
+    ) {
+        sheetPresentationState.present(
+            destination,
+            source: source,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    private func dismissSheet() {
+        // 关闭后必须清空来源，下一次键盘、恢复或程序化展示才能安全走 fallback。
+        sheetPresentationState.dismiss()
+    }
+
+    @ViewBuilder
+    private func newSessionSheet(
+        presentation: WorkbenchSheetPresentation,
+        layout: WorkbenchLayout
+    ) -> some View {
+        let sheet = NewSessionSheet(
+            onCreated: { sessionID in
+                open(.session(sessionID), layout: layout)
+            },
+            onOpenWorkspaces: {
+                open(.workspaces, layout: layout)
+            }
+        )
+
+        switch presentation.transition {
+        case .systemSheet:
+            sheet
+        case .zoom(let sourceID):
+            sheet.navigationTransition(
+                .zoom(sourceID: sourceID, in: presentationNamespace)
+            )
+        }
+    }
+
     private func visibleSessionNotificationRoute(
         layout: WorkbenchLayout
     ) -> SessionNotificationRoute? {
         guard scenePhase == .active,
-              presentedSheet == nil,
+              sheetPresentationState.presentation == nil,
               !(showingInspector && !layout.usesAttachedInspector),
               let visibleSessionID = navigationState.visibleSessionID(
                   usesCompactNavigation: layout.usesCompactNavigation
@@ -566,7 +606,7 @@ struct UnifiedWorkbenchShell: View {
             Spacer(minLength: 8)
 
             Button(L10n.text("ui.re_pair")) {
-                presentedSheet = .settings
+                presentSheet(.settings)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
@@ -820,9 +860,15 @@ struct UnifiedWorkbenchShell: View {
                 open(.me, layout: layout)
             },
             onNewSession: {
-                // 侧栏底部保留全局新建入口，和会话页右上角共用同一个创建流程。
-                presentedSheet = .newSession
-            }
+                // 只有宽 iPad 浮动侧栏是已确认的稳定来源；其余布局 fail closed。
+                presentSheet(
+                    .newSession,
+                    source: layout.usesFloatingSidebarSurface ? .sidebarNewSession : nil
+                )
+            },
+            newSessionPresentationNamespace: layout.usesFloatingSidebarSurface
+                ? presentationNamespace
+                : nil
         )
     }
 
@@ -918,7 +964,9 @@ struct UnifiedWorkbenchShell: View {
             : nil
 
         return SessionListView(
-            onNewSession: { presentedSheet = .newSession },
+            onNewSession: { source in
+                presentSheet(.newSession, source: source)
+            },
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
             },
@@ -927,7 +975,8 @@ struct UnifiedWorkbenchShell: View {
                 open(.workspaces, layout: layout)
             },
             manageConnections: manageConnections,
-            placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface
+            placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface,
+            newSessionPresentationNamespace: presentationNamespace
         )
     }
 

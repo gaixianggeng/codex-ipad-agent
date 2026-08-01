@@ -359,6 +359,7 @@ struct WorkbenchSidebarFooter: View {
     let isMeSelected: Bool
     let onOpenSettings: () -> Void
     let onNewSession: () -> Void
+    let newSessionPresentationNamespace: Namespace.ID?
 
     init(
         tokens: ThemeTokens,
@@ -366,7 +367,8 @@ struct WorkbenchSidebarFooter: View {
         bottomSafeAreaInset: CGFloat = 0,
         isMeSelected: Bool = false,
         onOpenSettings: @escaping () -> Void,
-        onNewSession: @escaping () -> Void
+        onNewSession: @escaping () -> Void,
+        newSessionPresentationNamespace: Namespace.ID? = nil
     ) {
         self.tokens = tokens
         self.usesFloatingSurface = usesFloatingSurface
@@ -374,6 +376,7 @@ struct WorkbenchSidebarFooter: View {
         self.isMeSelected = isMeSelected
         self.onOpenSettings = onOpenSettings
         self.onNewSession = onNewSession
+        self.newSessionPresentationNamespace = newSessionPresentationNamespace
     }
 
     var body: some View {
@@ -471,6 +474,21 @@ struct WorkbenchSidebarFooter: View {
 
     @ViewBuilder
     private var newSessionButton: some View {
+        if let newSessionPresentationNamespace {
+            newSessionButtonContent
+                .matchedTransitionSource(
+                    id: NewSessionPresentationSource
+                        .sidebarNewSession
+                        .transitionSourceID,
+                    in: newSessionPresentationNamespace
+                )
+        } else {
+            newSessionButtonContent
+        }
+    }
+
+    @ViewBuilder
+    private var newSessionButtonContent: some View {
         Group {
             if usesFloatingSurface, !reduceTransparency {
                 Button(action: onNewSession) {
