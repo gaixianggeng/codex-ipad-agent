@@ -13530,6 +13530,23 @@
         }
       }
     },
+    "ui.loading_sessions" : {
+      "comment" : "Loading state shown while the session index is being prepared.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading sessions…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载会话…"
+          }
+        }
+      }
+    },
     "ui.loading_recent_conversations" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -16583,6 +16600,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开"
+          }
+        }
+      }
+    },
+    "ui.open_a_workspace_to_load_its_sessions" : {
+      "comment" : "Explains the relationship between workspace directories and the session index for first-time users.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sessions are loaded by workspace directory. Go to Workspace and open or add a directory first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话按工作区目录加载。请先前往工作区打开或加入一个目录。"
           }
         }
       }
@@ -22893,6 +22927,23 @@
         }
       }
     },
+    "ui.session_loading_failed" : {
+      "comment" : "Title shown when a session index request fails after a workspace has been opened.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't load sessions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话加载失败"
+          }
+        }
+      }
+    },
     "ui.session_name" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -23112,6 +23163,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "会话已恢复显示全部工作区"
+          }
+        }
+      }
+    },
+    "ui.session_runtime_unavailable" : {
+      "comment" : "Title shown when the connected Mac cannot provide the session runtime.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Session service unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话服务不可用"
           }
         }
       }
