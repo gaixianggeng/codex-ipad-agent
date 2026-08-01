@@ -1527,13 +1527,29 @@ extension SessionStore {
     }
 
     func saveSessionListPreferences() {
+        let profileID = appStore.notificationRoutingProfileID
+        var preferences = SessionListPreferences(
+            pinnedSessionIDs: pinnedSessionIDs,
+            archivedSessionIDs: archivedSessionIDs,
+            sessionWorkspaceIDs: sessionWorkspaceIDs
+        )
+        // 远端归档在内存中先乐观展示，但磁盘只能保存服务端已确认状态。
+        // 这里逐个还原当前 Profile 的 pending 快照，避免其他偏好保存把乐观值泄漏到重启状态。
+        for (key, mutation) in sessionArchiveMutationsByKey where key.profileID == profileID {
+            if mutation.before.isPinned {
+                preferences.pinnedSessionIDs.insert(key.sessionID)
+            } else {
+                preferences.pinnedSessionIDs.remove(key.sessionID)
+            }
+            if mutation.before.isArchived {
+                preferences.archivedSessionIDs.insert(key.sessionID)
+            } else {
+                preferences.archivedSessionIDs.remove(key.sessionID)
+            }
+        }
         sessionListPreferenceStore.save(
-            SessionListPreferences(
-                pinnedSessionIDs: pinnedSessionIDs,
-                archivedSessionIDs: archivedSessionIDs,
-                sessionWorkspaceIDs: sessionWorkspaceIDs
-            ),
-            profileID: appStore.notificationRoutingProfileID
+            preferences,
+            profileID: profileID
         )
     }
 
@@ -1576,19 +1592,26 @@ extension SessionStore {
                 if let latest = state.latestCompletion {
                     if latest.representsSameCompletion(as: version) {
                         let wasRead = state.readCompletion?.representsSameCompletion(as: latest) == true
+                        let wasManuallyUnread = state.manualUnreadCompletion?
+                            .representsSameCompletion(as: latest) == true
                         let merged = latest.merging(version)
                         state.latestCompletion = merged
-                        if selectedSessionID == session.id || wasRead {
+                        if wasManuallyUnread {
+                            state.manualUnreadCompletion = merged
+                            state.readCompletion = nil
+                        } else if selectedSessionID == session.id || wasRead {
                             state.readCompletion = merged
                         }
                     } else {
                         state.latestCompletion = version
+                        state.manualUnreadCompletion = nil
                         if selectedSessionID == session.id {
                             state.readCompletion = version
                         }
                     }
                 } else {
                     state.latestCompletion = version
+                    state.manualUnreadCompletion = nil
                     // 旧历史首次进入索引时视为已读；从已观察运行态进入终态才是新结果。
                     if !state.observedRunning || selectedSessionID == session.id {
                         state.readCompletion = version
@@ -1620,6 +1643,12 @@ extension SessionStore {
             && unreadHistorySessionIDs.contains(session.id)
     }
 
+    func canChangeHistoryReadState(_ session: AgentSession) -> Bool {
+        !session.isRunning
+            && !session.isLocalDraft
+            && historyReadStateBySessionID[session.id]?.latestCompletion != nil
+    }
+
     func markHistorySessionRead(_ sessionID: SessionID) {
         guard let session = sessionsByID[sessionID],
               !session.isRunning,
@@ -1633,6 +1662,31 @@ extension SessionStore {
             return
         }
         state.readCompletion = latest
+        state.manualUnreadCompletion = nil
+        historyReadStateBySessionID[sessionID] = state
+        sessionHistoryReadStateStore.save(
+            historyReadStateBySessionID,
+            profileID: appStore.notificationRoutingProfileID
+        )
+        publishUnreadHistorySessionIDs(from: historyReadStateBySessionID)
+    }
+
+    /// “标为未读”回退的是持久化 completion 已读水位，而不是直接修改派生 Set。
+    /// 因此后续刷新、重启和同一完成版本的重复快照都会保持未读语义。
+    func markHistorySessionUnread(_ sessionID: SessionID) {
+        guard let session = sessionsByID[sessionID],
+              !session.isRunning,
+              !session.isLocalDraft else {
+            return
+        }
+        synchronizeHistoryReadStates()
+        guard var state = historyReadStateBySessionID[sessionID],
+              state.latestCompletion != nil,
+              state.readCompletion != nil else {
+            return
+        }
+        state.readCompletion = nil
+        state.manualUnreadCompletion = state.latestCompletion
         historyReadStateBySessionID[sessionID] = state
         sessionHistoryReadStateStore.save(
             historyReadStateBySessionID,
@@ -2217,6 +2271,8 @@ extension SessionStore {
         workspaceIdentityReplacementByOldID = [:]
         setSidebarProjectsIfChanged([])
         sessionWorkspaceIDs = nil
+        // 归档 HTTP 请求没有服务端 generation，连接切换也不能证明旧请求已取消。
+        // 保留按 Profile+Session 的 pending，阻止回切同一 Profile 后发出乱序的第二次写入。
         pinnedSessionIDs = []
         archivedSessionIDs = []
         sessionVisibleLimitByProjectID = [:]

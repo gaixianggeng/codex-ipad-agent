@@ -1,5 +1,91 @@
 import SwiftUI
 
+/// 会话行的快捷动作统一从这里读取当前状态并提交，避免菜单、滑动和 VoiceOver
+/// 分别维护 toggle 逻辑，尤其防止异步归档因重复 Task 回到旧状态。
+@MainActor
+private struct SessionRowActionController {
+    let sessionStore: SessionStore
+    let session: AgentSession
+
+    var isPinned: Bool {
+        sessionStore.isSessionPinned(session.id)
+    }
+
+    var isArchived: Bool {
+        sessionStore.isSessionArchived(session.id)
+    }
+
+    var isUnread: Bool {
+        sessionStore.isHistorySessionUnread(session)
+    }
+
+    var canChangePinState: Bool {
+        !isArchived && !sessionStore.isSessionArchiveMutationPending(session.id)
+    }
+
+    var canChangeReadState: Bool {
+        sessionStore.canChangeHistoryReadState(session)
+    }
+
+    var canChangeArchiveState: Bool {
+        !sessionStore.isExternalReadOnlySession(session)
+            && !sessionStore.isProtocolReadOnlySession(session)
+            && !sessionStore.isSessionArchiveMutationPending(session.id)
+    }
+
+    var pinTitle: String {
+        isPinned ? L10n.text("ui.unpin") : L10n.text("ui.pin_to_top")
+    }
+
+    var pinSystemImage: String {
+        isPinned ? "pin.slash" : "pin"
+    }
+
+    var readTitle: String {
+        isUnread ? L10n.text("ui.mark_as_read") : L10n.text("ui.mark_as_unread")
+    }
+
+    var readSystemImage: String {
+        isUnread ? "envelope.open" : "envelope.badge"
+    }
+
+    var archiveTitle: String {
+        isArchived ? L10n.text("ui.unarchive") : L10n.text("ui.archive")
+    }
+
+    var archiveSystemImage: String {
+        isArchived ? "archivebox.fill" : "archivebox"
+    }
+
+    func togglePinned() {
+        guard canChangePinState else { return }
+        sessionStore.toggleSessionPinned(session)
+        MimiHaptics.fire(.commit)
+    }
+
+    func toggleReadState() {
+        guard canChangeReadState else { return }
+
+        if isUnread {
+            sessionStore.markHistorySessionRead(session.id)
+        } else {
+            sessionStore.markHistorySessionUnread(session.id)
+        }
+        MimiHaptics.fire(.commit)
+    }
+
+    func toggleArchived() {
+        // 归档是远端异步写入：先锁定一次目标态，并在 pending 时拒绝再创建 Task。
+        // 状态层也会按 session ID 串行化，覆盖菜单与滑动动作紧邻触发的边界情况。
+        guard canChangeArchiveState else { return }
+        let archived = !isArchived
+        MimiHaptics.fire(.commit)
+        Task {
+            await sessionStore.setSessionArchivedRemote(session, archived: archived)
+        }
+    }
+}
+
 /// 会话管理 Sheet 使用单一枚举路由，避免重命名和 Review 各自维护布尔状态。
 enum SessionActionPresentation: Identifiable {
     case rename(AgentSession)
@@ -25,8 +111,7 @@ struct SessionActionMenuContent: View {
     @Binding var presentation: SessionActionPresentation?
 
     var body: some View {
-        let isPinned = sessionStore.isSessionPinned(session.id)
-        let isArchived = sessionStore.isSessionArchived(session.id)
+        let actions = SessionRowActionController(sessionStore: sessionStore, session: session)
         let reminder = sessionStore.sessionReminder(for: session.id)
 
         Group {
@@ -40,12 +125,21 @@ struct SessionActionMenuContent: View {
             }
 
             Button {
-                sessionStore.toggleSessionPinned(session)
+                actions.togglePinned()
             } label: {
                 Label(
-                    isPinned ? L10n.text("ui.unpin") : L10n.text("ui.pin_to_top"),
-                    systemImage: isPinned ? "pin.slash" : "pin"
+                    actions.pinTitle,
+                    systemImage: actions.pinSystemImage
                 )
+            }
+            .disabled(!actions.canChangePinState)
+
+            if actions.canChangeReadState {
+                Button {
+                    actions.toggleReadState()
+                } label: {
+                    Label(actions.readTitle, systemImage: actions.readSystemImage)
+                }
             }
 
             if sessionStore.supportsCodexThreadManagement(session) {
@@ -126,15 +220,12 @@ struct SessionActionMenuContent: View {
                 )
             }
 
-            Button(role: isArchived ? nil : .destructive) {
-                Task { await sessionStore.toggleSessionArchivedRemote(session) }
+            Button(role: actions.isArchived ? nil : .destructive) {
+                actions.toggleArchived()
             } label: {
-                Label(
-                    isArchived ? L10n.text("ui.unarchive") : L10n.text("ui.archive"),
-                    systemImage: isArchived ? "archivebox.fill" : "archivebox"
-                )
+                Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
             }
-            .disabled(sessionStore.isExternalReadOnlySession(session))
+            .disabled(!actions.canChangeArchiveState)
         }
     }
 }
@@ -160,9 +251,7 @@ private struct SessionActionsContextMenuModifier: ViewModifier {
     let session: AgentSession
 
     func body(content: Content) -> some View {
-        let pinActionTitle = sessionStore.isSessionPinned(session.id)
-            ? L10n.text("ui.unpin")
-            : L10n.text("ui.pin_to_top")
+        let actions = SessionRowActionController(sessionStore: sessionStore, session: session)
 
         content
             .contextMenu {
@@ -171,12 +260,73 @@ private struct SessionActionsContextMenuModifier: ViewModifier {
                     presentation: $presentation
                 )
             }
-            // 上下文菜单服务触控长按和指针右键；自定义辅助功能动作让 VoiceOver
-            // 无需进入菜单也能执行同一置顶操作，并且直接读取当前状态避免标签滞后。
-            .accessibilityAction(named: Text(pinActionTitle)) {
-                sessionStore.toggleSessionPinned(session)
+            // 自定义动作与上下文菜单使用同一控制器；标签始终反映当前状态，
+            // regular iPad 即使不启用 swipe 也保留完整的 VoiceOver 等价入口。
+            .accessibilityActions {
+                Button(actions.pinTitle) {
+                    actions.togglePinned()
+                }
+                .disabled(!actions.canChangePinState)
+
+                if actions.canChangeReadState {
+                    Button(actions.readTitle) {
+                        actions.toggleReadState()
+                    }
+                }
+
+                Button(actions.archiveTitle) {
+                    actions.toggleArchived()
+                }
+                .disabled(!actions.canChangeArchiveState)
             }
             .sessionActionSheets(presentation: $presentation)
+    }
+}
+
+private struct SessionRowSwipeActionsModifier: ViewModifier {
+    @EnvironmentObject private var sessionStore: SessionStore
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    let session: AgentSession
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if horizontalSizeClass == .compact {
+            let actions = SessionRowActionController(sessionStore: sessionStore, session: session)
+
+            content
+                // LTR 下从左向右滑动揭示 leading；显式禁止 full swipe，避免误提交状态。
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button {
+                        actions.togglePinned()
+                    } label: {
+                        Label(actions.pinTitle, systemImage: actions.pinSystemImage)
+                    }
+                    .tint(actions.isPinned ? Color.gray : Color.orange)
+                    .disabled(!actions.canChangePinState)
+
+                    if actions.canChangeReadState {
+                        Button {
+                            actions.toggleReadState()
+                        } label: {
+                            Label(actions.readTitle, systemImage: actions.readSystemImage)
+                        }
+                        .tint(Color.blue)
+                    }
+                }
+                // LTR 下从右向左滑动揭示 trailing；永久删除、停止和取消不进入滑动入口。
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: actions.isArchived ? nil : .destructive) {
+                        actions.toggleArchived()
+                    } label: {
+                        Label(actions.archiveTitle, systemImage: actions.archiveSystemImage)
+                    }
+                    .tint(actions.isArchived ? Color.blue : Color.red)
+                    .disabled(!actions.canChangeArchiveState)
+                }
+        } else {
+            content
+        }
     }
 }
 
@@ -189,5 +339,9 @@ extension View {
 
     func sessionRowActions(_ session: AgentSession) -> some View {
         modifier(SessionActionsContextMenuModifier(session: session))
+    }
+
+    func sessionRowSwipeActions(_ session: AgentSession) -> some View {
+        modifier(SessionRowSwipeActionsModifier(session: session))
     }
 }
