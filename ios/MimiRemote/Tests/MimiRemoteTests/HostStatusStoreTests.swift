@@ -72,6 +72,27 @@ final class HostStatusStoreTests: XCTestCase {
         XCTAssertEqual(fixture.statusStore.status(for: refreshed).state, .available)
     }
 
+    func testProbeFallsBackToIPAfterDNSIdentityMismatch() async throws {
+        let fixture = try makeFixture(
+            inactiveExpectedInstallationID: "installation-b",
+            returnedInstallationID: "installation-b",
+            inactiveTailscaleDNSName: "old-mac.tailnet.ts.net",
+            installationIDsByHost: [
+                "old-mac.tailnet.ts.net": "unexpected-installation",
+                "100.64.0.20": "installation-b",
+            ]
+        )
+
+        fixture.statusStore.refreshIfNeeded(appStore: fixture.appStore, sessionStore: fixture.sessionStore)
+        await fixture.statusStore.waitForRefreshForTesting()
+
+        XCTAssertEqual(
+            HostStatusURLProtocol.requestedHosts(),
+            ["old-mac.tailnet.ts.net", "100.64.0.20"]
+        )
+        XCTAssertEqual(fixture.statusStore.status(for: fixture.inactiveProfile).state, .available)
+    }
+
     func testProbeBackfillsPlatformForLegacyActiveProfile() async throws {
         let fixture = try makeFixture(
             inactiveExpectedInstallationID: "installation-b",
@@ -95,6 +116,7 @@ final class HostStatusStoreTests: XCTestCase {
         inactiveTailscaleDNSName: String? = nil,
         returnedTailscaleDNSName: String? = nil,
         failingHosts: Set<String> = [],
+        installationIDsByHost: [String: String] = [:],
         activeHostPlatform: HostPlatform = .apple
     ) throws -> (
         appStore: AppStore,
@@ -147,6 +169,7 @@ final class HostStatusStoreTests: XCTestCase {
         HostStatusURLProtocol.tailscaleDNSName = returnedTailscaleDNSName
         HostStatusURLProtocol.tailscaleDeviceName = returnedTailscaleDNSName == nil ? nil : "new-mac"
         HostStatusURLProtocol.failingHosts = failingHosts
+        HostStatusURLProtocol.installationIDsByHost = installationIDsByHost
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HostStatusURLProtocol.self]
         let statusStore = HostStatusStore(
@@ -165,6 +188,7 @@ private final class HostStatusURLProtocol: URLProtocol {
     static var tailscaleDNSName: String?
     static var tailscaleDeviceName: String?
     static var failingHosts: Set<String> = []
+    static var installationIDsByHost: [String: String] = [:]
     static var platform = "windows"
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -183,7 +207,10 @@ private final class HostStatusURLProtocol: URLProtocol {
         Self.lock.lock()
         Self.hosts.append(url.host ?? "")
         Self.paths.append(url.path)
-        let installationID = url.host == "100.64.0.10" ? "installation-a" : Self.installationID
+        let host = url.host ?? ""
+        let installationID = host == "100.64.0.10"
+            ? "installation-a"
+            : (Self.installationIDsByHost[host] ?? Self.installationID)
         let tailscaleDNSName = Self.tailscaleDNSName
         let tailscaleDeviceName = Self.tailscaleDeviceName
         let platform = Self.platform
@@ -240,6 +267,7 @@ private final class HostStatusURLProtocol: URLProtocol {
         tailscaleDNSName = nil
         tailscaleDeviceName = nil
         failingHosts = []
+        installationIDsByHost = [:]
         platform = "windows"
         lock.unlock()
     }

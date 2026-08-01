@@ -208,4 +208,59 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.10:8787")
         XCTAssertEqual(try store.client().endpoint, "http://100.64.0.10:8787")
     }
+
+    func testConnectionPreflightFallsBackWhenDNSPointsToDifferentInstallation() async throws {
+        let suiteName = "TailscaleStableHostnameTests.IdentityFallback.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "studio",
+            endpoint: "http://100.64.0.10:8787",
+            tailscaleDNSName: "studio.tailnet.ts.net",
+            tailscaleDeviceName: "studio",
+            isDisplayNameCustomized: false,
+            lastSuccessfulAt: nil,
+            installationID: "installation-a"
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let recorder = ConnectionRouteProbeRecorder()
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                await recorder.record(endpoint)
+            },
+            routeVersionProbe: { endpoint, _, _ in
+                VersionResponse(
+                    name: "agentd",
+                    version: "test",
+                    installationID: endpoint.contains("studio.tailnet.ts.net")
+                        ? "different-installation"
+                        : "installation-a"
+                )
+            }
+        )
+
+        let connected = await store.preflightConnection()
+        let probedEndpoints = await recorder.endpoints()
+
+        XCTAssertTrue(connected)
+        XCTAssertEqual(
+            probedEndpoints,
+            [
+                "http://studio.tailnet.ts.net:8787",
+                "http://100.64.0.10:8787",
+            ]
+        )
+        XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.10:8787")
+        XCTAssertEqual(try store.client().endpoint, "http://100.64.0.10:8787")
+    }
 }

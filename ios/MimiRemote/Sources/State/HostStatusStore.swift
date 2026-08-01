@@ -34,6 +34,11 @@ private struct HostProbeResult {
     let error: Error?
 }
 
+private enum HostProbeCandidateError: Error {
+    case installationIdentityRequired
+    case installationIdentityMismatch
+}
+
 /// 只由 Mac 选择器观察。这里的 `@Published` 更新不会经过 AppStore/SessionStore，
 /// 因而非当前主机状态变化不会让 Timeline 或工作台重算。
 @MainActor
@@ -183,6 +188,20 @@ final class HostStatusStore: ObservableObject {
                                     token: descriptor.token,
                                     session: session
                                 ).version(timeout: 2)
+                                let actualID = version.installationID?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .lowercased()
+                                guard let actualID, !actualID.isEmpty else {
+                                    throw HostProbeCandidateError.installationIdentityRequired
+                                }
+                                if let expectedID = descriptor.expectedInstallationID?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .lowercased(),
+                                   !expectedID.isEmpty,
+                                   expectedID != actualID {
+                                    // MagicDNS 可能已指向另一台主机；逐候选校验身份后才能决定是否回退到保存的 IP。
+                                    throw HostProbeCandidateError.installationIdentityMismatch
+                                }
                                 return HostProbeResult(
                                     descriptor: descriptor,
                                     version: version,
@@ -283,6 +302,15 @@ final class HostStatusStore: ObservableObject {
         }
         if error as? ConnectionProfileError == .missingToken || isCredentialInvalidatingError(error) {
             applyTerminal(.authenticationRequired, profile: profile)
+            return
+        }
+        if let candidateError = error as? HostProbeCandidateError {
+            switch candidateError {
+            case .installationIdentityRequired:
+                applyTerminal(.upgradeRequired, profile: profile)
+            case .installationIdentityMismatch:
+                applyTerminal(.identityMismatch, profile: profile)
+            }
             return
         }
         if error is ProtocolCompatibilityError {

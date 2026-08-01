@@ -231,6 +231,7 @@ struct ConnectionTestStageStability: Identifiable, Equatable {
 }
 
 typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> Void
+typealias ConnectionRouteVersionProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> VersionResponse
 typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async throws -> Void
 typealias LocalAgentPairingClaim = (_ endpoint: String, _ timeout: TimeInterval) async throws -> String
 

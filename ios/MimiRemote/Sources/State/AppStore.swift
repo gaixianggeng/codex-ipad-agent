@@ -45,6 +45,7 @@ final class AppStore: ObservableObject {
     private let localAgentProbe: LocalAgentProbe
     private let localAgentPairingClaim: LocalAgentPairingClaim
     private let routeProbe: ConnectionRouteProbe
+    private let routeVersionProbe: ConnectionRouteVersionProbe?
     private let usesDefaultRouteProbe: Bool
     private var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
@@ -70,6 +71,7 @@ final class AppStore: ObservableObject {
         localAgentProbe: LocalAgentProbe? = nil,
         localAgentPairingClaim: LocalAgentPairingClaim? = nil,
         routeProbe: ConnectionRouteProbe? = nil,
+        routeVersionProbe: ConnectionRouteVersionProbe? = nil,
         allowsEphemeralLocalCredentialFallback: Bool? = nil
     ) {
         self.defaults = defaults
@@ -85,6 +87,9 @@ final class AppStore: ObservableObject {
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
         usesDefaultRouteProbe = routeProbe == nil
+        self.routeVersionProbe = routeProbe == nil
+            ? (routeVersionProbe ?? Self.defaultConnectionRouteVersionProbe)
+            : routeVersionProbe
 
         var initialProfiles = Self.loadConnectionProfiles(from: defaults)
         if defaults.data(forKey: Self.profilesKey) == nil,
@@ -1265,17 +1270,18 @@ final class AppStore: ObservableObject {
         for candidate in candidates {
             do {
                 try await routeProbe(candidate.endpoint, token, candidate.timeout)
-                activateConnectionRoute(candidate.route, endpoint: candidate.endpoint)
-                if usesDefaultRouteProbe,
-                   candidate.route == .configured,
+                if candidate.route == .configured,
                    let profile = activeConnectionProfile {
-                    await refreshConnectionProfileHostMetadata(
+                    try await validateConnectionCandidateIdentityAndRefreshHostMetadata(
                         from: candidate.endpoint,
                         profileID: profile.id,
                         expectedRevision: profile.revision,
-                        expectedInstallationID: profile.installationID
+                        expectedInstallationID: profile.installationID,
+                        profileName: profile.displayName
                     )
                 }
+                // 身份校验必须先于发布 active route；否则 DNSName 被复用时会短暂连接到错误主机。
+                activateConnectionRoute(candidate.route, endpoint: candidate.endpoint)
                 connectionTermination = nil
                 connectionStatus = .connected(candidate.route.statusTitle)
                 lastError = nil
@@ -1836,32 +1842,37 @@ final class AppStore: ObservableObject {
         try await runtime.validateDirectGateway()
     }
 
-    private func refreshConnectionProfileHostMetadata(
+    private static func defaultConnectionRouteVersionProbe(
+        endpoint: String,
+        token: String,
+        timeout: TimeInterval
+    ) async throws -> VersionResponse {
+        try await AgentAPIClient(endpoint: endpoint, token: token).version(timeout: min(timeout, 2))
+    }
+
+    private func validateConnectionCandidateIdentityAndRefreshHostMetadata(
         from routeEndpoint: String,
         profileID: String,
         expectedRevision: UInt64,
-        expectedInstallationID: String?
-    ) async {
+        expectedInstallationID: String?,
+        profileName: String
+    ) async throws {
         guard let expectedInstallationID = Self.normalizedInstallationID(expectedInstallationID) else {
             return
         }
-        do {
-            let version = try await AgentAPIClient(
-                endpoint: routeEndpoint,
-                token: token
-            ).version(timeout: min(routeProbeTimeout, 2))
-            try version.requireCompatible()
-            guard Self.normalizedInstallationID(version.installationID) == expectedInstallationID else {
-                return
-            }
-            _ = refreshConnectionProfileHostMetadata(
-                profileID: profileID,
-                expectedRevision: expectedRevision,
-                version: version
-            )
-        } catch {
-            // 路由已经完成真实 WebSocket 验证；元数据刷新失败不能把可用连接降级为失败。
+        guard let routeVersionProbe else { return }
+        let version = try await routeVersionProbe(routeEndpoint, token, routeProbeTimeout)
+        guard let actualInstallationID = Self.normalizedInstallationID(version.installationID) else {
+            throw ConnectionProfileError.installationIdentityRequired
         }
+        guard actualInstallationID == expectedInstallationID else {
+            throw ConnectionProfileError.installationIdentityMismatch(profileName: profileName)
+        }
+        _ = refreshConnectionProfileHostMetadata(
+            profileID: profileID,
+            expectedRevision: expectedRevision,
+            version: version
+        )
     }
 
     /// 探测结果只有在 Profile revision 与 installation_id 都未变化时才能刷新可变名称。
