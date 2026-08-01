@@ -941,6 +941,65 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.recentActivityProjectionBySessionID[first.id])
     }
 
+    func testArchivePendingPreferenceSaveAndRestartKeepCommittedStateUntilSuccess() async throws {
+        let project = makeProject(id: "proj_archive_persistence_boundary")
+        let session = makeSession(
+            id: "session_archive_persistence_boundary",
+            projectID: project.id,
+            title: "归档持久化边界",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let appStore = AppStore()
+        let preferences = makeSessionListPreferenceStore()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.toggleSessionPinned(session)
+
+        let task = Task { await store.setSessionArchivedRemote(session, archived: true) }
+        await gate.waitForRequestCount(1)
+        XCTAssertTrue(store.isSessionArchived(session.id), "内存应立即显示乐观归档")
+        XCTAssertFalse(store.isSessionPinned(session.id))
+
+        // 模拟 pending 期间另一项偏好触发整份保存；磁盘仍必须保留远端已确认的 before。
+        store.saveSessionListPreferences()
+        let pendingPreferences = preferences.load(profileID: appStore.notificationRoutingProfileID)
+        XCTAssertFalse(pendingPreferences.archivedSessionIDs.contains(session.id))
+        XCTAssertTrue(pendingPreferences.pinnedSessionIDs.contains(session.id))
+
+        let restartedStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        restartedStore.reloadSessionListPreferences()
+        XCTAssertFalse(restartedStore.isSessionArchived(session.id), "重启只能恢复远端已确认状态")
+        XCTAssertTrue(restartedStore.isSessionPinned(session.id))
+
+        await gate.resolve(id: session.id, archived: true)
+        let didArchive = await task.value
+        XCTAssertTrue(didArchive)
+        let committedPreferences = preferences.load(profileID: appStore.notificationRoutingProfileID)
+        XCTAssertTrue(committedPreferences.archivedSessionIDs.contains(session.id))
+        XCTAssertFalse(committedPreferences.pinnedSessionIDs.contains(session.id))
+    }
+
     func testConnectionClearKeepsArchivePendingAndStaleHostFailureRollsBackPersistedProfile() async throws {
         let project = makeProject(id: "proj_archive_switch")
         let session = makeSession(
@@ -975,9 +1034,14 @@ extension ConversationDataFlowTests {
 
         let task = Task { await store.setSessionArchivedRemote(session, archived: true) }
         await gate.waitForRequestCount(1)
-        XCTAssertTrue(
+        XCTAssertFalse(
             preferences.load(profileID: oldProfileID)
                 .archivedSessionIDs.contains(session.id)
+        )
+        XCTAssertTrue(
+            preferences.load(profileID: oldProfileID)
+                .pinnedSessionIDs.contains(session.id),
+            "远端确认前磁盘必须保留 committed before"
         )
 
         _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(

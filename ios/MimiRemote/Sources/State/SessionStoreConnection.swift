@@ -1527,13 +1527,29 @@ extension SessionStore {
     }
 
     func saveSessionListPreferences() {
+        let profileID = appStore.notificationRoutingProfileID
+        var preferences = SessionListPreferences(
+            pinnedSessionIDs: pinnedSessionIDs,
+            archivedSessionIDs: archivedSessionIDs,
+            sessionWorkspaceIDs: sessionWorkspaceIDs
+        )
+        // 远端归档在内存中先乐观展示，但磁盘只能保存服务端已确认状态。
+        // 这里逐个还原当前 Profile 的 pending 快照，避免其他偏好保存把乐观值泄漏到重启状态。
+        for (key, mutation) in sessionArchiveMutationsByKey where key.profileID == profileID {
+            if mutation.before.isPinned {
+                preferences.pinnedSessionIDs.insert(key.sessionID)
+            } else {
+                preferences.pinnedSessionIDs.remove(key.sessionID)
+            }
+            if mutation.before.isArchived {
+                preferences.archivedSessionIDs.insert(key.sessionID)
+            } else {
+                preferences.archivedSessionIDs.remove(key.sessionID)
+            }
+        }
         sessionListPreferenceStore.save(
-            SessionListPreferences(
-                pinnedSessionIDs: pinnedSessionIDs,
-                archivedSessionIDs: archivedSessionIDs,
-                sessionWorkspaceIDs: sessionWorkspaceIDs
-            ),
-            profileID: appStore.notificationRoutingProfileID
+            preferences,
+            profileID: profileID
         )
     }
 

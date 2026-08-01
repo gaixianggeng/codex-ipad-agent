@@ -997,7 +997,7 @@ extension SessionStore {
         insertPendingSessionArchiveMutationKey(key)
         // 乐观阶段只改变可见性与排序偏好；本地发送投影要等服务端确认后再释放，
         // 否则失败回滚时会丢失仍需保护的 preview / recency。
-        applySessionArchivePreferenceState(target, sessionID: session.id)
+        applySessionArchivePreferenceState(target, sessionID: session.id, persist: false)
 
         defer {
             finishSessionArchiveMutation(key: key, token: mutation.token)
@@ -1005,30 +1005,39 @@ extension SessionStore {
 
         do {
             try await client.setSessionArchived(id: session.id, archived: shouldArchive)
-            guard canApplySessionArchiveMutation(mutation, key: key) else { return false }
-            if shouldArchive,
-               sessionArchivePreferenceState(for: session.id) == target {
-                listProjectionBySessionID.removeValue(forKey: session.id)
-                recentActivityProjectionBySessionID.removeValue(forKey: session.id)
+            guard isCurrentSessionArchiveMutation(mutation, key: key) else { return false }
+            guard canPersistSessionArchiveMutation(mutation, key: key) else { return false }
+            let didApplyToCurrentHost = canApplySessionArchiveMutation(mutation, key: key)
+            if didApplyToCurrentHost {
+                // Profile 切走又切回时内存可能已从 committed 偏好重载；远端成功后恢复目标态。
+                if sessionArchivePreferenceState(for: session.id) != target {
+                    applySessionArchivePreferenceState(target, sessionID: session.id, persist: false)
+                }
+                if shouldArchive,
+                   sessionArchivePreferenceState(for: session.id) == target {
+                    listProjectionBySessionID.removeValue(forKey: session.id)
+                    recentActivityProjectionBySessionID.removeValue(forKey: session.id)
+                }
+                setStatusMessage(
+                    shouldArchive
+                        ? L10n.format("ui.archived_remote_session_value", session.title)
+                        : L10n.format("ui.remote_archiving_value_has_been_canceled", session.title)
+                )
             }
-            setStatusMessage(
-                shouldArchive
-                    ? L10n.format("ui.archived_remote_session_value", session.title)
-                    : L10n.format("ui.remote_archiving_value_has_been_canceled", session.title)
-            )
-            return true
+            // 同步写入指定 Profile 后 defer 才释放 pending；这样任何通用偏好保存都仍会
+            // 过滤其他未确认事务，同时旧 Profile 的成功不会污染当前 Profile 内存。
+            persistSessionArchivePreferenceState(target, key: key)
+            return didApplyToCurrentHost
         } catch {
             guard isCurrentSessionArchiveMutation(mutation, key: key) else { return false }
             // CAS 回滚：只有 pinned / archived 仍等于本事务的乐观目标时才恢复。
             // 若期间发生了更晚的本地置顶等操作，保留用户的新状态，旧失败不得覆盖。
             if appStore.notificationRoutingProfileID == key.profileID,
                sessionArchivePreferenceState(for: session.id) == target {
-                applySessionArchivePreferenceState(mutation.before, sessionID: session.id)
-            } else {
-                rollbackPersistedSessionArchivePreferenceState(
+                applySessionArchivePreferenceState(
                     mutation.before,
-                    expected: target,
-                    key: key
+                    sessionID: session.id,
+                    persist: false
                 )
             }
             if appStore.notificationRoutingProfileID == key.profileID {
@@ -1089,7 +1098,8 @@ extension SessionStore {
 
     private func applySessionArchivePreferenceState(
         _ state: SessionArchivePreferenceState,
-        sessionID: SessionID
+        sessionID: SessionID,
+        persist: Bool = true
     ) {
         if state.isPinned {
             pinnedSessionIDs.insert(sessionID)
@@ -1101,7 +1111,9 @@ extension SessionStore {
         } else {
             archivedSessionIDs.remove(sessionID)
         }
-        saveSessionListPreferences()
+        if persist {
+            saveSessionListPreferences()
+        }
         rebuildSessionIndexes()
     }
 
@@ -1109,8 +1121,36 @@ extension SessionStore {
         _ mutation: SessionArchiveMutation,
         key: ScopedSessionID
     ) -> Bool {
-        appStore.activeHostScope == mutation.hostScope
+        // generation 只隔离连接内事件；归档 HTTP 成功是同一安装身份上的幂等最终态。
+        // 同一 Profile+Session 在 pending 期间禁止再次写入，因此 A→B→A 后可安全恢复目标态。
+        appStore.activeHostScope.profileID == mutation.hostScope.profileID
+            && appStore.activeHostScope.installationID == mutation.hostScope.installationID
             && isCurrentSessionArchiveMutation(mutation, key: key)
+    }
+
+    private func canPersistSessionArchiveMutation(
+        _ mutation: SessionArchiveMutation,
+        key: ScopedSessionID
+    ) -> Bool {
+        guard isCurrentSessionArchiveMutation(mutation, key: key) else {
+            return false
+        }
+        // legacy/debug 单连接使用 endpoint 哈希作为偏好命名空间，没有 ConnectionProfile 可查；
+        // 其 token 仍由 pending 表控制。持久化 Profile 则必须仍存在且绑定原安装身份，
+        // 防止删除后复用相同 Profile ID 时被迟到成功重新写入。
+        guard mutation.hostScope.profileID == key.profileID else {
+            return true
+        }
+        guard let profile = appStore.connectionProfiles.first(where: { $0.id == key.profileID }) else {
+            return false
+        }
+        guard let profileInstallationID = profile.installationID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !profileInstallationID.isEmpty else {
+            return false
+        }
+        return profileInstallationID == mutation.hostScope.installationID
     }
 
     private func isCurrentSessionArchiveMutation(
@@ -1129,25 +1169,17 @@ extension SessionStore {
         removePendingSessionArchiveMutationKey(key)
     }
 
-    private func rollbackPersistedSessionArchivePreferenceState(
-        _ before: SessionArchivePreferenceState,
-        expected target: SessionArchivePreferenceState,
+    private func persistSessionArchivePreferenceState(
+        _ state: SessionArchivePreferenceState,
         key: ScopedSessionID
     ) {
         var preferences = sessionListPreferenceStore.load(profileID: key.profileID)
-        let persisted = SessionArchivePreferenceState(
-            isPinned: preferences.pinnedSessionIDs.contains(key.sessionID),
-            isArchived: preferences.archivedSessionIDs.contains(key.sessionID)
-        )
-        guard persisted == target else {
-            return
-        }
-        if before.isPinned {
+        if state.isPinned {
             preferences.pinnedSessionIDs.insert(key.sessionID)
         } else {
             preferences.pinnedSessionIDs.remove(key.sessionID)
         }
-        if before.isArchived {
+        if state.isArchived {
             preferences.archivedSessionIDs.insert(key.sessionID)
         } else {
             preferences.archivedSessionIDs.remove(key.sessionID)
