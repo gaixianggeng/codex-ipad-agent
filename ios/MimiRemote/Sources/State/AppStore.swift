@@ -878,7 +878,12 @@ final class AppStore: ObservableObject {
             )
         }
 
-        var nextProfiles = connectionProfiles.filter { $0.id != targetProfile.id }
+        // 临时开发档案从未持久化凭据；切到其它档案时必须在同一次提交中淘汰，
+        // 否则稍后切回会把“只有内存 Token”的档案误写成可恢复的持久档案。
+        let previousEphemeralProfileID = ephemeralLocalProfileID
+        var nextProfiles = connectionProfiles.filter {
+            $0.id != targetProfile.id && $0.id != previousEphemeralProfileID
+        }
         nextProfiles.append(targetProfile)
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
         let didChange = normalizedEndpoint != endpoint ||
@@ -893,7 +898,7 @@ final class AppStore: ObservableObject {
         let credentialReceipt: HostCredentialWriteReceipt
         let usesEphemeralLocalCredential: Bool
         let isContinuingEphemeralCredential =
-            ephemeralLocalProfileID == targetProfile.id &&
+            previousEphemeralProfileID == targetProfile.id &&
             HostConnectionEndpointPolicy.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint)
         if isContinuingEphemeralCredential {
             credentialReceipt = await credentialVault.rememberInMemory(prepared.token, for: targetProfile.id)
@@ -903,7 +908,7 @@ final class AppStore: ObservableObject {
                 credentialReceipt = try await credentialVault.save(
                     prepared.token,
                     for: targetProfile.id,
-                    forcePersistence: ephemeralLocalProfileID == targetProfile.id
+                    forcePersistence: previousEphemeralProfileID == targetProfile.id
                 )
                 usesEphemeralLocalCredential = false
             } catch {
@@ -948,6 +953,11 @@ final class AppStore: ObservableObject {
         token = prepared.token
         connectionProfiles = nextProfiles
         activeConnectionProfileID = targetProfile.id
+        if let previousEphemeralProfileID,
+           previousEphemeralProfileID != targetProfile.id {
+            // 旧临时档案没有 Keychain 项，只清理进程内 Token，避免 entitlement 错误扩大失败面。
+            await credentialVault.forgetMemory(profileID: previousEphemeralProfileID)
+        }
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1

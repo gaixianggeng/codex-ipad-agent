@@ -240,6 +240,98 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertNil(defaults.string(forKey: "agentd.endpoint"))
     }
 
+    func testSwitchingFromEphemeralProfileRemovesItsMetadataAndMemoryCredential() async throws {
+        let suiteName = "PairingLinkTests.EphemeralSwitchCleanup.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "ephemeral-token"
+        ))
+        let ephemeralProfileID = try XCTUnwrap(store.activeConnectionProfileID)
+
+        keychain.forcedCopyStatus = nil
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "persistent-token",
+            profileTarget: .newProfile(id: "mac-b", displayName: "远程 Mac")
+        ))
+
+        XCTAssertEqual(store.connectionProfiles.map(\.id), ["mac-b"])
+        let persistedData = try XCTUnwrap(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertEqual(try JSONDecoder().decode([ConnectionProfile].self, from: persistedData).map(\.id), ["mac-b"])
+        XCTAssertNil(keychain.data(account: "agentd-profile.\(ephemeralProfileID)"))
+        await XCTAssertThrowsErrorAsync(try await store.prepareConnectionProfileSwitch(id: ephemeralProfileID)) { error in
+            XCTAssertEqual(error as? ConnectionProfileError, .notFound)
+        }
+
+        let relaunchedStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertEqual(relaunchedStore.connectionProfiles.map(\.id), ["mac-b"])
+        XCTAssertEqual(relaunchedStore.activeConnectionProfileID, "mac-b")
+        XCTAssertEqual(relaunchedStore.token, "persistent-token")
+
+        // 复用同一个 ID 时必须重新写入 Keychain；若旧内存 Token 未清理，Vault 会误判 unchanged。
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://replacement.example.com",
+            token: "ephemeral-token",
+            profileTarget: .newProfile(id: ephemeralProfileID, displayName: "重新添加")
+        ))
+        XCTAssertEqual(
+            keychain.data(account: "agentd-profile.\(ephemeralProfileID)"),
+            Data("ephemeral-token".utf8)
+        )
+    }
+
+    func testEphemeralProfilePersistsOnlyAfterKeychainRecovers() async throws {
+        let suiteName = "PairingLinkTests.EphemeralPersistenceTransition.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "ephemeral-token"
+        ))
+        let profileID = try XCTUnwrap(store.activeConnectionProfileID)
+
+        await XCTAssertThrowsErrorAsync(try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "ephemeral-token",
+            profileTarget: .existingProfile(id: profileID)
+        ))) { error in
+            XCTAssertTrue((error as? TokenStoreError)?.isMissingEntitlement == true)
+        }
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://192.168.1.20:8787")
+        XCTAssertEqual(store.token, "ephemeral-token")
+        XCTAssertNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+
+        keychain.forcedCopyStatus = nil
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "ephemeral-token",
+            profileTarget: .existingProfile(id: profileID)
+        ))
+
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "https://agent.example.com")
+        XCTAssertEqual(keychain.data(account: "agentd-profile.\(profileID)"), Data("ephemeral-token".utf8))
+        let persistedData = try XCTUnwrap(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertEqual(try JSONDecoder().decode([ConnectionProfile].self, from: persistedData).map(\.id), [profileID])
+    }
+
     func testMissingKeychainEntitlementNeverFallsBackForPublicEndpoint() async throws {
         let suiteName = "PairingLinkTests.RemoteCredential.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
