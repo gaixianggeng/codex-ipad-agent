@@ -356,11 +356,12 @@ struct SessionListView: View {
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
 
-    var onNewSession: (() -> Void)?
+    var onNewSession: ((NewSessionPresentationSource?) -> Void)?
     var onSelectSession: ((AgentSession) -> Void)?
     var onOpenWorkspaces: (() -> Void)?
     var manageConnections: (() -> Void)?
     var placesFilterInTrailingToolbar = false
+    var newSessionPresentationNamespace: Namespace.ID?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -455,15 +456,17 @@ struct SessionListView: View {
                 // 将筛选并入右侧工具组，避免其圆形玻璃底板被侧栏盖住。
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     filterMenu(tokens: tokens)
-                    sessionListTrailingToolbarActions(tokens: tokens)
+                    sessionListRefreshToolbarButton(tokens: tokens)
                 }
+                newSessionToolbarItem(tokens: tokens)
             } else {
                 ToolbarItem(placement: .topBarLeading) {
                     filterMenu(tokens: tokens)
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    sessionListTrailingToolbarActions(tokens: tokens)
+                ToolbarItem(placement: .topBarTrailing) {
+                    sessionListRefreshToolbarButton(tokens: tokens)
                 }
+                newSessionToolbarItem(tokens: tokens)
             }
         }
         .task {
@@ -477,8 +480,7 @@ struct SessionListView: View {
         }
     }
 
-    @ViewBuilder
-    private func sessionListTrailingToolbarActions(tokens: ThemeTokens) -> some View {
+    private func sessionListRefreshToolbarButton(tokens: ThemeTokens) -> some View {
         sessionListToolbarButton(
             systemImage: "arrow.clockwise",
             accessibilityLabel: L10n.text("ui.refresh_session_library"),
@@ -486,13 +488,46 @@ struct SessionListView: View {
         ) {
             Task { await sessionStore.refreshSessionLibraryIndex(authoritative: true) }
         }
+    }
 
+    @ToolbarContentBuilder
+    private func newSessionToolbarItem(tokens: ThemeTokens) -> some ToolbarContent {
+        if let newSessionPresentationNamespace {
+            ToolbarItem(placement: .topBarTrailing) {
+                newSessionToolbarButton(
+                    tokens: tokens,
+                    source: .sessionsToolbar(hasNamespace: true)
+                )
+            }
+            // ToolbarContent source 只包住加号，不能把刷新或筛选一起作为返回锚点。
+            .matchedTransitionSource(
+                id: NewSessionPresentationSource
+                    .sessionsToolbarNewSession
+                    .transitionSourceID,
+                in: newSessionPresentationNamespace
+            )
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                newSessionToolbarButton(
+                    tokens: tokens,
+                    source: .sessionsToolbar(hasNamespace: false)
+                )
+            }
+        }
+    }
+
+    private func newSessionToolbarButton(
+        tokens: ThemeTokens,
+        source: NewSessionPresentationSource?
+    ) -> some View {
         sessionListToolbarButton(
             systemImage: "plus",
             accessibilityLabel: L10n.text("ui.new_session_3da224c4"),
             tokens: tokens,
             isPrimary: true,
-            action: presentNewSession
+            action: {
+                presentNewSession(source: source)
+            }
         )
         .accessibilityIdentifier("sessions.newSession")
     }
@@ -628,10 +663,12 @@ struct SessionListView: View {
             } description: {
                 Text(L10n.text("ui.new_sessions_created_from_a_workspace_appear_here"))
             } actions: {
-                Button(L10n.text("ui.new_session"), action: presentNewSession)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .tint(tokens.primaryAction)
+                Button(L10n.text("ui.new_session")) {
+                    presentNewSession(source: nil)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(tokens.primaryAction)
             }
             .accessibilityIdentifier("sessions.empty.noSessions")
         case .noMatches:
@@ -789,9 +826,9 @@ struct SessionListView: View {
         return selectedStatus == .all ? L10n.text("ui.filter") : selectedStatus.title
     }
 
-    private func presentNewSession() {
+    private func presentNewSession(source: NewSessionPresentationSource?) {
         if let onNewSession {
-            onNewSession()
+            onNewSession(source)
         } else {
             Task { await sessionStore.startNewSession() }
         }
