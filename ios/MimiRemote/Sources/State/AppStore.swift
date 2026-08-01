@@ -281,6 +281,8 @@ final class AppStore: ObservableObject {
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
     private var credentialLifecycleGeneration: UInt64 = 0
+    // 仅由 AppStoreCapabilities extension 使用，用 generation 拒绝迟到的协商响应。
+    var capabilityNegotiationGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
     private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
@@ -300,9 +302,11 @@ final class AppStore: ObservableObject {
         self.tokenStore = tokenStore
         credentialVault = HostCredentialVault(tokenStore: tokenStore)
         self.routeProbeTimeout = routeProbeTimeout
-        self.prefersLocalConnection = prefersLocalConnection ?? Self.isRunningOnMacCatalyst
+        self.prefersLocalConnection =
+            prefersLocalConnection ?? HostConnectionEndpointPolicy.prefersLocalConnectionByDefault
         self.allowsEphemeralLocalCredentialFallback =
-            allowsEphemeralLocalCredentialFallback ?? Self.isRunningOnMacCatalyst
+            allowsEphemeralLocalCredentialFallback ??
+                HostConnectionEndpointPolicy.allowsDevelopmentEphemeralCredentialFallback
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
@@ -416,7 +420,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: initialEndpoint,
             displayName: initialProfile?.displayName ?? Self.defaultProfileDisplayName(endpoint: initialEndpoint),
-            committedAt: Date()
+            committedAt: Date(),
+            capabilityNegotiation: .notNegotiated
         )
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
@@ -560,8 +565,8 @@ final class AppStore: ObservableObject {
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {
         if activeConnectionProfileID == ephemeralLocalProfileID {
-            // macOS 本地 Debug 包没有可恢复的 Keychain 项；桌面端后台保留同机短期凭据，
-            // 进程退出后自然清空，下一次启动重新向 loopback agentd 领取。
+            // 开发包没有可恢复的 Keychain 项；后台保留本进程短期凭据，
+            // 进程退出后自然清空，下一次启动必须重新向 agentd 领取。
             return
         }
         credentialLifecycleGeneration &+= 1
@@ -697,6 +702,8 @@ final class AppStore: ObservableObject {
         bundle.routes.remember(session)
         return MultiRuntimeSessionWebSocketClient(bundle: bundle)
     }
+
+    func replaceCapabilityNegotiation(_ negotiation: HostCapabilityNegotiation, preserving state: ActiveHostState) { activeHostState = state.replacingCapabilityNegotiation(with: negotiation) }
 
     func prepareConnectionSettings(
         endpoint: String,
@@ -871,7 +878,12 @@ final class AppStore: ObservableObject {
             )
         }
 
-        var nextProfiles = connectionProfiles.filter { $0.id != targetProfile.id }
+        // 临时开发档案从未持久化凭据；切到其它档案时必须在同一次提交中淘汰，
+        // 否则稍后切回会把“只有内存 Token”的档案误写成可恢复的持久档案。
+        let previousEphemeralProfileID = ephemeralLocalProfileID
+        var nextProfiles = connectionProfiles.filter {
+            $0.id != targetProfile.id && $0.id != previousEphemeralProfileID
+        }
         nextProfiles.append(targetProfile)
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
         let didChange = normalizedEndpoint != endpoint ||
@@ -881,14 +893,14 @@ final class AppStore: ObservableObject {
             targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform
 
         // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
-        // 未签入 provisioning profile 的 Catalyst 本机 Debug 包只在 loopback + -34018 时使用进程内凭据。
+        // 未签入 provisioning profile 的开发包只在受限私网 + -34018 时使用进程内凭据。
         let credentialLifecycle = credentialLifecycleGeneration
         let credentialReceipt: HostCredentialWriteReceipt
         let usesEphemeralLocalCredential: Bool
-        let isContinuingEphemeralLoopback =
-            ephemeralLocalProfileID == targetProfile.id &&
-            Self.isLoopbackEndpoint(normalizedEndpoint)
-        if isContinuingEphemeralLoopback {
+        let isContinuingEphemeralCredential =
+            previousEphemeralProfileID == targetProfile.id &&
+            HostConnectionEndpointPolicy.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint)
+        if isContinuingEphemeralCredential {
             credentialReceipt = await credentialVault.rememberInMemory(prepared.token, for: targetProfile.id)
             usesEphemeralLocalCredential = true
         } else {
@@ -896,19 +908,19 @@ final class AppStore: ObservableObject {
                 credentialReceipt = try await credentialVault.save(
                     prepared.token,
                     for: targetProfile.id,
-                    forcePersistence: ephemeralLocalProfileID == targetProfile.id
+                    forcePersistence: previousEphemeralProfileID == targetProfile.id
                 )
                 usesEphemeralLocalCredential = false
             } catch {
                 let canUseEphemeralLocalCredential =
                     allowsEphemeralLocalCredentialFallback &&
-                    Self.isLoopbackEndpoint(normalizedEndpoint) &&
+                    HostConnectionEndpointPolicy.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint) &&
                     (error as? TokenStoreError)?.isMissingEntitlement == true
                 guard canUseEphemeralLocalCredential else {
                     throw error
                 }
-                // 仅降级同机 loopback，且只接受明确的 Keychain entitlement 缺失。
-                // Token 不进入 UserDefaults；进程退出后由下一次本机自动配对重新领取。
+                // Catalyst 仅允许同机 loopback；Debug Simulator 允许用于本地验收的私网 HTTP。
+                // Token 不进入 UserDefaults，进程退出即失效；Release / TestFlight 不启用此降级。
                 credentialReceipt = await credentialVault.rememberInMemory(
                     prepared.token,
                     for: targetProfile.id
@@ -941,6 +953,11 @@ final class AppStore: ObservableObject {
         token = prepared.token
         connectionProfiles = nextProfiles
         activeConnectionProfileID = targetProfile.id
+        if let previousEphemeralProfileID,
+           previousEphemeralProfileID != targetProfile.id {
+            // 旧临时档案没有 Keychain 项，只清理进程内 Token，避免 entitlement 错误扩大失败面。
+            await credentialVault.forgetMemory(profileID: previousEphemeralProfileID)
+        }
         connectionTermination = nil
         // 每次提交都开启新的连接代次。即使地址没变，旧异步结果也必须失效。
         connectionGeneration += 1
@@ -962,7 +979,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: normalizedEndpoint,
             displayName: targetProfile.displayName,
-            committedAt: prepared.validatedAt
+            committedAt: prepared.validatedAt,
+            capabilityNegotiation: prepared.capabilityNegotiation
         )
         lastError = nil
         HostSwitchSignpost.event("host_commit")
@@ -989,7 +1007,7 @@ final class AppStore: ObservableObject {
     }
 
     func clearPairing() async throws {
-        // 持久化凭据必须先完成 Keychain 删除；临时 loopback 凭据只需清理进程内缓存。
+        // 持久化凭据必须先完成 Keychain 删除；临时开发凭据只需清理进程内缓存。
         // 否则系统暂时禁止 Keychain 访问时，下一次启动会变成“旧 Token + 默认 Endpoint”的半提交状态。
         let nextProfiles: [ConnectionProfile]
         if let activeConnectionProfileID {
@@ -1029,7 +1047,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: defaultEndpoint,
             displayName: Self.defaultProfileDisplayName(endpoint: defaultEndpoint),
-            committedAt: Date()
+            committedAt: Date(),
+            capabilityNegotiation: .notNegotiated
         )
         connectionTermination = nil
         connectionStatus = .idle
@@ -1055,7 +1074,7 @@ final class AppStore: ObservableObject {
     }
 
     /// 只修改非敏感显示名称，不进入连接切换事务，也不读取或写入 Keychain。
-    /// 临时 loopback 档案保持进程内；其它档案先完成编码再发布，避免出现半提交名称。
+    /// 临时开发档案保持进程内；其它档案先完成编码再发布，避免出现半提交名称。
     @discardableResult
     func renameConnectionProfile(id: String, displayName rawDisplayName: String) throws -> Bool {
         guard let profileIndex = connectionProfiles.firstIndex(where: { $0.id == id }) else {
@@ -1085,7 +1104,8 @@ final class AppStore: ObservableObject {
                 scope: activeHostState.scope,
                 endpoint: activeHostState.endpoint,
                 displayName: displayName,
-                committedAt: activeHostState.committedAt
+                committedAt: activeHostState.committedAt,
+                capabilityNegotiation: activeHostState.capabilityNegotiation
             )
         }
         return true
@@ -1367,7 +1387,8 @@ final class AppStore: ObservableObject {
                 timeout: min(routeProbeTimeout, 1.5)
             ))
         }
-        let configuredRoute: ActiveConnectionRoute = Self.isLoopbackEndpoint(normalizedEndpoint) ? .local : .configured
+        let configuredRoute: ActiveConnectionRoute =
+            HostConnectionEndpointPolicy.isLoopbackEndpoint(normalizedEndpoint) ? .local : .configured
         candidates.append((endpoint: normalizedEndpoint, route: configuredRoute, timeout: routeProbeTimeout))
 
         var configuredRouteError: Error?
@@ -1715,7 +1736,8 @@ final class AppStore: ObservableObject {
                         ),
                         runtimeBundle: bundle,
                         expiresAt: deadline
-                    )
+                    ),
+                    capabilityNegotiation: version.capabilityNegotiation
                 )
             } catch {
                 // 每次失败都先完整退役 candidate；重试时始终只有一条候选业务 WS。
@@ -1849,7 +1871,7 @@ final class AppStore: ObservableObject {
         throw ConnectionProfileError.duplicateInstallation(profileName: duplicate.displayName)
     }
 
-    private static func validateInstallationIdentity(
+    static func validateInstallationIdentity(
         actual: String?,
         expected: String?,
         profileName: String
@@ -1930,21 +1952,6 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         connectionStatus = .connected(ActiveConnectionRoute.local.statusTitle)
         lastError = nil
-    }
-
-    private static var isRunningOnMacCatalyst: Bool {
-#if targetEnvironment(macCatalyst)
-        true
-#else
-        false
-#endif
-    }
-
-    private static func isLoopbackEndpoint(_ endpoint: String) -> Bool {
-        guard let host = URLComponents(string: endpoint)?.host?.lowercased() else {
-            return false
-        }
-        return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
     private func activateConnectionRoute(_ route: ActiveConnectionRoute, endpoint: String) {

@@ -179,10 +179,9 @@ extension SessionStore {
                 )
             }
 
-            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”；
-            // 带首轮 prompt 的新会话也保留 thread/read 快照，用它校准后续事件回放。
-            // 新建空交互会话没有历史可补；启动后立刻请求完整历史容易撞上后端 thread/read
-            // 初始化窗口并误报“大历史加载失败”，因此只跳过这类空会话的首屏补拉。
+            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
+            // 新线程的首轮内容由本地回显和 buffered event replay 承接；turn/start 刚 ACK 时 rollout
+            // 可能尚未可读，此时同步请求完整历史只会制造 no-rollout/超时竞态。
             let didLoadInitialHistory: Bool
             if responseSelectionLease == nil {
                 // 用户已经切走：保留服务端创建结果和本地投影，历史在再次打开时按需补拉。
@@ -190,14 +189,18 @@ extension SessionStore {
             } else if hasLoadedFullHistorySnapshot(sessionID: responseSession.id) {
                 // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
                 didLoadInitialHistory = true
-            } else if resume != nil || !payload.isEmpty {
+            } else if resume != nil {
                 didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
-            } else {
+            } else if payload.isEmpty {
                 // 新建空 thread 在首个 turn 前没有 rollout。把当前空快照标成已加载，前台恢复时
                 // 就不会误打 thread/turns/list 并把 no-rollout 错报成“大历史加载失败”；首个 turn
                 // 会改变 updatedAt/revision/lastSeq，届时签名自然失效并允许正常补拉。
                 markEmptyHistoryLoaded(for: responseSession)
                 didLoadInitialHistory = true
+            } else {
+                // 非空新线程不能标成“已加载空历史”，否则重新进入时可能跳过真正的历史补拉。
+                // 保持未加载状态，当前首轮直接连接事件流，后续刷新或重新进入再做权威对账。
+                didLoadInitialHistory = false
             }
             if !prompt.isEmpty {
                 if let clientMessageID {

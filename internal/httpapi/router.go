@@ -39,6 +39,7 @@ type Router struct {
 	monitor        *relayMonitor
 	historyMedia   *appServerHistoryMediaStore
 	fileUploads    *fileUploadStore
+	capabilities   capabilityRegistry
 	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
 	// 它与本进程 app-server runtime 分离，不能被用于 resume、审批或中断外部 turn。
 	externalActivity externalActivitySource
@@ -154,6 +155,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 			options.GatewayTurnClaimStorePath,
 		)
 	}
+	fileUploads := newFileUploadStore(defaultFileUploadRoot())
 	r := &Router{
 		cfg:            cfg,
 		projects:       registry,
@@ -170,7 +172,8 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		},
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
-		fileUploads:                 newFileUploadStore(defaultFileUploadRoot()),
+		fileUploads:                 fileUploads,
+		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		externalActivity:            externalActivity,
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
@@ -375,6 +378,9 @@ func (r *Router) healthz(w http.ResponseWriter, req *http.Request) {
 func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 	results := r.doctor.RunReadiness(req.Context())
 	results = appendReadinessCheck(results, r.appServerUpstreamReadinessCheck(req.Context()))
+	// 可选 capability 的降级只作为 warning，不把基础会话链路误判为整体不可用。
+	// status --json 读取同一 readyz，因此也能看到服务端本地禁用或依赖失败原因。
+	results = r.capabilities.appendDoctorCheck(results)
 	status := http.StatusOK
 	if !results.OK {
 		// liveness 与 readiness 分离：进程仍可通过 /healthz 被守护进程观察，
@@ -385,11 +391,16 @@ func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponse(r.version, r.installationID))
+	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponse(
+		r.version,
+		r.installationID,
+		r.capabilities.enabledNames(),
+		r.capabilities.statuses(),
+	))
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, r.doctor.Run(req.Context(), false))
+	writeJSON(w, http.StatusOK, r.capabilities.appendDoctorCheck(r.doctor.Run(req.Context(), false)))
 }
 
 func (r *Router) codexHistoryDebugHandler(w http.ResponseWriter, req *http.Request) {

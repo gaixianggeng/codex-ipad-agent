@@ -12,6 +12,10 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertEqual(current.platform, "darwin")
         XCTAssertEqual(Set(current.capabilities), MimiProtocolContract.declaredCapabilities)
+        XCTAssertEqual(
+            current.capabilityNegotiation.decision(for: "file_upload_v1"),
+            .enabled
+        )
         XCTAssertNoThrow(try current.requireCompatible())
 
         let previous = try decodeVersionFixture("version-previous.json")
@@ -22,6 +26,10 @@ final class ProtocolContractTests: XCTestCase {
         )
         XCTAssertNil(previous.platform)
         XCTAssertTrue(previous.capabilities.isEmpty, "旧服务缺少 capability 时必须安全降级为空集合")
+        XCTAssertEqual(
+            previous.capabilityNegotiation.decision(for: "file_upload_v1"),
+            .serverUnsupported
+        )
         XCTAssertNoThrow(try previous.requireCompatible())
 
         let incompatible = try decodeVersionFixture("version-incompatible.json")
@@ -38,6 +46,15 @@ final class ProtocolContractTests: XCTestCase {
             XCTAssertEqual(serverRevision, 3)
             XCTAssertTrue(error.localizedDescription.contains("3"))
         }
+
+        let future = try decodeVersionFixture("version-unknown-capability.json")
+        XCTAssertNoThrow(try future.requireCompatible())
+        XCTAssertEqual(future.capabilities, ["future_safe_path_v2"])
+        XCTAssertEqual(
+            future.capabilityNegotiation.decision(for: "file_upload_v1"),
+            .serverUnsupported,
+            "未知 capability/state 不能意外打开当前客户端的文件上传路径"
+        )
     }
 
     func testSharedClientMatrixMatchesGeneratedRESTAndWebSocketHeaders() throws {

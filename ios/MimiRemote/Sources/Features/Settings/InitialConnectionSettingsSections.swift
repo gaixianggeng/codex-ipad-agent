@@ -3,6 +3,20 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+enum InitialConnectionErrorClassifier {
+    static func isCredentialRejection(_ raw: String) -> Bool {
+        let lowercased = raw.lowercased()
+        if lowercased.contains("unauthorized") {
+            return true
+        }
+        // 401 必须是独立状态码；Keychain 的 -34018 等 OSStatus 不能被子串误判为鉴权失败。
+        return raw.range(
+            of: #"(^|\D)401(\D|$)"#,
+            options: .regularExpression
+        ) != nil
+    }
+}
+
 enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
     case initialConnection
     case addConnectionProfile
@@ -959,7 +973,7 @@ struct InitialConnectionSettingsSections: View {
         if lowercased.contains("expired") || raw.contains("过期") {
             return L10n.text("ui.the_pairing_qr_code_has_expired_please_re")
         }
-        if lowercased.contains("unauthorized") || lowercased.contains("401") {
+        if InitialConnectionErrorClassifier.isCredentialRejection(raw) {
             return L10n.text("ui.this_device_has_not_been_verified_by_mac")
         }
         if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {

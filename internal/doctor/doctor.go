@@ -37,11 +37,14 @@ type Results struct {
 }
 
 type Check struct {
-	Name    string `json:"name"`
-	OK      bool   `json:"ok"`
-	Level   string `json:"level"`
-	Message string `json:"message"`
-	Fix     string `json:"fix,omitempty"`
+	Name       string `json:"name"`
+	OK         bool   `json:"ok"`
+	Level      string `json:"level"`
+	Message    string `json:"message"`
+	Fix        string `json:"fix,omitempty"`
+	Capability string `json:"capability,omitempty"`
+	State      string `json:"state,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 func NewChecker(version string, cfg config.Config, registry *projects.Registry, configPath ...string) *Checker {
