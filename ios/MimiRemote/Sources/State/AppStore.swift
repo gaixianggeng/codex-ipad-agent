@@ -281,6 +281,8 @@ final class AppStore: ObservableObject {
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
     private var credentialLifecycleGeneration: UInt64 = 0
+    // 仅由 AppStoreCapabilities extension 使用，用 generation 拒绝迟到的协商响应。
+    var capabilityNegotiationGeneration: UInt64 = 0
 #if DEBUG
     @Published private var debugWorkbenchBypassEnabled = false
     private let debugLaunchConfiguration = DebugLaunchConfiguration.current()
@@ -416,7 +418,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: initialEndpoint,
             displayName: initialProfile?.displayName ?? Self.defaultProfileDisplayName(endpoint: initialEndpoint),
-            committedAt: Date()
+            committedAt: Date(),
+            capabilityNegotiation: .notNegotiated
         )
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
@@ -698,6 +701,8 @@ final class AppStore: ObservableObject {
         return MultiRuntimeSessionWebSocketClient(bundle: bundle)
     }
 
+    func replaceCapabilityNegotiation(_ negotiation: HostCapabilityNegotiation, preserving state: ActiveHostState) { activeHostState = state.replacingCapabilityNegotiation(with: negotiation) }
+
     func prepareConnectionSettings(
         endpoint: String,
         token: String,
@@ -962,7 +967,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: normalizedEndpoint,
             displayName: targetProfile.displayName,
-            committedAt: prepared.validatedAt
+            committedAt: prepared.validatedAt,
+            capabilityNegotiation: prepared.capabilityNegotiation
         )
         lastError = nil
         HostSwitchSignpost.event("host_commit")
@@ -1029,7 +1035,8 @@ final class AppStore: ObservableObject {
             ),
             endpoint: defaultEndpoint,
             displayName: Self.defaultProfileDisplayName(endpoint: defaultEndpoint),
-            committedAt: Date()
+            committedAt: Date(),
+            capabilityNegotiation: .notNegotiated
         )
         connectionTermination = nil
         connectionStatus = .idle
@@ -1085,7 +1092,8 @@ final class AppStore: ObservableObject {
                 scope: activeHostState.scope,
                 endpoint: activeHostState.endpoint,
                 displayName: displayName,
-                committedAt: activeHostState.committedAt
+                committedAt: activeHostState.committedAt,
+                capabilityNegotiation: activeHostState.capabilityNegotiation
             )
         }
         return true
@@ -1715,7 +1723,8 @@ final class AppStore: ObservableObject {
                         ),
                         runtimeBundle: bundle,
                         expiresAt: deadline
-                    )
+                    ),
+                    capabilityNegotiation: version.capabilityNegotiation
                 )
             } catch {
                 // 每次失败都先完整退役 candidate；重试时始终只有一条候选业务 WS。
@@ -1849,7 +1858,7 @@ final class AppStore: ObservableObject {
         throw ConnectionProfileError.duplicateInstallation(profileName: duplicate.displayName)
     }
 
-    private static func validateInstallationIdentity(
+    static func validateInstallationIdentity(
         actual: String?,
         expected: String?,
         profileName: String

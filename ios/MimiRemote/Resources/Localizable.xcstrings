@@ -9886,6 +9886,74 @@
         }
       }
     },
+    "ui.file_upload_capability_negotiation_failed" : {
+      "comment" : "Shown when file upload capability negotiation is missing, inconsistent, or unknown.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File upload availability could not be verified for the current Mac. Reconnect, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法确认当前 Mac 的文件上传能力，请重新连接后再试。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_dependency_unavailable_on_current_mac" : {
+      "comment" : "Shown when agentd disabled file uploads because its local cache dependency is unavailable.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File uploads are temporarily unavailable on the current Mac. Run agentd doctor on that Mac for details."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 的文件上传依赖暂不可用，请在该 Mac 运行 agentd doctor 查看详情。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_disabled_on_current_mac" : {
+      "comment" : "Shown when the current Mac locally disables file_upload_v1.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File uploads are disabled in the current Mac's local agentd configuration."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 已在本地 agentd 配置中禁用文件上传。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_host_changed_select_again" : {
+      "comment" : "Shown when the active Mac changes while the system file picker is open.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The active Mac changed. Select the file again for the current Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 已切换，请为当前 Mac 重新选择文件。"
+          }
+        }
+      }
+    },
     "ui.file_cannot_be_empty" : {
       "comment" : "Shown when the selected file contains no data.",
       "localizations" : {

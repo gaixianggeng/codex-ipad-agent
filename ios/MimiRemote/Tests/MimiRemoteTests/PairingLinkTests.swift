@@ -398,6 +398,62 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(reloaded.connectionProfiles.count, 2)
     }
 
+    func testCapabilityNegotiationIsIsolatedPerHostAndRejectsStaleLease() async throws {
+        let suiteName = "PairingLinkTests.CapabilityIsolation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations()
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        let enabled = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: ["file_upload_v1"],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "enabled",
+                    reason: "available"
+                )
+            ]
+        )
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.10:8787",
+            token: "token-a",
+            profileTarget: .newProfile(id: "mac-a", displayName: "Mac A"),
+            installationID: "installation-a",
+            capabilityNegotiation: enabled
+        ))
+        let macALease = try XCTUnwrap(store.capabilityLease(for: "file_upload_v1"))
+        XCTAssertEqual(store.capabilityDecision(for: "file_upload_v1"), .enabled)
+
+        let disabled = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: [],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "locally_disabled",
+                    reason: "disabled_by_local_config"
+                )
+            ]
+        )
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "Mac B"),
+            installationID: "installation-b",
+            capabilityNegotiation: disabled
+        ))
+
+        XCTAssertEqual(store.capabilityDecision(for: "file_upload_v1"), .locallyDisabled)
+        XCTAssertNil(store.capabilityLease(for: "file_upload_v1"))
+        XCTAssertFalse(
+            store.isCurrentCapabilityLease(macALease),
+            "切换主机后不能继续使用上一台 Mac 的 capability lease"
+        )
+    }
+
     func testV1ProfileBindsInstallationIdentityOnFirstSuccessfulCommit() async throws {
         let suiteName = "PairingLinkTests.ProfileV2IdentityMigration.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

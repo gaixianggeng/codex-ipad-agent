@@ -412,6 +412,7 @@ enum PendingAddContentAction: Equatable {
 struct FileImporterRequest: Identifiable, Equatable {
     let id = UUID()
     let targetScope: ComposerDraftScopeKey
+    let capabilityLease: HostCapabilityLease
 }
 
 struct FileImporterPresentationState: Equatable {

@@ -16,6 +16,7 @@
 - `fixtures/version-current.json`：当前 `/api/version` 线协议；
 - `fixtures/version-previous.json`：上一版 agentd 缺少新增字段时的兼容样例；
 - `fixtures/version-incompatible.json`：服务端明确要求更高客户端修订时的失败样例；
+- `fixtures/version-unknown-capability.json`：未来未知能力和状态对当前客户端无害的样例；
 - `fixtures/client-matrix.json`：上一版、当前、纯加法新客户端和不兼容客户端的服务端预期。
 
 `internal/protocolcontract/generated.go` 与
@@ -49,7 +50,7 @@
 | revision 2 | revision 3，最低客户端为 3 | iOS 在进入业务链路前返回明确升级错误 |
 | 任一握手 header 缺失、非正整数或窗口自相矛盾 | revision 2 | HTTP `400 protocol_metadata_invalid`，不猜测兼容性 |
 
-capability 只决定功能是否可用，不替代协议兼容判断。旧服务端缺少 capability 时，客户端必须隐藏入口或给出明确升级提示，不能根据 marketing version 猜测。
+capability 只决定功能是否可用，不替代协议兼容判断。旧服务端缺少 capability 时，客户端必须隐藏入口或给出明确升级提示，不能根据 marketing version 猜测。运行时声明、本地降级和状态矩阵见 [Capability 声明与本地降级](capability-rollout.md)。
 
 ## 实现
 
@@ -92,5 +93,5 @@ bash ./scripts/test-conversation-regressions.sh
 
 - 当前采用单仓库 manifest、生成器和 golden fixtures，适合小团队且无需 Schema Registry。若 API 数量继续增长，再评估从 OpenAPI / JSON Schema 生成更多模型；当前不提前引入。
 - revision 1 客户端没有 header，只能按已记录的上一版窗口识别。未来提高最低客户端修订前，必须先确认活跃旧版本已经完成迁移。
-- 纯加法兼容依赖 capability 和安全默认值。新增能力时仍需补两端 fixture 与实际功能测试；本机制不替代 MIM-29 的用户链路回归，也不建设 MIM-30 的通用 capability/降级开关。
+- 纯加法兼容依赖 capability 和安全默认值。新增能力时仍需补两端 fixture、服务端依赖检查、端点拒绝、当前 Host 隔离与实际功能测试；本机制继续复用 MIM-29 的用户链路回归。
 - 这套检查进入快速 PR Gate，不扩展 Nightly 或 Release 编排；更重的长期组合测试留给后续真实故障数据驱动。

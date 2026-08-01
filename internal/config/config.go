@@ -17,22 +17,23 @@ import (
 const AppName = "mimi-remote"
 
 type Config struct {
-	Listen        string          `json:"listen"`
-	Network       NetworkConfig   `json:"network"`
-	Auth          AuthConfig      `json:"auth"`
-	Runtime       RuntimeConfig   `json:"runtime"`
-	AppServer     AppServerConfig `json:"app_server"`
-	Voice         VoiceConfig     `json:"voice"`
-	Codex         CodexConfig     `json:"codex"`
-	Claude        ClaudeConfig    `json:"claude"`
-	Session       SessionConfig   `json:"session"`
-	Debug         DebugConfig     `json:"debug"`
-	Projects      []ProjectConfig `json:"projects"`
-	ScanRoots     []string        `json:"scan_roots"`
-	BrowseRoots   []string        `json:"browse_roots"`
-	WorktreesRoot string          `json:"worktrees_root"`
-	Actions       []ActionConfig  `json:"actions"`
-	DevInsecure   bool            `json:"dev_insecure"`
+	Listen        string           `json:"listen"`
+	Network       NetworkConfig    `json:"network"`
+	Auth          AuthConfig       `json:"auth"`
+	Capabilities  CapabilityConfig `json:"capabilities"`
+	Runtime       RuntimeConfig    `json:"runtime"`
+	AppServer     AppServerConfig  `json:"app_server"`
+	Voice         VoiceConfig      `json:"voice"`
+	Codex         CodexConfig      `json:"codex"`
+	Claude        ClaudeConfig     `json:"claude"`
+	Session       SessionConfig    `json:"session"`
+	Debug         DebugConfig      `json:"debug"`
+	Projects      []ProjectConfig  `json:"projects"`
+	ScanRoots     []string         `json:"scan_roots"`
+	BrowseRoots   []string         `json:"browse_roots"`
+	WorktreesRoot string           `json:"worktrees_root"`
+	Actions       []ActionConfig   `json:"actions"`
+	DevInsecure   bool             `json:"dev_insecure"`
 }
 
 type NetworkConfig struct {
@@ -44,6 +45,22 @@ type NetworkConfig struct {
 type AuthConfig struct {
 	Token           string `json:"token"`
 	AllowQueryToken bool   `json:"allow_query_token"`
+}
+
+// CapabilityConfig 是仅保存在当前 Mac 配置文件中的紧急降级边界。
+// disabled 允许提前写入尚未被当前版本识别的合法 capability；旧 agentd 会安全忽略，
+// 升级到认识该能力的版本后则立即按本地禁用处理。
+type CapabilityConfig struct {
+	Disabled []string `json:"disabled,omitempty"`
+}
+
+func (c CapabilityConfig) IsDisabled(name string) bool {
+	for _, disabled := range c.Disabled {
+		if strings.TrimSpace(disabled) == name {
+			return true
+		}
+	}
+	return false
 }
 
 type CodexConfig struct {
@@ -484,6 +501,9 @@ func (c Config) Validate() error {
 	if strings.Contains(strings.ToLower(c.Auth.Token), "change-me") {
 		return fmt.Errorf("token 仍是示例占位值，请执行 agentd setup 生成随机 token")
 	}
+	if err := validateCapabilities(c.Capabilities); err != nil {
+		return err
+	}
 	if c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
@@ -519,6 +539,49 @@ func (c Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func validateCapabilities(capabilities CapabilityConfig) error {
+	if len(capabilities.Disabled) > 32 {
+		return fmt.Errorf("capabilities.disabled 最多配置 32 项")
+	}
+	seen := map[string]bool{}
+	for index, raw := range capabilities.Disabled {
+		name := strings.TrimSpace(raw)
+		if !validCapabilityName(name) {
+			return fmt.Errorf("capabilities.disabled[%d] 必须使用小写 snake_case_vN 格式", index)
+		}
+		if seen[name] {
+			return fmt.Errorf("capabilities.disabled 重复：%s", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+func validCapabilityName(name string) bool {
+	versionSeparator := strings.LastIndex(name, "_v")
+	if versionSeparator <= 0 || versionSeparator+2 >= len(name) {
+		return false
+	}
+	base, version := name[:versionSeparator], name[versionSeparator+2:]
+	if version[0] < '1' || version[0] > '9' {
+		return false
+	}
+	for _, char := range version[1:] {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	if base[0] < 'a' || base[0] > 'z' {
+		return false
+	}
+	for _, char := range base[1:] {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return !strings.Contains(base, "__") && !strings.HasSuffix(base, "_")
 }
 
 func validateActions(actions []ActionConfig) error {
