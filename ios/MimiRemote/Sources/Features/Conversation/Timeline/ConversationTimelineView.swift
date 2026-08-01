@@ -54,6 +54,10 @@ struct ConversationTimelineView: View {
             tailItemID: timelineItems.last?.id
         )
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: messages)
+        let crossSessionOriginMessageID = Self.crossSessionOriginMessageID(
+            session: displayedSessionID.flatMap { sessionStore.sessionsByID[$0] },
+            messages: messages
+        )
         let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
@@ -82,6 +86,7 @@ struct ConversationTimelineView: View {
                                 timelineRow(
                                     item,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                                    crossSessionOriginMessageID: crossSessionOriginMessageID,
                                     proxy: proxy
                                 )
                                     .simultaneousGesture(TapGesture().onEnded {
@@ -320,6 +325,7 @@ struct ConversationTimelineView: View {
     private func timelineRow(
         _ item: ConversationTimelineItem,
         activeUserDeliveryMessageID: UUID?,
+        crossSessionOriginMessageID: UUID?,
         proxy: ScrollViewProxy
     ) -> some View {
         switch item {
@@ -329,6 +335,7 @@ struct ConversationTimelineView: View {
                 themeVersion: themeStore.themeVersion,
                 layout: layout,
                 showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
+                showsCrossSessionOrigin: message.id == crossSessionOriginMessageID,
                 skills: sessionStore.capabilityList?.skills ?? [],
                 retry: { message in
                     Task { await sessionStore.retryFailedUserMessage(message) }
@@ -427,6 +434,7 @@ struct ConversationTimelineView: View {
                 themeVersion: themeStore.themeVersion,
                 layout: layout,
                 showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
+                showsCrossSessionOrigin: false,
                 skills: sessionStore.capabilityList?.skills ?? [],
                 retry: { message in
                     Task { await sessionStore.retryFailedUserMessage(message) }
@@ -611,6 +619,22 @@ struct ConversationTimelineView: View {
             }
         }
         return nil
+    }
+
+    private static func crossSessionOriginMessageID(
+        session: AgentSession?,
+        messages: [ConversationMessage]
+    ) -> UUID? {
+        guard let initialUserMessage = messages.first(where: {
+            $0.role == .user && $0.kind == .message
+        }),
+        ConversationOriginPresentation.isCreatedFromAnotherConversation(
+            session: session,
+            initialUserContent: initialUserMessage.content
+        ) else {
+            return nil
+        }
+        return initialUserMessage.id
     }
 
     private static func isOptimisticSessionID(_ sessionID: SessionID?) -> Bool {

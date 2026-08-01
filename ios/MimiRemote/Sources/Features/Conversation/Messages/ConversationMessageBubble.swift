@@ -125,8 +125,11 @@ struct ConversationMessageContent: View {
             userImageContent(style: style)
         } else if shouldRenderStructuredUserPayload {
             structuredUserContent(style: style)
-        } else if isAssistantDocument {
-            let plan = MessageRenderPlanCache.shared.plan(for: message)
+        } else if shouldRenderMarkdownMessage {
+            let presentationContent = message.role == .assistant
+                ? ConversationMarkdownPresentation.displayContent(from: message.content)
+                : message.content
+            let plan = MessageRenderPlanCache.shared.plan(for: message, rendering: presentationContent)
             let references = fileReferences
             if references.isEmpty {
                 markdownContent(plan: plan, style: style)
@@ -156,9 +159,7 @@ struct ConversationMessageContent: View {
         return VStack(alignment: .trailing, spacing: 8) {
             let text = userImageText
             if !text.isEmpty {
-                Text(text)
-                    .font(style.bodyFont)
-                    .foregroundStyle(userBubbleForeground)
+                userTextContent(text, style: style)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -249,6 +250,14 @@ struct ConversationMessageContent: View {
         message.role == .assistant && message.kind == .message
     }
 
+    private var shouldRenderMarkdownMessage: Bool {
+        guard message.kind == .message else {
+            return false
+        }
+        return message.role == .assistant
+            || (message.role == .user && ConversationMarkdownPresentation.containsLink(in: message.content))
+    }
+
     private var shouldRenderUserImages: Bool {
         message.role == .user
             && message.kind == .message
@@ -265,14 +274,24 @@ struct ConversationMessageContent: View {
         VStack(alignment: .leading, spacing: 9) {
             let text = structuredPayloadText
             if !text.isEmpty {
-                Text(text)
-                    .font(style.bodyFont)
-                    .foregroundStyle(userBubbleForeground)
-                    .fixedSize(horizontal: false, vertical: true)
+                userTextContent(text, style: style)
             }
             userPayloadAccessories(style: style)
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func userTextContent(_ text: String, style: MarkdownStyle) -> some View {
+        if ConversationMarkdownPresentation.containsLink(in: text) {
+            let plan = MessageRenderPlanCache.shared.plan(for: message, rendering: text)
+            markdownContent(plan: plan, style: style)
+        } else {
+            Text(text)
+                .font(style.bodyFont)
+                .foregroundStyle(userBubbleForeground)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var structuredPayloadText: String {

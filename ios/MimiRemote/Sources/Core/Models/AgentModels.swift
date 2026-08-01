@@ -1039,12 +1039,19 @@ final class MessageRenderPlanCache {
     }
 
     func plan(for message: ConversationMessage) -> MessageRenderPlan {
+        plan(for: message, rendering: message.content)
+    }
+
+    func plan(for message: ConversationMessage, rendering content: String) -> MessageRenderPlan {
         let messageKey = message.stableID ?? message.clientMessageID ?? message.id.uuidString
+        let fingerprint = content == message.content
+            ? (digest: message.contentDigest, byteCount: message.contentByteCount)
+            : makeContentFingerprint(content)
         return plan(
             messageKey: messageKey,
-            content: message.content,
-            contentDigest: message.contentDigest,
-            contentByteCount: message.contentByteCount,
+            content: content,
+            contentDigest: fingerprint.digest,
+            contentByteCount: fingerprint.byteCount,
             isStreaming: message.role == .assistant && message.sendStatus == .sending
         )
     }
@@ -1208,6 +1215,17 @@ final class MessageRenderPlanCache {
                 return false
             }
         }
+    }
+
+    private func makeContentFingerprint(_ content: String) -> (digest: UInt64, byteCount: Int) {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        var byteCount = 0
+        for byte in content.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+            byteCount += 1
+        }
+        return (hash, byteCount)
     }
 
     private func renumber(_ blocks: [MarkdownBlock]) -> [MarkdownBlock] {

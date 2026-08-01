@@ -6552,6 +6552,24 @@
         }
       }
     },
+    "ui.created_from_another_conversation" : {
+      "comment" : "Badge identifying a session that was created by or continued from another conversation.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Created from another conversation"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由其他会话创建"
+          }
+        }
+      }
+    },
     "ui.creating" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
