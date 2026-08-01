@@ -45,6 +45,13 @@ grep -Fq -- '-only-testing:MimiRemoteTests/ProtocolContractTests' "$runner" \
   || fail "iOS runner 未选择共享关键链路 fixture 回归。"
 grep -Fq 'testCriticalJourneyFixtureMatchesIOSRequestBuilders' "$map_doc" \
   || fail "${map_doc} 未记录共享关键链路 fixture 回归。"
+grep -Fq 'final class SessionListLifecycleCoordinatorTests' \
+  ios/MimiRemote/Tests/MimiRemoteTests/SessionListLifecycleCoordinatorTests.swift \
+  || fail "iOS 缺少会话生命周期连续性回归。"
+grep -Fq -- '-only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests' "$runner" \
+  || fail "iOS runner 未选择会话生命周期连续性回归。"
+grep -Fq 'SessionListLifecycleCoordinatorTests' "$map_doc" \
+  || fail "${map_doc} 未记录会话生命周期连续性回归。"
 grep -Fq 'func TestFileUploadCapabilityRolloutMatrix(' \
   internal/httpapi/capability_rollout_test.go \
   || fail "Go 缺少 capability enabled/disabled/dependency 矩阵。"
