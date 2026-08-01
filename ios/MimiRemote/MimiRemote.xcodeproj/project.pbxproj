@@ -48,6 +48,7 @@
 		2988A74079D67A66B14DFF98 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F92342D7DF3BBF2BC0BF24FC /* SettingsView.swift */; };
 		6A680002ABCDEF1234567890 /* TokenActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A680001ABCDEF1234567890 /* TokenActivityView.swift */; };
 		2B372F78E1EC09D8E4B7210F /* ConversationRuntimeTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A1F29F52DC5CC790708ACC /* ConversationRuntimeTestSupport.swift */; };
+		B8E2C4A9D7F1036B5C8A21E4 /* ConversationAppServerProjectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F35B1D0C7A9E4B2D8C6F1043 /* ConversationAppServerProjectorTests.swift */; };
 		2D6CA662D1D655CE6BE05CF0 /* FileUploadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80D89DB26E0A1CA68C63E07D /* FileUploadStore.swift */; };
 		2EE9AF7AEF490C9B6832C118 /* ConversationTurnQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23CF7E66AAB73235912C1990 /* ConversationTurnQueueTests.swift */; };
 		31B351EE974251896BA43252 /* SessionStoreHostSwitching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3369A709F1AC9D2CF790753C /* SessionStoreHostSwitching.swift */; };
@@ -208,6 +209,8 @@
 		F08F39B329A077D24D08FECF /* testWorkspaceOpenCurrentDirectoryButton.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 0AEF1C233E236BA44225FA2F /* testWorkspaceOpenCurrentDirectoryButton.1.png */; };
 		F0ABEBFE125D238054D75506 /* DoctorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80C5A70C7B1570DFCB3F7CF1 /* DoctorView.swift */; };
 		F0DC6138A242D45D79253F8B /* HostWarmSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */; };
+		F16900000000000000000001 /* MimiInteractionFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16900000000000000000002 /* MimiInteractionFeedback.swift */; };
+		F16900000000000000000004 /* MimiInteractionFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16900000000000000000005 /* MimiInteractionFeedbackTests.swift */; };
 		F1BFCDBADE221F598CA62933 /* testExpandedWorkGroupRendering.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 7587EB164AF1902FAD735D90 /* testExpandedWorkGroupRendering.1.png */; };
 		F38D8C9DDF3FCC6EBBE20885 /* SessionIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD9975BE3B6F00A870817B17 /* SessionIndexStore.swift */; };
 		F3ABBC8502D690C76985F756 /* AgentAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF761429383D479BD96FC52 /* AgentAPIClient.swift */; };
@@ -306,6 +309,7 @@
 		3CF761429383D479BD96FC52 /* AgentAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAPIClient.swift; sourceTree = "<group>"; };
 		3D416A89FB3388B3E36769E5 /* ConversationDirectRuntimeHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectRuntimeHistoryTests.swift; sourceTree = "<group>"; };
 		F05000000000000000000002 /* ConversationDirectRuntimeSubscriptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectRuntimeSubscriptionTests.swift; sourceTree = "<group>"; };
+		F35B1D0C7A9E4B2D8C6F1043 /* ConversationAppServerProjectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationAppServerProjectorTests.swift; sourceTree = "<group>"; };
 		3DA20088DF3CC377CBB6D7B4 /* HostConnectionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostConnectionSupport.swift; sourceTree = "<group>"; };
 		3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStoreSupport.swift; sourceTree = "<group>"; };
 		40A98707004C8DC4ED81CBCD /* ComposerVoiceSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerVoiceSupport.swift; sourceTree = "<group>"; };
@@ -357,6 +361,8 @@
 		7A4E57C95034C12853D10303 /* MediaWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaWorker.swift; sourceTree = "<group>"; };
 		7D29856557B35AE9C7C9B5EA /* QRCodeScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeScannerSheet.swift; sourceTree = "<group>"; };
 		80C5A70C7B1570DFCB3F7CF1 /* DoctorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoctorView.swift; sourceTree = "<group>"; };
+		F16900000000000000000002 /* MimiInteractionFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiInteractionFeedback.swift; sourceTree = "<group>"; };
+		F16900000000000000000005 /* MimiInteractionFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiInteractionFeedbackTests.swift; sourceTree = "<group>"; };
 		80D89DB26E0A1CA68C63E07D /* FileUploadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileUploadStore.swift; sourceTree = "<group>"; };
 		80F8AA2ABA18C212AEAA34E1 /* HostStatusStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatusStore.swift; sourceTree = "<group>"; };
 		81BCB17BD7BC9E4109AC1F8A /* ConversationConnectionRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationConnectionRecoveryTests.swift; sourceTree = "<group>"; };
@@ -582,6 +588,7 @@
 				81BCB17BD7BC9E4109AC1F8A /* ConversationConnectionRecoveryTests.swift */,
 				315746F97ABB8E16D93F98A4 /* ConversationDataFlowTests.swift */,
 				078AEE7E4BDAC1751244A05A /* ConversationDataFlowTestSupport.swift */,
+				F35B1D0C7A9E4B2D8C6F1043 /* ConversationAppServerProjectorTests.swift */,
 				3D416A89FB3388B3E36769E5 /* ConversationDirectRuntimeHistoryTests.swift */,
 				F05000000000000000000002 /* ConversationDirectRuntimeSubscriptionTests.swift */,
 				B24C8D02E4F65A19B7C3D821 /* SubagentSessionTests.swift */,
@@ -606,6 +613,7 @@
 				053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */,
 				8AA53A2531C62C2974077C88 /* LocalizationTests.swift */,
 				A0E1C34623582EDA99D6B917 /* LogStoreTests.swift */,
+				F16900000000000000000005 /* MimiInteractionFeedbackTests.swift */,
 				24B74985F9E77EEE70BC1856 /* MarkdownRenderingTests.swift */,
 				8EABFF317C695883ECE910D0 /* PairingLinkTests.swift */,
 				EF8E25B79CBECB1CB0EDBD5B /* ProtocolContractTests.swift */,
@@ -838,6 +846,14 @@
 			path = Localization;
 			sourceTree = "<group>";
 		};
+		F16900000000000000000003 /* Interaction */ = {
+			isa = PBXGroup;
+			children = (
+				F16900000000000000000002 /* MimiInteractionFeedback.swift */,
+			);
+			path = Interaction;
+			sourceTree = "<group>";
+		};
 		BC50ED3CCF73CFBFDF3C6171 = {
 			isa = PBXGroup;
 			children = (
@@ -866,6 +882,7 @@
 			children = (
 				D28C291AC46CF73586F8764A /* AppExternalLinks.swift */,
 				5BB12206C8D32201707AA176 /* API */,
+				F16900000000000000000003 /* Interaction */,
 				9DD779B181654D6C7D59AEE9 /* Localization */,
 				07A81BF8D51C2B90E153B254 /* Media */,
 				16A54848C6A9B1324C77E712 /* Models */,
@@ -1161,6 +1178,7 @@
 				AD2BA4EB75791D6DA68D6A46 /* ConversationConnectionRecoveryTests.swift in Sources */,
 				467ED9D49A463D5F5AF02A3C /* ConversationDataFlowTestSupport.swift in Sources */,
 				10BF43237408412ED651F5B4 /* ConversationDataFlowTests.swift in Sources */,
+				B8E2C4A9D7F1036B5C8A21E4 /* ConversationAppServerProjectorTests.swift in Sources */,
 				759158BB4175D405D74CD30A /* ConversationDirectRuntimeHistoryTests.swift in Sources */,
 				F05000000000000000000001 /* ConversationDirectRuntimeSubscriptionTests.swift in Sources */,
 				A24B7C91D3E54F08A6B2C710 /* SubagentSessionTests.swift in Sources */,
@@ -1185,6 +1203,7 @@
 				F0DC6138A242D45D79253F8B /* HostWarmSnapshotTests.swift in Sources */,
 				E4A6ECBFD5B621FB6A30299A /* LocalizationTests.swift in Sources */,
 				BDDBF10C9208B7AB95535A57 /* LogStoreTests.swift in Sources */,
+				F16900000000000000000004 /* MimiInteractionFeedbackTests.swift in Sources */,
 				4DDCF6949E6DDCC9ABEBE709 /* MarkdownRenderingTests.swift in Sources */,
 				89DCEF26CCF404A369DFDE80 /* PairingLinkTests.swift in Sources */,
 				E321385031CD0951AABBF21C /* ProtocolContractTests.swift in Sources */,
@@ -1275,6 +1294,7 @@
 				CA5DCE5FDDA7F1DE9C0C64F7 /* MarkdownParser.swift in Sources */,
 				0FCA7C8C42E283AD24681BA0 /* MarkdownStyle.swift in Sources */,
 				410ECA3E93AE577686A636C0 /* MediaWorker.swift in Sources */,
+				F16900000000000000000001 /* MimiInteractionFeedback.swift in Sources */,
 				3B0E963BB2856F7CDD36EB67 /* MessageStore.swift in Sources */,
 				E158B34D71964DBF782D1DDF /* MimiRemoteApp.swift in Sources */,
 				41B2009F6B92E4B407CFDB72 /* ModelReasoningGridPicker.swift in Sources */,
