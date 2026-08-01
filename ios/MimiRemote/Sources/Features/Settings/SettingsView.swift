@@ -682,7 +682,10 @@ private struct ConnectionSpeedTestView: View {
                         Text(resultTitle)
                             .font(themeStore.uiFont(.headline, weight: .semibold))
                             .foregroundStyle(tokens.primaryText)
-                        Text(appStore.endpoint)
+                        Text(ConnectionOverviewPresentation.summary(
+                            isConfigured: appStore.isConfigured,
+                            profile: appStore.activeConnectionProfile
+                        ))
                             .font(themeStore.uiFont(.caption))
                             .foregroundStyle(tokens.secondaryText)
                             .lineLimit(1)

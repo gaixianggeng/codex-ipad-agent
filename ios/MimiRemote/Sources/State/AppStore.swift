@@ -491,6 +491,9 @@ final class AppStore: ObservableObject {
     func beginConnectionAttempt() -> UInt64 {
         connectionAttemptGeneration &+= 1
         connectionAttemptSummary = nil
+        // 新操作必须立即移除上一次可见错误；本次错误仍由当前操作的 catch 路径发布。
+        lastError = nil
+        connectionTermination = nil
         return connectionAttemptGeneration
     }
 
@@ -511,6 +514,8 @@ final class AppStore: ObservableObject {
     private func resetConnectionAttemptSummary() {
         connectionAttemptGeneration &+= 1
         connectionAttemptSummary = nil
+        lastError = nil
+        connectionTermination = nil
     }
 
     func prepareNewConnectionProfile(
@@ -1188,7 +1193,6 @@ final class AppStore: ObservableObject {
     /// 用已保存的连接信息做轻量真实链路探测，让设置页不必等用户手动点“测试连接”才显示状态。
     @discardableResult
     func preflightConnection(force: Bool = false) async -> Bool {
-        let localAvailable = await detectLocalAgent(force: force)
         if !force, case .connected = connectionStatus {
             return true
         }
@@ -1198,9 +1202,10 @@ final class AppStore: ObservableObject {
         }
         isConnectionPreflightRunning = true
         defer { isConnectionPreflightRunning = false }
+        let attemptGeneration = beginConnectionAttempt()
+        let localAvailable = await detectLocalAgent(force: force)
 
         guard isConfigured else {
-            resetConnectionAttemptSummary()
             guard localAvailable else {
                 connectionStatus = .idle
                 return false
@@ -1222,9 +1227,7 @@ final class AppStore: ObservableObject {
             }
         }
 
-        let attemptGeneration = beginConnectionAttempt()
         connectionStatus = .testing
-        lastError = nil
 
         let normalizedEndpoint: String
         do {

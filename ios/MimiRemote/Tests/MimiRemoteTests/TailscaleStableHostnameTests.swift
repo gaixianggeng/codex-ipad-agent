@@ -1,4 +1,5 @@
 import XCTest
+import Security
 @testable import MimiRemote
 
 @MainActor
@@ -442,6 +443,161 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(summary.attempts.map(\.result), [.succeeded])
         XCTAssertNil(summary.failureGuidance)
         XCTAssertNil(summary.fallbackMessage)
+    }
+
+    func testConnectionOverviewPresentationNeverExposesRawEndpoint() {
+        let endpoint = "http://192.168.1.20:8787"
+        let fallbackProfile = ConnectionProfile(
+            id: "lan-fallback",
+            displayName: "192.168.1.20",
+            endpoint: endpoint,
+            isDisplayNameCustomized: false,
+            lastSuccessfulAt: nil
+        )
+        let endpointNamedProfile = ConnectionProfile(
+            id: "endpoint-name",
+            displayName: endpoint,
+            endpoint: endpoint,
+            isDisplayNameCustomized: true,
+            lastSuccessfulAt: nil
+        )
+
+        for profile in [fallbackProfile, endpointNamedProfile] {
+            let summary = ConnectionOverviewPresentation.summary(
+                isConfigured: true,
+                profile: profile
+            )
+            XCTAssertFalse(summary.contains(endpoint))
+            XCTAssertFalse(summary.contains("192.168.1.20"))
+            XCTAssertEqual(summary, L10n.text("ui.connection_profile_reachable_network"))
+        }
+
+        let namedProfile = ConnectionProfile(
+            id: "named",
+            displayName: "工作室 Mac",
+            endpoint: endpoint,
+            isDisplayNameCustomized: true,
+            lastSuccessfulAt: nil
+        )
+        XCTAssertEqual(
+            ConnectionOverviewPresentation.summary(isConfigured: true, profile: namedProfile),
+            "工作室 Mac"
+        )
+        XCTAssertEqual(
+            ConnectionOverviewPresentation.summary(isConfigured: false, profile: fallbackProfile),
+            L10n.text("ui.mac_connection_not_configured_yet")
+        )
+    }
+
+    func testNewAttemptClearsVisibleErrorTerminationAndRejectsStaleGeneration() throws {
+        let suiteName = "TailscaleStableHostnameTests.VisibleErrorReset.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false
+        )
+        let staleGeneration = store.beginConnectionAttempt()
+        store.finishConnectionAttempt(
+            generation: staleGeneration,
+            attempts: [
+                ConnectionRouteAttempt(
+                    endpoint: "http://192.168.1.20:8787",
+                    result: .failed(.unreachable)
+                ),
+            ],
+            outcome: .failed
+        )
+        store.markCredentialsInvalid()
+        XCTAssertNotNil(store.lastError)
+        XCTAssertNotNil(store.connectionTermination)
+        XCTAssertNotNil(store.connectionAttemptSummary)
+
+        let currentGeneration = store.beginConnectionAttempt()
+        XCTAssertNil(store.lastError)
+        XCTAssertNil(store.connectionTermination)
+        XCTAssertNil(store.connectionAttemptSummary)
+
+        store.finishConnectionAttempt(
+            generation: staleGeneration,
+            attempts: [
+                ConnectionRouteAttempt(
+                    endpoint: "http://192.168.1.99:8787",
+                    result: .failed(.unreachable)
+                ),
+            ],
+            outcome: .failed
+        )
+        XCTAssertNil(store.connectionAttemptSummary)
+
+        store.finishConnectionAttempt(
+            generation: currentGeneration,
+            attempts: [
+                ConnectionRouteAttempt(
+                    endpoint: "http://192.168.1.20:8787",
+                    result: .succeeded
+                ),
+            ],
+            outcome: .connected(activeEndpoint: "http://192.168.1.20:8787")
+        )
+        XCTAssertEqual(store.connectionAttemptSummary?.outcome, .connected(activeEndpoint: "http://192.168.1.20:8787"))
+    }
+
+    func testCancelledPreparationLeavesNoAttemptSummary() async throws {
+        let store = AppStore(
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in
+                try await Task.sleep(for: .seconds(30))
+            }
+        )
+        let task = Task {
+            try await store.prepareConnectionSettings(
+                endpoint: "http://192.168.1.20:8787",
+                token: "token-lan"
+            )
+        }
+        await Task.yield()
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancelled preparation should not succeed")
+        } catch is CancellationError {
+            // 预期取消：prepare 的取消路径必须清掉尚未提交的瞬态摘要。
+        }
+        XCTAssertNil(store.connectionAttemptSummary)
+    }
+
+    func testCommitFailureDoesNotPublishPreparedSuccessSummary() async throws {
+        let suiteName = "TailscaleStableHostnameTests.CommitFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedAddStatus: errSecInteractionNotAllowed)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in },
+            allowsEphemeralLocalCredentialFallback: false
+        )
+
+        let prepared = try await store.prepareConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "token-remote"
+        )
+        XCTAssertNil(store.connectionAttemptSummary)
+
+        do {
+            _ = try await store.commitConnectionSettings(prepared)
+            XCTFail("Keychain failure should reject commit")
+        } catch {
+            XCTAssertNil(store.connectionAttemptSummary)
+            XCTAssertFalse(store.isConfigured)
+        }
     }
 }
 

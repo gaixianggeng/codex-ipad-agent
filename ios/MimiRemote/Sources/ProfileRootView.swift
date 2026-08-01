@@ -427,7 +427,10 @@ struct MacConnectionPanel: View {
                         .padding(.vertical, 4)
                         .background(connectionTone(tokens: tokens).opacity(0.12), in: Capsule())
                 }
-                Text(appStore.isConfigured ? appStore.endpoint : L10n.text("ui.mac_connection_not_configured_yet"))
+                Text(ConnectionOverviewPresentation.summary(
+                    isConfigured: appStore.isConfigured,
+                    profile: appStore.activeConnectionProfile
+                ))
                     .font(themeStore.uiFont(.callout))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(2)
@@ -474,10 +477,7 @@ struct MacConnectionPanel: View {
         if appStore.isConfigured || isShowingManualFields {
             Button {
                 Task {
-                    await appStore.testConnection(
-                        endpoint: endpoint,
-                        token: token
-                    )
+                    await testConnection()
                 }
             } label: {
                 Label(isConnectionTesting ? L10n.text("ui.under_test") : L10n.text("ui.test_connection"), systemImage: isConnectionTesting ? "timer" : "bolt.horizontal.circle")
@@ -541,6 +541,7 @@ struct MacConnectionPanel: View {
     private var scanConnectionCompactButton: some View {
         if appStore.isConfigured {
             Button {
+                localError = nil
                 isShowingQRCodeScanner = true
             } label: {
                 compactActionLabel(L10n.text("ui.scan_code_to_connect"), systemImage: "qrcode.viewfinder")
@@ -549,6 +550,7 @@ struct MacConnectionPanel: View {
             .disabled(isSavingConnection)
         } else {
             Button {
+                localError = nil
                 isShowingQRCodeScanner = true
             } label: {
                 compactActionLabel(L10n.text("ui.scan_code_to_connect"), systemImage: "qrcode.viewfinder")
@@ -561,10 +563,7 @@ struct MacConnectionPanel: View {
     private var testConnectionCompactButton: some View {
         Button {
             Task {
-                await appStore.testConnection(
-                    endpoint: endpoint,
-                    token: token
-                )
+                await testConnection()
             }
         } label: {
             compactActionLabel(isConnectionTesting ? L10n.text("ui.under_test") : L10n.text("ui.test_connection"), systemImage: isConnectionTesting ? "timer" : "bolt.horizontal.circle")
@@ -598,6 +597,7 @@ struct MacConnectionPanel: View {
     private var scanConnectionButton: some View {
         if appStore.isConfigured {
             Button {
+                localError = nil
                 isShowingQRCodeScanner = true
             } label: {
                 Label(L10n.text("ui.scan_code_to_connect"), systemImage: "qrcode.viewfinder")
@@ -606,6 +606,7 @@ struct MacConnectionPanel: View {
             .disabled(isSavingConnection)
         } else {
             Button {
+                localError = nil
                 isShowingQRCodeScanner = true
             } label: {
                 Label(L10n.text("ui.scan_code_to_connect"), systemImage: "qrcode.viewfinder")
@@ -652,6 +653,7 @@ struct MacConnectionPanel: View {
     }
 
     private func saveManualConnection() async {
+        localError = nil
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
@@ -671,6 +673,7 @@ struct MacConnectionPanel: View {
     }
 
     private func applyScannedConnection(_ rawValue: String) async -> QRCodeScannerSubmissionResult {
+        localError = nil
         isSavingConnection = true
         do {
             let wasConfigured = appStore.isConfigured
@@ -698,6 +701,11 @@ struct MacConnectionPanel: View {
             localError = error.localizedDescription
             return .rejected(error.localizedDescription)
         }
+    }
+
+    private func testConnection() async {
+        localError = nil
+        await appStore.testConnection(endpoint: endpoint, token: token)
     }
 
     private func refreshCommittedConnection(maxWait: TimeInterval) async -> Bool {

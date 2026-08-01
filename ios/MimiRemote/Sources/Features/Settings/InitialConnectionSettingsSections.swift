@@ -575,7 +575,7 @@ struct InitialConnectionSettingsSections: View {
                     .font(themeStore.uiFont(.body, weight: item.isCurrent ? .semibold : .regular))
                 // 主列表只表达普通用户需要理解的可用范围；真实候选和 endpoint
                 // 留在连接诊断中，避免把 LAN / Tailscale 术语变成用户选择题。
-                Text(connectionProfileRouteDetail(item))
+                Text(ConnectionOverviewPresentation.routeDetail(for: item.profile))
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -663,25 +663,6 @@ struct InitialConnectionSettingsSections: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings.profile.\(item.id)")
-    }
-
-    private func connectionProfileRouteDetail(_ item: ConnectionProfileSettingsItem) -> String {
-        if item.profile.tailscaleDNSName != nil ||
-            ConnectionProfile.isTailscaleIPEndpoint(item.profile.endpoint) {
-            return L10n.text("ui.connection_profile_automatic_networks")
-        }
-        switch ConnectionRouteKind.classify(endpoint: item.profile.endpoint) {
-        case .loopback:
-            return L10n.text("ui.connection_profile_this_computer")
-        case .localNetwork:
-            return L10n.text("ui.connection_profile_reachable_network")
-        case .secureRemote:
-            return L10n.text("ui.connection_profile_secure_address")
-        case .tailscaleMagicDNS, .tailscaleIP:
-            return L10n.text("ui.connection_profile_automatic_networks")
-        case .other:
-            return L10n.text("ui.connection_profile_automatic_address")
-        }
     }
 
     private var endpointTransportAssessment: EndpointTransportAssessment {
@@ -1015,7 +996,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private var displayErrorMessage: String? {
-        guard let raw = appStore.lastError ?? localError else {
+        guard let raw = localError ?? appStore.lastError else {
             return nil
         }
         return friendlyConnectionMessage(raw)
@@ -1088,6 +1069,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func beginScanningHost() {
+        localError = nil
         let intent: ConnectionQRCodeScanIntent = appStore.activeConnectionProfile == nil
             ? .initialConnection
             : .addConnectionProfile
@@ -1203,6 +1185,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func switchConnectionProfile(id: String) async {
+        localError = nil
         profileOperationID = id
         defer { profileOperationID = nil }
         do {
@@ -1258,6 +1241,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func save() async {
+        localError = nil
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
@@ -1293,6 +1277,7 @@ struct InitialConnectionSettingsSections: View {
         _ rawValue: String,
         intent: ConnectionQRCodeScanIntent
     ) async -> QRCodeScannerSubmissionResult {
+        localError = nil
         isSavingConnection = true
         guard intent.isValid(activeProfileID: appStore.activeConnectionProfileID) else {
             isSavingConnection = false

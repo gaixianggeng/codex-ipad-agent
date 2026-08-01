@@ -271,6 +271,58 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     }
 }
 
+/// 普通连接界面使用的展示策略。Profile 中的 endpoint 仍用于路由和诊断，
+/// 这里仅返回设备名或可理解的连接范围，避免把 URL / IP 重新暴露给普通用户。
+enum ConnectionOverviewPresentation {
+    static func summary(isConfigured: Bool, profile: ConnectionProfile?) -> String {
+        guard isConfigured else {
+            return L10n.text("ui.mac_connection_not_configured_yet")
+        }
+        guard let profile else {
+            return L10n.text("ui.connection_profile_automatic_address")
+        }
+        if let displayName = humanReadableDisplayName(for: profile) {
+            return displayName
+        }
+        return routeDetail(for: profile)
+    }
+
+    static func routeDetail(for profile: ConnectionProfile) -> String {
+        if profile.tailscaleDNSName != nil ||
+            ConnectionProfile.isTailscaleIPEndpoint(profile.endpoint) {
+            return L10n.text("ui.connection_profile_automatic_networks")
+        }
+        switch ConnectionRouteKind.classify(endpoint: profile.endpoint) {
+        case .loopback:
+            return L10n.text("ui.connection_profile_this_computer")
+        case .localNetwork:
+            return L10n.text("ui.connection_profile_reachable_network")
+        case .secureRemote:
+            return L10n.text("ui.connection_profile_secure_address")
+        case .tailscaleMagicDNS, .tailscaleIP:
+            return L10n.text("ui.connection_profile_automatic_networks")
+        case .other:
+            return L10n.text("ui.connection_profile_automatic_address")
+        }
+    }
+
+    private static func humanReadableDisplayName(for profile: ConnectionProfile) -> String? {
+        let value = profile.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let lowercased = value.lowercased()
+        let routeHosts = profile.connectionCandidates.compactMap {
+            URLComponents(string: $0)?.host?.lowercased()
+        }
+        guard !value.contains("://"),
+              !value.contains(":"),
+              !(value.contains(".") && !value.contains(" ")),
+              !routeHosts.contains(lowercased) else {
+            return nil
+        }
+        return value
+    }
+}
+
 struct ConnectionProfileSettingsItem: Identifiable, Equatable {
     let profile: ConnectionProfile
     let isCurrent: Bool

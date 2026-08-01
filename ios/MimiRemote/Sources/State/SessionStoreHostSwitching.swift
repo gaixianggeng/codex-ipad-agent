@@ -130,7 +130,6 @@ extension SessionStore {
             setConnectionSwitchTargetProfileID(switchTargetProfileID)
         }
         let previousStatus = appStore.connectionStatus
-        let previousError = appStore.lastError
         let previousDuration = appStore.lastConnectionTestDurationMillis
         let previousReport = appStore.lastConnectionTestReport
         let previousRecentReports = appStore.recentConnectionTestReports
@@ -168,7 +167,8 @@ extension SessionStore {
             if connectionTermination == previousSessionTermination,
                appStore.connectionTermination == previousAppTermination {
                 appStore.connectionStatus = previousStatus
-                appStore.lastError = previousError
+                // 新操作开始后不能恢复上一次红色错误；当前操作错误由调用入口的 catch 展示。
+                appStore.lastError = nil
                 appStore.lastConnectionTestDurationMillis = previousDuration
                 appStore.lastConnectionTestReport = previousReport
                 appStore.recentConnectionTestReports = previousRecentReports

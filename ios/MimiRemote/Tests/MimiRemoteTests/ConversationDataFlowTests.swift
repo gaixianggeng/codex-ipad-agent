@@ -243,7 +243,8 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(appStore.activeConnectionProfileID, "mac-a")
         XCTAssertEqual(appStore.token, "token-a")
         XCTAssertEqual(appStore.connectionStatus, .connected("旧 Mac"))
-        XCTAssertEqual(appStore.lastError, "旧连接现场")
+        // 旧连接和会话继续保留，但新操作开始后不能把上一次红色错误恢复回来。
+        XCTAssertNil(appStore.lastError)
         XCTAssertEqual(oldSocket.disconnectCallCount, 0)
         XCTAssertEqual(store.selectedSessionID, running.id)
         XCTAssertEqual(sockets.count, 1)
