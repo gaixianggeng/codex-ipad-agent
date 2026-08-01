@@ -302,9 +302,11 @@ final class AppStore: ObservableObject {
         self.tokenStore = tokenStore
         credentialVault = HostCredentialVault(tokenStore: tokenStore)
         self.routeProbeTimeout = routeProbeTimeout
-        self.prefersLocalConnection = prefersLocalConnection ?? Self.isRunningOnMacCatalyst
+        self.prefersLocalConnection =
+            prefersLocalConnection ?? HostConnectionEndpointPolicy.prefersLocalConnectionByDefault
         self.allowsEphemeralLocalCredentialFallback =
-            allowsEphemeralLocalCredentialFallback ?? Self.allowsDevelopmentEphemeralCredentialFallback
+            allowsEphemeralLocalCredentialFallback ??
+                HostConnectionEndpointPolicy.allowsDevelopmentEphemeralCredentialFallback
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
@@ -892,7 +894,7 @@ final class AppStore: ObservableObject {
         let usesEphemeralLocalCredential: Bool
         let isContinuingEphemeralCredential =
             ephemeralLocalProfileID == targetProfile.id &&
-            Self.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint)
+            HostConnectionEndpointPolicy.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint)
         if isContinuingEphemeralCredential {
             credentialReceipt = await credentialVault.rememberInMemory(prepared.token, for: targetProfile.id)
             usesEphemeralLocalCredential = true
@@ -907,7 +909,7 @@ final class AppStore: ObservableObject {
             } catch {
                 let canUseEphemeralLocalCredential =
                     allowsEphemeralLocalCredentialFallback &&
-                    Self.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint) &&
+                    HostConnectionEndpointPolicy.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint) &&
                     (error as? TokenStoreError)?.isMissingEntitlement == true
                 guard canUseEphemeralLocalCredential else {
                     throw error
@@ -1375,7 +1377,8 @@ final class AppStore: ObservableObject {
                 timeout: min(routeProbeTimeout, 1.5)
             ))
         }
-        let configuredRoute: ActiveConnectionRoute = Self.isLoopbackEndpoint(normalizedEndpoint) ? .local : .configured
+        let configuredRoute: ActiveConnectionRoute =
+            HostConnectionEndpointPolicy.isLoopbackEndpoint(normalizedEndpoint) ? .local : .configured
         candidates.append((endpoint: normalizedEndpoint, route: configuredRoute, timeout: routeProbeTimeout))
 
         var configuredRouteError: Error?
@@ -1939,46 +1942,6 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         connectionStatus = .connected(ActiveConnectionRoute.local.statusTitle)
         lastError = nil
-    }
-
-    private static var isRunningOnMacCatalyst: Bool {
-#if targetEnvironment(macCatalyst)
-        true
-#else
-        false
-#endif
-    }
-
-    /// Catalyst 未签名开发包维持既有 loopback 降级；Simulator 仅在 Debug 构建启用，
-    /// 确保 TestFlight / App Store 包始终要求可用的系统 Keychain。
-    private static var allowsDevelopmentEphemeralCredentialFallback: Bool {
-#if targetEnvironment(macCatalyst)
-        true
-#elseif DEBUG && targetEnvironment(simulator)
-        true
-#else
-        false
-#endif
-    }
-
-    private static func isEligibleEphemeralCredentialEndpoint(_ endpoint: String) -> Bool {
-        if isLoopbackEndpoint(endpoint) {
-            return true
-        }
-#if DEBUG && targetEnvironment(simulator)
-        // Simulator 无法直接访问宿主机 loopback；只放行传输策略已经确认的私网 HTTP，
-        // 公网 HTTPS 即使 Keychain 缺 entitlement 也必须失败，避免扩大凭据驻留范围。
-        return EndpointTransportPolicy.assess(endpoint).status == .allowedPrivateHTTP
-#else
-        return false
-#endif
-    }
-
-    private static func isLoopbackEndpoint(_ endpoint: String) -> Bool {
-        guard let host = URLComponents(string: endpoint)?.host?.lowercased() else {
-            return false
-        }
-        return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
     private func activateConnectionRoute(_ route: ActiveConnectionRoute, endpoint: String) {
