@@ -215,7 +215,32 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertTrue(try JSONDecoder().decode([ConnectionProfile].self, from: persistedProfiles).isEmpty)
     }
 
-    func testMissingKeychainEntitlementNeverFallsBackForRemoteEndpoint() async throws {
+    func testPrivateSimulatorConnectionUsesMemoryWhenKeychainEntitlementIsMissing() async throws {
+        let suiteName = "PairingLinkTests.EphemeralSimulatorCredential.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "simulator-token"
+        ))
+
+        XCTAssertTrue(store.isConfigured)
+        XCTAssertEqual(store.token, "simulator-token")
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://192.168.1.20:8787")
+        XCTAssertNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertNil(defaults.string(forKey: "agentd.activeConnectionProfileID.v1"))
+        XCTAssertNil(defaults.string(forKey: "agentd.endpoint"))
+    }
+
+    func testMissingKeychainEntitlementNeverFallsBackForPublicEndpoint() async throws {
         let suiteName = "PairingLinkTests.RemoteCredential.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -229,16 +254,23 @@ final class PairingLinkTests: XCTestCase {
 
         do {
             _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
-                endpoint: "http://192.168.1.20:8787",
+                endpoint: "https://agent.example.com",
                 token: "remote-token"
             ))
-            XCTFail("远端地址不得降级为进程内凭据")
+            XCTFail("公网地址不得降级为进程内凭据")
         } catch let error as TokenStoreError {
             XCTAssertTrue(error.isMissingEntitlement)
         }
 
         XCTAssertFalse(store.isConfigured)
         XCTAssertTrue(store.connectionProfiles.isEmpty)
+    }
+
+    func testInitialConnectionErrorClassifierRequiresStandaloneHTTP401() {
+        XCTAssertTrue(InitialConnectionErrorClassifier.isCredentialRejection("HTTP 401 Unauthorized"))
+        XCTAssertTrue(InitialConnectionErrorClassifier.isCredentialRejection("unauthorized"))
+        XCTAssertFalse(InitialConnectionErrorClassifier.isCredentialRejection("OSStatus -34018"))
+        XCTAssertFalse(InitialConnectionErrorClassifier.isCredentialRejection("request 14018 failed"))
     }
 
     func testLegacySingleConnectionMigratesWithoutWritingTokenToDefaults() throws {

@@ -48,7 +48,7 @@ actor HostCredentialVault {
         if !forcePersistence, let cached = memoryTokens[profileID] {
             previousToken = cached
         } else {
-            // 临时 loopback 档案转为远端连接时必须重新读取 Keychain，
+            // 临时开发档案转为持久连接时必须重新读取 Keychain，
             // 不能把仅存在于内存的 Token 误判为已经持久化。
             previousToken = try tokenStore.load(profileID: profileID)
         }
@@ -61,8 +61,8 @@ actor HostCredentialVault {
         return previousToken.isEmpty ? .inserted : .replaced(previousToken: previousToken)
     }
 
-    /// 未签入 Catalyst provisioning profile 的本地 Debug 包无法访问数据保护 Keychain。
-    /// loopback 自动配对可以安全地只保留进程内凭据，重启后再向同机 agentd 领取。
+    /// 未签入 provisioning profile 的 Catalyst / Simulator Debug 包可能无法访问 Keychain。
+    /// 受限本地验收连接只保留进程内凭据，重启后必须重新向 agentd 领取。
     func rememberInMemory(_ token: String, for profileID: String) -> HostCredentialWriteReceipt {
         guard let previousToken = memoryTokens.updateValue(token, forKey: profileID) else {
             return .inserted

@@ -304,7 +304,7 @@ final class AppStore: ObservableObject {
         self.routeProbeTimeout = routeProbeTimeout
         self.prefersLocalConnection = prefersLocalConnection ?? Self.isRunningOnMacCatalyst
         self.allowsEphemeralLocalCredentialFallback =
-            allowsEphemeralLocalCredentialFallback ?? Self.isRunningOnMacCatalyst
+            allowsEphemeralLocalCredentialFallback ?? Self.allowsDevelopmentEphemeralCredentialFallback
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
@@ -563,8 +563,8 @@ final class AppStore: ObservableObject {
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {
         if activeConnectionProfileID == ephemeralLocalProfileID {
-            // macOS 本地 Debug 包没有可恢复的 Keychain 项；桌面端后台保留同机短期凭据，
-            // 进程退出后自然清空，下一次启动重新向 loopback agentd 领取。
+            // 开发包没有可恢复的 Keychain 项；后台保留本进程短期凭据，
+            // 进程退出后自然清空，下一次启动必须重新向 agentd 领取。
             return
         }
         credentialLifecycleGeneration &+= 1
@@ -886,14 +886,14 @@ final class AppStore: ObservableObject {
             targetProfile.hostPlatform != activeConnectionProfile?.hostPlatform
 
         // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
-        // 未签入 provisioning profile 的 Catalyst 本机 Debug 包只在 loopback + -34018 时使用进程内凭据。
+        // 未签入 provisioning profile 的开发包只在受限私网 + -34018 时使用进程内凭据。
         let credentialLifecycle = credentialLifecycleGeneration
         let credentialReceipt: HostCredentialWriteReceipt
         let usesEphemeralLocalCredential: Bool
-        let isContinuingEphemeralLoopback =
+        let isContinuingEphemeralCredential =
             ephemeralLocalProfileID == targetProfile.id &&
-            Self.isLoopbackEndpoint(normalizedEndpoint)
-        if isContinuingEphemeralLoopback {
+            Self.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint)
+        if isContinuingEphemeralCredential {
             credentialReceipt = await credentialVault.rememberInMemory(prepared.token, for: targetProfile.id)
             usesEphemeralLocalCredential = true
         } else {
@@ -907,13 +907,13 @@ final class AppStore: ObservableObject {
             } catch {
                 let canUseEphemeralLocalCredential =
                     allowsEphemeralLocalCredentialFallback &&
-                    Self.isLoopbackEndpoint(normalizedEndpoint) &&
+                    Self.isEligibleEphemeralCredentialEndpoint(normalizedEndpoint) &&
                     (error as? TokenStoreError)?.isMissingEntitlement == true
                 guard canUseEphemeralLocalCredential else {
                     throw error
                 }
-                // 仅降级同机 loopback，且只接受明确的 Keychain entitlement 缺失。
-                // Token 不进入 UserDefaults；进程退出后由下一次本机自动配对重新领取。
+                // Catalyst 仅允许同机 loopback；Debug Simulator 允许用于本地验收的私网 HTTP。
+                // Token 不进入 UserDefaults，进程退出即失效；Release / TestFlight 不启用此降级。
                 credentialReceipt = await credentialVault.rememberInMemory(
                     prepared.token,
                     for: targetProfile.id
@@ -995,7 +995,7 @@ final class AppStore: ObservableObject {
     }
 
     func clearPairing() async throws {
-        // 持久化凭据必须先完成 Keychain 删除；临时 loopback 凭据只需清理进程内缓存。
+        // 持久化凭据必须先完成 Keychain 删除；临时开发凭据只需清理进程内缓存。
         // 否则系统暂时禁止 Keychain 访问时，下一次启动会变成“旧 Token + 默认 Endpoint”的半提交状态。
         let nextProfiles: [ConnectionProfile]
         if let activeConnectionProfileID {
@@ -1062,7 +1062,7 @@ final class AppStore: ObservableObject {
     }
 
     /// 只修改非敏感显示名称，不进入连接切换事务，也不读取或写入 Keychain。
-    /// 临时 loopback 档案保持进程内；其它档案先完成编码再发布，避免出现半提交名称。
+    /// 临时开发档案保持进程内；其它档案先完成编码再发布，避免出现半提交名称。
     @discardableResult
     func renameConnectionProfile(id: String, displayName rawDisplayName: String) throws -> Bool {
         guard let profileIndex = connectionProfiles.firstIndex(where: { $0.id == id }) else {
@@ -1946,6 +1946,31 @@ final class AppStore: ObservableObject {
         true
 #else
         false
+#endif
+    }
+
+    /// Catalyst 未签名开发包维持既有 loopback 降级；Simulator 仅在 Debug 构建启用，
+    /// 确保 TestFlight / App Store 包始终要求可用的系统 Keychain。
+    private static var allowsDevelopmentEphemeralCredentialFallback: Bool {
+#if targetEnvironment(macCatalyst)
+        true
+#elseif DEBUG && targetEnvironment(simulator)
+        true
+#else
+        false
+#endif
+    }
+
+    private static func isEligibleEphemeralCredentialEndpoint(_ endpoint: String) -> Bool {
+        if isLoopbackEndpoint(endpoint) {
+            return true
+        }
+#if DEBUG && targetEnvironment(simulator)
+        // Simulator 无法直接访问宿主机 loopback；只放行传输策略已经确认的私网 HTTP，
+        // 公网 HTTPS 即使 Keychain 缺 entitlement 也必须失败，避免扩大凭据驻留范围。
+        return EndpointTransportPolicy.assess(endpoint).status == .allowedPrivateHTTP
+#else
+        return false
 #endif
     }
 
