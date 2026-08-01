@@ -235,6 +235,47 @@ typealias ConnectionRouteVersionProbe = (_ endpoint: String, _ token: String, _ 
 typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async throws -> Void
 typealias LocalAgentPairingClaim = (_ endpoint: String, _ timeout: TimeInterval) async throws -> String
 
+extension AppStore {
+    static func defaultConnectionRouteVersionProbe(
+        endpoint: String,
+        token: String,
+        timeout: TimeInterval
+    ) async throws -> VersionResponse {
+        try await AgentAPIClient(endpoint: endpoint, token: token).version(timeout: min(timeout, 2))
+    }
+
+    func validateConnectionCandidateIdentityAndRefreshHostMetadata(
+        from routeEndpoint: String,
+        profileID: String,
+        expectedRevision: UInt64,
+        expectedInstallationID: String?,
+        profileName: String,
+        token: String,
+        timeout: TimeInterval,
+        versionProbe: ConnectionRouteVersionProbe?
+    ) async throws {
+        let expectedID = expectedInstallationID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let expectedID, !expectedID.isEmpty, let versionProbe else { return }
+        let version = try await versionProbe(routeEndpoint, token, timeout)
+        let actualID = version.installationID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let actualID, !actualID.isEmpty else {
+            throw ConnectionProfileError.installationIdentityRequired
+        }
+        guard actualID == expectedID else {
+            throw ConnectionProfileError.installationIdentityMismatch(profileName: profileName)
+        }
+        _ = refreshConnectionProfileHostMetadata(
+            profileID: profileID,
+            expectedRevision: expectedRevision,
+            version: version
+        )
+    }
+}
+
 enum ActiveConnectionRoute: Equatable {
     case configured
     case local

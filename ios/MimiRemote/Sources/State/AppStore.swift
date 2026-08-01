@@ -1277,7 +1277,10 @@ final class AppStore: ObservableObject {
                         profileID: profile.id,
                         expectedRevision: profile.revision,
                         expectedInstallationID: profile.installationID,
-                        profileName: profile.displayName
+                        profileName: profile.displayName,
+                        token: token,
+                        timeout: routeProbeTimeout,
+                        versionProbe: routeVersionProbe
                     )
                 }
                 // 身份校验必须先于发布 active route；否则 DNSName 被复用时会短暂连接到错误主机。
@@ -1840,39 +1843,6 @@ final class AppStore: ObservableObject {
         )
         // 同时验证控制面和 WebSocket，避免 /healthz 可用但真实 Codex 通道不可用时误选该地址。
         try await runtime.validateDirectGateway()
-    }
-
-    private static func defaultConnectionRouteVersionProbe(
-        endpoint: String,
-        token: String,
-        timeout: TimeInterval
-    ) async throws -> VersionResponse {
-        try await AgentAPIClient(endpoint: endpoint, token: token).version(timeout: min(timeout, 2))
-    }
-
-    private func validateConnectionCandidateIdentityAndRefreshHostMetadata(
-        from routeEndpoint: String,
-        profileID: String,
-        expectedRevision: UInt64,
-        expectedInstallationID: String?,
-        profileName: String
-    ) async throws {
-        guard let expectedInstallationID = Self.normalizedInstallationID(expectedInstallationID) else {
-            return
-        }
-        guard let routeVersionProbe else { return }
-        let version = try await routeVersionProbe(routeEndpoint, token, routeProbeTimeout)
-        guard let actualInstallationID = Self.normalizedInstallationID(version.installationID) else {
-            throw ConnectionProfileError.installationIdentityRequired
-        }
-        guard actualInstallationID == expectedInstallationID else {
-            throw ConnectionProfileError.installationIdentityMismatch(profileName: profileName)
-        }
-        _ = refreshConnectionProfileHostMetadata(
-            profileID: profileID,
-            expectedRevision: expectedRevision,
-            version: version
-        )
     }
 
     /// 探测结果只有在 Profile revision 与 installation_id 都未变化时才能刷新可变名称。
