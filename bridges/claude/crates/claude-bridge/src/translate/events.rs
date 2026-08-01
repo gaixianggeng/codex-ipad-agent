@@ -1937,14 +1937,12 @@ pub fn turn_status_from_result(error_message: Option<&str>) -> (TurnStatus, Opti
 
 pub(crate) const CLAUDE_AUTHENTICATION_REQUIRED_CODE: &str = "claude_authentication_required";
 
-/// 只识别 Claude 顶层认证失败，不把工具内部或普通网络错误误判为登录失效。
-/// 旧版 Claude Code 的文案并不完全稳定，因此同时覆盖 OAuth 过期与刷新失败；
-/// 协议向客户端只暴露稳定 code。普通工具返回的 authentication 文案不能命中。
+/// 只识别 Claude Code 已知的 OAuth 会话过期且刷新失败组合，不把工具、MCP、
+/// 代理或第三方 OAuth 的普通认证失败误判为 Claude 登录失效。协议向客户端只
+/// 暴露稳定 code；未同时包含两个权威片段时 fail closed，继续走通用错误提示。
 pub(crate) fn is_claude_authentication_failure(message: &str) -> bool {
     let normalized = message.trim().to_ascii_lowercase();
-    (normalized.contains("failed to authenticate") && normalized.contains("oauth"))
-        || (normalized.contains("oauth session expired")
-            && normalized.contains("could not be refreshed"))
+    normalized.contains("oauth session expired") && normalized.contains("could not be refreshed")
 }
 
 fn claude_error_code(message: &str) -> Option<&'static str> {
@@ -2540,6 +2538,10 @@ mod tests {
         for unrelated_error in [
             "Invalid authentication credentials",
             "Failed to authenticate third-party tool request",
+            "Failed to authenticate: OAuth provider rejected proxy request",
+            "Failed to authenticate MCP OAuth token",
+            "OAuth session expired",
+            "Could not be refreshed after a third-party OAuth failure",
         ] {
             assert!(!is_claude_authentication_failure(unrelated_error));
             let (_, turn_error) = turn_status_from_result(Some(unrelated_error));
