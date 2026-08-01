@@ -250,6 +250,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         try openSettings()
 
         let tokenUsage = app.descendant(identifier: "settings.tokenUsage")
+        let tokenQuota = app.descendant(identifier: "settings.tokenUsage.quota")
+        let tokenActivity = app.descendant(identifier: "settings.tokenUsage.activity")
         let activityGrid = app.descendant(identifier: "settings.tokenActivity.grid")
         let activityUnavailable = app.descendant(identifier: "settings.tokenActivity.unavailable")
         let macDevices = app.descendant(identifier: "settings.connectionManagement")
@@ -262,6 +264,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
 
         XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
+        XCTAssertTrue(tokenQuota.waitForExistence(timeout: 4), "Token 模块应展示当前剩余列")
+        XCTAssertTrue(tokenActivity.waitForExistence(timeout: 4), "Token 模块应展示活动列")
         XCTAssertTrue(
             activityGrid.waitForExistence(timeout: 4)
                 || activityUnavailable.waitForExistence(timeout: 1),
@@ -272,6 +276,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
         XCTAssertGreaterThan(tokenUsage.frame.width, 250, "Token 模块应使用完整分组宽度")
+        XCTAssertLessThan(tokenQuota.frame.midX, tokenActivity.frame.midX, "当前剩余应稳定位于活动列左侧")
+        XCTAssertLessThan(tokenQuota.frame.minX, tokenActivity.frame.minX, "Token 两个主模块不得回退为上下堆叠")
         XCTAssertEqual(macDevices.frame.height, 52, accuracy: 1, "Mac 与设备应保持标准行高")
         XCTAssertEqual(appearance.frame.height, 52, accuracy: 1, "偏好项应保持标准行高")
 

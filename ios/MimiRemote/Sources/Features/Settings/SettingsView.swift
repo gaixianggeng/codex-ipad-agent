@@ -28,6 +28,54 @@ struct TokenActivityWeek: Identifiable, Equatable {
     var id: Date { startDate }
 }
 
+struct TokenActivityMonthLabel: Identifiable, Equatable {
+    let weekIndex: Int
+    let date: Date
+
+    var id: Int { weekIndex }
+}
+
+enum TokenActivityGridMetrics {
+    static let spacing: CGFloat = 3
+    static let maximumCellSize: CGFloat = 7
+    static let minimumCellSize: CGFloat = 4
+
+    /// 点格保持可读尺寸，把可用宽度换成最近周数；窄屏减少历史范围而不是横向滚动。
+    static func weekCount(
+        availableWidth: CGFloat,
+        isAccessibilitySize: Bool,
+        maximumWeekCount: Int = 53
+    ) -> Int {
+        // GeometryReader 在布局探测阶段可能给出 0、负数或非有限宽度；此时不生成点阵，避免最小周数反向撑大父容器。
+        guard maximumWeekCount > 0,
+              availableWidth.isFinite,
+              availableWidth >= minimumCellSize else { return 0 }
+        let preferredCellSize: CGFloat = isAccessibilitySize ? 7 : 6
+        let rawCount = Int(
+            floor((max(availableWidth, 0) + spacing) / (preferredCellSize + spacing))
+        )
+        let minimumWeekCount = min(6, maximumWeekCount)
+        let maximumFittingCount = Int(
+            floor((availableWidth + spacing) / (minimumCellSize + spacing))
+        )
+        // 正常卡片至少展示六周；极窄探测宽度则按实际可容纳数量降级，保证点格与间距总宽度不越界。
+        return min(
+            maximumWeekCount,
+            maximumFittingCount,
+            max(rawCount, minimumWeekCount)
+        )
+    }
+
+    static func cellSize(availableWidth: CGFloat, weekCount: Int) -> CGFloat {
+        guard weekCount > 0, availableWidth.isFinite else { return 0 }
+        let width = max(availableWidth, 0)
+        let spacingWidth = spacing * CGFloat(weekCount - 1)
+        guard width > spacingWidth else { return 0 }
+        let fittedSize = (width - spacingWidth) / CGFloat(weekCount)
+        return min(max(fittedSize, minimumCellSize), maximumCellSize)
+    }
+}
+
 enum TokenActivityCalendar {
     static func weeks(
         buckets: [AccountTokenUsageDailyBucket],
@@ -106,6 +154,40 @@ enum TokenActivityCalendar {
             return nil
         }
         return date
+    }
+
+    /// 截短历史窗口后首周仍要有月份锚点；后续标签至少相隔四周，且给末端文字留出空间。
+    static func monthLabels(
+        for weeks: [TokenActivityWeek],
+        minimumWeekSpacing: Int = 4,
+        minimumTrailingWeeks: Int = 3
+    ) -> [TokenActivityMonthLabel] {
+        guard !weeks.isEmpty else { return [] }
+        let minimumWeekSpacing = max(minimumWeekSpacing, 1)
+        let minimumTrailingWeeks = max(minimumTrailingWeeks, 1)
+        var labels: [TokenActivityMonthLabel] = []
+        var lastLabelIndex = -minimumWeekSpacing
+
+        for (index, week) in weeks.enumerated() {
+            let date: Date?
+            if index == 0 {
+                date = week.days.first?.date
+            } else {
+                date = week.days.first {
+                    utcCalendar.component(.day, from: $0.date) == 1
+                }?.date
+            }
+
+            guard let date,
+                  index - lastLabelIndex >= minimumWeekSpacing,
+                  index == 0 || weeks.count - index >= minimumTrailingWeeks
+            else {
+                continue
+            }
+            labels.append(TokenActivityMonthLabel(weekIndex: index, date: date))
+            lastLabelIndex = index
+        }
+        return labels
     }
 
     private static func intensity(tokens: Int64, maximum: Int64) -> Int {
@@ -1264,7 +1346,7 @@ private struct AccountTokenUsageCard: View {
                 wideLayout(tokens: tokens)
                     .frame(minWidth: 620)
             }
-            compactLayout(tokens: tokens)
+            phoneSideBySideLayout(tokens: tokens)
         }
         .padding(18)
         .frame(maxWidth: .infinity)
@@ -1287,7 +1369,7 @@ private struct AccountTokenUsageCard: View {
 
     private func wideLayout(tokens: ThemeTokens) -> some View {
         HStack(alignment: .top, spacing: 20) {
-            quotaPanel(tokens: tokens)
+            quotaPanel(tokens: tokens, usesVerticalContent: false)
                 .frame(width: 236)
 
             Divider()
@@ -1299,48 +1381,52 @@ private struct AccountTokenUsageCard: View {
         .frame(minHeight: 156)
     }
 
-    private func compactLayout(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            quotaPanel(tokens: tokens)
+    private func phoneSideBySideLayout(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            quotaPanel(tokens: tokens, usesVerticalContent: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
 
             Divider()
                 .overlay(tokens.border.opacity(0.72))
 
             activityPanel(tokens: tokens)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    private func quotaPanel(tokens: ThemeTokens) -> some View {
+    private func quotaPanel(tokens: ThemeTokens, usesVerticalContent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.text("ui.current_remaining"))
                 .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
 
-            if dynamicTypeSize.isAccessibilitySize {
+            if usesVerticalContent || dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 14) {
-                    usageRings
+                    usageRings(diameter: compactRingDiameter)
                     usageLegend(tokens: tokens)
                 }
             } else {
                 HStack(alignment: .center, spacing: 16) {
-                    usageRings
+                    usageRings(diameter: 92)
                     usageLegend(tokens: tokens)
                 }
             }
         }
+        .accessibilityIdentifier("settings.tokenUsage.quota")
     }
 
-    private var usageRings: some View {
+    private var compactRingDiameter: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 92 : 84
+    }
+
+    private func usageRings(diameter: CGFloat) -> some View {
         CombinedUsageRingsGraphic(
             items: usageItems,
             expectedRingCount: 3,
-            diameter: dynamicTypeSize.isAccessibilitySize ? 104 : 92,
+            diameter: diameter,
             lineWidth: 6
         )
-        .frame(
-            width: dynamicTypeSize.isAccessibilitySize ? 104 : 92,
-            height: dynamicTypeSize.isAccessibilitySize ? 104 : 92
-        )
+        .frame(width: diameter, height: diameter)
         .accessibilityLabel(L10n.text("ui.current_remaining"))
     }
 
@@ -1370,7 +1456,8 @@ private struct AccountTokenUsageCard: View {
                         Text("\(item.providerName) · \(item.window.label)")
                             .font(themeStore.uiFont(.caption, weight: .medium))
                             .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         Spacer(minLength: 4)
 
@@ -1439,6 +1526,7 @@ private struct AccountTokenUsageCard: View {
                 .accessibilityIdentifier("settings.tokenActivity.unavailable")
             }
         }
+        .accessibilityIdentifier("settings.tokenUsage.activity")
     }
 
     private func activityTitle(tokens: ThemeTokens) -> some View {
@@ -1526,59 +1614,63 @@ private struct AccountUsageRefreshButton: View {
 private struct TokenActivityDotGrid: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
 
     let buckets: [AccountTokenUsageDailyBucket]
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let weeks = TokenActivityCalendar.weeks(buckets: buckets)
-        let activeDayCount = weeks
+        let activeDayCount = TokenActivityCalendar.weeks(buckets: buckets)
             .flatMap(\.days)
             .filter { !$0.isFuture && $0.tokens > 0 }
             .count
 
         GeometryReader { proxy in
-            let spacing: CGFloat = 3
-            let availableCell = (proxy.size.width - spacing * 52) / 53
-            // 固定卡片高度内最多使用 7pt 点格；更宽的 iPad 只增加留白，
-            // 不放大到裁掉第七行或破坏左右模块的视觉平衡。
-            let cellSize = min(max(availableCell, 4), 7)
-            let contentWidth = cellSize * 53 + spacing * 52
+            let weekCount = TokenActivityGridMetrics.weekCount(
+                availableWidth: proxy.size.width,
+                isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+            )
+            let weeks = TokenActivityCalendar.weeks(
+                buckets: buckets,
+                weekCount: weekCount
+            )
+            let monthLabels = TokenActivityCalendar.monthLabels(for: weeks)
+            let spacing = TokenActivityGridMetrics.spacing
+            let cellSize = TokenActivityGridMetrics.cellSize(
+                availableWidth: proxy.size.width,
+                weekCount: weekCount
+            )
+            let contentWidth = cellSize * CGFloat(weekCount)
+                + spacing * CGFloat(max(weekCount - 1, 0))
             let gridHeight = cellSize * 7 + spacing * 6
 
-            ScrollView(.horizontal) {
-                ZStack(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: spacing) {
-                        ForEach(weeks) { week in
-                            VStack(spacing: spacing) {
-                                ForEach(week.days) { day in
-                                    RoundedRectangle(
-                                        cornerRadius: min(2.2, cellSize * 0.3),
-                                        style: .continuous
-                                    )
-                                    .fill(fill(for: day, tokens: tokens))
-                                    .frame(width: cellSize, height: cellSize)
-                                }
+            ZStack(alignment: .topLeading) {
+                HStack(alignment: .top, spacing: spacing) {
+                    ForEach(weeks) { week in
+                        VStack(spacing: spacing) {
+                            ForEach(week.days) { day in
+                                RoundedRectangle(
+                                    cornerRadius: min(2.2, cellSize * 0.3),
+                                    style: .continuous
+                                )
+                                .fill(fill(for: day, tokens: tokens))
+                                .frame(width: cellSize, height: cellSize)
                             }
                         }
                     }
-                    .offset(y: 19)
-
-                    ForEach(Array(weeks.enumerated()), id: \.element.id) { index, week in
-                        if let monthDate = week.days.first(where: isFirstDayOfMonth)?.date {
-                            Text(monthText(monthDate))
-                                .font(themeStore.uiFont(size: 9, weight: .medium))
-                                .foregroundStyle(tokens.tertiaryText)
-                                .fixedSize()
-                                .offset(x: CGFloat(index) * (cellSize + spacing))
-                        }
-                    }
                 }
-                .frame(width: contentWidth, height: gridHeight + 19, alignment: .topLeading)
+                .offset(y: 19)
+
+                ForEach(monthLabels) { label in
+                    Text(monthText(label.date))
+                        .font(themeStore.uiFont(size: 9, weight: .medium))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .fixedSize()
+                        .offset(x: CGFloat(label.weekIndex) * (cellSize + spacing))
+                }
             }
-            .scrollIndicators(.hidden)
-            .defaultScrollAnchor(.trailing)
+            .frame(width: contentWidth, height: gridHeight + 19, alignment: .topLeading)
         }
         .frame(height: 86)
         .accessibilityElement(children: .ignore)
@@ -1602,10 +1694,6 @@ private struct TokenActivityDotGrid: View {
         case 4: return tokens.accent.opacity(0.92)
         default: return tokens.secondaryText.opacity(0.09 + contrastBoost)
         }
-    }
-
-    private func isFirstDayOfMonth(_ day: TokenActivityDay) -> Bool {
-        TokenActivityCalendar.utcCalendar.component(.day, from: day.date) == 1
     }
 
     private func monthText(_ date: Date) -> String {
