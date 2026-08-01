@@ -1848,7 +1848,7 @@ extension ConversationDataFlowTests {
             sessions: [],
             projectSessions: [project.id: []],
             createSessionResponse: try makeCreateSessionResponse(session: created),
-            messagesResult: []
+            messagesError: AgentAPIError.server(status: 404, message: "no rollout found")
         )
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
@@ -1889,7 +1889,12 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(store.sessions.contains { $0.id == draftID })
         XCTAssertTrue(conversationStore.messages(for: draftID).isEmpty)
         XCTAssertTrue(conversationStore.messages(for: created.id).contains { $0.content == "轮询后发送第一条消息" })
+        XCTAssertFalse(conversationStore.hasLoadedHistory(sessionID: created.id), "运行中的新线程不能被标记成已加载空历史")
+        XCTAssertTrue(client.requestedMessageSessionIDs.isEmpty, "首轮 ACK 后应直接接入事件流，不能同步读取尚未就绪的 rollout")
+        XCTAssertNil(store.selectedHistorySavingsNotice)
+        XCTAssertNil(store.errorMessage)
         XCTAssertEqual(sockets.count, 1)
+        XCTAssertEqual(sockets.first?.replayBufferedEventsByConnect, [true])
     }
 
     // 回归：新建草稿必须保留入口选择的 runtime，直到首条消息真正创建远端会话。
@@ -3319,7 +3324,11 @@ extension ConversationDataFlowTests {
         client.failHistoryRequest(at: 1, with: MockError.timeout)
         await manualRefreshTask.value
 
-        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
+        let notice = try XCTUnwrap(store.selectedHistorySavingsNotice)
+        XCTAssertEqual(notice.kind, .fullFailed)
+        XCTAssertEqual(notice.message, L10n.text("ui.the_complete_history_failed_to_load_the_content"))
+        XCTAssertFalse(notice.message.contains("过大"), "普通超时不能推断为内容过大")
+        XCTAssertFalse(notice.message.localizedCaseInsensitiveContains("too large"), "Generic failures must not imply oversized history")
         XCTAssertEqual(
             store.statusMessage,
             L10n.format("ui.full_history_loading_failed_value", MockError.timeout.localizedDescription)
