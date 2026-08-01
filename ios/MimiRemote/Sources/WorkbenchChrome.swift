@@ -525,6 +525,10 @@ enum WorkbenchSidebarSurfaceMetrics {
     static let overlayWidth: CGFloat = 300
     static let outerInset: CGFloat = 12
     static let cornerRadius: CGFloat = 18
+    // 展开态只从列表末端预留的窄条接管横向拖动；关闭态只捕获屏幕最左侧窄边缘。
+    static let openDragStripWidth: CGFloat = 22
+    static let openDragStripVerticalInset: CGFloat = 72
+    static let closedEdgeDragWidth: CGFloat = 22
 }
 
 /// iPad 工作台的图标型操作统一使用同一套光学尺寸；系统工具栏或 ButtonStyle 负责材质与按压反馈。
@@ -702,6 +706,8 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
                 .contentShape(Circle())
         }
         .foregroundStyle(tokens.primaryText)
+        // 与触控、指针和 VoiceOver 共用同一个 action，不新增第二套 visibility 状态。
+        .keyboardShortcut("s", modifiers: [.control, .command])
     }
 }
 

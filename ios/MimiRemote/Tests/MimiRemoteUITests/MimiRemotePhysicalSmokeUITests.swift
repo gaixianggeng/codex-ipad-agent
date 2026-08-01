@@ -181,6 +181,108 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
     }
 
+    func testWideIPadFloatingSidebarDragDoesNotStealSessionRowGestures() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "浮动侧栏拖动只在 iPad regular width 下验收。"
+        )
+        rotate(to: .landscapeLeft)
+
+        if firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 3
+        ) == nil,
+           let showSidebar = firstExistingButton(
+               labels: ["显示边栏", "Show Sidebar"],
+               timeout: 5
+           ) {
+            showSidebar.tap()
+        }
+
+        guard let collapseSidebar = firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 8
+        ) else {
+            return XCTFail("iPad 浮动侧栏应先处于展开态")
+        }
+        let identifiedSessionRows = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sessions.row."))
+        let seededSessionRows = app.buttons.matching(
+            NSPredicate(
+                format: "label CONTAINS %@ OR label CONTAINS %@",
+                "mimi-remote",
+                "sample-app"
+            )
+        )
+        // SwiftUI 在部分系统版本会把 row 合并为整行 Button，而不透传子视图 identifier。
+        // 优先使用稳定 identifier；Debug 样例下回退到已知工作区标签，避免把定位器缺失误报成功能失败。
+        let sessionRow = identifiedSessionRows.firstMatch.exists
+            ? identifiedSessionRows.firstMatch
+            : seededSessionRows.firstMatch
+        guard sessionRow.waitForExistence(timeout: 12) else {
+            return XCTFail("Debug 样例应提供可交互的会话 row")
+        }
+
+        let sidebarTrailingX = collapseSidebar.frame.maxX
+        sessionRow.swipeUp()
+        XCTAssertEqual(
+            collapseSidebar.frame.maxX,
+            sidebarTrailingX,
+            accuracy: 2,
+            "纵向列表手势不得改变侧栏 progress"
+        )
+        sessionRow.swipeLeft()
+        XCTAssertEqual(
+            collapseSidebar.frame.maxX,
+            sidebarTrailingX,
+            accuracy: 2,
+            "row 横向 swipe 不得被侧栏拖动 recognizer 接管"
+        )
+
+        let window = app.windows.firstMatch
+        let width = max(window.frame.width, 1)
+        let closeStart = window.coordinate(
+            // 300pt 列内扣除 12pt surface outer inset 后，22pt 拖动带中心是 x=277。
+            withNormalizedOffset: CGVector(dx: 277 / width, dy: 0.5)
+        )
+        let closeEnd = window.coordinate(
+            withNormalizedOffset: CGVector(dx: 12 / width, dy: 0.5)
+        )
+        closeStart.press(forDuration: 0.1, thenDragTo: closeEnd)
+        guard firstExistingButton(
+            labels: ["显示边栏", "Show Sidebar"],
+            timeout: 8
+        ) != nil else {
+            return XCTFail("trailing 22pt 拖动带关闭后应显示等价的展开按钮")
+        }
+
+        let openStart = window.coordinate(
+            withNormalizedOffset: CGVector(dx: 11 / width, dy: 0.5)
+        )
+        let openEnd = window.coordinate(
+            withNormalizedOffset: CGVector(dx: 310 / width, dy: 0.5)
+        )
+        openStart.press(forDuration: 0.1, thenDragTo: openEnd)
+
+        guard let reopenedCollapseSidebar = firstExistingButton(
+            labels: ["收起会话列表", "Collapse conversation list"],
+            timeout: 8
+        ) else {
+            return XCTFail("leading 22pt edge 应能直接重新展开侧栏")
+        }
+        XCTAssertEqual(
+            reopenedCollapseSidebar.frame.maxX,
+            sidebarTrailingX,
+            accuracy: 2,
+            "重新展开后侧栏应回到原始展开位置"
+        )
+
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "MIM-72-iPad-sidebar-drag-row-competition"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     func testVoiceProviderInlineSelectionSurvivesRotation() throws {
         try enterWorkbenchIfNeeded()
         try openSettings()

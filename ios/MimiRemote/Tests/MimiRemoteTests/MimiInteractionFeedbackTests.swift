@@ -43,6 +43,14 @@ final class MimiInteractionFeedbackTests: XCTestCase {
         )
     }
 
+    func testGestureSettlingReduceMotionUsesShortEaseOutWithoutSpatialOvershoot() {
+        let resolution = MimiMotion.gestureSettling.resolve(reduceMotion: true)
+
+        XCTAssertEqual(resolution.curve, .easeOut(duration: 0.12))
+        XCTAssertFalse(resolution.allowsScale)
+        XCTAssertFalse(resolution.allowsSpatialMotion)
+    }
+
     func testHapticEventsMapToExactlyOneDistinctPattern() {
         let patterns = MimiHapticEvent.allCases.map(\.pattern)
 

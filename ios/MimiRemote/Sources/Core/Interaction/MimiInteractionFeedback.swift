@@ -92,6 +92,26 @@ enum MimiMotion: CaseIterable {
     func animation(reduceMotion: Bool) -> Animation {
         resolve(reduceMotion: reduceMotion).animation
     }
+
+    func animation(reduceMotion: Bool, initialVelocity: CGFloat) -> Animation {
+        let resolution = resolve(reduceMotion: reduceMotion)
+        guard case .spring(let response, let dampingFraction, _) = resolution.curve,
+              response > 0 else {
+            return resolution.animation
+        }
+
+        // SwiftUI 的 response/dampingFraction 没有速度入口；换算为等价二阶弹簧后，
+        // 侧栏可把手指释放速度连续交给 settling，同时仍复用同一语义 token。
+        let angularFrequency = 2 * Double.pi / response
+        let stiffness = angularFrequency * angularFrequency
+        let damping = 2 * dampingFraction * angularFrequency
+        return .interpolatingSpring(
+            mass: 1,
+            stiffness: stiffness,
+            damping: damping,
+            initialVelocity: Double(initialVelocity)
+        )
+    }
 }
 
 /// 高频触控面的统一即时按压反馈。
