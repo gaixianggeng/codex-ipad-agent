@@ -1852,8 +1852,24 @@ extension ConversationDataFlowTests {
         )
         let conversationStore = ConversationStore()
         var sockets: [MockWebSocketClient] = []
-        let appStore = AppStore()
-        appStore.token = "test-token"
+        let suiteName = "ConversationDataFlowTests.EmptyOptimistic.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "empty-optimistic",
+            displayName: "Empty Optimistic",
+            endpoint: "http://127.0.0.1:8787",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("test-token".utf8), account: "agentd-profile.\(profile.id)")
+        // 生产代码要求连接档案与 Keychain 凭据同时存在；测试夹具也必须建立同一认证状态。
+        let appStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertNotNil(appStore.authenticatedCredentialFingerprint)
         let store = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
