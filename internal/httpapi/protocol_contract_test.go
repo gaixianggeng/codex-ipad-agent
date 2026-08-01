@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
@@ -60,6 +61,8 @@ func TestVersionResponseMatchesSharedCurrentGoldenFixture(t *testing.T) {
 	if err := json.Unmarshal(readProtocolFixture(t, "version-current.json"), &expected); err != nil {
 		t.Fatalf("当前 golden fixture 不是合法 JSON：%v", err)
 	}
+	// 共享 fixture 使用 darwin 供 iOS 解码测试；Go 端按实际构建目标验证动态平台值。
+	expected.(map[string]any)["platform"] = runtime.GOOS
 	actualJSON, _ := json.Marshal(actual)
 	expectedJSON, _ := json.Marshal(expected)
 	if string(actualJSON) != string(expectedJSON) {

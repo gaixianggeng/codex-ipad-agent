@@ -760,7 +760,10 @@ func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t 
 		t.Fatalf("version 应返回 200，got=%d body=%s", version.Code, version.Body.String())
 	}
 	versionBody := decodeJSON(t, version)
-	if versionBody["name"] != "agentd" || versionBody["version"] != "test" || versionBody["installation_id"] != testInstallationID {
+	if versionBody["name"] != "agentd" ||
+		versionBody["version"] != "test" ||
+		versionBody["installation_id"] != testInstallationID ||
+		versionBody["platform"] != runtime.GOOS {
 		t.Fatalf("version 响应必须保留移动端所需字段：%v", versionBody)
 	}
 	capabilities, ok := versionBody["capabilities"].([]any)

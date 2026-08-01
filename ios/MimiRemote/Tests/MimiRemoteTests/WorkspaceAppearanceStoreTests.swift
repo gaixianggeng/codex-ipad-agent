@@ -56,7 +56,10 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .redChamber,
             .greekMythology,
             .sherlockHolmes,
-            .aliceWonderland
+            .aliceWonderland,
+            .onePiece,
+            .naruto,
+            .digimon
         ]
         let newCharacters = newStyles.flatMap {
             WorkspaceAppearanceStore.characters(for: $0)
@@ -69,8 +72,8 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
                 "\(style.rawValue) 应提供 10 个角色"
             )
         }
-        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 60)
-        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 60)
+        XCTAssertEqual(Set(newCharacters.map(\.id)).count, 90)
+        XCTAssertEqual(Set(newCharacters.map(\.assetName)).count, 90)
         XCTAssertTrue(WorkspaceAppearanceStore.characters(for: .emoji).isEmpty)
     }
 
@@ -83,7 +86,10 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
             .redChamber,
             .greekMythology,
             .sherlockHolmes,
-            .aliceWonderland
+            .aliceWonderland,
+            .onePiece,
+            .naruto,
+            .digimon
         ]
 
         for style in newStyles {
@@ -111,10 +117,52 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         for style in WorkspaceIconStyle.allCases {
             let englishName = L10n.text(style.titleKey, language: .english)
             let chineseName = L10n.text(style.titleKey, language: .simplifiedChinese)
+            let compactEnglishName = L10n.text(style.compactTitleKey, language: .english)
+            let compactChineseName = L10n.text(
+                style.compactTitleKey,
+                language: .simplifiedChinese
+            )
 
             XCTAssertNotEqual(englishName, style.titleKey)
             XCTAssertNotEqual(chineseName, style.titleKey)
+            XCTAssertNotEqual(compactEnglishName, style.compactTitleKey)
+            XCTAssertNotEqual(compactChineseName, style.compactTitleKey)
+            XCTAssertFalse(compactEnglishName.isEmpty)
+            XCTAssertFalse(compactChineseName.isEmpty)
         }
+    }
+
+    func testHiddenStylesStayAvailableOnlyWhileCurrentlySelected() {
+        XCTAssertEqual(
+            WorkspaceIconStyle.visibleStyles,
+            [
+                .journey,
+                .threeKingdoms,
+                .waterMargin,
+                .redChamber,
+                .onePiece,
+                .naruto,
+                .digimon,
+                .emoji
+            ]
+        )
+        XCTAssertLessThanOrEqual(WorkspaceIconStyle.visibleStyles.count, 8)
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .journey),
+            WorkspaceIconStyle.visibleStyles
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .sherlockHolmes),
+            WorkspaceIconStyle.visibleStyles + [.sherlockHolmes]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .aliceWonderland),
+            WorkspaceIconStyle.visibleStyles + [.aliceWonderland]
+        )
+        XCTAssertEqual(
+            WorkspaceIconStyle.selectableStyles(currentStyle: .greekMythology),
+            WorkspaceIconStyle.visibleStyles + [.greekMythology]
+        )
     }
 
     func testBuiltInEmojiPoolKeepsPreviousProductChoices() {
@@ -480,5 +528,59 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         let store = WorkspaceAppearanceStore(defaults: defaults)
         store.setCustomCharacterID("unknown-character", profileID: "mac-a", projectID: "project-1")
         XCTAssertNil(store.customCharacterID(profileID: "mac-a", projectID: "project-1"))
+    }
+
+    func testWorkspaceIdentityMigrationKeepsDestinationCustomPreferences() {
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+        let profileID = "mac-a"
+        let oldID = "legacy-project"
+        let newID = "ws_canonical"
+        store.setCustomCharacterID("nezha", profileID: profileID, projectID: oldID)
+        store.setCustomCharacterID("guanyin", profileID: profileID, projectID: newID)
+        store.setCustomCharacterID(
+            "three-guan-yu",
+            style: .threeKingdoms,
+            profileID: profileID,
+            projectID: oldID
+        )
+        store.setCustomCharacterID(
+            "three-zhuge-liang",
+            style: .threeKingdoms,
+            profileID: profileID,
+            projectID: newID
+        )
+        store.setCustomEmoji("🐱", profileID: profileID, projectID: oldID)
+        store.setCustomEmoji("🤖", profileID: profileID, projectID: newID)
+
+        store.migrateProjectIdentity(
+            profileID: profileID,
+            from: oldID,
+            to: newID
+        )
+
+        XCTAssertEqual(
+            store.customCharacterID(style: .journey, profileID: profileID, projectID: newID),
+            "guanyin"
+        )
+        XCTAssertEqual(
+            store.customCharacterID(
+                style: .threeKingdoms,
+                profileID: profileID,
+                projectID: newID
+            ),
+            "three-zhuge-liang"
+        )
+        XCTAssertEqual(store.customEmoji(profileID: profileID, projectID: newID), "🤖")
+        XCTAssertNil(
+            store.customCharacterID(style: .journey, profileID: profileID, projectID: oldID)
+        )
+        XCTAssertNil(
+            store.customCharacterID(
+                style: .threeKingdoms,
+                profileID: profileID,
+                projectID: oldID
+            )
+        )
+        XCTAssertNil(store.customEmoji(profileID: profileID, projectID: oldID))
     }
 }

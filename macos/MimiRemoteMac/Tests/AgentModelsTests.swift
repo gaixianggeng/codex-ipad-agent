@@ -2,6 +2,25 @@ import XCTest
 @testable import MimiRemoteMac
 
 final class AgentModelsTests: XCTestCase {
+    func testPairingExpiryStatusDescribesOnlyTheTimeBoundary() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let status = PairingExpiryStatus(rawValue: "")
+
+        XCTAssertEqual(
+            status.statusText(at: now, expiryDate: now.addingTimeInterval(10 * 60)),
+            "10 分钟后失效"
+        )
+        XCTAssertEqual(
+            status.statusText(at: now, expiryDate: now),
+            "二维码已失效"
+        )
+        XCTAssertEqual(PairingExpiryStatus.fallbackText(for: "10 分钟后失效"), "10 分钟后失效")
+        XCTAssertFalse(
+            status.statusText(at: now, expiryDate: now.addingTimeInterval(10 * 60))
+                .contains("一次性")
+        )
+    }
+
     func testPairingPayloadContainsOnlyShortLivedFields() throws {
         let raw = Data(#"{"endpoint":"http://100.64.0.8:8787","tailscale_dns_name":"studio.tailnet.ts.net","tailscale_device_name":"studio","pair_url":"mimiremote://pair?pair_sig=abc","pair_expires_at":"2026-07-22T12:00:00Z","warnings":[]}"#.utf8)
         let payload = try JSONDecoder().decode(PairingInfo.self, from: raw)

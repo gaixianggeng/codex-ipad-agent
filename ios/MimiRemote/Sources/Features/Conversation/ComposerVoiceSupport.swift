@@ -1,5 +1,4 @@
 import AVFoundation
-import AudioToolbox
 import SwiftUI
 import UIKit
 
@@ -124,27 +123,12 @@ struct VoiceMicButton: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         // 准备音频会话可能耗时，必须允许用户再次点击取消；否则准备卡住时按钮会永久无响应。
         .disabled(!state.isEnabled)
         .accessibilityLabel(state.accessibilityTitle)
         .accessibilityValue(state.accessibilityValue)
         .accessibilityHint(state.accessibilityHint(usesRealtimeTranscription: usesRealtimeTranscription))
-    }
-}
-
-struct ComposerPressButtonStyle: ButtonStyle {
-    let reduceMotion: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            // 玻璃键帽用很短的缩放和明度变化确认按压；降低动态效果时只保留明度反馈。
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
-            .opacity(configuration.isPressed ? 0.82 : 1)
-            .animation(
-                .easeOut(duration: reduceMotion ? 0 : 0.08),
-                value: configuration.isPressed
-            )
     }
 }
 
@@ -296,27 +280,6 @@ final class VoiceLevelMeter: ObservableObject {
     func reset() {
         samples = Array(repeating: 0, count: VoiceLevelMeter.barCount)
         previousLevel = 0
-    }
-}
-
-@MainActor
-enum VoiceHaptics {
-    private static let recordingStartGenerator = UIImpactFeedbackGenerator(style: .heavy)
-    private static let recordingReadyGenerator = UINotificationFeedbackGenerator()
-
-    static func prepareRecordingStarted() {
-        recordingStartGenerator.prepare()
-        recordingReadyGenerator.prepare()
-    }
-
-    static func recordingStarted() {
-        // 语音输入的唯一震动锚点：只有录音器已经开始采样后才震动。
-        // 用户感受到这次反馈，就可以立即开口。
-        recordingStartGenerator.impactOccurred(intensity: 1.0)
-        recordingReadyGenerator.notificationOccurred(.success)
-        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-        recordingStartGenerator.prepare()
-        recordingReadyGenerator.prepare()
     }
 }
 
@@ -666,7 +629,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
 
         isPreparing = true
-        VoiceHaptics.prepareRecordingStarted()
+        MimiHaptics.prepare(.commit)
 
         let pendingAudioSessionCleanup = audioSessionCleanupTask
         Task {
@@ -715,7 +678,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         noticeMessage = nil
 
         isPreparing = true
-        VoiceHaptics.prepareRecordingStarted()
+        MimiHaptics.prepare(.commit)
         let session = AppleSpeechTranscriptionSession(audioSessionCoordinator: audioSessionCoordinator)
         appleSession = session
         let pendingAudioSessionCleanup = audioSessionCleanupTask
@@ -739,14 +702,29 @@ final class VoiceInputController: NSObject, ObservableObject {
                 try await session.start(
                     locale: locale,
                     onTranscript: { [weak self] transcript in
-                        guard self?.activeProvider == .apple else { return }
+                        guard self?.activeProvider == .apple,
+                              self?.startRequestID == requestID else {
+                            return
+                        }
                         onTranscript(transcript)
                     },
                     onLevel: { [weak self] level in
+                        guard self?.activeProvider == .apple,
+                              self?.startRequestID == requestID else {
+                            return
+                        }
                         self?.levelMeter.push(level)
                     },
                     onFailure: { [weak self, weak session] error in
-                        guard let self, let session, activeProvider == .apple else { return }
+                        guard let self,
+                              let session,
+                              activeProvider == .apple,
+                              startRequestID == requestID else {
+                            return
+                        }
+                        // 结果流可能在 session.start() 返回前就失败；先让本次请求失效，
+                        // 防止外层启动任务随后又把已经失败的会话标成录音中。
+                        startRequestID = nil
                         errorMessage = userFacingAppleSpeechError(error)
                         isPreparing = false
                         isRecording = false
@@ -765,7 +743,8 @@ final class VoiceInputController: NSObject, ObservableObject {
                 isPreparing = false
                 isRecording = true
                 levelMeter.prepareForRecording()
-                VoiceHaptics.recordingStarted()
+                // 录音器真正开始采样后只发出一次 commit；准备和持续录音状态不重复触发。
+                MimiHaptics.fire(.commit)
             } catch is CancellationError {
                 await session.cancel()
                 if startRequestID == requestID {
@@ -897,7 +876,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         Task {
             try? await audioSessionCoordinator.prewarm()
         }
-        VoiceHaptics.prepareRecordingStarted()
+        MimiHaptics.prepare(.commit)
     }
 
     private func startRecording(requestID: UUID) async throws {
@@ -929,7 +908,8 @@ final class VoiceInputController: NSObject, ObservableObject {
             levelMeter.prepareForRecording()
             isPreparing = false
             isRecording = true
-            VoiceHaptics.recordingStarted()
+            // 录音器真正开始采样后只发出一次 commit；准备和持续录音状态不重复触发。
+            MimiHaptics.fire(.commit)
             startMetering()
         } catch {
             await audioSessionCoordinator.deactivate(activation)

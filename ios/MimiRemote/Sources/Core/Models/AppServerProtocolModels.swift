@@ -402,6 +402,31 @@ struct CodexAppServerRequestBuilder {
         ]))
     }
 
+    /// 无 cwd 列表只用于 agentd 的受控全局发现。客户端不携带项目过滤器，也不
+    /// 依赖 experimental parent/ancestor API；路径与仓库身份裁剪完全由 gateway 完成。
+    func controlledGlobalThreadList(
+        limit: Int? = 50,
+        cursor: String? = nil
+    ) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
+            "limit": limit.map { .int(Int64($0)) },
+            "cursor": cursor.map { .string($0) },
+            "sortKey": .string("updated_at"),
+            "sortDirection": .string("desc"),
+            // thread/list 省略 sourceKinds 时只返回交互式会话。显式加入 subAgent，
+            // 才能发现 Codex 从另一聊天派发、但没有 parentThreadId 的独立任务。
+            // gateway 仍会按授权项目和 Git 仓库身份逐条裁剪这些全局结果。
+            "sourceKinds": .array([
+                .string("cli"),
+                .string("vscode"),
+                .string("appServer"),
+                .string("subAgent"),
+            ]),
+            "archived": .bool(false),
+            "useStateDbOnly": .bool(false)
+        ]))
+    }
+
     func threadSearch(
         query: String,
         limit: Int? = 50,
@@ -444,6 +469,11 @@ struct CodexAppServerRequestBuilder {
 
     func accountRateLimitsRead() -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "account/rateLimits/read")
+    }
+
+    func accountUsageRead() -> CodexAppServerRequestSpec {
+        // 该方法在 app-server schema 中没有 params；省略字段可兼容严格校验版本。
+        CodexAppServerRequestSpec(method: "account/usage/read", params: nil)
     }
 
     func threadStart(projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {

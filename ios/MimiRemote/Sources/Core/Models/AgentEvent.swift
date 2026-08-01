@@ -625,6 +625,65 @@ extension AgentEventMetadata {
     )
 }
 
+enum CodexMCPElicitationPresentation: Equatable {
+    case form
+    case confirmation
+    case unsupported
+}
+
+/// MCP form 只有在当前客户端能完整表达每个字段时才进入补充信息表单。
+/// Codex 工具审批必须带精确的私有标记；空 schema、未知字段类型或未知 mode
+/// 都不能靠消息文案猜测授权意图，统一 fail closed。
+func codexMCPElicitationPresentation(
+    params: [String: CodexAppServerJSONValue]
+) -> CodexMCPElicitationPresentation {
+    let mode = params["mode"]?.stringValue?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    if mode == "url" {
+        return .confirmation
+    }
+    if let mode,
+       !mode.isEmpty,
+       !["form", "openai/form", "openai-form"].contains(mode) {
+        return .unsupported
+    }
+    if CodexMCPToolApprovalProtocol.isToolCall(params) {
+        return .confirmation
+    }
+
+    guard let properties = params["requestedSchema"]?
+        .objectValue?["properties"]?.objectValue,
+        !properties.isEmpty,
+        properties.values.allSatisfy(codexMCPFormPropertyIsRenderable)
+    else {
+        return .unsupported
+    }
+    return .form
+}
+
+private func codexMCPFormPropertyIsRenderable(_ value: CodexAppServerJSONValue) -> Bool {
+    guard let schema = value.objectValue else {
+        return false
+    }
+    switch schema["type"]?.stringValue?.lowercased() {
+    case "string", "boolean", "integer", "number":
+        return true
+    case "array":
+        guard let items = schema["items"]?.objectValue else {
+            return false
+        }
+        return items["type"]?.stringValue?.lowercased() == "string"
+            || items["enum"]?.arrayValue?.isEmpty == false
+            || items["anyOf"]?.arrayValue?.isEmpty == false
+    case nil:
+        return schema["enum"]?.arrayValue?.isEmpty == false
+            || schema["oneOf"]?.arrayValue?.isEmpty == false
+    default:
+        return false
+    }
+}
+
 struct CodexAppServerEventProjector {
     private struct StreamedTextKey: Hashable {
         let sessionID: SessionID?
@@ -712,11 +771,15 @@ struct CodexAppServerEventProjector {
             )
         case "item/started":
             rememberAgentMessageKind(from: params, metadata: metadata)
-            return startedCommandItemEvent(params: params, metadata: metadata)
+            return startedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
-            let event = completedAgentMessageEvent(params: params, metadata: metadata)
+            let event = completedUserMessageEvent(params: params, metadata: metadata)
+                ?? completedAgentMessageEvent(params: params, metadata: metadata)
                 ?? completedImageItemEvent(params: params, metadata: metadata)
+                // collabAgentToolCall 的 receiverThreadIds 是子会话关系的唯一可信来源。
+                // 必须先于通用工具活动投影处理，否则它会被 processItemCompleted 吞掉。
+                ?? collabSubagentContextEvent(params: params, metadata: metadata)
                 ?? completedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
             if let itemID = metadata.itemID {
@@ -764,18 +827,23 @@ struct CodexAppServerEventProjector {
             }
             return .userInputRequest(request, metadata)
         }
-        if request.method == "mcpServer/elicitation/request",
-           params["mode"]?.stringValue != "url",
-           !CodexMCPToolApprovalProtocol.isToolCall(params) {
-            let metadata = makeMetadata(from: params)
-            guard let userInput = mcpElicitationUserInputRequest(
-                from: params,
-                requestID: request.id.description,
-                metadata: metadata
-            ) else {
+        if request.method == "mcpServer/elicitation/request" {
+            switch codexMCPElicitationPresentation(params: params) {
+            case .form:
+                let metadata = makeMetadata(from: params)
+                guard let userInput = mcpElicitationUserInputRequest(
+                    from: params,
+                    requestID: request.id.description,
+                    metadata: metadata
+                ) else {
+                    return nil
+                }
+                return .userInputRequest(userInput, metadata)
+            case .confirmation:
+                break
+            case .unsupported:
                 return nil
             }
-            return .userInputRequest(userInput, metadata)
         }
         guard isApprovalLike(method: request.method, params: params) else {
             return nil
@@ -783,6 +851,14 @@ struct CodexAppServerEventProjector {
         let metadata = makeMetadata(from: params)
         let kind = approvalKind(method: request.method, params: params)
         let itemID = metadata.itemID ?? request.id.description
+        let availableDecisions: [String]?
+        if kind == CodexMCPToolApprovalProtocol.kind {
+            availableDecisions = CodexMCPToolApprovalProtocol.availableDecisions(params)
+        } else if kind == "mcp_elicitation" {
+            availableDecisions = ["accept", "decline"]
+        } else {
+            availableDecisions = params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue)
+        }
         return .approvalRequest(
             AgentApprovalRequest(
                 id: firstString(in: params, keys: ["approvalId"]) ?? itemID,
@@ -790,9 +866,7 @@ struct CodexAppServerEventProjector {
                 body: approvalBody(kind: kind, params: params),
                 kind: kind,
                 risk: firstString(in: params, keys: ["risk"]) ?? "high",
-                availableDecisions: kind == CodexMCPToolApprovalProtocol.kind
-                    ? CodexMCPToolApprovalProtocol.availableDecisions(params)
-                    : params["availableDecisions"]?.arrayValue?.compactMap(\.stringValue),
+                availableDecisions: availableDecisions,
                 persistentPermissionRules: eligiblePersistentPermissionRules(from: params)
             ),
             metadata
@@ -813,7 +887,8 @@ struct CodexAppServerEventProjector {
             turnID: turnID,
             itemID: itemID,
             messageID: messageID,
-            clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"]),
+            clientMessageID: firstString(in: params, keys: ["clientUserMessageId", "clientMessageId", "client_message_id"])
+                ?? item?["clientId"]?.stringValue,
             revision: Int(seq),
             createdAt: nil
         )
@@ -864,6 +939,64 @@ struct CodexAppServerEventProjector {
             role: .assistant,
             kind: kind,
             content: text,
+            createdAt: Date(),
+            seq: metadata.seq,
+            revision: metadata.revision ?? 0,
+            sendStatus: .confirmed
+        )
+        return .messageCompleted(message, metadata)
+    }
+
+    private func completedUserMessageEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue,
+              item["type"]?.stringValue == "userMessage",
+              let clientMessageID = metadata.clientMessageID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !clientMessageID.isEmpty else {
+            return nil
+        }
+        let content = (item["content"]?.arrayValue ?? []).compactMap { value -> String? in
+            guard let part = value.objectValue else {
+                return nil
+            }
+            switch part["type"]?.stringValue {
+            case "text":
+                return part["text"]?.stringValue
+            case "image":
+                return L10n.text("ui.image_attachment")
+            case "localImage":
+                guard let path = part["path"]?.stringValue else {
+                    return L10n.text("ui.image_attachment")
+                }
+                return L10n.format("ui.image_value", URL(fileURLWithPath: path).lastPathComponent)
+            case "skill":
+                return part["name"]?.stringValue.map { "[$\($0)]" }
+            case "mention":
+                return part["name"]?.stringValue.map { "[@\($0)]" }
+            default:
+                return nil
+            }
+        }
+        .joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            return nil
+        }
+        let itemID = metadata.itemID ?? item["id"]?.stringValue
+        let messageID = metadata.messageID
+            ?? appServerMessageID(turnID: metadata.turnID, itemID: itemID)
+            ?? itemID
+            ?? UUID().uuidString
+        let message = AgentMessage(
+            id: messageID,
+            sessionID: metadata.sessionID ?? "",
+            clientMessageID: clientMessageID,
+            turnID: metadata.turnID,
+            itemID: itemID,
+            role: .user,
+            content: content,
             createdAt: Date(),
             seq: metadata.seq,
             revision: metadata.revision ?? 0,
@@ -1184,17 +1317,25 @@ struct CodexAppServerEventProjector {
         return .processItemCompleted(message, context, metadata)
     }
 
-    private func startedCommandItemEvent(
+    private func startedProcessItemEvent(
         params: [String: CodexAppServerJSONValue],
         metadata: AgentEventMetadata
     ) -> AgentEvent? {
         guard var item = params["item"]?.objectValue,
-              firstString(in: item, keys: ["type"]) == "commandExecution"
+              let type = firstString(in: item, keys: ["type"]),
+              [
+                "commandExecution",
+                "fileChange",
+                "mcpToolCall",
+                "dynamicToolCall",
+                "collabAgentToolCall",
+                "webSearch",
+              ].contains(type)
         else {
             return nil
         }
-        // started 可能早于 status 字段到达。先投影一条可见的运行中消息，completed 再用
-        // 同一 stable message ID 原位覆盖，避免长命令期间页面看起来没有反馈。
+        // started 可能早于 status 字段到达。命令、Tool 与子 Agent 都先投影可见的运行中消息，
+        // completed 再用同一 stable message ID 原位覆盖，避免查询或等待期间页面看起来卡住。
         if firstString(in: item, keys: ["status"]) == nil {
             item["status"] = .string("inProgress")
         }
@@ -1225,20 +1366,79 @@ struct CodexAppServerEventProjector {
         params: [String: CodexAppServerJSONValue],
         metadata: AgentEventMetadata
     ) -> AgentEvent? {
-        guard let item = params["item"]?.objectValue,
-              let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
-        else {
+        guard let item = params["item"]?.objectValue else {
+            return nil
+        }
+        let task = contextTask(from: item, fallbackStatus: firstString(in: params, keys: ["status"]))
+        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
+        guard task != nil || !subagents.isEmpty else { return nil }
+        return .sessionContext(
+            SessionContextSnapshot(
+                sessionID: metadata.sessionID,
+                threadID: metadata.sessionID,
+                tasks: task.map { [$0] } ?? [],
+                subagents: subagents,
+                updatedAt: Date()
+            ),
+            metadata
+        )
+    }
+
+    private func collabSubagentContextEvent(
+        params: [String: CodexAppServerJSONValue],
+        metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue else {
+            return nil
+        }
+        let subagents = contextSubagents(from: item, parentThreadID: metadata.sessionID)
+        guard !subagents.isEmpty else {
             return nil
         }
         return .sessionContext(
             SessionContextSnapshot(
                 sessionID: metadata.sessionID,
                 threadID: metadata.sessionID,
-                tasks: [task],
+                subagents: subagents,
                 updatedAt: Date()
             ),
             metadata
         )
+    }
+
+    private func contextSubagents(
+        from item: [String: CodexAppServerJSONValue],
+        parentThreadID: SessionID?
+    ) -> [SessionContextSubagent] {
+        guard firstString(in: item, keys: ["type"]) == "collabAgentToolCall",
+              let parentThreadID,
+              !parentThreadID.isEmpty
+        else {
+            return []
+        }
+        let receiverThreadIDs = item["receiverThreadIds"]?.arrayValue?
+            .compactMap(\.stringValue)
+            .filter { rawID in
+                !rawID.isEmpty
+                    && rawID == rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            ?? []
+        let agentStates = item["agentsStates"]?.objectValue ?? [:]
+        return Array(Set(receiverThreadIDs)).sorted().map { childThreadID in
+            let state = agentStates[childThreadID]?.objectValue
+            return SessionContextSubagent(
+                id: childThreadID,
+                parentThreadID: parentThreadID,
+                sessionID: firstString(in: state ?? [:], keys: ["sessionId"]),
+                nickname: firstString(in: item, keys: ["agentNickname", "nickname", "tool"]),
+                role: firstString(in: item, keys: ["agentRole", "role"]),
+                status: firstString(in: state ?? [:], keys: ["status"])
+                    ?? agentStates[childThreadID]?.stringValue
+                    ?? firstString(in: item, keys: ["status"]),
+                statusMessage: firstString(in: state ?? [:], keys: ["message"]),
+                canAcceptDirectInput: state?["canAcceptDirectInput"]?.boolValue
+            )
+        }
     }
 
     private func contextTask(
@@ -1366,7 +1566,7 @@ struct CodexAppServerEventProjector {
                 ?? fallback,
             code: firstString(in: params, keys: ["code"])
                 ?? nestedString(in: params, key: "error", nestedKey: "code"),
-            retryable: params["retryable"]?.boolValue
+            retryable: params["retryable"]?.boolValue ?? params["willRetry"]?.boolValue
         )
     }
 
@@ -1461,7 +1661,7 @@ struct CodexAppServerEventProjector {
             return nil
         }
         let properties = params["requestedSchema"]?.objectValue?["properties"]?.objectValue ?? [:]
-        var questions = properties.keys.sorted().compactMap { key -> AgentUserInputQuestion? in
+        let questions = properties.keys.sorted().compactMap { key -> AgentUserInputQuestion? in
             guard let schema = properties[key]?.objectValue else {
                 return nil
             }
@@ -1478,17 +1678,8 @@ struct CodexAppServerEventProjector {
                 options: options
             )
         }
-        if questions.isEmpty {
-            // openai/form 允许任意 schema。当前 UI 无法安全渲染时，保留一个显式文本回答入口；
-            // 若用户不提交任何内容，runtime 会回 decline 而不是误 accept。
-            questions = [AgentUserInputQuestion(
-                id: "response",
-                header: firstString(in: params, keys: ["serverName"]) ?? "MCP",
-                question: firstString(in: params, keys: ["message"]) ?? L10n.text("ui.mcp_service_request_supplementary_information"),
-                isOther: true,
-                isSecret: false,
-                options: []
-            )]
+        guard !questions.isEmpty else {
+            return nil
         }
         return AgentUserInputRequest(
             id: requestID,
@@ -1538,8 +1729,7 @@ struct CodexAppServerEventProjector {
         let lower = method.lowercased()
         return lower.contains("approval")
             || (method == "mcpServer/elicitation/request"
-                && (params["mode"]?.stringValue == "url"
-                    || CodexMCPToolApprovalProtocol.isToolCall(params)))
+                && codexMCPElicitationPresentation(params: params) == .confirmation)
     }
 
     private func approvalKind(

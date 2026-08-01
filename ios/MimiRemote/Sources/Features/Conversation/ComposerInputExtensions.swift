@@ -109,20 +109,25 @@ struct CompactComposerLeadingControlsShell: View {
 extension ComposerView {
     @ViewBuilder
     var addContentButton: some View {
-        Button {
-            showsAddContentPanel.toggle()
-        } label: {
-            composerToolbarControlLabel(
-                title: nil,
-                systemImage: "plus",
-                accessibilityLabel: L10n.text("ui.add_content")
-            )
+        ZStack {
+            Button {
+                showsAddContentPanel.toggle()
+            } label: {
+                composerToolbarControlLabel(
+                    title: nil,
+                    systemImage: "plus",
+                    accessibilityLabel: L10n.text("ui.add_content")
+                )
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityLabel(L10n.text("ui.add_content"))
+            .accessibilityIdentifier("composer.addContent")
+            .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
+            .disabled(isRequestingCameraAuthorization)
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.add_content"))
-        .accessibilityIdentifier("composer.addContent")
-        .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
-        .disabled(isRequestingCameraAuthorization)
+        // Popover 必须挂在不会参与按压缩放的固定锚点上；否则系统可能在 spring
+        // 回弹途中读取 source rect，让箭头与“+”入口出现瞬时偏移。
+        .frame(width: 44, height: 44)
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
                 skillShortcuts: enabledSkillShortcuts,
@@ -600,7 +605,7 @@ extension ComposerView {
             )
             .contentShape(RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!enabled)
         .accessibilityLabel(isGoalMode ? L10n.text("ui.send_target_task") : (composerState.voiceDraftNeedsReview ? L10n.text("ui.confirm_sending_voice_draft") : L10n.text("ui.send")))
@@ -625,7 +630,7 @@ extension ComposerView {
             .frame(width: 44, height: 44)
             .contentShape(Circle())
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(!canInterruptSelectedSession)
         .opacity(canInterruptSelectedSession ? 1 : 0.52)
         .accessibilityLabel(L10n.text("ui.stop_current_reply"))
@@ -1184,20 +1189,24 @@ extension ComposerView {
             )
         case .files(let targetScope):
             Task {
-                do {
-                    try await sessionStore.fileUploadStore.ensureServerSupportsFileUpload(
-                        endpoint: sessionStore.appStore.connectionEndpoint,
-                        token: sessionStore.appStore.token
-                    )
-                    guard !Task.isCancelled else {
-                        return
-                    }
-                    fileImporterPresentation.present(
-                        FileImporterRequest(targetScope: targetScope)
-                    )
-                } catch {
-                    attachmentErrorMessage = error.localizedDescription
+                let decision = await sessionStore.appStore.refreshCapabilityNegotiationForCurrentHost(
+                    capability: "file_upload_v1"
+                )
+                guard !Task.isCancelled else {
+                    return
                 }
+                guard let capabilityLease = sessionStore.appStore.capabilityLease(
+                    for: "file_upload_v1"
+                ) else {
+                    attachmentErrorMessage = MobileFileUploadError(decision: decision).localizedDescription
+                    return
+                }
+                fileImporterPresentation.present(
+                    FileImporterRequest(
+                        targetScope: targetScope,
+                        capabilityLease: capabilityLease
+                    )
+                )
             }
         }
     }
@@ -1350,7 +1359,7 @@ extension ComposerView {
 
     func handleSelectedFile(
         _ result: Result<[URL], Error>,
-        targetScope: ComposerDraftScopeKey
+        request: FileImporterRequest
     ) {
         switch result {
         case .failure(let error):
@@ -1360,6 +1369,10 @@ extension ComposerView {
             }
             attachmentErrorMessage = error.localizedDescription
         case .success(let urls):
+            guard sessionStore.appStore.isCurrentCapabilityLease(request.capabilityLease) else {
+                attachmentErrorMessage = MobileFileUploadError.hostChanged.localizedDescription
+                return
+            }
             guard let url = urls.first else {
                 return
             }
@@ -1370,7 +1383,7 @@ extension ComposerView {
             attachmentErrorMessage = nil
             sessionStore.fileUploadStore.start(
                 selectedURL: url,
-                targetScope: targetScope,
+                targetScope: request.targetScope,
                 endpoint: sessionStore.appStore.connectionEndpoint,
                 token: sessionStore.appStore.token
             ) { [weak sessionStore] attachment, scope in

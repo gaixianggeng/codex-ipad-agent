@@ -1,0 +1,17 @@
+{
+  "name": "agentd",
+  "version": "future",
+  "installation_id": "00112233-4455-4677-8899-aabbccddeeff",
+  "protocol_revision": 2,
+  "minimum_client_protocol_revision": 1,
+  "capabilities": [
+    "future_safe_path_v2"
+  ],
+  "capability_statuses": [
+    {
+      "name": "future_safe_path_v2",
+      "state": "future_rollout_state",
+      "reason": "future_reason"
+    }
+  ]
+}

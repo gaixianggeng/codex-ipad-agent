@@ -29,6 +29,25 @@ struct UsageSummary: Codable, Hashable {
     }
 }
 
+/// ChatGPT 账号维度的 Token 活动。它与单个 thread 的 UsageSummary 不同：
+/// 数据由 app-server 直接返回，不能用移动端在线期间收到的 turn 通知自行累加。
+struct AccountTokenUsageDailyBucket: Hashable, Identifiable {
+    let startDate: String
+    let tokens: Int64
+
+    var id: String { startDate }
+}
+
+struct AccountTokenUsageSummary: Hashable {
+    let lifetimeTokens: Int64?
+}
+
+struct AccountTokenUsageSnapshot: Hashable {
+    let summary: AccountTokenUsageSummary
+    /// nil 表示当前账号/版本没有返回日粒度历史；空数组表示接口可用但当前没有活动。
+    let dailyUsageBuckets: [AccountTokenUsageDailyBucket]?
+}
+
 // 展示模型与 runtime 模型共享同一空白归一化规则，保持 module-internal。
 extension String {
     var trimmedNonEmpty: String? {
@@ -1161,6 +1180,45 @@ struct AgentErrorPayload: Codable, Hashable {
     let message: String
     let code: String?
     let retryable: Bool?
+}
+
+enum ClaudeAuthenticationRecovery {
+    static let errorCode = "claude_authentication_required"
+    static let loginCommand = "claude"
+
+    static func matches(_ payload: AgentErrorPayload) -> Bool {
+        if payload.code?.caseInsensitiveCompare(errorCode) == .orderedSame {
+            return true
+        }
+        // 兼容尚未升级 bridge 的宿主，只识别 Claude Code 这条足够具体的旧英文错误，
+        // 避免把 Codex 或某个 MCP 工具的普通 authentication failure 错标成 Claude 登录过期。
+        let normalized = payload.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.contains("oauth session expired")
+            && normalized.contains("could not be refreshed")
+    }
+
+    static var title: String {
+        L10n.text("ui.claude_code_login_expired")
+    }
+
+    static var recoveryMessage: String {
+        L10n.text("ui.claude_code_login_expired_recovery")
+    }
+
+    static var activityPayload: ConversationActivityPayload {
+        ConversationActivityPayload(
+            category: .error,
+            displayTitle: title,
+            subtitle: recoveryMessage,
+            status: errorCode
+        )
+    }
+}
+
+extension ConversationActivityPayload {
+    var isClaudeAuthenticationRecovery: Bool {
+        category == .error && status?.caseInsensitiveCompare(ClaudeAuthenticationRecovery.errorCode) == .orderedSame
+    }
 }
 
 enum ConnectionTerminationStatus: Equatable {

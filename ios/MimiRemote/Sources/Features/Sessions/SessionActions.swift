@@ -155,16 +155,26 @@ private struct SessionActionSheetsModifier: ViewModifier {
 }
 
 private struct SessionActionsContextMenuModifier: ViewModifier {
+    @EnvironmentObject private var sessionStore: SessionStore
     @State private var presentation: SessionActionPresentation?
     let session: AgentSession
 
     func body(content: Content) -> some View {
+        let pinActionTitle = sessionStore.isSessionPinned(session.id)
+            ? L10n.text("ui.unpin")
+            : L10n.text("ui.pin_to_top")
+
         content
             .contextMenu {
                 SessionActionMenuContent(
                     session: session,
                     presentation: $presentation
                 )
+            }
+            // 上下文菜单服务触控长按和指针右键；自定义辅助功能动作让 VoiceOver
+            // 无需进入菜单也能执行同一置顶操作，并且直接读取当前状态避免标签滞后。
+            .accessibilityAction(named: Text(pinActionTitle)) {
+                sessionStore.toggleSessionPinned(session)
             }
             .sessionActionSheets(presentation: $presentation)
     }

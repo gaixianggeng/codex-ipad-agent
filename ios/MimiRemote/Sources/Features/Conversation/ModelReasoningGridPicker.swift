@@ -488,7 +488,7 @@ private struct ModelReasoningPickerHeader: View {
             .contentShape(Rectangle())
         }
         .menuStyle(.button)
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.all_models"))
     }
 
@@ -534,7 +534,7 @@ private struct ModelReasoningPickerHeader: View {
             .contentShape(Rectangle())
         }
         .toggleStyle(.button)
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.quick_mode"))
         .accessibilityValue(isFastMode ? L10n.text("ui.already_turned_on") : L10n.text("ui.closed"))
         .accessibilityHint(L10n.text("ui.after_turning_it_on_the_priority_service_speed"))
@@ -773,7 +773,7 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(!isAvailable)
         .hoverEffect(.highlight)
         .accessibilityLabel(
@@ -1049,7 +1049,7 @@ private struct ModelReasoningAccessiblePicker: View {
                 .frame(minHeight: 44)
                 .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
 
             ForEach(layout.efforts) { effort in
                 let isAvailable = activeOption.map {
@@ -1074,7 +1074,7 @@ private struct ModelReasoningAccessiblePicker: View {
                     .frame(minHeight: 44)
                     .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
                 }
-                .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+                .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                 .disabled(!isAvailable)
                 .accessibilityLabel(
                     "\(activeOption.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: layout.kind) } ?? ""), "

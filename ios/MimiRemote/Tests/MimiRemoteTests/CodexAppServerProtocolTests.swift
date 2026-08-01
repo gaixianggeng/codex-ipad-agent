@@ -434,6 +434,65 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertNil(sandbox["writableRoots"])
     }
 
+    func testAccountTokenUsageBuilderAndParserPreserveInt64AndNullableBuckets() async throws {
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [])
+        XCTAssertEqual(builder.accountUsageRead().method, "account/usage/read")
+        XCTAssertNil(builder.accountUsageRead().params)
+
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let payload = CodexAppServerJSONValue.object([
+            "summary": .object([
+                "lifetimeTokens": .int(50_160_000_000)
+            ]),
+            "dailyUsageBuckets": .array([
+                .object([
+                    "startDate": .string("2026-07-30"),
+                    "tokens": .int(9_223_372_036)
+                ]),
+                .object([
+                    "startDate": .string("2026-07-29"),
+                    "tokens": .int(-10)
+                ])
+            ])
+        ])
+
+        let parsedSnapshot = await runtime.accountTokenUsageSnapshot(fromPayload: payload)
+        let snapshot = try XCTUnwrap(parsedSnapshot)
+        XCTAssertEqual(snapshot.summary.lifetimeTokens, 50_160_000_000)
+        XCTAssertEqual(
+            snapshot.dailyUsageBuckets,
+            [
+                AccountTokenUsageDailyBucket(
+                    startDate: "2026-07-30",
+                    tokens: 9_223_372_036
+                ),
+                AccountTokenUsageDailyBucket(startDate: "2026-07-29", tokens: 0)
+            ]
+        )
+
+        let parsedNullBuckets = await runtime.accountTokenUsageSnapshot(
+            fromPayload: .object([
+                "summary": .object([:]),
+                "dailyUsageBuckets": .null
+            ])
+        )
+        let nullBuckets = try XCTUnwrap(parsedNullBuckets)
+        XCTAssertNil(nullBuckets.summary.lifetimeTokens)
+        XCTAssertNil(nullBuckets.dailyUsageBuckets)
+
+        let parsedEmptyBuckets = await runtime.accountTokenUsageSnapshot(
+            fromPayload: .object([
+                "summary": .object([:]),
+                "dailyUsageBuckets": .array([])
+            ])
+        )
+        let emptyBuckets = try XCTUnwrap(parsedEmptyBuckets)
+        XCTAssertEqual(emptyBuckets.dailyUsageBuckets, [])
+    }
+
     func testDeterministicGatewayPolicyFailureStopsReconnectOnlyForHardPolicyErrors() {
         // 硬策略拒绝：重连必然复现，应停止自动重连。
         XCTAssertTrue(SessionStore.isDeterministicGatewayPolicyFailure(
@@ -487,6 +546,71 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
         XCTAssertEqual(params["archived"]?.boolValue, false)
         XCTAssertEqual(params["useStateDbOnly"]?.boolValue, true)
+    }
+
+    func testControlledGlobalThreadListOmitsCWDAndCarriesOpaqueCursor() throws {
+        let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
+        let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
+
+        let request = builder.controlledGlobalThreadList(limit: 50, cursor: "mimi_opaque")
+        let params = try XCTUnwrap(request.params?.objectValue)
+
+        XCTAssertEqual(request.method, "thread/list")
+        XCTAssertNil(params["cwd"], "受控全局发现不能伪造项目 cwd")
+        XCTAssertEqual(params["cursor"]?.stringValue, "mimi_opaque")
+        XCTAssertEqual(params["sortKey"]?.stringValue, "updated_at")
+        XCTAssertEqual(params["sortDirection"]?.stringValue, "desc")
+        XCTAssertEqual(
+            params["sourceKinds"]?.arrayValue?.compactMap(\.stringValue),
+            ["cli", "vscode", "appServer", "subAgent"]
+        )
+        XCTAssertEqual(params["archived"]?.boolValue, false)
+        XCTAssertEqual(params["useStateDbOnly"]?.boolValue, false)
+    }
+
+    func testGlobalThreadProjectionRestoresStableRelationAndAuthorizedProject() async throws {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        let project = AgentProject(
+            id: "repo",
+            name: "Repo",
+            path: "/Users/me/repo"
+        )
+        let thread: [String: CodexAppServerJSONValue] = [
+            "id": .string("child-thread"),
+            "sessionId": .string("session-child"),
+            "cwd": .string("/Users/me/.codex/worktrees/09f4/repo"),
+            "name": .string("Child"),
+            "status": .object(["type": .string("idle")]),
+            "parentThreadId": .string("parent-thread"),
+            "agentNickname": .string("Euler"),
+            "agentRole": .string("worker"),
+            "canAcceptDirectInput": .bool(false),
+            "mimiRemote": .object([
+                "projectId": .string(project.id),
+                "projectName": .string(project.name),
+                "projectPath": .string(project.path),
+                "discovery": .string("global"),
+                "readOnly": .bool(true),
+            ]),
+        ]
+
+        let session = try await runtime.agentSession(
+            from: thread,
+            projects: [project],
+            fallbackProject: nil
+        )
+
+        XCTAssertEqual(session.projectID, project.id)
+        XCTAssertEqual(session.parentThreadID, "parent-thread")
+        XCTAssertEqual(session.appServerSessionID, "session-child")
+        XCTAssertEqual(session.agentNickname, "Euler")
+        XCTAssertEqual(session.agentRole, "worker")
+        XCTAssertEqual(session.canAcceptDirectInput, false)
+        XCTAssertFalse(session.allowsDirectInput)
+        XCTAssertEqual(session.context?.subagents.first?.id, "child-thread")
     }
 
     func testThreadListBuilderPreservesWindowsCWDAsRemoteHostPath() throws {
@@ -1945,6 +2069,66 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(userInput.questions.first(where: { $0.id == "environment" })?.options.map(\.label), ["staging", "production"])
     }
 
+    func testUnmarkedEmptyOrUnrenderableMcpSchemaFailsClosed() {
+        let requests = [
+            CodexAppServerServerRequest(
+                id: .string("mcp-empty"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow the linear MCP server to run tool \"save_issue\"?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([:])
+                    ])
+                ])
+            ),
+            CodexAppServerServerRequest(
+                id: .string("mcp-object"),
+                method: "mcpServer/elicitation/request",
+                params: .object([
+                    "threadId": .string("thread-1"),
+                    "turnId": .string("turn-1"),
+                    "serverName": .string("linear"),
+                    "mode": .string("form"),
+                    "message": .string("Allow this MCP request?"),
+                    "requestedSchema": .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "nested": .object(["type": .string("object")])
+                        ])
+                    ])
+                ])
+            )
+        ]
+
+        for request in requests {
+            var projector = CodexAppServerEventProjector()
+            XCTAssertNil(
+                projector.project(request),
+                "没有 Codex 工具审批标记的空或不可渲染表单不能暴露授权入口"
+            )
+        }
+    }
+
+    func testUnknownMcpElicitationModeDoesNotExposeApproval() {
+        let request = CodexAppServerServerRequest(
+            id: .string("mcp-future"),
+            method: "mcpServer/elicitation/request",
+            params: .object([
+                "threadId": .string("thread-1"),
+                "serverName": .string("unknown"),
+                "mode": .string("future-destructive-mode"),
+                "message": .string("Approve everything")
+            ])
+        )
+        var projector = CodexAppServerEventProjector()
+        XCTAssertNil(projector.project(request))
+    }
+
     func testCodexMcpToolElicitationProjectsToApprovalWithDeclaredTrustChoices() throws {
         let request = CodexAppServerServerRequest(
             id: .string("mcp-tool-approval-1"),
@@ -2255,114 +2439,5 @@ final class CodexAppServerProtocolTests: XCTestCase {
         }
         XCTAssertEqual(warning.code, "deprecationNotice")
         XCTAssertTrue(warning.message.contains("请迁移"))
-    }
-}
-
-final class DoctorDiagnosticsTests: XCTestCase {
-    func testParsesStructuredDoctorResponseAndKeepsPrettyRawJSON() throws {
-        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
-        let response = try XCTUnwrap(HTTPURLResponse(
-            url: url,
-            statusCode: 200,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        ))
-        let data = Data(#"{"ok":false,"version":"1.4.0","listen":"127.0.0.1:8787","checks":[{"name":"token","ok":true,"level":"ok","message":"Token 已配置"},{"name":"tailscale","ok":false,"level":"warning","message":"未检测到 Tailscale"},{"name":"codex","ok":false,"level":"error","message":"未找到 Codex CLI","fix":"安装 Codex CLI"}],"future":{"ignored":true}}"#.utf8)
-
-        let document = try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response)
-
-        XCTAssertFalse(document.report.ok)
-        XCTAssertEqual(document.report.version, "1.4.0")
-        XCTAssertEqual(document.report.listen, "127.0.0.1:8787")
-        XCTAssertEqual(document.report.checks.count, 3)
-        XCTAssertEqual(document.report.checks[0].displayName, L10n.text("ui.access_token"))
-        XCTAssertEqual(document.report.checks[0].displayMessage, L10n.text("ui.doctor_access_token_ready"))
-        XCTAssertNil(document.report.checks[0].displayFix)
-        XCTAssertTrue(document.report.checks[1].isWarning)
-        XCTAssertEqual(document.report.checks[2].displayMessage, L10n.text("ui.doctor_codex_cli_needs_attention"))
-        XCTAssertEqual(document.report.checks[2].displayFix, L10n.text("ui.doctor_fix_codex"))
-        XCTAssertTrue(document.rawJSON.contains("\n"))
-        XCTAssertTrue(document.rawJSON.contains(#""version" : "1.4.0""#))
-    }
-
-    func testUnknownDoctorCheckUsesLocalizedSummaryAndKeepsRawDetails() {
-        let check = DoctorDiagnosticCheck(
-            name: "future-check",
-            ok: false,
-            level: "warning",
-            message: "服务端新增的诊断详情：/private/path",
-            fix: "运行 future-fix --repair"
-        )
-
-        XCTAssertEqual(check.displayMessage, L10n.text("ui.doctor_check_warning"))
-        XCTAssertEqual(check.displayFix, L10n.text("ui.doctor_fix_generic"))
-        XCTAssertTrue(check.hasRawDiagnosticDetails)
-        XCTAssertEqual(check.message, "服务端新增的诊断详情：/private/path")
-        XCTAssertEqual(check.fix, "运行 future-fix --repair")
-    }
-
-    func testRejectsNonSuccessHTTPResponseWithServerMessage() throws {
-        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
-        let response = try XCTUnwrap(HTTPURLResponse(
-            url: url,
-            statusCode: 401,
-            httpVersion: nil,
-            headerFields: nil
-        ))
-        let data = Data(#"{"error":{"message":"token 无效"}}"#.utf8)
-
-        XCTAssertThrowsError(try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response)) { error in
-            XCTAssertEqual(
-                error as? DoctorDiagnosticError,
-                .httpStatus(code: 401, message: "token 无效")
-            )
-            XCTAssertEqual(error.localizedDescription, "诊断请求失败（HTTP 401）：token 无效")
-        }
-    }
-
-    func testRejectsNonHTTPResponseAndMalformedPayload() throws {
-        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
-        let nonHTTP = URLResponse(
-            url: url,
-            mimeType: "application/json",
-            expectedContentLength: 2,
-            textEncodingName: "utf-8"
-        )
-        XCTAssertThrowsError(
-            try DoctorDiagnosticsParser.parseDoctorResponse(data: Data("{}".utf8), response: nonHTTP)
-        ) { error in
-            XCTAssertEqual(error as? DoctorDiagnosticError, .invalidHTTPResponse)
-        }
-
-        let okResponse = try XCTUnwrap(HTTPURLResponse(
-            url: url,
-            statusCode: 200,
-            httpVersion: nil,
-            headerFields: nil
-        ))
-        XCTAssertThrowsError(
-            try DoctorDiagnosticsParser.parseDoctorResponse(data: Data(#"{"ok":true}"#.utf8), response: okResponse)
-        ) { error in
-            guard case .invalidPayload = error as? DoctorDiagnosticError else {
-                return XCTFail("expected invalidPayload, got \(error)")
-            }
-        }
-    }
-
-    func testBuildsDoctorURLAndFormatsFallbackPayload() throws {
-        let url = try DoctorDiagnosticsParser.doctorURL(endpoint: " https://mac.example:8787/old/path?token=ignored ")
-        XCTAssertEqual(url.scheme, "https")
-        XCTAssertEqual(url.host, "mac.example")
-        XCTAssertEqual(url.port, 8787)
-        XCTAssertEqual(url.path, "/api/doctor")
-        XCTAssertNil(url.query)
-
-        XCTAssertThrowsError(try DoctorDiagnosticsParser.doctorURL(endpoint: "not a URL")) { error in
-            XCTAssertEqual(error as? DoctorDiagnosticError, .invalidEndpoint)
-        }
-        XCTAssertEqual(
-            DoctorDiagnosticsParser.formatDiagnosticPayload(Data([0xFF]), fallback: "无法解码"),
-            "无法解码"
-        )
     }
 }

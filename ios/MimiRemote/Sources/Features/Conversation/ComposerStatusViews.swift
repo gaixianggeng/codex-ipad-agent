@@ -629,7 +629,7 @@ struct ComposerStatusTray: View {
                 .font(themeStore.uiFont(size: 13, weight: .semibold))
                 .frame(width: 44, height: 44)
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .foregroundStyle(isRefreshDisabled ? themeStore.tokens(for: colorScheme).tertiaryText : tint)
         .disabled(isRefreshDisabled)
         .help(L10n.text("ui.refresh_codex_usage"))
@@ -658,7 +658,7 @@ struct ComposerStatusTray: View {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isDisabled)
         .help(title)
         .accessibilityLabel(title)

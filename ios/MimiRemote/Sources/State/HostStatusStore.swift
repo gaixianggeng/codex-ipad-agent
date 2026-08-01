@@ -126,7 +126,11 @@ final class HostStatusStore: ObservableObject {
         sessionStore: SessionStore,
         requestedEpoch: UInt64
     ) async {
-        let profiles = appStore.connectionProfiles.filter { $0.id != appStore.activeConnectionProfileID }
+        // 非当前主机始终需要探活；当前主机仅在旧 Profile 还没有平台元数据时补探一次。
+        // 这样升级后无需用户先切走再切回，入口也能自动获得正确系统图标。
+        let profiles = appStore.connectionProfiles.filter {
+            $0.id != appStore.activeConnectionProfileID || $0.hostPlatform == .unknown
+        }
         guard !profiles.isEmpty else { return }
         let currentDate = now()
         let rotated = rotatedProfiles(profiles)
@@ -253,6 +257,11 @@ final class HostStatusStore: ObservableObject {
             expectedRevision: profile.revision,
             version: version
         ) ?? profile
+        appStore.rememberHostPlatform(
+            HostPlatform(serverValue: version.platform),
+            profileID: profile.id,
+            expectedRevision: refreshedProfile.revision
+        )
         let date = now()
         statusesByProfileID[profile.id] = HostProbeStatus(
             state: .available,

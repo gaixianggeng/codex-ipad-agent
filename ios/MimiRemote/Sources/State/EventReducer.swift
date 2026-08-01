@@ -74,9 +74,12 @@ actor EventReducer {
             output.statusUpdates.append((id, status))
             if shouldClearPendingApproval(for: status) {
                 output.pendingApprovalUpdates.append((id, nil))
+                output.pendingApprovalTaskClears.append(id)
+                output.messageMutations.append(.resolveLatestPendingApproval(id))
             }
             if shouldClearPendingUserInput(for: status) {
                 output.pendingUserInputUpdates.append((id, nil))
+                output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
             }
             if !isRunningStatus(status) {
                 output.activeTurnMutations.append(.clear(id, nil))
@@ -252,12 +255,14 @@ actor EventReducer {
             output.messageMutations.append(.system(L10n.format("ui.run_warning_value", payload.message), fallbackSessionID, .error, metadata))
         case .error(let payload, let metadata):
             let id = metadata.sessionID ?? fallbackSessionID
+            let isClaudeAuthenticationFailure = ClaudeAuthenticationRecovery.matches(payload)
             // 多 runtime 下错误必须按通知携带的 thread 归属，不能回退到当前选中的其他会话。
             output.statusUpdates.append((id, SessionStatus.failed.rawValue))
             output.foregroundClears.append(id)
             output.activeTurnMutations.append(.clear(id, metadata.turnID))
             output.pendingApprovalUpdates.append((id, nil))
             output.pendingUserInputUpdates.append((id, nil))
+            output.pendingApprovalTaskClears.append(id)
             output.contextUpdates.append((
                 SessionContextSnapshot(
                     sessionID: id,
@@ -266,13 +271,44 @@ actor EventReducer {
                 ),
                 id
             ))
-            output.errorMessage = payload.message
+            output.errorMessage = isClaudeAuthenticationFailure
+                ? ClaudeAuthenticationRecovery.title
+                : payload.message
             output.logAppends.append(EventReducerLogAppend(
                 text: "\n[agentd] \(payload.message)\n",
                 sessionID: id,
                 seq: nil
             ))
-            output.messageMutations.append(.system(L10n.format("ui.run_error_value", payload.message), id, .error, metadata))
+            if isClaudeAuthenticationFailure {
+                let stableID = metadata.messageID
+                    ?? metadata.itemID
+                    ?? metadata.turnID.map { "runtime-error:\($0)" }
+                    ?? metadata.seq.map { "runtime-error:\($0)" }
+                    ?? "runtime-error:\(UUID().uuidString)"
+                output.messageMutations.append(.completed(
+                    AgentMessage(
+                        id: stableID,
+                        sessionID: id,
+                        turnID: metadata.turnID,
+                        itemID: metadata.itemID,
+                        role: .system,
+                        kind: .error,
+                        content: ClaudeAuthenticationRecovery.recoveryMessage,
+                        summary: ClaudeAuthenticationRecovery.title,
+                        activityPayload: ClaudeAuthenticationRecovery.activityPayload,
+                        createdAt: metadata.createdAt,
+                        updatedAt: metadata.createdAt,
+                        seq: metadata.seq,
+                        revision: metadata.revision ?? 0
+                    ),
+                    metadata,
+                    fallbackSessionID
+                ))
+            } else {
+                output.messageMutations.append(.system(L10n.format("ui.run_error_value", payload.message), id, .error, metadata))
+            }
+            output.messageMutations.append(.resolveLatestPendingApproval(id))
+            output.messageMutations.append(.resolveLatestPendingUserInput(id, skipped: false))
             output.messageMutations.append(.turnLifecycle(.failed, metadata, fallbackSessionID))
         case .unknown(let type):
             let eventType = type.trimmingCharacters(in: .whitespacesAndNewlines)

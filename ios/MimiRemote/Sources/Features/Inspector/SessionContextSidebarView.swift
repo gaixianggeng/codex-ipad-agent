@@ -1,11 +1,31 @@
 import SwiftUI
 
+struct OpenSubagentSessionAction {
+    var handler: (SessionContextSubagent) -> Void
+
+    func callAsFunction(_ subagent: SessionContextSubagent) {
+        handler(subagent)
+    }
+}
+
+private struct OpenSubagentSessionEnvironmentKey: EnvironmentKey {
+    static let defaultValue = OpenSubagentSessionAction(handler: { _ in })
+}
+
+extension EnvironmentValues {
+    var openSubagentSession: OpenSubagentSessionAction {
+        get { self[OpenSubagentSessionEnvironmentKey.self] }
+        set { self[OpenSubagentSessionEnvironmentKey.self] = newValue }
+    }
+}
+
 struct SessionContextSidebarView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var contextStore: SessionContextStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.openSubagentSession) private var openSubagentSession
     @State private var pendingCommandAction: AgentCommandAction?
     @State private var goalEditor: ThreadGoalEditorDraft?
 
@@ -21,10 +41,10 @@ struct SessionContextSidebarView: View {
                 List {
                     overviewSection(context, session: sessionStore.selectedSession)
                     goalSection(goal: sessionStore.selectedThreadGoal ?? context.goal)
+                    subagentSection(context.subagents)
                     commandActionSection()
                     taskSection(context.tasks)
                     entrySection(context.sources)
-                    subagentSection(context.subagents)
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
@@ -302,15 +322,36 @@ struct SessionContextSidebarView: View {
                 ContextEmptyRow(title: L10n.text("ui.no_sub_agents_yet"))
             } else {
                 ForEach(subagents) { subagent in
-                    ContextItemRow(
-                        symbolName: "person.2",
-                        title: subagent.displayName,
-                        subtitle: subagent.role,
-                        badge: subagent.status.map(statusText)
-                    )
+                    Button {
+                        openSubagentSession(subagent)
+                    } label: {
+                        SubagentContextRow(
+                            subagent: subagent,
+                            statusText: subagent.status.map(statusText)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .frame(minHeight: 44)
+                    .accessibilityLabel(subagentAccessibilityLabel(subagent))
+                    .accessibilityHint(L10n.text("ui.open"))
+                    .accessibilityIdentifier("context.subagent.\(subagent.id)")
                 }
             }
         }
+    }
+
+    private func subagentAccessibilityLabel(_ subagent: SessionContextSubagent) -> String {
+        [
+            subagent.displayName,
+            subagent.role,
+            subagent.status.map(statusText),
+            subagent.statusMessage,
+            subagent.canAcceptDirectInput == true ? nil : L10n.text("ui.read_only"),
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
     }
 
     private func statusText(_ status: SessionContextStatus) -> String {
@@ -771,6 +812,105 @@ private struct CommandActionResultRow: View {
 
     private var tokens: ThemeTokens {
         themeStore.tokens(for: colorScheme)
+    }
+}
+
+private struct SubagentContextRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    let subagent: SessionContextSubagent
+    let statusText: String?
+
+    private var isReadOnly: Bool {
+        subagent.canAcceptDirectInput != true
+    }
+
+    private var normalizedStatus: String {
+        subagent.status?.lowercased() ?? ""
+    }
+
+    private var statusSymbolName: String {
+        switch normalizedStatus {
+        case "active", "running", "inprogress", "in_progress", "started":
+            return "circle.fill"
+        case "completed", "complete", "success", "succeeded":
+            return "checkmark.circle.fill"
+        case "systemerror", "failed":
+            return "exclamationmark.triangle.fill"
+        default:
+            return "circle"
+        }
+    }
+
+    private func statusColor(tokens: ThemeTokens) -> Color {
+        switch normalizedStatus {
+        case "active", "running", "inprogress", "in_progress", "started":
+            return tokens.primaryAction
+        case "completed", "complete", "success", "succeeded":
+            return .green
+        case "systemerror", "failed":
+            return .red
+        default:
+            return tokens.tertiaryText
+        }
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "person.2")
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: 26, height: 26)
+                .background(
+                    tokens.elevatedSurface.opacity(0.72),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(subagent.displayName)
+                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(2)
+
+                if let role = subagent.role, !role.isEmpty {
+                    Text(role)
+                        .font(themeStore.uiFont(.caption2))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(2)
+                }
+
+                HStack(spacing: 5) {
+                    Image(systemName: statusSymbolName)
+                        .foregroundStyle(statusColor(tokens: tokens))
+                    if let statusText, !statusText.isEmpty {
+                        Text(statusText)
+                    }
+                    if isReadOnly {
+                        Label(L10n.text("ui.read_only"), systemImage: "lock.fill")
+                    }
+                }
+                .font(themeStore.uiFont(.caption2, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .lineLimit(2)
+
+                if let message = subagent.statusMessage, !message.isEmpty {
+                    Text(message)
+                        .font(themeStore.uiFont(.caption2))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(3)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "chevron.right")
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+                .padding(.top, 5)
+        }
+        .padding(.vertical, 4)
     }
 }
 

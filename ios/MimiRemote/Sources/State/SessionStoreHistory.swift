@@ -179,10 +179,9 @@ extension SessionStore {
                 )
             }
 
-            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”；
-            // 带首轮 prompt 的新会话也保留 thread/read 快照，用它校准后续事件回放。
-            // 新建空交互会话没有历史可补；启动后立刻请求完整历史容易撞上后端 thread/read
-            // 初始化窗口并误报“大历史加载失败”，因此只跳过这类空会话的首屏补拉。
+            // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”。
+            // 新线程的首轮内容由本地回显和 buffered event replay 承接；turn/start 刚 ACK 时 rollout
+            // 可能尚未可读，此时同步请求完整历史只会制造 no-rollout/超时竞态。
             let didLoadInitialHistory: Bool
             if responseSelectionLease == nil {
                 // 用户已经切走：保留服务端创建结果和本地投影，历史在再次打开时按需补拉。
@@ -190,14 +189,18 @@ extension SessionStore {
             } else if hasLoadedFullHistorySnapshot(sessionID: responseSession.id) {
                 // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
                 didLoadInitialHistory = true
-            } else if resume != nil || !payload.isEmpty {
+            } else if resume != nil {
                 didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
-            } else {
+            } else if payload.isEmpty {
                 // 新建空 thread 在首个 turn 前没有 rollout。把当前空快照标成已加载，前台恢复时
                 // 就不会误打 thread/turns/list 并把 no-rollout 错报成“大历史加载失败”；首个 turn
                 // 会改变 updatedAt/revision/lastSeq，届时签名自然失效并允许正常补拉。
                 markEmptyHistoryLoaded(for: responseSession)
                 didLoadInitialHistory = true
+            } else {
+                // 非空新线程不能标成“已加载空历史”，否则重新进入时可能跳过真正的历史补拉。
+                // 保持未加载状态，当前首轮直接连接事件流，后续刷新或重新进入再做权威对账。
+                didLoadInitialHistory = false
             }
             if !prompt.isEmpty {
                 if let clientMessageID {
@@ -1076,7 +1079,7 @@ extension SessionStore {
             // 只替换当前项目的会话，避免一次项目点击误删其他项目已经加载好的列表。
             let pageSessions = sessions(page.sessions, in: workspace)
             replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
             if updateStatusMessage, canReportForeground() {
                 setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
@@ -1129,7 +1132,7 @@ extension SessionStore {
         for result in results {
             guard let page = result.page else { continue }
             mergeSessionPage(sessions(page.sessions, in: result.workspace))
-            updateSessionPageState(projectID: result.workspace.id, page: page)
+            updateSessionPageState(projectID: result.workspace.id, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(result.workspace.id)
         }
     }
@@ -1300,7 +1303,7 @@ extension SessionStore {
         await loadHistoryIfNeeded(for: session)
         guard isSelectionLeaseCurrent(selectionLease) else { return }
         if session.isRunning {
-            if autoAttach && canControlSession(session) {
+            if autoAttach && (canControlSession(session) || isProtocolReadOnlySession(session)) {
                 // 前台恢复会反复走到这里；已加载会话的 loadHistoryIfNeeded 是 no-op，此时若做
                 // 完整回放，backlog 里的旧卡会被追加到已合并的时间线后面。状态级回放已经
                 // 覆盖 completed 内容，足够补齐离开期间的输出。
@@ -1428,7 +1431,22 @@ extension SessionStore {
         // thread/read 校准。读取也失败时最多保留 3 个刷新周期，不能形成永久幽灵运行态。
         result.append(contentsOf: knownRunningSessions)
 
-        guard preserveAllLoaded || isShowingAllSessions(projectID: projectID) else {
+        let controlledGlobalSessions = sessions(forProjectID: projectID).filter { session in
+            guard controlledGlobalSessionIDs.contains(session.id),
+                  shouldRetainSessionMissingFromFreshPage(session),
+                  !knownIDs.contains(session.id) else {
+                return false
+            }
+            knownIDs.insert(session.id)
+            return true
+        }
+        // 工作区 thread/list 只查询精确 cwd，不会返回同仓外部 Worktree。只保留本 Host
+        // 已由 agentd 全局裁剪授权的 ID；下一次完整全局遍历会负责清除已消失项。
+        result.append(contentsOf: controlledGlobalSessions)
+
+        guard preserveAllLoaded
+                || sessionProjectsWithAdditionalPages.contains(projectID)
+                || isShowingAllSessions(projectID: projectID) else {
             return result
         }
 
@@ -1552,6 +1570,11 @@ extension SessionStore {
             pendingApproval: item.pendingApproval,
             pendingUserInput: item.pendingUserInput,
             goal: item.goal,
+            appServerSessionID: item.appServerSessionID,
+            parentThreadID: item.parentThreadID,
+            agentNickname: item.agentNickname,
+            agentRole: item.agentRole,
+            canAcceptDirectInput: item.canAcceptDirectInput,
             context: item.context
         )
     }
@@ -1624,7 +1647,20 @@ extension SessionStore {
         sessions = next
     }
 
-    func updateSessionPageState(projectID: String, page: SessionsPage) {
+    func updateSessionPageState(
+        projectID: String,
+        page: SessionsPage,
+        requestedCursor: String?
+    ) {
+        if requestedCursor == nil,
+           sessionProjectsWithAdditionalPages.contains(projectID),
+           sessionHasMoreByProjectID[projectID] != nil {
+            // 用户已经把工作区翻到更深窗口后，轮询/网络恢复/手动刷新只负责合并最新首屏。
+            // 若用首屏 cursor 覆盖深层 continuation，下一次“显示更多”会重复第二页；
+            // exhausted 也必须保留，否则已消失的入口会被错误恢复。
+            rebuildProjectSessionListSnapshot(forProjectID: projectID)
+            return
+        }
         if let cursor = page.nextCursor, page.hasMore {
             sessionPageCursorByProjectID[projectID] = cursor
             sessionHasMoreByProjectID[projectID] = true
@@ -1941,6 +1977,7 @@ extension SessionStore {
         }
         sessionsByID = byID
         sessionIndexByID = indexByID
+        synchronizeHistoryReadStates()
         pruneSessionScopedState(validSessionIDs: Set(byID.keys))
 
         // 和 Codex/Litter 的 snapshot 思路一致：Store 在数据变更时生成排序/分组投影，
@@ -1963,9 +2000,12 @@ extension SessionStore {
         previews.reserveCapacity(grouped.count)
         hiddenCounts.reserveCapacity(grouped.count)
         for (projectID, projectSessions) in grouped {
-            let visibleSessions = Self.lifecycleVisibleSessions(
-                projectSessions,
-                limit: Self.sessionPreviewLimit
+            let visibleSessions = sessionsIncludingDerivedReadOnlySupplements(
+                base: Self.lifecycleVisibleSessions(
+                    projectSessions,
+                    limit: Self.sessionPreviewLimit
+                ),
+                candidates: projectSessions
             )
             let hiddenCount = max(0, projectSessions.count - visibleSessions.count)
             hiddenCounts[projectID] = hiddenCount
@@ -1997,7 +2037,10 @@ extension SessionStore {
 
         let allSessions = baseSessions
         let visibleLimit = sessionVisibleLimit(forProjectID: projectID)
-        let visibleSessions = Self.lifecycleVisibleSessions(allSessions, limit: visibleLimit)
+        let visibleSessions = sessionsIncludingDerivedReadOnlySupplements(
+            base: Self.lifecycleVisibleSessions(allSessions, limit: visibleLimit),
+            candidates: allSessions
+        )
         let isShowingAll = visibleLimit > Self.sessionPreviewLimit
 
         return ProjectSessionListSnapshot(
@@ -2029,6 +2072,36 @@ extension SessionStore {
         }
         let historyLimit = max(0, normalizedLimit - active.count)
         return active + Array(sessions.lazy.filter { !$0.isRunning }.prefix(historyLimit))
+    }
+
+    /// 项目预览和根侧栏共用同一个有界补充规则。完整保留原窗口及其顺序，再追加最多
+    /// 3 条派生只读历史；项目窗口特意把运行会话放在最前，不能用全量时间排序破坏它。
+    /// candidates 已使用稳定 recencyAt 排序，因此补充行不会读取 Agent 持续推进的
+    /// updatedAt 让 MIM-57 的列表再次跳动。
+    func sessionsIncludingDerivedReadOnlySupplements(
+        base: [AgentSession],
+        candidates: [AgentSession]
+    ) -> [AgentSession] {
+        var visibleByID: [SessionID: AgentSession] = [:]
+        visibleByID.reserveCapacity(base.count + Self.derivedReadOnlyHistorySupplementLimit)
+        for session in base {
+            visibleByID[session.id] = session
+        }
+
+        let supplements = candidates.lazy
+            .filter {
+                !$0.isRunning
+                    && !$0.isLocalDraft
+                    && self.isControlledGlobalDerivedReadOnlySession($0)
+            }
+            .prefix(Self.derivedReadOnlyHistorySupplementLimit)
+        var result = base
+        result.reserveCapacity(base.count + Self.derivedReadOnlyHistorySupplementLimit)
+        for session in supplements where visibleByID[session.id] == nil {
+            visibleByID[session.id] = session
+            result.append(session)
+        }
+        return result
     }
 
     func rebuildProjectSessionListSnapshot(forProjectID projectID: String) {
@@ -2233,6 +2306,27 @@ extension SessionStore {
 
     func isListableSession(_ session: AgentSession) -> Bool {
         !archivedSessionIDs.contains(session.id) || session.id == selectedSessionID || session.isRunning
+    }
+
+    /// 只用于根侧栏的有界展示优先级，不参与授权、父子关系或输入权限判断。
+    /// `<codex_delegation>` 是 Codex Desktop 独立派生 Thread 的兼容提示；必须同时满足
+    /// agentd 受控全局授权、Codex runtime 与协议只读，不能单凭用户可伪造的 preview 提权。
+    func isControlledGlobalDerivedReadOnlySession(_ session: AgentSession) -> Bool {
+        guard controlledGlobalSessionIDs.contains(session.id),
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex",
+              !session.allowsDirectInput else {
+            return false
+        }
+
+        if let parentThreadID = session.parentThreadID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !parentThreadID.isEmpty {
+            return true
+        }
+
+        let preview = session.preview?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return preview.hasPrefix("<codex_delegation>")
     }
 
     func projectMatchesSearch(_ project: AgentProject) -> Bool {

@@ -130,6 +130,29 @@ func newFileUploadStore(root string) *fileUploadStore {
 	}
 }
 
+func (s *fileUploadStore) probe() error {
+	if s == nil || s.root == "" {
+		return errors.New("文件上传缓存目录为空")
+	}
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(s.root, 0o700); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(s.root, ".capability-probe-")
+	if err != nil {
+		return err
+	}
+	probePath := probe.Name()
+	defer os.Remove(probePath)
+	if err := probe.Chmod(0o600); err != nil {
+		_ = probe.Close()
+		return err
+	}
+	return probe.Close()
+}
+
 func defaultFileUploadRoot() string {
 	if override := strings.TrimSpace(os.Getenv("AGENTD_FILE_UPLOAD_CACHE_DIR")); override != "" {
 		return override
@@ -142,6 +165,10 @@ func defaultFileUploadRoot() string {
 }
 
 func (r *Router) fileUploadHandler(w http.ResponseWriter, req *http.Request) {
+	if !r.capabilities.enabled(fileUploadCapability) {
+		r.capabilities.writeUnavailable(w, fileUploadCapability)
+		return
+	}
 	if req.URL.Path == "/api/file-uploads" {
 		if req.Method != http.MethodPost {
 			methodNotAllowed(w)

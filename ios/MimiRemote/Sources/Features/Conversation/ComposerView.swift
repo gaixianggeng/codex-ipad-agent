@@ -77,9 +77,7 @@ struct ComposerView: View {
     static let maximumImageAttachmentCount = 8
 
     var composerMotionAnimation: Animation {
-        reduceMotion
-            ? .easeOut(duration: 0.12)
-            : .spring(response: 0.34, dampingFraction: 1, blendDuration: 0.08)
+        MimiMotion.stateTransition.animation(reduceMotion: reduceMotion)
     }
 
     var body: some View {
@@ -184,7 +182,7 @@ struct ComposerView: View {
             guard let request = fileImporterPresentation.consumeRequest() else {
                 return
             }
-            handleSelectedFile(result, targetScope: request.targetScope)
+            handleSelectedFile(result, request: request)
         }
         .confirmationDialog(
             cameraAttachmentAccessIssue?.title ?? "",
@@ -934,7 +932,7 @@ struct ComposerView: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.expand_input_box"))
         .accessibilityValue(collapsedPhoneComposerText)
         .accessibilityIdentifier("composer.expand")
@@ -1274,7 +1272,7 @@ struct ComposerView: View {
                 accessibilityLabel: L10n.text("ui.session_options")
             )
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.session_options"))
         .accessibilityValue(composerOptionsAccessibilityValue)
         .accessibilityHint(L10n.text("ui.adjust_build_settings_and_sending_mode"))
@@ -1366,7 +1364,7 @@ struct ComposerView: View {
                 accessibilityLabel: L10n.text("ui.select_skill")
             )
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.select_skill"))
         .accessibilityValue(selectedSkillPaths.isEmpty ? L10n.text("ui.not_selected") : L10n.plural("ui.skills_selected_count", count: selectedSkillPaths.count))
         .accessibilityIdentifier("composer.skill")
@@ -1525,7 +1523,7 @@ struct ComposerView: View {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous))
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .help(isGuidedSelected ? L10n.text("ui.immediately_change_the_reply_currently_being_generated") : L10n.text("ui.save_it_in_this_device_first_and_automatically"))
             .accessibilityLabel(L10n.text("ui.append_mode_on_the_fly"))
             .accessibilityValue(isGuidedSelected ? L10n.text("ui.lead_current_reply") : L10n.text("ui.queue_for_next_round"))
@@ -1630,7 +1628,7 @@ struct ComposerView: View {
             )
             .contentTransition(.opacity)
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
         .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
         .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
@@ -1804,7 +1802,7 @@ struct ComposerView: View {
                 accessibilityLabel: L10n.text("ui.permission_mode")
             )
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.permission_mode"))
         .accessibilityValue(permissionTitle)
     }

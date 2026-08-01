@@ -47,17 +47,6 @@ func TestAppServerGatewayRejectsUnsafeCWDAndSandbox(t *testing.T) {
 			want: "cwd",
 		},
 		{
-			name: "thread list missing cwd",
-			payload: map[string]any{
-				"id":     6,
-				"method": "thread/list",
-				"params": map[string]any{
-					"limit": 20,
-				},
-			},
-			want: "cwd",
-		},
-		{
 			name: "approval policy never",
 			payload: map[string]any{
 				"id":     4,
@@ -915,6 +904,7 @@ func TestAppServerGatewaySanitizesParamsForAllAllowedMethods(t *testing.T) {
 		`{"method":"initialized","params":{` + dangerousTail + `}}`,
 		`{"id":61,"method":"model/list","params":{` + dangerousTail + `}}`,
 		`{"id":62,"method":"account/rateLimits/read","params":{` + dangerousTail + `}}`,
+		`{"id":63,"method":"account/usage/read","params":{` + dangerousTail + `}}`,
 	}
 	for _, frame := range emptyParamFrames {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
@@ -1592,6 +1582,46 @@ func TestClaudeGatewayPassesThroughServerRequestResolvedAfterDecision(t *testing
 	forwardedResolved, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, resolved)
 	if policyErr != nil || !forward || !bytes.Equal(forwardedResolved, resolved) {
 		t.Fatalf("Claude resolved notification 应透明回流 iOS：forward=%t err=%+v payload=%s", forward, policyErr, forwardedResolved)
+	}
+}
+
+func TestAppServerGatewayTerminalNotificationsClearPendingServerRequests(t *testing.T) {
+	policy := &appServerGatewayPolicy{
+		runtimeID:             "codex",
+		pendingServerRequests: map[string]appServerGatewayPendingServerRequest{},
+	}
+
+	resolvedRequest := []byte(`{"id":"resolved-1","method":"mcpServer/elicitation/request","params":{"threadId":"thread-1","turnId":"turn-1","mode":"form","message":"Allow?","requestedSchema":{"type":"object","properties":{}}}}`)
+	if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, resolvedRequest); policyErr != nil || !forward {
+		t.Fatalf("MCP server request 应登记 pending：forward=%t err=%+v", forward, policyErr)
+	}
+	resolved := []byte(`{"method":"serverRequest/resolved","params":{"requestId":"resolved-1","threadId":"thread-1","turnId":"turn-1"}}`)
+	if got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, resolved); policyErr != nil || !forward || !bytes.Equal(got, resolved) {
+		t.Fatalf("resolved 应透传并清理 pending：forward=%t err=%+v got=%s", forward, policyErr, got)
+	}
+	resolvedID := json.RawMessage(`"resolved-1"`)
+	if _, ok := policy.consumePendingServerRequest(&resolvedID); ok {
+		t.Fatal("serverRequest/resolved 后不应保留 gateway pending")
+	}
+
+	terminalRequest := []byte(`{"id":"terminal-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"input-1","questions":[]}}`)
+	otherRequest := []byte(`{"id":"other-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-2","turnId":"turn-live","itemId":"input-2","questions":[]}}`)
+	for _, request := range [][]byte{terminalRequest, otherRequest} {
+		if _, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, request); policyErr != nil || !forward {
+			t.Fatalf("server request 应登记 pending：forward=%t err=%+v payload=%s", forward, policyErr, request)
+		}
+	}
+	completed := []byte(`{"method":"turn/completed","params":{"threadId":"thread-1","turnId":"turn-2"}}`)
+	if got, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, completed); policyErr != nil || !forward || !bytes.Equal(got, completed) {
+		t.Fatalf("turn/completed 应透传并清理同 turn pending：forward=%t err=%+v got=%s", forward, policyErr, got)
+	}
+	terminalID := json.RawMessage(`"terminal-1"`)
+	if _, ok := policy.consumePendingServerRequest(&terminalID); ok {
+		t.Fatal("terminal turn 后不应保留同 turn pending")
+	}
+	otherID := json.RawMessage(`"other-1"`)
+	if pending, ok := policy.consumePendingServerRequest(&otherID); !ok || pending.threadID != "thread-2" || pending.turnID != "turn-live" {
+		t.Fatalf("其他 thread 的 live pending 不应被误清理：pending=%+v ok=%t", pending, ok)
 	}
 }
 

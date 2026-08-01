@@ -89,8 +89,10 @@ struct SystemNotice: View {
 }
 
 struct RuntimeSummaryCard: View {
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @State private var isRetryingClaudeAuthentication = false
     let message: ConversationMessage
     let layout: ConversationLayout
 
@@ -146,7 +148,17 @@ struct RuntimeSummaryCard: View {
 
     private func activityContent(_ payload: ConversationActivityPayload) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            if payload.category == .plan {
+            if payload.isClaudeAuthenticationRecovery {
+                Text(payload.subtitle ?? ClaudeAuthenticationRecovery.recoveryMessage)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                ViewThatFits(in: .horizontal) {
+                    claudeAuthenticationActions(stacked: false)
+                    claudeAuthenticationActions(stacked: true)
+                }
+                .padding(.top, 3)
+            } else if payload.category == .plan {
                 planMarkdownContent
             } else if payload.category == .thinking, let subtitle = payload.subtitle {
                 Text(subtitle)
@@ -166,7 +178,7 @@ struct RuntimeSummaryCard: View {
                 if let toolName = payload.toolName, payload.category == .toolCall {
                     activityDetailRow(L10n.text("ui.tools"), value: toolName, monospaced: true)
                 }
-                let statusText = [payload.status.map { L10n.format("ui.status_value", $0) }, payload.exitCode.map { L10n.format("ui.exit_code_value", $0) }]
+                let statusText = [payload.displayStatusText.map { L10n.format("ui.status_value", $0) }, payload.exitCode.map { L10n.format("ui.exit_code_value", $0) }]
                     .compactMap { $0 }
                     .joined(separator: " · ")
                 if !statusText.isEmpty {
@@ -186,6 +198,59 @@ struct RuntimeSummaryCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func claudeAuthenticationActions(stacked: Bool) -> some View {
+        if stacked {
+            VStack(alignment: .leading, spacing: 8) {
+                copyClaudeLoginCommandButton
+                retryClaudeRequestButton
+            }
+        } else {
+            HStack(spacing: 8) {
+                copyClaudeLoginCommandButton
+                retryClaudeRequestButton
+            }
+        }
+    }
+
+    private var copyClaudeLoginCommandButton: some View {
+        Button {
+            UIPasteboard.general.string = ClaudeAuthenticationRecovery.loginCommand
+            sessionStore.setStatusMessage(L10n.text("ui.claude_login_command_copied"))
+        } label: {
+            Label(L10n.text("ui.copy_login_command"), systemImage: "doc.on.doc")
+                // small control 的样式还会补齐边距，最终保持至少 44pt 的触控区域。
+                .frame(minHeight: 36)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+    }
+
+    private var retryClaudeRequestButton: some View {
+        Button {
+            guard !isRetryingClaudeAuthentication else { return }
+            isRetryingClaudeAuthentication = true
+            Task {
+                _ = await sessionStore.retryClaudeAuthenticationFailure(message)
+                isRetryingClaudeAuthentication = false
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if isRetryingClaudeAuthentication {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+                Text(L10n.text("ui.try_again"))
+            }
+            .frame(minHeight: 36)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(isRetryingClaudeAuthentication)
     }
 
     private func activityDetailRow(_ label: String, value: String, monospaced: Bool = false) -> some View {
@@ -273,8 +338,8 @@ struct RuntimeSummaryCard: View {
     }
 
     private var symbolName: String {
-        if let category = message.activityPayload?.category {
-            return ProcessedActivitySymbol.symbolName(for: category)
+        if let payload = message.activityPayload {
+            return ProcessedActivitySymbol.symbolName(for: payload)
         }
         switch message.kind {
         case .commentary:

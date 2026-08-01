@@ -112,10 +112,15 @@ enum WorkspaceStripLayout {
 enum WorkspaceSessionAgeBoundary {
     static let staleInterval: TimeInterval = 12 * 60 * 60
 
-    static func firstStaleIndex(in sessions: [AgentSession], now: Date = Date()) -> Int? {
+    static func firstStaleIndex(
+        in sessions: [AgentSession],
+        excludingSessionIDs: Set<SessionID> = [],
+        now: Date = Date()
+    ) -> Int? {
         // 工作区会话已经按 SessionIndexStore.orderingDate 倒序排列；
-        // 这里复用同一时间口径，避免列表顺序与 12 小时分组依据不一致。
+        // 置顶会话可以跨越时间分组，因此排除后再寻找普通会话的 12 小时边界。
         sessions.firstIndex { session in
+            !excludingSessionIDs.contains(session.id) &&
             now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
         }
     }
@@ -138,6 +143,72 @@ struct WorkspaceSessionLoadInvocationTokens {
 
     mutating func remove(for projectID: String) {
         latestByProjectID.removeValue(forKey: projectID)
+    }
+}
+
+enum WorkspaceCatalogLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
+enum WorkspaceCatalogLoadResult: Equatable {
+    case loaded
+    case cancelled
+    case failed(String)
+}
+
+enum WorkspaceSessionLoadFailureDisposition: Equatable {
+    case cancelled
+    case failed(String)
+}
+
+/// Session 首屏和 catalog/open 使用同一套明确取消分类，避免 URL transport 取消落入用户错误态。
+func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionLoadFailureDisposition {
+    isCancellationError(error) ? .cancelled : .failed(error.localizedDescription)
+}
+
+struct WorkspaceCatalogRefreshScope: Equatable {
+    let hostScope: HostScope
+    let credentialsSuspended: Bool
+}
+
+/// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
+struct WorkspaceCatalogLoadCoordinator {
+    private(set) var state: WorkspaceCatalogLoadState = .idle
+    private var currentInvocationID: UUID?
+
+    @discardableResult
+    mutating func begin() -> UUID {
+        let invocationID = UUID()
+        currentInvocationID = invocationID
+        state = .loading
+        return invocationID
+    }
+
+    func isCurrent(_ invocationID: UUID) -> Bool {
+        currentInvocationID == invocationID
+    }
+
+    @discardableResult
+    mutating func complete(
+        _ invocationID: UUID,
+        result: WorkspaceCatalogLoadResult,
+        hasCachedProjects: Bool
+    ) -> Bool {
+        guard isCurrent(invocationID) else {
+            return false
+        }
+        switch result {
+        case .loaded:
+            state = .loaded
+        case .cancelled:
+            state = hasCachedProjects ? .loaded : .idle
+        case .failed(let message):
+            state = .failed(message)
+        }
+        return true
     }
 }
 
@@ -167,11 +238,10 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
-    @State private var catalogState: CatalogState = .idle
+    @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     @State private var isPresentingOpenWorkspace = false
-    @State private var pendingWorkspaceRemoval: AgentProject?
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
 
     init(
@@ -198,6 +268,10 @@ struct WorkspaceRootView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let catalogRefreshScope = WorkspaceCatalogRefreshScope(
+            hostScope: appStore.activeHostScope,
+            credentialsSuspended: appStore.isCredentialMemorySuspended
+        )
 
         Group {
             if embedsNavigationStack {
@@ -210,7 +284,11 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
-        .task(id: appStore.activeHostScope) {
+        .task(id: catalogRefreshScope) {
+            // 后台会主动清空内存凭据；恢复完成发布 false 后，完整 scope 会确定性触发一次新刷新。
+            guard !catalogRefreshScope.credentialsSuspended else {
+                return
+            }
             migrateLegacyWorkspaceAppearance()
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
@@ -243,9 +321,6 @@ struct WorkspaceRootView: View {
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeSelection()
-            if !sessionStore.sidebarProjects.isEmpty {
-                catalogState = .loaded
-            }
         }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet { workspaceID in
@@ -269,29 +344,6 @@ struct WorkspaceRootView: View {
             }
             .presentationDetents([.large])
         }
-        .confirmationDialog(
-            L10n.text("ui.remove_directory"),
-            isPresented: Binding(
-                get: { pendingWorkspaceRemoval != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        pendingWorkspaceRemoval = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let project = pendingWorkspaceRemoval {
-                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
-                    removeWorkspace(project)
-                }
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingWorkspaceRemoval = nil
-            }
-        } message: {
-            Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
-        }
         .background(tokens.background.ignoresSafeArea())
     }
 
@@ -305,6 +357,7 @@ struct WorkspaceRootView: View {
 
     private func navigationContent(tokens: ThemeTokens) -> some View {
         workspaceBrowser(tokens: tokens)
+            .accessibilityIdentifier("workspace.browser")
             .navigationTitle(L10n.text("ui.workspace"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -313,22 +366,24 @@ struct WorkspaceRootView: View {
                         Button {
                             gitInspectionTarget = WorkspaceGitInspectionTarget(project: selectedProject)
                         } label: {
-                            Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
+                            WorkbenchChromeIcon(systemName: "doc.text.magnifyingglass")
                         }
                         .disabled(
                             sessionStore.workspaceGitSummaryByPath[selectedProject.path]?.isRepository == false
                         )
+                        .accessibilityLabel(L10n.text("ui.git_changes"))
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isPresentingOpenWorkspace = true
                     } label: {
-                        Label(L10n.text("ui.open_directory"), systemImage: "folder.badge.plus")
+                        WorkbenchChromeIcon(systemName: "folder.badge.plus")
                     }
                     // 顶栏的栏目选中态已经承担品牌识别；全局目录操作使用系统中性材质，
                     // 避免与选中工作区的梅紫填充形成两个大面积焦点。
                     .foregroundStyle(tokens.primaryText)
+                    .accessibilityLabel(L10n.text("ui.open_directory"))
                 }
             }
     }
@@ -336,7 +391,7 @@ struct WorkspaceRootView: View {
     @ViewBuilder
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {
         if sessionStore.sidebarProjects.isEmpty {
-            if catalogState == .loading {
+            if catalogLoad.state == .loading {
                 workspaceLoadingState(tokens: tokens)
             } else {
                 workspaceEmptyState(tokens: tokens)
@@ -382,7 +437,7 @@ struct WorkspaceRootView: View {
 
     private func workspaceEmptyState(tokens: ThemeTokens) -> some View {
         let isFailure: Bool
-        if case .failed = catalogState {
+        if case .failed = catalogLoad.state {
             isFailure = true
         } else {
             isFailure = false
@@ -459,7 +514,7 @@ struct WorkspaceRootView: View {
             GeometryReader { geometry in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 12) {
-                        if catalogState == .loading && sessionStore.sidebarProjects.isEmpty {
+                        if catalogLoad.state == .loading && sessionStore.sidebarProjects.isEmpty {
                             ForEach(0..<4, id: \.self) { index in
                                 WorkspaceLibraryCard(
                                     project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
@@ -488,7 +543,7 @@ struct WorkspaceRootView: View {
                                     tokens: tokens,
                                     action: {},
                                     onOpenGitChanges: {},
-                                    onRemove: {}
+                                    onConfirmRemove: {}
                                 )
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .redacted(reason: .placeholder)
@@ -544,10 +599,8 @@ struct WorkspaceRootView: View {
                                     selectedWorkspaceID = project.id
                                 } onOpenGitChanges: {
                                     gitInspectionTarget = WorkspaceGitInspectionTarget(project: project)
-                                } onRemove: {
-                                    // 当前浏览中的卡片不允许移除；用户需先切到正确工作区，再处理误开的目录。
-                                    guard selectedWorkspaceID != project.id else { return }
-                                    pendingWorkspaceRemoval = project
+                                } onConfirmRemove: {
+                                    removeWorkspace(project)
                                 }
                                 .frame(width: WorkspaceStripLayout.cardWidth)
                                 .id(project.id)
@@ -587,6 +640,7 @@ struct WorkspaceRootView: View {
         return WorkspaceDetailView(
             // 工作区详情承担完整历史浏览，展示所有已加载页；项目侧栏才保留 5 条预览窗口。
             recentSessions: sessionStore.sessions(forProjectID: project.id),
+            unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
             canLoadMoreSessions: sessionStore.canLoadMoreSessions(projectID: project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
@@ -625,17 +679,17 @@ struct WorkspaceRootView: View {
     }
 
     private var emptyWorkspaceTitle: String {
-        if case .failed = catalogState { return L10n.text("ui.unable_to_load_workspace") }
+        if case .failed = catalogLoad.state { return L10n.text("ui.unable_to_load_workspace") }
         return L10n.text("ui.no_workspace_yet")
     }
 
     private var emptyWorkspaceSymbol: String {
-        if case .failed = catalogState { return "exclamationmark.triangle" }
+        if case .failed = catalogLoad.state { return "exclamationmark.triangle" }
         return "folder.badge.plus"
     }
 
     private var emptyWorkspaceMessage: String {
-        if case .failed(let message) = catalogState { return message }
+        if case .failed(let message) = catalogLoad.state { return message }
         return L10n.text("ui.once_the_directory_is_open_you_can_browse")
     }
 
@@ -649,13 +703,19 @@ struct WorkspaceRootView: View {
            projects.contains(where: { $0.id == selectedWorkspaceID }) {
             return
         }
+        if let selectedWorkspaceID {
+            let retainedID = sessionStore.retainedWorkspaceID(for: selectedWorkspaceID)
+            if projects.contains(where: { $0.id == retainedID }) {
+                self.selectedWorkspaceID = retainedID
+                return
+            }
+        }
         selectedWorkspaceID = sessionStore.selectedProjectID.flatMap { selectedID in
             projects.contains(where: { $0.id == selectedID }) ? selectedID : nil
         } ?? projects.first?.id
     }
 
     private func removeWorkspace(_ project: AgentProject) {
-        pendingWorkspaceRemoval = nil
         guard selectedWorkspaceID != project.id else { return }
         sessionLoadStates.removeValue(forKey: project.id)
         sessionLoadInvocationTokens.remove(for: project.id)
@@ -663,21 +723,35 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshCatalog(forceGitSummary: Bool = false) async {
-        catalogState = .loading
+        let invocationID = catalogLoad.begin()
         do {
             try await sessionStore.refreshWorkspaceCatalog()
-            guard !Task.isCancelled else {
+            guard catalogLoad.isCurrent(invocationID) else {
                 return
             }
-            catalogState = .loaded
+            guard !Task.isCancelled else {
+                catalogLoad.complete(
+                    invocationID,
+                    result: .cancelled,
+                    hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
+                )
+                return
+            }
+            catalogLoad.complete(
+                invocationID,
+                result: .loaded,
+                hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
+            )
             await sessionStore.refreshWorkspaceGitSummaries(
                 for: sessionStore.sidebarProjects,
                 force: forceGitSummary
             )
-        } catch is CancellationError {
-            return
         } catch {
-            catalogState = .failed(error.localizedDescription)
+            catalogLoad.complete(
+                invocationID,
+                result: isCancellationError(error) ? .cancelled : .failed(error.localizedDescription),
+                hasCachedProjects: !sessionStore.sidebarProjects.isEmpty
+            )
         }
     }
 
@@ -707,16 +781,16 @@ struct WorkspaceRootView: View {
                 return
             }
             sessionLoadStates[projectID] = .loaded
-        } catch is CancellationError {
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
-                return
-            }
-            sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
         } catch {
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
                 return
             }
-            sessionLoadStates[projectID] = .failed(error.localizedDescription)
+            switch workspaceSessionLoadFailureDisposition(error) {
+            case .cancelled:
+                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+            case .failed(let message):
+                sessionLoadStates[projectID] = .failed(message)
+            }
         }
     }
 
@@ -728,12 +802,6 @@ struct WorkspaceRootView: View {
         sessionStore.sessions(forProjectID: projectID).isEmpty ? .idle : .loaded
     }
 
-    private enum CatalogState: Equatable {
-        case idle
-        case loading
-        case loaded
-        case failed(String)
-    }
 }
 
 private enum WorkspaceSessionLoadState: Equatable {
@@ -744,23 +812,6 @@ private enum WorkspaceSessionLoadState: Equatable {
 
     var isLoading: Bool {
         self == .loading
-    }
-}
-
-private struct WorkspaceActionPressButtonStyle: ButtonStyle {
-    let reduceMotion: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            // 按下反馈直接跟随触点；减少动态效果时仅改变透明度，避免不必要的缩放运动。
-            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.985)
-            .opacity(configuration.isPressed ? 0.84 : 1)
-            .animation(
-                reduceMotion
-                    ? .easeOut(duration: 0.08)
-                    : .spring(response: 0.22, dampingFraction: 1),
-                value: configuration.isPressed
-            )
     }
 }
 
@@ -787,15 +838,16 @@ private struct WorkspaceLibraryCard: View {
     let tokens: ThemeTokens
     let action: () -> Void
     let onOpenGitChanges: () -> Void
-    let onRemove: () -> Void
+    let onConfirmRemove: () -> Void
     @State private var isPresentingIconPicker = false
+    @State private var isPresentingRemoveConfirmation = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Button(action: action) {
                 cardContent
             }
-            .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(accessibilitySummary)
 
             Menu {
@@ -813,9 +865,12 @@ private struct WorkspaceLibraryCard: View {
                 }
 
                 if !isSelected {
-                    Button(role: .destructive, action: onRemove) {
+                    Button(role: .destructive) {
+                        isPresentingRemoveConfirmation = true
+                    } label: {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
                     }
+                    .accessibilityIdentifier("workspace.remove.request.\(project.id)")
                 }
             } label: {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "ellipsis.circle")
@@ -826,6 +881,24 @@ private struct WorkspaceLibraryCard: View {
             }
             .menuStyle(.button)
             .accessibilityLabel(L10n.text("ui.workspace_actions"))
+            .accessibilityIdentifier("workspace.card.actions.\(project.id)")
+            // iPad 会把 confirmationDialog 适配成 popover；必须挂在真实的 44pt 操作源上，
+            // 让系统在旋转和分栏宽度变化时从当前卡片计算箭头与安全区域，而不是使用整页根视图。
+            .confirmationDialog(
+                L10n.text("ui.remove_directory"),
+                isPresented: $isPresentingRemoveConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.format("ui.remove_directory_value", project.name), role: .destructive) {
+                    onConfirmRemove()
+                }
+                .accessibilityIdentifier("workspace.remove.confirm.\(project.id)")
+                Button(L10n.text("ui.cancel"), role: .cancel) {
+                    isPresentingRemoveConfirmation = false
+                }
+            } message: {
+                Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
+            }
             .padding(.top, 4)
             .padding(.trailing, 2)
 
@@ -1216,7 +1289,7 @@ private struct WorkspaceCharacterPicker: View {
                             }
                         }
                     }
-                    .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                     .disabled(isUnavailable)
                     .opacity(isUnavailable ? 0.36 : 1)
                     .accessibilityIdentifier("workspace.character.\(character.id)")
@@ -1297,7 +1370,7 @@ private struct WorkspaceEmojiPicker: View {
                             }
                         }
                     }
-                    .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                     .disabled(isUnavailable)
                     .opacity(isUnavailable ? 0.36 : 1)
                     .accessibilityLabel(emoji)
@@ -1369,14 +1442,17 @@ private struct WorkspaceEmojiPicker: View {
 }
 
 private struct WorkspaceDetailView: View {
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var actionButtonHeight: CGFloat = 68
+    @ScaledMetric(relativeTo: .caption) private var compactActionFontSize: CGFloat = 12
     @State private var isLoadingMoreSessions = false
 
     let recentSessions: [AgentSession]
+    let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
     let canLoadMoreSessions: Bool
     let claudeChannelAvailable: Bool
@@ -1465,7 +1541,7 @@ private struct WorkspaceDetailView: View {
             .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
     }
 
     @ViewBuilder
@@ -1506,8 +1582,11 @@ private struct WorkspaceDetailView: View {
                         }
                         Text(sessionLoadState.isLoading ? L10n.text("ui.loading") : L10n.text("ui.refresh"))
                     }
-                    .font(themeStore.uiFont(.caption, weight: .medium))
+                    .font(themeStore.uiFont(size: compactActionFontSize, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
+                    // 手动刷新与“显示更多”同属会话列表操作；即使 caption 很短，也保留 44pt 触控区。
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(sessionLoadState.isLoading)
@@ -1534,6 +1613,7 @@ private struct WorkspaceDetailView: View {
                 VStack(spacing: 0) {
                     let firstStaleIndex = WorkspaceSessionAgeBoundary.firstStaleIndex(
                         in: recentSessions,
+                        excludingSessionIDs: sessionStore.pinnedSessionIDs,
                         now: currentDate()
                     )
 
@@ -1552,6 +1632,7 @@ private struct WorkspaceDetailView: View {
                             recentSessionRow(session, tokens: tokens)
                         }
                         .buttonStyle(.plain)
+                        .sessionRowActions(session)
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {
@@ -1572,17 +1653,23 @@ private struct WorkspaceDetailView: View {
                                         .controlSize(.small)
                                 } else {
                                     Image(systemName: "chevron.down")
-                                        .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                        .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
                                 }
                                 Text(isLoadingMoreSessions ? L10n.text("ui.loading") : L10n.text("ui.show_more"))
                             }
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
+                            .font(themeStore.uiFont(size: compactActionFontSize, weight: .semibold))
                             .foregroundStyle(tokens.secondaryText)
                             .frame(maxWidth: .infinity, minHeight: 46)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .disabled(isLoadingMoreSessions)
+                        .accessibilityLabel(
+                            isLoadingMoreSessions
+                                ? L10n.text("ui.loading")
+                                : L10n.text("ui.show_more")
+                        )
+                        .accessibilityIdentifier("workspace.sessions.loadMore")
                     }
                 }
                 .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1671,10 +1758,21 @@ private struct WorkspaceDetailView: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.title)
-                    .font(themeStore.uiFont(.callout, weight: .medium))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if sessionStore.isSessionPinned(session.id) {
+                        SessionPinnedBadge(compact: true)
+                    }
+
+                    Text(session.title)
+                        .font(themeStore.uiFont(.callout, weight: .medium))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+
+                    if unreadHistorySessionIDs.contains(session.id) {
+                        SessionUnreadIndicator()
+                    }
+                }
 
                 HStack(spacing: 6) {
                     if let branch = session.gitBranchName {
@@ -1729,6 +1827,12 @@ private struct WorkspaceDetailView: View {
         .padding(.horizontal, 14)
         .frame(minHeight: 62)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(
+            unreadHistorySessionIDs.contains(session.id)
+                ? L10n.text("ui.unread_result")
+                : ""
+        )
     }
 
     private func shouldShowRecentSessionStatus(

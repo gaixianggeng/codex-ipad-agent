@@ -67,13 +67,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Personalization"
+            "value" : "Appearance & Personalization"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "个性化"
+            "value" : "外观与个性化"
           }
         }
       }
@@ -114,12 +114,26 @@
         }
       }
     },
+    "ui.workspace_icon_style_compact_journey" : {"comment":"Compact source label for Journey to the West in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Journey"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"西游记"}}}},
+    "ui.workspace_icon_style_compact_three_kingdoms" : {"comment":"Compact source label for Romance of the Three Kingdoms in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Kingdoms"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"三国"}}}},
+    "ui.workspace_icon_style_compact_water_margin" : {"comment":"Compact source label for Water Margin in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Water Margin"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"水浒"}}}},
+    "ui.workspace_icon_style_compact_red_chamber" : {"comment":"Compact source label for Dream of the Red Chamber in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Red Chamber"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"红楼"}}}},
+    "ui.workspace_icon_style_compact_greek_mythology" : {"comment":"Compact source label for Greek mythology in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Greek"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"希腊"}}}},
+    "ui.workspace_icon_style_compact_sherlock_holmes" : {"comment":"Compact source label for the Sherlock Holmes stories in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sherlock"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"福尔摩斯"}}}},
+    "ui.workspace_icon_style_compact_alice_wonderland" : {"comment":"Compact source label for Alice in Wonderland in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Alice"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"爱丽丝"}}}},
+    "ui.workspace_icon_style_compact_one_piece" : {"comment":"Compact source label for One Piece in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"One Piece"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"航海王"}}}},
+    "ui.workspace_icon_style_compact_naruto" : {"comment":"Compact source label for Naruto in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Naruto"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"火影"}}}},
+    "ui.workspace_icon_style_compact_digimon" : {"comment":"Compact source label for Digimon in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Digimon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"数码宝贝"}}}},
+    "ui.workspace_icon_style_compact_emoji" : {"comment":"Compact source label for Emoji in the workspace icon style grid.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Emoji"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"Emoji"}}}},
     "ui.workspace_icon_style_three_kingdoms" : {"comment":"Workspace icon style based on Romance of the Three Kingdoms.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Three Kingdoms"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"三国演义"}}}},
     "ui.workspace_icon_style_water_margin" : {"comment":"Workspace icon style based on Water Margin.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Water Margin"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"水浒传"}}}},
     "ui.workspace_icon_style_red_chamber" : {"comment":"Workspace icon style based on Dream of the Red Chamber.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Dream of the Red Chamber"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"红楼梦"}}}},
     "ui.workspace_icon_style_greek_mythology" : {"comment":"Workspace icon style based on Greek mythology.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Greek Mythology"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"希腊神话"}}}},
     "ui.workspace_icon_style_sherlock_holmes" : {"comment":"Workspace icon style based on the Sherlock Holmes stories.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sherlock Holmes"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"福尔摩斯"}}}},
     "ui.workspace_icon_style_alice_wonderland" : {"comment":"Workspace icon style based on Alice's Adventures in Wonderland.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Alice in Wonderland"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"爱丽丝梦游仙境"}}}},
+    "ui.workspace_icon_style_one_piece" : {"comment":"Workspace icon style based on One Piece.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"One Piece"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"航海王"}}}},
+    "ui.workspace_icon_style_naruto" : {"comment":"Workspace icon style based on Naruto.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Naruto"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"火影忍者"}}}},
+    "ui.workspace_icon_style_digimon" : {"comment":"Workspace icon style based on Digimon.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Digimon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"数码宝贝"}}}},
     "ui.workspace_character_three_liu_bei" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Liu Bei"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"刘备"}}}},
     "ui.workspace_character_three_guan_yu" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Guan Yu"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"关羽"}}}},
     "ui.workspace_character_three_zhang_fei" : {"comment":"Built-in Three Kingdoms workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Zhang Fei"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"张飞"}}}},
@@ -180,6 +194,36 @@
     "ui.workspace_character_alice_dormouse" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Dormouse"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"睡鼠"}}}},
     "ui.workspace_character_alice_caterpillar" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Caterpillar"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"毛毛虫"}}}},
     "ui.workspace_character_alice_duchess" : {"comment":"Built-in Alice in Wonderland workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Duchess"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"公爵夫人"}}}},
+    "ui.workspace_character_one_piece_luffy" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Monkey D. Luffy"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"蒙奇·D·路飞"}}}},
+    "ui.workspace_character_one_piece_zoro" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Roronoa Zoro"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"罗罗诺亚·索隆"}}}},
+    "ui.workspace_character_one_piece_nami" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Nami"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"娜美"}}}},
+    "ui.workspace_character_one_piece_usopp" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Usopp"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"乌索普"}}}},
+    "ui.workspace_character_one_piece_sanji" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sanji"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"山治"}}}},
+    "ui.workspace_character_one_piece_chopper" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Tony Tony Chopper"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"托尼托尼·乔巴"}}}},
+    "ui.workspace_character_one_piece_robin" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Nico Robin"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"妮可·罗宾"}}}},
+    "ui.workspace_character_one_piece_franky" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Franky"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"弗兰奇"}}}},
+    "ui.workspace_character_one_piece_brook" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Brook"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"布鲁克"}}}},
+    "ui.workspace_character_one_piece_jinbe" : {"comment":"Built-in One Piece workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Jinbe"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"甚平"}}}},
+    "ui.workspace_character_naruto_naruto" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Naruto Uzumaki"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"漩涡鸣人"}}}},
+    "ui.workspace_character_naruto_sasuke" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sasuke Uchiha"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"宇智波佐助"}}}},
+    "ui.workspace_character_naruto_sakura" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Sakura Haruno"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"春野樱"}}}},
+    "ui.workspace_character_naruto_kakashi" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Kakashi Hatake"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"旗木卡卡西"}}}},
+    "ui.workspace_character_naruto_hinata" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Hinata Hyuga"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"日向雏田"}}}},
+    "ui.workspace_character_naruto_gaara" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Gaara"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"我爱罗"}}}},
+    "ui.workspace_character_naruto_itachi" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Itachi Uchiha"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"宇智波鼬"}}}},
+    "ui.workspace_character_naruto_jiraiya" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Jiraiya"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"自来也"}}}},
+    "ui.workspace_character_naruto_shikamaru" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Shikamaru Nara"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"奈良鹿丸"}}}},
+    "ui.workspace_character_naruto_tsunade" : {"comment":"Built-in Naruto workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Tsunade"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"纲手"}}}},
+    "ui.workspace_character_digimon_agumon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Agumon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"亚古兽"}}}},
+    "ui.workspace_character_digimon_gabumon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Gabumon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"加布兽"}}}},
+    "ui.workspace_character_digimon_patamon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Patamon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"巴达兽"}}}},
+    "ui.workspace_character_digimon_gatomon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Gatomon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"迪路兽"}}}},
+    "ui.workspace_character_digimon_biyomon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Biyomon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"比丘兽"}}}},
+    "ui.workspace_character_digimon_tentomon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Tentomon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"甲虫兽"}}}},
+    "ui.workspace_character_digimon_gomamon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Gomamon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"哥玛兽"}}}},
+    "ui.workspace_character_digimon_palmon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Palmon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"巴鲁兽"}}}},
+    "ui.workspace_character_digimon_veemon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Veemon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"V仔兽"}}}},
+    "ui.workspace_character_digimon_guilmon" : {"comment":"Built-in Digimon workspace character.","extractionState":"manual","localizations":{"en":{"stringUnit":{"state":"translated","value":"Guilmon"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"基尔兽"}}}},
     "·" : {
       "comment" : "A separator between two elements.",
       "isCommentAutoGenerated" : true,
@@ -400,6 +444,108 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "运行异常"
+          }
+        }
+      }
+    },
+    "ui.claude_code_login_expired" : {
+      "comment" : "Title shown when Claude Code OAuth can no longer refresh automatically.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude Code login expired"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude Code 登录已过期"
+          }
+        }
+      }
+    },
+    "ui.claude_code_login_expired_recovery" : {
+      "comment" : "Recovery instructions shown after Claude Code OAuth expires.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On the Mac running Mimi Remote, open Terminal and run claude to sign in again. Then return here and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请回到运行 Mimi Remote 助手的 Mac，在终端运行 claude 并按提示重新登录，然后回到这里重试。"
+          }
+        }
+      }
+    },
+    "ui.claude_login_command_copied" : {
+      "comment" : "Confirmation after copying the Claude Code login command.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copied claude. Run it in Terminal on your Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制 claude，请在 Mac 的终端运行。"
+          }
+        }
+      }
+    },
+    "ui.claude_request_sent_again" : {
+      "comment" : "Confirmation after explicitly retrying a request that failed because Claude Code authentication expired.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Request sent again"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求已重新发送"
+          }
+        }
+      }
+    },
+    "ui.copy_login_command" : {
+      "comment" : "Button that copies the Claude Code login command for use on the Mac host.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy login command"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制登录命令"
+          }
+        }
+      }
+    },
+    "ui.original_request_for_retry_was_not_found" : {
+      "comment" : "Shown when an authentication error card can no longer find the original user request to retry.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The original request could not be found. Please send it again from the composer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到本次失败对应的原始请求，请直接在输入框重新发送。"
           }
         }
       }
@@ -1057,13 +1203,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Advanced"
+            "value" : "Diagnostics & Development"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "高级"
+            "value" : "诊断与开发"
           }
         }
       }
@@ -1807,6 +1953,23 @@
         }
       }
     },
+    "ui.another_host" : {
+      "comment" : "Secondary saved host name used by the debug-only platform icon preview.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another host"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一台主机"
+          }
+        }
+      }
+    },
     "ui.another_mac_connection_operation_is_still_in_progress" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -2312,6 +2475,40 @@
         }
       }
     },
+    "ui.apple_voice_input_stopped_please_try_again" : {
+      "comment" : "Shown when the on-device speech result stream becomes unhealthy while microphone audio is still arriving.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On-device voice input stopped. Tap the microphone to try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备端语音输入已停止，请点击麦克风重试。"
+          }
+        }
+      }
+    },
+    "ui.apple_voice_input_was_interrupted_please_try_again" : {
+      "comment" : "Shown after iOS interrupts an active on-device voice input session.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice input was interrupted by the system. Tap the microphone to try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音输入被系统中断，请点击麦克风重试。"
+          }
+        }
+      }
+    },
     "ui.application" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -2699,6 +2896,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "approvalPolicy=never 被禁止"
+          }
+        }
+      }
+    },
+    "ui.allow_once" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "allow once"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许一次"
           }
         }
       }
@@ -3431,6 +3645,363 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "调用工具"
+          }
+        }
+      }
+    },
+    "ui.continue_subagent" : {
+      "comment" : "User-facing UI text for continuing an actual collaboration subagent, distinct from resuming an independent Codex task.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Continue subagent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续子 Agent"
+          }
+        }
+      }
+    },
+    "ui.interrupt_subagent" : {
+      "comment" : "User-facing UI text for interrupting an actual collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interrupt subagent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中断子 Agent"
+          }
+        }
+      }
+    },
+    "ui.interrupted_status" : {
+      "comment" : "User-facing terminal status for an interrupted activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interrupted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已中断"
+          }
+        }
+      }
+    },
+    "ui.perform_subagent_collaboration" : {
+      "comment" : "User-facing UI text for a collaboration subagent action whose exact operation is unavailable.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Coordinate subagents"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行子 Agent 协作"
+          }
+        }
+      }
+    },
+    "ui.query_linear" : {
+      "comment" : "User-facing UI text for a safe generic Linear query.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query Linear"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询 Linear"
+          }
+        }
+      }
+    },
+    "ui.query_linear_issues" : {
+      "comment" : "User-facing UI text for listing or searching Linear issues.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query Linear issues"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询 Linear Issue"
+          }
+        }
+      }
+    },
+    "ui.query_subagents" : {
+      "comment" : "User-facing UI text for listing actual collaboration subagents.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query subagents"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询子 Agent"
+          }
+        }
+      }
+    },
+    "ui.query_task_list" : {
+      "comment" : "User-facing UI text for listing independent Codex tasks.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Query task list"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查询任务列表"
+          }
+        }
+      }
+    },
+    "ui.read_independent_task" : {
+      "comment" : "User-facing UI text for reading an independent Codex task.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read independent task"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取独立任务"
+          }
+        }
+      }
+    },
+    "ui.read_issue_comments" : {
+      "comment" : "User-facing UI text for reading Linear issue comments.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read issue comments"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 Issue 评论"
+          }
+        }
+      }
+    },
+    "ui.read_linear" : {
+      "comment" : "User-facing UI text for a safe generic Linear read.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read Linear data"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 Linear"
+          }
+        }
+      }
+    },
+    "ui.read_linear_issue" : {
+      "comment" : "User-facing UI text for reading one Linear issue.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read Linear issue"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取 Linear Issue"
+          }
+        }
+      }
+    },
+    "ui.resume_independent_task" : {
+      "comment" : "User-facing UI text for resuming or continuing an independent Codex task.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resume independent task"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复独立任务"
+          }
+        }
+      }
+    },
+    "ui.start_independent_task" : {
+      "comment" : "User-facing UI text for starting a separate Codex task, distinct from a collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start independent task"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动独立任务"
+          }
+        }
+      }
+    },
+    "ui.start_subagent" : {
+      "comment" : "User-facing UI text for starting an actual collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start subagent"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动子 Agent"
+          }
+        }
+      }
+    },
+    "ui.timed_out_status" : {
+      "comment" : "User-facing terminal status for a timed-out activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timed out"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已超时"
+          }
+        }
+      }
+    },
+    "ui.update_issue_comments" : {
+      "comment" : "User-facing UI text for creating or updating Linear issue comments.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update issue comments"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新 Issue 评论"
+          }
+        }
+      }
+    },
+    "ui.update_linear" : {
+      "comment" : "User-facing UI text for a safe generic Linear write.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update Linear"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新 Linear"
+          }
+        }
+      }
+    },
+    "ui.update_linear_issue" : {
+      "comment" : "User-facing UI text for creating or updating a Linear issue.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update Linear issue"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新 Linear Issue"
+          }
+        }
+      }
+    },
+    "ui.wait_for_subagent_result" : {
+      "comment" : "User-facing UI text for waiting on an actual collaboration subagent.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for subagent result"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待子 Agent 结果"
+          }
+        }
+      }
+    },
+    "ui.wait_for_task_results" : {
+      "comment" : "User-facing UI text for waiting on independent Codex tasks.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for task results"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待任务结果"
           }
         }
       }
@@ -6436,6 +7007,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "创建：%@"
+          }
+        }
+      }
+    },
+    "ui.created_from_another_conversation" : {
+      "comment" : "Badge identifying a session that was created by or continued from another conversation.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Created from another conversation"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由其他会话创建"
           }
         }
       }
@@ -9756,6 +10345,74 @@
         }
       }
     },
+    "ui.file_upload_capability_negotiation_failed" : {
+      "comment" : "Shown when file upload capability negotiation is missing, inconsistent, or unknown.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File upload availability could not be verified for the current Mac. Reconnect, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法确认当前 Mac 的文件上传能力，请重新连接后再试。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_dependency_unavailable_on_current_mac" : {
+      "comment" : "Shown when agentd disabled file uploads because its local cache dependency is unavailable.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File uploads are temporarily unavailable on the current Mac. Run agentd doctor on that Mac for details."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 的文件上传依赖暂不可用，请在该 Mac 运行 agentd doctor 查看详情。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_disabled_on_current_mac" : {
+      "comment" : "Shown when the current Mac locally disables file_upload_v1.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File uploads are disabled in the current Mac's local agentd configuration."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 已在本地 agentd 配置中禁用文件上传。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_host_changed_select_again" : {
+      "comment" : "Shown when the active Mac changes while the system file picker is open.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The active Mac changed. Select the file again for the current Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 已切换，请为当前 Mac 重新选择文件。"
+          }
+        }
+      }
+    },
     "ui.file_cannot_be_empty" : {
       "comment" : "Shown when the selected file contains no data.",
       "localizations" : {
@@ -11548,6 +12205,24 @@
         }
       }
     },
+    "ui.unread_result" : {
+      "comment" : "Accessibility value for a history session that has a new completed result the user has not opened.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unread result"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未读结果"
+          }
+        }
+      }
+    },
     "ui.host_in_parentheses" : {
       "comment" : "Endpoint host enclosed in language-appropriate parentheses.",
       "localizations" : {
@@ -11561,6 +12236,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "（%@）"
+          }
+        }
+      }
+    },
+    "ui.host_platform_preview_name" : {
+      "comment" : "Debug-only host name for a platform icon preview. The placeholder is macOS, Windows, Linux, or Unknown.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ host"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 主机"
           }
         }
       }
@@ -12997,13 +13689,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Legal & Support"
+            "value" : "About & Support"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "法律与支持"
+            "value" : "关于与支持"
           }
         }
       }
@@ -13379,6 +14071,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在加载历史诊断……"
+          }
+        }
+      }
+    },
+    "ui.loading_sessions" : {
+      "comment" : "Loading state shown while the session index is being prepared.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading sessions…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载会话…"
           }
         }
       }
@@ -16436,6 +17145,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开"
+          }
+        }
+      }
+    },
+    "ui.open_a_workspace_to_load_its_sessions" : {
+      "comment" : "Explains the relationship between workspace directories and the session index for first-time users.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sessions are loaded by workspace directory. Go to Workspace and open or add a directory first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话按工作区目录加载。请先前往工作区打开或加入一个目录。"
           }
         }
       }
@@ -22746,6 +23472,23 @@
         }
       }
     },
+    "ui.session_loading_failed" : {
+      "comment" : "Title shown when a session index request fails after a workspace has been opened.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't load sessions"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话加载失败"
+          }
+        }
+      }
+    },
     "ui.session_name" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -22965,6 +23708,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "会话已恢复显示全部工作区"
+          }
+        }
+      }
+    },
+    "ui.session_runtime_unavailable" : {
+      "comment" : "Title shown when the connected Mac cannot provide the session runtime.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Session service unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话服务不可用"
           }
         }
       }
@@ -23652,6 +24412,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "显示更多"
+          }
+        }
+      }
+    },
+    "ui.show_sidebar" : {
+      "comment" : "Accessibility label for the control that reveals the floating conversation sidebar.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Sidebar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示边栏"
           }
         }
       }
@@ -24662,6 +25439,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "子 Agent"
+          }
+        }
+      }
+    },
+    "ui.sub_agent_managed_by_parent" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Managed by the parent session"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由父会话管理"
+          }
+        }
+      }
+    },
+    "ui.sub_agent_managed_read_only" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Managed by the parent session · Read Only"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由父会话管理 · 只读"
+          }
+        }
+      }
+    },
+    "ui.sub_agent_unavailable" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This child session is no longer available or is outside the authorized repository scope."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个子会话已不可用，或不在已授权仓库范围内。"
           }
         }
       }
@@ -26118,13 +26946,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The complete history failed to load. The content may be too large."
+            "value" : "The complete history failed to load. Please try again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "完整历史加载失败，可能是内容过大。"
+            "value" : "完整历史加载失败，请重试。"
           }
         }
       }
@@ -28873,6 +29701,42 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token 额度"
+          }
+        }
+      }
+    },
+    "ui.connection" : {
+      "comment" : "Settings section title for saved Mac devices and connection health.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接"
+          }
+        }
+      }
+    },
+    "ui.mac_devices" : {
+      "comment" : "Settings row title for managing the currently active and other saved Macs.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac & Devices"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 与设备"
           }
         }
       }
@@ -33468,6 +34332,23 @@
         }
       }
     },
+    "ui.check_host_status" : {
+      "comment" : "Menu action that refreshes the cached availability status of saved hosts across macOS, Windows, and Linux.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check Host Status"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查主机状态"
+          }
+        }
+      }
+    },
     "ui.mac_already_saved_as_value" : {
       "comment" : "Shown when the stable installation identity already belongs to another saved Mac profile. The placeholder is the existing profile name.",
       "localizations" : {
@@ -33804,6 +34685,258 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "完成 Mac 设置后，扫描它显示的二维码。"
+          }
+        }
+      }
+    },
+    "ui.me" : {
+      "comment" : "Top-level destination for account usage, preferences, devices, and app information.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Me"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我的"
+          }
+        }
+      }
+    },
+    "ui.my_preferences" : {
+      "comment" : "Section title for personal app preferences on the Me page.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "My Preferences"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我的偏好设置"
+          }
+        }
+      }
+    },
+    "ui.more" : {
+      "comment" : "Section title for secondary destinations on the Me page.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多"
+          }
+        }
+      }
+    },
+    "ui.current_remaining" : {
+      "comment" : "Heading above the account quota rings; the rings represent remaining quota.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current Remaining"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前剩余"
+          }
+        }
+      }
+    },
+    "ui.token_activity" : {
+      "comment" : "Heading for the account's daily Token activity dot grid.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token Activity"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token 活动"
+          }
+        }
+      }
+    },
+    "ui.lifetime_token_value" : {
+      "comment" : "Compact lifetime Token count shown in the Token activity header. The placeholder is a localized compact number.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lifetime · %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "累计 Token · %@"
+          }
+        }
+      }
+    },
+    "ui.loading_token_activity" : {
+      "comment" : "Loading message for account Token activity.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading Token activity…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载 Token 活动…"
+          }
+        }
+      }
+    },
+    "ui.token_activity_unavailable" : {
+      "comment" : "Shown when the current host or account cannot return account Token activity.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token activity is temporarily unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token 活动暂时不可用"
+          }
+        }
+      }
+    },
+    "ui.token_activity_waiting" : {
+      "comment" : "Initial placeholder before the first account Token activity refresh finishes.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token activity will appear after refresh"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新后显示 Token 活动"
+          }
+        }
+      }
+    },
+    "ui.token_activity_accessibility_value" : {
+      "comment" : "VoiceOver summary for the Token activity grid. The placeholder is the number of active days.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ active days in the past year"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "过去一年有 %@ 天使用了 Token"
+          }
+        }
+      }
+    },
+    "ui.advanced_and_development" : {
+      "comment" : "Me page destination grouping advanced capabilities and developer mode.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Advanced & Development"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高级与开发"
+          }
+        }
+      }
+    },
+    "ui.about_and_legal" : {
+      "comment" : "Me page destination grouping app information and legal documents.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "About & Legal"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关于与法律"
+          }
+        }
+      }
+    },
+    "ui.compact_number_hundred_million_suffix" : {
+      "comment" : "Chinese compact-number suffix for one hundred million. Only used by the Simplified Chinese formatter.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " hundred million"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "亿"
+          }
+        }
+      }
+    },
+    "ui.compact_number_ten_thousand_suffix" : {
+      "comment" : "Chinese compact-number suffix for ten thousand. Only used by the Simplified Chinese formatter.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " ten thousand"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "万"
           }
         }
       }

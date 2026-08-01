@@ -8,6 +8,7 @@ struct ConversationTimelineView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
     let layout: ConversationLayout
+    let explicitSessionID: SessionID?
     @State private var shouldFollowMessageTail = true
     @State private var forceNextMessageTailScroll = true
     // 在会话切换、本地提交或用户主动“回到底部”后，旧 List 的滚动几何可能还会
@@ -29,10 +30,19 @@ struct ConversationTimelineView: View {
     private let messageTailFollowThreshold: CGFloat = 120
     private static let timelineTailSentinelID = "__conversation_timeline_safe_tail__"
 
+    init(layout: ConversationLayout, sessionID: SessionID? = nil) {
+        self.layout = layout
+        explicitSessionID = sessionID
+    }
+
+    private var displayedSessionID: SessionID? {
+        explicitSessionID ?? sessionStore.selectedSessionID
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let hostProfileID = sessionStore.mediaProfileScope
-        let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
+        let messages = conversationStore.messages(for: displayedSessionID)
         let timelineSnapshot = timelineItemCache.snapshot(
             from: messages,
             suspendingUpdates: isUserScrollingTimeline
@@ -40,11 +50,15 @@ struct ConversationTimelineView: View {
         let timelineItems = timelineSnapshot.items
         let timelineItemIDs = timelineSnapshot.itemIDs
         let tailFollowTaskKey = Self.tailFollowTaskKey(
-            sessionID: sessionStore.selectedSessionID,
+            sessionID: displayedSessionID,
             tailItemID: timelineItems.last?.id
         )
         let activeUserDeliveryMessageID = Self.activeUserDeliveryMessageID(in: messages)
-        let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: sessionStore.selectedSessionID) != nil
+        let crossSessionOriginMessageID = Self.crossSessionOriginMessageID(
+            session: displayedSessionID.flatMap { sessionStore.sessionsByID[$0] },
+            messages: messages
+        )
+        let isHistoryLoading = sessionStore.historyLoadProgress(sessionID: displayedSessionID) != nil
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
                 // 用 List 替代 ScrollView + LazyVStack：行高是真实测量值、
@@ -60,7 +74,7 @@ struct ConversationTimelineView: View {
                                 .listRowInsets(layout.messageRowInsets)
                                 .listRowBackground(Color.clear)
                         } else {
-                            if sessionStore.canLoadEarlierHistory(sessionID: sessionStore.selectedSessionID) {
+                            if sessionStore.canLoadEarlierHistory(sessionID: displayedSessionID) {
                                 loadEarlierRow(proxy: proxy, timelineItems: timelineItems)
                                     .listRowSeparator(.hidden)
                                     .listRowInsets(layout.messageRowInsets)
@@ -72,6 +86,7 @@ struct ConversationTimelineView: View {
                                 timelineRow(
                                     item,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                                    crossSessionOriginMessageID: crossSessionOriginMessageID,
                                     proxy: proxy
                                 )
                                     .simultaneousGesture(TapGesture().onEnded {
@@ -101,7 +116,7 @@ struct ConversationTimelineView: View {
                 // 挂载后再定位到固定尾部哨兵。
                 .id(ScopedSessionID(
                     profileID: hostProfileID,
-                    sessionID: sessionStore.selectedSessionID ?? "__none__"
+                    sessionID: displayedSessionID ?? "__none__"
                 ))
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
@@ -151,7 +166,7 @@ struct ConversationTimelineView: View {
                     .padding(.bottom, 16)
                 }
             }
-            .onChange(of: sessionStore.selectedSessionID) { oldID, newID in
+            .onChange(of: displayedSessionID) { oldID, newID in
                 let shouldPreserveTailFollowLock = isTailFollowLocked
                     && Self.isOptimisticSessionID(oldID)
                     && newID != nil
@@ -192,7 +207,7 @@ struct ConversationTimelineView: View {
                 cancelPendingTailScrollAttempts()
                 shouldFollowMessageTail = true
                 forceNextMessageTailScroll = true
-                isTailFollowLocked = sessionStore.selectedSessionID != nil
+                isTailFollowLocked = displayedSessionID != nil
                 if !messages.isEmpty {
                     HostSwitchSignpost.event("first_text_visible")
                 }
@@ -222,7 +237,7 @@ struct ConversationTimelineView: View {
                     queueTailScrollAttempts(
                         timelineItems: timelineItems,
                         proxy: proxy,
-                        sessionID: sessionStore.selectedSessionID,
+                        sessionID: displayedSessionID,
                         expectedTailItemID: timelineItems.last?.id,
                         animatedFirstAttempt: true,
                         force: true
@@ -235,7 +250,7 @@ struct ConversationTimelineView: View {
                     queueTailScrollAttempts(
                         timelineItems: timelineItems,
                         proxy: proxy,
-                        sessionID: sessionStore.selectedSessionID,
+                        sessionID: displayedSessionID,
                         expectedTailItemID: timelineItems.last?.id,
                         animatedFirstAttempt: false,
                         force: true
@@ -245,7 +260,7 @@ struct ConversationTimelineView: View {
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
-                    sessionID: sessionStore.selectedSessionID,
+                    sessionID: displayedSessionID,
                     expectedTailItemID: timelineItems.last?.id,
                     animatedFirstAttempt: true,
                     force: false
@@ -264,7 +279,7 @@ struct ConversationTimelineView: View {
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
-                    sessionID: sessionStore.selectedSessionID,
+                    sessionID: displayedSessionID,
                     expectedTailItemID: timelineItems.last?.id,
                     animatedFirstAttempt: false,
                     force: false,
@@ -276,7 +291,7 @@ struct ConversationTimelineView: View {
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
-                    sessionID: sessionStore.selectedSessionID,
+                    sessionID: displayedSessionID,
                     expectedTailItemID: timelineItems.last?.id,
                     animatedFirstAttempt: false,
                     force: false,
@@ -292,7 +307,7 @@ struct ConversationTimelineView: View {
                 queueTailScrollAttempts(
                     timelineItems: timelineItems,
                     proxy: proxy,
-                    sessionID: sessionStore.selectedSessionID,
+                    sessionID: displayedSessionID,
                     expectedTailItemID: timelineItems.last?.id,
                     animatedFirstAttempt: false,
                     // 首次打开/切换会话不能被尚未稳定的滚动几何拦截；
@@ -310,6 +325,7 @@ struct ConversationTimelineView: View {
     private func timelineRow(
         _ item: ConversationTimelineItem,
         activeUserDeliveryMessageID: UUID?,
+        crossSessionOriginMessageID: UUID?,
         proxy: ScrollViewProxy
     ) -> some View {
         switch item {
@@ -319,6 +335,7 @@ struct ConversationTimelineView: View {
                 themeVersion: themeStore.themeVersion,
                 layout: layout,
                 showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
+                showsCrossSessionOrigin: message.id == crossSessionOriginMessageID,
                 skills: sessionStore.capabilityList?.skills ?? [],
                 retry: { message in
                     Task { await sessionStore.retryFailedUserMessage(message) }
@@ -417,6 +434,7 @@ struct ConversationTimelineView: View {
                 themeVersion: themeStore.themeVersion,
                 layout: layout,
                 showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
+                showsCrossSessionOrigin: false,
                 skills: sessionStore.capabilityList?.skills ?? [],
                 retry: { message in
                     Task { await sessionStore.retryFailedUserMessage(message) }
@@ -603,6 +621,22 @@ struct ConversationTimelineView: View {
         return nil
     }
 
+    private static func crossSessionOriginMessageID(
+        session: AgentSession?,
+        messages: [ConversationMessage]
+    ) -> UUID? {
+        guard let initialUserMessage = messages.first(where: {
+            $0.role == .user && $0.kind == .message
+        }),
+        ConversationOriginPresentation.isCreatedFromAnotherConversation(
+            session: session,
+            initialUserContent: initialUserMessage.content
+        ) else {
+            return nil
+        }
+        return initialUserMessage.id
+    }
+
     private static func isOptimisticSessionID(_ sessionID: SessionID?) -> Bool {
         sessionID?.hasPrefix("local:") == true
     }
@@ -664,14 +698,14 @@ struct ConversationTimelineView: View {
         HStack {
             Spacer()
             Button {
-                let sessionID = sessionStore.selectedSessionID
+                let sessionID = displayedSessionID
                 // prepend 后把原来最早的一条滚回顶部，保住用户当前阅读位置。
                 let anchorID = timelineItems.first?.id
                 Task { @MainActor in
                     await loadEarlierHistory(preserving: anchorID, sessionID: sessionID, proxy: proxy)
                 }
             } label: {
-                if sessionStore.isLoadingEarlierHistory(sessionID: sessionStore.selectedSessionID) {
+                if sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID) {
                     ProgressView()
                         .controlSize(.small)
                         .tint(workbenchSecondaryText)
@@ -682,7 +716,7 @@ struct ConversationTimelineView: View {
             .font(themeStore.uiFont(.caption, weight: .medium))
             .buttonStyle(.borderless)
             .foregroundStyle(workbenchSecondaryText)
-            .disabled(sessionStore.isLoadingEarlierHistory(sessionID: sessionStore.selectedSessionID))
+            .disabled(sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID))
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(statusChipBackground, in: Capsule())
@@ -826,7 +860,7 @@ struct ConversationTimelineView: View {
             guard !Task.isCancelled,
                   tailScrollCoordinator.attemptGeneration == attemptGeneration,
                   tailScrollCoordinator.userScrollAwayGeneration == scrollAwayGeneration,
-                  sessionStore.selectedSessionID == sessionID,
+                  displayedSessionID == sessionID,
                   currentTimelineTailItemID() == expectedTailItemID,
                   !isPreservingHistoryScroll
             else {
@@ -847,7 +881,7 @@ struct ConversationTimelineView: View {
             guard !Task.isCancelled,
                   tailScrollCoordinator.attemptGeneration == attemptGeneration,
                   tailScrollCoordinator.userScrollAwayGeneration == scrollAwayGeneration,
-                  sessionStore.selectedSessionID == sessionID,
+                  displayedSessionID == sessionID,
                   currentTimelineTailItemID() == expectedTailItemID,
                   !isPreservingHistoryScroll
             else {
@@ -874,7 +908,7 @@ struct ConversationTimelineView: View {
         queueTailScrollAttempts(
             timelineItems: timelineItems,
             proxy: proxy,
-            sessionID: sessionStore.selectedSessionID,
+            sessionID: displayedSessionID,
             expectedTailItemID: timelineItems.last?.id,
             animatedFirstAttempt: true,
             force: true,
@@ -912,8 +946,10 @@ struct ConversationTimelineView: View {
         hasUnseenTailMessage = false
         defer { isPreservingHistoryScroll = false }
 
-        await sessionStore.loadEarlierHistoryForSelectedSession()
-        guard sessionStore.selectedSessionID == sessionID, let anchorID else {
+        if let sessionID {
+            await sessionStore.loadEarlierHistory(sessionID: sessionID)
+        }
+        guard displayedSessionID == sessionID, let anchorID else {
             return
         }
         await Task.yield()
@@ -921,7 +957,7 @@ struct ConversationTimelineView: View {
     }
 
     private func restoreHistoryAnchor(_ anchorID: String, proxy: ScrollViewProxy) {
-        let messages = conversationStore.messages(for: sessionStore.selectedSessionID)
+        let messages = conversationStore.messages(for: displayedSessionID)
         let timelineItems = timelineItemCache.snapshot(from: messages).items
         guard timelineItems.contains(where: { $0.id == anchorID }) else {
             return

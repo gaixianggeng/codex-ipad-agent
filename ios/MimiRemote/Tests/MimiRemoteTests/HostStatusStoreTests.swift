@@ -20,6 +20,10 @@ final class HostStatusStoreTests: XCTestCase {
         XCTAssertEqual(fixture.statusStore.status(for: fixture.inactiveProfile).state, .available)
         XCTAssertEqual(HostStatusURLProtocol.requestedHosts(), ["100.64.0.20"])
         XCTAssertEqual(HostStatusURLProtocol.requestedPaths(), ["/api/version"])
+        XCTAssertEqual(
+            fixture.appStore.connectionProfiles.first(where: { $0.id == fixture.inactiveProfile.id })?.hostPlatform,
+            .windows
+        )
 
         fixture.statusStore.refreshIfNeeded(appStore: fixture.appStore, sessionStore: fixture.sessionStore)
         await fixture.statusStore.waitForRefreshForTesting()
@@ -68,12 +72,30 @@ final class HostStatusStoreTests: XCTestCase {
         XCTAssertEqual(fixture.statusStore.status(for: refreshed).state, .available)
     }
 
+    func testProbeBackfillsPlatformForLegacyActiveProfile() async throws {
+        let fixture = try makeFixture(
+            inactiveExpectedInstallationID: "installation-b",
+            returnedInstallationID: "installation-b",
+            activeHostPlatform: .unknown
+        )
+
+        fixture.statusStore.refreshIfNeeded(appStore: fixture.appStore, sessionStore: fixture.sessionStore)
+        await fixture.statusStore.waitForRefreshForTesting()
+
+        XCTAssertTrue(HostStatusURLProtocol.requestedHosts().contains("100.64.0.10"))
+        XCTAssertEqual(
+            fixture.appStore.connectionProfiles.first(where: { $0.id == "mac-a" })?.hostPlatform,
+            .windows
+        )
+    }
+
     private func makeFixture(
         inactiveExpectedInstallationID: String,
         returnedInstallationID: String,
         inactiveTailscaleDNSName: String? = nil,
         returnedTailscaleDNSName: String? = nil,
-        failingHosts: Set<String> = []
+        failingHosts: Set<String> = [],
+        activeHostPlatform: HostPlatform = .apple
     ) throws -> (
         appStore: AppStore,
         sessionStore: SessionStore,
@@ -91,7 +113,8 @@ final class HostStatusStoreTests: XCTestCase {
             displayName: "Mac A",
             endpoint: "http://100.64.0.10:8787",
             lastSuccessfulAt: nil,
-            installationID: "installation-a"
+            installationID: "installation-a",
+            hostPlatform: activeHostPlatform
         )
         let inactive = ConnectionProfile(
             id: "mac-b",
@@ -142,6 +165,7 @@ private final class HostStatusURLProtocol: URLProtocol {
     static var tailscaleDNSName: String?
     static var tailscaleDeviceName: String?
     static var failingHosts: Set<String> = []
+    static var platform = "windows"
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -159,9 +183,10 @@ private final class HostStatusURLProtocol: URLProtocol {
         Self.lock.lock()
         Self.hosts.append(url.host ?? "")
         Self.paths.append(url.path)
-        let installationID = Self.installationID
+        let installationID = url.host == "100.64.0.10" ? "installation-a" : Self.installationID
         let tailscaleDNSName = Self.tailscaleDNSName
         let tailscaleDeviceName = Self.tailscaleDeviceName
+        let platform = Self.platform
         let shouldFail = Self.failingHosts.contains(url.host ?? "")
         Self.lock.unlock()
 
@@ -173,6 +198,7 @@ private final class HostStatusURLProtocol: URLProtocol {
             "name": "agentd",
             "version": "test",
             "installation_id": installationID,
+            "platform": platform,
         ]
         if let tailscaleDNSName {
             payload["tailscale_dns_name"] = tailscaleDNSName
@@ -214,6 +240,7 @@ private final class HostStatusURLProtocol: URLProtocol {
         tailscaleDNSName = nil
         tailscaleDeviceName = nil
         failingHosts = []
+        platform = "windows"
         lock.unlock()
     }
 }

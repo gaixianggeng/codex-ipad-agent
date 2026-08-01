@@ -145,11 +145,14 @@ type ContextSource struct {
 }
 
 type ContextSubagent struct {
-	ID             string `json:"id,omitempty"`
-	ParentThreadID string `json:"parent_thread_id,omitempty"`
-	Nickname       string `json:"nickname,omitempty"`
-	Role           string `json:"role,omitempty"`
-	Status         string `json:"status,omitempty"`
+	ID                   string `json:"id,omitempty"`
+	ParentThreadID       string `json:"parent_thread_id,omitempty"`
+	SessionID            string `json:"session_id,omitempty"`
+	Nickname             string `json:"nickname,omitempty"`
+	Role                 string `json:"role,omitempty"`
+	Status               string `json:"status,omitempty"`
+	StatusMessage        string `json:"status_message,omitempty"`
+	CanAcceptDirectInput *bool  `json:"can_accept_direct_input,omitempty"`
 }
 
 const promptSubmitDelay = 180 * time.Millisecond

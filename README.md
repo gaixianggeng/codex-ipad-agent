@@ -40,7 +40,7 @@ Mimi Remote connects directly to your Mac through Tailscale or the same local ne
 
 Mimi Remote is an independent third-party project. It is not affiliated with, endorsed by, or a product of OpenAI, Anthropic, or Tailscale. Codex is the primary supported runtime; the optional Claude Code bridge is experimental.
 
-> There is no public App Store release yet. Build the iOS app from source; internal TestFlight builds are not a public download channel.
+> There is no public App Store release yet. Install the iOS app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source.
 
 <table>
   <tr>
@@ -171,7 +171,7 @@ Codex app-server is a managed loopback process and remains the primary runtime. 
 
 The security boundary is deliberately concentrated on the Mac:
 
-- A QR code carries a short-lived, single-use pairing ticket. The resulting long-lived `agentd` token is stored in Keychain per Mac profile.
+- A QR code carries a signed pairing ticket that can be reused only during its 10-minute lifetime; it never carries the long-lived credential. The resulting `agentd` token is stored in Keychain per Mac profile.
 - The app-server capability token and provider credentials never leave the Mac. The managed app-server endpoint listens on loopback.
 - Client-supplied project IDs are resolved through the configured project allowlist. File access is limited to project roots, `browse_roots`, and managed Worktrees.
 - Git and Worktree APIs expose fixed, validated operations. General commands must be configured as actions and use confirmation, timeouts, request limits, and bounded output.
@@ -179,7 +179,24 @@ The security boundary is deliberately concentrated on the Mac:
 
 This shape keeps deployment small and auditable, but the tradeoff is explicit: the Mac must be awake and privately reachable, and `agentd` plus the selected runtime must be healthy. There is no maintainer-operated relay, cloud state sync, or APNs background execution path.
 
+## Prerequisites
+
+Check these before you install:
+
+- **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
+- **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
+- **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
+- **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
+- **Developer-only tools:** normal Windows and macOS host installs from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) do not require Go or Rust. Those tools are only needed for backend or bridge source development. See the [full install, upgrade, and rollback guide](docs/install-upgrade-rollback.md) for platform details.
+
 ## Install and run
+
+### First installation in four steps
+
+1. **Prepare Codex:** install Codex CLI, complete its own authentication on the host, and confirm the runtime is ready. Mimi Remote does not configure provider credentials or billing.
+2. **Install and start the host:** install the Windows or macOS package from [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest), finish first-run setup, and confirm the service is ready.
+3. **Install the iOS app:** join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6). Developers can instead follow the [iOS build guide](ios/MimiRemote/README.md) to run it from source.
+4. **Pair:** open the host's pairing action (or run `agentd pair --qr-only`) and scan the short-lived QR code in Mimi Remote.
 
 ### Windows host
 
@@ -258,9 +275,11 @@ https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/insta
 
 Ask `$skill-installer` to install that GitHub path. Each GitHub Release also includes `install-mimi-remote.zip` and its SHA-256 file for an auditable, versioned copy.
 
-### Build the iOS app from source
+### Install the iOS app
 
-Mimi Remote requires iOS/iPadOS 26 or later. Install XcodeGen before generating the Xcode project:
+Mimi Remote requires iOS/iPadOS 26 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path.
+
+To build the app from source instead, use a Mac with Xcode 26 or later and install XcodeGen before generating the Xcode project:
 
 ```bash
 brew install xcodegen
@@ -272,9 +291,9 @@ xcodegen generate \
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The QR code is a short-lived, single-use pairing ticket, not a long-lived token. Manual connection is available as a fallback.
+In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The signed QR ticket can be reused during its 10-minute lifetime and never contains the long-lived token. Manual connection is available as a fallback.
 
-Command-line `build` and `run` lease an available, paired USB iOS device and skip busy targets before falling back to the fixed `iPad Pro 13-inch (M5)` Simulator. Tests, snapshots, and CI require that exact Simulator and never fall back to iPad mini. Run `bash ./scripts/ios-dev.sh leases` to inspect cross-worktree leases and external `xcodebuild` usage:
+Command-line `build` and `run` deterministically lease an available, paired USB iOS device first, then a currently reachable local-network device, and finally the fixed `iPad Pro 13-inch (M5)` Simulator. Explicit `IOS_DEVICE_ID` and `IOS_DEVICE_NAME` selections support either physical-device transport and fail clearly when that device is not reachable. A physical device keeps the same UDID-scoped lease and DerivedData across transport changes. Tests, snapshots, and CI still require the exact M5 Simulator and never fall back to iPad mini. Run `bash ./scripts/ios-dev.sh leases` to inspect wired/wireless devices, cross-worktree leases, and external `xcodebuild` usage:
 
 ```bash
 bash ./scripts/ios-dev.sh build-for-testing

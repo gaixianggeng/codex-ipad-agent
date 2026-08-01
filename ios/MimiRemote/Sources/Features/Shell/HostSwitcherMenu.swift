@@ -11,7 +11,18 @@ struct HostSwitcherMenu: View {
     @EnvironmentObject private var hostStatusStore: HostStatusStore
 
     let presentation: HostSwitcherPresentation
+    let usesCondensedSidebarMetrics: Bool
     let manageConnections: () -> Void
+
+    init(
+        presentation: HostSwitcherPresentation,
+        usesCondensedSidebarMetrics: Bool = false,
+        manageConnections: @escaping () -> Void
+    ) {
+        self.presentation = presentation
+        self.usesCondensedSidebarMetrics = usesCondensedSidebarMetrics
+        self.manageConnections = manageConnections
+    }
 
     @State private var failedProfileID: String?
     @State private var switchErrorMessage: String?
@@ -40,12 +51,12 @@ struct HostSwitcherMenu: View {
             Button {
                 hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
             } label: {
-                Label(L10n.text("ui.check_mac_status"), systemImage: "arrow.clockwise")
+                Label(L10n.text("ui.check_host_status"), systemImage: "arrow.clockwise")
             }
             .disabled(sessionStore.isConnectionSwitchInProgress || sessionStore.isNetworkUnavailable)
 
             Button(action: manageConnections) {
-                Label(L10n.text("ui.mac_connection"), systemImage: "gearshape")
+                Label(L10n.text("ui.manage_connections"), systemImage: "gearshape")
             }
         } label: {
             switcherLabel
@@ -54,6 +65,13 @@ struct HostSwitcherMenu: View {
         .simultaneousGesture(TapGesture().onEnded {
             hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
         })
+        .task(id: platformRefreshTrigger) {
+            guard appStore.connectionProfiles.count > 1,
+                  appStore.connectionProfiles.contains(where: { $0.hostPlatform == .unknown }) else {
+                return
+            }
+            hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
+        }
         .accessibilityIdentifier("hostSwitcher.menu")
         .alert(L10n.text("ui.switch_failed"), isPresented: errorPresentation) {
             if let failedProfileID {
@@ -78,15 +96,25 @@ struct HostSwitcherMenu: View {
         switch presentation {
         case .sidebar:
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
+                HStack(spacing: usesCondensedSidebarMetrics ? 4 : 6) {
                     Text(profileName)
-                        .font(.headline.weight(.semibold))
+                        .font(
+                            usesCondensedSidebarMetrics
+                                ? .subheadline.weight(.semibold)
+                                : .headline.weight(.semibold)
+                        )
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 5) {
+                    if appStore.connectionProfiles.count > 1 {
+                        // 侧栏把平台降为状态行的小型辅助信息，避免与额度入口和主机名称争抢视觉。
+                        HostPlatformGlyph(kind: currentHostIconKind, size: 11)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
                     if isSwitching {
                         ProgressView()
                             .controlSize(.mini)
@@ -101,14 +129,18 @@ struct HostSwitcherMenu: View {
                         .lineLimit(1)
                 }
             }
-            .frame(maxWidth: 150, alignment: .leading)
+            .frame(maxWidth: usesCondensedSidebarMetrics ? 136 : 150, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(switcherAccessibilityLabel(
+                profileName: profileName,
+                connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
+            )))
         case .toolbar:
-            // 顶栏只表达“当前 Mac 可切换”，完整名称和连接操作留在菜单与设置内，
-            // 避免全局连接信息占据第二行并与当前页面争夺视觉中心。
+            // 顶栏只表达当前主机可切换；多设备时用服务端真实平台增强辨识度，
+            // 单设备和未知平台继续使用通用电脑，避免根据名称或地址猜测系统。
             ZStack(alignment: .bottomTrailing) {
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 16, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
+                HostPlatformGlyph(kind: currentHostIconKind)
+                    .frame(width: 18, height: 18)
 
                 if isSwitching {
                     ProgressView()
@@ -121,20 +153,47 @@ struct HostSwitcherMenu: View {
                         .offset(x: 2, y: 2)
                 }
             }
-            // 顶栏保留当前栏目这一处紫色导航提示；Mac 入口回归中性，
+            // 顶栏保留当前栏目这一处紫色导航提示；主机入口保持中性，
             // 连接状态继续由右下角语义色圆点表达。
             .foregroundStyle(.secondary)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                Text(
-                    L10n.format(
-                        "ui.connection_profile_status_value",
-                        profileName,
-                        isSwitching ? L10n.text("ui.connecting") : currentConnectionText
-                    )
-                )
-            )
+            .accessibilityLabel(Text(switcherAccessibilityLabel(
+                profileName: profileName,
+                connectionText: isSwitching ? L10n.text("ui.connecting") : currentConnectionText
+            )))
         }
+    }
+
+    private var currentHostIconKind: HostPlatformIconKind {
+        guard appStore.connectionProfiles.count > 1 else {
+            return .genericComputer
+        }
+        return appStore.activeConnectionProfile?.hostPlatform.iconKind ?? .genericComputer
+    }
+
+    private var platformRefreshTrigger: String {
+        let profiles = appStore.connectionProfiles.map {
+            "\($0.id):\($0.revision):\($0.hostPlatform.rawValue)"
+        }.joined(separator: "|")
+        return [
+            profiles,
+            String(sessionStore.isLoading),
+            String(sessionStore.isNetworkUnavailable),
+            String(sessionStore.isAppInBackground)
+        ].joined(separator: ":")
+    }
+
+    private func switcherAccessibilityLabel(
+        profileName: String,
+        connectionText: String
+    ) -> String {
+        var components = [profileName]
+        if appStore.connectionProfiles.count > 1,
+           let platformName = appStore.activeConnectionProfile?.hostPlatform.displayName {
+            components.append(platformName)
+        }
+        components.append(connectionText)
+        return components.joined(separator: ", ")
     }
 
     private var errorPresentation: Binding<Bool> {
@@ -223,6 +282,63 @@ struct HostSwitcherMenu: View {
             } catch {
                 failedProfileID = profileID
                 switchErrorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// 三个平台图标保持相同的视觉盒，连接状态由调用方独立表达。
+/// Windows 使用 Windows 11 的正视四格造型；Linux 使用模板渲染的经典 Tux 矢量图。
+struct HostPlatformGlyph: View {
+    let kind: HostPlatformIconKind
+    let size: CGFloat
+
+    init(kind: HostPlatformIconKind, size: CGFloat = 18) {
+        self.kind = kind
+        self.size = size
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        switch kind {
+        case .apple:
+            Image(systemName: "apple.logo")
+                .font(.system(size: size * 8 / 9, weight: size < 14 ? .medium : .semibold))
+                .symbolRenderingMode(.hierarchical)
+        case .windows11:
+            Windows11Mark(spacing: size / 12)
+                .frame(width: size * 5 / 6, height: size * 5 / 6)
+        case .linuxTux:
+            Image("LinuxTux")
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .frame(width: size * 17 / 18, height: size)
+        case .genericComputer:
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: size * 8 / 9, weight: size < 14 ? .medium : .semibold))
+                .symbolRenderingMode(.hierarchical)
+        }
+    }
+
+    var body: some View {
+        glyph
+            .frame(width: size, height: size)
+    }
+}
+
+private struct Windows11Mark: View {
+    let spacing: CGFloat
+
+    var body: some View {
+        VStack(spacing: spacing) {
+            HStack(spacing: spacing) {
+                Rectangle()
+                Rectangle()
+            }
+            HStack(spacing: spacing) {
+                Rectangle()
+                Rectangle()
             }
         }
     }
