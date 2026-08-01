@@ -1641,21 +1641,38 @@ actor CodexAppServerSessionRuntime {
     }
 
     func connectForEvents(sessionID: SessionID) async throws {
+        // 必须在第一次 suspension 前登记订阅意图。若页面离开期间 unsubscribe 安装了
+        // 更新一代 false lease，旧 connect 恢复后只能退出，不能重新覆盖成 true。
+        let lease = replaceThreadSubscriptionLease(sessionID: sessionID, wantsEvents: true)
         if contextsBySessionID[sessionID] == nil {
             _ = try await session(id: sessionID, afterSeq: nil)
+        }
+        guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+            return
         }
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         let connection = try await ensureConnection()
-        let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
-        _ = replaceThreadSubscriptionLease(sessionID: sessionID, wantsEvents: true)
+        guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+            return
+        }
+        let projects = try await projects()
+        guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+            return
+        }
+        let builder = CodexAppServerRequestBuilder(
+            allowlistedProjects: projectsIncludingSessionContext(projects, context: context)
+        )
         if needsPendingInteractionRecovery(for: context.session) {
             // App 进后台时只取消页面事件泵，底层 gateway 连接可能仍存活，所以这个
             // thread 仍被记为已 resume。若列表已是等待态、runtime 却没有对应 server request，
             // 说明请求落在了 iOS 挂起/切会话窗口；清掉本地绑定标记，强制 thread/resume 让
             // app-server 重放未处理请求。
             threadsResumedOnConnection.remove(sessionID)
+        }
+        guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
+            return
         }
         // 官方 app-server 客户端选择历史 thread 时会使用 thread/resume 建立 live listener；thread/read/list 只能做
         // hydration。移动端打开会话也要先绑定当前连接，否则历史里的 pending approval 和后续 turn 事件

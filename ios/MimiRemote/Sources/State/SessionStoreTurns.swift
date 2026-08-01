@@ -580,7 +580,11 @@ extension SessionStore {
                     force: true,
                     reason: .authoritativeReopen
                 )
-                if didRefreshHistory {
+                guard isSelectionLeaseCurrent(selectionLease) else { return false }
+                if didRefreshHistory,
+                   conversationStore.hasTerminalTurnAfterLatestUserMessage(sessionID: session.id) {
+                    // 请求成功不等于内容已经收敛：空/陈旧首屏会保留本地 waiting 消息。
+                    // 只有权威历史带回终态 turn 后才清 activity，让下次重开仍可继续强制对账。
                     clearForegroundActivity(sessionID: session.id)
                     clearRuntimeActivity(sessionID: session.id)
                 }

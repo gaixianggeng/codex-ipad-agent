@@ -3326,6 +3326,85 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.recentHistorySessions.contains { $0.id == running.id })
     }
 
+    func testEmptyAuthoritativeReopenKeepsWaitingUntilTerminalHistoryArrives() async {
+        let project = makeProject(id: "proj_empty_authoritative_reopen")
+        let completed = makeSession(
+            id: "thread_empty_authoritative_reopen",
+            projectID: project.id,
+            title: "等待权威历史",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [completed])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        store.projects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.sidebarProjects = [project]
+        store.sessions = [completed]
+        conversationStore.appendLocalUser(
+            "讲个笑话",
+            sessionID: completed.id,
+            clientMessageID: "client_empty_authoritative_reopen",
+            sendStatus: .confirmed
+        )
+        store.setForegroundActivity(.waitingForAssistant, sessionID: completed.id)
+
+        let firstReopen = Task { await store.selectSession(completed) }
+        await client.waitForHistoryRequestCount(1)
+        client.resolveHistoryRequest(at: 0, with: HistoryMessagesPage(messages: []))
+        await firstReopen.value
+
+        XCTAssertEqual(store.foregroundActivityBySessionID[completed.id], .waitingForAssistant)
+        XCTAssertEqual(conversationStore.messages(for: completed.id).map(\.content), ["讲个笑话"])
+
+        store.returnToSessionList()
+        let secondReopen = Task { await store.selectSession(completed) }
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "user_empty_authoritative_reopen",
+                    role: "user",
+                    content: "讲个笑话",
+                    createdAt: Date(timeIntervalSince1970: 101),
+                    clientMessageID: "client_empty_authoritative_reopen",
+                    turnID: "turn_empty_authoritative_reopen",
+                    sendStatus: .confirmed
+                ),
+                CodexHistoryMessage(
+                    id: "assistant_empty_authoritative_reopen",
+                    role: "assistant",
+                    content: "第二次对账拿到了回复。",
+                    createdAt: Date(timeIntervalSince1970: 102),
+                    turnID: "turn_empty_authoritative_reopen",
+                    sendStatus: .confirmed,
+                    turnLifecycle: .completed
+                )
+            ])
+        )
+        await secondReopen.value
+
+        XCTAssertNil(store.foregroundActivityBySessionID[completed.id])
+        XCTAssertTrue(
+            conversationStore.messages(for: completed.id).contains {
+                $0.role == .assistant && $0.content == "第二次对账拿到了回复。"
+            }
+        )
+    }
+
     func testQuietHistoryRefreshFailureKeepsCachedMessagesWithoutShowingFailureBanner() async throws {
         let project = makeProject(id: "proj_quiet_history")
         let history = makeSession(

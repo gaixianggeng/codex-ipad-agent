@@ -1,8 +1,117 @@
 import XCTest
 @testable import MimiRemote
 
+private actor FirstConfigRequestGate {
+    private let config: CodexAppServerConfigResponse
+    private var callCount = 0
+    private var firstContinuation: CheckedContinuation<Void, Never>?
+    private var firstStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(config: CodexAppServerConfigResponse) {
+        self.config = config
+    }
+
+    func next() async -> CodexAppServerConfigResponse {
+        callCount += 1
+        if callCount == 1 {
+            let waiters = firstStartWaiters
+            firstStartWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            await withCheckedContinuation { continuation in
+                firstContinuation = continuation
+            }
+        }
+        return config
+    }
+
+    func waitUntilFirstRequestStarts() async {
+        if callCount > 0 { return }
+        await withCheckedContinuation { continuation in
+            firstStartWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstRequest() {
+        firstContinuation?.resume()
+        firstContinuation = nil
+    }
+}
+
 @MainActor
 extension ConversationDataFlowTests {
+    func testConnectSuspendedBeforeHydrationCannotOverrideNewerUnsubscribeLease() async throws {
+        let project = AgentProject(
+            id: "proj_connect_hydration_lease",
+            name: "Connect Hydration Lease",
+            path: "/tmp/connect-hydration-lease"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: [
+                "initialize",
+                "initialized",
+                "thread/read",
+                "thread/resume",
+                "thread/unsubscribe"
+            ]
+        )
+        let configGate = FirstConfigRequestGate(config: config)
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { await configGate.next() }
+        )
+        let threadID = "thr_connect_hydration_lease"
+        let thread = #"{"id":"thr_connect_hydration_lease","sessionId":"thr_connect_hydration_lease","preview":"连接代次","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"idle"},"path":null,"cwd":"/tmp/connect-hydration-lease","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"连接代次","turns":[]}"#
+
+        let staleConnect = Task {
+            try await runtime.connectForEvents(sessionID: threadID)
+        }
+        await configGate.waitUntilFirstRequestStarts()
+
+        let unsubscribe = Task {
+            try await runtime.unsubscribeThread(threadID: threadID)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let unsubscribeRequest = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/unsubscribe",
+            after: 1
+        )
+        transportResponse(
+            transport,
+            id: unsubscribeRequest.id,
+            result: #"{"status":"unsubscribed"}"#
+        )
+        _ = try await unsubscribe.value
+
+        await configGate.releaseFirstRequest()
+        let read = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/read",
+            after: 2
+        )
+        transportResponse(transport, id: read.id, result: #"{"thread":\#(thread)}"#)
+        try await staleConnect.value
+
+        let requests = await transport.sentMessages().compactMap {
+            try? decodeAppServerRequest($0)
+        }
+        XCTAssertEqual(requests.filter { $0.method == "thread/unsubscribe" }.count, 1)
+        XCTAssertEqual(
+            requests.filter { $0.method == "thread/resume" }.count,
+            0,
+            "旧 connect 恢复后不能覆盖更新一代退订意图"
+        )
+    }
+
     func testLateThreadUnsubscribeCannotOverrideNewerSubscriptionLease() async throws {
         let project = AgentProject(
             id: "proj_unsubscribe_lease",

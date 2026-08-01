@@ -185,6 +185,23 @@ final class ConversationStore: ObservableObject {
         return false
     }
 
+    func hasTerminalTurnAfterLatestUserMessage(sessionID: String) -> Bool {
+        // authoritative reopen 只有在历史明确带回终态 turn 后才能清理“等待回复”。
+        // 空首屏会保留本地消息；本地 waiting/partial assistant 都没有终态 lifecycle，
+        // 因而不会被误当成已经对账完成。
+        var sawTerminalAssistant = false
+        for message in messages(for: sessionID).reversed() where message.kind == .message {
+            if message.role == .assistant {
+                sawTerminalAssistant = sawTerminalAssistant || message.turnLifecycle?.isTerminal == true
+                continue
+            }
+            if message.role == .user {
+                return message.turnLifecycle?.isTerminal == true || sawTerminalAssistant
+            }
+        }
+        return false
+    }
+
     func lastSeenSeq(for sessionID: String?) -> EventSequence? {
         guard let sessionID else {
             return nil
