@@ -261,10 +261,19 @@ struct InitialConnectionSettingsSections: View {
                         Text(message)
                             .foregroundStyle(.red)
                             .font(themeStore.uiFont(size: 13))
+                    } else if let message = appStore.connectionAttemptSummary?.fallbackMessage {
+                        Label(message, systemImage: "arrow.trianglehead.turn.up.right.diamond.fill")
+                            .foregroundStyle(.secondary)
+                            .font(themeStore.uiFont(.footnote))
                     }
 
-                    if connectionTestDurationText != nil || appStore.lastConnectionTestReport != nil {
+                    if connectionTestDurationText != nil ||
+                        appStore.lastConnectionTestReport != nil ||
+                        appStore.connectionAttemptSummary != nil {
                         DisclosureGroup(L10n.text("ui.connection_diagnostics")) {
+                            if let summary = appStore.connectionAttemptSummary {
+                                connectionAttemptDiagnosticRows(summary)
+                            }
                             if let connectionTestDurationText {
                                 LabeledContent(L10n.text("ui.testing_time"), value: connectionTestDurationText)
                                     .foregroundStyle(statusColor)
@@ -541,7 +550,8 @@ struct InitialConnectionSettingsSections: View {
         isConnectionTesting ||
         displayErrorMessage != nil ||
         connectionTestDurationText != nil ||
-        appStore.lastConnectionTestReport != nil
+        appStore.lastConnectionTestReport != nil ||
+        appStore.connectionAttemptSummary != nil
     }
 
     private var canSubmit: Bool {
@@ -563,8 +573,8 @@ struct InitialConnectionSettingsSections: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.profile.displayName)
                     .font(themeStore.uiFont(.body, weight: item.isCurrent ? .semibold : .regular))
-                // 档案名称保持首要层级；连接设置属于详情层，第二行才展示
-                // MagicDNS、IP 回退和当前实际路由，便于现场诊断改名后的回退行为。
+                // 主列表只表达普通用户需要理解的可用范围；真实候选和 endpoint
+                // 留在连接诊断中，避免把 LAN / Tailscale 术语变成用户选择题。
                 Text(connectionProfileRouteDetail(item))
                     .font(themeStore.uiFont(.caption))
                     .foregroundStyle(.secondary)
@@ -656,16 +666,22 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func connectionProfileRouteDetail(_ item: ConnectionProfileSettingsItem) -> String {
-        var details: [String] = []
-        if let dnsName = item.profile.tailscaleDNSName {
-            details.append("MagicDNS \(dnsName)")
+        if item.profile.tailscaleDNSName != nil ||
+            ConnectionProfile.isTailscaleIPEndpoint(item.profile.endpoint) {
+            return L10n.text("ui.connection_profile_automatic_networks")
         }
-        let fallbackHost = URLComponents(string: item.profile.endpoint)?.host ?? item.profile.endpoint
-        details.append("IP \(fallbackHost)")
-        if item.isCurrent {
-            details.append("\(L10n.text("ui.current_connection")) \(appStore.connectionEndpoint)")
+        switch ConnectionRouteKind.classify(endpoint: item.profile.endpoint) {
+        case .loopback:
+            return L10n.text("ui.connection_profile_this_computer")
+        case .localNetwork:
+            return L10n.text("ui.connection_profile_reachable_network")
+        case .secureRemote:
+            return L10n.text("ui.connection_profile_secure_address")
+        case .tailscaleMagicDNS, .tailscaleIP:
+            return L10n.text("ui.connection_profile_automatic_networks")
+        case .other:
+            return L10n.text("ui.connection_profile_automatic_address")
         }
-        return details.joined(separator: " · ")
     }
 
     private var endpointTransportAssessment: EndpointTransportAssessment {
@@ -684,6 +700,31 @@ struct InitialConnectionSettingsSections: View {
             return nil
         }
         return AppStore.connectionTestDurationText(milliseconds: milliseconds)
+    }
+
+    @ViewBuilder
+    private func connectionAttemptDiagnosticRows(_ summary: ConnectionAttemptSummary) -> some View {
+        ForEach(Array(summary.attempts.enumerated()), id: \.offset) { index, attempt in
+            LabeledContent(L10n.format("ui.connection_attempt_value", String(index + 1))) {
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("\(attempt.routeKind.diagnosticTitle) · \(attempt.result.diagnosticTitle)")
+                        .foregroundStyle(connectionAttemptResultColor(attempt.result))
+                    Text(attempt.endpoint)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private func connectionAttemptResultColor(_ result: ConnectionRouteAttempt.Result) -> Color {
+        switch result {
+        case .succeeded:
+            return themeStore.tokens(for: colorScheme).success
+        case .failed:
+            return .red
+        }
     }
 
     private func connectionStageSummaryRow(title: String, stage: ConnectionTestStageTiming, color: Color) -> some View {
@@ -983,6 +1024,9 @@ struct InitialConnectionSettingsSections: View {
     private func friendlyConnectionMessage(_ raw: String) -> String {
         if let termination = appStore.connectionTermination {
             return termination.message
+        }
+        if let guidance = appStore.connectionAttemptSummary?.failureGuidance {
+            return guidance
         }
         let lowercased = raw.lowercased()
         if lowercased.contains("expired") || raw.contains("过期") {

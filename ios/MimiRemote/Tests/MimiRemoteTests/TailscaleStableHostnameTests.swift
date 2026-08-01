@@ -88,6 +88,7 @@ final class TailscaleStableHostnameTests: XCTestCase {
             tailscaleDNSName: "old-mac.tailnet.ts.net",
             tailscaleDeviceName: "old-mac"
         )
+        XCTAssertNil(store.connectionAttemptSummary)
         _ = try await store.commitConnectionSettings(prepared)
         let probedEndpoints = await recorder.endpoints()
 
@@ -104,6 +105,22 @@ final class TailscaleStableHostnameTests: XCTestCase {
         XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://100.64.0.20:8787")
         XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.20:8787")
         XCTAssertEqual(try store.client().endpoint, "http://100.64.0.20:8787")
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(
+            summary.attempts,
+            [
+                ConnectionRouteAttempt(
+                    endpoint: "http://old-mac.tailnet.ts.net:8787",
+                    result: .failed(.dnsResolutionFailed)
+                ),
+                ConnectionRouteAttempt(
+                    endpoint: "http://100.64.0.20:8787",
+                    result: .succeeded
+                ),
+            ]
+        )
+        XCTAssertEqual(summary.outcome, .connected(activeEndpoint: "http://100.64.0.20:8787"))
+        XCTAssertEqual(summary.fallbackMessage, L10n.text("ui.connection_automatically_used_saved_address"))
     }
 
     func testMetadataRefreshRequiresStableIdentityAndPreservesCustomName() throws {
@@ -207,6 +224,15 @@ final class TailscaleStableHostnameTests: XCTestCase {
         )
         XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.10:8787")
         XCTAssertEqual(try store.client().endpoint, "http://100.64.0.10:8787")
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(
+            summary.attempts.map(\.endpoint),
+            ["http://studio.tailnet.ts.net:8787", "http://100.64.0.10:8787"]
+        )
+        XCTAssertEqual(
+            summary.attempts.map(\.result),
+            [.failed(.dnsResolutionFailed), .succeeded]
+        )
     }
 
     func testConnectionPreflightFallsBackWhenDNSPointsToDifferentInstallation() async throws {
@@ -262,5 +288,173 @@ final class TailscaleStableHostnameTests: XCTestCase {
         )
         XCTAssertEqual(store.connectionEndpoint, "http://100.64.0.10:8787")
         XCTAssertEqual(try store.client().endpoint, "http://100.64.0.10:8787")
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(
+            summary.attempts.map(\.result),
+            [.failed(.identityMismatch), .succeeded]
+        )
+    }
+
+    func testLANOnlyFailureUsesCurrentReachableNetworkGuidance() async throws {
+        let suiteName = "TailscaleStableHostnameTests.LANFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in throw URLError(.timedOut) }
+        )
+
+        do {
+            _ = try await store.prepareConnectionSettings(
+                endpoint: "http://192.168.1.20:8787",
+                token: "token-lan"
+            )
+            XCTFail("LAN-only timeout should fail")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .timedOut)
+        }
+
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(summary.attempts.count, 1)
+        XCTAssertEqual(summary.attempts.first?.routeKind, .localNetwork)
+        XCTAssertEqual(summary.attempts.first?.result, .failed(.unreachable))
+        XCTAssertEqual(summary.failureGuidance, L10n.text("ui.connection_local_network_guidance"))
+    }
+
+    func testAllTailscaleCandidatesUnavailableKeepConditionalGuidanceAndOrder() async throws {
+        let suiteName = "TailscaleStableHostnameTests.AllUnavailable.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { endpoint, _, _ in
+                throw URLError(endpoint.contains(".ts.net") ? .cannotFindHost : .cannotConnectToHost)
+            }
+        )
+
+        do {
+            _ = try await store.prepareConnectionSettings(
+                endpoint: "http://100.64.0.20:8787",
+                token: "token-tail",
+                tailscaleDNSName: "studio.tailnet.ts.net"
+            )
+            XCTFail("all unavailable candidates should fail")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .cannotConnectToHost)
+        }
+
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(
+            summary.attempts.map(\.endpoint),
+            ["http://studio.tailnet.ts.net:8787", "http://100.64.0.20:8787"]
+        )
+        XCTAssertEqual(
+            summary.attempts.map(\.result),
+            [.failed(.dnsResolutionFailed), .failed(.unreachable)]
+        )
+        XCTAssertEqual(summary.failureGuidance, L10n.text("ui.connection_conditional_tailscale_guidance"))
+        XCTAssertFalse(try XCTUnwrap(summary.failureGuidance).contains("未启用"))
+        XCTAssertFalse(try XCTUnwrap(summary.failureGuidance).lowercased().contains("disabled"))
+    }
+
+    func testPreflightDoesNotActivateCandidatesWithMismatchedIdentity() async throws {
+        let suiteName = "TailscaleStableHostnameTests.AllIdentityMismatch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "studio",
+            endpoint: "http://100.64.0.10:8787",
+            tailscaleDNSName: "studio.tailnet.ts.net",
+            tailscaleDeviceName: "studio",
+            lastSuccessfulAt: nil,
+            installationID: "installation-a"
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            routeProbeTimeout: 0.1,
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in },
+            routeVersionProbe: { _, _, _ in
+                VersionResponse(
+                    name: "agentd",
+                    version: "test",
+                    installationID: "different-installation"
+                )
+            }
+        )
+
+        let connected = await store.preflightConnection()
+        XCTAssertFalse(connected)
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(
+            summary.attempts.map(\.result),
+            [.failed(.identityMismatch), .failed(.identityMismatch)]
+        )
+        XCTAssertEqual(summary.failureGuidance, L10n.text("ui.connection_identity_mismatch_guidance"))
+        XCTAssertEqual(store.connectionEndpoint, "http://studio.tailnet.ts.net:8787")
+    }
+
+    func testNextConnectionAttemptReplacesPreviousFailureSummary() async throws {
+        let suiteName = "TailscaleStableHostnameTests.SummaryReset.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let plan = ConnectionAttemptProbePlan()
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            routeProbe: { _, _, _ in try await plan.probe() }
+        )
+
+        do {
+            _ = try await store.prepareConnectionSettings(
+                endpoint: "http://192.168.1.20:8787",
+                token: "token-lan"
+            )
+            XCTFail("first attempt should fail")
+        } catch {
+            XCTAssertEqual(store.connectionAttemptSummary?.attempts.first?.result, .failed(.unreachable))
+        }
+
+        await plan.allowSuccess()
+        let prepared = try await store.prepareConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "token-lan"
+        )
+        XCTAssertNil(store.connectionAttemptSummary)
+        _ = try await store.commitConnectionSettings(prepared)
+        let summary = try XCTUnwrap(store.connectionAttemptSummary)
+        XCTAssertEqual(summary.attempts.map(\.result), [.succeeded])
+        XCTAssertNil(summary.failureGuidance)
+        XCTAssertNil(summary.fallbackMessage)
+    }
+}
+
+private actor ConnectionAttemptProbePlan {
+    private var shouldFail = true
+
+    func probe() throws {
+        if shouldFail {
+            throw URLError(.timedOut)
+        }
+    }
+
+    func allowSuccess() {
+        shouldFail = false
     }
 }

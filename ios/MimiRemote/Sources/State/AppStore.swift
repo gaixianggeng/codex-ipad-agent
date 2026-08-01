@@ -24,6 +24,7 @@ final class AppStore: ObservableObject {
     @Published var lastConnectionTestDurationMillis: Int?
     @Published var lastConnectionTestReport: ConnectionTestReport?
     @Published var recentConnectionTestReports: [ConnectionTestReport] = []
+    @Published private(set) var connectionAttemptSummary: ConnectionAttemptSummary?
     @Published private(set) var localAgentDetected = false
     @Published private(set) var activeConnectionRoute: ActiveConnectionRoute = .configured
 
@@ -39,19 +40,20 @@ final class AppStore: ObservableObject {
     private let defaults: UserDefaults
     private let tokenStore: TokenStore
     private let credentialVault: HostCredentialVault
-    private let routeProbeTimeout: TimeInterval
+    let routeProbeTimeout: TimeInterval
     private let prefersLocalConnection: Bool
     private let allowsEphemeralLocalCredentialFallback: Bool
     private let localAgentProbe: LocalAgentProbe
     private let localAgentPairingClaim: LocalAgentPairingClaim
-    private let routeProbe: ConnectionRouteProbe
+    let routeProbe: ConnectionRouteProbe
     private let routeVersionProbe: ConnectionRouteVersionProbe?
-    private let usesDefaultRouteProbe: Bool
+    let usesDefaultRouteProbe: Bool
     private var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
     private var activeRouteEndpoint: String?
+    private var connectionAttemptGeneration: UInt64 = 0
     private var activeRuntimeBundle: AppServerRuntimeBundle?
     private var activeRuntimeIdentity: String?
     private var credentialSuspensionTask: Task<Void, Never>?
@@ -484,55 +486,31 @@ final class AppStore: ObservableObject {
 
     func replaceCapabilityNegotiation(_ negotiation: HostCapabilityNegotiation, preserving state: ActiveHostState) { activeHostState = state.replacingCapabilityNegotiation(with: negotiation) }
 
-    func prepareConnectionSettings(
-        endpoint: String,
-        token: String,
-        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
-        tailscaleDNSName: String? = nil,
-        tailscaleDeviceName: String? = nil
-    ) async throws -> PreparedConnectionSettings {
-        let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
-        let normalizedDNSName = ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
-        let normalizedDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
-            tailscaleDeviceName,
-            dnsName: normalizedDNSName
-        )
-        let candidates = ConnectionProfile.connectionCandidates(
-            endpoint: normalizedEndpoint,
-            tailscaleDNSName: normalizedDNSName
-        )
-        var finalError: Error?
-        for candidate in candidates {
-            do {
-                if usesDefaultRouteProbe {
-                    return try await prepareFastHostContext(
-                        activeEndpoint: candidate,
-                        fallbackEndpoint: normalizedEndpoint,
-                        token: token,
-                        profileTarget: profileTarget,
-                        tailscaleDNSName: normalizedDNSName,
-                        tailscaleDeviceName: normalizedDeviceName
-                    )
-                }
+    /// Attempt summary 只属于当前内存中的一次操作。generation 防止较早操作的迟到结果
+    /// 覆盖用户刚发起的新连接，也确保新操作开始时不会展示上一次失败。
+    func beginConnectionAttempt() -> UInt64 {
+        connectionAttemptGeneration &+= 1
+        connectionAttemptSummary = nil
+        return connectionAttemptGeneration
+    }
 
-                // 测试和兼容注入仍保留原 routeProbe seam，但候选顺序与生产路径一致。
-                try await routeProbe(candidate, token, routeProbeTimeout)
-                return PreparedConnectionSettings(
-                    endpoint: normalizedEndpoint,
-                    activeEndpoint: candidate,
-                    token: token,
-                    profileTarget: profileTarget,
-                    tailscaleDNSName: normalizedDNSName,
-                    tailscaleDeviceName: normalizedDeviceName
-                )
-            } catch {
-                if Task.isCancelled || error is CancellationError {
-                    throw error
-                }
-                finalError = error
-            }
-        }
-        throw finalError ?? URLError(.cannotConnectToHost)
+    func finishConnectionAttempt(
+        generation: UInt64,
+        attempts: [ConnectionRouteAttempt],
+        outcome: ConnectionAttemptSummary.Outcome
+    ) {
+        guard generation == connectionAttemptGeneration else { return }
+        connectionAttemptSummary = ConnectionAttemptSummary(attempts: attempts, outcome: outcome)
+    }
+
+    func cancelConnectionAttempt(generation: UInt64) {
+        guard generation == connectionAttemptGeneration else { return }
+        connectionAttemptSummary = nil
+    }
+
+    private func resetConnectionAttemptSummary() {
+        connectionAttemptGeneration &+= 1
+        connectionAttemptSummary = nil
     }
 
     func prepareNewConnectionProfile(
@@ -843,6 +821,15 @@ final class AppStore: ObservableObject {
         lastError = nil
         HostSwitchSignpost.event("host_commit")
 
+        if let attemptGeneration = prepared.connectionAttemptGeneration {
+            // 只有凭据、Profile 与 Runtime 全部提交成功后，才向设置页发布轻量成功说明。
+            finishConnectionAttempt(
+                generation: attemptGeneration,
+                attempts: prepared.connectionAttempts,
+                outcome: .connected(activeEndpoint: normalizedActiveEndpoint)
+            )
+        }
+
         if let previousRuntimeBundle,
            candidateRuntime.map({ previousRuntimeBundle === $0 }) != true {
             Task {
@@ -916,6 +903,7 @@ final class AppStore: ObservableObject {
         connectionTermination = nil
         connectionStatus = .idle
         lastError = nil
+        resetConnectionAttemptSummary()
         lastConnectionTestDurationMillis = nil
         lastConnectionTestReport = nil
         recentConnectionTestReports = []
@@ -1005,6 +993,9 @@ final class AppStore: ObservableObject {
     }
     @discardableResult
     func validateConnection(endpoint: String, token: String) async throws -> String {
+        // 完整测速不是 MIM-39 的候选选择操作，但它同样代表一次新的用户连接动作；
+        // 开始时清掉旧的候选失败，避免新错误被上一次提示覆盖。
+        resetConnectionAttemptSummary()
         let startedAt = Date()
         var stages: [ConnectionTestStageTiming] = []
         var gatewayDiagnosticsBaseline: RelayDiagnosticsResponse?
@@ -1209,6 +1200,7 @@ final class AppStore: ObservableObject {
         defer { isConnectionPreflightRunning = false }
 
         guard isConfigured else {
+            resetConnectionAttemptSummary()
             guard localAvailable else {
                 connectionStatus = .idle
                 return false
@@ -1230,6 +1222,7 @@ final class AppStore: ObservableObject {
             }
         }
 
+        let attemptGeneration = beginConnectionAttempt()
         connectionStatus = .testing
         lastError = nil
 
@@ -1237,6 +1230,7 @@ final class AppStore: ObservableObject {
         do {
             normalizedEndpoint = try Self.validatedEndpoint(endpoint)
         } catch {
+            cancelConnectionAttempt(generation: attemptGeneration)
             connectionStatus = .failed(error.localizedDescription)
             lastError = error.localizedDescription
             return false
@@ -1267,6 +1261,7 @@ final class AppStore: ObservableObject {
         }
 
         var configuredRouteError: Error?
+        var attempts: [ConnectionRouteAttempt] = []
         for candidate in candidates {
             do {
                 try await routeProbe(candidate.endpoint, token, candidate.timeout)
@@ -1284,6 +1279,12 @@ final class AppStore: ObservableObject {
                     )
                 }
                 // 身份校验必须先于发布 active route；否则 DNSName 被复用时会短暂连接到错误主机。
+                attempts.append(ConnectionRouteAttempt(endpoint: candidate.endpoint, result: .succeeded))
+                finishConnectionAttempt(
+                    generation: attemptGeneration,
+                    attempts: attempts,
+                    outcome: .connected(activeEndpoint: candidate.endpoint)
+                )
                 activateConnectionRoute(candidate.route, endpoint: candidate.endpoint)
                 connectionTermination = nil
                 connectionStatus = .connected(candidate.route.statusTitle)
@@ -1291,9 +1292,14 @@ final class AppStore: ObservableObject {
                 return true
             } catch {
                 if Task.isCancelled || error is CancellationError {
+                    cancelConnectionAttempt(generation: attemptGeneration)
                     connectionStatus = .idle
                     return false
                 }
+                attempts.append(ConnectionRouteAttempt(
+                    endpoint: candidate.endpoint,
+                    result: .failed(ConnectionFailureFact.classify(error))
+                ))
                 // loopback 可能运行着另一个用户配置；本机 Token 不匹配时继续尝试档案地址，
                 // 不能提前把仍有效的 Tailscale 凭据标记为失效。
                 if candidate.route == .configured ||
@@ -1320,6 +1326,11 @@ final class AppStore: ObservableObject {
 
         resetConnectionRoute()
         let finalError = configuredRouteError ?? URLError(.cannotConnectToHost)
+        finishConnectionAttempt(
+            generation: attemptGeneration,
+            attempts: attempts,
+            outcome: .failed
+        )
         if acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
@@ -1589,7 +1600,7 @@ final class AppStore: ObservableObject {
         return (tailscaleDeviceName ?? fallback, false)
     }
 
-    private func prepareFastHostContext(
+    func prepareFastHostContext(
         activeEndpoint: String,
         fallbackEndpoint: String,
         token: String,

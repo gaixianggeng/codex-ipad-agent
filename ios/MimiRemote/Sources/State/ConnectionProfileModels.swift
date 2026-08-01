@@ -475,6 +475,9 @@ struct PreparedConnectionSettings: Equatable {
     let hostPlatform: HostPlatform
     let hostContext: PreparedHostContext?
     let capabilityNegotiation: HostCapabilityNegotiation
+    /// 候选路由只在提交成功后发布；prepare 成功本身不等同于设置已保存。
+    let connectionAttemptGeneration: UInt64?
+    let connectionAttempts: [ConnectionRouteAttempt]
 
     init(
         endpoint: String,
@@ -487,7 +490,9 @@ struct PreparedConnectionSettings: Equatable {
         tailscaleDeviceName: String? = nil,
         hostPlatform: HostPlatform = .unknown,
         hostContext: PreparedHostContext? = nil,
-        capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated
+        capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated,
+        connectionAttemptGeneration: UInt64? = nil,
+        connectionAttempts: [ConnectionRouteAttempt] = []
     ) {
         self.endpoint = endpoint
         self.activeEndpoint = activeEndpoint ?? endpoint
@@ -507,6 +512,29 @@ struct PreparedConnectionSettings: Equatable {
         self.hostPlatform = hostPlatform
         self.hostContext = hostContext
         self.capabilityNegotiation = capabilityNegotiation
+        self.connectionAttemptGeneration = connectionAttemptGeneration
+        self.connectionAttempts = connectionAttempts
+    }
+
+    func recordingConnectionAttempt(
+        generation: UInt64,
+        attempts: [ConnectionRouteAttempt]
+    ) -> PreparedConnectionSettings {
+        PreparedConnectionSettings(
+            endpoint: endpoint,
+            activeEndpoint: activeEndpoint,
+            token: token,
+            profileTarget: profileTarget,
+            validatedAt: validatedAt,
+            installationID: installationID,
+            tailscaleDNSName: tailscaleDNSName,
+            tailscaleDeviceName: tailscaleDeviceName,
+            hostPlatform: hostPlatform,
+            hostContext: hostContext,
+            capabilityNegotiation: capabilityNegotiation,
+            connectionAttemptGeneration: generation,
+            connectionAttempts: attempts
+        )
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -520,6 +548,8 @@ struct PreparedConnectionSettings: Equatable {
             lhs.tailscaleDeviceName == rhs.tailscaleDeviceName &&
             lhs.hostPlatform == rhs.hostPlatform &&
             lhs.hostContext === rhs.hostContext &&
-            lhs.capabilityNegotiation == rhs.capabilityNegotiation
+            lhs.capabilityNegotiation == rhs.capabilityNegotiation &&
+            lhs.connectionAttemptGeneration == rhs.connectionAttemptGeneration &&
+            lhs.connectionAttempts == rhs.connectionAttempts
     }
 }

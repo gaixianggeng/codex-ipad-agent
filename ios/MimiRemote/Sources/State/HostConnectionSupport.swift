@@ -230,12 +230,285 @@ struct ConnectionTestStageStability: Identifiable, Equatable {
     }
 }
 
+/// 单次连接操作中实际尝试过的候选类型。这里只描述已经验证过的地址事实，
+/// 不承担候选选择；候选顺序仍完全由 ConnectionProfile.connectionCandidates 决定。
+enum ConnectionRouteKind: Hashable {
+    case loopback
+    case localNetwork
+    case tailscaleMagicDNS
+    case tailscaleIP
+    case secureRemote
+    case other
+
+    static func classify(endpoint: String) -> Self {
+        let host = URLComponents(string: endpoint)?.host?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+        if HostConnectionEndpointPolicy.isLoopbackEndpoint(endpoint) {
+            return .loopback
+        }
+        if host?.hasSuffix(".ts.net") == true {
+            return .tailscaleMagicDNS
+        }
+        if ConnectionProfile.isTailscaleIPEndpoint(endpoint) {
+            return .tailscaleIP
+        }
+        switch EndpointTransportPolicy.assess(endpoint).status {
+        case .allowedPrivateHTTP:
+            return .localNetwork
+        case .allowedHTTPS:
+            return .secureRemote
+        case .empty, .invalid, .blockedPublicHTTP:
+            return .other
+        }
+    }
+
+    var diagnosticTitle: String {
+        switch self {
+        case .loopback:
+            return L10n.text("ui.connection_route_this_computer")
+        case .localNetwork:
+            return L10n.text("ui.connection_route_local_network")
+        case .tailscaleMagicDNS:
+            return "MagicDNS"
+        case .tailscaleIP:
+            return L10n.text("ui.connection_route_tailscale_address")
+        case .secureRemote:
+            return "HTTPS"
+        case .other:
+            return L10n.text("ui.connection_route_saved_address")
+        }
+    }
+}
+
+/// 失败分类只基于底层错误明确表达的事实。DNS/超时只能归类为解析或可达性失败，
+/// 不能据此断言用户是否安装、登录或启用了 Tailscale。
+enum ConnectionFailureFact: Equatable {
+    case dnsResolutionFailed
+    case unreachable
+    case identityRequired
+    case identityMismatch
+    case credentialsRejected
+    case protocolOrServer
+    case other
+
+    static func classify(_ error: Error) -> Self {
+        if isCredentialInvalidatingError(error) {
+            return .credentialsRejected
+        }
+        if let profileError = error as? ConnectionProfileError {
+            switch profileError {
+            case .installationIdentityRequired:
+                return .identityRequired
+            case .installationIdentityMismatch:
+                return .identityMismatch
+            default:
+                return .other
+            }
+        }
+        if let connectionError = error as? CodexAppServerConnectionError {
+            switch connectionError {
+            case .disconnected, .timeout:
+                return .unreachable
+            case .transport(let underlying):
+                return classify(underlying)
+            case .notInitialized, .duplicateRequestID, .appServer, .decoding:
+                return .protocolOrServer
+            }
+        }
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else {
+            if error is AgentAPIError {
+                return .protocolOrServer
+            }
+            return .other
+        }
+        let code = URLError.Code(rawValue: nsError.code)
+        switch code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return .dnsResolutionFailed
+        case .timedOut,
+             .cannotConnectToHost,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .internationalRoamingOff,
+             .callIsActive,
+             .dataNotAllowed,
+             .resourceUnavailable,
+             .cannotLoadFromNetwork:
+            return .unreachable
+        default:
+            return .other
+        }
+    }
+
+    var diagnosticTitle: String {
+        switch self {
+        case .dnsResolutionFailed:
+            return L10n.text("ui.connection_failure_dns")
+        case .unreachable:
+            return L10n.text("ui.connection_failure_unreachable")
+        case .identityRequired:
+            return L10n.text("ui.connection_failure_identity_required")
+        case .identityMismatch:
+            return L10n.text("ui.connection_failure_identity_mismatch")
+        case .credentialsRejected:
+            return L10n.text("ui.connection_failure_credentials")
+        case .protocolOrServer:
+            return L10n.text("ui.connection_failure_protocol")
+        case .other:
+            return L10n.text("ui.connection_failure_other")
+        }
+    }
+}
+
+struct ConnectionRouteAttempt: Equatable {
+    enum Result: Equatable {
+        case succeeded
+        case failed(ConnectionFailureFact)
+
+        var diagnosticTitle: String {
+            switch self {
+            case .succeeded:
+                return L10n.text("ui.connection_attempt_succeeded")
+            case .failed(let fact):
+                return fact.diagnosticTitle
+            }
+        }
+    }
+
+    let endpoint: String
+    let routeKind: ConnectionRouteKind
+    let result: Result
+
+    init(endpoint: String, result: Result) {
+        self.endpoint = AgentAPIClient.normalizedEndpoint(endpoint)
+        routeKind = ConnectionRouteKind.classify(endpoint: endpoint)
+        self.result = result
+    }
+}
+
+/// 仅保留当前进程内最近一次候选连接操作的终态，用于轻量提示和可展开诊断。
+/// AppStore 在下一次操作开始时会先清空；该值不会写入 Profile 或 UserDefaults。
+struct ConnectionAttemptSummary: Equatable {
+    enum Outcome: Equatable {
+        case connected(activeEndpoint: String)
+        case failed
+    }
+
+    let attempts: [ConnectionRouteAttempt]
+    let outcome: Outcome
+
+    var fallbackMessage: String? {
+        guard case .connected(let activeEndpoint) = outcome,
+              let preferred = attempts.first?.endpoint,
+              AgentAPIClient.normalizedEndpoint(activeEndpoint) != preferred else {
+            return nil
+        }
+        return L10n.text("ui.connection_automatically_used_saved_address")
+    }
+
+    var failureGuidance: String? {
+        guard outcome == .failed else { return nil }
+        let failures = attempts.compactMap { attempt -> ConnectionFailureFact? in
+            guard case .failed(let fact) = attempt.result else { return nil }
+            return fact
+        }
+        if failures.contains(.identityMismatch) {
+            return L10n.text("ui.connection_identity_mismatch_guidance")
+        }
+        // 凭据、版本和协议错误已有更精确的底层文案；这里只替换纯可达性失败。
+        guard !failures.isEmpty,
+              failures.allSatisfy({ $0 == .dnsResolutionFailed || $0 == .unreachable }) else {
+            return nil
+        }
+        let routeKinds = Set(attempts.map(\.routeKind))
+        let onlyLocal = routeKinds.allSatisfy { $0 == .loopback || $0 == .localNetwork }
+        if onlyLocal {
+            return L10n.text("ui.connection_local_network_guidance")
+        }
+        return L10n.text("ui.connection_conditional_tailscale_guidance")
+    }
+}
+
 typealias ConnectionRouteProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> Void
 typealias ConnectionRouteVersionProbe = (_ endpoint: String, _ token: String, _ timeout: TimeInterval) async throws -> VersionResponse
 typealias LocalAgentProbe = (_ endpoint: String, _ timeout: TimeInterval) async throws -> Void
 typealias LocalAgentPairingClaim = (_ endpoint: String, _ timeout: TimeInterval) async throws -> String
 
 extension AppStore {
+    func prepareConnectionSettings(
+        endpoint: String,
+        token: String,
+        profileTarget: PreparedConnectionProfileTarget = .currentOrNew(displayName: nil),
+        tailscaleDNSName: String? = nil,
+        tailscaleDeviceName: String? = nil
+    ) async throws -> PreparedConnectionSettings {
+        let attemptGeneration = beginConnectionAttempt()
+        let normalizedEndpoint = try Self.validatedEndpoint(endpoint)
+        let normalizedDNSName = ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
+        let normalizedDeviceName = ConnectionProfile.normalizedTailscaleDeviceName(
+            tailscaleDeviceName,
+            dnsName: normalizedDNSName
+        )
+        let candidates = ConnectionProfile.connectionCandidates(
+            endpoint: normalizedEndpoint,
+            tailscaleDNSName: normalizedDNSName
+        )
+        var finalError: Error?
+        var attempts: [ConnectionRouteAttempt] = []
+        for candidate in candidates {
+            do {
+                if usesDefaultRouteProbe {
+                    let prepared = try await prepareFastHostContext(
+                        activeEndpoint: candidate,
+                        fallbackEndpoint: normalizedEndpoint,
+                        token: token,
+                        profileTarget: profileTarget,
+                        tailscaleDNSName: normalizedDNSName,
+                        tailscaleDeviceName: normalizedDeviceName
+                    )
+                    attempts.append(ConnectionRouteAttempt(endpoint: candidate, result: .succeeded))
+                    // 路由验证成功不代表 Keychain/Profile 已提交；成功摘要由 commit 发布。
+                    return prepared.recordingConnectionAttempt(
+                        generation: attemptGeneration,
+                        attempts: attempts
+                    )
+                }
+
+                // 测试注入继续复用既有 seam；这里只记录结果，不改变 MIM-39 候选顺序。
+                try await routeProbe(candidate, token, routeProbeTimeout)
+                attempts.append(ConnectionRouteAttempt(endpoint: candidate, result: .succeeded))
+                return PreparedConnectionSettings(
+                    endpoint: normalizedEndpoint,
+                    activeEndpoint: candidate,
+                    token: token,
+                    profileTarget: profileTarget,
+                    tailscaleDNSName: normalizedDNSName,
+                    tailscaleDeviceName: normalizedDeviceName,
+                    connectionAttemptGeneration: attemptGeneration,
+                    connectionAttempts: attempts
+                )
+            } catch {
+                if Task.isCancelled || error is CancellationError {
+                    cancelConnectionAttempt(generation: attemptGeneration)
+                    throw error
+                }
+                attempts.append(ConnectionRouteAttempt(
+                    endpoint: candidate,
+                    result: .failed(ConnectionFailureFact.classify(error))
+                ))
+                finalError = error
+            }
+        }
+        finishConnectionAttempt(
+            generation: attemptGeneration,
+            attempts: attempts,
+            outcome: .failed
+        )
+        throw finalError ?? URLError(.cannotConnectToHost)
+    }
+
     static func defaultConnectionRouteVersionProbe(
         endpoint: String,
         token: String,
