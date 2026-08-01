@@ -165,6 +165,99 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(activeDay.intensity, 4)
     }
 
+    func testTokenActivityGridAdaptsRecentWeeksWithoutShrinkingCells() {
+        XCTAssertEqual(
+            TokenActivityGridMetrics.weekCount(
+                availableWidth: 0,
+                isAccessibilitySize: false
+            ),
+            0
+        )
+        XCTAssertEqual(
+            TokenActivityGridMetrics.weekCount(
+                availableWidth: -.infinity,
+                isAccessibilitySize: true
+            ),
+            0
+        )
+        XCTAssertEqual(
+            TokenActivityGridMetrics.cellSize(availableWidth: 0, weekCount: 6),
+            0
+        )
+        XCTAssertEqual(
+            TokenActivityGridMetrics.weekCount(
+                availableWidth: 38,
+                isAccessibilitySize: false
+            ),
+            5,
+            "极窄布局应减少周数，不能由六周最小值反向撑宽"
+        )
+        let narrowWeekCount = TokenActivityGridMetrics.weekCount(
+            availableWidth: 38,
+            isAccessibilitySize: false
+        )
+        let narrowCellSize = TokenActivityGridMetrics.cellSize(
+            availableWidth: 38,
+            weekCount: narrowWeekCount
+        )
+        XCTAssertLessThanOrEqual(
+            narrowCellSize * CGFloat(narrowWeekCount)
+                + TokenActivityGridMetrics.spacing * CGFloat(narrowWeekCount - 1),
+            38
+        )
+        XCTAssertEqual(
+            TokenActivityGridMetrics.weekCount(
+                availableWidth: 130,
+                isAccessibilitySize: false
+            ),
+            14
+        )
+        XCTAssertEqual(
+            TokenActivityGridMetrics.weekCount(
+                availableWidth: 130,
+                isAccessibilitySize: true
+            ),
+            13
+        )
+        XCTAssertEqual(
+            TokenActivityGridMetrics.weekCount(
+                availableWidth: 600,
+                isAccessibilitySize: false
+            ),
+            53
+        )
+        XCTAssertGreaterThanOrEqual(
+            TokenActivityGridMetrics.cellSize(availableWidth: 130, weekCount: 14),
+            TokenActivityGridMetrics.minimumCellSize
+        )
+    }
+
+    func testTokenActivityCalendarUsesRequestedRecentWindowAndSparseMonthLabels() throws {
+        let calendar = TokenActivityCalendar.utcCalendar
+        let endingAt = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 30))
+        )
+        let weeks = TokenActivityCalendar.weeks(
+            buckets: [],
+            endingAt: endingAt,
+            weekCount: 16
+        )
+        let labels = TokenActivityCalendar.monthLabels(for: weeks)
+
+        XCTAssertEqual(weeks.count, 16)
+        XCTAssertEqual(labels.first?.weekIndex, 0)
+        XCTAssertTrue(
+            zip(labels, labels.dropFirst()).allSatisfy { pair in
+                pair.1.weekIndex - pair.0.weekIndex >= 4
+            },
+            "月份标签至少相隔四周，避免窄屏重叠"
+        )
+        XCTAssertTrue(
+            labels.dropFirst().allSatisfy { weeks.count - $0.weekIndex >= 3 },
+            "末端至少保留三周宽度，避免月份文字被右边界裁切"
+        )
+    }
+
     func testStoredLanguageFallsBackToSystemForUnknownValue() {
         let suiteName = "LocalizationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

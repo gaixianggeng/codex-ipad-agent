@@ -109,20 +109,25 @@ struct CompactComposerLeadingControlsShell: View {
 extension ComposerView {
     @ViewBuilder
     var addContentButton: some View {
-        Button {
-            showsAddContentPanel.toggle()
-        } label: {
-            composerToolbarControlLabel(
-                title: nil,
-                systemImage: "plus",
-                accessibilityLabel: L10n.text("ui.add_content")
-            )
+        ZStack {
+            Button {
+                showsAddContentPanel.toggle()
+            } label: {
+                composerToolbarControlLabel(
+                    title: nil,
+                    systemImage: "plus",
+                    accessibilityLabel: L10n.text("ui.add_content")
+                )
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityLabel(L10n.text("ui.add_content"))
+            .accessibilityIdentifier("composer.addContent")
+            .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
+            .disabled(isRequestingCameraAuthorization)
         }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.add_content"))
-        .accessibilityIdentifier("composer.addContent")
-        .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
-        .disabled(isRequestingCameraAuthorization)
+        // Popover 必须挂在不会参与按压缩放的固定锚点上；否则系统可能在 spring
+        // 回弹途中读取 source rect，让箭头与“+”入口出现瞬时偏移。
+        .frame(width: 44, height: 44)
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
                 skillShortcuts: enabledSkillShortcuts,
