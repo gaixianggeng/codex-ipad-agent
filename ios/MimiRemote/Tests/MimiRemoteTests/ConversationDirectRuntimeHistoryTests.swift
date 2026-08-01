@@ -1486,8 +1486,22 @@ extension ConversationDataFlowTests {
             configProvider: { config }
         )
         let client = CodexAppServerSessionAPIClient(runtime: runtime)
-        let appStore = AppStore()
-        appStore.token = "test-token"
+        let suiteName = "ConversationDataFlowTests.StoreDirect.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "store-direct",
+            displayName: "Store Direct",
+            endpoint: "http://127.0.0.1:8787",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("test-token".utf8), account: "agentd-profile.\(profile.id)")
+        let appStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
         let conversationStore = ConversationStore()
         let logStore = LogStore()
         let contextStore = SessionContextStore()
@@ -1534,12 +1548,27 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(collaborationMode["mode"]?.stringValue, "default")
         XCTAssertEqual(collaborationMode["settings"]?.objectValue?["model"]?.stringValue, "gpt-store-default")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_store_direct","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490102,"completedAt":null,"durationMs":null}}}"#)
-        let historyMessages = try await waitForFakeAppServerMessages(transport, count: 7)
-        let historyRead = try decodeAppServerRequest(historyMessages[6])
-        XCTAssertEqual(historyRead.method, "thread/read")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: historyRead.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490102,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
+        // 新线程首轮由本地回显和 buffered event replay 承接，不能在 rollout 尚未就绪时
+        // 追加 thread/read；若未来回归到旧行为，先响应请求让 sendTask 能退出，再给出明确断言。
+        for _ in 0..<20 {
+            if (await transport.sentMessages()).count > 6 {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let requestsAfterTurnStart = await transport.sentMessages().compactMap { try? decodeAppServerRequest($0) }
+        let unexpectedHistoryRead = requestsAfterTurnStart.first { $0.method == "thread/read" }
+        if let unexpectedHistoryRead {
+            transport.enqueue(#"{"id":\#(try jsonFragment(for: unexpectedHistoryRead.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490102,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
+        }
         let didSend = await sendTask.value
         XCTAssertTrue(didSend)
+        XCTAssertNil(unexpectedHistoryRead, "新线程首轮 ACK 后不能同步读取尚未就绪的 rollout")
+        XCTAssertFalse(conversationStore.hasLoadedHistory(sessionID: "thr_store_direct"))
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertEqual(store.connectedSessionID, "thr_store_direct")
+        XCTAssertNotNil(store.webSocket)
+        XCTAssertNotNil(appStore.authenticatedCredentialFingerprint)
         try await waitForWebSocketStatus(.connected, store: store)
         XCTAssertEqual(store.selectedSessionID, "thr_store_direct")
 
