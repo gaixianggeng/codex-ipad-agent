@@ -215,6 +215,8 @@
 		F0DC6138A242D45D79253F8B /* HostWarmSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053D35545CB6F6F836EAADBA /* HostWarmSnapshotTests.swift */; };
 		F16900000000000000000001 /* MimiInteractionFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16900000000000000000002 /* MimiInteractionFeedback.swift */; };
 		F16900000000000000000004 /* MimiInteractionFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16900000000000000000005 /* MimiInteractionFeedbackTests.swift */; };
+		720000000000000000000002 /* FloatingSidebarPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720000000000000000000001 /* FloatingSidebarPresentation.swift */; };
+		720000000000000000000004 /* FloatingSidebarPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720000000000000000000003 /* FloatingSidebarPresentationTests.swift */; };
 		F1BFCDBADE221F598CA62933 /* testExpandedWorkGroupRendering.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 7587EB164AF1902FAD735D90 /* testExpandedWorkGroupRendering.1.png */; };
 		F38D8C9DDF3FCC6EBBE20885 /* SessionIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD9975BE3B6F00A870817B17 /* SessionIndexStore.swift */; };
 		F3ABBC8502D690C76985F756 /* AgentAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF761429383D479BD96FC52 /* AgentAPIClient.swift */; };
@@ -370,6 +372,8 @@
 		80C5A70C7B1570DFCB3F7CF1 /* DoctorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoctorView.swift; sourceTree = "<group>"; };
 		F16900000000000000000002 /* MimiInteractionFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiInteractionFeedback.swift; sourceTree = "<group>"; };
 		F16900000000000000000005 /* MimiInteractionFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MimiInteractionFeedbackTests.swift; sourceTree = "<group>"; };
+		720000000000000000000001 /* FloatingSidebarPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingSidebarPresentation.swift; sourceTree = "<group>"; };
+		720000000000000000000003 /* FloatingSidebarPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingSidebarPresentationTests.swift; sourceTree = "<group>"; };
 		80D89DB26E0A1CA68C63E07D /* FileUploadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileUploadStore.swift; sourceTree = "<group>"; };
 		80F8AA2ABA18C212AEAA34E1 /* HostStatusStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStatusStore.swift; sourceTree = "<group>"; };
 		81BCB17BD7BC9E4109AC1F8A /* ConversationConnectionRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationConnectionRecoveryTests.swift; sourceTree = "<group>"; };
@@ -624,6 +628,7 @@
 				8AA53A2531C62C2974077C88 /* LocalizationTests.swift */,
 				A0E1C34623582EDA99D6B917 /* LogStoreTests.swift */,
 				F16900000000000000000005 /* MimiInteractionFeedbackTests.swift */,
+				720000000000000000000003 /* FloatingSidebarPresentationTests.swift */,
 				24B74985F9E77EEE70BC1856 /* MarkdownRenderingTests.swift */,
 				8EABFF317C695883ECE910D0 /* PairingLinkTests.swift */,
 				B39F00000000000000000001 /* TailscaleStableHostnameTests.swift */,
@@ -882,6 +887,7 @@
 		CDD0A924F91498466D80EC3E /* Shell */ = {
 			isa = PBXGroup;
 			children = (
+				720000000000000000000001 /* FloatingSidebarPresentation.swift */,
 				C01D29CF13ECEA0EBF33BF7C /* HostSwitcherMenu.swift */,
 				089CDD9B409CEDE6D600DA58 /* UnifiedWorkbenchShell.swift */,
 				42A1B2C3D4E5F60718293A4C /* WorkbenchSidebarComponents.swift */,
@@ -1218,6 +1224,7 @@
 				E4A6ECBFD5B621FB6A30299A /* LocalizationTests.swift in Sources */,
 				BDDBF10C9208B7AB95535A57 /* LogStoreTests.swift in Sources */,
 				F16900000000000000000004 /* MimiInteractionFeedbackTests.swift in Sources */,
+				720000000000000000000004 /* FloatingSidebarPresentationTests.swift in Sources */,
 				4DDCF6949E6DDCC9ABEBE709 /* MarkdownRenderingTests.swift in Sources */,
 				89DCEF26CCF404A369DFDE80 /* PairingLinkTests.swift in Sources */,
 				B39B00000000000000000001 /* TailscaleStableHostnameTests.swift in Sources */,
@@ -1310,6 +1317,7 @@
 				0FCA7C8C42E283AD24681BA0 /* MarkdownStyle.swift in Sources */,
 				410ECA3E93AE577686A636C0 /* MediaWorker.swift in Sources */,
 				F16900000000000000000001 /* MimiInteractionFeedback.swift in Sources */,
+				720000000000000000000002 /* FloatingSidebarPresentation.swift in Sources */,
 				3B0E963BB2856F7CDD36EB67 /* MessageStore.swift in Sources */,
 				E158B34D71964DBF782D1DDF /* MimiRemoteApp.swift in Sources */,
 				41B2009F6B92E4B407CFDB72 /* ModelReasoningGridPicker.swift in Sources */,

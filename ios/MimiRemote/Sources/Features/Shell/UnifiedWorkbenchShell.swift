@@ -101,7 +101,12 @@ struct UnifiedWorkbenchShell: View {
     @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
-    @State private var floatingSidebarVisible = true
+    @SceneStorage("workbench.floatingSidebarVisible") private var storedFloatingSidebarVisible = true
+    @State private var floatingSidebarPresentation = FloatingSidebarPresentationState()
+    @State private var floatingSidebarRenderedProgress = FloatingSidebarRenderedProgressTracker(
+        initialValue: FloatingSidebarVisibility.open.progress
+    )
+    @State private var didRestoreFloatingSidebarVisibility = false
     @State private var presentedSheet: AppSheetDestination?
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
@@ -156,6 +161,7 @@ struct UnifiedWorkbenchShell: View {
                 }
             }
             .onAppear {
+                restoreFloatingSidebarVisibilityIfNeeded()
                 synchronizeNavigation(for: layout)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
             }
@@ -167,6 +173,11 @@ struct UnifiedWorkbenchShell: View {
             }
             .onChange(of: layout.usesAttachedInspector) { _, _ in
                 handleRelatedPresentationChange(layout: layout)
+            }
+            .onChange(of: layout.usesFloatingSidebarSurface) { _, usesFloatingSidebarSurface in
+                handleFloatingSidebarLayoutModeChange(
+                    usesFloatingSidebarSurface: usesFloatingSidebarSurface
+                )
             }
             .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
                 guard let commit else { return }
@@ -302,60 +313,235 @@ struct UnifiedWorkbenchShell: View {
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
     ) -> some View {
-        ZStack(alignment: .leading) {
-            // detail 必须收到真实的缩窄宽度提案，而不能只修改 safe area。
-            // Workspace 的 GeometryReader 与横向 ScrollView 会按提案宽度重新排版；
-            // 外层 ZStack 背景仍连续铺满整窗，因此不会重新出现独立的分栏底板。
-            detail(layout: layout, tokens: tokens)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(
-                    .leading,
-                    floatingSidebarVisible
-                        ? WorkbenchSidebarSurfaceMetrics.overlayWidth
-                        : 0
-                )
+        let sidebarWidth = WorkbenchSidebarSurfaceMetrics.overlayWidth
+        let renderTargetProgress = didRestoreFloatingSidebarVisibility
+            ? floatingSidebarPresentation.renderTargetProgress
+            : (storedFloatingSidebarVisible ? 1 : 0)
+        let keepsOpenSurfaceInteractive = didRestoreFloatingSidebarVisibility
+            ? floatingSidebarPresentation.keepsOpenSurfaceInteractive
+            : storedFloatingSidebarVisible
+        let showsClosedControls = didRestoreFloatingSidebarVisibility
+            ? floatingSidebarPresentation.isIdleClosed
+            : !storedFloatingSidebarVisible
+        let keepsClosedEdgeInteractive = didRestoreFloatingSidebarVisibility
+            ? floatingSidebarPresentation.keepsClosedEdgeInteractive
+            : !storedFloatingSidebarVisible
 
-            if floatingSidebarVisible {
-                sidebar(
-                    tokens: tokens,
-                    layout: layout,
-                    bottomSafeAreaInset: bottomSafeAreaInset
-                )
-                .frame(width: WorkbenchSidebarSurfaceMetrics.overlayWidth)
-                .frame(maxHeight: .infinity)
-                .transition(floatingSidebarTransition)
-                .zIndex(1)
+        return FloatingSidebarAnimatedScene(sidebarWidth: sidebarWidth) {
+            // detail 与 sidebar 从同一个 animatableData 排版，避免目标状态与屏幕位置分裂。
+            detail(layout: layout, tokens: tokens)
+        } sidebar: {
+            sidebar(
+                tokens: tokens,
+                layout: layout,
+                bottomSafeAreaInset: bottomSafeAreaInset
+            )
+            .disabled(!keepsOpenSurfaceInteractive)
+            .accessibilityHidden(!keepsOpenSurfaceInteractive)
+            .overlay(alignment: .trailing) {
+                if keepsOpenSurfaceInteractive {
+                    // recognizer 真正只安装在空白拖动带；row 与按钮不进入命中树。
+                    Rectangle()
+                        // Color.clear 在部分 SwiftUI 层级会被省略，极低 alpha 保留真实命中表面且不可见。
+                        .fill(Color.primary.opacity(0.001))
+                        .frame(width: WorkbenchSidebarSurfaceMetrics.openDragStripWidth)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .allowsHitTesting(true)
+                        .simultaneousGesture(floatingSidebarDragGesture())
+                        .accessibilityHidden(true)
+                        // padding 必须位于 gesture 外层，确保顶部/底部与浮层外边距不进入命中区。
+                        .padding(
+                            .vertical,
+                            WorkbenchSidebarSurfaceMetrics.openDragStripVerticalInset
+                        )
+                        .padding(.trailing, WorkbenchSidebarSurfaceMetrics.outerInset)
+                }
             }
         }
+        .modifier(
+            FloatingSidebarProgressModifier(
+                progress: renderTargetProgress,
+                tracker: floatingSidebarRenderedProgress
+            )
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(tokens.background.ignoresSafeArea())
         .overlay(alignment: .topLeading) {
-            if !floatingSidebarVisible {
+            if showsClosedControls {
                 WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
-                    setFloatingSidebarVisible(true)
+                    toggleFloatingSidebarVisibility()
                 }
                 .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
                 .padding(.top, 6)
-                .transition(floatingSidebarTransition)
                 .accessibilitySortPriority(10)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if keepsClosedEdgeInteractive {
+                GeometryReader { proxy in
+                    let hitFrame = FloatingSidebarGestureHitRegion.closedEdgeFrame(
+                        containerSize: proxy.size,
+                        edgeWidth: WorkbenchSidebarSurfaceMetrics.closedEdgeDragWidth,
+                        verticalInset: WorkbenchSidebarSurfaceMetrics.closedEdgeDragVerticalInset
+                    )
+
+                    if !hitFrame.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            // 用真实布局占出顶部保护区，不依赖 offset 的命中变换语义。
+                            Spacer()
+                                .frame(height: hitFrame.minY)
+                                .allowsHitTesting(false)
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.001))
+                                // 只让 Rectangle 命中；GeometryReader 与上下 Spacer 都没有 recognizer。
+                                .frame(width: hitFrame.width, height: hitFrame.height)
+                                .contentShape(Rectangle())
+                                .allowsHitTesting(true)
+                                .simultaneousGesture(floatingSidebarDragGesture())
+                                .accessibilityHidden(true)
+                            Spacer(minLength: 0)
+                                .allowsHitTesting(false)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                }
             }
         }
     }
 
-    private var floatingSidebarTransition: AnyTransition {
-        reduceMotion
-            ? .opacity
-            : .move(edge: .leading).combined(with: .opacity)
+    private func toggleFloatingSidebarVisibility() {
+        let currentVisibility: FloatingSidebarVisibility
+        if didRestoreFloatingSidebarVisibility {
+            currentVisibility = floatingSidebarPresentation.committedVisibility
+        } else {
+            currentVisibility = storedFloatingSidebarVisible ? .open : .closed
+        }
+        settleFloatingSidebar(
+            to: currentVisibility.toggled,
+            progressVelocity: 0
+        )
     }
 
-    private func setFloatingSidebarVisible(_ isVisible: Bool) {
-        withAnimation(
-            reduceMotion
-                ? nil
-                : .spring(response: 0.34, dampingFraction: 1)
-        ) {
-            floatingSidebarVisible = isVisible
+    private func floatingSidebarDragGesture() -> some Gesture {
+        DragGesture(
+            minimumDistance: FloatingSidebarGestureArbitration.minimumDistance,
+            // 拖动带会跟随侧栏移动；全局坐标避免局部原点位移污染 translation 与投影。
+            coordinateSpace: .global
+        )
+        .onChanged { value in
+            let axis = floatingSidebarPresentation.resolveGestureAxis(
+                translation: value.translation
+            )
+            guard axis == .horizontal else { return }
+
+            if !floatingSidebarPresentation.isInteracting {
+                // 顺序不可改变：先读取真实 animatableData，再 fencing 旧动画并进入 interaction。
+                let renderedProgress = floatingSidebarRenderedProgress.value
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    floatingSidebarPresentation.beginInteraction(
+                        renderedProgress: renderedProgress,
+                        consumedHysteresisTranslation: FloatingSidebarGestureArbitration
+                            .consumedHysteresisTranslation(for: value.translation.width)
+                    )
+                }
+                MimiHaptics.prepare(.snap)
+            }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            _ = withTransaction(transaction) {
+                floatingSidebarPresentation.updateInteraction(
+                    translation: value.translation.width,
+                    sidebarWidth: WorkbenchSidebarSurfaceMetrics.overlayWidth
+                )
+            }
         }
+        .onEnded { value in
+            guard floatingSidebarPresentation.gestureAxis == .horizontal,
+                  let decision = floatingSidebarPresentation.releaseDecision(
+                      translation: value.translation.width,
+                      predictedEndTranslation: value.predictedEndTranslation.width,
+                      velocity: value.velocity.width,
+                      sidebarWidth: WorkbenchSidebarSurfaceMetrics.overlayWidth
+                  ) else {
+                floatingSidebarPresentation.resetGesture()
+                return
+            }
+
+            settleFloatingSidebar(
+                to: decision.target,
+                progressVelocity: decision.progressVelocity
+            )
+        }
+    }
+
+    private func settleFloatingSidebar(
+        to target: FloatingSidebarVisibility,
+        progressVelocity: CGFloat
+    ) {
+        // 必须先读取屏幕当前插值，再递增 revision/进入 settling；否则会用目标值归一化速度。
+        let currentPresentationProgress = floatingSidebarRenderedProgress.value
+        let springInitialVelocity = reduceMotion
+            ? 0
+            : FloatingSidebarProjection.springInitialVelocity(
+                progressVelocity: progressVelocity,
+                currentPresentationProgress: currentPresentationProgress,
+                targetProgress: target.progress
+            )
+        let settling = floatingSidebarPresentation.prepareSettling(
+            target: target,
+            springInitialVelocity: springInitialVelocity
+        )
+        storedFloatingSidebarVisible = target == .open
+
+        withAnimation(
+            MimiMotion.gestureSettling.animation(
+                reduceMotion: reduceMotion,
+                initialVelocity: settling.springInitialVelocity
+            ),
+            completionCriteria: .logicallyComplete
+        ) {
+            floatingSidebarPresentation.startSettling(settling)
+        } completion: {
+            guard floatingSidebarPresentation.completeSettling(
+                revision: settling.revision
+            ) else {
+                return
+            }
+            floatingSidebarRenderedProgress.record(settling.target.progress)
+            MimiHaptics.fire(.snap)
+        }
+    }
+
+    private func restoreFloatingSidebarVisibilityIfNeeded() {
+        guard !didRestoreFloatingSidebarVisibility else { return }
+        didRestoreFloatingSidebarVisibility = true
+        let visibility: FloatingSidebarVisibility = storedFloatingSidebarVisible
+            ? .open
+            : .closed
+        floatingSidebarPresentation.restore(visibility)
+        floatingSidebarRenderedProgress.record(visibility.progress)
+    }
+
+    private func handleFloatingSidebarLayoutModeChange(
+        usesFloatingSidebarSurface: Bool
+    ) {
+        guard didRestoreFloatingSidebarVisibility,
+              !usesFloatingSidebarSurface else {
+            return
+        }
+
+        // 离开浮动布局时取消在途动画但保留 committed 语义；返回宽布局从同一状态恢复。
+        let visibility = floatingSidebarPresentation.committedVisibility
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            floatingSidebarPresentation.restore(visibility)
+        }
+        floatingSidebarRenderedProgress.record(visibility.progress)
     }
 
     private func openConnectionSettings(layout: WorkbenchLayout) {
@@ -445,7 +631,7 @@ struct UnifiedWorkbenchShell: View {
                 tokens: tokens,
                 onCollapse: {
                     if layout.usesFloatingSidebarSurface {
-                        setFloatingSidebarVisible(false)
+                        toggleFloatingSidebarVisibility()
                     } else {
                         columnVisibility = .detailOnly
                     }
@@ -525,6 +711,13 @@ struct UnifiedWorkbenchShell: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .contentMargins(
+            .trailing,
+            layout.usesFloatingSidebarSurface
+                ? WorkbenchSidebarSurfaceMetrics.openDragStripWidth
+                : 0,
+            for: .scrollContent
+        )
         .environment(\.defaultMinListRowHeight, 38)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
