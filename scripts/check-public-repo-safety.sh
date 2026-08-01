@@ -74,17 +74,18 @@ artifact_matches="$(git ls-files -co --exclude-standard | \
   rg -v '(^|/)\.env\.(example|sample|template)$' || true)"
 report_matches "发现不应进入仓库的凭据或签名产物" "$artifact_matches"
 
-docs_paths=(README.md)
-[[ -d docs ]] && docs_paths+=(docs)
-[[ -f ios/MimiRemote/README.md ]] && docs_paths+=(ios/MimiRemote/README.md)
+public_text_paths=(README.md)
+[[ -d docs ]] && public_text_paths+=(docs)
+[[ -d config/automations ]] && public_text_paths+=(config/automations)
+[[ -f ios/MimiRemote/README.md ]] && public_text_paths+=(ios/MimiRemote/README.md)
 private_endpoint_matches="$(rg -l --pcre2 \
   '100\.(?!64\.0\.0/10(?:[^0-9]|$))(6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}' \
-  "${docs_paths[@]}" || true)"
-report_matches "公开文档包含具体 Tailscale 地址" "$private_endpoint_matches"
+  "${public_text_paths[@]}" || true)"
+report_matches "公开文本包含具体 Tailscale 地址" "$private_endpoint_matches"
 
 home_path_matches="$(rg -l --pcre2 '/Users/(?!me/|you/|demo/)[A-Za-z0-9._-]+/|/home/(?!me/|user/|demo/)[A-Za-z0-9._-]+/' \
-  "${docs_paths[@]}" || true)"
-report_matches "公开文档包含真实用户主目录" "$home_path_matches"
+  "${public_text_paths[@]}" || true)"
+report_matches "公开文本包含真实用户主目录" "$home_path_matches"
 
 unpinned_action_matches="$(rg -n --pcre2 'uses:\s+(?!\./)[^\s]+@(?![0-9a-f]{40}(?:\s|$))[^\s]+' \
   .github/workflows || true)"
