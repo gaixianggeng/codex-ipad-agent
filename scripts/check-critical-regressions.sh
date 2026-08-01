@@ -20,7 +20,7 @@ map_doc="docs/critical-user-journey-regressions.md"
 [[ -f "$runner" ]] || fail "缺少回归入口 ${runner}。"
 [[ -f "$map_doc" ]] || fail "缺少风险映射 ${map_doc}。"
 
-for risk_id in R1 R2 R3 R4 R5 R6 R7 R8; do
+for risk_id in R1 R2 R3 R4 R5 R6 R7 R8 R9; do
   grep -Fq "| ${risk_id} |" "$map_doc" \
     || fail "${map_doc} 缺少 ${risk_id} 的风险映射。"
 done
@@ -45,6 +45,26 @@ grep -Fq -- '-only-testing:MimiRemoteTests/ProtocolContractTests' "$runner" \
   || fail "iOS runner 未选择共享关键链路 fixture 回归。"
 grep -Fq 'testCriticalJourneyFixtureMatchesIOSRequestBuilders' "$map_doc" \
   || fail "${map_doc} 未记录共享关键链路 fixture 回归。"
+grep -Fq 'func TestFileUploadCapabilityRolloutMatrix(' \
+  internal/httpapi/capability_rollout_test.go \
+  || fail "Go 缺少 capability enabled/disabled/dependency 矩阵。"
+grep -Fq 'func testFileUploadCapabilityDecisionMatrixFailsClosed(' \
+  ios/MimiRemote/Tests/MimiRemoteTests/FileAttachmentModelsTests.swift \
+  || fail "iOS 缺少 capability fail-closed 状态矩阵。"
+grep -Fq 'func testCapabilityNegotiationIsIsolatedPerHostAndRejectsStaleLease(' \
+  ios/MimiRemote/Tests/MimiRemoteTests/PairingLinkTests.swift \
+  || fail "iOS 缺少多 Host capability 隔离与 stale lease 回归。"
+for test_group in FileAttachmentModelsTests PairingLinkTests ProtocolContractTests; do
+  grep -Fq -- "-only-testing:MimiRemoteTests/${test_group}" "$runner" \
+    || fail "iOS runner 未选择 ${test_group} capability 回归。"
+done
+for test_name in \
+  TestFileUploadCapabilityRolloutMatrix \
+  testFileUploadCapabilityDecisionMatrixFailsClosed \
+  testCapabilityNegotiationIsIsolatedPerHostAndRejectsStaleLease; do
+  grep -Fq "$test_name" "$map_doc" \
+    || fail "${map_doc} 未记录 ${test_name}。"
+done
 
 # 每个条目同时绑定 XCTest selector 与真实源码。测试改名、移动或从 runner
 # 移除时都会给出具体失败点，避免文档仍显示覆盖但 Gate 已经漏跑。
@@ -97,4 +117,4 @@ grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/go-ci.yml \
 grep -Fq '"scripts/check-critical-regressions.sh"' .github/workflows/ios-ci.yml \
   || fail "iOS CI 的 push 路径缺少关键链路 checker。"
 
-echo "关键链路回归映射检查通过：8 类风险、4 个 Go 包和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"
+echo "关键链路回归映射检查通过：9 类风险、4 个 Go 包和 ${#critical_swift_tests[@]} 个高价值 iOS 测试均已接入。"

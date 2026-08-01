@@ -1,5 +1,16 @@
 import Foundation
 
+enum QueuedTurnAcceptedDisposition {
+    case awaitingStart(turnID: TurnID?)
+    case guidance
+    case terminal(turnID: TurnID?)
+    case superseded(
+        turnID: TurnID?,
+        activeTurnID: TurnID
+    )
+    case threadClosed(turnID: TurnID?)
+}
+
 // Codex Desktop 与 Mimi 的 app-server 是两个独立进程，runtime status 不能跨进程复用。
 // 这里消费 agentd 从 rollout 提炼出的只读活动层；所有消息仍走现有历史读取，不建立控制连接。
 extension SessionStore {
@@ -89,6 +100,78 @@ extension SessionStore {
              .rejected,
              .uncertain:
             return nil
+        }
+    }
+
+    func reconciledAcceptedDisposition(
+        sessionID: SessionID,
+        disposition: QueuedTurnAcceptedDisposition,
+        ignoringActiveTurnID: TurnID? = nil
+    ) -> QueuedTurnAcceptedDisposition {
+        let reportedActiveTurnID = sessionsByID[sessionID]?.activeTurnID
+        // guidance fallback 的前提是 Runtime 已在 RPC 前确认旧 expected turn 不存在。
+        // 只忽略这一个精确 ID；期间若出现其它 active turn，仍按 superseded 保护。
+        let currentActiveTurnID = reportedActiveTurnID == ignoringActiveTurnID
+            ? nil
+            : reportedActiveTurnID
+        func isTerminal(_ turnID: TurnID) -> Bool {
+            conversationStore.turnLifecycle(
+                sessionID: sessionID,
+                turnID: turnID
+            )?.isTerminal == true
+        }
+
+        switch disposition {
+        case .awaitingStart(let turnID):
+            if let turnID, isTerminal(turnID) {
+                return .terminal(turnID: turnID)
+            }
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(
+                    turnID: turnID,
+                    activeTurnID: currentActiveTurnID
+                )
+            }
+            return disposition
+        case .terminal(let turnID):
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(
+                    turnID: turnID,
+                    activeTurnID: currentActiveTurnID
+                )
+            }
+            return disposition
+        case .superseded(let turnID, let reportedActiveTurnID):
+            let effectiveActiveTurnID: TurnID
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID,
+               currentActiveTurnID != reportedActiveTurnID {
+                effectiveActiveTurnID = currentActiveTurnID
+            } else {
+                effectiveActiveTurnID = reportedActiveTurnID
+            }
+            if isTerminal(effectiveActiveTurnID) {
+                // completed(B) 可能先于 superseded(A,B) 落到 MainActor；lifecycle 是
+                // 不会随 activeTurnID 清空而丢失的终态证据，禁止再次复活 B。
+                return .terminal(turnID: effectiveActiveTurnID)
+            }
+            return .superseded(
+                turnID: turnID,
+                activeTurnID: effectiveActiveTurnID
+            )
+        case .threadClosed(let turnID):
+            if let currentActiveTurnID,
+               currentActiveTurnID != turnID {
+                return .superseded(
+                    turnID: turnID,
+                    activeTurnID: currentActiveTurnID
+                )
+            }
+            return disposition
+        case .guidance:
+            return disposition
         }
     }
 
@@ -309,7 +392,7 @@ extension SessionStore {
                 return
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
         } catch {
             // 活动 API 已给出可靠运行态；列表补拉失败时保留已有行，下一次轮询继续重试未知线程。
@@ -342,6 +425,14 @@ extension SessionStore {
             )
         } else {
             recoveredExternalMisclassification = false
+        }
+        if let clientMessageID,
+           let turnID = acceptedTurnID(from: outcome) {
+            conversationStore.bindTurnID(
+                turnID,
+                clientMessageID: clientMessageID,
+                sessionID: sessionID
+            )
         }
         guard let clientMessageID else { return }
 

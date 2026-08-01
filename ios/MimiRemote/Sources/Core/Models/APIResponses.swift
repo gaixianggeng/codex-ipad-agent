@@ -43,6 +43,7 @@ struct VersionResponse: Codable {
     let minimumClientProtocolRevision: Int
     let platform: String?
     let capabilities: [String]
+    let capabilityStatuses: [AgentCapabilityStatus]
 
     init(
         name: String,
@@ -51,7 +52,8 @@ struct VersionResponse: Codable {
         protocolRevision: Int = MimiProtocolContract.currentRevision,
         minimumClientProtocolRevision: Int = MimiProtocolContract.minimumSupportedClientRevision,
         platform: String? = nil,
-        capabilities: [String] = []
+        capabilities: [String] = [],
+        capabilityStatuses: [AgentCapabilityStatus] = []
     ) {
         self.name = name
         self.version = version
@@ -60,6 +62,7 @@ struct VersionResponse: Codable {
         self.minimumClientProtocolRevision = minimumClientProtocolRevision
         self.platform = platform
         self.capabilities = capabilities
+        self.capabilityStatuses = capabilityStatuses
     }
 
     enum CodingKeys: String, CodingKey {
@@ -70,6 +73,7 @@ struct VersionResponse: Codable {
         case minimumClientProtocolRevision = "minimum_client_protocol_revision"
         case platform
         case capabilities
+        case capabilityStatuses = "capability_statuses"
     }
 
     init(from decoder: Decoder) throws {
@@ -89,6 +93,12 @@ struct VersionResponse: Codable {
         self.platform = try container.decodeIfPresent(String.self, forKey: .platform)
         // 旧 agentd 没有 capabilities。解码为空集合后由具体功能入口安全隐藏或给出升级提示。
         self.capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        // 状态说明是纯加法字段。未知 state 和未知 capability 保留为字符串，
+        // 由当前功能入口 fail-closed 判断，不能让整个版本响应解码失败。
+        self.capabilityStatuses = try container.decodeIfPresent(
+            [AgentCapabilityStatus].self,
+            forKey: .capabilityStatuses
+        ) ?? []
     }
 
     func requireCompatible() throws {
@@ -113,6 +123,40 @@ struct VersionResponse: Codable {
                 serverRevision: protocolRevision
             )
         }
+    }
+
+    var capabilityNegotiation: HostCapabilityNegotiation {
+        HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: Set(capabilities),
+            statuses: capabilityStatuses
+        )
+    }
+}
+
+struct AgentCapabilityStatus: Codable, Equatable, Sendable {
+    let name: String
+    let state: String
+    let reason: String
+
+    init(name: String, state: String, reason: String) {
+        self.name = name
+        self.state = state
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case state
+        case reason
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        state = try container.decode(String.self, forKey: .state)
+        // reason 是诊断增强字段。旧服务缺失时保持可解码，再由协商状态决定是否 fail-closed。
+        reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
     }
 }
 

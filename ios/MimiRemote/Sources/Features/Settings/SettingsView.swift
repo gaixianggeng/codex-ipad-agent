@@ -232,6 +232,7 @@ struct SettingsView: View {
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
+    @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -263,13 +264,25 @@ struct SettingsView: View {
                 }
             )
         }
+        // 重命名路由固定由设置根层持有，Form.Section 刷新不会销毁唯一的 sheet presenter。
+        .sheet(
+            item: profileRenameRouteBinding,
+            onDismiss: { profileRenamePresentation.dismiss() }
+        ) { route in
+            ConnectionProfileRenameSheet(route: route) { displayName in
+                try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
+            }
+        }
     }
 
     @ViewBuilder
     private func settingsContent(tokens: ThemeTokens, resolvedColorScheme: ColorScheme) -> some View {
         Group {
             if isInitialSetup {
-                InitialPairingView(qrScannerPresentation: qrScannerPresentation)
+                InitialPairingView(
+                    qrScannerPresentation: qrScannerPresentation,
+                    onRequestProfileRename: { profileRenamePresentation.present($0) }
+                )
             } else {
                 settingsForm(tokens: tokens)
                     .frame(maxWidth: 920)
@@ -299,6 +312,18 @@ struct SettingsView: View {
     private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
         // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
         horizontalSizeClass == .compact ? .large : .inline
+    }
+
+    private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
+        Binding(
+            get: { profileRenamePresentation.route },
+            set: { route in
+                // item-driven sheet 关闭时由 SwiftUI 写回 nil；新目标只允许经 present(_:) 进入。
+                if route == nil {
+                    profileRenamePresentation.dismiss()
+                }
+            }
+        )
     }
 
     private func settingsForm(tokens: ThemeTokens) -> some View {
@@ -393,7 +418,10 @@ struct SettingsView: View {
 
             Section {
                 NavigationLink {
-                    ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
+                    ConnectionManagementView(
+                        qrScannerPresentation: qrScannerPresentation,
+                        onRequestProfileRename: { profileRenamePresentation.present($0) }
+                    )
                 } label: {
                     SettingsMacDevicesSummaryLabel(
                         currentDevice: currentMacDisplayName,
@@ -730,10 +758,14 @@ private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
+    let onRequestProfileRename: (ConnectionProfile) -> Void
 
     var body: some View {
         Form {
-            InitialConnectionSettingsSections(qrScannerPresentation: qrScannerPresentation)
+            InitialConnectionSettingsSections(
+                qrScannerPresentation: qrScannerPresentation,
+                onRequestProfileRename: onRequestProfileRename
+            )
         }
         .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
         .frame(maxWidth: 720)
@@ -1732,12 +1764,16 @@ private struct InitialPairingView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
+    let onRequestProfileRename: (ConnectionProfile) -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            InitialConnectionSettingsSections(qrScannerPresentation: qrScannerPresentation)
+            InitialConnectionSettingsSections(
+                qrScannerPresentation: qrScannerPresentation,
+                onRequestProfileRename: onRequestProfileRename
+            )
         }
         .themedSettingsForm(tokens: tokens)
         // 连接是短表单而不是数据表；宽窗口里限制行长，按钮和输入框不会被拉成整屏。

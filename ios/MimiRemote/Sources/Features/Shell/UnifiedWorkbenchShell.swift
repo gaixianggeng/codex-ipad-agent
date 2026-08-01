@@ -5,6 +5,7 @@ enum AppDestination: Hashable {
     case workspaces
     case me
     case session(SessionID)
+    case subagent(parentID: SessionID, childID: SessionID)
 }
 
 private enum AppSheetDestination: String, Identifiable {
@@ -57,10 +58,14 @@ enum CompactWorkbenchTab: Hashable {
     }
 
     var systemImage: String {
+        navigationIcon.normalSystemName
+    }
+
+    var navigationIcon: WorkbenchNavigationIcon {
         switch self {
-        case .sessions: return "bubble.left.and.bubble.right"
-        case .workspaces: return "folder"
-        case .me: return "person.crop.circle"
+        case .sessions: return .sessions
+        case .workspaces: return .workspaces
+        case .me: return .me
         }
     }
 }
@@ -79,390 +84,6 @@ enum WorkbenchNavigationEvent: Equatable {
     case sessionSelectionFinished(SessionID)
 }
 
-/// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
-/// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
-struct WorkbenchNavigationState: Equatable {
-    private(set) var route: WorkbenchRestorationRoute
-    private(set) var selection: AppDestination?
-    private(set) var compactSessionPath: [AppDestination]
-    private(set) var compactWorkspacePath: [AppDestination]
-    private(set) var compactSelectedTab: CompactWorkbenchTab
-    private(set) var pendingSessionSelectionID: SessionID?
-
-    init(route: WorkbenchRestorationRoute = .sessions) {
-        self.route = route
-        selection = Self.destination(for: route)
-        compactSessionPath = []
-        compactWorkspacePath = []
-        pendingSessionSelectionID = nil
-
-        switch route {
-        case .sessions:
-            compactSelectedTab = .sessions
-        case .workspaces:
-            compactSelectedTab = .workspaces
-        case .session(let id, let source):
-            let destination = AppDestination.session(id)
-            switch source {
-            case .sessions:
-                compactSelectedTab = .sessions
-                compactSessionPath = [destination]
-            case .workspaces:
-                compactSelectedTab = .workspaces
-                compactWorkspacePath = [destination]
-            }
-        }
-    }
-
-    /// selectedSessionID 可能在“我的”或列表页继续保留，不能据此判断会话是否真的可见。
-    func visibleSessionID(usesCompactNavigation: Bool) -> SessionID? {
-        if usesCompactNavigation, compactSelectedTab == .me {
-            return nil
-        }
-        guard case .session(let sessionID) = selection else {
-            return nil
-        }
-        return sessionID
-    }
-
-    @discardableResult
-    mutating func reduce(
-        _ event: WorkbenchNavigationEvent,
-        usesCompactNavigation: Bool,
-        selectedSessionID: SessionID?
-    ) -> WorkbenchNavigationEffect? {
-        switch event {
-        case .open(let destination, let requestedSource):
-            return open(
-                destination,
-                requestedSource: requestedSource,
-                usesCompactNavigation: usesCompactNavigation,
-                selectedSessionID: selectedSessionID
-            )
-
-        case .synchronize(let restoredRoute):
-            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
-            let preservedPendingSessionID = restoredRoute.detailSessionID == pendingSessionSelectionID
-                ? pendingSessionSelectionID
-                : nil
-            route = restoredRoute
-            selection = Self.destination(for: restoredRoute)
-            pendingSessionSelectionID = preservedPendingSessionID
-            guard usesCompactNavigation else {
-                if preservesMe {
-                    selection = .me
-                }
-                return nil
-            }
-            restoreCompactPath(for: restoredRoute)
-            if preservesMe {
-                compactSelectedTab = .me
-                selection = .me
-            }
-            return nil
-
-        case .selectionCommitted(let commit):
-            let preservesMe = isShowingMe(usesCompactNavigation: usesCompactNavigation)
-            pendingSessionSelectionID = nil
-            switch commit.reason {
-            case .invalidation:
-                guard route.detailSessionID != nil else { return nil }
-                applyRoot(route.rootPage, usesCompactNavigation: usesCompactNavigation)
-                restoreMeIfNeeded(
-                    preservesMe,
-                    usesCompactNavigation: usesCompactNavigation
-                )
-
-            case .identityReplacement(let previousID):
-                guard route.detailSessionID == previousID,
-                      let sessionID = commit.sessionID else { return nil }
-                applySession(
-                    sessionID,
-                    source: route.rootPage,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: true
-                )
-                restoreMeIfNeeded(
-                    preservesMe,
-                    usesCompactNavigation: usesCompactNavigation
-                )
-
-            case .restoration:
-                // Root 只允许仍与启动快照一致的恢复提交；这里再约束一次，
-                // 防止恢复结果把用户后来进入的列表或其他详情重新覆盖。
-                guard let sessionID = commit.sessionID,
-                      route.detailSessionID == sessionID else { return nil }
-                applySession(
-                    sessionID,
-                    source: route.rootPage,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: true
-                )
-                restoreMeIfNeeded(
-                    preservesMe,
-                    usesCompactNavigation: usesCompactNavigation
-                )
-
-            case .notification:
-                guard let sessionID = commit.sessionID else { return nil }
-                applySession(
-                    sessionID,
-                    source: .sessions,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: false
-                )
-
-            case .userOpen:
-                guard let sessionID = commit.sessionID else { return nil }
-                let source = route.detailSessionID == sessionID
-                    ? route.rootPage
-                    : (usesCompactNavigation ? activeRootPage : route.rootPage)
-                applySession(
-                    sessionID,
-                    source: source,
-                    usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: false
-                )
-            }
-            return nil
-
-        case .compactPathChanged(let tab, let path):
-            guard tab != .me else { return nil }
-            compactSelectedTab = tab
-            switch tab {
-            case .sessions:
-                compactSessionPath = path
-            case .workspaces:
-                compactWorkspacePath = path
-            case .me:
-                break
-            }
-
-            let destination = path.last ?? Self.rootDestination(for: tab)
-            selection = destination
-            switch destination {
-            case .sessions:
-                route = .sessions
-                pendingSessionSelectionID = nil
-            case .workspaces:
-                route = .workspaces
-                pendingSessionSelectionID = nil
-            case .me:
-                break
-            case .session(let sessionID):
-                route = .session(id: sessionID, source: Self.rootPage(for: tab))
-            }
-            return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
-
-        case .compactTabChanged(let tab):
-            compactSelectedTab = tab
-            guard tab != .me else {
-                // “我的”是全局入口，切入时保留当前会话/工作区路由和两个 Tab 的历史栈。
-                selection = .me
-                return nil
-            }
-            let path = tab == .sessions ? compactSessionPath : compactWorkspacePath
-            let destination = path.last ?? Self.rootDestination(for: tab)
-            selection = destination
-            switch destination {
-            case .sessions:
-                route = .sessions
-                pendingSessionSelectionID = nil
-            case .workspaces:
-                route = .workspaces
-                pendingSessionSelectionID = nil
-            case .me:
-                break
-            case .session(let sessionID):
-                route = .session(id: sessionID, source: Self.rootPage(for: tab))
-            }
-            return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
-
-        case .sessionSelectionFinished(let sessionID):
-            if pendingSessionSelectionID == sessionID {
-                pendingSessionSelectionID = nil
-            }
-            return nil
-        }
-    }
-
-    /// “我的”是覆盖在工作台路由之上的全局页面。后台恢复、失效或会话 ID 替换
-    /// 可以更新隐藏路由，但不能在没有用户导航意图时把当前页面抢走。
-    private mutating func restoreMeIfNeeded(
-        _ shouldRestore: Bool,
-        usesCompactNavigation: Bool
-    ) {
-        guard shouldRestore else { return }
-        selection = .me
-        if usesCompactNavigation {
-            compactSelectedTab = .me
-        }
-    }
-
-    private mutating func open(
-        _ destination: AppDestination,
-        requestedSource: WorkbenchRootPage?,
-        usesCompactNavigation: Bool,
-        selectedSessionID: SessionID?
-    ) -> WorkbenchNavigationEffect? {
-        switch destination {
-        case .sessions:
-            applyRoot(.sessions, usesCompactNavigation: usesCompactNavigation)
-        case .workspaces:
-            applyRoot(.workspaces, usesCompactNavigation: usesCompactNavigation)
-        case .me:
-            selection = .me
-            if usesCompactNavigation {
-                compactSelectedTab = .me
-            }
-            return nil
-        case .session(let sessionID):
-            applySession(
-                sessionID,
-                source: requestedSource ?? (usesCompactNavigation ? activeRootPage : route.rootPage),
-                usesCompactNavigation: usesCompactNavigation,
-                replacesCompactPath: false
-            )
-        }
-        return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
-    }
-
-    private mutating func applyRoot(
-        _ page: WorkbenchRootPage,
-        usesCompactNavigation: Bool
-    ) {
-        pendingSessionSelectionID = nil
-        switch page {
-        case .sessions:
-            route = .sessions
-            selection = .sessions
-            guard usesCompactNavigation else { return }
-            compactSelectedTab = .sessions
-            compactSessionPath = []
-        case .workspaces:
-            route = .workspaces
-            selection = .workspaces
-            guard usesCompactNavigation else { return }
-            compactSelectedTab = .workspaces
-            compactWorkspacePath = []
-        }
-    }
-
-    private mutating func applySession(
-        _ sessionID: SessionID,
-        source: WorkbenchRootPage,
-        usesCompactNavigation: Bool,
-        replacesCompactPath: Bool
-    ) {
-        let destination = AppDestination.session(sessionID)
-        route = .session(id: sessionID, source: source)
-        selection = destination
-        guard usesCompactNavigation else { return }
-
-        switch source {
-        case .sessions:
-            compactSelectedTab = .sessions
-            compactSessionPath = replacesCompactPath
-                ? [destination]
-                : Self.sessionPath(afterOpening: destination, currentPath: compactSessionPath)
-        case .workspaces:
-            compactSelectedTab = .workspaces
-            compactWorkspacePath = replacesCompactPath
-                ? [destination]
-                : Self.sessionPath(afterOpening: destination, currentPath: compactWorkspacePath)
-        }
-    }
-
-    private mutating func restoreCompactPath(for restoredRoute: WorkbenchRestorationRoute) {
-        switch restoredRoute {
-        case .sessions:
-            compactSelectedTab = .sessions
-            compactSessionPath = []
-        case .workspaces:
-            compactSelectedTab = .workspaces
-            compactWorkspacePath = []
-        case .session(let sessionID, let source):
-            applySession(
-                sessionID,
-                source: source,
-                usesCompactNavigation: true,
-                replacesCompactPath: true
-            )
-        }
-    }
-
-    private mutating func effectForUserNavigation(
-        to destination: AppDestination,
-        selectedSessionID: SessionID?
-    ) -> WorkbenchNavigationEffect? {
-        switch destination {
-        case .sessions, .workspaces:
-            // 返回列表本身就是显式用户意图；即使当前 ID 已为空也要推进选择代次，
-            // 让仍在等待的恢复、通知和创建任务立即失效。
-            return .returnToSessionList
-        case .me:
-            return nil
-        case .session(let sessionID):
-            guard selectedSessionID != sessionID,
-                  pendingSessionSelectionID != sessionID else { return nil }
-            // selectSession 包含网络恢复，可能跨帧；记录在途 ID，阻止同一个 UI 事件链重复启动。
-            pendingSessionSelectionID = sessionID
-            return .selectSession(sessionID)
-        }
-    }
-
-    private var activeRootPage: WorkbenchRootPage {
-        switch compactSelectedTab {
-        case .sessions:
-            return .sessions
-        case .workspaces:
-            return .workspaces
-        case .me:
-            return route.rootPage
-        }
-    }
-
-    private func isShowingMe(usesCompactNavigation: Bool) -> Bool {
-        usesCompactNavigation ? compactSelectedTab == .me : selection == .me
-    }
-
-    private static func destination(for route: WorkbenchRestorationRoute) -> AppDestination {
-        switch route {
-        case .sessions:
-            return .sessions
-        case .workspaces:
-            return .workspaces
-        case .session(let id, _):
-            return .session(id)
-        }
-    }
-
-    private static func rootDestination(for tab: CompactWorkbenchTab) -> AppDestination {
-        tab == .workspaces ? .workspaces : .sessions
-    }
-
-    private static func rootPage(for tab: CompactWorkbenchTab) -> WorkbenchRootPage {
-        tab == .workspaces ? .workspaces : .sessions
-    }
-
-    private static func sessionPath(
-        afterOpening destination: AppDestination,
-        currentPath: [AppDestination]
-    ) -> [AppDestination] {
-        guard currentPath.last != destination else { return currentPath }
-
-        var updatedPath = currentPath
-        if let currentDestination = updatedPath.last,
-           case .session = currentDestination {
-            // local:* 占位切到真实 ID 时替换当前详情，不能再 push 一层。
-            updatedPath[updatedPath.index(before: updatedPath.endIndex)] = destination
-        } else {
-            updatedPath.append(destination)
-        }
-        return updatedPath
-    }
-}
-
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
@@ -474,16 +95,20 @@ struct UnifiedWorkbenchShell: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var floatingSidebarVisible = true
     @State private var presentedSheet: AppSheetDestination?
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
     @State private var didApplyDebugLaunchRoute = false
+    @State private var selectedRelatedSubagent: SessionContextSubagent?
+    @State private var relatedSubagentParentID: SessionID?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -491,7 +116,8 @@ struct UnifiedWorkbenchShell: View {
         GeometryReader { proxy in
             let layout = WorkbenchLayout(
                 containerWidth: proxy.size.width,
-                horizontalSizeClass: horizontalSizeClass
+                horizontalSizeClass: horizontalSizeClass,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad
             )
 
             Group {
@@ -499,6 +125,12 @@ struct UnifiedWorkbenchShell: View {
                     compactLayout(
                         layout: layout,
                         tokens: tokens
+                    )
+                } else if layout.usesFloatingSidebarSurface {
+                    floatingLayout(
+                        layout: layout,
+                        tokens: tokens,
+                        bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else {
                     splitLayout(
@@ -532,6 +164,9 @@ struct UnifiedWorkbenchShell: View {
                     usesCompactNavigation: usesCompactNavigation,
                     layout: layout
                 )
+            }
+            .onChange(of: layout.usesAttachedInspector) { _, _ in
+                handleRelatedPresentationChange(layout: layout)
             }
             .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
                 guard let commit else { return }
@@ -572,8 +207,7 @@ struct UnifiedWorkbenchShell: View {
               let visibleSessionID = navigationState.visibleSessionID(
                   usesCompactNavigation: layout.usesCompactNavigation
               ),
-              let session = sessionStore.selectedSession,
-              session.id == visibleSessionID
+              let session = sessionStore.sessionsByID[visibleSessionID]
         else {
             return nil
         }
@@ -663,6 +297,67 @@ struct UnifiedWorkbenchShell: View {
         .navigationSplitViewStyle(.balanced)
     }
 
+    private func floatingLayout(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        bottomSafeAreaInset: CGFloat
+    ) -> some View {
+        ZStack(alignment: .leading) {
+            // detail 必须收到真实的缩窄宽度提案，而不能只修改 safe area。
+            // Workspace 的 GeometryReader 与横向 ScrollView 会按提案宽度重新排版；
+            // 外层 ZStack 背景仍连续铺满整窗，因此不会重新出现独立的分栏底板。
+            detail(layout: layout, tokens: tokens)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(
+                    .leading,
+                    floatingSidebarVisible
+                        ? WorkbenchSidebarSurfaceMetrics.overlayWidth
+                        : 0
+                )
+
+            if floatingSidebarVisible {
+                sidebar(
+                    tokens: tokens,
+                    layout: layout,
+                    bottomSafeAreaInset: bottomSafeAreaInset
+                )
+                .frame(width: WorkbenchSidebarSurfaceMetrics.overlayWidth)
+                .frame(maxHeight: .infinity)
+                .transition(floatingSidebarTransition)
+                .zIndex(1)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(tokens.background.ignoresSafeArea())
+        .overlay(alignment: .topLeading) {
+            if !floatingSidebarVisible {
+                WorkbenchFloatingSidebarRevealButton(tokens: tokens) {
+                    setFloatingSidebarVisible(true)
+                }
+                .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
+                .padding(.top, 6)
+                .transition(floatingSidebarTransition)
+                .accessibilitySortPriority(10)
+            }
+        }
+    }
+
+    private var floatingSidebarTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .move(edge: .leading).combined(with: .opacity)
+    }
+
+    private func setFloatingSidebarVisible(_ isVisible: Bool) {
+        withAnimation(
+            reduceMotion
+                ? nil
+                : .spring(response: 0.34, dampingFraction: 1)
+        ) {
+            floatingSidebarVisible = isVisible
+        }
+    }
+
     private func openConnectionSettings(layout: WorkbenchLayout) {
         open(.me, layout: layout)
     }
@@ -734,54 +429,49 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         bottomSafeAreaInset: CGFloat
     ) -> some View {
-        VStack(spacing: 0) {
-            List(selection: selectionBinding(layout: layout)) {
-                Section {
-                    sidebarDestinationRow(
-                        destination: .sessions,
-                        title: L10n.text("ui.session"),
-                        systemImage: "bubble.left.and.bubble.right",
-                        tokens: tokens,
-                        layout: layout
-                    )
-                    sidebarDestinationRow(
-                        destination: .workspaces,
-                        title: L10n.text("ui.workspace"),
-                        systemImage: "folder",
-                        tokens: tokens,
-                        layout: layout
-                    )
-                }
-
-                if !sessionStore.activeSessions.isEmpty {
-                    Section(L10n.text("ui.in_progress")) {
-                        ForEach(sessionStore.activeSessions) { session in
-                            sidebarSessionLink(session)
-                        }
-                    }
-                }
-
-                Section(sessionStore.activeSessions.isEmpty ? L10n.text("ui.recently") : L10n.text("ui.recent_history")) {
-                    if sessionStore.recentHistorySessions.isEmpty {
-                        Text(sessionStore.activeSessions.isEmpty ? L10n.text("ui.no_recent_conversations_yet") : L10n.text("ui.no_history_sessions_yet"))
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.tertiaryText)
-                            .listRowBackground(Color.clear)
+        WorkbenchSidebarContainer(
+            tokens: tokens,
+            usesFloatingSurface: layout.usesFloatingSidebarSurface
+        ) {
+            sidebarContent(
+                tokens: tokens,
+                layout: layout,
+                bottomSafeAreaInset: layout.usesFloatingSidebarSurface
+                    ? 0
+                    : bottomSafeAreaInset
+            )
+        } floatingHeader: {
+            WorkbenchFloatingSidebarHeader(
+                tokens: tokens,
+                onCollapse: {
+                    if layout.usesFloatingSidebarSurface {
+                        setFloatingSidebarVisible(false)
                     } else {
-                        ForEach(sessionStore.recentHistorySessions) { session in
-                            sidebarSessionLink(session)
-                        }
+                        columnVisibility = .detailOnly
                     }
                 }
+            ) {
+                sidebarBrandHeader(
+                    tokens: tokens,
+                    layout: layout,
+                    constrainedWidth: nil,
+                    usesFloatingChrome: true
+                )
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 38)
-            // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后，
-            // 列表自身滚动，底部全局操作不会跟着短列表上浮。
-            .frame(maxHeight: .infinity)
+        } toolbarHeader: {
+            sidebarBrandHeader(tokens: tokens, layout: layout)
+        }
+        .task {
+            await sessionStore.refreshSessionLibraryIndex()
+        }
+    }
 
-            // 设置属于整个工作台而不是某个列表项，固定在侧栏底部可让顶部只保留品牌和当前内容。
+    private func sidebarContent(tokens: ThemeTokens, layout: WorkbenchLayout, bottomSafeAreaInset: CGFloat) -> some View {
+        WorkbenchSidebarContentLayout(
+            usesFloatingSurface: layout.usesFloatingSidebarSurface
+        ) {
+            sidebarList(tokens: tokens, layout: layout)
+        } footer: {
             sidebarFooter(
                 tokens: tokens,
                 layout: layout,
@@ -791,31 +481,67 @@ struct UnifiedWorkbenchShell: View {
         // NavigationSplitView 在 iPad 竖屏以 overlay 展开侧栏时不会保证内容采用整列理想高度，
         // 根容器必须主动填满列高，Footer 才能稳定锚定到底部安全区。
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(tokens.sidebarBackground.ignoresSafeArea())
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                sidebarBrandHeader(tokens: tokens, layout: layout)
+    }
+
+    private func sidebarList(tokens: ThemeTokens, layout: WorkbenchLayout) -> some View {
+        List(selection: selectionBinding(layout: layout)) {
+            Section {
+                sidebarDestinationRow(
+                    destination: .sessions,
+                    title: L10n.text("ui.session"),
+                    icon: .sessions,
+                    tokens: tokens,
+                    layout: layout
+                )
+                sidebarDestinationRow(
+                    destination: .workspaces,
+                    title: L10n.text("ui.workspace"),
+                    icon: .workspaces,
+                    tokens: tokens,
+                    layout: layout
+                )
             }
-            // iPadOS 26+ 会默认给 leading toolbar item 添加共享玻璃底板；
-            // 品牌标题不是独立按钮，隐藏底板后仍保留系统正确的 leading 对齐。
-            .sharedBackgroundVisibility(.hidden)
+
+            if !sessionStore.activeSessions.isEmpty {
+                Section(L10n.text("ui.in_progress")) {
+                    ForEach(sessionStore.activeSessions) { session in
+                        sidebarSessionLink(session, layout: layout)
+                    }
+                }
+            }
+
+            Section(sessionStore.activeSessions.isEmpty ? L10n.text("ui.recently") : L10n.text("ui.recent_history")) {
+                if sessionStore.recentHistorySessions.isEmpty {
+                    Text(sessionStore.activeSessions.isEmpty ? L10n.text("ui.no_recent_conversations_yet") : L10n.text("ui.no_history_sessions_yet"))
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .listRowBackground(Color.clear)
+                } else {
+                    ForEach(sessionStore.recentHistorySessions) { session in
+                        sidebarSessionLink(session, layout: layout)
+                    }
+                }
+            }
         }
-        .task {
-            await sessionStore.refreshSessionLibraryIndex()
-        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 38)
+        // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
+        .frame(maxHeight: .infinity)
     }
 
     private func sidebarBrandHeader(
         tokens: ThemeTokens,
-        layout: WorkbenchLayout
+        layout: WorkbenchLayout,
+        constrainedWidth: CGFloat? = 190,
+        usesFloatingChrome: Bool = false
     ) -> some View {
-        let headerWidth: CGFloat = 190
-
-        return HStack(spacing: 8) {
+        HStack(spacing: usesFloatingChrome ? 6 : 8) {
             AIUsageRingsControl(
                 codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
                 claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
                 includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                usesCondensedVisual: usesFloatingChrome,
                 onRefresh: {
                     await sessionStore.refreshCodexUsage()
                     if sessionStore.hasClaudeRuntimeChannel {
@@ -827,29 +553,37 @@ struct UnifiedWorkbenchShell: View {
 
             HostSwitcherMenu(
                 presentation: .sidebar,
+                usesCondensedSidebarMetrics: usesFloatingChrome,
                 manageConnections: {
                     open(.me, layout: layout)
                 }
             )
             .layoutPriority(1)
         }
-        .frame(width: headerWidth, alignment: .leading)
+        .frame(width: constrainedWidth, alignment: .leading)
     }
 
-    private func sidebarSessionLink(_ session: AgentSession) -> some View {
-        NavigationLink(value: AppDestination.session(session.id)) {
-            SessionIndexRow(
-                session: session,
-                foregroundActivity: sessionStore.foregroundActivity(for: session.id),
-                isSelected: navigationState.selection == .session(session.id),
-                isPinned: sessionStore.isSessionPinned(session.id),
-                isArchived: sessionStore.isSessionArchived(session.id),
-                reminder: sessionStore.sessionReminder(for: session.id),
-                isObserving: sessionStore.isSessionObserving(session),
-                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
-                isUnread: sessionStore.isHistorySessionUnread(session),
-                style: .sidebar
-            )
+    @ViewBuilder
+    private func sidebarSessionLink(_ session: AgentSession, layout: WorkbenchLayout) -> some View {
+        Group {
+            if layout.usesFloatingSidebarSurface {
+                Button {
+                    openSession(session, source: .sessions, layout: layout)
+                } label: {
+                    sidebarSessionRow(session)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(
+                    navigationState.selection == .session(session.id)
+                        ? .isSelected
+                        : []
+                )
+            } else {
+                NavigationLink(value: AppDestination.session(session.id)) {
+                    sidebarSessionRow(session)
+                }
+            }
         }
         .accessibilityValue(
             sessionStore.isHistorySessionUnread(session)
@@ -862,6 +596,21 @@ struct UnifiedWorkbenchShell: View {
         .listRowBackground(Color.clear)
     }
 
+    private func sidebarSessionRow(_ session: AgentSession) -> some View {
+        SessionIndexRow(
+            session: session,
+            foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+            isSelected: navigationState.selection == .session(session.id),
+            isPinned: sessionStore.isSessionPinned(session.id),
+            isArchived: sessionStore.isSessionArchived(session.id),
+            reminder: sessionStore.sessionReminder(for: session.id),
+            isObserving: sessionStore.isSessionObserving(session),
+            isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
+            isUnread: sessionStore.isHistorySessionUnread(session),
+            style: .sidebar
+        )
+    }
+
     private func sidebarFooter(
         tokens: ThemeTokens,
         layout: WorkbenchLayout,
@@ -869,6 +618,7 @@ struct UnifiedWorkbenchShell: View {
     ) -> some View {
         WorkbenchSidebarFooter(
             tokens: tokens,
+            usesFloatingSurface: layout.usesFloatingSidebarSurface,
             bottomSafeAreaInset: bottomSafeAreaInset,
             isMeSelected: navigationState.selection == .me,
             onOpenSettings: {
@@ -885,7 +635,7 @@ struct UnifiedWorkbenchShell: View {
     private func sidebarDestinationRow(
         destination: AppDestination,
         title: String,
-        systemImage: String,
+        icon: WorkbenchNavigationIcon,
         tokens: ThemeTokens,
         layout: WorkbenchLayout
     ) -> some View {
@@ -893,7 +643,7 @@ struct UnifiedWorkbenchShell: View {
 
         return WorkbenchSidebarDestinationButton(
             title: title,
-            systemImage: systemImage,
+            icon: icon,
             isSelected: isSelected,
             tokens: tokens,
             action: { open(destination, layout: layout) }
@@ -919,6 +669,23 @@ struct UnifiedWorkbenchShell: View {
             )
         case .session:
             sessionDetail(layout: layout, tokens: tokens)
+        case .subagent(let parentID, let childID):
+            if let relation = selectedRelatedSubagent,
+               relation.id == childID,
+               relatedSubagentParentID == parentID {
+                RelatedSessionConversationView(
+                    relation: relation,
+                    parentSessionID: parentID,
+                    showsCloseButton: false,
+                    onClose: {}
+                )
+            } else {
+                ContentUnavailableView(
+                    L10n.text("ui.sub_agent"),
+                    systemImage: "person.2.slash",
+                    description: Text(L10n.text("ui.sub_agent_unavailable"))
+                )
+            }
         }
     }
 
@@ -939,8 +706,15 @@ struct UnifiedWorkbenchShell: View {
                     embedsNavigationStack: false
                 )
             }
-        case .session:
-            sessionDetail(layout: layout, tokens: tokens)
+        case .session, .subagent:
+            if layout.usesFloatingSidebarSurface {
+                // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，父会话与子会话路由都显式使用原生导航栈。
+                NavigationStack {
+                    sessionDetail(layout: layout, tokens: tokens)
+                }
+            } else {
+                sessionDetail(layout: layout, tokens: tokens)
+            }
         }
     }
 
@@ -954,7 +728,12 @@ struct UnifiedWorkbenchShell: View {
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
             },
-            manageConnections: manageConnections
+            onOpenWorkspaces: {
+                // 首次使用空态与侧栏共用同一路由，紧凑布局切 Tab，宽屏切换详情列。
+                open(.workspaces, layout: layout)
+            },
+            manageConnections: manageConnections,
+            placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface
         )
     }
 
@@ -1014,7 +793,7 @@ struct UnifiedWorkbenchShell: View {
                         .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
                         Button {
-                            showingInspector.toggle()
+                            toggleInspector()
                         } label: {
                             Label(
                                 showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
@@ -1022,8 +801,7 @@ struct UnifiedWorkbenchShell: View {
                             )
                         }
                     } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
+                        WorkbenchChromeIcon(systemName: "ellipsis")
                             .foregroundStyle(tokens.secondaryText)
                     }
                     .accessibilityLabel(L10n.text("ui.options"))
@@ -1037,8 +815,7 @@ struct UnifiedWorkbenchShell: View {
                                 presentation: $sessionActionPresentation
                             )
                         } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 16, weight: .semibold))
+                            WorkbenchChromeIcon(systemName: "ellipsis")
                                 .foregroundStyle(tokens.secondaryText)
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
@@ -1065,7 +842,7 @@ struct UnifiedWorkbenchShell: View {
                         tokens: tokens,
                         isActive: showingInspector
                     ) {
-                        showingInspector.toggle()
+                        toggleInspector()
                     }
                 }
             }
@@ -1074,7 +851,24 @@ struct UnifiedWorkbenchShell: View {
         .toolbar(.hidden, for: .tabBar)
         .themedWorkbenchNavigationChrome(tokens: tokens, colorScheme: themeStore.resolvedColorScheme(for: colorScheme))
         .sessionActionSheets(presentation: $sessionActionPresentation)
-        .sessionInspectorPresentation(isPresented: $showingInspector, layout: layout)
+        .environment(
+            \.openSubagentSession,
+            OpenSubagentSessionAction { subagent in
+                openRelatedSubagent(subagent, layout: layout)
+            }
+        )
+        .sessionInspectorPresentation(
+            isPresented: $showingInspector,
+            layout: layout,
+            relatedSubagent: $selectedRelatedSubagent,
+            parentSessionID: $relatedSubagentParentID,
+            onOpenSubagent: { subagent in
+                openRelatedSubagent(subagent, layout: layout)
+            },
+            onCloseRelatedSubagent: {
+                closeRelatedSubagent(keepInspectorVisible: true)
+            }
+        )
     }
 
     private func selectionBinding(layout: WorkbenchLayout) -> Binding<AppDestination?> {
@@ -1106,6 +900,13 @@ struct UnifiedWorkbenchShell: View {
             set: { path in
                 let expectedPath = compactPath(for: tab)
                 guard path != expectedPath else { return }
+                if case .subagent = expectedPath.last,
+                   !path.contains(where: {
+                       if case .subagent = $0 { return true }
+                       return false
+                   }) {
+                    closeRelatedSubagent(keepInspectorVisible: false)
+                }
                 let lane: WorkbenchNavigationBindingScheduler.Lane = tab == .workspaces
                     ? .compactWorkspacesPath
                     : .compactSessionsPath
@@ -1143,6 +944,11 @@ struct UnifiedWorkbenchShell: View {
         source: WorkbenchRootPage? = nil,
         layout: WorkbenchLayout
     ) {
+        if case .subagent = destination {
+            // 由 openRelatedSubagent 先保存展示元数据。
+        } else if selectedRelatedSubagent != nil {
+            closeRelatedSubagent(keepInspectorVisible: false)
+        }
         applyNavigation(.open(destination, source: source), layout: layout)
     }
 
@@ -1164,10 +970,9 @@ struct UnifiedWorkbenchShell: View {
 
     private func applyDebugLaunchRouteIfNeeded(layout: WorkbenchLayout) {
 #if DEBUG
-        guard !didApplyDebugLaunchRoute,
-              ProcessInfo.processInfo.arguments.contains("--debug-open-workspaces") else {
-            return
-        }
+        guard !didApplyDebugLaunchRoute else { return }
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("--debug-open-workspaces") else { return }
         didApplyDebugLaunchRoute = true
         // 真机视觉验证可直接抵达目标页；仅 Debug 生效，不改变正常或 Release 启动路径。
         open(.workspaces, layout: layout)
@@ -1179,6 +984,18 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout
     ) {
         if usesCompactNavigation {
+            if let relation = selectedRelatedSubagent,
+               let parentID = relatedSubagentParentID {
+                showingInspector = false
+                applyNavigation(
+                    .open(
+                        .subagent(parentID: parentID, childID: relation.id),
+                        source: navigationState.route.rootPage
+                    ),
+                    layout: layout
+                )
+                return
+            }
             if navigationState.selection == .me {
                 applyNavigation(.compactTabChanged(.me), layout: layout)
             } else {
@@ -1187,10 +1004,63 @@ struct UnifiedWorkbenchShell: View {
             return
         }
 
+        if selectedRelatedSubagent != nil {
+            showingInspector = true
+        }
+
         if navigationState.compactSelectedTab == .me {
             open(.me, layout: layout)
         } else {
             synchronizeNavigation(for: layout)
+        }
+    }
+
+    private func handleRelatedPresentationChange(layout: WorkbenchLayout) {
+        guard selectedRelatedSubagent != nil, !layout.usesCompactNavigation else { return }
+        showingInspector = true
+    }
+
+    private func toggleInspector() {
+        if showingInspector {
+            closeRelatedSubagent(keepInspectorVisible: false)
+            showingInspector = false
+        } else {
+            showingInspector = true
+        }
+    }
+
+    private func openRelatedSubagent(
+        _ relation: SessionContextSubagent,
+        layout: WorkbenchLayout
+    ) {
+        guard !relation.id.isEmpty, let parentID = sessionStore.selectedSessionID else { return }
+        selectedRelatedSubagent = relation
+        relatedSubagentParentID = parentID
+
+        if layout.usesCompactNavigation {
+            showingInspector = false
+            DispatchQueue.main.async {
+                open(
+                    .subagent(parentID: parentID, childID: relation.id),
+                    source: navigationState.route.rootPage,
+                    layout: layout
+                )
+            }
+        } else {
+            // 宽屏替换附着检查器；中等宽度复用当前系统 sheet 并在其中 push，
+            // 两种形态都保留父会话上下文。
+            showingInspector = true
+        }
+    }
+
+    private func closeRelatedSubagent(keepInspectorVisible: Bool) {
+        if let childID = selectedRelatedSubagent?.id {
+            sessionStore.stopRelatedSessionObservation(sessionID: childID)
+        }
+        selectedRelatedSubagent = nil
+        relatedSubagentParentID = nil
+        if keepInspectorVisible {
+            showingInspector = true
         }
     }
 
@@ -1251,9 +1121,7 @@ struct UnifiedWorkbenchShell: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
+            WorkbenchChromeIcon(systemName: systemImage)
         }
         .foregroundStyle(isActive ? tokens.primaryAction : tokens.secondaryText)
         .disabled(isDisabled)
@@ -1310,233 +1178,22 @@ struct UnifiedWorkbenchShell: View {
     }
 }
 
-/// 侧栏标题旁的 AI 账号剩余用量入口。与设置页共享三环和窗口选择规则，
-/// 在窄侧栏里只缩小图形，仍保留完整的 44pt 点击区。
-private struct AIUsageRingsControl: View {
-    @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    let codexDisplay: CodexUsageWindowsDisplay
-    let claudeDisplay: CodexUsageWindowsDisplay
-    let includesClaude: Bool
-    let onRefresh: () async -> Void
-
-    @State private var showsDetails = false
-    @State private var isRefreshing = false
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let metrics = CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
-        let items = usageItems(tokens: tokens)
-
-        CombinedUsageRingsGraphic(
-            items: items,
-            // 三环也是稳定的品牌识别；额度未接入时保留灰色轨道，不退化成单环。
-            expectedRingCount: 3,
-            diameter: metrics.diameter,
-            lineWidth: metrics.lineWidth,
-            ringSpacing: metrics.ringSpacing
-        )
-        .frame(width: metrics.hitSize, height: metrics.hitSize)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            showsDetails.toggle()
-        }
-        .hoverEffect(.highlight)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(L10n.text("ui.token_quota"))
-        .accessibilityValue(accessibilityValue(items: items))
-        .accessibilityIdentifier("sidebar.codexUsageRings")
-        .accessibilityAction {
-            showsDetails.toggle()
-        }
-        .popover(isPresented: $showsDetails, arrowEdge: .top) {
-            usageDetails(tokens: tokens)
-                .presentationCompactAdaptation(.sheet)
-                .presentationDetents([.height(360), .medium])
-                .presentationDragIndicator(.visible)
-        }
-    }
-
-    private func usageDetails(tokens: ThemeTokens) -> some View {
-        let items = usageItems(tokens: tokens)
-
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.text("ui.token_quota"))
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(windowSummaryText)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    Task { await refreshUsage() }
-                } label: {
-                    Group {
-                        if isRefreshing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                    }
-                    .frame(width: 34, height: 34)
-                    .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tokens.secondaryText)
-                .background(tokens.surface.opacity(0.72), in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border.opacity(0.72), lineWidth: 1)
-                }
-                .disabled(isRefreshing)
-                .accessibilityLabel(L10n.format("ui.refresh_value_usage", "AI"))
-            }
-
-            VStack(spacing: 14) {
-                if items.isEmpty {
-                    Text(L10n.text("ui.after_refreshing_the_account_window_currently_returned_by"))
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        if index > 0 {
-                            Divider().overlay(tokens.border.opacity(0.72))
-                        }
-                        usageWindowRow(item: item, tokens: tokens)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                usageCreditLine(name: "Codex", display: codexDisplay)
-                if includesClaude {
-                    usageCreditLine(name: "Claude", display: claudeDisplay)
-                }
-            }
-            .foregroundStyle(tokens.secondaryText)
-        }
-        .padding(16)
-        .frame(width: horizontalSizeClass == .compact ? nil : 320)
-        .frame(maxWidth: horizontalSizeClass == .compact ? .infinity : nil, alignment: .leading)
-    }
-
-    private func usageWindowRow(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
-        let progress = item.window.remainingProgress ?? 0
-
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle()
-                    .stroke(item.tint, lineWidth: 2.5)
-                    .frame(width: 12, height: 12)
-                Text("\(item.providerName) · \(item.window.label)")
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                    .monospacedDigit()
-                Text(item.window.title)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-
-                Spacer(minLength: 8)
-
-                Text(item.window.remainingText)
-                    .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(
-                        item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
-                    )
-                    .monospacedDigit()
-            }
-
-            ProgressView(value: progress)
-                .tint(item.tint)
-                .opacity(item.window.remainingProgress == nil ? 0.3 : 1)
-
-            Text(item.window.resetText)
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
-        )
-        .accessibilityValue(
-            L10n.format(
-                "ui.usage_window_accessibility_value",
-                item.window.remainingText,
-                item.window.resetText
-            )
-        )
-    }
-
-    private func refreshUsage() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
-        await onRefresh()
-    }
-
-    private func usageItems(tokens: ThemeTokens) -> [CombinedUsageItem] {
-        CombinedUsageItem.make(
-            codexDisplay: codexDisplay,
-            claudeDisplay: claudeDisplay,
-            includesClaude: includesClaude,
-            claudeShortTint: tokens.accent
-        )
-    }
-
-    private var windowSummaryText: String {
-        var summaries = [codexDisplay.windowSummaryText]
-        if includesClaude {
-            summaries.append(claudeDisplay.windowSummaryText)
-        }
-        return summaries.joined(separator: " · ")
-    }
-
-    private func usageCreditLine(
-        name: String,
-        display: CodexUsageWindowsDisplay
-    ) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                .font(.system(size: 12, weight: .semibold))
-            // name 与 creditText 已分别完成本地化；按原文组合，避免 Xcode 抽取裸 `%@: %@` key。
-            Text(verbatim: "\(name): \(display.creditText)")
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .lineLimit(2)
-        }
-    }
-
-    private func accessibilityValue(items: [CombinedUsageItem]) -> String {
-        guard !items.isEmpty else {
-            return L10n.text("ui.account_usage_has_not_been_obtained_yet")
-        }
-        return items
-            .map { "\($0.providerName)\($0.window.accessibilityName)\($0.window.remainingText)" }
-            .joined(separator: L10n.text("ui.list_separator"))
-    }
-}
-
 struct CodexUsageRingMetrics {
     let diameter: CGFloat
     let lineWidth: CGFloat
     let ringSpacing: CGFloat
     let hitSize: CGFloat
 
-    init(isCompact: Bool) {
-        diameter = isCompact ? 32 : 36
-        lineWidth = isCompact ? 3 : 3.2
-        ringSpacing = isCompact ? 1.5 : 1.8
+    init(isCompact: Bool, usesCondensedVisual: Bool = false) {
+        if usesCondensedVisual {
+            diameter = 30
+            lineWidth = 3
+            ringSpacing = 1.4
+        } else {
+            diameter = isCompact ? 32 : 36
+            lineWidth = isCompact ? 3 : 3.2
+            ringSpacing = isCompact ? 1.5 : 1.8
+        }
         // 图形在 iPhone 上收紧，但点击区始终保持 44pt，兼顾窄屏排版和触控可用性。
         hitSize = 44
     }

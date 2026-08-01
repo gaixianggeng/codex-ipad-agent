@@ -2,6 +2,112 @@ import Foundation
 
 // WebSocket 生命周期、事件投影与通知保持在同一 MainActor 隔离域。
 extension SessionStore {
+    func prepareRelatedSession(
+        _ relation: SessionContextSubagent,
+        parentSessionID: SessionID
+    ) async -> AgentSession? {
+        let hostScope = appStore.activeHostScope
+        guard !relation.id.isEmpty else { return nil }
+
+        // gateway 重启后连接级 receiver 授权会丢失。先刷新父历史，现代
+        // thread/turns/list 与旧版 thread/read 都会重新登记 receiverThreadIds。
+        if let parent = sessionsByID[parentSessionID] {
+            _ = await loadHistory(for: parent, quiet: true, force: true)
+        }
+        guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return nil }
+
+        do {
+            let response = try await clientFactory().session(
+                id: relation.id,
+                afterSeq: replayWatermark(for: relation.id)
+            )
+            guard appStore.activeHostScope == hostScope else { return nil }
+            var child = response.session
+            if let parent = sessionsByID[parentSessionID],
+               projectsByID[child.projectID] == nil,
+               sidebarProjectsByID[child.projectID] == nil {
+                child = session(child, in: workspaceForSession(parent))
+            }
+            child.parentThreadID = child.parentThreadID ?? relation.parentThreadID ?? parentSessionID
+            child.appServerSessionID = child.appServerSessionID ?? relation.sessionID
+            child.agentNickname = child.agentNickname ?? relation.nickname
+            child.agentRole = child.agentRole ?? relation.role
+            // 父事件与 child read 任一来源明确只读时都取更严格值；两边都明确
+            // 可写才允许普通会话控制链路重新开放写入，未知则 fail-closed。
+            child.canAcceptDirectInput = child.canAcceptDirectInput == true
+                && relation.canAcceptDirectInput == true
+            upsert(child)
+            _ = await loadHistory(for: child, quiet: true, force: true)
+            guard appStore.activeHostScope == hostScope else { return nil }
+            let current = sessionsByID[child.id] ?? child
+            observeRelatedSession(current)
+            return current
+        } catch {
+            guard appStore.activeHostScope == hostScope else { return nil }
+            setErrorMessage(error.localizedDescription)
+            return nil
+        }
+    }
+
+    func observeRelatedSession(_ session: AgentSession) {
+        guard !session.isLocalDraft,
+              !isAppInBackground,
+              !isNetworkUnavailable,
+              connectionTermination == nil,
+              !appStore.requiresRePairing
+        else {
+            return
+        }
+        if relatedSessionSocketID == session.id, relatedSessionSocket != nil {
+            return
+        }
+        stopRelatedSessionObservation()
+        relatedSessionSocketGeneration &+= 1
+        let generation = relatedSessionSocketGeneration
+        let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: session.id)
+        let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
+        socket.onStatus = { [weak self] status in
+            guard case .terminated(let reason) = status else { return }
+            Task { @MainActor in
+                guard let self,
+                      self.relatedSessionSocketGeneration == generation,
+                      self.relatedSessionSocketID == session.id else { return }
+                if reason == .credentialsInvalid {
+                    self.terminateConnection(reason)
+                }
+            }
+        }
+        socket.onEvent = { [weak self] event in
+            Task { @MainActor in
+                guard let self,
+                      self.relatedSessionSocketGeneration == generation,
+                      self.relatedSessionSocketID == session.id else { return }
+                await self.applyRuntimeEvent(event, lease: lease)
+            }
+        }
+        // 次级阅读区绝不发送 turn/control；失败回调只需保持 no-op。
+        socket.onSendAccepted = { _ in }
+        socket.onSendFailure = { _, _ in }
+        socket.onTurnSendOutcome = { _, _ in }
+        socket.onApprovalDecisionFailure = { _, _ in }
+        socket.onUserInputResponseFailure = { _, _ in }
+        socket.onControlFailure = { _ in }
+        relatedSessionSocket = socket
+        relatedSessionSocketID = session.id
+        socket.connect(sessionID: session.id, replayBufferedEvents: false)
+    }
+
+    func stopRelatedSessionObservation(sessionID: SessionID? = nil) {
+        if let sessionID, relatedSessionSocketID != sessionID {
+            return
+        }
+        relatedSessionSocketGeneration &+= 1
+        relatedSessionSocketID = nil
+        let socket = relatedSessionSocket
+        relatedSessionSocket = nil
+        socket?.disconnect()
+    }
+
     func connectWebSocket(
         _ session: AgentSession,
         isReconnectAttempt: Bool = false,
@@ -1048,11 +1154,16 @@ extension SessionStore {
             )
         case .error(let payload, let metadata):
             let sessionID = metadata.sessionID ?? fallbackSessionID
+            let isClaudeAuthenticationFailure = ClaudeAuthenticationRecovery.matches(payload)
             return SessionRuntimeNotification(
                 id: "failed:\(sessionID):\(payload.message)",
                 sessionID: sessionID,
-                title: L10n.text("ui.session_error"),
-                body: payload.message,
+                title: isClaudeAuthenticationFailure
+                    ? ClaudeAuthenticationRecovery.title
+                    : L10n.text("ui.session_error"),
+                body: isClaudeAuthenticationFailure
+                    ? ClaudeAuthenticationRecovery.recoveryMessage
+                    : payload.message,
                 kind: .failed
             )
         default:
@@ -1805,6 +1916,11 @@ extension SessionStore {
         error: Error,
         reportForeground: Bool = true
     ) async {
+        // 页面生命周期、凭据后台挂起和旧 host waiter 的取消都不是工作区故障；
+        // 这里必须先静默收口，不能二次 resolve 后把 Swift.CancellationError 写入全局错误。
+        guard !isCancellationError(error) else {
+            return
+        }
         if terminateConnectionIfCredentialsInvalid(error) {
             return
         }
@@ -2064,6 +2180,9 @@ extension SessionStore {
     }
 
     func clearConnectionData() {
+        controlledGlobalDiscoveryUnavailable = false
+        controlledGlobalSessionIDs = []
+        stopRelatedSessionObservation()
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
         networkSuspendedSessionID = nil

@@ -78,8 +78,8 @@
 
 ### 默认链路
 
-- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机；设备忙时按固定顺序跳过，最后使用未占用的 `iPad Pro 13-inch (M5)` Simulator。
-- 同时连接多台 USB 真机时先按名称 `iPad Pro`、再按设备名和 UDID 排序；不得依赖列表顺序或随机选择。
+- 日常 `build` / `run` 采用确定性自动选择：优先 available、paired、USB 连接且未占用的 iOS/iPadOS 真机，其次是 available、paired、本地网络可达且未占用的真机，最后使用未占用的 `iPad Pro 13-inch (M5)` Simulator。
+- 同一连接类型下的多台真机先按名称 `iPad Pro`、再按设备名和 UDID 排序；不得依赖列表顺序或随机选择。
 - `build-for-testing`、`test`、视觉快照和 CI 精确固定 `iPad Pro 13-inch (M5)` Simulator；目标缺失或忙时等待或明确失败，禁止回退 iPad mini、其他 iPad 或 iPhone。
 - 所有入口固定使用 `MimiRemote` Scheme 和 `Debug` 配置。
 - 命令行统一通过 `bash ./scripts/ios-dev.sh` 执行：
@@ -103,8 +103,8 @@
 
 ### 设备用途
 
-- available、paired、USB 连接的真机是日常 `build` / `run` 第一优先级；仅通过本地网络可见或历史配对的设备不算“连接到电脑”。
-- 没有可用 USB 真机时，`iPad Pro 13-inch (M5)` 是唯一 Simulator fallback。
+- available、paired、USB 连接的真机是日常 `build` / `run` 第一优先级；没有可用 wired 真机时，可使用 available、paired 且当前本地网络可达的真机。仅保留历史配对记录、当前不可达的设备不参与选择。
+- 没有可用 USB 或本地网络真机时，`iPad Pro 13-inch (M5)` 是唯一 Simulator fallback。同一真机无论通过 wired 还是 localNetwork 连接，均按 UDID 共用租约和 DerivedData。
 - `iPhone 17 Pro` 只用于明确的 iPhone 布局验收，`iPhone 17e` 只用于小屏兼容验收。切换时显式设置 `IOS_SIMULATOR_NAME`，完成后恢复默认 iPad。
 - 相机、通知、Keychain、Tailscale/弱网、性能以及发布前验证仍必须使用真机；自动 fallback 到 Simulator 时不得把这些专项验证标记为完成。
 - Simulator 通过不代表真机专项验收完成，真机结果也不替代日常 Simulator 回归。

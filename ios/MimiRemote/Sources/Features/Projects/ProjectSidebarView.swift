@@ -787,6 +787,10 @@ struct OpenWorkspaceSheet: View {
             guard requestID == browseRequestID else {
                 return
             }
+            guard !Task.isCancelled else {
+                isBrowsing = false
+                return
+            }
             browsePath = response.path
             browseParentPath = response.parentPath
             browseEntries = response.entries
@@ -797,8 +801,11 @@ struct OpenWorkspaceSheet: View {
             guard requestID == browseRequestID else {
                 return
             }
-            browseError = userFacingBrowseError(error)
             isBrowsing = false
+            guard !isCancellationError(error) else {
+                return
+            }
+            browseError = userFacingBrowseError(error)
         }
     }
 
@@ -827,6 +834,9 @@ struct OpenWorkspaceSheet: View {
         do {
             previewURL = try await sessionStore.previewFile(path: targetPath)
         } catch {
+            guard !isCancellationError(error) else {
+                return
+            }
             previewError = userFacingPreviewError(error)
         }
     }
@@ -853,13 +863,15 @@ struct OpenWorkspaceSheet: View {
         isOpening = true
         localError = nil
         defer { isOpening = false }
-        if await sessionStore.openWorkspace(path: targetPath) {
-            if let openedWorkspaceID = sessionStore.selectedProjectID {
-                onOpened(openedWorkspaceID)
-            }
+        switch await sessionStore.openWorkspaceOutcome(path: targetPath) {
+        case .opened(let workspaceID):
+            onOpened(workspaceID)
             dismiss()
-        } else {
-            localError = userFacingOpenWorkspaceError(sessionStore.errorMessage, path: targetPath)
+        case .cancelled:
+            // 关闭 Sheet、切主机或后台凭据挂起都属于生命周期取消；保留输入供用户恢复后重试。
+            return
+        case .failed(let message):
+            localError = userFacingOpenWorkspaceError(message, path: targetPath)
         }
     }
 

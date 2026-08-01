@@ -1,5 +1,19 @@
 import Foundation
 
+enum WorkspaceOpenOutcome: Equatable {
+    /// 工作区选择已经提交；会话首屏由 WorkspaceRoot 的独立加载生命周期继续补齐。
+    case opened(workspaceID: String)
+    case cancelled
+    case failed(String)
+
+    var didOpen: Bool {
+        if case .opened = self {
+            return true
+        }
+        return false
+    }
+}
+
 // 启动恢复、项目选择与 Worktree 生命周期从稳定外观 API 中拆出。
 extension SessionStore {
     func bootstrap() async {
@@ -35,7 +49,7 @@ extension SessionStore {
         do {
             let page = try await sessionListFirstPage(workspace: workspace, limit: Self.initialSessionPageLimit, reuseRecent: true)
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: workspace.id, page: page)
+            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
         } catch {
             // 恢复快照仍须经过工作区授权校验；单次列表失败不应让用户丢掉上次阅读位置。
         }
@@ -550,7 +564,7 @@ extension SessionStore {
             }
             let pageSessions = sessions(page.sessions, in: workspace)
             replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
-            updateSessionPageState(projectID: projectID, page: page)
+            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(projectID)
 
             if isSelectionLeaseCurrent(foregroundLease),
@@ -622,7 +636,13 @@ extension SessionStore {
     /// 只刷新工作区目录，不改变当前会话选择，也不重建 WebSocket。
     /// 工作区页浏览和手动刷新必须与会话运行态隔离，避免用户查看目录时打断长任务。
     func refreshWorkspaceCatalog() async throws {
-        let fetchedProjects = try await clientFactory().projects()
+        let hostScope = appStore.activeHostScope
+        let client = try clientFactory()
+        let fetchedProjects = try await client.projects()
+        // projects 属于远端主机数据；旧 host 或已取消的 View 任务不得在 await 后写入当前 Store。
+        guard !Task.isCancelled, appStore.activeHostScope == hostScope else {
+            throw CancellationError()
+        }
         setProjectsIfChanged(fetchedProjects)
 
         // projects() 是后端可选目录，不等于用户已打开的工作区。旧实现把所有候选目录
@@ -687,7 +707,7 @@ extension SessionStore {
                 ),
                 projectID: workspace.id
             )
-            updateSessionPageState(projectID: workspace.id, page: page)
+            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
             clearWorkspaceUnavailable(workspace.id)
         } catch {
             _ = terminateConnectionIfCredentialsInvalid(error)
@@ -696,17 +716,23 @@ extension SessionStore {
     }
 
     @discardableResult
-    func openWorkspace(path: String) async -> Bool {
+    func openWorkspaceOutcome(path: String) async -> WorkspaceOpenOutcome {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            setErrorMessage(L10n.text("ui.please_enter_the_directory_path_in_the_development"))
-            return false
+            let message = L10n.text("ui.please_enter_the_directory_path_in_the_development")
+            setErrorMessage(message)
+            return .failed(message)
         }
         let openIntent = reserveSelectionIntent()
         do {
             // 走 clientFactory（与会话请求同一个注入点）而不是 appStore.client()，
             // 让 resolve 和后续会话加载共用一条可测试链路。
             let resolvedWorkspace = try await clientFactory().resolveWorkspace(path: trimmed)
+            // resolve 之后的 remember 会写入当前 Profile；必须先确认旧意图仍持有提交权，
+            // 否则切主机或新导航会把上一台 Mac 的工作区持久化到新作用域。
+            guard !Task.isCancelled, isSelectionLeaseCurrent(openIntent) else {
+                return .cancelled
+            }
             // resolve 的返回路径是 agentd realpath；同时带上用户输入路径，才能把旧版保存的
             // 符号链接路径安全迁移到同一 canonical workspace，而不猜测其他同名目录。
             let workspace = rememberWorkspace(
@@ -715,28 +741,35 @@ extension SessionStore {
             )
             clearWorkspaceUnavailable(workspace.id)
             insertExpandedProjectID(workspace.id)
-            let selectionLease = commitSelection(
+            guard let selectionLease = commitSelection(
                 projectID: workspace.id,
                 sessionID: nil,
                 reason: .invalidation,
                 ifCurrent: openIntent
-            )
-            if selectionLease != nil {
-                setErrorMessage(nil)
-                disconnectWebSocket()
+            ) else {
+                return .cancelled
             }
+            setErrorMessage(nil)
+            disconnectWebSocket()
             await refreshSessions(
                 forProjectID: workspace.id,
                 activatesProject: false,
                 foregroundLease: selectionLease
             )
-            return true
+            return .opened(workspaceID: workspace.id)
         } catch {
-            if isSelectionLeaseCurrent(openIntent) {
-                setErrorMessage(error.localizedDescription)
+            guard !isCancellationError(error), isSelectionLeaseCurrent(openIntent) else {
+                return .cancelled
             }
-            return false
+            let message = error.localizedDescription
+            setErrorMessage(message)
+            return .failed(message)
         }
+    }
+
+    @discardableResult
+    func openWorkspace(path: String) async -> Bool {
+        await openWorkspaceOutcome(path: path).didOpen
     }
 
     @discardableResult

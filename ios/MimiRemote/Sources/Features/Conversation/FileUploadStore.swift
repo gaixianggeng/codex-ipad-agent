@@ -38,13 +38,40 @@ struct FileUploadJob: Identifiable, Equatable {
     var canRetry: Bool
 }
 
-enum MobileFileUploadError: LocalizedError {
-    case upgradeRequired
+enum MobileFileUploadError: LocalizedError, Equatable {
+    case serverUnsupported
+    case locallyDisabled
+    case dependencyUnavailable
+    case negotiationFailed
+    case hostChanged
 
     var errorDescription: String? {
         switch self {
-        case .upgradeRequired:
+        case .serverUnsupported:
             return L10n.text("ui.current_mac_version_does_not_support_file_upload")
+        case .locallyDisabled:
+            return L10n.text("ui.file_upload_disabled_on_current_mac")
+        case .dependencyUnavailable:
+            return L10n.text("ui.file_upload_dependency_unavailable_on_current_mac")
+        case .negotiationFailed:
+            return L10n.text("ui.file_upload_capability_negotiation_failed")
+        case .hostChanged:
+            return L10n.text("ui.file_upload_host_changed_select_again")
+        }
+    }
+
+    init(decision: HostCapabilityDecision) {
+        switch decision {
+        case .enabled:
+            self = .negotiationFailed
+        case .serverUnsupported:
+            self = .serverUnsupported
+        case .locallyDisabled:
+            self = .locallyDisabled
+        case .dependencyUnavailable:
+            self = .dependencyUnavailable
+        case .negotiationFailed:
+            self = .negotiationFailed
         }
     }
 }
@@ -71,13 +98,6 @@ final class FileUploadStore: ObservableObject {
 
     init(session: URLSession = .shared) {
         self.session = session
-    }
-
-    func ensureServerSupportsFileUpload(endpoint: String, token: String) async throws {
-        let version = try await AgentAPIClient(endpoint: endpoint, token: token, session: session).version()
-        guard version.capabilities.contains("file_upload_v1") else {
-            throw MobileFileUploadError.upgradeRequired
-        }
     }
 
     func start(

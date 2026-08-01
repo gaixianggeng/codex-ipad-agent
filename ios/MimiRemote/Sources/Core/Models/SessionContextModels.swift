@@ -208,20 +208,29 @@ struct SessionContextSource: Identifiable, Codable, Hashable {
 struct SessionContextSubagent: Identifiable, Codable, Hashable {
     var id: String
     var parentThreadID: String?
+    var sessionID: String?
     var nickname: String?
     var role: String?
     var status: String?
+    var statusMessage: String?
+    var canAcceptDirectInput: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
         case parentThreadID = "parent_thread_id"
+        case sessionID = "session_id"
         case nickname
         case role
         case status
+        case statusMessage = "status_message"
+        case canAcceptDirectInput = "can_accept_direct_input"
     }
 
     private enum AlternateCodingKeys: String, CodingKey {
         case parentThreadID = "parentThreadId"
+        case sessionID = "sessionId"
+        case statusMessage
+        case canAcceptDirectInput
     }
 
     var displayName: String {
@@ -231,23 +240,41 @@ struct SessionContextSubagent: Identifiable, Codable, Hashable {
         return id.isEmpty ? "Subagent" : id
     }
 
-    init(id: String, parentThreadID: String? = nil, nickname: String? = nil, role: String? = nil, status: String? = nil) {
+    init(
+        id: String,
+        parentThreadID: String? = nil,
+        sessionID: String? = nil,
+        nickname: String? = nil,
+        role: String? = nil,
+        status: String? = nil,
+        statusMessage: String? = nil,
+        canAcceptDirectInput: Bool? = nil
+    ) {
         self.id = id
         self.parentThreadID = parentThreadID
+        self.sessionID = sessionID
         self.nickname = nickname
         self.role = role
         self.status = status
+        self.statusMessage = statusMessage
+        self.canAcceptDirectInput = canAcceptDirectInput
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let alternate = try decoder.container(keyedBy: AlternateCodingKeys.self)
         let nickname = try container.decodeIfPresent(String.self, forKey: .nickname)
-        self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? nickname ?? UUID().uuidString
+        self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
         self.parentThreadID = try container.decodeIfPresent(String.self, forKey: .parentThreadID)
             ?? alternate.decodeIfPresent(String.self, forKey: .parentThreadID)
+        self.sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+            ?? alternate.decodeIfPresent(String.self, forKey: .sessionID)
         self.nickname = nickname
         self.role = try container.decodeIfPresent(String.self, forKey: .role)
         self.status = try container.decodeIfPresent(String.self, forKey: .status)
+        self.statusMessage = try container.decodeIfPresent(String.self, forKey: .statusMessage)
+            ?? alternate.decodeIfPresent(String.self, forKey: .statusMessage)
+        self.canAcceptDirectInput = try container.decodeIfPresent(Bool.self, forKey: .canAcceptDirectInput)
+            ?? alternate.decodeIfPresent(Bool.self, forKey: .canAcceptDirectInput)
     }
 }

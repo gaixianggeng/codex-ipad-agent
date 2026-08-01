@@ -19,6 +19,18 @@ func credentialFingerprintRejectedByError(_ error: Error) -> String? {
     (error as? any CredentialInvalidatingError)?.rejectedCredentialFingerprint
 }
 
+/// 只识别传输层明确表达的取消；超时、断网和 HTTP 错误仍是需要用户处理的真实失败。
+func isCancellationError(_ error: Error) -> Bool {
+    if error is CancellationError {
+        return true
+    }
+    if let urlError = error as? URLError {
+        return urlError.code == .cancelled
+    }
+    let cocoaError = error as NSError
+    return cocoaError.domain == NSURLErrorDomain && cocoaError.code == NSURLErrorCancelled
+}
+
 /// 只比较不可逆摘要，既能淘汰旧请求，又不会把长期访问码带进错误、日志或诊断状态。
 func connectionCredentialFingerprint(_ token: String) -> String {
     SHA256.hash(data: Data(token.utf8))

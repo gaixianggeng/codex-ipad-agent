@@ -215,7 +215,124 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertTrue(try JSONDecoder().decode([ConnectionProfile].self, from: persistedProfiles).isEmpty)
     }
 
-    func testMissingKeychainEntitlementNeverFallsBackForRemoteEndpoint() async throws {
+    func testPrivateSimulatorConnectionUsesMemoryWhenKeychainEntitlementIsMissing() async throws {
+        let suiteName = "PairingLinkTests.EphemeralSimulatorCredential.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "simulator-token"
+        ))
+
+        XCTAssertTrue(store.isConfigured)
+        XCTAssertEqual(store.token, "simulator-token")
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://192.168.1.20:8787")
+        XCTAssertNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertNil(defaults.string(forKey: "agentd.activeConnectionProfileID.v1"))
+        XCTAssertNil(defaults.string(forKey: "agentd.endpoint"))
+    }
+
+    func testSwitchingFromEphemeralProfileRemovesItsMetadataAndMemoryCredential() async throws {
+        let suiteName = "PairingLinkTests.EphemeralSwitchCleanup.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "ephemeral-token"
+        ))
+        let ephemeralProfileID = try XCTUnwrap(store.activeConnectionProfileID)
+
+        keychain.forcedCopyStatus = nil
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "persistent-token",
+            profileTarget: .newProfile(id: "mac-b", displayName: "远程 Mac")
+        ))
+
+        XCTAssertEqual(store.connectionProfiles.map(\.id), ["mac-b"])
+        let persistedData = try XCTUnwrap(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertEqual(try JSONDecoder().decode([ConnectionProfile].self, from: persistedData).map(\.id), ["mac-b"])
+        XCTAssertNil(keychain.data(account: "agentd-profile.\(ephemeralProfileID)"))
+        await XCTAssertThrowsErrorAsync(try await store.prepareConnectionProfileSwitch(id: ephemeralProfileID)) { error in
+            XCTAssertEqual(error as? ConnectionProfileError, .notFound)
+        }
+
+        let relaunchedStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+        XCTAssertEqual(relaunchedStore.connectionProfiles.map(\.id), ["mac-b"])
+        XCTAssertEqual(relaunchedStore.activeConnectionProfileID, "mac-b")
+        XCTAssertEqual(relaunchedStore.token, "persistent-token")
+
+        // 复用同一个 ID 时必须重新写入 Keychain；若旧内存 Token 未清理，Vault 会误判 unchanged。
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://replacement.example.com",
+            token: "ephemeral-token",
+            profileTarget: .newProfile(id: ephemeralProfileID, displayName: "重新添加")
+        ))
+        XCTAssertEqual(
+            keychain.data(account: "agentd-profile.\(ephemeralProfileID)"),
+            Data("ephemeral-token".utf8)
+        )
+    }
+
+    func testEphemeralProfilePersistsOnlyAfterKeychainRecovers() async throws {
+        let suiteName = "PairingLinkTests.EphemeralPersistenceTransition.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)
+        let store = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain),
+            allowsEphemeralLocalCredentialFallback: true
+        )
+
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://192.168.1.20:8787",
+            token: "ephemeral-token"
+        ))
+        let profileID = try XCTUnwrap(store.activeConnectionProfileID)
+
+        await XCTAssertThrowsErrorAsync(try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "ephemeral-token",
+            profileTarget: .existingProfile(id: profileID)
+        ))) { error in
+            XCTAssertTrue((error as? TokenStoreError)?.isMissingEntitlement == true)
+        }
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "http://192.168.1.20:8787")
+        XCTAssertEqual(store.token, "ephemeral-token")
+        XCTAssertNil(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+
+        keychain.forcedCopyStatus = nil
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "https://agent.example.com",
+            token: "ephemeral-token",
+            profileTarget: .existingProfile(id: profileID)
+        ))
+
+        XCTAssertEqual(store.activeConnectionProfile?.endpoint, "https://agent.example.com")
+        XCTAssertEqual(keychain.data(account: "agentd-profile.\(profileID)"), Data("ephemeral-token".utf8))
+        let persistedData = try XCTUnwrap(defaults.data(forKey: "agentd.connectionProfiles.v2"))
+        XCTAssertEqual(try JSONDecoder().decode([ConnectionProfile].self, from: persistedData).map(\.id), [profileID])
+    }
+
+    func testMissingKeychainEntitlementNeverFallsBackForPublicEndpoint() async throws {
         let suiteName = "PairingLinkTests.RemoteCredential.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -229,16 +346,23 @@ final class PairingLinkTests: XCTestCase {
 
         do {
             _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
-                endpoint: "http://192.168.1.20:8787",
+                endpoint: "https://agent.example.com",
                 token: "remote-token"
             ))
-            XCTFail("远端地址不得降级为进程内凭据")
+            XCTFail("公网地址不得降级为进程内凭据")
         } catch let error as TokenStoreError {
             XCTAssertTrue(error.isMissingEntitlement)
         }
 
         XCTAssertFalse(store.isConfigured)
         XCTAssertTrue(store.connectionProfiles.isEmpty)
+    }
+
+    func testInitialConnectionErrorClassifierRequiresStandaloneHTTP401() {
+        XCTAssertTrue(InitialConnectionErrorClassifier.isCredentialRejection("HTTP 401 Unauthorized"))
+        XCTAssertTrue(InitialConnectionErrorClassifier.isCredentialRejection("unauthorized"))
+        XCTAssertFalse(InitialConnectionErrorClassifier.isCredentialRejection("OSStatus -34018"))
+        XCTAssertFalse(InitialConnectionErrorClassifier.isCredentialRejection("request 14018 failed"))
     }
 
     func testLegacySingleConnectionMigratesWithoutWritingTokenToDefaults() throws {
@@ -396,6 +520,62 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(reloaded.activeConnectionProfileID, "mac-b")
         XCTAssertEqual(reloaded.token, "token-b")
         XCTAssertEqual(reloaded.connectionProfiles.count, 2)
+    }
+
+    func testCapabilityNegotiationIsIsolatedPerHostAndRejectsStaleLease() async throws {
+        let suiteName = "PairingLinkTests.CapabilityIsolation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keychain = TestKeychainOperations()
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        let enabled = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: ["file_upload_v1"],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "enabled",
+                    reason: "available"
+                )
+            ]
+        )
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.10:8787",
+            token: "token-a",
+            profileTarget: .newProfile(id: "mac-a", displayName: "Mac A"),
+            installationID: "installation-a",
+            capabilityNegotiation: enabled
+        ))
+        let macALease = try XCTUnwrap(store.capabilityLease(for: "file_upload_v1"))
+        XCTAssertEqual(store.capabilityDecision(for: "file_upload_v1"), .enabled)
+
+        let disabled = HostCapabilityNegotiation(
+            wasNegotiated: true,
+            declared: [],
+            statuses: [
+                AgentCapabilityStatus(
+                    name: "file_upload_v1",
+                    state: "locally_disabled",
+                    reason: "disabled_by_local_config"
+                )
+            ]
+        )
+        _ = try await store.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.20:8787",
+            token: "token-b",
+            profileTarget: .newProfile(id: "mac-b", displayName: "Mac B"),
+            installationID: "installation-b",
+            capabilityNegotiation: disabled
+        ))
+
+        XCTAssertEqual(store.capabilityDecision(for: "file_upload_v1"), .locallyDisabled)
+        XCTAssertNil(store.capabilityLease(for: "file_upload_v1"))
+        XCTAssertFalse(
+            store.isCurrentCapabilityLease(macALease),
+            "切换主机后不能继续使用上一台 Mac 的 capability lease"
+        )
     }
 
     func testV1ProfileBindsInstallationIdentityOnFirstSuccessfulCommit() async throws {
@@ -2148,5 +2328,114 @@ final class TestKeychainOperations: KeychainOperating {
     private func account(from dictionary: CFDictionary) -> String {
         let values = dictionary as NSDictionary
         return values[kSecAttrAccount as String] as? String ?? ""
+    }
+}
+
+final class DoctorDiagnosticsTests: XCTestCase {
+    func testParsesStructuredDoctorResponseAndKeepsPrettyRawJSON() throws {
+        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ))
+        let data = Data(#"{"ok":false,"version":"1.4.0","listen":"127.0.0.1:8787","checks":[{"name":"token","ok":true,"level":"ok","message":"Token 已配置"},{"name":"tailscale","ok":false,"level":"warning","message":"未检测到 Tailscale"},{"name":"codex","ok":false,"level":"error","message":"未找到 Codex CLI","fix":"安装 Codex CLI"}],"future":{"ignored":true}}"#.utf8)
+
+        let document = try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response)
+
+        XCTAssertFalse(document.report.ok)
+        XCTAssertEqual(document.report.version, "1.4.0")
+        XCTAssertEqual(document.report.listen, "127.0.0.1:8787")
+        XCTAssertEqual(document.report.checks.count, 3)
+        XCTAssertEqual(document.report.checks[0].displayName, L10n.text("ui.access_token"))
+        XCTAssertEqual(document.report.checks[0].displayMessage, L10n.text("ui.doctor_access_token_ready"))
+        XCTAssertNil(document.report.checks[0].displayFix)
+        XCTAssertTrue(document.report.checks[1].isWarning)
+        XCTAssertEqual(document.report.checks[2].displayMessage, L10n.text("ui.doctor_codex_cli_needs_attention"))
+        XCTAssertEqual(document.report.checks[2].displayFix, L10n.text("ui.doctor_fix_codex"))
+        XCTAssertTrue(document.rawJSON.contains("\n"))
+        XCTAssertTrue(document.rawJSON.contains(#""version" : "1.4.0""#))
+    }
+
+    func testUnknownDoctorCheckUsesLocalizedSummaryAndKeepsRawDetails() {
+        let check = DoctorDiagnosticCheck(
+            name: "future-check",
+            ok: false,
+            level: "warning",
+            message: "服务端新增的诊断详情：/private/path",
+            fix: "运行 future-fix --repair"
+        )
+
+        XCTAssertEqual(check.displayMessage, L10n.text("ui.doctor_check_warning"))
+        XCTAssertEqual(check.displayFix, L10n.text("ui.doctor_fix_generic"))
+        XCTAssertTrue(check.hasRawDiagnosticDetails)
+        XCTAssertEqual(check.message, "服务端新增的诊断详情：/private/path")
+        XCTAssertEqual(check.fix, "运行 future-fix --repair")
+    }
+
+    func testRejectsNonSuccessHTTPResponseWithServerMessage() throws {
+        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 401,
+            httpVersion: nil,
+            headerFields: nil
+        ))
+        let data = Data(#"{"error":{"message":"token 无效"}}"#.utf8)
+
+        XCTAssertThrowsError(try DoctorDiagnosticsParser.parseDoctorResponse(data: data, response: response)) { error in
+            XCTAssertEqual(
+                error as? DoctorDiagnosticError,
+                .httpStatus(code: 401, message: "token 无效")
+            )
+            XCTAssertEqual(error.localizedDescription, "诊断请求失败（HTTP 401）：token 无效")
+        }
+    }
+
+    func testRejectsNonHTTPResponseAndMalformedPayload() throws {
+        let url = try XCTUnwrap(URL(string: "https://mac.example/api/doctor"))
+        let nonHTTP = URLResponse(
+            url: url,
+            mimeType: "application/json",
+            expectedContentLength: 2,
+            textEncodingName: "utf-8"
+        )
+        XCTAssertThrowsError(
+            try DoctorDiagnosticsParser.parseDoctorResponse(data: Data("{}".utf8), response: nonHTTP)
+        ) { error in
+            XCTAssertEqual(error as? DoctorDiagnosticError, .invalidHTTPResponse)
+        }
+
+        let okResponse = try XCTUnwrap(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        ))
+        XCTAssertThrowsError(
+            try DoctorDiagnosticsParser.parseDoctorResponse(data: Data(#"{"ok":true}"#.utf8), response: okResponse)
+        ) { error in
+            guard case .invalidPayload = error as? DoctorDiagnosticError else {
+                return XCTFail("expected invalidPayload, got \(error)")
+            }
+        }
+    }
+
+    func testBuildsDoctorURLAndFormatsFallbackPayload() throws {
+        let url = try DoctorDiagnosticsParser.doctorURL(endpoint: " https://mac.example:8787/old/path?token=ignored ")
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "mac.example")
+        XCTAssertEqual(url.port, 8787)
+        XCTAssertEqual(url.path, "/api/doctor")
+        XCTAssertNil(url.query)
+
+        XCTAssertThrowsError(try DoctorDiagnosticsParser.doctorURL(endpoint: "not a URL")) { error in
+            XCTAssertEqual(error as? DoctorDiagnosticError, .invalidEndpoint)
+        }
+        XCTAssertEqual(
+            DoctorDiagnosticsParser.formatDiagnosticPayload(Data([0xFF]), fallback: "无法解码"),
+            "无法解码"
+        )
     }
 }

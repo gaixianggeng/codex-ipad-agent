@@ -1,16 +1,5 @@
 import Foundation
 
-enum QueuedTurnAcceptedDisposition {
-    case awaitingStart(turnID: TurnID?)
-    case guidance
-    case terminal(turnID: TurnID?)
-    case superseded(
-        turnID: TurnID?,
-        activeTurnID: TurnID
-    )
-    case threadClosed(turnID: TurnID?)
-}
-
 // Runtime 使用量、连接配置、Turn、Goal、审批与队列发送共享同一协调边界。
 extension SessionStore {
     func refreshCodexUsage() async {
@@ -32,7 +21,7 @@ extension SessionStore {
         refreshingUsageRuntimeProviders.contains(Self.normalizedRuntimeProvider(runtimeProvider))
     }
 
-    func refreshUsage(runtimeProvider: String) async {
+    func refreshUsage(runtimeProvider: String, reportsErrors: Bool = true) async {
         let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
         guard !refreshingUsageRuntimeProviders.contains(normalizedProvider) else {
             return
@@ -69,8 +58,22 @@ extension SessionStore {
         } catch is CancellationError {
             return
         } catch {
-            setErrorMessage(error.localizedDescription)
+            if reportsErrors {
+                setErrorMessage(error.localizedDescription)
+            }
         }
+    }
+
+    /// 进入 Claude 会话时在后台触发 bridge 的 OAuth 单飞检查。bridge 自带 5 分钟缓存，
+    /// 因此切换会话不会重复拉取；这里也不把预热失败升级成页面错误，真正发送仍保留
+    /// 权威的 runtime 结果。
+    func warmSelectedClaudeAuthentication() async {
+        guard let session = selectedSession,
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude"
+        else {
+            return
+        }
+        await refreshUsage(runtimeProvider: "claude", reportsErrors: false)
     }
 
     func refreshCurrentContext() async {
@@ -281,7 +284,12 @@ extension SessionStore {
     }
 
     func loadEarlierHistoryForSelectedSession() async {
-        guard let session = selectedSession,
+        guard let selectedSessionID else { return }
+        await loadEarlierHistory(sessionID: selectedSessionID)
+    }
+
+    func loadEarlierHistory(sessionID: SessionID) async {
+        guard let session = sessionsByID[sessionID],
               let cursor = historyPreviousCursorBySessionID[session.id],
               canLoadEarlierHistory(sessionID: session.id),
               !loadingEarlierHistorySessionIDs.contains(session.id)
@@ -470,7 +478,7 @@ extension SessionStore {
         }
         let refreshedSessions = sessions(page.sessions, in: workspace)
         mergeSessionPage(refreshedSessions)
-        updateSessionPageState(projectID: workspace.id, page: page)
+        updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
         clearWorkspaceUnavailable(workspace.id)
 
         guard let target = sessionsByID[route.sessionID],
@@ -603,7 +611,8 @@ extension SessionStore {
         tokenBudget: Int64? = nil,
         runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
@@ -695,7 +704,8 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
-        if let session = selectedSession, isExternalReadOnlySession(session) {
+        if let session = selectedSession,
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             setErrorMessage(L10n.text("ui.mac_observe_only"))
             return false
         }
@@ -1151,78 +1161,6 @@ extension SessionStore {
                 queue[index].lastError = message
             }
             queuedRunningTurnsBySessionID[sessionID] = queue
-        }
-    }
-
-    func reconciledAcceptedDisposition(
-        sessionID: SessionID,
-        disposition: QueuedTurnAcceptedDisposition,
-        ignoringActiveTurnID: TurnID? = nil
-    ) -> QueuedTurnAcceptedDisposition {
-        let reportedActiveTurnID = sessionsByID[sessionID]?.activeTurnID
-        // guidance fallback 的前提是 Runtime 已在 RPC 前确认旧 expected turn 不存在。
-        // 只忽略这一个精确 ID；期间若出现其它 active turn，仍按 superseded 保护。
-        let currentActiveTurnID = reportedActiveTurnID == ignoringActiveTurnID
-            ? nil
-            : reportedActiveTurnID
-        func isTerminal(_ turnID: TurnID) -> Bool {
-            conversationStore.turnLifecycle(
-                sessionID: sessionID,
-                turnID: turnID
-            )?.isTerminal == true
-        }
-
-        switch disposition {
-        case .awaitingStart(let turnID):
-            if let turnID, isTerminal(turnID) {
-                return .terminal(turnID: turnID)
-            }
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .terminal(let turnID):
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .superseded(let turnID, let reportedActiveTurnID):
-            let effectiveActiveTurnID: TurnID
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID,
-               currentActiveTurnID != reportedActiveTurnID {
-                effectiveActiveTurnID = currentActiveTurnID
-            } else {
-                effectiveActiveTurnID = reportedActiveTurnID
-            }
-            if isTerminal(effectiveActiveTurnID) {
-                // completed(B) 可能先于 superseded(A,B) 落到 MainActor；lifecycle 是
-                // 不会随 activeTurnID 清空而丢失的终态证据，禁止再次复活 B。
-                return .terminal(turnID: effectiveActiveTurnID)
-            }
-            return .superseded(
-                turnID: turnID,
-                activeTurnID: effectiveActiveTurnID
-            )
-        case .threadClosed(let turnID):
-            if let currentActiveTurnID,
-               currentActiveTurnID != turnID {
-                return .superseded(
-                    turnID: turnID,
-                    activeTurnID: currentActiveTurnID
-                )
-            }
-            return disposition
-        case .guidance:
-            return disposition
         }
     }
 
@@ -1738,6 +1676,42 @@ extension SessionStore {
         return await sendTurn(message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt))
     }
 
+    @discardableResult
+    func retryClaudeAuthenticationFailure(_ failure: ConversationMessage) async -> Bool {
+        guard failure.activityPayload?.isClaudeAuthenticationRecovery == true,
+              let session = selectedSession,
+              Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "claude"
+        else {
+            return false
+        }
+
+        let failedTurnID = failure.turnID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let matchingRequests = conversationStore.messages(for: session.id).filter {
+            $0.role == .user
+                && $0.turnID == failedTurnID
+                && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        // 认证错误可能迟到，期间用户也可能已经发出下一条请求。只重发与错误事件
+        // 同 turn 且唯一的用户消息；身份缺失或歧义时 fail closed，绝不猜“最近一条”。
+        guard !failedTurnID.isEmpty,
+              matchingRequests.count == 1,
+              let original = matchingRequests.first else {
+            setErrorMessage(L10n.text("ui.original_request_for_retry_was_not_found"))
+            return false
+        }
+
+        // 用户明确点击后才重发。先复用 bridge 的凭据续期检查，再沿普通 sendTurn
+        // 恢复 thread；认证失败进程已由 bridge 淘汰，因此新进程会读取最新登录状态。
+        await refreshUsage(runtimeProvider: "claude", reportsErrors: false)
+        setErrorMessage(nil)
+        let payload = original.turnPayload ?? CodexAppServerTurnPayload(prompt: original.content)
+        let sent = await sendTurn(payload)
+        if sent {
+            setStatusMessage(L10n.text("ui.claude_request_sent_again"))
+        }
+        return sent
+    }
+
     func suspendForBackground() {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
@@ -1900,7 +1874,8 @@ extension SessionStore {
         status: ThreadGoalStatus?,
         tokenBudget: Int64?
     ) async -> Bool {
-        if let session = sessionsByID[threadID], isExternalReadOnlySession(session) {
+        if let session = sessionsByID[threadID],
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return false
         }
@@ -1959,7 +1934,8 @@ extension SessionStore {
         guard let sessionID = selectedSessionID else {
             return
         }
-        if let session = sessionsByID[sessionID], isExternalReadOnlySession(session) {
+        if let session = sessionsByID[sessionID],
+           isExternalReadOnlySession(session) || isProtocolReadOnlySession(session) {
             threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return
         }

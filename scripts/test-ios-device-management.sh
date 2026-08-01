@@ -95,18 +95,131 @@ assert_contains "$(cat "$mini_destination_output")" "指定 UDID 不是可用的
 target_output="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target)"
 assert_contains "$target_output" "device: iPad Pro (PHYSICAL-PRO-UDID)" \
   "普通 build/run 默认优先 USB iPad Pro"
+assert_contains "$target_output" "Connection: wired" \
+  "新版 devicectl 字段必须能识别 wired 真机"
 assert_contains "$target_output" "dev-device-derived/PHYSICAL-PRO-UDID" \
   "真机 DerivedData 必须按 UDID 隔离"
 
+wireless_id_target="$(
+  IOS_TARGET_MODE=device \
+  IOS_DEVICE_ID="NETWORK-PRO-UDID" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" target
+)"
+assert_contains "$wireless_id_target" "device: iPad Pro (NETWORK-PRO-UDID)" \
+  "IOS_DEVICE_ID 必须能明确选择新字段格式的本地网络真机"
+assert_contains "$wireless_id_target" "Connection: localNetwork" \
+  "本地网络真机必须显示连接方式"
+assert_contains "$wireless_id_target" "dev-device-derived/NETWORK-PRO-UDID" \
+  "无线真机必须和有线真机一样按 UDID 隔离 DerivedData"
+
+wireless_name_target="$(
+  IOS_DEVICE_NAME="Network iPhone" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" target
+)"
+assert_contains "$wireless_name_target" "device: Network iPhone (NETWORK-ONLY-UDID)" \
+  "IOS_DEVICE_NAME 必须能明确选择旧字段格式的本地网络真机"
+assert_contains "$wireless_name_target" "Connection: localNetwork" \
+  "旧版 devicectl 字段必须能识别本地网络真机"
+
+unreachable_output="$TEMP_DIR/unreachable-device.log"
+set +e
+IOS_TARGET_MODE=device \
+IOS_DEVICE_ID="OFFLINE-PAIRED-UDID" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" target >"$unreachable_output" 2>&1
+unreachable_status=$?
+set -e
+assert_equal "4" "$unreachable_status" \
+  "明确选择不可达的无线真机时必须失败"
+assert_contains "$(cat "$unreachable_output")" "真机不可达或未配对" \
+  "指定真机不可达时必须输出可操作原因"
+
+lease_inventory="$(bash "$ROOT_DIR/scripts/ios-dev.sh" leases)"
+assert_contains "$lease_inventory" "Network iPhone (NETWORK-ONLY-UDID)" \
+  "leases 必须展示可达的无线真机"
+assert_contains "$lease_inventory" "connection:  localNetwork" \
+  "leases 必须标记无线真机连接方式"
+
+: > "$TEMP_DIR/wireless-build-xcodebuild.log"
+wireless_build_output="$(
+  IOS_TARGET_MODE=device \
+  IOS_DEVICE_ID="NETWORK-PRO-UDID" \
+  IOS_DEVICE_DERIVED_DATA_PATH="$TEMP_DIR/wireless-derived" \
+  IOS_TEST_XCODEBUILD_LOG="$TEMP_DIR/wireless-build-xcodebuild.log" \
+  IOS_TEST_CREATE_APP=1 \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" build
+)"
+assert_contains "$wireless_build_output" "使用已租用本地网络真机：iPad Pro (NETWORK-PRO-UDID)" \
+  "显式无线 build 必须进入真机部署链路"
+assert_contains "$(cat "$TEMP_DIR/wireless-build-xcodebuild.log")" \
+  "-destination platform=iOS,id=NETWORK-PRO-UDID" \
+  "无线 build 必须把选中 UDID 传入 xcodebuild"
+assert_contains "$(cat "$TEMP_DIR/wireless-build-xcodebuild.log")" \
+  "-derivedDataPath $TEMP_DIR/wireless-derived" \
+  "无线 build 必须使用该 UDID 的独立 DerivedData"
+[[ ! -d "$IOS_DEVICE_LEASE_ROOT/NETWORK-PRO-UDID.lease" ]] \
+  || fail "无线 build 结束后必须释放按 UDID 建立的租约"
+
+duplicate_target="$(
+  IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/duplicate-device-transports.json" \
+  IOS_TARGET_MODE=device \
+  IOS_DEVICE_ID="SHARED-TRANSPORT-UDID" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" target
+)"
+assert_contains "$duplicate_target" "Connection: wired" \
+  "同一 UDID 同时报告 wired/localNetwork 时必须去重并优先 wired"
+assert_contains "$duplicate_target" "dev-device-derived/SHARED-TRANSPORT-UDID" \
+  "同一 UDID 不得按 transport 拆分 DerivedData"
+duplicate_inventory="$(
+  IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/duplicate-device-transports.json" \
+  bash "$ROOT_DIR/scripts/ios-dev.sh" leases
+)"
+assert_equal "1" "$(printf '%s\n' "$duplicate_inventory" | awk 'index($0, "SHARED-TRANSPORT-UDID") { count += 1 } END { print count + 0 }')" \
+  "leases 必须将同一 UDID 的两种 transport 去重为一台设备"
+
 owner_start="$(/bin/ps -p "$$" -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+write_lease_metadata "SHARED-TRANSPORT-UDID" "$$" "$owner_start"
+duplicate_busy_output="$TEMP_DIR/duplicate-transport-busy.log"
+set +e
+IOS_TEST_PHYSICAL_JSON="$FIXTURE_DIR/duplicate-device-transports.json" \
+IOS_TARGET_MODE=device \
+IOS_DEVICE_ID="SHARED-TRANSPORT-UDID" \
+bash "$ROOT_DIR/scripts/ios-dev.sh" target >"$duplicate_busy_output" 2>&1
+duplicate_busy_status=$?
+set -e
+assert_equal "75" "$duplicate_busy_status" \
+  "同一 UDID 的 wired/localNetwork 必须共用一份租约"
+assert_contains "$(cat "$duplicate_busy_output")" "SHARED-TRANSPORT-UDID" \
+  "transport 共用租约时必须输出占用设备"
+rm -f "$IOS_DEVICE_LEASE_ROOT/SHARED-TRANSPORT-UDID.lease/metadata"
+rmdir "$IOS_DEVICE_LEASE_ROOT/SHARED-TRANSPORT-UDID.lease"
+
 write_lease_metadata "PHYSICAL-PRO-UDID" "$$" "$owner_start"
 target_output="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target 2>"$TEMP_DIR/skip-live.log")"
 assert_contains "$target_output" "device: iPad mini (PHYSICAL-MINI-UDID)" \
   "主力真机已有活租约时必须选择下一台空闲 USB 真机"
 assert_contains "$(cat "$TEMP_DIR/skip-live.log")" "跳过占用设备：iPad Pro" \
   "跳过租约设备时必须输出可见原因"
+write_lease_metadata "PHYSICAL-MINI-UDID" "$$" "$owner_start"
+wireless_fallback_target="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target 2>"$TEMP_DIR/wireless-fallback.log")"
+assert_contains "$wireless_fallback_target" "device: iPad Pro (NETWORK-PRO-UDID)" \
+  "所有 wired 真机忙时必须先回退本地网络真机"
+assert_contains "$wireless_fallback_target" "Connection: localNetwork" \
+  "本地网络回退必须可观测"
+write_lease_metadata "NETWORK-PRO-UDID" "$$" "$owner_start"
+write_lease_metadata "NETWORK-ONLY-UDID" "$$" "$owner_start"
+simulator_fallback_target="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target 2>"$TEMP_DIR/simulator-fallback.log")"
+assert_contains "$simulator_fallback_target" "simulator: iPad Pro 13-inch (M5) (M5-27-UDID)" \
+  "wired 和 localNetwork 真机都忙时必须回退固定 M5 Simulator"
+assert_contains "$simulator_fallback_target" "dev-simulator-derived/M5-27-UDID" \
+  "真机全部忙时 Simulator fallback 仍必须按 UDID 隔离 DerivedData"
 rm -f "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-PRO-UDID.lease/metadata"
 rmdir "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-PRO-UDID.lease"
+rm -f "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-MINI-UDID.lease/metadata"
+rmdir "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-MINI-UDID.lease"
+rm -f "$IOS_DEVICE_LEASE_ROOT/NETWORK-PRO-UDID.lease/metadata"
+rmdir "$IOS_DEVICE_LEASE_ROOT/NETWORK-PRO-UDID.lease"
+rm -f "$IOS_DEVICE_LEASE_ROOT/NETWORK-ONLY-UDID.lease/metadata"
+rmdir "$IOS_DEVICE_LEASE_ROOT/NETWORK-ONLY-UDID.lease"
 
 mkdir "$IOS_DEVICE_LEASE_ROOT/PHYSICAL-PRO-UDID.lease"
 acquiring_target="$(bash "$ROOT_DIR/scripts/ios-dev.sh" target 2>"$TEMP_DIR/acquiring.log")"

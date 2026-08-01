@@ -502,7 +502,9 @@ extension CodexAppServerSessionRuntime {
             throw AgentAPIError.invalidResponse
         }
         let cwd = thread["cwd"]?.stringValue ?? fallbackProject?.path ?? ""
-        let project = projectFor(cwd: cwd, projects: projects) ?? fallbackProject
+        let project = gatewayAnnotatedProject(from: thread, projects: projects)
+            ?? projectFor(cwd: cwd, projects: projects)
+            ?? fallbackProject
         let projectID = project?.id ?? fallbackProject?.id ?? cwd
         let projectName = project?.name ?? fallbackProject?.name ?? cwd
         let status = sessionStatus(from: thread["status"], forceRunning: forceRunning)
@@ -561,8 +563,31 @@ extension CodexAppServerSessionRuntime {
             usage: cached?.usage,
             rateLimit: rateLimit,
             goal: goal,
+            appServerSessionID: nonEmpty(thread["sessionId"]?.stringValue),
+            parentThreadID: nonEmpty(thread["parentThreadId"]?.stringValue),
+            agentNickname: nonEmpty(thread["agentNickname"]?.stringValue),
+            agentRole: nonEmpty(thread["agentRole"]?.stringValue),
+            canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
             context: context
         )
+    }
+
+    func gatewayAnnotatedProject(
+        from thread: [String: CodexAppServerJSONValue],
+        projects: [AgentProject]
+    ) -> AgentProject? {
+        guard let annotation = thread["mimiRemote"]?.objectValue,
+              annotation["discovery"]?.stringValue == "global",
+              let projectID = nonEmpty(annotation["projectId"]?.stringValue),
+              let projectPath = nonEmpty(annotation["projectPath"]?.stringValue)
+        else {
+            return nil
+        }
+        // agentd 已做 repo identity 裁剪；iOS 再与当前 config.projects 交叉验证，
+        // 避免陈旧连接或协议混用把会话投影到不存在的项目。
+        return projects.first {
+            $0.id == projectID && $0.path == projectPath
+        }
     }
 
     func sessionContext(
@@ -994,16 +1019,22 @@ extension CodexAppServerSessionRuntime {
         status: String
     ) -> [SessionContextSubagent] {
         var subagents: [SessionContextSubagent] = []
+        var seenThreadIDs = Set<String>()
         if let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) {
-            subagents.append(
-                SessionContextSubagent(
-                    id: thread["id"]?.stringValue ?? UUID().uuidString,
+            if let childThreadID = nonEmpty(thread["id"]?.stringValue) {
+                subagents.append(
+                    SessionContextSubagent(
+                    id: childThreadID,
                     parentThreadID: parentThreadID,
+                    sessionID: nonEmpty(thread["sessionId"]?.stringValue),
                     nickname: nonEmpty(thread["agentNickname"]?.stringValue),
                     role: nonEmpty(thread["agentRole"]?.stringValue),
-                    status: status
+                    status: status,
+                    canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue
+                    )
                 )
-            )
+                seenThreadIDs.insert(childThreadID)
+            }
         }
         guard let threadID = nonEmpty(thread["id"]?.stringValue) else {
             return subagents
@@ -1012,24 +1043,47 @@ extension CodexAppServerSessionRuntime {
         for turn in turns.reversed() {
             let items = turn["items"]?.arrayValue?.compactMap(\.objectValue) ?? []
             for item in items.reversed() where item["type"]?.stringValue == "collabAgentToolCall" {
-                let id = nonEmpty(
+                let receiverThreadIDs: [String] = item["receiverThreadIds"]?.arrayValue?
+                    .compactMap(\.stringValue)
+                    .compactMap { rawID in
+                        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return !trimmed.isEmpty && trimmed == rawID ? rawID : nil
+                    }
+                    ?? []
+                let legacyThreadID = nonEmpty(
                     item["childThreadId"]?.stringValue,
                     item["agentThreadId"]?.stringValue,
                     item["subagentThreadId"]?.stringValue,
-                    item["threadId"]?.stringValue,
-                    item["id"]?.stringValue
-                ) ?? UUID().uuidString
-                subagents.append(
-                    SessionContextSubagent(
-                        id: id,
+                    item["threadId"]?.stringValue
+                )
+                let childThreadIDs: [String]
+                if receiverThreadIDs.isEmpty {
+                    childThreadIDs = legacyThreadID.map { [$0] } ?? []
+                } else {
+                    childThreadIDs = receiverThreadIDs
+                }
+                let agentStates = item["agentsStates"]?.objectValue ?? [:]
+                for childThreadID in childThreadIDs where seenThreadIDs.insert(childThreadID).inserted {
+                    let agentState = agentStates[childThreadID]?.objectValue
+                    let stateStatus = nonEmpty(
+                        agentState?["status"]?.stringValue,
+                        agentStates[childThreadID]?.stringValue
+                    )
+                    subagents.append(
+                        SessionContextSubagent(
+                        id: childThreadID,
                         parentThreadID: threadID,
+                        sessionID: nonEmpty(agentState?["sessionId"]?.stringValue),
                         nickname: nonEmpty(item["agentNickname"]?.stringValue, item["nickname"]?.stringValue, item["tool"]?.stringValue),
                         role: nonEmpty(item["agentRole"]?.stringValue, item["role"]?.stringValue),
-                        status: nonEmpty(item["status"]?.stringValue, turn["status"]?.stringValue, status)
+                        status: nonEmpty(stateStatus, item["status"]?.stringValue, turn["status"]?.stringValue, status),
+                        statusMessage: nonEmpty(agentState?["message"]?.stringValue),
+                        canAcceptDirectInput: agentState?["canAcceptDirectInput"]?.boolValue
+                        )
                     )
-                )
-                if subagents.count >= 8 {
-                    return subagents
+                    if subagents.count >= 32 {
+                        return subagents
+                    }
                 }
             }
         }
@@ -1598,38 +1652,6 @@ extension CodexAppServerSessionRuntime {
         return resolved
     }
 
-    func discardBufferedResolvedInteractionRequests(
-        sessionID: SessionID?,
-        requestIDs: Set<String>
-    ) {
-        guard !requestIDs.isEmpty else {
-            return
-        }
-        let sessionIDs = sessionID.map { [$0] } ?? Array(bufferedEventsBySessionID.keys)
-        for candidateSessionID in sessionIDs {
-            guard var events = bufferedEventsBySessionID[candidateSessionID] else {
-                continue
-            }
-            events.removeAll { event in
-                switch event {
-                case .approvalRequest(let request, let metadata):
-                    return requestIDs.contains(request.id)
-                        || metadata.itemID.map(requestIDs.contains) == true
-                case .userInputRequest(let request, let metadata):
-                    return requestIDs.contains(request.id)
-                        || metadata.itemID.map(requestIDs.contains) == true
-                default:
-                    return false
-                }
-            }
-            if events.isEmpty {
-                bufferedEventsBySessionID.removeValue(forKey: candidateSessionID)
-            } else {
-                bufferedEventsBySessionID[candidateSessionID] = events
-            }
-        }
-    }
-
     func clearAllPendingServerRequests() -> CodexAppServerResolvedServerRequests {
         let approvalSessionIDs = uniqueStrings(pendingApprovalRequestsByID.values.compactMap { request in
             approvalSessionID(for: request)
@@ -1728,36 +1750,6 @@ extension CodexAppServerSessionRuntime {
             ?? params["conversationId"]?.stringValue
             ?? params["sessionId"]?.stringValue
             ?? params["session_id"]?.stringValue
-    }
-
-    func isApprovalLikeServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
-        let lower = request.method.lowercased()
-        if lower.contains("approval") {
-            return true
-        }
-        // URL 与带精确协议标记的 Codex MCP 工具调用使用明确的授权交互。
-        return request.method == "mcpServer/elicitation/request"
-            && codexMCPElicitationPresentation(
-                params: request.params?.objectValue ?? [:]
-            ) == .confirmation
-    }
-
-    func isUserInputServerRequest(_ request: CodexAppServerServerRequest) -> Bool {
-        if request.method == "item/tool/requestUserInput" {
-            return true
-        }
-        // 只有能被当前 UI 完整表达的 form 才进入补充信息卡。
-        return request.method == "mcpServer/elicitation/request"
-            && codexMCPElicitationPresentation(
-                params: request.params?.objectValue ?? [:]
-            ) == .form
-    }
-
-    func isUnsupportedMCPElicitation(_ request: CodexAppServerServerRequest) -> Bool {
-        request.method == "mcpServer/elicitation/request"
-            && codexMCPElicitationPresentation(
-                params: request.params?.objectValue ?? [:]
-            ) == .unsupported
     }
 
     func uniqueStrings(_ values: [String]) -> [String] {

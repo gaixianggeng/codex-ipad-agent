@@ -612,9 +612,11 @@ private struct ConversationImagePreviewContent: View {
                 maxHeight: maxHeight,
                 alignment: fillsAvailableWidth ? .center : .leading
             )
-            .padding(fillsAvailableWidth ? 4 : 0)
+            // 单图与多图统一成中性媒体卡：4pt 内边距把图像从描边内缩，
+            // 白底截图不再顶死边框，圆角也能稳稳咬住内容，避免“图与框对不齐”。
+            .padding(4)
             .background(
-                fillsAvailableWidth ? style.tableBackground : Color.clear,
+                style.tableBackground,
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
