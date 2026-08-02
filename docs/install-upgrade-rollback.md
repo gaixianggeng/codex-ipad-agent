@@ -7,7 +7,7 @@
 ## 方案
 
 - macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
-- Windows 普通用户使用按用户 EXE 安装器；有证书时优先 Authenticode 签名，无证书时发布元数据明确标记为 `unsigned-release` 的安装包，后台由当前用户计划任务托管。
+- Windows 普通用户使用按用户 EXE 安装器；正式 Release 强制 Authenticode 签名，缺少证书时失败关闭。unsigned 安装器只用于本地/Nightly snapshot，后台由当前用户计划任务托管。
 - Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
 - Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和两个 Token 都留在系统用户配置目录，升级二进制不会删除它们。
@@ -27,7 +27,7 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 (Get-AuthenticodeSignature $setup).Status
 ```
 
-摘要必须与 `.sha256` 一致。`.metadata.json` 为 `authenticode-pfx` 时签名状态必须为 `Valid`；为 `unsigned-release` 时状态应为 `NotSigned`，EXE 文件名包含 `-unsigned`，Windows 可能显示 Microsoft Defender SmartScreen 警告。未签名版本只应从本仓库正式 Release 下载并核对摘要。安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`，注册名为 `Mimi Remote agentd` 的当前用户登录任务，以 limited 权限执行：
+摘要必须与 `.sha256` 一致。正式 Release 的 `.metadata.json` 必须为 `authenticode-pfx`，签名状态必须为 `Valid`；`unsigned-release` / `unsigned-snapshot` 只属于本地或 Nightly 验证，不得作为正式下载。安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`，注册名为 `Mimi Remote agentd` 的当前用户登录任务，以 limited 权限执行：
 
 ```text
 agentd.exe serve --log-file "%LOCALAPPDATA%\Mimi Remote\logs\agentd.log"
@@ -373,14 +373,14 @@ macOS 产物还必须配置以下 GitHub Actions Secrets：
 | `MACOS_NOTARY_KEY_ID` | 10 位 API Key ID | 与 `.p8` 配套 |
 | `MACOS_NOTARY_ISSUER_ID` | App Store Connect Issuer UUID | 与 `.p8` 配套 |
 
-Windows 安装器可选配置以下 Authenticode Secrets：
+Windows 正式安装器必须配置以下 Authenticode Secrets：
 
 | Secret | 内容 | 权限边界 |
 | --- | --- | --- |
 | `WINDOWS_SIGN_PFX` | Windows 代码签名证书与私钥导出的 PFX，再整体 base64 | 只用于签名两份 `.exe` 和最终安装器 |
 | `WINDOWS_SIGN_PFX_PASSWORD` | PFX 导出密码 | 只在 Windows release job 的临时文件生命周期内使用 |
 
-Windows verify job 会在发布前构建 release 二进制、编译 Inno Setup、验证 SHA-256 与签名模式，再把已验证安装器作为 Actions artifact 交给发布 job；PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制要求有效 Authenticode，两个都缺失时显式构建 `unsigned-release`；只配置其中一个、签名无效或安装器静态策略不满足时，正式 tag 发布必须失败。
+Windows verify job 会在发布前构建 release 二进制、编译 Inno Setup、验证 SHA-256 与 Authenticode，再把已验证安装器作为 Actions artifact 交给发布 job；PFX 临时文件不会进入 artifact。任一 Secret 缺失、签名无效或安装器静态策略不满足时，正式 tag 发布必须失败，不回退到 `unsigned-release`。
 
 Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 

@@ -3,13 +3,8 @@ name: Release Validation
 on:
   workflow_dispatch:
     inputs:
-      candidate_ref:
-        description: "待发布 commit、分支或 tag；只读取，不创建 tag"
-        required: true
-        default: "main"
-        type: string
-      previous_release_ref:
-        description: "上一已知可用的正式 commit 或 tag；必须是 candidate 祖先"
+      previous_release_tag:
+        description: "上一已知可用的正式 GitHub Release tag（例如 v0.2.10）"
         required: true
         type: string
       candidate_version:
@@ -30,20 +25,21 @@ on:
         required: true
         default: false
         type: boolean
-      internal_testflight_evidence:
-        description: "publish-readiness 必填：同一 candidate 的 Internal TestFlight 证据 URL"
+      internal_testflight_run_id:
+        description: "publish-readiness 必填：同一 main SHA 的成功 iOS CI 上传 run ID"
         required: false
         type: string
-      rollback_drill_evidence:
-        description: "publish-readiness 必填：上一签名产物恢复演练证据 URL"
+      rollback_drill_run_id:
+        description: "publish-readiness 必填：同一 main SHA 的成功 Release Rollback Drill run ID"
         required: false
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: release-validation-${{ inputs.candidate_ref }}
+  group: release-validation-${{ github.sha }}-${{ inputs.validation_mode }}
   cancel-in-progress: false
 
 jobs:
@@ -54,39 +50,77 @@ jobs:
     outputs:
       candidate_sha: ${{ steps.refs.outputs.candidate_sha }}
       previous_sha: ${{ steps.refs.outputs.previous_sha }}
+      release_version: ${{ steps.refs.outputs.release_version }}
+      ios_bundle_id: ${{ steps.refs.outputs.ios_bundle_id }}
+      ios_version: ${{ steps.refs.outputs.ios_version }}
+      ios_project_build: ${{ steps.refs.outputs.ios_project_build }}
     steps:
-      - name: Checkout candidate
+      - name: Checkout trusted main candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.candidate_ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Resolve immutable commits
+      - name: Resolve immutable commits and version metadata
         id: refs
         shell: bash
         env:
-          PREVIOUS_RELEASE_REF: ${{ inputs.previous_release_ref }}
-        run: |
-          candidate_sha="$(git rev-parse --verify 'HEAD^{commit}')"
-          previous_sha="$(git rev-parse --verify "${PREVIOUS_RELEASE_REF}^{commit}")"
-          echo "candidate_sha=$candidate_sha" >>"$GITHUB_OUTPUT"
-          echo "previous_sha=$previous_sha" >>"$GITHUB_OUTPUT"
-          echo "Candidate: \`$candidate_sha\`" >>"$GITHUB_STEP_SUMMARY"
-          echo "Previous known-good: \`$previous_sha\`" >>"$GITHUB_STEP_SUMMARY"
-
-      - name: Validate candidate version metadata
-        shell: bash
-        env:
-          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          PREVIOUS_RELEASE_TAG: ${{ inputs.previous_release_tag }}
+          RELEASE_VERSION: ${{ inputs.candidate_version }}
           VALIDATION_MODE: ${{ inputs.validation_mode }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          [[ "$CANDIDATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
+            || { echo "Release validation 只允许在正式仓库运行。" >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo "Release validation 只允许从受保护的 main 手工触发。" >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          candidate_sha="$(git rev-parse --verify 'HEAD^{commit}')"
+          main_sha="$(git rev-parse --verify 'origin/main^{commit}')"
+          [[ "$candidate_sha" == "$GITHUB_SHA" && "$candidate_sha" == "$main_sha" ]] \
+            || { echo "候选必须是触发时 origin/main 的完整 SHA。" >&2; exit 1; }
+          git merge-base --is-ancestor "$candidate_sha" origin/main
+          [[ "$PREVIOUS_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
+            || { echo "previous_release_tag 必须是 v 开头的语义版本。" >&2; exit 1; }
+          git fetch --force origin \
+            "refs/tags/$PREVIOUS_RELEASE_TAG:refs/tags/$PREVIOUS_RELEASE_TAG"
+          previous_sha="$(git rev-parse --verify "${PREVIOUS_RELEASE_TAG}^{commit}")"
+          previous_release_json="$RUNNER_TEMP/previous-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PREVIOUS_RELEASE_TAG" >"$previous_release_json"
+          export PREVIOUS_RELEASE_TAG
+          ruby -rjson -e '
+            release = JSON.parse(File.read(ARGV.fetch(0)))
+            abort "previous release tag mismatch" unless release.fetch("tag_name") == ENV.fetch("PREVIOUS_RELEASE_TAG")
+            abort "previous release cannot be draft/prerelease" if release.fetch("draft") || release.fetch("prerelease")
+          ' "$previous_release_json"
+          git merge-base --is-ancestor "$previous_sha" "$candidate_sha" \
+            || { echo "previous Release 必须是 candidate 的祖先。" >&2; exit 1; }
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
             || { echo "candidate_version 必须是不含 v 的语义版本。" >&2; exit 1; }
-          if [[ "$VALIDATION_MODE" == "publish-readiness" && "$CANDIDATE_VERSION" == "0.0.0" ]]; then
+          if [[ "$VALIDATION_MODE" == "publish-readiness" && "$RELEASE_VERSION" == "0.0.0" ]]; then
             echo "publish-readiness 必须提供真实 candidate_version，不能使用 0.0.0。" >&2
             exit 1
           fi
-          echo "Candidate version: \`$CANDIDATE_VERSION\`" >>"$GITHUB_STEP_SUMMARY"
+
+          ios_bundle_id="$(ruby -ryaml -e 'print YAML.safe_load(File.read(ARGV.fetch(0))).dig("targets", "MimiRemote", "settings", "base", "PRODUCT_BUNDLE_IDENTIFIER")' ios/MimiRemote/project.yml)"
+          ios_version="$(ruby -ryaml -e 'print YAML.safe_load(File.read(ARGV.fetch(0))).dig("targets", "MimiRemote", "settings", "base", "MARKETING_VERSION")' ios/MimiRemote/project.yml)"
+          ios_project_build="$(ruby -ryaml -e 'print YAML.safe_load(File.read(ARGV.fetch(0))).dig("targets", "MimiRemote", "settings", "base", "CURRENT_PROJECT_VERSION")' ios/MimiRemote/project.yml)"
+          [[ "$ios_bundle_id" == "com.gaixianggeng.mimi" ]]
+          [[ "$ios_version" =~ ^[0-9]+\.[0-9]+([.][0-9]+)?$ ]]
+          [[ "$ios_project_build" =~ ^[0-9]+$ ]]
+
+          echo "candidate_sha=$candidate_sha" >>"$GITHUB_OUTPUT"
+          echo "previous_sha=$previous_sha" >>"$GITHUB_OUTPUT"
+          echo "release_version=$RELEASE_VERSION" >>"$GITHUB_OUTPUT"
+          echo "ios_bundle_id=$ios_bundle_id" >>"$GITHUB_OUTPUT"
+          echo "ios_version=$ios_version" >>"$GITHUB_OUTPUT"
+          echo "ios_project_build=$ios_project_build" >>"$GITHUB_OUTPUT"
+          echo "Candidate: \`$candidate_sha\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "Previous known-good: \`$previous_sha\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "Previous Release: \`$PREVIOUS_RELEASE_TAG\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "Public release version: \`$RELEASE_VERSION\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "iOS: \`$ios_bundle_id $ios_version ($ios_project_build+)\`" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Check N/N-1 and rollback readiness
         shell: bash
@@ -163,6 +197,7 @@ jobs:
     name: Mac tests and ${{ inputs.validation_mode }} DMG
     needs: resolve
     runs-on: macos-26
+    environment: release-production-signing
     timeout-minutes: 90
     steps:
       - name: Checkout immutable candidate
@@ -175,6 +210,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Codex CLI for installed-agent runtime check
+        run: npm install --global "@openai/codex@$(cat internal/httpapi/testdata/codex-protocol/codex-version.txt)"
 
       - name: Install universal macOS Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -193,7 +236,7 @@ jobs:
       - name: Build ad-hoc DMG for dry-run
         if: inputs.validation_mode == 'dry-run'
         env:
-          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
         run: |
           bash ./scripts/build-macos-installer.sh \
             --snapshot \
@@ -205,7 +248,7 @@ jobs:
       - name: Build, sign, notarize, and inspect DMG without publishing
         if: inputs.validation_mode == 'publish-readiness'
         env:
-          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
@@ -220,6 +263,18 @@ jobs:
             --require-notarization \
             dist-macos/Mimi-Remote-Mac.dmg
 
+      - name: Install DMG copy and verify embedded agentd runtime
+        shell: bash
+        env:
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+        run: |
+          bash ./scripts/test-macos-dmg-install.sh \
+            --dmg dist-macos/Mimi-Remote-Mac.dmg \
+            --expected-version "$CANDIDATE_VERSION" \
+            --expected-commit "$CANDIDATE_SHA" \
+            --output dist-macos/macos-install-evidence.json
+
       - name: Upload audited Mac candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -232,6 +287,7 @@ jobs:
     name: Windows ${{ inputs.validation_mode }} installer
     needs: resolve
     runs-on: windows-latest
+    environment: release-production-signing
     timeout-minutes: 60
     steps:
       - name: Checkout immutable candidate
@@ -249,40 +305,46 @@ jobs:
         shell: pwsh
         run: choco install innosetup --yes --no-progress
 
-      - name: Build and inspect Windows candidate
+      - name: Build and inspect unsigned Windows snapshot
+        if: inputs.validation_mode == 'dry-run'
         shell: pwsh
         env:
-          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
-          VALIDATION_MODE: ${{ inputs.validation_mode }}
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
+        run: |
+          ./scripts/build-windows-installer.ps1 `
+            -Version $env:CANDIDATE_VERSION `
+            -OutputDirectory dist-windows `
+            -Snapshot
+          $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
+          ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+          ./scripts/test-windows-install.ps1
+
+      - name: Build and inspect signed Windows candidate
+        if: inputs.validation_mode == 'publish-readiness'
+        shell: pwsh
+        env:
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
           WINDOWS_SIGN_PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
-          if ($env:VALIDATION_MODE -eq 'publish-readiness') {
-            if (-not $env:WINDOWS_SIGN_PFX -or -not $env:WINDOWS_SIGN_PFX_PASSWORD) {
-              throw 'publish-readiness requires Windows signing secrets.'
-            }
-            $pfx = Join-Path $env:RUNNER_TEMP 'mimi-release-validation.pfx'
-            try {
-              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
-              ./scripts/build-windows-installer.ps1 `
-                -Version $env:CANDIDATE_VERSION `
-                -OutputDirectory dist-windows `
-                -PfxPath $pfx `
-                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
-              $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
-              ./scripts/check-windows-installer.ps1 `
-                -InstallerPath $installer.FullName `
-                -RequireSignature
-            } finally {
-              Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
-            }
-          } else {
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX_PASSWORD)) {
+            throw 'publish-readiness requires Windows signing secrets.'
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'mimi-release-validation.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
             ./scripts/build-windows-installer.ps1 `
               -Version $env:CANDIDATE_VERSION `
               -OutputDirectory dist-windows `
-              -Snapshot
+              -PfxPath $pfx `
+              -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
             $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
-            ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+            ./scripts/check-windows-installer.ps1 `
+              -InstallerPath $installer.FullName `
+              -RequireSignature
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
           }
           ./scripts/test-windows-install.ps1
 
@@ -348,7 +410,14 @@ jobs:
       source_ref: ${{ needs.resolve.outputs.candidate_sha }}
       validate_app_store: true
       what_to_test: "Release validation only；不上传、不分发 Internal TestFlight。"
-    secrets: inherit
+    secrets:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+      IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+      IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+      IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
 
   controlled-runtime-smoke:
     name: Controlled Runtime release smoke
@@ -376,17 +445,12 @@ jobs:
         env:
           MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
           AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
-          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
           CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
-          CONTROLLED_RUNTIME_CANDIDATE_SHA: ${{ vars.MIMI_NIGHTLY_RUNTIME_CANDIDATE_SHA }}
           MIMI_CLAUDE_SMOKE_ENABLED: ${{ vars.MIMI_NIGHTLY_CLAUDE_SMOKE_ENABLED }}
         run: |
           [[ "$MIMI_RUNTIME_ENDPOINT" == https://* || "$MIMI_RUNTIME_ENDPOINT" == http://127.0.0.1:* ]]
           [[ -n "$AGENTD_TOKEN" ]]
-          [[ "$CONTROLLED_RUNTIME_CANDIDATE_SHA" == "$CANDIDATE_SHA" ]] || {
-            echo "受控 Runtime commit 不匹配：expected=$CANDIDATE_SHA actual=${CONTROLLED_RUNTIME_CANDIDATE_SHA:-missing}" >&2
-            exit 1
-          }
           version_response="$(mktemp)"
           trap 'rm -f "$version_response"' EXIT
           curl \
@@ -397,19 +461,27 @@ jobs:
             --header "Authorization: Bearer $AGENTD_TOKEN" \
             --output "$version_response" \
             "${MIMI_RUNTIME_ENDPOINT%/}/api/version"
-          runtime_version="$(
+          read -r runtime_version runtime_commit < <(
             ruby -rjson -e '
               body = JSON.parse(File.read(ARGV.fetch(0)))
               version = body["version"]
               abort "Runtime /api/version 缺少 version" unless version.is_a?(String) && !version.empty?
-              print version
+              commit = body["build_commit"]
+              abort "Runtime /api/version 缺少完整 build_commit" unless
+                commit.is_a?(String) && commit.match?(/\A[0-9a-f]{40}\z/)
+              puts [version, commit].join(" ")
             ' "$version_response"
-          )"
+          )
           [[ "$runtime_version" == "$CANDIDATE_VERSION" ]] || {
             echo "受控 Runtime 版本不匹配：expected=$CANDIDATE_VERSION actual=$runtime_version" >&2
             exit 1
           }
+          [[ "$runtime_commit" == "$CANDIDATE_SHA" ]] || {
+            echo "受控 Runtime commit 不匹配：expected=$CANDIDATE_SHA actual=$runtime_commit" >&2
+            exit 1
+          }
           echo "Controlled Runtime version: \`$runtime_version\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "Controlled Runtime build commit: \`$runtime_commit\`" >>"$GITHUB_STEP_SUMMARY"
           bash ./scripts/history-sync-regression.sh \
             --endpoint "controlled=$MIMI_RUNTIME_ENDPOINT" \
             --rounds 10 \
@@ -436,16 +508,17 @@ jobs:
       - ios-app-store-validation
       - controlled-runtime-smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - name: Fail closed and summarize evidence
         shell: bash
         env:
           VALIDATION_MODE: ${{ inputs.validation_mode }}
-          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+          CANDIDATE_VERSION: ${{ needs.resolve.outputs.release_version }}
           RUNTIME_REQUESTED: ${{ inputs.run_controlled_runtime_smoke }}
-          INTERNAL_TESTFLIGHT_EVIDENCE: ${{ inputs.internal_testflight_evidence }}
-          ROLLBACK_DRILL_EVIDENCE: ${{ inputs.rollback_drill_evidence }}
+          INTERNAL_TESTFLIGHT_RUN_ID: ${{ inputs.internal_testflight_run_id }}
+          ROLLBACK_DRILL_RUN_ID: ${{ inputs.rollback_drill_run_id }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           GO_RUST_RESULT: ${{ needs.go-rust-and-packaging.result }}
           MACOS_RESULT: ${{ needs.macos-candidate.result }}
@@ -458,6 +531,7 @@ jobs:
             echo "## Release Validation"
             echo
             echo "- Mode: \`$VALIDATION_MODE\`"
+            echo "- Candidate SHA: \`$CANDIDATE_SHA\`"
             echo "- Candidate version: \`$CANDIDATE_VERSION\`"
             echo "- 该 workflow 不创建 tag/Release、不上传 TestFlight、不部署、不执行生产回滚。"
             echo
@@ -494,14 +568,201 @@ jobs:
             || { echo "publish-readiness 必须运行受控 Runtime smoke。" >&2; exit 1; }
           [[ "$RUNTIME_RESULT" == "success" ]]
           [[ "$IOS_SIGNED_RESULT" == "success" ]]
-          [[ "$INTERNAL_TESTFLIGHT_EVIDENCE" == https://* ]] \
-            || { echo "缺少同一 candidate 的 Internal TestFlight 证据 URL。" >&2; exit 1; }
-          [[ "$ROLLBACK_DRILL_EVIDENCE" == https://* ]] \
-            || { echo "缺少上一签名产物恢复演练证据 URL。" >&2; exit 1; }
+          [[ "$INTERNAL_TESTFLIGHT_RUN_ID" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "缺少同一 candidate 的可信 Internal TestFlight upload run ID。" >&2; exit 1; }
+          [[ "$ROLLBACK_DRILL_RUN_ID" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "缺少同一 candidate 的可信 agentd rollback drill run ID。" >&2; exit 1; }
           {
             echo
-            echo "- Internal TestFlight evidence: $INTERNAL_TESTFLIGHT_EVIDENCE"
-            echo "- Signed rollback drill evidence: $ROLLBACK_DRILL_EVIDENCE"
-            echo
-            echo "PUBLISH-READINESS 通过：仍需由维护者按运行手册做最终人工确认；本 workflow 没有执行发布。"
+            echo "PUBLISH-READINESS 上游检查通过；正在生成绑定 SHA、版本、build、digest 和 run 的 attestation。"
           } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout immutable candidate for attestation verifier
+        if: inputs.validation_mode == 'publish-readiness'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+
+      - name: Download audited Mac candidate evidence
+        if: inputs.validation_mode == 'publish-readiness'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-macos-${{ needs.resolve.outputs.candidate_sha }}
+          path: validated-macos
+
+      - name: Verify Mac DMG installed-runtime evidence
+        if: inputs.validation_mode == 'publish-readiness'
+        id: macos
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          evidence="validated-macos/macos-install-evidence.json"
+          [[ -f "$evidence" ]]
+          ruby -rjson -rtime -e '
+            value = JSON.parse(File.read(ARGV.fetch(0)))
+            expected_keys = %w[
+              build candidate_sha completed_at dmg_sha256 doctor_ok install_method installed_agentd_sha256
+              kind readyz_body_sha256 readyz_http_status runtime_version schema_version started_at status version
+            ]
+            abort "Mac evidence fields mismatch" unless value.keys.sort == expected_keys.sort
+            abort "Mac evidence candidate mismatch" unless value["candidate_sha"] == ENV.fetch("EXPECTED_CANDIDATE_SHA")
+            abort "Mac evidence version mismatch" unless value["version"] == ENV.fetch("EXPECTED_VERSION")
+            abort "Mac evidence build invalid" unless value["build"].is_a?(Integer) && value["build"].positive?
+            abort "Mac evidence runtime version mismatch" unless
+              value["runtime_version"] == "#{value['version']}+mac.#{value['build']}"
+            abort "Mac install did not succeed" unless
+              value["schema_version"] == 1 &&
+              value["kind"] == "macos_dmg_drag_install_runtime" &&
+              value["status"] == "success" &&
+              value["install_method"] == "dmg-drag-copy" &&
+              value["readyz_http_status"] == 200 &&
+              value["doctor_ok"] == true
+            %w[dmg_sha256 installed_agentd_sha256 readyz_body_sha256].each do |key|
+              abort "Mac evidence #{key} invalid" unless value[key].is_a?(String) && value[key].match?(/\A[0-9a-f]{64}\z/)
+            end
+            abort "Mac evidence time order invalid" if Time.iso8601(value.fetch("completed_at")) < Time.iso8601(value.fetch("started_at"))
+          ' "$evidence"
+          echo "evidence=$evidence" >>"$GITHUB_OUTPUT"
+
+      - name: Resolve trusted TestFlight and rollback evidence artifacts
+        if: inputs.validation_mode == 'publish-readiness'
+        id: evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+          INTERNAL_TESTFLIGHT_RUN_ID: ${{ inputs.internal_testflight_run_id }}
+          ROLLBACK_DRILL_RUN_ID: ${{ inputs.rollback_drill_run_id }}
+        run: |
+          set -euo pipefail
+          testflight_dir="$RUNNER_TEMP/evidence/testflight"
+          rollback_dir="$RUNNER_TEMP/evidence/rollback"
+          mkdir -p "$testflight_dir" "$rollback_dir"
+          testflight_evidence="$(bash ./scripts/fetch-release-evidence.sh \
+            --run-id "$INTERNAL_TESTFLIGHT_RUN_ID" \
+            --workflow-path .github/workflows/ios-ci.yml \
+            --artifact-name "internal-testflight-evidence-$CANDIDATE_SHA" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --output-dir "$testflight_dir")"
+          rollback_evidence="$(bash ./scripts/fetch-release-evidence.sh \
+            --run-id "$ROLLBACK_DRILL_RUN_ID" \
+            --workflow-path .github/workflows/release-rollback-drill.yml \
+            --artifact-name "rollback-drill-evidence-$CANDIDATE_SHA" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --output-dir "$rollback_dir")"
+          [[ -f "$testflight_evidence" && -f "$rollback_evidence" ]]
+          echo "testflight_evidence=$testflight_evidence" >>"$GITHUB_OUTPUT"
+          echo "testflight_source=$testflight_dir/source.json" >>"$GITHUB_OUTPUT"
+          echo "rollback_evidence=$rollback_evidence" >>"$GITHUB_OUTPUT"
+          echo "rollback_source=$rollback_dir/source.json" >>"$GITHUB_OUTPUT"
+
+      - name: Download validated IPA and provenance
+        if: inputs.validation_mode == 'publish-readiness'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-ios-validated-${{ needs.resolve.outputs.candidate_sha }}
+          path: validated-ios
+
+      - name: Verify validated IPA provenance
+        if: inputs.validation_mode == 'publish-readiness'
+        id: ipa
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+          EXPECTED_BUNDLE_ID: ${{ needs.resolve.outputs.ios_bundle_id }}
+          EXPECTED_IOS_VERSION: ${{ needs.resolve.outputs.ios_version }}
+        run: |
+          set -euo pipefail
+          metadata="validated-ios/release-ios-metadata.json"
+          [[ -f "$metadata" ]]
+          ipa_candidates=()
+          while IFS= read -r ipa_candidate; do
+            ipa_candidates+=("$ipa_candidate")
+          done < <(find validated-ios -name '*.ipa' -type f -print)
+          [[ "${#ipa_candidates[@]}" == "1" ]]
+          actual_sha="$(sha256sum "${ipa_candidates[0]}" | awk '{print $1}')"
+          export actual_sha
+          ruby -rjson -e '
+            metadata = JSON.parse(File.read(ARGV.fetch(0)))
+            expected_keys = %w[build bundle_id candidate_sha sha256 version]
+            abort "IPA metadata fields mismatch" unless metadata.keys.sort == expected_keys
+            abort "IPA candidate mismatch" unless metadata.fetch("candidate_sha") == ENV.fetch("EXPECTED_CANDIDATE_SHA")
+            abort "IPA bundle mismatch" unless metadata.fetch("bundle_id") == ENV.fetch("EXPECTED_BUNDLE_ID")
+            abort "IPA version mismatch" unless metadata.fetch("version") == ENV.fetch("EXPECTED_IOS_VERSION")
+            abort "IPA build invalid" unless metadata.fetch("build").match?(/\A[1-9][0-9]*\z/)
+            abort "IPA digest invalid" unless metadata.fetch("sha256").match?(/\A[0-9a-f]{64}\z/)
+            abort "IPA digest mismatch" unless metadata.fetch("sha256") == ENV.fetch("actual_sha")
+            puts "bundle_id=#{metadata.fetch("bundle_id")}"
+            puts "ios_version=#{metadata.fetch("version")}"
+            puts "ios_build=#{metadata.fetch("build")}"
+            puts "artifact_sha256=#{metadata.fetch("sha256")}"
+          ' "$metadata" >>"$GITHUB_OUTPUT"
+
+      - name: Create machine-readable publish-readiness attestation
+        if: inputs.validation_mode == 'publish-readiness'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          PREVIOUS_SHA: ${{ needs.resolve.outputs.previous_sha }}
+          IOS_BUNDLE_ID: ${{ steps.ipa.outputs.bundle_id }}
+          IOS_VERSION: ${{ steps.ipa.outputs.ios_version }}
+          IOS_BUILD: ${{ steps.ipa.outputs.ios_build }}
+          IPA_SHA256: ${{ steps.ipa.outputs.artifact_sha256 }}
+          TESTFLIGHT_EVIDENCE: ${{ steps.evidence.outputs.testflight_evidence }}
+          TESTFLIGHT_SOURCE: ${{ steps.evidence.outputs.testflight_source }}
+          ROLLBACK_EVIDENCE: ${{ steps.evidence.outputs.rollback_evidence }}
+          ROLLBACK_SOURCE: ${{ steps.evidence.outputs.rollback_source }}
+          MACOS_INSTALL_EVIDENCE: ${{ steps.macos.outputs.evidence }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/release-readiness"
+          mkdir -p "$evidence_dir"
+          export RUN_ID="$GITHUB_RUN_ID"
+          export RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          export REPOSITORY="$GITHUB_REPOSITORY"
+          export VERIFIED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          ruby -rjson -e '
+            run = {
+              "schema_version" => 1,
+              "run_id" => ENV.fetch("RUN_ID"),
+              "run_attempt" => Integer(ENV.fetch("RUN_ATTEMPT"), 10),
+              "repository" => ENV.fetch("REPOSITORY"),
+              "workflow" => ".github/workflows/release-validation.yml",
+              "url" => "https://github.com/#{ENV.fetch("REPOSITORY")}/actions/runs/#{ENV.fetch("RUN_ID")}",
+              "verified_at" => ENV.fetch("VERIFIED_AT")
+            }
+            File.write(ARGV.fetch(0), JSON.generate(run) + "\n")
+          ' "$evidence_dir/run.json"
+          bash ./scripts/check-release-readiness.sh create \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --release-version "$RELEASE_VERSION" \
+            --previous-sha "$PREVIOUS_SHA" \
+            --ios-bundle-id "$IOS_BUNDLE_ID" \
+            --ios-version "$IOS_VERSION" \
+            --ios-build "$IOS_BUILD" \
+            --artifact-sha256 "$IPA_SHA256" \
+            --testflight-evidence "$TESTFLIGHT_EVIDENCE" \
+            --testflight-source "$TESTFLIGHT_SOURCE" \
+            --rollback-evidence "$ROLLBACK_EVIDENCE" \
+            --rollback-source "$ROLLBACK_SOURCE" \
+            --macos-install-evidence "$MACOS_INSTALL_EVIDENCE" \
+            --run-metadata "$evidence_dir/run.json" \
+            --output "$evidence_dir/attestation.json"
+          bash ./scripts/check-release-readiness.sh verify \
+            --attestation "$evidence_dir/attestation.json" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --release-version "$RELEASE_VERSION"
+          echo "PUBLISH-READINESS 通过：真实 tag 发布只接受该 attestation 对应的 SHA 与版本。" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload exact publish-readiness attestation
+        if: inputs.validation_mode == 'publish-readiness'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-readiness-${{ needs.resolve.outputs.candidate_sha }}-${{ needs.resolve.outputs.release_version }}
+          path: ${{ runner.temp }}/release-readiness/attestation.json
+          if-no-files-found: error
+          retention-days: 30

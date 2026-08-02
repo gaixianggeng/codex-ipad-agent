@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: nightly-validation-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   go-race-and-release-snapshot:
@@ -200,27 +200,68 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Environment selected refs 是外层强制边界；这里再绑定一次当前正式 main，
+      # 避免维护者误从其他分支手工触发后读取受控 Runtime 凭据。
+      - name: Trust gate before controlled runtime secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
+            || { echo "Controlled Runtime only runs in the official repository." >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo "Controlled Runtime only accepts refs/heads/main." >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "Controlled Runtime requires an immutable event SHA." >&2; exit 1; }
+
+          head_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          [[ "$head_sha" == "$GITHUB_SHA" && "$main_sha" == "$GITHUB_SHA" ]] \
+            || { echo "Controlled Runtime source is not current origin/main." >&2; exit 1; }
+
       - name: Require isolated runtime credentials
         shell: bash
         env:
           MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
           AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
-          CONTROLLED_RUNTIME_CANDIDATE_SHA: ${{ vars.MIMI_NIGHTLY_RUNTIME_CANDIDATE_SHA }}
           EXPECTED_CANDIDATE_SHA: ${{ github.sha }}
         run: |
           [[ "$MIMI_RUNTIME_ENDPOINT" == https://* || "$MIMI_RUNTIME_ENDPOINT" == http://127.0.0.1:* ]] \
             || { echo "受控 Endpoint 必须是 HTTPS 或 runner loopback。" >&2; exit 1; }
           [[ -n "$AGENTD_TOKEN" ]] \
             || { echo "缺少受控、可撤销的 Nightly Token。" >&2; exit 1; }
-          [[ "$CONTROLLED_RUNTIME_CANDIDATE_SHA" == "$EXPECTED_CANDIDATE_SHA" ]] \
-            || { echo "受控 Runtime 未声明运行当前 Nightly commit。" >&2; exit 1; }
+          [[ "$EXPECTED_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
 
       - name: Run read-only Codex history smoke
         shell: bash
         env:
           MIMI_RUNTIME_ENDPOINT: ${{ secrets.MIMI_NIGHTLY_RUNTIME_ENDPOINT }}
           AGENTD_TOKEN: ${{ secrets.MIMI_NIGHTLY_RUNTIME_TOKEN }}
+          EXPECTED_CANDIDATE_SHA: ${{ github.sha }}
         run: |
+          version_response="$(mktemp)"
+          trap 'rm -f "$version_response"' EXIT
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 15 \
+            --header "Authorization: Bearer $AGENTD_TOKEN" \
+            --output "$version_response" \
+            "${MIMI_RUNTIME_ENDPOINT%/}/api/version"
+          runtime_commit="$(ruby -rjson -e '
+            body = JSON.parse(File.read(ARGV.fetch(0)))
+            commit = body["build_commit"]
+            abort "Runtime /api/version 缺少完整 build_commit" unless
+              commit.is_a?(String) && commit.match?(/\A[0-9a-f]{40}\z/)
+            print commit
+          ' "$version_response")"
+          [[ "$runtime_commit" == "$EXPECTED_CANDIDATE_SHA" ]] || {
+            echo "受控 Runtime commit 不匹配：expected=$EXPECTED_CANDIDATE_SHA actual=$runtime_commit" >&2
+            exit 1
+          }
+          echo "Controlled Runtime build commit: \`$runtime_commit\`" >>"$GITHUB_STEP_SUMMARY"
           bash ./scripts/history-sync-regression.sh \
             --endpoint "controlled=$MIMI_RUNTIME_ENDPOINT" \
             --rounds 10 \

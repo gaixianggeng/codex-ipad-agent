@@ -139,18 +139,23 @@ Issue 中记录原因、被绕过的失败 check、操作者、时间、回滚 c
 修改 `.github/workflows`、发布验证脚本或回滚规则时，本地先运行：
 
 ```bash
-bash ./scripts/check-validation-workflows.sh
+bash ./scripts/check-validation-workflows.sh --self-test
+bash ./scripts/check-release-readiness.sh --self-test
 bash ./scripts/check-pr-gate.sh
 ```
 
-发布候选必须显式提供上一已知可用 commit/tag，并先做只读 dry-run：
+发布候选必须显式提供上一正式 GitHub Release tag，并先做只读 dry-run：
 
 ```bash
 bash ./scripts/check-rollback-readiness.sh \
   --candidate-ref HEAD \
-  --previous-ref "<上一正式 tag 或 commit>" \
+  --previous-ref "<上一正式 Release tag>" \
   --output /tmp/mimi-rollback-readiness.md
 ```
 
-完整触发方式、artifact、失败处理、Internal TestFlight 证据和 capability kill switch
+完整触发方式、artifact、失败处理、Internal TestFlight upload run、agentd rollback drill 和 capability kill switch
 见 [Nightly、Release validation 与回滚检查](docs/nightly-release-rollback.md)。
+正式 `v*` tag 发布会强制消费同一 `main` SHA 与版本的成功 publish-readiness attestation；
+attestation 只接受 GitHub API 验证过的 TestFlight/rollback run artifact，不能直接填写 JSON。
+缺少或不匹配时发布 fail-closed，Windows 正式安装器也不允许回退到 unsigned。tag 发布
+使用 current protected `main` 的 verifier，并要求 tag 本身指向 current main。

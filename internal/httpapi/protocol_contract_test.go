@@ -70,6 +70,23 @@ func TestVersionResponseMatchesSharedCurrentGoldenFixture(t *testing.T) {
 	}
 }
 
+func TestVersionResponseExposesInjectedBuildCommit(t *testing.T) {
+	server := newTestServer(t)
+	server.router.buildCommit = "0123456789abcdef0123456789abcdef01234567"
+	rec := httptest.NewRecorder()
+	server.handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("version 请求失败：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response protocolcontract.VersionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.BuildCommit != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("build_commit 未绑定编译身份：%q", response.BuildCommit)
+	}
+}
+
 func TestVersionResponseOptionallyAdvertisesCurrentMagicDNSMetadata(t *testing.T) {
 	server := newTestServer(t)
 	server.router.tailscaleHostLookup = func(context.Context) tailscaleinfo.Host {

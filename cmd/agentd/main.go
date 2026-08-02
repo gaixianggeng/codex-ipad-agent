@@ -32,6 +32,10 @@ import (
 // 正式发布由 GoReleaser 使用 -X 注入版本号；源码构建明确标记为 devel，避免首个正式版本被误判为开发构建。
 var version = "devel"
 
+// buildCommit 由正式/Nightly 构建使用 -X 注入完整 40 位 Git SHA。
+// 本地源码构建保持 unknown；Release Runtime 验证会明确拒绝 unknown/devel/空值。
+var buildCommit = "unknown"
+
 // managedServicePlatform 默认等于编译目标，只作为平台命令选择的窄测试缝隙；
 // 生产代码不修改它，也不根据配置或环境变量伪装操作系统。
 var managedServicePlatform = runtime.GOOS
@@ -1029,6 +1033,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		nil,
 		httpapi.RouterOptions{
 			GatewayTurnClaimStorePath: gatewayTurnClaimStorePath,
+			BuildCommit:               buildCommit,
 		},
 	)
 	apiRouter.EnableTailscaleHostMetadata()

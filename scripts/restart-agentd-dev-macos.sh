@@ -151,6 +151,7 @@ main() {
   local target_binary
   local current_version
   local git_revision
+  local git_commit
   local new_version
   local run_dir
   local candidate
@@ -169,7 +170,8 @@ main() {
     || fail "Homebrew agentd 不是可替换的普通文件：$target_binary"
   current_version="$("$target_binary" version)"
 
-  git_revision="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD)"
+  git_commit="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)"
+  git_revision="${git_commit:0:12}"
   new_version="devel-${git_revision}"
   if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal)" ]]; then
     new_version="${new_version}-dirty"
@@ -184,7 +186,7 @@ main() {
   (
     cd "$ROOT_DIR"
     CGO_ENABLED=0 go build -trimpath \
-      -ldflags "-s -w -X main.version=${new_version}" \
+      -ldflags "-s -w -X main.version=${new_version} -X main.buildCommit=${git_commit}" \
       -o "$candidate" ./cmd/agentd
   )
   /bin/chmod 755 "$candidate"

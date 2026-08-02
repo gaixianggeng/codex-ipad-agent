@@ -167,6 +167,9 @@ func StartManagedWebSocket(ctx context.Context, options ManagedWebSocketOptions)
 	}
 	select {
 	case err := <-process.waitCh:
+		// launcher 可能正常退出，却把真正的 app-server 留在同一进程组。
+		// 这里不会把 process 返回给调用方，因此必须在报启动失败前回收整棵进程树。
+		terminateManagedProcess(process.cmd)
 		if err == nil {
 			return nil, fmt.Errorf("codex app-server WebSocket 启动后立即退出")
 		}
@@ -254,6 +257,9 @@ func (p *ManagedProcess) Shutdown(ctx context.Context) error {
 		}
 		select {
 		case err := <-p.waitCh:
+			// launcher 可能先退出、把真正的 app-server 留在独立进程组中；
+			// 即使已经 Wait 到 parent，也必须再回收整个托管进程树。
+			terminateManagedProcess(p.cmd)
 			shutdownErr = err
 			return
 		case <-ctx.Done():
@@ -282,6 +288,8 @@ func (p *ManagedWebSocketProcess) Shutdown(ctx context.Context) error {
 	p.shutdownOnce.Do(func() {
 		select {
 		case err := <-p.waitCh:
+			// Node/npm launcher 先退出时，native Codex 仍可能留在同一进程组。
+			terminateManagedProcess(p.cmd)
 			shutdownErr = ignoreKilledProcessError(err)
 			return
 		case <-ctx.Done():

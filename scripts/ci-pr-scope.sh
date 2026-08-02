@@ -109,7 +109,7 @@ else
 
     # CI 编排或分类规则本身变化时执行全部语言门禁，避免分类器修改静默缩小覆盖面。
     case "$changed_path" in
-      .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh|scripts/check-validation-workflows.sh|scripts/check-rollback-readiness.sh)
+      .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh|scripts/check-validation-workflows.sh|scripts/check-release-readiness.sh|scripts/fetch-release-evidence.sh|scripts/check-rollback-readiness.sh|scripts/run-agentd-rollback-drill.sh|scripts/test-macos-dmg-install.sh)
         go_scope=true
         ios_scope=true
         rust_scope=true

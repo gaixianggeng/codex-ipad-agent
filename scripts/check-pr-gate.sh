@@ -17,7 +17,11 @@ done
 bash -n \
   scripts/ci-pr-scope.sh \
   scripts/check-critical-regressions.sh \
+  scripts/check-release-readiness.sh \
+  scripts/fetch-release-evidence.sh \
   scripts/check-rollback-readiness.sh \
+  scripts/run-agentd-rollback-drill.sh \
+  scripts/test-macos-dmg-install.sh \
   scripts/check-validation-workflows.sh \
   scripts/check-pr-gate.sh
 
@@ -64,8 +68,13 @@ assert_scope docs_only false false false CONTRIBUTING.md
 assert_scope workflow true true true .github/workflows/pr-gate.yml
 assert_scope nightly_workflow true true true .github/workflows/nightly.yml
 assert_scope release_validation_workflow true true true .github/workflows/release-validation.yml
+assert_scope rollback_drill_workflow true true true .github/workflows/release-rollback-drill.yml
 assert_scope validation_checker true true true scripts/check-validation-workflows.sh
+assert_scope readiness_checker true true true scripts/check-release-readiness.sh
+assert_scope evidence_fetcher true true true scripts/fetch-release-evidence.sh
 assert_scope rollback_checker true true true scripts/check-rollback-readiness.sh
+assert_scope rollback_drill true true true scripts/run-agentd-rollback-drill.sh
+assert_scope macos_dmg_install true true true scripts/test-macos-dmg-install.sh
 assert_scope runtime_smoke true false false scripts/history-sync-regression.sh
 assert_scope mixed true true true \
   cmd/agentd/main.go \

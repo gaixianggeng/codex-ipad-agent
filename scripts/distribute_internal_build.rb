@@ -7,6 +7,7 @@ require "net/http"
 require "openssl"
 require "open3"
 require "tmpdir"
+require "time"
 require "uri"
 
 def abort_release(message)
@@ -177,7 +178,8 @@ else
 end
 
 group = client.get("/v1/betaGroups/#{group_id}").fetch("data")
-abort_release("目标组不是内部测试组") if group.dig("attributes", "isInternalGroup") == false
+# 发布证据必须失败关闭：字段缺失也不能被当作内部组。
+abort_release("目标组不是内部测试组") unless group.dig("attributes", "isInternalGroup") == true
 group_builds = client.get("/v1/betaGroups/#{group_id}/builds", { "limit" => "200" }).fetch("data")
 unless group_builds.any? { |item| item.fetch("id") == build_id }
   client.post("/v1/betaGroups/#{group_id}/relationships/builds", {
@@ -198,6 +200,41 @@ localizations = client.get("/v1/builds/#{build_id}/betaBuildLocalizations", { "l
 localization = localizations.find { |item| item.dig("attributes", "locale") == "zh-Hans" } || localizations.first
 actual_whats_new = localization&.dig("attributes", "whatsNew").to_s
 abort_release("What to Test 回读不一致") unless actual_whats_new == whats_new
+
+# 只有在 ASC 回读确认构建为 VALID、已进入目标内部组、组内存在测试员且
+# What to Test 一致后才生成机器 receipt。后续发布门禁只接受来自受信 Actions run
+# 的该文件，不接受 workflow_dispatch 直接填写的“成功”JSON。
+evidence_path = ENV["TESTFLIGHT_EVIDENCE_PATH"].to_s
+unless evidence_path.empty?
+  evidence_directory = File.dirname(File.expand_path(evidence_path))
+  abort_release("TestFlight evidence 输出目录不存在：#{evidence_directory}") unless Dir.exist?(evidence_directory)
+  evidence = {
+    "schema_version" => 2,
+    "kind" => "app_store_connect_internal_distribution",
+    "asc_build_id" => build_id,
+    "asc_processing_state" => build.dig("attributes", "processingState"),
+    "bundle_id" => metadata[:bundle_id],
+    "ios_version" => metadata[:version],
+    "ios_build" => metadata[:build],
+    "internal_beta_group_id" => group_id,
+    "internal_beta_group" => group.dig("attributes", "name"),
+    "internal_group" => group.dig("attributes", "isInternalGroup") == true,
+    "tester_count" => tester_count,
+    "what_to_test_verified" => true,
+    "generated_at" => Time.now.utc.iso8601
+  }
+  temporary_path = "#{evidence_path}.tmp.#{$$}"
+  begin
+    File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      file.write(JSON.generate(evidence) << "\n")
+      file.flush
+      file.fsync
+    end
+    File.rename(temporary_path, evidence_path)
+  ensure
+    File.delete(temporary_path) if File.exist?(temporary_path)
+  end
+end
 
 puts "Mimi TestFlight 内测发布成功：#{metadata[:version]} (#{metadata[:build]}) " \
      "build=#{build_id} group=#{group.dig('attributes', 'name')} testers=#{tester_count} whatsNew=verified"
