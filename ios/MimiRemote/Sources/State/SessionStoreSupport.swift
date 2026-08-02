@@ -70,6 +70,8 @@ struct SessionListFirstPageRequestKey: Hashable {
     let workspacePath: String
     let limit: Int
     let consistency: SessionListConsistency
+    /// nil 表示真正首屏；非 nil 表示权威展示窗口从已提交边界续跑。
+    let cursor: String?
 }
 
 /// “已经有几条缓存”与“当前主机代次已完成精确首屏”是两个状态。
@@ -82,7 +84,17 @@ struct WorkspaceSessionFirstPageKey: Hashable {
 
 struct WorkspaceSessionFirstPageCompletion: Equatable {
     let consistency: SessionListConsistency
+    let isPresentationWindowComplete: Bool
+    /// 权威展示窗口达到单批预算但仍欠填时，保存下一批唯一允许继续的 opaque cursor。
+    let continuationCursor: String?
+    /// 仅记录当前权威 cursor 链实际扫描过的有序 ID；不能用整个工作区缓存冒充权威种子。
+    let scannedSessionIDs: [SessionID]
     let completedAt: Date
+}
+
+struct SessionListFirstPageResult {
+    let page: SessionsPage
+    let requestedCursor: String?
 }
 
 enum SessionListRequestSource: String {
@@ -90,7 +102,9 @@ enum SessionListRequestSource: String {
     case libraryIndex
     case restore
     case selectedProject
+    case externalActivity
     case workspaceForeground
+    case workspaceLoadMore
 }
 
 enum SessionListRequestDelivery: String {
@@ -119,6 +133,21 @@ enum SessionListDiagnostics {
         // 只记录固定枚举和计数，不写 workspace path、标题或任何用户内容。
         logger.info(
             "source=\(source.rawValue, privacy: .public) page=1 consistency=\(consistencyName, privacy: .public) delivery=\(delivery.rawValue, privacy: .public) count=\(count) duration_ms=\(durationMilliseconds)"
+        )
+    }
+
+    static func presentationWindowCompleted(
+        source: SessionListRequestSource,
+        consistency: SessionListConsistency,
+        rawCount: Int,
+        listableCount: Int,
+        pagesScanned: Int,
+        hasMore: Bool
+    ) {
+        let consistencyName = consistency == .authoritative ? "authoritative" : "fastIndexed"
+        // 这里只记录分页形态，不记录 workspace、标题、session ID 或任何用户内容。
+        logger.info(
+            "source=\(source.rawValue, privacy: .public) presentation_fill consistency=\(consistencyName, privacy: .public) raw_count=\(rawCount) listable_count=\(listableCount) pages_scanned=\(pagesScanned) has_more=\(hasMore)"
         )
     }
 }
@@ -1603,6 +1632,15 @@ extension SessionStore {
         guard let existing = sessionsByID[incoming.id] else {
             return incoming
         }
+        return sessionPreservingSubagentOwnership(incoming, withKnown: existing)
+    }
+
+    /// 同一 cursor 链也可能重复同一 ID，且后一页才携带完整 parent/source。
+    /// 分页结果尚未进入 Store 时，用当前链已知行执行同样的单调 ownership 合并。
+    func sessionPreservingSubagentOwnership(
+        _ incoming: AgentSession,
+        withKnown existing: AgentSession
+    ) -> AgentSession {
         var result = incoming
         result.createdAt = result.createdAt ?? existing.createdAt ?? existing.context?.createdAt
 

@@ -1449,8 +1449,11 @@ extension SessionStore {
         sessionListFirstPageCacheByKey = sessionListFirstPageCacheByKey.filter {
             replacements[$0.key.workspaceID] == nil
         }
-        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+        let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
             replacements[$0.key.workspaceID] == nil
+        }
+        if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+            workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
         }
 
         let workspacesByID = Dictionary(
@@ -1916,8 +1919,11 @@ extension SessionStore {
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
         sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
         sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
-        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+        let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
             $0.key.workspaceID != project.id
+        }
+        if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+            workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
         }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
@@ -2343,7 +2349,9 @@ extension SessionStore {
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
-        workspaceSessionFirstPageCompletionByKey = [:]
+        if !workspaceSessionFirstPageCompletionByKey.isEmpty {
+            workspaceSessionFirstPageCompletionByKey = [:]
+        }
         sessionListCooldownUntilByBudgetKey = [:]
         lastSessionLibraryIndexRefreshAt = nil
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }

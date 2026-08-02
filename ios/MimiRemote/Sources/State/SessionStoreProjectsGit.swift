@@ -905,8 +905,11 @@ extension SessionStore {
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
         sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
         sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
-        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+        let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
             $0.key.workspaceID != project.id
+        }
+        if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+            workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
         }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
@@ -1487,17 +1490,36 @@ extension SessionStore {
                     finishSessionPageRequest(projectID: projectID, token: requestToken ?? 0)
                 }
             }
-            let page = try await lease.client.sessionsPage(
+            let page = try await sessionListPageFillingPresentationWindow(
+                client: lease.client,
                 workspace: workspace,
                 cursor: cursor,
-                limit: Self.expandedSessionPageLimit
+                limit: Self.expandedSessionPageLimit,
+                consistency: .fastIndexed,
+                source: .workspaceLoadMore,
+                expectedHostScope: lease.scope,
+                // 翻页要补的是新根会话；服务端边界漂移造成的重复 ID 不能占满下一页额度。
+                excludingListableSessionIDs: Set(sessions(forProjectID: projectID).map(\.id)),
+                // 新的刷新/分页 token 取代旧请求后，旧 cursor 链必须在下一页前停止。
+                isRequestCurrent: { [weak self] in
+                    guard let self, let requestToken else { return false }
+                    return self.isCurrentSessionPageRequest(projectID: projectID, token: requestToken)
+                }
             )
             guard canApplyProjectsGitResult(lease),
                   isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
-            mergeSessionPage(sessions(page.sessions, in: workspace))
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                sessions(page.sessions, in: workspace),
+                workspace: workspace
+            )
             updateSessionPageState(projectID: projectID, page: page, requestedCursor: cursor)
+            // 显示更多也可能从弱索引补认既有 root 的 child 身份。必须在推进到本轮安全
+            // continuation 之后再失效首屏完成态，让视图自动用该游标补齐，而不是退回旧边界。
+            invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
+                workspace: workspace
+            )
             sessionProjectsWithAdditionalPages.insert(projectID)
             clearWorkspaceUnavailable(projectID)
             setErrorMessage(nil)

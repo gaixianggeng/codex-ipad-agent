@@ -1146,7 +1146,9 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     var historyCursorPages: [String: HistoryMessagesPage]
     var requestedMessageCursors: [String?] = []
     var requestedSessionCursors: [String?] = []
+    var requestedSessionLimits: [Int?] = []
     var requestedSessionListConsistencies: [SessionListConsistency] = []
+    var onSessionPageRequest: ((String?) -> Void)?
 
     init(
         projects: [AgentProject],
@@ -1177,6 +1179,8 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
         requestedSessionCursors.append(cursor)
+        requestedSessionLimits.append(limit)
+        onSessionPageRequest?(cursor)
         if let cursor, let page = cursorPages[cursor] {
             return page
         }
@@ -1235,6 +1239,7 @@ final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
     let blockOnCall: Int
     let blockedError: Error?
     private(set) var requestedMessageCursors: [String?] = []
+    private(set) var requestedSessionCursors: [String?] = []
     private(set) var sessionsPageCallCount = 0
     private(set) var requestedSessionListConsistencies: [SessionListConsistency] = []
     private var blockedListRefreshCount = 0
@@ -1263,6 +1268,7 @@ final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
         sessionsPageCallCount += 1
+        requestedSessionCursors.append(cursor)
         guard sessionsPageCallCount >= blockOnCall else {
             return page
         }

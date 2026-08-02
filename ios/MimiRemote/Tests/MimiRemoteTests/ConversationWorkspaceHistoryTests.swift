@@ -271,11 +271,15 @@ extension ConversationDataFlowTests {
     }
 
     func testSessionStoreCreatesWorktreeAndOpensReturnedWorkspace() async {
-        let project = makeProject(id: "proj_1")
+        let project = AgentProject(
+            id: "proj_1",
+            name: "proj_1",
+            path: "/Users/mimi-tests/proj_1"
+        )
         let workspace = AgentWorkspace(
             id: "ws_worktree",
             name: "feature-review",
-            path: "/tmp/worktrees/proj_1/feature-review",
+            path: "/Users/mimi-tests/worktrees/proj_1/feature-review",
             rootProjectID: project.id,
             rootProjectName: project.name,
             rootProjectPath: project.path
@@ -407,7 +411,11 @@ extension ConversationDataFlowTests {
     }
 
     func testSessionStoreHandoffsSessionWithNativeForkWhenAvailable() async {
-        let project = makeProject(id: "proj_1")
+        let project = AgentProject(
+            id: "proj_1",
+            name: "proj_1",
+            path: "/Users/mimi-tests/proj_1"
+        )
         let source = makeSession(
             id: "codex_source",
             projectID: project.id,
@@ -419,7 +427,7 @@ extension ConversationDataFlowTests {
         let workspace = AgentWorkspace(
             id: "ws_handoff",
             name: "audit-handoff",
-            path: "/tmp/worktrees/proj_1/audit-handoff",
+            path: "/Users/mimi-tests/worktrees/proj_1/audit-handoff",
             rootProjectID: project.id,
             rootProjectName: project.name,
             rootProjectPath: project.path
@@ -476,7 +484,11 @@ extension ConversationDataFlowTests {
     }
 
     func testSessionStoreHandoffsSessionToNewWorktree() async throws {
-        let project = makeProject(id: "proj_1")
+        let project = AgentProject(
+            id: "proj_1",
+            name: "proj_1",
+            path: "/Users/mimi-tests/proj_1"
+        )
         let source = makeSession(
             id: "codex_source",
             projectID: project.id,
@@ -489,7 +501,7 @@ extension ConversationDataFlowTests {
         let workspace = AgentWorkspace(
             id: "ws_handoff",
             name: "audit-handoff",
-            path: "/tmp/worktrees/proj_1/audit-handoff",
+            path: "/Users/mimi-tests/worktrees/proj_1/audit-handoff",
             rootProjectID: project.id,
             rootProjectName: project.name,
             rootProjectPath: project.path
@@ -1337,7 +1349,7 @@ extension ConversationDataFlowTests {
 
     func testSessionStoreLoadsNextSessionPageWhenExpanded() async {
         let project = makeProject(id: "proj_1")
-        let firstPage = (0..<3).map { index in
+        let firstPage = (0..<20).map { index in
             makeSession(
                 id: "codex_first_\(index)",
                 projectID: project.id,
@@ -1345,7 +1357,7 @@ extension ConversationDataFlowTests {
                 status: "history",
                 source: "codex",
                 resumeID: "first_\(index)",
-                updatedAt: Date(timeIntervalSince1970: TimeInterval(20 - index))
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
             )
         }
         let secondPage = (0..<2).map { index in
@@ -1379,24 +1391,37 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         await store.refreshAll(autoAttach: false)
         XCTAssertTrue(store.canLoadMoreSessions(projectID: project.id))
-        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).map(\.id), firstPage.map(\.id))
+        XCTAssertEqual(
+            store.visibleSessions(forProjectID: project.id).map(\.id),
+            Array(firstPage.prefix(SessionStore.sessionPreviewLimit)).map(\.id)
+        )
         var snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertFalse(snapshot.isShowingAll)
         XCTAssertTrue(snapshot.canLoadMore)
         XCTAssertTrue(snapshot.shouldShowActionRow)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_more"))
 
+        // 首屏固定填满 20 条；逐步展开到当前窗口边界后才请求下一 opaque cursor。
+        await store.toggleSessionListExpansion(projectID: project.id)
+        await store.toggleSessionListExpansion(projectID: project.id)
         await store.toggleSessionListExpansion(projectID: project.id)
 
         XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (firstPage + secondPage).map(\.id))
-        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 5)
+        XCTAssertEqual(store.visibleSessions(forProjectID: project.id).count, 20)
         snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertTrue(snapshot.isShowingAll)
         XCTAssertFalse(snapshot.canLoadMore)
-        XCTAssertEqual(snapshot.allSessionCount, 5)
-        XCTAssertEqual(snapshot.visibleSessions.count, 5)
-        XCTAssertFalse(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.allSessionCount, 22)
+        XCTAssertEqual(snapshot.visibleSessions.count, 20)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
+        XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_more"))
+
+        await store.toggleSessionListExpansion(projectID: project.id)
+        snapshot = store.sessionListSnapshot(forProjectID: project.id)
+        XCTAssertTrue(snapshot.isShowingAll)
+        XCTAssertEqual(snapshot.visibleSessions.count, 22)
+        XCTAssertTrue(snapshot.shouldShowActionRow)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_less"))
     }
 
@@ -1554,26 +1579,26 @@ extension ConversationDataFlowTests {
 
     func testWorkspaceBackgroundRefreshPreservesDeepContinuation() async {
         let project = makeProject(id: "proj_workspace_deep_cursor")
-        let firstPage = [
+        let firstPage = (0..<20).map { index in
             makeSession(
-                id: "workspace_deep_recent",
+                id: "workspace_deep_recent_\(index)",
                 projectID: project.id,
-                title: "最近会话",
+                title: "最近会话 \(index)",
                 status: "history",
                 source: "codex",
-                updatedAt: Date(timeIntervalSince1970: 400)
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(500 - index))
             )
-        ]
-        let secondPage = [
+        }
+        let secondPage = (0..<20).map { index in
             makeSession(
-                id: "workspace_deep_middle",
+                id: "workspace_deep_middle_\(index)",
                 projectID: project.id,
-                title: "第二页会话",
+                title: "第二页会话 \(index)",
                 status: "history",
                 source: "claude",
-                updatedAt: Date(timeIntervalSince1970: 300)
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(400 - index))
             )
-        ]
+        }
         let thirdPage = [
             makeSession(
                 id: "workspace_deep_oldest",
@@ -1728,15 +1753,26 @@ extension ConversationDataFlowTests {
             clientFactory: { client }
         )
 
+        store.projects = [project]
         store.selectedProjectID = project.id
-        await store.refreshAll(autoAttach: false)
+        await store.refreshSessions(
+            forProjectID: project.id,
+            showLoading: false,
+            reuseRecent: false,
+            consistency: .fastIndexed
+        )
         var snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertTrue(snapshot.canLoadMore)
         XCTAssertTrue(snapshot.shouldShowActionRow)
         XCTAssertEqual(snapshot.actionTitle, L10n.text("ui.show_more"))
 
         client.page = SessionsPage(sessions: firstPage, hasMore: false)
-        await store.refreshAll(autoAttach: false)
+        await store.refreshSessions(
+            forProjectID: project.id,
+            showLoading: false,
+            reuseRecent: false,
+            consistency: .fastIndexed
+        )
 
         snapshot = store.sessionListSnapshot(forProjectID: project.id)
         XCTAssertFalse(snapshot.canLoadMore)

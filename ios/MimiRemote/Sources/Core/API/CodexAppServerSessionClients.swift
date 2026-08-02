@@ -339,8 +339,8 @@ final class AppServerRuntimeBundle {
     }
 }
 
-private struct RuntimeSessionsContinuation: Codable {
-    enum State: String, Codable {
+private struct RuntimeSessionsContinuation: Codable, Hashable {
+    enum State: String, Codable, Hashable {
         case notStarted
         case canContinue
         case exhausted
@@ -677,6 +677,26 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         var continuation: RuntimeSessionsContinuation
     }
 
+    private final class EmptyPageRefillBudget {
+        private(set) var remaining: Int
+
+        init(limit: Int) {
+            remaining = max(0, limit)
+        }
+
+        var isExhausted: Bool { remaining == 0 }
+
+        func consume() -> Bool {
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
+    }
+
+    /// 单次合并调用最多跨过 8 个空 continuation 页；更深历史交给返回的安全 cursor
+    /// 在下一次 Store 补页中继续，避免一个 RPC 独占 gateway。
+    private static let maximumEmptyPageRefillsPerRequest = 8
+
     private enum SessionListScope {
         case projectID(String?)
         case workspace(AgentWorkspace)
@@ -697,23 +717,28 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
             sessions: SessionIndexStore.sortedSessions(decoded.claudeBuffer),
             continuation: decoded.claude
         )
+        let emptyPageRefillBudget = EmptyPageRefillBudget(
+            limit: Self.maximumEmptyPageRefillsPerRequest
+        )
 
-        codex = try await refilledCandidate(
+        codex = try await refilledCandidateSkippingEmptyPages(
             codex,
             runtime: bundle.codex,
             scope: scope,
             limit: limit,
             consistency: consistency,
-            available: true
+            available: true,
+            budget: emptyPageRefillBudget
         )
         let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
-        claude = try await refilledCandidate(
+        claude = try await refilledCandidateSkippingEmptyPages(
             claude,
             runtime: bundle.claude,
             scope: scope,
             limit: limit,
             consistency: consistency,
-            available: claudeAvailable
+            available: claudeAvailable,
+            budget: emptyPageRefillBudget
         )
 
         // limit=nil 沿用旧语义：只返回本轮首次取得的候选窗口，不扫描完整历史。
@@ -723,26 +748,76 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         emitted.reserveCapacity(outputLimit)
 
         mergeLoop: while emitted.count < outputLimit {
-            // 某侧 buffer 用完但仍有 continuation 时，必须在输出另一侧更旧记录前补齐候选。
-            // 否则未知的下一条可能比另一侧当前 head 更新，形成跨页逆序。
-            if codex.sessions.isEmpty, !claude.sessions.isEmpty {
-                codex = try await refilledCandidate(
+            if !claudeAvailable,
+               claude.sessions.isEmpty,
+               claude.continuation.hasMore {
+                // channel 可能在两次“显示更多”之间临时下线。不能反复调用 no-op refill，
+                // 也不能越过未知的 Claude head 输出 Codex 旧记录；保留双方 buffer/cursor，
+                // 待下一次 channel 恢复后从同一 opaque cursor 安全继续。
+                break mergeLoop
+            }
+            if codex.sessions.isEmpty, claude.sessions.isEmpty {
+                guard codex.continuation.hasMore || claude.continuation.hasMore else {
+                    break mergeLoop
+                }
+                guard !emptyPageRefillBudget.isExhausted else {
+                    // continuation 留在 composite cursor，下一次 Store 补页可从原位置安全继续。
+                    break mergeLoop
+                }
+
+                // 两侧当前页都可能被上游过滤为空，但 cursor 仍指向更旧页。nil/nil 只表示
+                // “当前 buffer 为空”，不能冒充“两个 Runtime 都已耗尽”。
+                codex = try await refilledCandidateSkippingEmptyPages(
                     codex,
                     runtime: bundle.codex,
                     scope: scope,
                     limit: limit,
                     consistency: consistency,
-                    available: true
+                    available: true,
+                    budget: emptyPageRefillBudget
                 )
-            }
-            if claude.sessions.isEmpty, !codex.sessions.isEmpty {
-                claude = try await refilledCandidate(
+                claude = try await refilledCandidateSkippingEmptyPages(
                     claude,
                     runtime: bundle.claude,
                     scope: scope,
                     limit: limit,
                     consistency: consistency,
-                    available: claudeAvailable
+                    available: claudeAvailable,
+                    budget: emptyPageRefillBudget
+                )
+                continue mergeLoop
+            }
+
+            if emptyPageRefillBudget.isExhausted,
+               (codex.sessions.isEmpty && codex.continuation.hasMore
+                   || claude.sessions.isEmpty && claude.continuation.hasMore) {
+                // 另一侧的未知 head 仍可能更新；预算耗尽时保留当前 buffers/cursors，
+                // 不冒险输出另一侧更旧记录而破坏跨页全局顺序。
+                break mergeLoop
+            }
+
+            // 某侧 buffer 用完但仍有 continuation 时，必须在输出另一侧更旧记录前补齐候选。
+            // 否则未知的下一条可能比另一侧当前 head 更新，形成跨页逆序。
+            if codex.sessions.isEmpty, !claude.sessions.isEmpty {
+                codex = try await refilledCandidateSkippingEmptyPages(
+                    codex,
+                    runtime: bundle.codex,
+                    scope: scope,
+                    limit: limit,
+                    consistency: consistency,
+                    available: true,
+                    budget: emptyPageRefillBudget
+                )
+            }
+            if claude.sessions.isEmpty, !codex.sessions.isEmpty {
+                claude = try await refilledCandidateSkippingEmptyPages(
+                    claude,
+                    runtime: bundle.claude,
+                    scope: scope,
+                    limit: limit,
+                    consistency: consistency,
+                    available: claudeAvailable,
+                    budget: emptyPageRefillBudget
                 )
             }
 
@@ -771,6 +846,49 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         )
         let nextCursor = next.encodedIfNeeded()
         return SessionsPage(sessions: emitted, nextCursor: nextCursor, hasMore: nextCursor != nil)
+    }
+
+    private func refilledCandidateSkippingEmptyPages(
+        _ current: RuntimePage,
+        runtime: CodexAppServerSessionRuntime,
+        scope: SessionListScope,
+        limit: Int?,
+        consistency: SessionListConsistency,
+        available: Bool,
+        budget: EmptyPageRefillBudget
+    ) async throws -> RuntimePage {
+        guard available else { return current }
+
+        var candidate = current
+        var seenEmptyContinuations: Set<RuntimeSessionsContinuation> = []
+        while candidate.sessions.isEmpty {
+            switch candidate.continuation.state {
+            case .notStarted:
+                break
+            case .canContinue:
+                guard seenEmptyContinuations.insert(candidate.continuation).inserted else {
+                    // cursor 形成 A→B→A 之类的环时 fail closed，避免空页请求永久占用 gateway。
+                    candidate.continuation = .exhausted
+                    return candidate
+                }
+                guard budget.consume() else {
+                    // 不消费当前 continuation；调用方会把它原样编码回 composite cursor。
+                    return candidate
+                }
+            case .exhausted:
+                return candidate
+            }
+
+            candidate = try await refilledCandidate(
+                candidate,
+                runtime: runtime,
+                scope: scope,
+                limit: limit,
+                consistency: consistency,
+                available: available
+            )
+        }
+        return candidate
     }
 
     private func refilledCandidate(
@@ -815,9 +933,20 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
                 consistency: consistency
             )
         }
+        let continuation = Self.continuation(after: page)
+        let progressedContinuation: RuntimeSessionsContinuation
+        if let cursor,
+           continuation.hasMore,
+           continuation.cursor == cursor {
+            // 同一 cursor 再次返回自身不可能推进分页；即使这一页带有数据，也必须在消费完
+            // 当前 buffer 后停止，避免下一轮重复请求、重复会话或空页死循环。
+            progressedContinuation = .exhausted
+        } else {
+            progressedContinuation = continuation
+        }
         return RuntimePage(
             sessions: SessionIndexStore.sortedSessions(page.sessions),
-            continuation: Self.continuation(after: page)
+            continuation: progressedContinuation
         )
     }
 

@@ -48,14 +48,18 @@ extension SessionStore {
 
         // 先让 runtime 从真实 thread/list 建立 session→provider 路由；旧会话不在首屏时再使用本地轻量快照。
         do {
-            let page = try await sessionListFirstPage(
+            let result = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: true,
                 source: .restore
             )
+            let page = result.page
             guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else { return nil }
-            mergeSessionPage(sessions(page.sessions, in: workspace))
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                sessions(page.sessions, in: workspace),
+                workspace: workspace
+            )
             updateWorkspaceSessionFirstPageState(
                 workspace: workspace,
                 page: page,
@@ -63,6 +67,7 @@ extension SessionStore {
             )
             recordWorkspaceSessionFirstPageCompletion(
                 workspace: workspace,
+                page: page,
                 consistency: .fastIndexed
             )
         } catch {
@@ -518,8 +523,11 @@ extension SessionStore {
             sessionFirstPageWaiterCountByProjectID = sessionFirstPageWaiterCountByProjectID.filter {
                 validProjectIDs.contains($0.key)
             }
-            workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+            let validWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
                 validProjectIDs.contains($0.key.workspaceID)
+            }
+            if validWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+                workspaceSessionFirstPageCompletionByKey = validWorkspaceCompletions
             }
             rebuildProjectSessionListSnapshots()
             let projectID = requestedProjectID.flatMap { id in
@@ -582,13 +590,14 @@ extension SessionStore {
             // refreshAll 也必须进入首屏列表 single-flight。否则它与前台轮询或手动刷新重叠时，
             // 会向 gateway 发出两个相同 thread/list，后发请求被保护策略拒绝为 -32080。
             // reuseRecent=false 只绕过短缓存，不绕过正在执行的共享请求，仍保持全量刷新的语义。
-            let page = try await sessionListFirstPage(
+            let result = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: false,
                 consistency: consistency,
                 source: .bootstrap
             )
+            let page = result.page
             guard connectionGeneration == appStore.connectionGeneration else {
                 return
             }
@@ -598,7 +607,8 @@ extension SessionStore {
             applyWorkspaceSessionFirstPage(
                 workspace: workspace,
                 page: page,
-                consistency: consistency
+                consistency: consistency,
+                requestedCursor: result.requestedCursor
             )
 
             if isSelectionLeaseCurrent(foregroundLease),
@@ -704,9 +714,41 @@ extension SessionStore {
         guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
             return
         }
-        try await refreshWorkspaceSessions(projectID: projectID)
-        guard !needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
-            throw CancellationError()
+
+        var seenContinuationCursors = Set<String>()
+        var completedBatchCount = 0
+        while true {
+            try Task.checkCancellation()
+            guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+                throw WorkspaceSessionRefreshError.workspaceUnavailable
+            }
+            let startingCursor = authoritativeWorkspaceSessionFirstPageContinuationCursor(
+                workspace: workspace
+            )
+            if let startingCursor,
+               !seenContinuationCursors.insert(startingCursor).inserted {
+                // 跨批 cursor 环同样是不可信响应；不能靠下一轮继续制造请求风暴。
+                throw AgentAPIError.invalidResponse
+            }
+
+            try await refreshWorkspaceSessions(projectID: projectID)
+            guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
+                return
+            }
+            guard let nextCursor = authoritativeWorkspaceSessionFirstPageContinuationCursor(
+                workspace: workspace
+            ), nextCursor != startingCursor else {
+                // 请求被更新 token 取代或服务端未推进时，当前 waiter 退出；新的 owner/后续手动刷新接管。
+                throw CancellationError()
+            }
+            completedBatchCount += 1
+            if completedBatchCount.isMultiple(of: Self.sessionPresentationFillBatchCountPerBurst) {
+                // 每个 burst 的 RPC 数仍有硬上界；cursor 链整体按顺序 eventual 完成，
+                // 不把 “>12 页卡住” 推迟成另一个固定页数阈值。
+                await sessionListSleep(Self.sessionPresentationFillBurstBackoffNanoseconds)
+            }
+            try Task.checkCancellation()
+            await Task.yield()
         }
     }
 
@@ -734,7 +776,7 @@ extension SessionStore {
         defer { finishSessionFirstPageRequest(projectID: workspace.id, token: requestToken) }
 
         do {
-            let page = try await sessionListFirstPage(
+            let result = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: false,
@@ -742,6 +784,7 @@ extension SessionStore {
                 consistency: .authoritative,
                 source: .workspaceForeground
             )
+            let page = result.page
             guard isCurrentSessionPageRequest(projectID: workspace.id, token: requestToken) else {
                 return
             }
@@ -750,6 +793,7 @@ extension SessionStore {
                 workspace: workspace,
                 page: page,
                 consistency: .authoritative,
+                requestedCursor: result.requestedCursor,
                 // 工作区页下拉刷新首屏时，保留用户已经翻到的旧页，避免列表突然收缩回 20 条。
                 preserveAllLoaded: sessionProjectsWithAdditionalPages.contains(workspace.id)
             )

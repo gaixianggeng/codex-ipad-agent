@@ -478,7 +478,10 @@ extension SessionStore {
         }
         let refreshedSessions = sessions(page.sessions, in: workspace)
         guard isCurrentWorkspaceIdentity(workspace) else { return nil }
-        mergeSessionPage(refreshedSessions)
+        mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+            refreshedSessions,
+            workspace: workspace
+        )
         updateWorkspaceSessionFirstPageState(
             workspace: workspace,
             page: page,
@@ -486,6 +489,7 @@ extension SessionStore {
         )
         recordWorkspaceSessionFirstPageCompletion(
             workspace: workspace,
+            page: page,
             consistency: .fastIndexed
         )
         clearWorkspaceUnavailable(workspace.id)
