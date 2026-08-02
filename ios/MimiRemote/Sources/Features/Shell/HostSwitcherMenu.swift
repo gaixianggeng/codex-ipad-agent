@@ -9,6 +9,8 @@ struct HostSwitcherMenu: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var hostStatusStore: HostStatusStore
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     let presentation: HostSwitcherPresentation
     let usesCondensedSidebarMetrics: Bool
@@ -28,6 +30,46 @@ struct HostSwitcherMenu: View {
     @State private var switchErrorMessage: String?
 
     var body: some View {
+        styledMenu
+            // 原生 Menu 没有 onOpen；同步手势只启动独立的一次性探测，菜单展示绝不等待网络。
+            .simultaneousGesture(TapGesture().onEnded {
+                hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
+            })
+            .task(id: platformRefreshTrigger) {
+                guard appStore.connectionProfiles.count > 1,
+                      appStore.connectionProfiles.contains(where: { $0.hostPlatform == .unknown }) else {
+                    return
+                }
+                hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
+            }
+            .accessibilityIdentifier(accessibilityIdentifier)
+            .alert(L10n.text("ui.switch_failed"), isPresented: errorPresentation) {
+                if let failedProfileID {
+                    Button(L10n.text("ui.retry")) {
+                        switchToProfile(failedProfileID)
+                    }
+                }
+                Button(L10n.text("ui.manage_connections")) {
+                    manageConnections()
+                }
+                Button(L10n.text("ui.got_it"), role: .cancel) {}
+            } message: {
+                Text(switchErrorMessage ?? L10n.text("ui.please_try_again_later"))
+            }
+    }
+
+    @ViewBuilder
+    private var styledMenu: some View {
+        switch presentation {
+        case .sidebar:
+            switcherMenu
+        case .toolbar:
+            // 保留系统工具栏的中性玻璃，只恢复图标本身的主题主色，避免形成额外的大面积焦点。
+            switcherMenu
+        }
+    }
+
+    private var switcherMenu: some View {
         Menu {
             ForEach(appStore.connectionProfiles) { profile in
                 Button {
@@ -60,31 +102,6 @@ struct HostSwitcherMenu: View {
             }
         } label: {
             switcherLabel
-        }
-        // 原生 Menu 没有 onOpen；同步手势只启动独立的一次性探测，菜单展示绝不等待网络。
-        .simultaneousGesture(TapGesture().onEnded {
-            hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
-        })
-        .task(id: platformRefreshTrigger) {
-            guard appStore.connectionProfiles.count > 1,
-                  appStore.connectionProfiles.contains(where: { $0.hostPlatform == .unknown }) else {
-                return
-            }
-            hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
-        }
-        .accessibilityIdentifier("hostSwitcher.menu")
-        .alert(L10n.text("ui.switch_failed"), isPresented: errorPresentation) {
-            if let failedProfileID {
-                Button(L10n.text("ui.retry")) {
-                    switchToProfile(failedProfileID)
-                }
-            }
-            Button(L10n.text("ui.manage_connections")) {
-                manageConnections()
-            }
-            Button(L10n.text("ui.got_it"), role: .cancel) {}
-        } message: {
-            Text(switchErrorMessage ?? L10n.text("ui.please_try_again_later"))
         }
     }
 
@@ -153,9 +170,8 @@ struct HostSwitcherMenu: View {
                         .offset(x: 2, y: 2)
                 }
             }
-            // 顶栏保留当前栏目这一处紫色导航提示；主机入口保持中性，
-            // 连接状态继续由右下角语义色圆点表达。
-            .foregroundStyle(.secondary)
+            // 主机入口恢复原始主题主色；连接状态仍由右下角语义色圆点表达。
+            .foregroundStyle(themeStore.tokens(for: colorScheme).primaryAction)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(switcherAccessibilityLabel(
                 profileName: profileName,
@@ -181,6 +197,15 @@ struct HostSwitcherMenu: View {
             String(sessionStore.isNetworkUnavailable),
             String(sessionStore.isAppInBackground)
         ].joined(separator: ":")
+    }
+
+    private var accessibilityIdentifier: String {
+        switch presentation {
+        case .sidebar:
+            return "hostSwitcher.sidebar.menu"
+        case .toolbar:
+            return "hostSwitcher.toolbar.menu"
+        }
     }
 
     private func switcherAccessibilityLabel(
