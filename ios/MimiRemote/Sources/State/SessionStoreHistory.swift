@@ -1645,7 +1645,10 @@ extension SessionStore {
         recordRunningSessionsMissingFromFreshPage(freshIDs: freshIDs, projectID: projectID)
         var result = pageSessionsPreservingSelection(fresh, projectID: projectID)
         var knownIDs = Set(result.map(\.id))
-        let projectedSessions = sessions(forProjectID: projectID).filter { session in
+        // 生命周期合并必须读取 canonical sessions；`sessions(forProjectID:)` 是顶层展示投影，
+        // 已按 MIM-24 排除 child，不能用来决定 canonical 数据是否保留。
+        let canonicalProjectSessions = canonicalSessions(forProjectID: projectID)
+        let projectedSessions = canonicalProjectSessions.filter { session in
             guard recentActivityProjectionBySessionID[session.id] != nil,
                   shouldRetainSessionMissingFromFreshPage(session),
                   !knownIDs.contains(session.id) else {
@@ -1656,7 +1659,7 @@ extension SessionStore {
         }
         // 新建/发送后的列表请求可能命中旧缓存或旧的 single-flight 响应；服务端列表确认前不能删掉本地最近项。
         result.append(contentsOf: projectedSessions)
-        let knownRunningSessions = sessions(forProjectID: projectID).filter { session in
+        let knownRunningSessions = canonicalProjectSessions.filter { session in
             guard session.isRunning,
                   shouldRetainSessionMissingFromFreshPage(session),
                   !knownIDs.contains(session.id) else {
@@ -1669,7 +1672,20 @@ extension SessionStore {
         // thread/read 校准。读取也失败时最多保留 3 个刷新周期，不能形成永久幽灵运行态。
         result.append(contentsOf: knownRunningSessions)
 
-        let controlledGlobalSessions = sessions(forProjectID: projectID).filter { session in
+        let knownChildSessions = canonicalProjectSessions.filter { session in
+            guard session.isSubagentThread,
+                  shouldRetainSessionMissingFromFreshPage(session),
+                  !knownIDs.contains(session.id) else {
+                return false
+            }
+            knownIDs.insert(session.id)
+            return true
+        }
+        // workspace thread/list 可能不返回已通过父上下文进入的 child。顶层展示继续隐藏它，
+        // 但刷新不能删除父子导航、历史与次级观察仍依赖的 canonical 记录。
+        result.append(contentsOf: knownChildSessions)
+
+        let controlledGlobalSessions = canonicalProjectSessions.filter { session in
             guard controlledGlobalSessionIDs.contains(session.id),
                   shouldRetainSessionMissingFromFreshPage(session),
                   !knownIDs.contains(session.id) else {
@@ -1688,7 +1704,7 @@ extension SessionStore {
             return result
         }
 
-        let olderLoadedSessions = sessions(forProjectID: projectID).filter { session in
+        let olderLoadedSessions = canonicalProjectSessions.filter { session in
             guard shouldRetainSessionMissingFromFreshPage(session),
                   !knownIDs.contains(session.id) else {
                 return false
@@ -1706,7 +1722,7 @@ extension SessionStore {
     }
 
     func recordRunningSessionsMissingFromFreshPage(freshIDs: Set<SessionID>, projectID: String) {
-        let runningSessions = sessions(forProjectID: projectID).filter(\.isRunning)
+        let runningSessions = canonicalSessions(forProjectID: projectID).filter(\.isRunning)
         let runningIDs = Set(runningSessions.map(\.id))
 
         // 当前页重新出现、或实时事件已把它改成终态时，连续缺失计数立即失效。
@@ -1734,6 +1750,10 @@ extension SessionStore {
                 scheduleMissingRunningSessionReconciliation(session)
             }
         }
+    }
+
+    func canonicalSessions(forProjectID projectID: String) -> [AgentSession] {
+        sessions.filter { $0.projectID == projectID }
     }
 
     func shouldRetainSessionMissingFromFreshPage(_ session: AgentSession) -> Bool {
@@ -1810,6 +1830,7 @@ extension SessionStore {
             goal: item.goal,
             appServerSessionID: item.appServerSessionID,
             parentThreadID: item.parentThreadID,
+            isSubagent: item.isSubagent,
             agentNickname: item.agentNickname,
             agentRole: item.agentRole,
             canAcceptDirectInput: item.canAcceptDirectInput,
@@ -2550,7 +2571,10 @@ extension SessionStore {
             return base
         }
         let remote = remoteSessionSearchResults.filter { session in
-            projectID == nil || session.projectID == projectID
+            // 远端搜索结果不会经过 canonical sessions 的列表索引；必须在合并投影时
+            // 再走一次统一谓词，避免 child Thread 通过搜索重新出现在顶层列表。
+            isListableSession(session)
+                && (projectID == nil || session.projectID == projectID)
         }
         guard !remote.isEmpty else {
             return base
@@ -2589,23 +2613,21 @@ extension SessionStore {
     }
 
     func isListableSession(_ session: AgentSession) -> Bool {
-        !archivedSessionIDs.contains(session.id) || session.id == selectedSessionID || session.isRunning
+        // canonical sessions 仍保留 child，供父子导航、历史和实时观察使用；
+        // 只有顶层 presentation 排除 child，避免同一父会话的派生 Thread 被平铺成重复会话。
+        !session.isSubagentThread
+            && (!archivedSessionIDs.contains(session.id) || session.id == selectedSessionID || session.isRunning)
     }
 
     /// 只用于根侧栏的有界展示优先级，不参与授权、父子关系或输入权限判断。
     /// `<codex_delegation>` 是 Codex Desktop 独立派生 Thread 的兼容提示；必须同时满足
     /// agentd 受控全局授权、Codex runtime 与协议只读，不能单凭用户可伪造的 preview 提权。
     func isControlledGlobalDerivedReadOnlySession(_ session: AgentSession) -> Bool {
-        guard controlledGlobalSessionIDs.contains(session.id),
+        guard !session.isSubagentThread,
+              controlledGlobalSessionIDs.contains(session.id),
               Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source) == "codex",
               !session.allowsDirectInput else {
             return false
-        }
-
-        if let parentThreadID = session.parentThreadID?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !parentThreadID.isEmpty {
-            return true
         }
 
         let preview = session.preview?
