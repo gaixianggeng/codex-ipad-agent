@@ -99,7 +99,7 @@ enum WorkspaceIconStyle: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    /// 网格只显示一行短出处；辅助功能仍使用 `title` 朗读完整作品名。
+    /// 网格显示一行完整作品名；辅助功能同样使用 `title` 朗读完整作品名。
     var compactTitle: String {
         L10n.text(compactTitleKey)
     }
