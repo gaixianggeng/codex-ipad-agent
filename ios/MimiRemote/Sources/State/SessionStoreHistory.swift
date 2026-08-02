@@ -1302,40 +1302,65 @@ extension SessionStore {
             limit: limit,
             consistency: consistency
         )
-        // 手动刷新可以绕过短缓存，但同一时刻仍必须等待已存在的共享请求。
-        if let inFlight = sessionListFirstPageInFlightByKey[key] {
-            let page = try await inFlight.task.value
-            SessionListDiagnostics.completed(
-                source: source,
-                consistency: consistency,
-                delivery: .sharedInFlight,
-                count: page.sessions.count,
-                duration: sessionListNow().timeIntervalSince(requestStartedAt)
-            )
-            return page
-        }
-        // 会话库只需要 8 条时，可以复用同工作区正在执行的 20 条请求；反向复用会缩短主列表，不能做。
-        // 后台快速刷新也可以等待更强的权威请求；权威刷新不能复用快速索引结果，否则会重新引入漏会话问题。
-        if let largerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
-            entry.key.profileID == key.profileID
-                && entry.key.connectionGeneration == key.connectionGeneration
-                && entry.key.workspaceID == key.workspaceID
-                && entry.key.workspacePath == key.workspacePath
-                && (
-                    entry.key.consistency == key.consistency
-                        || (key.consistency == .fastIndexed && entry.key.consistency == .authoritative)
+        while true {
+            // 手动刷新可以绕过短缓存，但同一时刻仍必须等待已存在的共享请求。
+            if let inFlight = sessionListFirstPageInFlightByKey[key] {
+                let page = try await inFlight.task.value
+                SessionListDiagnostics.completed(
+                    source: source,
+                    consistency: consistency,
+                    delivery: .sharedInFlight,
+                    count: page.sessions.count,
+                    duration: sessionListNow().timeIntervalSince(requestStartedAt)
                 )
-                && entry.key.limit >= key.limit
-        })?.value {
-            let page = try await largerInFlight.task.value
-            SessionListDiagnostics.completed(
-                source: source,
-                consistency: consistency,
-                delivery: .largerInFlight,
-                count: page.sessions.count,
-                duration: sessionListNow().timeIntervalSince(requestStartedAt)
-            )
-            return page
+                return page
+            }
+
+            let matchesCurrentWorkspace: (SessionListFirstPageRequestKey) -> Bool = { candidate in
+                candidate.profileID == key.profileID
+                    && candidate.connectionGeneration == key.connectionGeneration
+                    && candidate.workspaceID == key.workspaceID
+                    && candidate.workspacePath == key.workspacePath
+            }
+
+            if consistency == .authoritative,
+               let weakerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
+                   matchesCurrentWorkspace(entry.key)
+                       && entry.key.consistency == .fastIndexed
+               })?.value {
+                // 冷启动的 fastIndexed 可能早于前台精确首屏。不能把弱结果冒充 authoritative，
+                // 也不能并发再打一个 thread/list；先排空弱请求，再回到循环重新加入/创建精确 single-flight。
+                // 原请求的 owner 会在成功或失败路径清理对应 key，yield 让其先完成清理；即使弱请求失败，
+                // 只要 host/task 仍有效，前台 authoritative 仍必须继续真正请求一次。
+                _ = try? await weakerInFlight.task.value
+                await Task.yield()
+                guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+                    throw CancellationError()
+                }
+                continue
+            }
+
+            // 会话库只需要 8 条时，可以复用同工作区正在执行的 20 条请求；反向复用会缩短主列表，不能做。
+            // 后台快速刷新也可以等待更强的权威请求；权威刷新不能复用快速索引结果，否则会重新引入漏会话问题。
+            if let largerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
+                matchesCurrentWorkspace(entry.key)
+                    && (
+                        entry.key.consistency == key.consistency
+                            || (key.consistency == .fastIndexed && entry.key.consistency == .authoritative)
+                    )
+                    && entry.key.limit >= key.limit
+            })?.value {
+                let page = try await largerInFlight.task.value
+                SessionListDiagnostics.completed(
+                    source: source,
+                    consistency: consistency,
+                    delivery: .largerInFlight,
+                    count: page.sessions.count,
+                    duration: sessionListNow().timeIntervalSince(requestStartedAt)
+                )
+                return page
+            }
+            break
         }
         let now = sessionListNow()
         if reuseRecent,
@@ -2104,16 +2129,19 @@ extension SessionStore {
         return token
     }
 
-    /// 相同首屏请求和“authoritative 在前、fastIndexed 在后”共享提交 token。
-    /// 网络 single-flight 只去重 RPC；这里再保证较弱 waiter 不会仅因后启动就让精确结果失去提交权。
+    /// 相同首屏请求共享提交 token；fastIndexed 在前时，后到的 authoritative 只提升一致性、不换 token。
+    /// 网络 single-flight 负责串行升级 RPC；这里保证任一 waiter 都不会仅因启动顺序失去提交权。
     func beginSessionFirstPageRequest(
         projectID: String,
         consistency: SessionListConsistency
     ) -> Int {
         if let token = sessionPageLoadingTokenByProjectID[projectID],
-           let activeConsistency = sessionFirstPageLoadingConsistencyByProjectID[projectID],
-           activeConsistency == consistency
-                || (activeConsistency == .authoritative && consistency == .fastIndexed) {
+           let activeConsistency = sessionFirstPageLoadingConsistencyByProjectID[projectID] {
+            // 提交权只允许从 fastIndexed 单调提升为 authoritative。提升时沿用 token，
+            // 让先开始的弱请求可以结束，但不能因后来的精确 waiter 把两边结果都判成过期。
+            if activeConsistency == .fastIndexed, consistency == .authoritative {
+                sessionFirstPageLoadingConsistencyByProjectID[projectID] = .authoritative
+            }
             sessionFirstPageWaiterCountByProjectID[projectID, default: 0] += 1
             return token
         }

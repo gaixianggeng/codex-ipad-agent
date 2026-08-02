@@ -375,6 +375,139 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
     }
 
+    func testAuthoritativeWaitsForInFlightFastIndexedThenPerformsExactlyOnePreciseRequest() async throws {
+        let project = makeProject(id: "workspace_fast_then_authoritative")
+        let sparsePage = SessionsPage(
+            sessions: [
+                makeSession(
+                    id: "thread_fast_sparse",
+                    projectID: project.id,
+                    title: "稀疏缓存",
+                    status: "history",
+                    source: "codex",
+                    updatedAt: Date(timeIntervalSince1970: 10)
+                )
+            ],
+            nextCursor: "fast-cursor",
+            hasMore: true
+        )
+        let authoritativeSessions = (0..<20).map { index in
+            makeSession(
+                id: "thread_precise_\(index)",
+                projectID: project.id,
+                title: "精确会话 \(index)",
+                status: index == 0 ? "running" : "history",
+                source: index.isMultiple(of: 2) ? "codex" : "claude",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let authoritativePage = SessionsPage(
+            sessions: authoritativeSessions,
+            nextCursor: "authoritative-cursor",
+            hasMore: true
+        )
+        let client = FastThenAuthoritativeSessionListClient(
+            projects: [project],
+            fastResult: .success(sparsePage),
+            authoritativePage: authoritativePage
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        let fastIndexed = Task { @MainActor in
+            await store.refreshSessions(
+                forProjectID: project.id,
+                showLoading: false,
+                reuseRecent: false,
+                consistency: .fastIndexed,
+                activatesProject: false
+            )
+        }
+        await client.waitForBlockedFastRequest()
+        let authoritative = Task { @MainActor in
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1, "fastIndexed 未结束前不能并发启动 authoritative")
+        XCTAssertEqual(client.maximumConcurrentRequestCount, 1)
+        XCTAssertEqual(store.sessionFirstPageLoadingConsistencyByProjectID[project.id], .authoritative)
+        XCTAssertEqual(store.sessionFirstPageWaiterCountByProjectID[project.id], 2)
+
+        client.releaseFastRequest()
+        await fastIndexed.value
+        try await authoritative.value
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.fastIndexed, .authoritative])
+        XCTAssertEqual(client.maximumConcurrentRequestCount, 1)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), authoritativeSessions.map(\.id))
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-cursor")
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertTrue(store.sessionFirstPageLoadingConsistencyByProjectID.isEmpty)
+        XCTAssertTrue(store.sessionFirstPageWaiterCountByProjectID.isEmpty)
+    }
+
+    func testAuthoritativeStillRunsAfterInFlightFastIndexedFails() async throws {
+        let project = makeProject(id: "workspace_failed_fast_then_authoritative")
+        let authoritativeSession = makeSession(
+            id: "thread_after_failed_fast",
+            projectID: project.id,
+            title: "精确恢复",
+            status: "history",
+            source: "codex"
+        )
+        let client = FastThenAuthoritativeSessionListClient(
+            projects: [project],
+            fastResult: .failure(FastThenAuthoritativeTestError.fastIndexedFailed),
+            authoritativePage: SessionsPage(
+                sessions: [authoritativeSession],
+                nextCursor: "authoritative-after-failure",
+                hasMore: true
+            )
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        let fastIndexed = Task { @MainActor in
+            await store.refreshSessions(
+                forProjectID: project.id,
+                showLoading: false,
+                reuseRecent: false,
+                reportErrorOnFailure: false,
+                consistency: .fastIndexed,
+                activatesProject: false
+            )
+        }
+        await client.waitForBlockedFastRequest()
+        let authoritative = Task { @MainActor in
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        }
+
+        client.releaseFastRequest()
+        await fastIndexed.value
+        try await authoritative.value
+
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.fastIndexed, .authoritative])
+        XCTAssertEqual(client.maximumConcurrentRequestCount, 1)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [authoritativeSession.id])
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-after-failure")
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertTrue(store.sessionFirstPageLoadingConsistencyByProjectID.isEmpty)
+        XCTAssertTrue(store.sessionFirstPageWaiterCountByProjectID.isEmpty)
+    }
+
     func testCancelledWorkspaceCatalogRequestCannotCommitLateProjects() async {
         let staleProject = makeProject(id: "stale-catalog-project")
         let gate = WorkspaceProjectsGate()
@@ -648,6 +781,98 @@ extension ConversationDataFlowTests {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Claude workspace list failed"))
         }
+    }
+}
+
+private enum FastThenAuthoritativeTestError: Error {
+    case fastIndexedFailed
+}
+
+/// 精确模拟冷启动顺序：第一条 fastIndexed 持续占用 transport，authoritative 只能在其结束后启动。
+private final class FastThenAuthoritativeSessionListClient: SessionStoreAPIClient {
+    let projectsResult: [AgentProject]
+    let fastResult: Result<SessionsPage, Error>
+    let authoritativePage: SessionsPage
+
+    private(set) var sessionsPageCallCount = 0
+    private(set) var requestedSessionListConsistencies: [SessionListConsistency] = []
+    private(set) var activeRequestCount = 0
+    private(set) var maximumConcurrentRequestCount = 0
+
+    private var fastContinuation: CheckedContinuation<SessionsPage, Error>?
+    private var fastRequestWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(
+        projects: [AgentProject],
+        fastResult: Result<SessionsPage, Error>,
+        authoritativePage: SessionsPage
+    ) {
+        self.projectsResult = projects
+        self.fastResult = fastResult
+        self.authoritativePage = authoritativePage
+    }
+
+    func projects() async throws -> [AgentProject] {
+        projectsResult
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        authoritativePage.sessions
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        sessionsPageCallCount += 1
+        requestedSessionListConsistencies.append(consistency)
+        activeRequestCount += 1
+        maximumConcurrentRequestCount = max(maximumConcurrentRequestCount, activeRequestCount)
+        defer { activeRequestCount -= 1 }
+
+        if consistency == .fastIndexed {
+            return try await withCheckedThrowingContinuation { continuation in
+                fastContinuation = continuation
+                let waiters = fastRequestWaiters
+                fastRequestWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+        return authoritativePage
+    }
+
+    func waitForBlockedFastRequest() async {
+        guard fastContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            guard fastContinuation == nil else {
+                continuation.resume()
+                return
+            }
+            fastRequestWaiters.append(continuation)
+        }
+    }
+
+    func releaseFastRequest() {
+        fastContinuation?.resume(with: fastResult)
+        fastContinuation = nil
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        throw MockError.unimplemented
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        []
     }
 }
 
