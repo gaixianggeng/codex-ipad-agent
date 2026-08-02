@@ -483,8 +483,8 @@ extension ConversationDataFlowTests {
             await store.refreshSessions(
                 forProjectID: project.id,
                 showLoading: false,
-                reuseRecent: false,
                 reportErrorOnFailure: false,
+                reuseRecent: false,
                 consistency: .fastIndexed,
                 activatesProject: false
             )
