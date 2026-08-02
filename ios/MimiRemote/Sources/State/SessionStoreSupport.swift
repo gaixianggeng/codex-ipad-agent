@@ -130,6 +130,7 @@ struct SessionListBudgetKey: Hashable {
 }
 
 struct SessionListFirstPageInFlight {
+    let id: UUID
     let task: Task<SessionsPage, Error>
 }
 

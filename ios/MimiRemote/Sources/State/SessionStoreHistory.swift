@@ -1142,7 +1142,16 @@ extension SessionStore {
         for result in results {
             guard let page = result.page,
                   isCurrentWorkspaceIdentity(result.workspace) else { continue }
-            mergeSessionPage(sessions(page.sessions, in: result.workspace))
+            let pageSessions = sessions(page.sessions, in: result.workspace)
+            if shouldProtectAuthoritativeWorkspaceSessionFirstPage(
+                workspace: result.workspace,
+                incomingConsistency: consistency
+            ) {
+                // 会话库的弱页可能晚于前台精确页返回；只补新 ID，不能把精确字段覆盖回稀疏索引值。
+                mergeSessionPageAddingMissingOnly(pageSessions)
+            } else {
+                mergeSessionPage(pageSessions)
+            }
             updateWorkspaceSessionFirstPageState(
                 workspace: result.workspace,
                 page: page,
@@ -1256,8 +1265,9 @@ extension SessionStore {
             workspace: workspace,
             incomingConsistency: consistency
         ) {
-            // authoritative 一旦完成，后续 State DB 稀疏页只允许增量合并，不能收缩列表。
-            mergeSessionPage(pageSessions)
+            // authoritative 一旦完成，后续 State DB 稀疏页只允许补充缺失 ID；
+            // 同 ID 的 title/status 等字段必须保留精确结果，不能被迟到的弱页覆盖。
+            mergeSessionPageAddingMissingOnly(pageSessions)
         } else {
             replaceSessionsIfChanged(
                 with: pageSessionsPreservingLoadedWindow(
@@ -1291,7 +1301,7 @@ extension SessionStore {
     ) async throws -> SessionsPage {
         let requestStartedAt = sessionListNow()
         let hostScope = expectedHostScope ?? appStore.activeHostScope
-        guard appStore.activeHostScope == hostScope else {
+        guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
             throw CancellationError()
         }
         let key = SessionListFirstPageRequestKey(
@@ -1327,14 +1337,18 @@ extension SessionStore {
                let weakerInFlight = sessionListFirstPageInFlightByKey.first(where: { entry in
                    matchesCurrentWorkspace(entry.key)
                        && entry.key.consistency == .fastIndexed
-               })?.value {
+               }) {
                 // 冷启动的 fastIndexed 可能早于前台精确首屏。不能把弱结果冒充 authoritative，
                 // 也不能并发再打一个 thread/list；先排空弱请求，再回到循环重新加入/创建精确 single-flight。
-                // 原请求的 owner 会在成功或失败路径清理对应 key，yield 让其先完成清理；即使弱请求失败，
-                // 只要 host/task 仍有效，前台 authoritative 仍必须继续真正请求一次。
-                _ = try? await weakerInFlight.task.value
-                await Task.yield()
-                guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+                // waiter 只按请求身份退休已经完成的旧 entry；即使旧 owner 稍后恢复，也不能误删同 key 的新请求。
+                // 弱请求失败或取消时，只要当前 host/task 仍有效，前台 authoritative 仍必须继续真正请求一次。
+                _ = try? await weakerInFlight.value.task.value
+                retireSessionListFirstPageInFlight(
+                    key: weakerInFlight.key,
+                    id: weakerInFlight.value.id
+                )
+                guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                      !Task.isCancelled else {
                     throw CancellationError()
                 }
                 continue
@@ -1393,12 +1407,14 @@ extension SessionStore {
             }
             // 冷启动或精确刷新等待窗口并继续请求，保证首屏最终自动恢复。
             await sessionListSleep(cooldownDelay)
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+            guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                  !Task.isCancelled else {
                 throw CancellationError()
             }
         }
 
         let client = try fixedClient ?? clientFactory()
+        let requestID = UUID()
         let task = Task {
             try await client.sessionsPage(
                 workspace: workspace,
@@ -1407,11 +1423,15 @@ extension SessionStore {
                 consistency: consistency
             )
         }
-        sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(task: task)
+        sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(
+            id: requestID,
+            task: task
+        )
         do {
             let page = try await task.value
-            sessionListFirstPageInFlightByKey.removeValue(forKey: key)
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+            retireSessionListFirstPageInFlight(key: key, id: requestID)
+            guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                  !Task.isCancelled else {
                 throw CancellationError()
             }
             sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(page: page, loadedAt: sessionListNow())
@@ -1425,12 +1445,21 @@ extension SessionStore {
             )
             return page
         } catch {
-            sessionListFirstPageInFlightByKey.removeValue(forKey: key)
+            retireSessionListFirstPageInFlight(key: key, id: requestID)
             if let policyFailure = sessionListPolicyFailure(from: error) {
                 registerSessionListCooldown(policyFailure, for: workspace)
             }
             throw error
         }
+    }
+
+    /// owner 与 waiter 都只能退休自己观察到的那一代请求，避免旧 continuation 删除同 key 的新 in-flight。
+    func retireSessionListFirstPageInFlight(
+        key: SessionListFirstPageRequestKey,
+        id: UUID
+    ) {
+        guard sessionListFirstPageInFlightByKey[key]?.id == id else { return }
+        sessionListFirstPageInFlightByKey.removeValue(forKey: key)
     }
 
     func cachedSessionListPage(workspace: AgentWorkspace, minimumLimit: Int) -> SessionsPage? {
@@ -1854,6 +1883,13 @@ extension SessionStore {
             return
         }
         sessions = next
+    }
+
+    /// 弱一致性结果迟到时只补充权威页尚未见过的会话，绝不回退同 ID 的精确字段。
+    func mergeSessionPageAddingMissingOnly(_ pageSessions: [AgentSession]) {
+        guard !pageSessions.isEmpty else { return }
+        let missingSessions = pageSessions.filter { sessionIndexByID[$0.id] == nil }
+        mergeSessionPage(missingSessions)
     }
 
     func updateSessionPageState(
