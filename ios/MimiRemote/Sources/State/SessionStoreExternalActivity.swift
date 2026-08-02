@@ -388,11 +388,21 @@ extension SessionStore {
                 limit: Self.initialSessionPageLimit,
                 consistency: .authoritative
             )
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+            guard appStore.activeHostScope == hostScope,
+                  !Task.isCancelled,
+                  isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else {
                 return
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
+            updateWorkspaceSessionFirstPageState(
+                workspace: workspace,
+                page: page,
+                consistency: .authoritative
+            )
+            recordWorkspaceSessionFirstPageCompletion(
+                workspace: workspace,
+                consistency: .authoritative
+            )
             clearWorkspaceUnavailable(projectID)
         } catch {
             // 活动 API 已给出可靠运行态；列表补拉失败时保留已有行，下一次轮询继续重试未知线程。

@@ -1233,16 +1233,24 @@ final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
     let projectsResult: [AgentProject]
     let page: SessionsPage
     let blockOnCall: Int
+    let blockedError: Error?
     private(set) var requestedMessageCursors: [String?] = []
     private(set) var sessionsPageCallCount = 0
+    private(set) var requestedSessionListConsistencies: [SessionListConsistency] = []
     private var blockedListRefreshCount = 0
-    private var blockedListContinuations: [CheckedContinuation<SessionsPage, Never>] = []
+    private var blockedListContinuations: [CheckedContinuation<SessionsPage, Error>] = []
     private var blockedListWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(projects: [AgentProject], page: SessionsPage, blockOnCall: Int = 2) {
+    init(
+        projects: [AgentProject],
+        page: SessionsPage,
+        blockOnCall: Int = 2,
+        blockedError: Error? = nil
+    ) {
         self.projectsResult = projects
         self.page = page
         self.blockOnCall = blockOnCall
+        self.blockedError = blockedError
     }
 
     func projects() async throws -> [AgentProject] {
@@ -1259,11 +1267,25 @@ final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
             return page
         }
         // 默认从第二次开始模拟慢 thread/list；指定 blockOnCall=1 时可复现 refreshAll 与轮询竞态。
-        return await withCheckedContinuation { continuation in
+        return try await withCheckedThrowingContinuation { continuation in
             blockedListContinuations.append(continuation)
             blockedListRefreshCount += 1
             notifyBlockedListWaiters()
         }
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        requestedSessionListConsistencies.append(consistency)
+        return try await sessionsPage(
+            projectID: workspace.rootProjectID ?? workspace.id,
+            cursor: cursor,
+            limit: limit
+        )
     }
 
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
@@ -1306,7 +1328,11 @@ final class BlockingSessionListRefreshClient: SessionStoreAPIClient {
     }
 
     func releaseBlockedSessionListRefresh() {
-        blockedListContinuations.forEach { $0.resume(returning: page) }
+        if let blockedError {
+            blockedListContinuations.forEach { $0.resume(throwing: blockedError) }
+        } else {
+            blockedListContinuations.forEach { $0.resume(returning: page) }
+        }
         blockedListContinuations = []
     }
 

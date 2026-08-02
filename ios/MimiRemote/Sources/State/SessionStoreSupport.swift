@@ -1,4 +1,5 @@
 import Foundation
+import os
 import UserNotifications
 
 extension SessionStore {
@@ -71,6 +72,57 @@ struct SessionListFirstPageRequestKey: Hashable {
     let consistency: SessionListConsistency
 }
 
+/// “已经有几条缓存”与“当前主机代次已完成精确首屏”是两个状态。
+/// key 必须包含完整 HostScope 和 canonical workspace path，避免切换 Mac、重连或目录身份迁移后误复用旧结论。
+struct WorkspaceSessionFirstPageKey: Hashable {
+    let hostScope: HostScope
+    let workspaceID: String
+    let workspacePath: String
+}
+
+struct WorkspaceSessionFirstPageCompletion: Equatable {
+    let consistency: SessionListConsistency
+    let completedAt: Date
+}
+
+enum SessionListRequestSource: String {
+    case bootstrap
+    case libraryIndex
+    case restore
+    case selectedProject
+    case workspaceForeground
+}
+
+enum SessionListRequestDelivery: String {
+    case cache
+    case largerInFlight
+    case network
+    case sharedInFlight
+    case staleCache
+}
+
+enum SessionListDiagnostics {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gaixianggeng.mimi",
+        category: "SessionList"
+    )
+
+    static func completed(
+        source: SessionListRequestSource,
+        consistency: SessionListConsistency,
+        delivery: SessionListRequestDelivery,
+        count: Int,
+        duration: TimeInterval
+    ) {
+        let consistencyName = consistency == .authoritative ? "authoritative" : "fastIndexed"
+        let durationMilliseconds = max(0, Int((duration * 1_000).rounded()))
+        // 只记录固定枚举和计数，不写 workspace path、标题或任何用户内容。
+        logger.info(
+            "source=\(source.rawValue, privacy: .public) page=1 consistency=\(consistencyName, privacy: .public) delivery=\(delivery.rawValue, privacy: .public) count=\(count) duration_ms=\(durationMilliseconds)"
+        )
+    }
+}
+
 struct SessionListBudgetKey: Hashable {
     let profileID: String
     let connectionGeneration: Int
@@ -78,6 +130,7 @@ struct SessionListBudgetKey: Hashable {
 }
 
 struct SessionListFirstPageInFlight {
+    let id: UUID
     let task: Task<SessionsPage, Error>
 }
 
