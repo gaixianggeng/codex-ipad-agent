@@ -128,7 +128,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             return
         }
         XCTAssertTrue(
-            app.descendant(identifier: "hostSwitcher.menu").waitForExistence(timeout: 8),
+            app.descendant(identifier: "hostSwitcher.sidebar.menu").waitForExistence(timeout: 8),
             "浮动侧栏应保留电脑切换入口"
         )
         assertMinimumTouchTarget(collapseSidebar, named: "浮动侧栏收起按钮")
@@ -688,6 +688,47 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         pickerScreenshot.name = "workspace-character-picker"
         pickerScreenshot.lifetime = .keepAlways
         add(pickerScreenshot)
+    }
+
+    func testWorkspaceKeepsGitInCardMenuOnlyAndHostSwitcherUsable() throws {
+        try relaunchDirectlyIntoWorkspaces()
+
+        // 紧凑布局使用顶栏入口，宽 iPad 使用侧栏入口；分离标识避免误把侧栏当成顶栏样式覆盖。
+        let toolbarHostSwitcher = app.descendant(identifier: "hostSwitcher.toolbar.menu")
+        let sidebarHostSwitcher = app.descendant(identifier: "hostSwitcher.sidebar.menu")
+        let hostSwitcher = toolbarHostSwitcher.waitForExistence(timeout: 3)
+            ? toolbarHostSwitcher
+            : sidebarHostSwitcher
+        XCTAssertTrue(hostSwitcher.waitForExistence(timeout: 10), "工作区应保留当前布局对应的主机切换入口")
+        assertMinimumTouchTarget(hostSwitcher, named: "工作区主机切换入口")
+        hostSwitcher.tap()
+        XCTAssertNotNil(
+            firstExistingButton(labels: ["检查主机状态", "Check Host Status"], timeout: 6),
+            "主机入口改色后仍应打开原有连接菜单"
+        )
+        dismissPresentedMenuOrPopover()
+
+        let openDirectory = app.descendant(identifier: "workspace.toolbar.openDirectory")
+        XCTAssertTrue(openDirectory.waitForExistence(timeout: 8), "工作区顶栏应保留打开目录入口")
+        assertMinimumTouchTarget(openDirectory, named: "打开目录入口")
+        XCTAssertNil(
+            firstExistingButton(labels: ["Git 变更", "Git changes"], timeout: 1),
+            "工作区顶栏不应继续展示低频 Git 入口"
+        )
+
+        let projectID = "debug-sample-app"
+        let cardMenu = app.descendant(identifier: "workspace.card.actions.\(projectID)")
+        XCTAssertTrue(cardMenu.waitForExistence(timeout: 10), "工作区卡片应保留对象级操作菜单")
+        assertMinimumTouchTarget(cardMenu, named: "工作区卡片操作入口")
+        cardMenu.tap()
+
+        let cardGit = firstExistingButton(labels: ["Git 变更", "Git changes"], timeout: 6)
+        XCTAssertNotNil(cardGit, "低频 Git 能力应降级到工作区卡片菜单，而不是被删除")
+        cardGit?.tap()
+
+        let complete = firstExistingButton(labels: ["完成", "Done"], timeout: 8)
+        XCTAssertNotNil(complete, "卡片菜单 Git 入口应继续打开绑定当前工作区的 Git 面板")
+        complete?.tap()
     }
 
     func testWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {

@@ -370,19 +370,6 @@ struct WorkspaceRootView: View {
             .navigationTitle(L10n.text("ui.workspace"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if let selectedProject {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            gitInspectionTarget = WorkspaceGitInspectionTarget(project: selectedProject)
-                        } label: {
-                            WorkbenchChromeIcon(systemName: "doc.text.magnifyingglass")
-                        }
-                        .disabled(
-                            sessionStore.workspaceGitSummaryByPath[selectedProject.path]?.isRepository == false
-                        )
-                        .accessibilityLabel(L10n.text("ui.git_changes"))
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isPresentingOpenWorkspace = true
@@ -393,6 +380,7 @@ struct WorkspaceRootView: View {
                     // 避免与选中工作区的梅紫填充形成两个大面积焦点。
                     .foregroundStyle(tokens.primaryText)
                     .accessibilityLabel(L10n.text("ui.open_directory"))
+                    .accessibilityIdentifier("workspace.toolbar.openDirectory")
                 }
             }
     }
@@ -871,6 +859,7 @@ private struct WorkspaceLibraryCard: View {
                     Label(L10n.text("ui.git_changes"), systemImage: "doc.text.magnifyingglass")
                 }
                 .disabled(gitSummary?.isRepository == false)
+                .accessibilityIdentifier("workspace.card.git.\(project.id)")
 
                 if allowsCustomization {
                     Button {
