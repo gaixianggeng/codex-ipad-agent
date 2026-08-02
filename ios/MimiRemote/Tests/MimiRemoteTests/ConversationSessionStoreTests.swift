@@ -7,6 +7,123 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testTopLevelSessionProjectionsHideChildrenButKeepCanonicalRootsAndForks() {
+        let project = makeProject(id: "proj_top_level_child_filter")
+        let parent = makeSession(
+            id: "thread-parent",
+            projectID: project.id,
+            title: "Parent root",
+            status: "history",
+            source: "codex"
+        )
+        var structuralChild = makeSession(
+            id: "thread-child-structural",
+            projectID: project.id,
+            title: "Structural child",
+            status: "history",
+            source: "codex"
+        )
+        structuralChild.parentThreadID = parent.id
+        structuralChild.canAcceptDirectInput = false
+        var runningChild = makeSession(
+            id: "thread-child-running",
+            projectID: project.id,
+            title: "Running child",
+            status: "running",
+            source: "codex"
+        )
+        runningChild.parentThreadID = parent.id
+        runningChild.canAcceptDirectInput = false
+        var sourceOnlyChild = makeSession(
+            id: "thread-child-source-only",
+            projectID: project.id,
+            title: "Source-only child",
+            status: "history",
+            source: "codex"
+        )
+        sourceOnlyChild.isSubagent = true
+        sourceOnlyChild.canAcceptDirectInput = false
+        let ordinaryFork = makeSession(
+            id: "thread-ordinary-fork",
+            projectID: project.id,
+            title: "Ordinary fork root",
+            status: "running",
+            source: "codex"
+        )
+        var externalReadOnlyRoot = makeSession(
+            id: "thread-external-read-only-root",
+            projectID: project.id,
+            title: "External read-only root",
+            status: "history",
+            source: "codex"
+        )
+        externalReadOnlyRoot.canAcceptDirectInput = false
+
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.projects = [project]
+        store.recentWorkspaces = [AgentWorkspace(project: project)]
+        store.sessions = [
+            parent,
+            structuralChild,
+            runningChild,
+            sourceOnlyChild,
+            ordinaryFork,
+            externalReadOnlyRoot,
+        ]
+
+        let childIDs = Set([structuralChild.id, runningChild.id, sourceOnlyChild.id])
+        let topLevelProjections = [
+            store.sessionLibrarySessions,
+            store.recentSessions,
+            store.activeSessions,
+            store.recentHistorySessions,
+            store.filteredSessions,
+            store.sessions(forProjectID: project.id),
+            store.visibleSessions(forProjectID: project.id),
+            store.sessionListSnapshot(forProjectID: project.id).visibleSessions,
+        ]
+
+        XCTAssertTrue(childIDs.isSubset(of: Set(store.sessionsByID.keys)), "child 必须留在 canonical store 供父子导航读取")
+        for projection in topLevelProjections {
+            XCTAssertTrue(childIDs.isDisjoint(with: Set(projection.map(\.id))))
+        }
+        XCTAssertTrue(store.activeSessions.contains { $0.id == ordinaryFork.id }, "普通 fork 仍是可独立打开的 root")
+        XCTAssertTrue(store.sessionLibrarySessions.contains { $0.id == externalReadOnlyRoot.id }, "只读能力不能被误当成 child 身份")
+        XCTAssertTrue(store.sessions(forProjectID: project.id).contains { $0.id == parent.id })
+
+        store.sessionSearchQuery = "remote child needle"
+        var remoteChild = sourceOnlyChild
+        remoteChild.title = "Remote child needle"
+        store.remoteSessionSearchResults = [remoteChild]
+        store.remoteSessionSearchSnippetByID[remoteChild.id] = "remote child needle"
+
+        XCTAssertTrue(store.sessionLibrarySessions.isEmpty)
+        XCTAssertTrue(store.filteredSessions.isEmpty)
+        XCTAssertTrue(store.filteredSessionSidebarProjects.isEmpty)
+        XCTAssertTrue(store.sessionListSnapshot(forProjectID: project.id).visibleSessions.isEmpty)
+
+        var remoteRoot = makeSession(
+            id: "thread-remote-read-only-root",
+            projectID: project.id,
+            title: "Remote child needle root",
+            status: "history",
+            source: "codex"
+        )
+        remoteRoot.canAcceptDirectInput = false
+        store.remoteSessionSearchResults = [remoteChild, remoteRoot]
+        store.remoteSessionSearchSnippetByID[remoteRoot.id] = "remote child needle"
+
+        XCTAssertEqual(store.sessionLibrarySessions.map(\.id), [remoteRoot.id])
+        XCTAssertEqual(store.filteredSessions.map(\.id), [remoteRoot.id])
+        XCTAssertEqual(store.filteredSessionSidebarProjects.map(\.id), [project.id])
+        XCTAssertEqual(store.sessionListSnapshot(forProjectID: project.id).visibleSessions.map(\.id), [remoteRoot.id])
+    }
+
     func testRefreshWithoutRecentWorkspacesDoesNotLoadSessions() async {
         let project = makeProject(id: "proj_no_recent")
         let history = makeSession(id: "codex_history", projectID: project.id, title: "历史", status: "history", source: "codex", resumeID: "history")
@@ -161,10 +278,11 @@ extension ConversationDataFlowTests {
         await store.refreshSessionLibraryIndex(authoritative: true)
 
         let initialVisibleIDs = store.recentHistorySessions.map(\.id)
-        XCTAssertEqual(initialVisibleIDs.count, 9, "普通前 8 与重复的派生前 3 去重后应保持有界")
+        XCTAssertEqual(initialVisibleIDs.count, 10, "structural child 隐藏后，普通前 8 加最多 3 条 root 派生补充仍应保持有界")
         XCTAssertEqual(Set(initialVisibleIDs).count, initialVisibleIDs.count)
-        XCTAssertTrue(initialVisibleIDs.contains(targetDelegation.id), "全局第 14、派生第 3 的 MIM-56 应进入默认侧栏")
-        XCTAssertFalse(initialVisibleIDs.contains(fourthDelegation.id), "派生补充集不得突破 3 条上限")
+        XCTAssertFalse(initialVisibleIDs.contains(newestStructuralChild.id), "有 parentThreadID 的 child 不能占顶层补充名额")
+        XCTAssertTrue(initialVisibleIDs.contains(targetDelegation.id), "无 parent/source-only 标记的只读 root 仍可进入默认侧栏")
+        XCTAssertTrue(initialVisibleIDs.contains(fourthDelegation.id), "structural child 隐藏后第三条 root 补充应保持可见")
         XCTAssertTrue(
             store.visibleSessions(forProjectID: project.id).contains { $0.id == targetDelegation.id },
             "展开当前目录时也应在普通预览之外看到派生第 3 条"
@@ -174,7 +292,7 @@ extension ConversationDataFlowTests {
                 $0.id == targetDelegation.id
             }
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             store.visibleSessions(forProjectID: project.id).contains { $0.id == fourthDelegation.id }
         )
 
@@ -325,7 +443,7 @@ extension ConversationDataFlowTests {
 
         await store.refreshSessionLibraryIndex(authoritative: true)
 
-        XCTAssertTrue(store.recentHistorySessions.contains { $0.id == structuralChild.id })
+        XCTAssertFalse(store.recentHistorySessions.contains { $0.id == structuralChild.id })
         XCTAssertTrue(store.recentHistorySessions.contains { $0.id == envelopeChild.id })
         XCTAssertFalse(store.recentHistorySessions.contains { $0.id == writableEnvelope.id })
         XCTAssertFalse(store.recentHistorySessions.contains { $0.id == claudeEnvelope.id })

@@ -1586,13 +1586,39 @@ extension SessionStore {
     }
 
     func sessionPreparedForStorage(_ incoming: AgentSession) -> AgentSession {
+        let ownershipPreserved = sessionPreservingSubagentOwnership(incoming)
         let preserved = sessionPreservingLocalCompletedGoal(
-            sessionPreservingLocalCompletedStatus(sessionPreservingActiveApproval(incoming))
+            sessionPreservingLocalCompletedStatus(sessionPreservingActiveApproval(ownershipPreserved))
         )
         let previewProjected = sessionApplyingListProjection(preserved)
         let monotonicRecency = sessionPreservingRecencyFloor(previewProjected)
         let recentProjected = sessionApplyingRecentActivityProjection(monotonicRecency)
         return sessionApplyingExternalActivity(recentProjected)
+    }
+
+    /// 子 Agent ownership 和创建时间属于线程身份，而非一次列表响应的瞬时字段。
+    /// REST / DataFlow 的稀疏同 ID 更新也必须单调保留，避免刷新后 child 被重新平铺为 root，
+    /// 或历史过滤因为 createdAt 丢失而放回父会话前缀。
+    func sessionPreservingSubagentOwnership(_ incoming: AgentSession) -> AgentSession {
+        guard let existing = sessionsByID[incoming.id] else {
+            return incoming
+        }
+        var result = incoming
+        result.createdAt = result.createdAt ?? existing.createdAt ?? existing.context?.createdAt
+
+        let incomingParent = result.parentThreadID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if incomingParent?.isEmpty != false {
+            let existingParent = existing.parentThreadID?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            result.parentThreadID = existingParent?.isEmpty == false
+                ? existingParent
+                : existing.context?.parentThreadID
+        }
+        if existing.isSubagentThread || result.isSubagentThread {
+            result.isSubagent = true
+        }
+        return result
     }
 
     func sessionApplyingExternalActivity(_ incoming: AgentSession) -> AgentSession {

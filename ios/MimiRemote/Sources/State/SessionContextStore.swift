@@ -49,12 +49,23 @@ final class SessionContextStore: ObservableObject {
             if context.goal == nil {
                 context.goal = session.goal
             }
+            // list/read 的 ownership 字段比增量 context 事件完整；这里只补空值并让 child 身份单调为真。
+            context.createdAt = context.createdAt ?? session.createdAt
+            context.parentThreadID = Self.nonEmpty(context.parentThreadID, session.parentThreadID)
+            context.isSubagent = Self.mergedSubagentFlag(
+                base: context.isSubagent,
+                update: session.isSubagent,
+                hasParent: context.parentThreadID != nil
+            )
             upsert(context, fallbackSessionID: session.id)
             return
         }
         let context = SessionContextSnapshot(
             sessionID: session.id,
             threadID: session.resumeID,
+            createdAt: session.createdAt,
+            parentThreadID: session.parentThreadID,
+            isSubagent: session.isSubagentThread ? true : session.isSubagent,
             status: SessionContextStatus(type: Self.statusType(from: session.status)),
             environment: SessionContextEnvironment(
                 id: "local",
@@ -153,10 +164,24 @@ final class SessionContextStore: ObservableObject {
         guard var base else {
             var next = update
             next.tasks = Array(update.tasks.prefix(maxTasks))
+            next.parentThreadID = nonEmpty(next.parentThreadID, nil)
+            next.isSubagent = mergedSubagentFlag(
+                base: nil,
+                update: next.isSubagent,
+                hasParent: next.parentThreadID != nil
+            )
             return next
         }
         base.sessionID = update.sessionID ?? base.sessionID
         base.threadID = update.threadID ?? base.threadID
+        // ownership 是线程身份，不是瞬时状态。稀疏 status/task 更新不得把已知 child 降级成 root。
+        base.createdAt = base.createdAt ?? update.createdAt
+        base.parentThreadID = nonEmpty(base.parentThreadID, update.parentThreadID)
+        base.isSubagent = mergedSubagentFlag(
+            base: base.isSubagent,
+            update: update.isSubagent,
+            hasParent: base.parentThreadID != nil
+        )
         base.status = update.status ?? base.status
         base.environment = mergeEnvironment(base.environment, update.environment)
         base.git = update.git ?? base.git
@@ -285,5 +310,16 @@ final class SessionContextStore: ObservableObject {
             return fallback
         }
         return preferred
+    }
+
+    private static func mergedSubagentFlag(
+        base: Bool?,
+        update: Bool?,
+        hasParent: Bool
+    ) -> Bool? {
+        if hasParent || base == true || update == true {
+            return true
+        }
+        return update ?? base
     }
 }

@@ -3,6 +3,10 @@ import Foundation
 struct SessionContextSnapshot: Codable, Hashable {
     var sessionID: SessionID?
     var threadID: String?
+    var createdAt: Date?
+    var parentThreadID: String?
+    /// Optional 保留“旧协议未知”与“明确不是子 Agent”的差异，并兼容旧持久化 JSON。
+    var isSubagent: Bool?
     var status: SessionContextStatus?
     var environment: SessionContextEnvironment?
     var git: SessionContextGitInfo?
@@ -15,6 +19,9 @@ struct SessionContextSnapshot: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case threadID = "thread_id"
+        case createdAt = "created_at"
+        case parentThreadID = "parent_thread_id"
+        case isSubagent = "is_subagent"
         case status
         case environment
         case git
@@ -28,6 +35,9 @@ struct SessionContextSnapshot: Codable, Hashable {
     init(
         sessionID: SessionID? = nil,
         threadID: String? = nil,
+        createdAt: Date? = nil,
+        parentThreadID: String? = nil,
+        isSubagent: Bool? = nil,
         status: SessionContextStatus? = nil,
         environment: SessionContextEnvironment? = nil,
         git: SessionContextGitInfo? = nil,
@@ -39,6 +49,9 @@ struct SessionContextSnapshot: Codable, Hashable {
     ) {
         self.sessionID = sessionID
         self.threadID = threadID
+        self.createdAt = createdAt
+        self.parentThreadID = parentThreadID
+        self.isSubagent = isSubagent
         self.status = status
         self.environment = environment
         self.git = git
@@ -53,6 +66,9 @@ struct SessionContextSnapshot: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.sessionID = try container.decodeIfPresent(SessionID.self, forKey: .sessionID)
         self.threadID = try container.decodeIfPresent(String.self, forKey: .threadID)
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        self.parentThreadID = try container.decodeIfPresent(String.self, forKey: .parentThreadID)
+        self.isSubagent = try container.decodeIfPresent(Bool.self, forKey: .isSubagent)
         self.status = try container.decodeIfPresent(SessionContextStatus.self, forKey: .status)
         self.environment = try container.decodeIfPresent(SessionContextEnvironment.self, forKey: .environment)
         self.git = try container.decodeIfPresent(SessionContextGitInfo.self, forKey: .git)

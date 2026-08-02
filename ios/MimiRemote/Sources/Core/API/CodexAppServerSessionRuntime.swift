@@ -1035,10 +1035,15 @@ actor CodexAppServerSessionRuntime {
         )
         let object = result?.objectValue ?? [:]
         let rawTurns = object["data"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let rawChronologicalTurns = Array(rawTurns.reversed())
         let chronologicalTurns = childOwnedHistoryTurns(
             in: thread,
-            turns: Array(rawTurns.reversed())
+            turns: rawChronologicalTurns
         )
+        // desc 分页一旦碰到 child 创建前的父 Turn（或无时间戳的继承 rollout），
+        // 后续 cursor 只会继续向更早的父前缀移动。此时必须本地关闭分页，不能把过滤后的
+        // 空页配上上游 nextCursor 再交给 UI。
+        let reachedInheritedBoundary = chronologicalTurns.count < rawChronologicalTurns.count
         // iPad 在 turn 结束后才恢复连接时，会错过实时 turn/completed，但分页历史已经能看到
         // 对应 turn 的终态。这里用最新一页的权威 turn 结果补回完成事件，避免消息已显示完成，
         // runtime 仍保留陈旧 activeTurnID，进而让后续输入永久卡在本地队列。
@@ -1069,7 +1074,8 @@ actor CodexAppServerSessionRuntime {
                 turnID: recoveredTerminalTurn.turnID
             )
         }
-        let nextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
+        let upstreamNextCursor = firstString(in: object, keys: ["nextCursor", "next_cursor"])
+        let nextCursor = reachedInheritedBoundary ? nil : upstreamNextCursor
         return HistoryMessagesPage(
             messages: messages,
             previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
@@ -1171,8 +1177,9 @@ actor CodexAppServerSessionRuntime {
     }
 
     /// Codex 子 Agent 的 Thread 会带上 spawn/fork 时继承的父 Turn，供模型建立上下文。
-    /// 这段前缀不属于子 Agent 自己的执行历史；只有父子身份和时间边界都明确时才裁剪，
-    /// 任何字段缺失或秒级时间戳相等都 fail-open，避免误删普通会话和真实子 Turn。
+    /// 这段前缀不属于子 Agent 自己的执行历史；只有 child 身份和创建时间都明确时才裁剪。
+    /// 已确认 child 后，无 startedAt 的 synthetic rollout 无法证明归 child 所有，按隔离优先丢弃；
+    /// 普通 fork、身份/创建时间缺失仍 fail-open，同秒创建的第一个真实 child Turn 继续保留。
     func childOwnedHistoryTurns(
         in thread: [String: CodexAppServerJSONValue],
         turns: [[String: CodexAppServerJSONValue]]
@@ -1181,17 +1188,8 @@ actor CodexAppServerSessionRuntime {
             thread["parentThreadId"]?.stringValue,
             thread["parent_thread_id"]?.stringValue
         ) != nil
-        let threadSource = nonEmpty(
-            thread["threadSource"]?.stringValue,
-            thread["thread_source"]?.stringValue
-        )?.lowercased()
-        let source = thread["source"]?.objectValue
-        let hasSubagentSource = threadSource?.hasPrefix("subagent") == true
-            || source?["subAgent"]?.objectValue != nil
-            || source?["subagent"]?.objectValue != nil
-            || nonEmpty(source?["subAgent"]?.stringValue, source?["subagent"]?.stringValue) != nil
 
-        guard hasParentThread || hasSubagentSource,
+        guard hasParentThread || hasSubagentSource(in: thread),
               let threadCreatedAt = firstDate(in: thread, keys: ["createdAt", "created_at"])
         else {
             return turns
@@ -1199,7 +1197,7 @@ actor CodexAppServerSessionRuntime {
 
         return turns.filter { turn in
             guard let turnStartedAt = firstDate(in: turn, keys: ["startedAt", "started_at"]) else {
-                return true
+                return false
             }
             return turnStartedAt >= threadCreatedAt
         }
@@ -1221,8 +1219,9 @@ actor CodexAppServerSessionRuntime {
                 "createdAt": cached.createdAt.map { .double($0.timeIntervalSince1970) } ?? .null,
                 "updatedAt": cached.updatedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
                 // prepareRelatedSession 会先 thread/read，再走 turns/list；缓存壳层必须保留
-                // 父子身份，否则分页历史会因缺 metadata 而错误 fail-open。
-                "parentThreadId": cached.parentThreadID.map { .string($0) } ?? .null
+                // parent 与 source-only subAgent 身份，否则分页历史会因缺 metadata 而错误 fail-open。
+                "parentThreadId": cached.parentThreadID.map { .string($0) } ?? .null,
+                "threadSource": cached.isSubagentThread ? .string("subagent") : .null
             ]
         }
         let project = projects.first
