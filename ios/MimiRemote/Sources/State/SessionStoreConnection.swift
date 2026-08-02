@@ -1435,6 +1435,8 @@ extension SessionStore {
         for oldID in replacements.keys {
             sessionPageRequestTokenByProjectID.removeValue(forKey: oldID)
             sessionPageLoadingTokenByProjectID.removeValue(forKey: oldID)
+            sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: oldID)
+            sessionFirstPageWaiterCountByProjectID.removeValue(forKey: oldID)
             sessionListReconciliationTasksByProjectID.removeValue(forKey: oldID)?.cancel()
         }
         let obsoleteFirstPageRequestKeys = sessionListFirstPageInFlightByKey.keys.filter {
@@ -1445,6 +1447,9 @@ extension SessionStore {
             sessionListFirstPageInFlightByKey.removeValue(forKey: key)
         }
         sessionListFirstPageCacheByKey = sessionListFirstPageCacheByKey.filter {
+            replacements[$0.key.workspaceID] == nil
+        }
+        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
             replacements[$0.key.workspaceID] == nil
         }
 
@@ -1909,6 +1914,11 @@ extension SessionStore {
         sessionProjectsWithAdditionalPages.remove(project.id)
         sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
+        sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
+        sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
+        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+            $0.key.workspaceID != project.id
+        }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
@@ -2328,9 +2338,12 @@ extension SessionStore {
         sessionProjectsWithAdditionalPages = []
         sessionPageRequestTokenByProjectID = [:]
         sessionPageLoadingTokenByProjectID = [:]
+        sessionFirstPageLoadingConsistencyByProjectID = [:]
+        sessionFirstPageWaiterCountByProjectID = [:]
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
+        workspaceSessionFirstPageCompletionByKey = [:]
         sessionListCooldownUntilByBudgetKey = [:]
         lastSessionLibraryIndexRefreshAt = nil
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }

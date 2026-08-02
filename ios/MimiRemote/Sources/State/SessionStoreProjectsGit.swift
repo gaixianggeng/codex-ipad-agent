@@ -903,6 +903,11 @@ extension SessionStore {
         sessionProjectsWithAdditionalPages.remove(project.id)
         sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
+        sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
+        sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
+        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+            $0.key.workspaceID != project.id
+        }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
@@ -1629,7 +1634,11 @@ extension SessionStore {
                 hostScope: hostScope
             )
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            mergeSessionLibraryPages([result], generation: generation)
+            mergeSessionLibraryPages(
+                [result],
+                generation: generation,
+                consistency: consistency
+            )
         }
     }
 

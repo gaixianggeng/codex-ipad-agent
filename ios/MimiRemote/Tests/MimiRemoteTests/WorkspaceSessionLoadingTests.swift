@@ -37,6 +37,344 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testWorkspaceSessionRefreshScopeTracksHostGenerationWithSameWorkspaceSelection() {
+        let firstHostScope = HostScope(
+            profileID: "profile-a",
+            installationID: "installation-a",
+            generation: 1
+        )
+        let reconnectedHostScope = HostScope(
+            profileID: "profile-a",
+            installationID: "installation-a",
+            generation: 2
+        )
+
+        XCTAssertNotEqual(
+            WorkspaceSessionRefreshScope(hostScope: firstHostScope, workspaceID: "workspace-a"),
+            WorkspaceSessionRefreshScope(hostScope: reconnectedHostScope, workspaceID: "workspace-a"),
+            "同一 workspace 在连接代次变化后必须重新触发精确首屏"
+        )
+    }
+
+    func testSparseWorkspaceCacheStillLoadsOneAuthoritativeFirstPage() async throws {
+        for sparseCount in [1, 4] {
+            let project = makeProject(id: "workspace_sparse_\(sparseCount)")
+            let completePage = (0..<20).map { index in
+                makeSession(
+                    id: "thread_sparse_\(sparseCount)_\(index)",
+                    projectID: project.id,
+                    title: "会话 \(index)",
+                    status: "history",
+                    source: index.isMultiple(of: 2) ? "codex" : "claude",
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+                )
+            }
+            let client = MutableSessionPageClient(
+                projects: [project],
+                page: SessionsPage(sessions: completePage, nextCursor: "older", hasMore: true)
+            )
+            let store = SessionStore(
+                appStore: AppStore(),
+                conversationStore: ConversationStore(),
+                logStore: LogStore(),
+                clientFactory: { client }
+            )
+            store.projects = [project]
+            store.sessions = Array(completePage.prefix(sparseCount))
+
+            XCTAssertEqual(store.sessions(forProjectID: project.id).count, sparseCount, "稀疏缓存必须先保持可见")
+            XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+            XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), completePage.map(\.id))
+            XCTAssertEqual(client.requestedSessionListConsistencies, [.authoritative])
+            XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+            XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+            XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "older")
+        }
+    }
+
+    func testFastIndexedFirstPageCannotShrinkCompletedAuthoritativeWindowOrCursor() async throws {
+        let project = makeProject(id: "workspace_authoritative_priority")
+        let completePage = (0..<20).map { index in
+            makeSession(
+                id: "thread_authoritative_\(index)",
+                projectID: project.id,
+                title: "精确会话 \(index)",
+                status: index == 0 ? "running" : "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: completePage, nextCursor: "authoritative-older", hasMore: true)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        client.page = SessionsPage(
+            sessions: [completePage[0]],
+            nextCursor: "sparse-older",
+            hasMore: true
+        )
+
+        await store.refreshSessions(
+            forProjectID: project.id,
+            showLoading: false,
+            reuseRecent: false,
+            consistency: .fastIndexed,
+            activatesProject: false
+        )
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), completePage.map(\.id))
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-older")
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.authoritative, .fastIndexed])
+    }
+
+    func testAuthoritativeFirstPageWaitsOutCooldownInsteadOfPromotingFastCache() async throws {
+        let project = makeProject(id: "workspace_authoritative_cooldown")
+        let sparse = makeSession(
+            id: "thread_authoritative_cooldown_sparse",
+            projectID: project.id,
+            title: "稀疏缓存",
+            status: "history",
+            source: "codex"
+        )
+        let completePage = (0..<20).map { index in
+            makeSession(
+                id: "thread_authoritative_cooldown_\(index)",
+                projectID: project.id,
+                title: "精确会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [sparse], nextCursor: "sparse-cursor", hasMore: true)
+        )
+        var now = Date(timeIntervalSince1970: 1_780_000_000)
+        var requestedSleeps: [UInt64] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            sessionListNow: { now },
+            sessionListSleep: { nanoseconds in
+                requestedSleeps.append(nanoseconds)
+                now = now.addingTimeInterval(Double(nanoseconds) / 1_000_000_000)
+            }
+        )
+        store.projects = [project]
+
+        await store.refreshSessions(
+            forProjectID: project.id,
+            showLoading: false,
+            reuseRecent: false,
+            consistency: .fastIndexed,
+            activatesProject: false
+        )
+        let workspace = try XCTUnwrap(store.workspacesByID[project.id])
+        store.sessionListCooldownUntilByBudgetKey[store.sessionListBudgetKey(for: workspace)] = now.addingTimeInterval(15)
+        client.page = SessionsPage(
+            sessions: completePage,
+            nextCursor: "authoritative-cursor",
+            hasMore: true
+        )
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        XCTAssertEqual(requestedSleeps, [15_000_000_000])
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.fastIndexed, .authoritative])
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), completePage.map(\.id))
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-cursor")
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
+    func testForgottenWorkspaceRejectsLateAuthoritativeLibraryCompletion() throws {
+        let project = makeProject(id: "workspace_forgotten_late_page")
+        let workspace = AgentWorkspace(project: project)
+        let lateSession = makeSession(
+            id: "thread_forgotten_late_page",
+            projectID: project.id,
+            title: "迟到会话",
+            status: "history",
+            source: "codex"
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.recentWorkspaces = [workspace]
+
+        store.forgetWorkspace(project)
+        store.mergeSessionLibraryPages(
+            [(workspace: workspace, page: SessionsPage(sessions: [lateSession]))],
+            generation: store.appStore.connectionGeneration,
+            consistency: .authoritative
+        )
+
+        XCTAssertTrue(store.sessions.isEmpty, "移除后的迟到响应不能复活会话")
+        XCTAssertTrue(store.workspaceSessionFirstPageCompletionByKey.isEmpty)
+        store.recentWorkspaces = [workspace]
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+    }
+
+    func testRestoreFailureCannotReviveWorkspaceForgottenWhileFirstPageIsInFlight() async {
+        let project = makeProject(id: "workspace_restore_forgotten_in_flight")
+        let workspace = AgentWorkspace(project: project)
+        let snapshotSession = makeSession(
+            id: "thread_restore_forgotten_in_flight",
+            projectID: project.id,
+            title: "旧恢复快照",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: []),
+            blockOnCall: 1,
+            blockedError: CancellationError()
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: snapshotSession)
+
+        let restore = Task { @MainActor in
+            await store.resolveSessionForRestore(snapshot)
+        }
+        await client.waitForBlockedSessionListRefresh()
+        store.forgetWorkspace(project)
+        client.releaseBlockedSessionListRefresh()
+        let resolved = await restore.value
+
+        XCTAssertNil(resolved)
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertTrue(store.sessionPageCursorByProjectID.isEmpty)
+        XCTAssertTrue(store.workspaceSessionFirstPageCompletionByKey.isEmpty)
+        XCTAssertTrue(store.recentWorkspaces.isEmpty)
+    }
+
+    func testConcurrentWorkspaceFirstPageWaitersShareNetworkAndBothObserveCompletion() async throws {
+        let project = makeProject(id: "workspace_concurrent_authoritative")
+        let completePage = (0..<20).map { index in
+            makeSession(
+                id: "thread_concurrent_authoritative_\(index)",
+                projectID: project.id,
+                title: "并发会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: completePage),
+            blockOnCall: 1
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.sessions = [completePage[0]]
+
+        let first = Task { @MainActor in
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        }
+        await client.waitForBlockedSessionListRefresh()
+        let second = Task { @MainActor in
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1)
+        client.releaseBlockedSessionListRefresh()
+        try await first.value
+        try await second.value
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, completePage.count)
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertTrue(store.sessionFirstPageLoadingConsistencyByProjectID.isEmpty)
+        XCTAssertTrue(store.sessionFirstPageWaiterCountByProjectID.isEmpty)
+    }
+
+    func testFastIndexedWaiterJoiningAuthoritativeRequestCannotDowngradeCompletion() async throws {
+        let project = makeProject(id: "workspace_authoritative_then_fast")
+        let completePage = (0..<20).map { index in
+            makeSession(
+                id: "thread_authoritative_then_fast_\(index)",
+                projectID: project.id,
+                title: "会话 \(index)",
+                status: index == 0 ? "running" : "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: completePage,
+                nextCursor: "authoritative-older",
+                hasMore: true
+            ),
+            blockOnCall: 1
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        let authoritative = Task { @MainActor in
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        }
+        await client.waitForBlockedSessionListRefresh()
+        let fastIndexed = Task { @MainActor in
+            await store.refreshSessions(
+                forProjectID: project.id,
+                showLoading: false,
+                reuseRecent: false,
+                consistency: .fastIndexed,
+                activatesProject: false
+            )
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1)
+        client.releaseBlockedSessionListRefresh()
+        try await authoritative.value
+        await fastIndexed.value
+
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.authoritative])
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), completePage.map(\.id))
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-older")
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
     func testCancelledWorkspaceCatalogRequestCannotCommitLateProjects() async {
         let staleProject = makeProject(id: "stale-catalog-project")
         let gate = WorkspaceProjectsGate()
