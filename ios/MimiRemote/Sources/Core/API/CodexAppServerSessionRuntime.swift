@@ -1397,6 +1397,10 @@ actor CodexAppServerSessionRuntime {
             || message.contains("experimentalapi")
     }
 
+    // full 首屏默认 10 turn；SessionStore 在 history_response_too_large 后按此上限向下
+    // 逐级缩页（10→5→2→1，见 SessionStore.fullHistoryTurnPageLadder）。两处必须保持一致。
+    static let fullHistoryTurnPageLadderTop = 10
+
     static func threadTurnPageLimit(forMessageLimit limit: Int?, loadMode: HistoryMessagesPage.LoadMode) -> Int {
         let requestedMessages = max(1, limit ?? 120)
         switch loadMode {
@@ -1405,6 +1409,13 @@ actor CodexAppServerSessionRuntime {
             // 控制 turn 页大小，比降低 WebSocket message size 更温和，不会制造重连风暴。
             return max(5, min(20, (requestedMessages + 3) / 4))
         case .full:
+            // 自适应缩页：SessionStore 缩页时直接传入目标 turn 数（均 ≤ 首屏 10），
+            // 这些小 limit 按精确 turn 数请求，便于命中 gateway full cap 以下；默认首屏
+            // (limit=20) 与翻页(limit=20) 等较大 message limit 仍走原有 message→turn 折算，
+            // 结果 10 turn，既是首屏也是 ladder 顶端。
+            if requestedMessages <= fullHistoryTurnPageLadderTop {
+                return max(1, requestedMessages)
+            }
             // full 手动加载仍要服从 Go gateway 的硬上限，避免弱网下大响应被 50 limit 拒绝。
             return max(10, min(50, (requestedMessages + 1) / 2))
         }

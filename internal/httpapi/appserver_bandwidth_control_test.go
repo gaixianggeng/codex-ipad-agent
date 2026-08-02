@@ -229,6 +229,65 @@ func TestAppServerGatewayCountsThreadListResponseAgainstBudgets(t *testing.T) {
 	}
 }
 
+// MIM-48：被 cap 阻断的大 full 响应从未写回 iPad，不能占用保护下行链路的历史预算，
+// 否则紧随其后的小 summary 回退会被 history_budget_limited 饿死，形成
+// “full 失败→等待→summary→再试 full” 的循环。
+func TestAppServerGatewayBlockedHistoryResponseSkipsDownloadBudget(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	oldLocalBudget := appServerGatewayHistoryBudgetMaxResponseBytes
+	oldGlobalBudget := appServerGatewayHistoryGlobalMaxResponseBytes
+	appServerGatewayHistoryResponseCapBytes = 1 << 10
+	appServerGatewayHistoryBudgetMaxResponseBytes = 1 << 10
+	appServerGatewayHistoryGlobalMaxResponseBytes = 1 << 10
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+		appServerGatewayHistoryBudgetMaxResponseBytes = oldLocalBudget
+		appServerGatewayHistoryGlobalMaxResponseBytes = oldGlobalBudget
+	})
+
+	router := &Router{monitor: newRelayMonitor()}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      "codex",
+		pendingHistory: map[string]appServerGatewayPendingHistoryRequest{},
+		historyBudgets: map[string]appServerGatewayHistoryBudget{},
+	}
+
+	fullID := json.RawMessage(`301`)
+	fullParams := map[string]any{"threadId": "thread-huge", "itemsView": "full", "limit": json.Number("20"), "sortDirection": "desc"}
+	if err := policy.reserveHistoryRequest(&fullID, "thread/turns/list", fullParams, 128); err != nil {
+		t.Fatalf("首个 full 历史请求应可预留：%+v", err)
+	}
+
+	oversized := `{"id":301,"result":{"data":["` + strings.Repeat("x", 2<<10) + `"]}}`
+	_, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, []byte(oversized))
+	if forward || policyErr == nil || !policyErr.historyResponseBlocked {
+		t.Fatalf("超过 cap 的 full 响应应被阻断：forward=%v err=%+v", forward, policyErr)
+	}
+	if policyErr.data["reason"] != "history_response_too_large" {
+		t.Fatalf("阻断原因应为 history_response_too_large：%+v", policyErr.data)
+	}
+	if policyErr.data["responseBytes"] != len(oversized) || policyErr.data["maxResponseBytes"] != appServerGatewayHistoryResponseCapBytes {
+		t.Fatalf("阻断错误应携带量级：%+v", policyErr.data)
+	}
+
+	// 关键断言：未转发的大响应不得写入全局/本 key 下行预算。
+	if got := router.gatewayHistoryGlobalBudget.responseBytes; got != 0 {
+		t.Fatalf("被阻断的 full 响应不应计入全局下行预算：got=%d", got)
+	}
+	fullKey := gatewayHistoryBudgetKey("thread-huge", "thread/turns/list", "full")
+	if got := policy.historyBudgets[fullKey].responseBytes; got != 0 {
+		t.Fatalf("被阻断的 full 响应不应计入本 key 下行预算：got=%d", got)
+	}
+
+	// 紧随其后的小 summary 回退必须仍能预留，不被全局预算饿死。
+	summaryID := json.RawMessage(`302`)
+	summaryParams := map[string]any{"threadId": "thread-huge", "itemsView": "summary", "limit": json.Number("60"), "sortDirection": "desc"}
+	if err := policy.reserveHistoryRequest(&summaryID, "thread/turns/list", summaryParams, 128); err != nil {
+		t.Fatalf("被阻断 full 之后的 summary 回退不应被限流：%+v", err)
+	}
+}
+
 func TestRelayMonitorRecordsForwardedAndRedactedBytes(t *testing.T) {
 	monitor := newRelayMonitor()
 	conn := monitor.startGatewayConnection("127.0.0.1", "example.test", "ws://upstream", 0)

@@ -414,6 +414,9 @@ final class SessionStore: ObservableObject {
     var gitRefreshDelayNanoseconds: UInt64 = 600_000_000
     let economyHistoryPageLimit = 60
     let fullHistoryPageLimit = 20
+    // full 首屏被 gateway cap 阻断且已知量级时，从首屏 turn 数向下逐级缩页重试完整历史，
+    // 再回退缩略。顶端 10 必须与 CodexAppServerSessionRuntime.fullHistoryTurnPageLadderTop 一致。
+    let fullHistoryTurnPageLadder = [10, 5, 2, 1]
     let historyFirstPageCacheTTL: TimeInterval = 4
     let historyPolicyRetryFallbackNanoseconds: UInt64 = 15_000_000_000
     let historyPolicyRetryMaxNanoseconds: UInt64 = 20_000_000_000

@@ -2,6 +2,28 @@ import XCTest
 @testable import MimiRemote
 
 final class CodexAppServerProtocolTests: XCTestCase {
+    func testFullHistoryTurnPageLimitUsesAdaptiveLadderValuesExactly() {
+        // MIM-48：默认首屏的 20 条消息仍折算为 10 个 turn；进入超限恢复后，
+        // 5/2/1 必须作为精确 turn 数下发，否则会被旧的最小 10 turn 规则吞掉，
+        // 自适应缩页看似重试、实际却持续请求同一大页。
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.threadTurnPageLimit(forMessageLimit: 20, loadMode: .full),
+            10
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.threadTurnPageLimit(forMessageLimit: 5, loadMode: .full),
+            5
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.threadTurnPageLimit(forMessageLimit: 2, loadMode: .full),
+            2
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.threadTurnPageLimit(forMessageLimit: 1, loadMode: .full),
+            1
+        )
+    }
+
     func testLiveWindowsHostHealthFromPhysicalDevice() async throws {
         guard let rawEndpoint = ProcessInfo.processInfo.environment["MIMI_LIVE_WINDOWS_ENDPOINT"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
