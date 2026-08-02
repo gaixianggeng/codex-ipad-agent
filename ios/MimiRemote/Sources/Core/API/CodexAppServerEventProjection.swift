@@ -1468,17 +1468,7 @@ extension CodexAppServerSessionRuntime {
     }
 
     func isVisibleUserHistoryMessage(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return false
-        }
-        let hiddenPrefixes = [
-            "<subagent_notification>",
-            "<turn_aborted>",
-            "<environment_context>",
-            "<codex_internal_context>"
-        ]
-        return !hiddenPrefixes.contains { trimmed.hasPrefix($0) }
+        isVisibleAppServerUserMessageText(text)
     }
 
     func appServerHistoryMessageID(turnID: TurnID?, itemID: AgentItemID) -> MessageID {
