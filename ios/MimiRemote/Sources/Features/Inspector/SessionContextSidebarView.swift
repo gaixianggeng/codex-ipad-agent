@@ -60,6 +60,7 @@ struct SessionContextSidebarView: View {
             }
         }
         .background(tokens.sidebarBackground)
+        .accessibilityIdentifier("sessionInspector.content")
         .sheet(item: $goalEditor) { draft in
             ThreadGoalEditorSheet(draft: draft)
         }

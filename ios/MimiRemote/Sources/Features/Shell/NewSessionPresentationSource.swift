@@ -92,3 +92,85 @@ struct WorkbenchSheetPresentationState: Equatable {
         presentation = nil
     }
 }
+
+/// Inspector 与 New Session 使用不同的空间来源，避免两个展示生命周期互相污染。
+enum InspectorPresentationSource: String, Hashable {
+    case sessionToolbarInspector
+
+    var transitionSourceID: String { rawValue }
+}
+
+/// Inspector 的入口宿主。只有 regular/medium 布局下持续可见的工具栏按钮能成为 zoom source。
+enum InspectorPresentationHost: Hashable {
+    case compactSheet
+    case mediumSheet
+    case attached
+}
+
+enum InspectorPresentationTransitionPolicy: Hashable {
+    case systemSheet
+    case zoom(sourceID: String)
+}
+
+/// 仅描述本次 Inspector 展示的动画身份，不持有 Inspector 内部选择或业务状态。
+struct InspectorPresentationContext: Hashable {
+    let host: InspectorPresentationHost
+    let source: InspectorPresentationSource?
+    let transition: InspectorPresentationTransitionPolicy
+
+    init(
+        host: InspectorPresentationHost,
+        source: InspectorPresentationSource? = nil,
+        hasNamespace: Bool = false,
+        reduceMotion: Bool = false
+    ) {
+        self.host = host
+
+        let resolvedSource: InspectorPresentationSource? = if host == .mediumSheet,
+                                                               source == .sessionToolbarInspector,
+                                                               hasNamespace {
+            source
+        } else {
+            nil
+        }
+        self.source = resolvedSource
+
+        if !reduceMotion, let resolvedSource {
+            transition = .zoom(sourceID: resolvedSource.transitionSourceID)
+        } else {
+            transition = .systemSheet
+        }
+    }
+
+}
+
+/// `showingInspector` 仍由界面层负责；这里仅锁定与其同步的动画上下文。
+struct InspectorPresentationState: Equatable {
+    private(set) var context: InspectorPresentationContext?
+
+    mutating func present(
+        on host: InspectorPresentationHost,
+        source: InspectorPresentationSource? = nil,
+        hasNamespace: Bool = false,
+        reduceMotion: Bool = false
+    ) {
+        // 展示期间拒绝重入，避免另一个入口替换返回锚点或动态辅助功能改变转场。
+        guard context == nil else { return }
+        context = InspectorPresentationContext(
+            host: host,
+            source: source,
+            hasNamespace: hasNamespace,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    mutating func dismiss() {
+        context = nil
+    }
+
+    mutating func layoutHostDidChange(to host: InspectorPresentationHost) {
+        guard context?.host != host else { return }
+        // Sheet 与 attached Inspector 是不同 host；旧 source/zoom 不得跨容器延续。
+        context = nil
+    }
+}

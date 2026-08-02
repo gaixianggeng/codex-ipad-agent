@@ -102,6 +102,7 @@ struct UnifiedWorkbenchShell: View {
     )
     @State private var didRestoreFloatingSidebarVisibility = false
     @State private var sheetPresentationState = WorkbenchSheetPresentationState()
+    @State private var inspectorPresentationState = InspectorPresentationState()
     @State private var sessionActionPresentation: SessionActionPresentation?
     @State private var notificationVisibilitySceneID = UUID()
     @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
@@ -1036,7 +1037,7 @@ struct UnifiedWorkbenchShell: View {
                         .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
                         Button {
-                            toggleInspector()
+                            toggleInspector(layout: layout)
                         } label: {
                             Label(
                                 showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
@@ -1078,16 +1079,7 @@ struct UnifiedWorkbenchShell: View {
                 }
                 // 宽屏保留两个独立动作；手机端已经收进单一更多菜单。
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                ToolbarItem(placement: .topBarTrailing) {
-                    workbenchToolbarIconButton(
-                        systemImage: "sidebar.right",
-                        accessibilityLabel: showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
-                        tokens: tokens,
-                        isActive: showingInspector
-                    ) {
-                        toggleInspector()
-                    }
-                }
+                inspectorToolbarItem(layout: layout, tokens: tokens)
             }
         }
         .background(tokens.background.ignoresSafeArea())
@@ -1103,6 +1095,8 @@ struct UnifiedWorkbenchShell: View {
         .sessionInspectorPresentation(
             isPresented: $showingInspector,
             layout: layout,
+            transitionContext: inspectorPresentationState.context,
+            presentationNamespace: presentationNamespace,
             relatedSubagent: $selectedRelatedSubagent,
             parentSessionID: $relatedSubagentParentID,
             onOpenSubagent: { subagent in
@@ -1110,6 +1104,15 @@ struct UnifiedWorkbenchShell: View {
             },
             onCloseRelatedSubagent: {
                 closeRelatedSubagent(keepInspectorVisible: true)
+            },
+            onRequestDismiss: {
+                // 只有用户明确结束当前 Inspector 时才清理子 Agent 导航。
+                // 布局迁移也会关闭 Sheet，但必须保留关系以迁移到 compact/attached host。
+                closeRelatedSubagent(keepInspectorVisible: false)
+            },
+            onDismiss: {
+                // Sheet 的返回动画完成后再清来源，保证 zoom 能回到原按钮。
+                inspectorPresentationState.dismiss()
             }
         )
     }
@@ -1226,6 +1229,9 @@ struct UnifiedWorkbenchShell: View {
         usesCompactNavigation: Bool,
         layout: WorkbenchLayout
     ) {
+        inspectorPresentationState.layoutHostDidChange(
+            to: inspectorPresentationHost(for: layout)
+        )
         if usesCompactNavigation {
             if let relation = selectedRelatedSubagent,
                let parentID = relatedSubagentParentID {
@@ -1248,6 +1254,7 @@ struct UnifiedWorkbenchShell: View {
         }
 
         if selectedRelatedSubagent != nil {
+            prepareInspectorPresentation(layout: layout)
             showingInspector = true
         }
 
@@ -1259,15 +1266,28 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func handleRelatedPresentationChange(layout: WorkbenchLayout) {
+        inspectorPresentationState.layoutHostDidChange(
+            to: inspectorPresentationHost(for: layout)
+        )
         guard selectedRelatedSubagent != nil, !layout.usesCompactNavigation else { return }
+        prepareInspectorPresentation(layout: layout)
         showingInspector = true
     }
 
-    private func toggleInspector() {
+    private func toggleInspector(
+        layout: WorkbenchLayout,
+        source: InspectorPresentationSource? = nil
+    ) {
         if showingInspector {
             closeRelatedSubagent(keepInspectorVisible: false)
             showingInspector = false
+            if layout.usesAttachedInspector {
+                // Attached host 没有 Sheet onDismiss，且从未使用 zoom，可同步结束动画上下文。
+                inspectorPresentationState.dismiss()
+            }
         } else {
+            // SwiftUI 可能在 Bool 写入的同一事务创建 Sheet；来源必须先锁定。
+            prepareInspectorPresentation(layout: layout, source: source)
             showingInspector = true
         }
     }
@@ -1292,6 +1312,7 @@ struct UnifiedWorkbenchShell: View {
         } else {
             // 宽屏替换附着检查器；中等宽度复用当前系统 sheet 并在其中 push，
             // 两种形态都保留父会话上下文。
+            prepareInspectorPresentation(layout: layout)
             showingInspector = true
         }
     }
@@ -1305,6 +1326,27 @@ struct UnifiedWorkbenchShell: View {
         if keepInspectorVisible {
             showingInspector = true
         }
+    }
+
+    private func inspectorPresentationHost(
+        for layout: WorkbenchLayout
+    ) -> InspectorPresentationHost {
+        if layout.usesCompactNavigation {
+            return .compactSheet
+        }
+        return layout.usesAttachedInspector ? .attached : .mediumSheet
+    }
+
+    private func prepareInspectorPresentation(
+        layout: WorkbenchLayout,
+        source: InspectorPresentationSource? = nil
+    ) {
+        inspectorPresentationState.present(
+            on: inspectorPresentationHost(for: layout),
+            source: source,
+            hasNamespace: true,
+            reduceMotion: reduceMotion
+        )
     }
 
     private func handleSelectionCommit(
@@ -1352,6 +1394,55 @@ struct UnifiedWorkbenchShell: View {
         case nil:
             break
         }
+    }
+
+    @ToolbarContentBuilder
+    private func inspectorToolbarItem(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens
+    ) -> some ToolbarContent {
+        if layout.usesSheetInspectorNavigation {
+            ToolbarItem(placement: .topBarTrailing) {
+                inspectorToolbarButton(
+                    layout: layout,
+                    tokens: tokens,
+                    source: .sessionToolbarInspector
+                )
+            }
+            // 只有中等宽度的独立按钮是稳定锚点；attached Inspector 不参与 Sheet zoom。
+            .matchedTransitionSource(
+                id: InspectorPresentationSource
+                    .sessionToolbarInspector
+                    .transitionSourceID,
+                in: presentationNamespace
+            )
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                inspectorToolbarButton(
+                    layout: layout,
+                    tokens: tokens,
+                    source: nil
+                )
+            }
+        }
+    }
+
+    private func inspectorToolbarButton(
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        source: InspectorPresentationSource?
+    ) -> some View {
+        workbenchToolbarIconButton(
+            systemImage: "sidebar.right",
+            accessibilityLabel: showingInspector
+                ? L10n.text("ui.hide_details")
+                : L10n.text("ui.show_details"),
+            tokens: tokens,
+            isActive: showingInspector
+        ) {
+            toggleInspector(layout: layout, source: source)
+        }
+        .accessibilityIdentifier("sessionDetail.inspector")
     }
 
     /// 顶栏交给系统工具栏材质和命中区域处理；这里只表达图标与激活状态，避免自绘圆形再叠一层系统玻璃。
