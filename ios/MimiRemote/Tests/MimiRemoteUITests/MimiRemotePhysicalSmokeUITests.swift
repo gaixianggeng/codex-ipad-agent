@@ -185,6 +185,33 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         }
     }
 
+    func testInspectorPresentationSurvivesIPadRotation() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "Inspector 的 sheet / attached 切换只在 iPad 验收。"
+        )
+        rotate(to: .portrait)
+        try openComposerIfNeeded()
+
+        let inspectorButton = app.descendant(identifier: "sessionDetail.inspector")
+        XCTAssertTrue(inspectorButton.waitForExistence(timeout: 10), "中等宽度应展示独立 Inspector 入口")
+        inspectorButton.tap()
+
+        let inspectorContent = app.descendant(identifier: "sessionInspector.content")
+        XCTAssertTrue(inspectorContent.waitForExistence(timeout: 10), "竖屏中等宽度应打开 Inspector Sheet")
+
+        rotate(to: .landscapeLeft)
+        XCTAssertTrue(inspectorContent.waitForExistence(timeout: 10), "旋转后 Inspector 内容不应丢失")
+
+        rotate(to: .portrait)
+        XCTAssertTrue(inspectorContent.waitForExistence(timeout: 10), "返回中等宽度后 Inspector 应保持展示")
+
+        let closeButton = app.descendant(identifier: "sessionDetail.inspector")
+        XCTAssertTrue(closeButton.waitForExistence(timeout: 5), "Inspector 展示期间应保留同一工具栏入口")
+        closeButton.tap()
+        XCTAssertTrue(inspectorContent.waitForNonExistence(timeout: 10), "关闭后不应残留 Sheet 或 attached Inspector")
+    }
+
     func testWideIPadFloatingSidebarDragDoesNotStealSessionRowGestures() throws {
         try XCTSkipUnless(
             UIDevice.current.userInterfaceIdiom == .pad,

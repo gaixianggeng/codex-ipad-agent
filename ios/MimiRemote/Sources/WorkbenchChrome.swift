@@ -716,19 +716,27 @@ extension View {
     func sessionInspectorPresentation(
         isPresented: Binding<Bool>,
         layout: WorkbenchLayout,
+        transitionContext: InspectorPresentationContext?,
+        presentationNamespace: Namespace.ID,
         relatedSubagent: Binding<SessionContextSubagent?>,
         parentSessionID: Binding<SessionID?>,
         onOpenSubagent: @escaping (SessionContextSubagent) -> Void,
-        onCloseRelatedSubagent: @escaping () -> Void
+        onCloseRelatedSubagent: @escaping () -> Void,
+        onRequestDismiss: @escaping () -> Void,
+        onDismiss: @escaping () -> Void
     ) -> some View {
         modifier(
             SessionInspectorPresentation(
                 isPresented: isPresented,
                 layout: layout,
+                transitionContext: transitionContext,
+                presentationNamespace: presentationNamespace,
                 relatedSubagent: relatedSubagent,
                 parentSessionID: parentSessionID,
                 onOpenSubagent: onOpenSubagent,
-                onCloseRelatedSubagent: onCloseRelatedSubagent
+                onCloseRelatedSubagent: onCloseRelatedSubagent,
+                onRequestDismiss: onRequestDismiss,
+                onDismiss: onDismiss
             )
         )
     }
@@ -738,10 +746,14 @@ struct SessionInspectorPresentation: ViewModifier {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var isPresented: Bool
     let layout: WorkbenchLayout
+    let transitionContext: InspectorPresentationContext?
+    let presentationNamespace: Namespace.ID
     @Binding var relatedSubagent: SessionContextSubagent?
     @Binding var parentSessionID: SessionID?
     let onOpenSubagent: (SessionContextSubagent) -> Void
     let onCloseRelatedSubagent: () -> Void
+    let onRequestDismiss: () -> Void
+    let onDismiss: () -> Void
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -770,51 +782,69 @@ struct SessionInspectorPresentation: ViewModifier {
                 )
             }
         } else {
-            content.sheet(isPresented: $isPresented) {
-                NavigationStack {
-                    SessionInspectorView()
-                        .environment(
-                            \.openSubagentSession,
-                            OpenSubagentSessionAction(handler: onOpenSubagent)
-                        )
-                        .navigationDestination(
-                            isPresented: Binding(
-                                get: {
-                                    layout.usesSheetInspectorNavigation
-                                        && relatedSubagent != nil
-                                        && parentSessionID != nil
-                                },
-                                set: { presented in
-                                    if !presented, layout.usesSheetInspectorNavigation {
-                                        onCloseRelatedSubagent()
-                                    }
-                                }
-                            )
-                        ) {
-                            if let relatedSubagent, let parentSessionID {
-                                RelatedSessionConversationView(
-                                    relation: relatedSubagent,
-                                    parentSessionID: parentSessionID,
-                                    showsCloseButton: false,
-                                    onClose: {}
-                                )
-                            }
-                        }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(L10n.text("ui.complete")) {
-                            isPresented = false
-                        }
-                    }
-                }
-                .interactiveDismissDisabled(
-                    layout.usesSheetInspectorNavigation && relatedSubagent != nil
-                )
-                .presentationDetents(horizontalSizeClass == .compact ? [.large] : [.medium, .large])
-                .presentationDragIndicator(.visible)
+            content.sheet(isPresented: $isPresented, onDismiss: onDismiss) {
+                transitionedInspectorSheet
             }
         }
+    }
+
+    @ViewBuilder
+    private var transitionedInspectorSheet: some View {
+        // Context 在打开前锁定；展示期间不重新读取布局或 Reduce Motion 来切换 View 结构。
+        switch transitionContext?.transition ?? .systemSheet {
+        case .systemSheet:
+            inspectorSheet
+        case .zoom(let sourceID):
+            inspectorSheet.navigationTransition(
+                .zoom(sourceID: sourceID, in: presentationNamespace)
+            )
+        }
+    }
+
+    private var inspectorSheet: some View {
+        NavigationStack {
+            SessionInspectorView()
+                .environment(
+                    \.openSubagentSession,
+                    OpenSubagentSessionAction(handler: onOpenSubagent)
+                )
+                .navigationDestination(
+                    isPresented: Binding(
+                        get: {
+                            layout.usesSheetInspectorNavigation
+                                && relatedSubagent != nil
+                                && parentSessionID != nil
+                        },
+                        set: { presented in
+                            if !presented, layout.usesSheetInspectorNavigation {
+                                onCloseRelatedSubagent()
+                            }
+                        }
+                    )
+                ) {
+                    if let relatedSubagent, let parentSessionID {
+                        RelatedSessionConversationView(
+                            relation: relatedSubagent,
+                            parentSessionID: parentSessionID,
+                            showsCloseButton: false,
+                            onClose: {}
+                        )
+                    }
+                }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(L10n.text("ui.complete")) {
+                    onRequestDismiss()
+                    isPresented = false
+                }
+            }
+        }
+        .interactiveDismissDisabled(
+            layout.usesSheetInspectorNavigation && relatedSubagent != nil
+        )
+        .presentationDetents(horizontalSizeClass == .compact ? [.large] : [.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 
