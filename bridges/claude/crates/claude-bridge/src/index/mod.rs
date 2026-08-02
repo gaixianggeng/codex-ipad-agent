@@ -26,7 +26,7 @@ pub use alleycat_bridge_core::{
 };
 use alleycat_codex_proto::{SessionSource, Thread, ThreadSourceKind, ThreadStatus};
 
-use crate::translate::items::is_internal_local_command_text;
+use crate::translate::items::is_internal_user_text;
 
 /// Bridge CLI version string baked into `Thread.cli_version`.
 pub const CLI_VERSION: &str = concat!("alleycat-claude-bridge/", env!("CARGO_PKG_VERSION"));
@@ -207,9 +207,7 @@ fn is_legacy_invalid_preview(preview: &str) -> bool {
     ]
     .iter()
     .any(|prefix| preview.starts_with(prefix));
-    preview == "(no messages)"
-        || truncated_internal_prefix
-        || is_internal_local_command_text(preview)
+    preview == "(no messages)" || truncated_internal_prefix || is_internal_user_text(preview)
 }
 
 /// Compat shim. Today's daemon calls
