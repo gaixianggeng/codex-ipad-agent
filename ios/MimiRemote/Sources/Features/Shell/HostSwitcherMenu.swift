@@ -156,18 +156,20 @@ struct HostSwitcherMenu: View {
             // 顶栏只表达当前主机可切换；多设备时用服务端真实平台增强辨识度，
             // 单设备和未知平台继续使用通用电脑，避免根据名称或地址猜测系统。
             ZStack(alignment: .bottomTrailing) {
-                HostPlatformGlyph(kind: currentHostIconKind)
-                    .frame(width: 18, height: 18)
+                // 圆形按钮的触控范围保持不变，只放大品牌图形的光学占比。
+                HostPlatformGlyph(kind: currentHostIconKind, size: 22)
+                    .frame(width: 22, height: 22)
 
                 if isSwitching {
                     ProgressView()
                         .controlSize(.mini)
-                        .offset(x: 3, y: 3)
+                        .offset(x: 4, y: 4)
                 } else {
                     Circle()
                         .fill(currentConnectionColor)
                         .frame(width: 6, height: 6)
-                        .offset(x: 2, y: 2)
+                        // 徽标同步外移，避免放大后的品牌图形与连接状态挤在一起。
+                        .offset(x: 4, y: 4)
                 }
             }
             // 主机入口恢复原始主题主色；连接状态仍由右下角语义色圆点表达。
