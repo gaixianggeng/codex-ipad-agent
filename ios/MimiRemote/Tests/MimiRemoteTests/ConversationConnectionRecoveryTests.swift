@@ -879,8 +879,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.statusMessage, L10n.plural("ui.session_list_retry_seconds_count", count: 15))
         XCTAssertFalse(store.statusMessage?.contains("itemsView") == true)
 
-        // 冷却窗口内继续刷新必须复用旧页，不能再撞 gateway。
-        await store.refreshSelectedProjectSessions(showLoading: true)
+        // 冷却窗口内的后台刷新必须复用旧页，不能再撞 gateway。
+        await store.refreshSelectedProjectSessions(showLoading: false)
         XCTAssertEqual(client.sessionsPageCallCount, 2)
 
         now = now.addingTimeInterval(15)

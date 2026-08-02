@@ -1572,6 +1572,104 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(appStore.activeConnectionProfileID, profile.id)
     }
 
+    func testNotificationFastRefreshPreservesAuthorityAndInvalidatesWindowForLateChildren() async {
+        let project = makeProject(id: "proj_notification_late_children")
+        let workspace = AgentWorkspace(project: project)
+        let authoritativeRoots = (0..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "notification_authoritative_root_\(index)",
+                projectID: project.id,
+                title: "权威通知会话 \(index)",
+                status: index == 0 ? "running" : "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(200 - index))
+            )
+        }
+        let staleShared = makeSession(
+            id: authoritativeRoots[0].id,
+            projectID: project.id,
+            title: "过期通知标题",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let lateChildren = (1...2).map { index in
+            AgentSession(
+                id: authoritativeRoots[index].id,
+                projectID: project.id,
+                project: project.id,
+                dir: project.path,
+                title: "通知补认子会话 \(index)",
+                status: "history",
+                source: "codex",
+                resumeID: nil,
+                createdAt: Date(timeIntervalSince1970: 1),
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(300 - index)),
+                parentThreadID: authoritativeRoots[0].id,
+                isSubagent: true,
+                canAcceptDirectInput: false
+            )
+        }
+        let notificationTarget = makeSession(
+            id: "notification_missing_target",
+            projectID: project.id,
+            title: "通知补入目标",
+            status: "history",
+            source: "codex"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
+            projectPages: [
+                project.id: SessionsPage(
+                    sessions: [staleShared] + lateChildren + [notificationTarget],
+                    nextCursor: "notification-fast-stale",
+                    hasMore: true
+                )
+            ]
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        store.projects = [project]
+        store.recentWorkspaces = [workspace]
+        store.sidebarProjects = [project]
+        store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: authoritativeRoots,
+                nextCursor: "notification-authoritative-cursor",
+                hasMore: true
+            ),
+            consistency: .authoritative
+        )
+        let route = SessionNotificationRoute.current(
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: project.id,
+            sessionID: notificationTarget.id
+        )
+
+        let outcome = await store.openSessionFromNotification(route)
+
+        XCTAssertEqual(outcome, .opened)
+        XCTAssertEqual(store.selectedSessionID, notificationTarget.id)
+        XCTAssertEqual(store.sessionsByID[authoritativeRoots[0].id]?.title, authoritativeRoots[0].title)
+        XCTAssertEqual(store.sessionsByID[authoritativeRoots[0].id]?.status, authoritativeRoots[0].status)
+        for child in lateChildren {
+            XCTAssertTrue(store.sessionsByID[child.id]?.isSubagentThread == true)
+            XCTAssertFalse(store.sessions(forProjectID: project.id).contains { $0.id == child.id })
+        }
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "notification-authoritative-cursor")
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(client.requestedProjectIDs, [project.id])
+    }
+
     func testNotificationFromOtherMacOnlyPromptsForProfileSwitch() async throws {
         let suiteName = "ConversationDataFlowTests.NotificationOtherProfile.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -1837,7 +1935,12 @@ extension ConversationDataFlowTests {
     }
 
     func testWorkspaceLoadFailureMarksUnavailableWhenResolveRejects() async {
-        let rootProject = makeProject(id: "proj_root")
+        // 避免 macOS 将 /tmp 规范化为 /private/tmp，夹具应验证业务状态而非本机路径别名。
+        let rootProject = AgentProject(
+            id: "proj_root",
+            name: "proj_root",
+            path: "/Users/mimi-tests/proj_root"
+        )
         let workspace = makeChildWorkspace(id: "ws_gone", name: "gone", root: rootProject)
         let client = MockSessionStoreClient(
             projects: [rootProject],
@@ -1864,7 +1967,11 @@ extension ConversationDataFlowTests {
     }
 
     func testWorkspaceLoadFailureStaysTransientWhenResolveSucceeds() async {
-        let rootProject = makeProject(id: "proj_root")
+        let rootProject = AgentProject(
+            id: "proj_root",
+            name: "proj_root",
+            path: "/Users/mimi-tests/proj_root"
+        )
         let workspace = makeChildWorkspace(id: "ws_flaky", name: "flaky", root: rootProject)
         let client = MockSessionStoreClient(
             projects: [rootProject],
@@ -1891,7 +1998,11 @@ extension ConversationDataFlowTests {
     }
 
     func testForgetWorkspaceClearsUnavailableMark() async {
-        let rootProject = makeProject(id: "proj_root")
+        let rootProject = AgentProject(
+            id: "proj_root",
+            name: "proj_root",
+            path: "/Users/mimi-tests/proj_root"
+        )
         let workspace = makeChildWorkspace(id: "ws_gone", name: "gone", root: rootProject)
         let client = MockSessionStoreClient(
             projects: [rootProject],

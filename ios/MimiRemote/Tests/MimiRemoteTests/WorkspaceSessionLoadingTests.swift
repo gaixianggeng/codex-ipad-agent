@@ -50,9 +50,30 @@ extension ConversationDataFlowTests {
         )
 
         XCTAssertNotEqual(
-            WorkspaceSessionRefreshScope(hostScope: firstHostScope, workspaceID: "workspace-a"),
-            WorkspaceSessionRefreshScope(hostScope: reconnectedHostScope, workspaceID: "workspace-a"),
+            WorkspaceSessionRefreshScope(
+                hostScope: firstHostScope,
+                workspaceID: "workspace-a",
+                needsAuthoritativeFirstPage: true
+            ),
+            WorkspaceSessionRefreshScope(
+                hostScope: reconnectedHostScope,
+                workspaceID: "workspace-a",
+                needsAuthoritativeFirstPage: true
+            ),
             "同一 workspace 在连接代次变化后必须重新触发精确首屏"
+        )
+        XCTAssertNotEqual(
+            WorkspaceSessionRefreshScope(
+                hostScope: firstHostScope,
+                workspaceID: "workspace-a",
+                needsAuthoritativeFirstPage: false
+            ),
+            WorkspaceSessionRefreshScope(
+                hostScope: firstHostScope,
+                workspaceID: "workspace-a",
+                needsAuthoritativeFirstPage: true
+            ),
+            "late-child 使完成态失效后必须重新触发精确首屏"
         )
     }
 
@@ -94,6 +115,729 @@ extension ConversationDataFlowTests {
             XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
             XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "older")
         }
+    }
+
+    func testAuthoritativeWorkspaceFirstPageFillsTopLevelWindowAcrossChildDensePages() async throws {
+        let project = makeProject(id: "workspace_child_dense_first_page")
+        let firstRoot = makeSession(
+            id: "root_0",
+            projectID: project.id,
+            title: "根会话 0",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let children = (0..<19).map { index in
+            makeSubagentSession(
+                id: "child_\(index)",
+                projectID: project.id,
+                parentThreadID: firstRoot.id,
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(99 - index))
+            )
+        }
+        let remainingRoots = (1..<20).map { index in
+            makeSession(
+                id: "root_\(index)",
+                projectID: project.id,
+                title: "根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(80 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: [firstRoot] + children,
+                nextCursor: "after-child-dense-page",
+                hasMore: true
+            ),
+            cursorPages: [
+                "after-child-dense-page": SessionsPage(sessions: remainingRoots)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (0..<20).map { "root_\($0)" })
+        XCTAssertTrue(children.allSatisfy { store.sessionsByID[$0.id]?.isSubagentThread == true })
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "after-child-dense-page"])
+        XCTAssertEqual(client.requestedSessionLimits, [20, 19])
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.authoritative, .authoritative])
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+    }
+
+    func testAuthoritativeFillRestoresStickySubagentOwnershipBeforeCountingRoots() async throws {
+        let project = makeProject(id: "workspace_sticky_child_ownership")
+        let knownChildren = (0..<20).map { index in
+            makeSubagentSession(
+                id: "sticky_child_\(index)",
+                projectID: project.id,
+                parentThreadID: "sticky_parent"
+            )
+        }
+        let sparseRows = knownChildren.map { child in
+            makeSession(
+                id: child.id,
+                projectID: project.id,
+                title: "稀疏列表行",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let roots = (0..<20).map { index in
+            makeSession(
+                id: "sticky_root_\(index)",
+                projectID: project.id,
+                title: "根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: sparseRows, nextCursor: "after-sparse-children", hasMore: true),
+            cursorPages: ["after-sparse-children": SessionsPage(sessions: roots)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.sessions = knownChildren
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), roots.map(\.id))
+        XCTAssertTrue(knownChildren.allSatisfy { store.sessionsByID[$0.id]?.isSubagentThread == true })
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "after-sparse-children"])
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
+    func testAuthoritativePresentationFillStopsAtRequestBudgetWithoutRecordingCompletion() async throws {
+        let project = makeProject(id: "workspace_presentation_budget")
+        let cachedRoot = makeSession(
+            id: "presentation_budget_cached_root",
+            projectID: project.id,
+            title: "缓存根会话",
+            status: "history",
+            source: "codex"
+        )
+        var cursorPages: [String: SessionsPage] = [:]
+        for index in 1..<SessionStore.maximumSessionPresentationFillPageCount {
+            cursorPages["budget-\(index)"] = SessionsPage(
+                sessions: [makeSubagentSession(
+                    id: "budget_child_\(index)",
+                    projectID: project.id,
+                    parentThreadID: cachedRoot.id
+                )],
+                nextCursor: "budget-\(index + 1)",
+                hasMore: true
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: [makeSubagentSession(
+                    id: "budget_child_0",
+                    projectID: project.id,
+                    parentThreadID: cachedRoot.id
+                )],
+                nextCursor: "budget-1",
+                hasMore: true
+            ),
+            cursorPages: cursorPages
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.sessions = [cachedRoot]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        store.recordWorkspaceSessionFirstPageCompletion(
+            workspace: workspace,
+            page: SessionsPage(sessions: [cachedRoot]),
+            consistency: .authoritative
+        )
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(client.requestedSessionCursors.count, SessionStore.maximumSessionPresentationFillPageCount)
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [cachedRoot.id])
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "budget-12")
+        XCTAssertNotNil(store.sessionsByID["budget_child_11"], "已扫描 child 仍须进入 canonical Store")
+
+        client.page = SessionsPage(
+            sessions: [cachedRoot],
+            nextCursor: "stale-first-page-cursor",
+            hasMore: true
+        )
+        await store.refreshSessions(
+            forProjectID: project.id,
+            showLoading: false,
+            reuseRecent: false,
+            consistency: .fastIndexed
+        )
+        XCTAssertEqual(
+            store.sessionPageCursorByProjectID[project.id],
+            "budget-12",
+            "后续弱首屏不能把 budget partial 已推进的安全 continuation 倒退"
+        )
+
+        let completedRoots = [cachedRoot] + (1..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "presentation_budget_completed_root_\(index)",
+                projectID: project.id,
+                title: "补齐根会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        client.page = SessionsPage(
+            sessions: completedRoots,
+            nextCursor: "fresh-authoritative-cursor",
+            hasMore: true
+        )
+        try await store.refreshWorkspaceSessions(projectID: project.id)
+
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "fresh-authoritative-cursor")
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+
+        client.page = SessionsPage(
+            sessions: [cachedRoot],
+            nextCursor: "stale-after-completion",
+            hasMore: true
+        )
+        await store.refreshSessions(
+            forProjectID: project.id,
+            showLoading: false,
+            reuseRecent: false,
+            consistency: .fastIndexed
+        )
+        XCTAssertEqual(
+            store.sessionPageCursorByProjectID[project.id],
+            "fresh-authoritative-cursor",
+            "完整 authoritative 可以纠正 partial cursor，随后弱首屏仍不能把它降级"
+        )
+    }
+
+    func testAuthoritativeFillUsesLaterDuplicateOwnershipBeforeCompletingWindow() async throws {
+        let project = makeProject(id: "workspace_duplicate_ownership")
+        let duplicateRootShell = makeSession(
+            id: "duplicate_child",
+            projectID: project.id,
+            title: "稀疏 root 壳",
+            status: "history",
+            source: "codex"
+        )
+        let duplicateChild = makeSubagentSession(
+            id: duplicateRootShell.id,
+            projectID: project.id,
+            parentThreadID: "duplicate_parent"
+        )
+        let roots = (0..<20).map { index in
+            makeSession(
+                id: "duplicate_root_\(index)",
+                projectID: project.id,
+                title: "根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: [duplicateRootShell],
+                nextCursor: "duplicate-next",
+                hasMore: true
+            ),
+            cursorPages: [
+                "duplicate-next": SessionsPage(sessions: [duplicateChild] + roots)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), roots.map(\.id))
+        XCTAssertTrue(store.sessionsByID[duplicateChild.id]?.isSubagentThread == true)
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "duplicate-next"])
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+    }
+
+    func testAuthoritativeFillRejectsHasMoreWithoutCursor() async {
+        let project = makeProject(id: "workspace_missing_cursor")
+        let cachedRoot = makeSession(
+            id: "missing_cursor_cached",
+            projectID: project.id,
+            title: "缓存会话",
+            status: "history",
+            source: "codex"
+        )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [cachedRoot], nextCursor: nil, hasMore: true)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.sessions = [cachedRoot]
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        ) { error in
+            XCTAssertTrue(error is AgentAPIError)
+        }
+
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [cachedRoot.id])
+    }
+
+    func testExternalActivityAuthoritativeRefreshUsesPresentationCompletePaging() async {
+        let project = makeProject(id: "workspace_external_activity_fill")
+        let firstRoot = makeSession(
+            id: "external_root_0",
+            projectID: project.id,
+            title: "根会话 0",
+            status: "history",
+            source: "codex"
+        )
+        let children = (0..<19).map { index in
+            makeSubagentSession(
+                id: "external_child_\(index)",
+                projectID: project.id,
+                parentThreadID: firstRoot.id
+            )
+        }
+        let olderRoots = (1..<20).map { index in
+            makeSession(
+                id: "external_root_\(index)",
+                projectID: project.id,
+                title: "根会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: [firstRoot] + children,
+                nextCursor: "external-next",
+                hasMore: true
+            ),
+            cursorPages: ["external-next": SessionsPage(sessions: olderRoots)]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        await store.refreshExternalActivityProject(
+            projectID: project.id,
+            client: client,
+            hostScope: store.appStore.activeHostScope
+        )
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, 20)
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "external-next"])
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
+    func testExternalActivityAndWorkspaceForegroundShareAuthoritativeFirstPage() async throws {
+        let project = makeProject(id: "workspace_external_activity_single_flight")
+        let roots = (0..<20).map { index in
+            makeSession(
+                id: "external_shared_root_\(index)",
+                projectID: project.id,
+                title: "共享根会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: roots),
+            blockOnCall: 1
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        let externalTask = Task { @MainActor in
+            await store.refreshExternalActivityProject(
+                projectID: project.id,
+                client: client,
+                hostScope: store.appStore.activeHostScope
+            )
+        }
+        await client.waitForBlockedSessionListRefresh()
+        let foregroundTask = Task { @MainActor in
+            try await store.refreshWorkspaceSessions(projectID: project.id)
+        }
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1, "重叠刷新必须共享同一条 authoritative cursor 链")
+        client.releaseBlockedSessionListRefresh()
+        await externalTask.value
+        try await foregroundTask.value
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, 20)
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+    }
+
+    func testLoadMoreSkipsChildOnlyPagesUntilTopLevelSessionsArrive() async throws {
+        let project = makeProject(id: "workspace_child_dense_load_more")
+        let firstPageRoots = (0..<20).map { index in
+            makeSession(
+                id: "initial_root_\(index)",
+                projectID: project.id,
+                title: "首屏根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let hiddenChildren = (0..<19).map { index in
+            makeSubagentSession(
+                id: "load_more_child_\(index)",
+                projectID: project.id,
+                parentThreadID: firstPageRoots[0].id,
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(79 - index))
+            )
+        }
+        let olderRoots = (0..<2).map { index in
+            makeSession(
+                id: "older_root_\(index)",
+                projectID: project.id,
+                title: "更早根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(40 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: firstPageRoots, nextCursor: "children-only", hasMore: true),
+            cursorPages: [
+                "children-only": SessionsPage(
+                    // 跨页重复的既有根会话不能占用“新增 20 条”的额度。
+                    sessions: [firstPageRoots[0]] + hiddenChildren,
+                    nextCursor: "older-roots",
+                    hasMore: true
+                ),
+                "older-roots": SessionsPage(sessions: olderRoots)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        await store.loadMoreSessions(projectID: project.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, 22)
+        XCTAssertTrue(olderRoots.allSatisfy { store.sessionsByID[$0.id] != nil })
+        XCTAssertTrue(hiddenChildren.allSatisfy { store.sessionsByID[$0.id]?.isSubagentThread == true })
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "children-only", "older-roots"])
+        XCTAssertEqual(client.requestedSessionLimits, [20, 20, 20])
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+    }
+
+    func testLoadMoreCannotDowngradeAuthoritativeFieldsAndAbsorbsLateChildOwnership() async throws {
+        let project = makeProject(id: "workspace_load_more_quality")
+        let authoritativeRoots = (0..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "quality_root_\(index)",
+                projectID: project.id,
+                title: "权威根会话 \(index)",
+                status: index == 0 ? "running" : "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let staleBoundary = makeSession(
+            id: authoritativeRoots[0].id,
+            projectID: project.id,
+            title: "过期边界标题",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let lateChild = makeSubagentSession(
+            id: authoritativeRoots[1].id,
+            projectID: project.id,
+            parentThreadID: authoritativeRoots[0].id
+        )
+        let olderRoot = makeSession(
+            id: "quality_older_root",
+            projectID: project.id,
+            title: "新增旧根会话",
+            status: "history",
+            source: "codex"
+        )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: authoritativeRoots,
+                nextCursor: "quality-load-more",
+                hasMore: true
+            ),
+            cursorPages: [
+                "quality-load-more": SessionsPage(
+                    sessions: [staleBoundary, lateChild, olderRoot]
+                )
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        await store.loadMoreSessions(projectID: project.id)
+
+        XCTAssertEqual(store.sessionsByID[authoritativeRoots[0].id]?.title, authoritativeRoots[0].title)
+        XCTAssertEqual(store.sessionsByID[authoritativeRoots[0].id]?.status, authoritativeRoots[0].status)
+        XCTAssertTrue(store.sessionsByID[authoritativeRoots[1].id]?.isSubagentThread == true)
+        XCTAssertFalse(store.sessions(forProjectID: project.id).contains { $0.id == authoritativeRoots[1].id })
+        XCTAssertEqual(store.sessionsByID[olderRoot.id]?.title, olderRoot.title)
+        XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
+    }
+
+    func testLoadMoreBudgetLateChildInvalidatesCompletedWindowWithoutRegressingDeepCursor() async throws {
+        let project = makeProject(id: "workspace_load_more_late_child_budget")
+        let authoritativeRoots = (0..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "load_more_budget_root_\(index)",
+                projectID: project.id,
+                title: "权威根会话 \(index)",
+                status: index == 1 ? "running" : "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(200 - index))
+            )
+        }
+        let lateChild = makeSubagentSession(
+            id: authoritativeRoots[1].id,
+            projectID: project.id,
+            parentThreadID: authoritativeRoots[0].id,
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        var cursorPages: [String: SessionsPage] = [:]
+        for index in 0..<SessionStore.maximumSessionPresentationFillPageCount {
+            cursorPages["late-\(index)"] = SessionsPage(
+                sessions: [lateChild],
+                nextCursor: "late-\(index + 1)",
+                hasMore: true
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: authoritativeRoots,
+                nextCursor: "late-0",
+                hasMore: true
+            ),
+            cursorPages: cursorPages
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+
+        await store.loadMoreSessions(projectID: project.id)
+
+        let protectedSession = try XCTUnwrap(store.sessionsByID[authoritativeRoots[1].id])
+        XCTAssertEqual(protectedSession.title, authoritativeRoots[1].title)
+        XCTAssertEqual(protectedSession.status, authoritativeRoots[1].status)
+        XCTAssertEqual(protectedSession.updatedAt, authoritativeRoots[1].updatedAt)
+        XCTAssertTrue(protectedSession.isSubagentThread)
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, 19)
+        let key = store.workspaceSessionFirstPageKey(for: workspace)
+        let partialCompletion = try XCTUnwrap(store.workspaceSessionFirstPageCompletionByKey[key])
+        XCTAssertEqual(partialCompletion.consistency, .authoritative)
+        XCTAssertFalse(partialCompletion.isPresentationWindowComplete)
+        XCTAssertNil(store.workspaceSessionFirstPageConsistency(projectID: project.id))
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "late-12")
+        XCTAssertTrue(store.canLoadMoreSessions(projectID: project.id))
+        XCTAssertEqual(
+            client.requestedSessionCursors,
+            [nil] + (0..<SessionStore.maximumSessionPresentationFillPageCount).map { "late-\($0)" }
+        )
+
+        let supplementalRoot = makeSession(
+            id: "load_more_budget_supplemental",
+            projectID: project.id,
+            title: "权威补齐根会话",
+            status: "history",
+            source: "codex"
+        )
+        client.page = SessionsPage(
+            sessions: authoritativeRoots.enumerated().compactMap { index, session in
+                index == 1 ? nil : session
+            } + [supplementalRoot],
+            nextCursor: "authoritative-refilled",
+            hasMore: true
+        )
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, SessionStore.initialSessionPageLimit)
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "late-12")
+        XCTAssertTrue(store.canLoadMoreSessions(projectID: project.id))
+    }
+
+    func testSupersededLoadMoreStopsBeforeFollowingAnotherCursor() async throws {
+        let project = makeProject(id: "workspace_superseded_load_more")
+        let roots = (0..<20).map { index in
+            makeSession(
+                id: "superseded_root_\(index)",
+                projectID: project.id,
+                title: "首屏根会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let childPage = SessionsPage(
+            sessions: [makeSubagentSession(
+                id: "superseded_child",
+                projectID: project.id,
+                parentThreadID: roots[0].id
+            )],
+            nextCursor: "must-not-request",
+            hasMore: true
+        )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: roots, nextCursor: "load-more", hasMore: true),
+            cursorPages: [
+                "load-more": childPage,
+                "must-not-request": SessionsPage(sessions: [makeSession(
+                    id: "must_not_arrive",
+                    projectID: project.id,
+                    title: "不应请求",
+                    status: "history",
+                    source: "codex"
+                )])
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        var supersedingToken: Int?
+        client.onSessionPageRequest = { cursor in
+            guard cursor == "load-more", supersedingToken == nil else { return }
+            supersedingToken = store.beginSessionFirstPageRequest(
+                projectID: project.id,
+                consistency: .authoritative
+            )
+        }
+        await store.loadMoreSessions(projectID: project.id)
+        if let supersedingToken {
+            store.finishSessionFirstPageRequest(projectID: project.id, token: supersedingToken)
+        }
+
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "load-more"])
+        XCTAssertNil(store.sessionsByID["superseded_child"])
+        XCTAssertNil(store.sessionsByID["must_not_arrive"])
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "load-more")
+    }
+
+    func testAuthoritativePresentationFillRejectsRepeatedCursorWithoutCompletion() async throws {
+        let project = makeProject(id: "workspace_repeated_cursor")
+        let firstRoot = makeSession(
+            id: "repeated_cursor_root",
+            projectID: project.id,
+            title: "根会话",
+            status: "history",
+            source: "codex"
+        )
+        let child = makeSubagentSession(
+            id: "repeated_cursor_child",
+            projectID: project.id,
+            parentThreadID: firstRoot.id
+        )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [firstRoot], nextCursor: "stuck", hasMore: true),
+            cursorPages: [
+                "stuck": SessionsPage(sessions: [child], nextCursor: "stuck", hasMore: true)
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+
+        do {
+            try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+            XCTFail("不前进的 cursor 不能被记录为 authoritative 完成")
+        } catch {
+            XCTAssertTrue(error is AgentAPIError)
+        }
+
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertTrue(store.sessions(forProjectID: project.id).isEmpty)
+        XCTAssertEqual(client.requestedSessionCursors, [nil, "stuck"])
     }
 
     func testFastIndexedFirstPageCannotShrinkCompletedAuthoritativeWindowOrCursor() async throws {
@@ -281,6 +1025,16 @@ extension ConversationDataFlowTests {
             status: "history",
             source: "codex"
         )
+        let authoritativeWindow = [authoritativeSession] + (1..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "thread_library_authoritative_\(index)",
+                projectID: project.id,
+                title: "权威会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
         let store = SessionStore(
             appStore: AppStore(),
             conversationStore: ConversationStore(),
@@ -291,7 +1045,7 @@ extension ConversationDataFlowTests {
         store.applyWorkspaceSessionFirstPage(
             workspace: workspace,
             page: SessionsPage(
-                sessions: [authoritativeSession],
+                sessions: authoritativeWindow,
                 nextCursor: "authoritative-library-cursor",
                 hasMore: true
             ),
@@ -316,6 +1070,295 @@ extension ConversationDataFlowTests {
         XCTAssertNotNil(store.sessionsByID[supplementalSession.id])
         XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-library-cursor")
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
+    func testLateFastLibraryPageCannotDowngradePartialAuthoritativeData() throws {
+        let project = makeProject(id: "workspace_late_fast_partial_library")
+        let workspace = AgentWorkspace(project: project)
+        let authoritativeSession = makeSession(
+            id: "thread_partial_library_shared",
+            projectID: project.id,
+            title: "部分权威标题",
+            status: "running",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let staleExisting = makeSession(
+            id: authoritativeSession.id,
+            projectID: project.id,
+            title: "过期部分索引标题",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let supplementalSession = makeSession(
+            id: "thread_partial_library_supplemental",
+            projectID: project.id,
+            title: "部分补充会话",
+            status: "history",
+            source: "codex"
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.recentWorkspaces = [workspace]
+        store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: [authoritativeSession],
+                nextCursor: "partial-authoritative-library-cursor",
+                hasMore: true
+            ),
+            consistency: .authoritative
+        )
+
+        store.mergeSessionLibraryPages(
+            [(
+                workspace: workspace,
+                page: SessionsPage(
+                    sessions: [staleExisting, supplementalSession],
+                    nextCursor: "partial-stale-library-cursor",
+                    hasMore: true
+                )
+            )],
+            generation: store.appStore.connectionGeneration,
+            consistency: .fastIndexed
+        )
+
+        XCTAssertEqual(store.sessionsByID[authoritativeSession.id]?.title, authoritativeSession.title)
+        XCTAssertEqual(store.sessionsByID[authoritativeSession.id]?.status, authoritativeSession.status)
+        XCTAssertNotNil(store.sessionsByID[supplementalSession.id])
+        XCTAssertEqual(
+            store.sessionPageCursorByProjectID[project.id],
+            "partial-authoritative-library-cursor"
+        )
+        XCTAssertNil(store.workspaceSessionFirstPageConsistency(projectID: project.id))
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+    }
+
+    func testNewAuthoritativeLibraryPageCanReplacePreviousAuthoritativeFields() throws {
+        let project = makeProject(id: "workspace_new_authoritative_library")
+        let workspace = AgentWorkspace(project: project)
+        let oldAuthoritative = makeSession(
+            id: "thread_new_authoritative_library_shared",
+            projectID: project.id,
+            title: "旧权威标题",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let newAuthoritative = makeSession(
+            id: oldAuthoritative.id,
+            projectID: project.id,
+            title: "新权威标题",
+            status: "running",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        let initialWindow = [oldAuthoritative] + (1..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "thread_old_authoritative_library_\(index)",
+                projectID: project.id,
+                title: "旧权威会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        store.recentWorkspaces = [workspace]
+        store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: initialWindow,
+                nextCursor: "old-authoritative-library-cursor",
+                hasMore: true
+            ),
+            consistency: .authoritative
+        )
+
+        store.mergeSessionLibraryPages(
+            [(
+                workspace: workspace,
+                page: SessionsPage(sessions: [newAuthoritative])
+            )],
+            generation: store.appStore.connectionGeneration,
+            consistency: .authoritative
+        )
+
+        XCTAssertEqual(store.sessionsByID[oldAuthoritative.id]?.title, newAuthoritative.title)
+        XCTAssertEqual(store.sessionsByID[oldAuthoritative.id]?.status, newAuthoritative.status)
+        XCTAssertEqual(store.sessionsByID[oldAuthoritative.id]?.updatedAt, newAuthoritative.updatedAt)
+        XCTAssertNil(store.sessionPageCursorByProjectID[project.id])
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
+    func testRestoreFastPagePreservesPartialAuthoritativeFieldsAndAbsorbsThreadIdentity() async throws {
+        let project = makeProject(id: "workspace_restore_quality")
+        let workspace = AgentWorkspace(project: project)
+        let authoritativeShared = makeSession(
+            id: "restore_quality_shared",
+            projectID: project.id,
+            title: "恢复权威标题",
+            status: "running",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let authoritativeRootBecomingChild = makeSession(
+            id: "restore_quality_late_child",
+            projectID: project.id,
+            title: "权威线程身份候选",
+            status: "history",
+            source: "codex"
+        )
+        let staleShared = makeSession(
+            id: authoritativeShared.id,
+            projectID: project.id,
+            title: "恢复过期标题",
+            status: "history",
+            source: "codex",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let lateChild = makeSubagentSession(
+            id: authoritativeRootBecomingChild.id,
+            projectID: project.id,
+            parentThreadID: authoritativeShared.id
+        )
+        let supplemental = makeSession(
+            id: "restore_quality_supplemental",
+            projectID: project.id,
+            title: "恢复补充会话",
+            status: "history",
+            source: "codex"
+        )
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: [staleShared, lateChild, supplemental],
+                nextCursor: "restore-stale-cursor",
+                hasMore: true
+            )
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: [authoritativeShared, authoritativeRootBecomingChild],
+                nextCursor: "restore-authoritative-cursor",
+                hasMore: true
+            ),
+            consistency: .authoritative
+        )
+        let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: authoritativeShared)
+
+        let restored = await store.resolveSessionForRestore(snapshot)
+
+        XCTAssertEqual(restored?.title, authoritativeShared.title)
+        XCTAssertEqual(store.sessionsByID[authoritativeShared.id]?.status, authoritativeShared.status)
+        XCTAssertTrue(store.sessionsByID[authoritativeRootBecomingChild.id]?.isSubagentThread == true)
+        XCTAssertFalse(
+            store.sessions(forProjectID: project.id).contains { $0.id == authoritativeRootBecomingChild.id }
+        )
+        XCTAssertEqual(store.sessionsByID[supplemental.id]?.title, supplemental.title)
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "restore-authoritative-cursor")
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+    }
+
+    func testRestoreLateChildrenInvalidateCompletedWindowAndAuthoritativeRefillsIt() async throws {
+        let project = makeProject(id: "workspace_restore_late_children_refill")
+        let workspace = AgentWorkspace(project: project)
+        let authoritativeRoots = (0..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "restore_refill_root_\(index)",
+                projectID: project.id,
+                title: "权威根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(200 - index))
+            )
+        }
+        let lateChildren = (1...3).map { index in
+            makeSubagentSession(
+                id: authoritativeRoots[index].id,
+                projectID: project.id,
+                parentThreadID: authoritativeRoots[0].id,
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(300 - index))
+            )
+        }
+        let client = MutableSessionPageClient(
+            projects: [project],
+            page: SessionsPage(
+                sessions: [authoritativeRoots[0]] + lateChildren,
+                nextCursor: "restore-fast-next",
+                hasMore: true
+            )
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        store.applyWorkspaceSessionFirstPage(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: authoritativeRoots,
+                nextCursor: "restore-authoritative-old",
+                hasMore: true
+            ),
+            consistency: .authoritative
+        )
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+
+        let snapshot = SessionRestoreSnapshot(endpoint: appStore.endpoint, session: authoritativeRoots[0])
+        _ = await store.resolveSessionForRestore(snapshot)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, 17)
+        XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "restore-authoritative-old")
+
+        let supplementalRoots = (20..<23).map { index in
+            makeSession(
+                id: "restore_refill_root_\(index)",
+                projectID: project.id,
+                title: "补齐根会话 \(index)",
+                status: "history",
+                source: "codex",
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(100 - index))
+            )
+        }
+        let survivingRoots = authoritativeRoots.enumerated().compactMap { index, session in
+            (1...3).contains(index) ? nil : session
+        }
+        client.page = SessionsPage(
+            sessions: survivingRoots + supplementalRoots,
+            nextCursor: "restore-authoritative-refilled",
+            hasMore: true
+        )
+
+        try await store.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: project.id)
+
+        XCTAssertEqual(store.sessions(forProjectID: project.id).count, SessionStore.initialSessionPageLimit)
+        XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "restore-authoritative-refilled")
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.fastIndexed, .authoritative])
     }
 
     func testRestoreFailureCannotReviveWorkspaceForgottenWhileFirstPageIsInFlight() async {
@@ -553,11 +1596,8 @@ extension ConversationDataFlowTests {
         let client = FastThenAuthoritativeSessionListClient(
             projects: [project],
             fastOutcome: .failure,
-            authoritativePage: SessionsPage(
-                sessions: [authoritativeSession],
-                nextCursor: "authoritative-after-failure",
-                hasMore: true
-            )
+            // 本用例只验证失败后的调度升级；分页补齐由 child-dense 专项用例覆盖。
+            authoritativePage: SessionsPage(sessions: [authoritativeSession])
         )
         let store = SessionStore(
             appStore: AppStore(),
@@ -598,7 +1638,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(clientSnapshot.requestedSessionListConsistencies, [.fastIndexed, .authoritative])
         XCTAssertEqual(clientSnapshot.maximumConcurrentRequestCount, 1)
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [authoritativeSession.id])
-        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-after-failure")
+        XCTAssertNil(store.sessionPageCursorByProjectID[project.id])
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
         XCTAssertTrue(store.sessionFirstPageLoadingConsistencyByProjectID.isEmpty)
         XCTAssertTrue(store.sessionFirstPageWaiterCountByProjectID.isEmpty)
@@ -992,6 +2032,29 @@ extension ConversationDataFlowTests {
 private enum FastThenAuthoritativeTestError: Error {
     case fastIndexedFailed
     case timedOut
+}
+
+private func makeSubagentSession(
+    id: String,
+    projectID: String,
+    parentThreadID: String,
+    updatedAt: Date = Date(timeIntervalSince1970: 2)
+) -> AgentSession {
+    AgentSession(
+        id: id,
+        projectID: projectID,
+        project: projectID,
+        dir: "/tmp/\(projectID)",
+        title: "子 Agent \(id)",
+        status: "history",
+        source: "codex",
+        resumeID: nil,
+        createdAt: Date(timeIntervalSince1970: 1),
+        updatedAt: updatedAt,
+        parentThreadID: parentThreadID,
+        isSubagent: true,
+        canAcceptDirectInput: false
+    )
 }
 
 private enum FastRequestOutcome {

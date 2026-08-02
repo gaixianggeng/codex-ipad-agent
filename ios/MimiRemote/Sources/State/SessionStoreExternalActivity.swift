@@ -382,11 +382,16 @@ extension SessionStore {
             return
         }
         do {
-            let page = try await client.sessionsPage(
+            // 外部活动补拉也必须加入首屏 single-flight；否则它与工作区前台刷新重叠时，
+            // 会并发启动两条 cursor 链并触发 gateway 的并发保护。
+            let page = try await sessionListFirstPage(
                 workspace: workspace,
-                cursor: nil,
                 limit: Self.initialSessionPageLimit,
-                consistency: .authoritative
+                reuseRecent: false,
+                consistency: .authoritative,
+                source: .externalActivity,
+                client: client,
+                hostScope: hostScope
             )
             guard appStore.activeHostScope == hostScope,
                   !Task.isCancelled,
@@ -401,6 +406,7 @@ extension SessionStore {
             )
             recordWorkspaceSessionFirstPageCompletion(
                 workspace: workspace,
+                page: page,
                 consistency: .authoritative
             )
             clearWorkspaceUnavailable(projectID)

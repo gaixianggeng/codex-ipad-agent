@@ -1143,13 +1143,13 @@ extension SessionStore {
             guard let page = result.page,
                   isCurrentWorkspaceIdentity(result.workspace) else { continue }
             let pageSessions = sessions(page.sessions, in: result.workspace)
-            if shouldProtectAuthoritativeWorkspaceSessionFirstPage(
-                workspace: result.workspace,
-                incomingConsistency: consistency
-            ) {
-                // 会话库的弱页可能晚于前台精确页返回；只补新 ID，不能把精确字段覆盖回稀疏索引值。
-                mergeSessionPageAddingMissingOnly(pageSessions)
+            if consistency == .fastIndexed {
+                mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                    pageSessions,
+                    workspace: result.workspace
+                )
             } else {
+                // 新一轮权威刷新必须能修正旧权威数据；只有弱一致性页需要降级保护。
                 mergeSessionPage(pageSessions)
             }
             updateWorkspaceSessionFirstPageState(
@@ -1159,6 +1159,7 @@ extension SessionStore {
             )
             recordWorkspaceSessionFirstPageCompletion(
                 workspace: result.workspace,
+                page: page,
                 consistency: consistency
             )
             clearWorkspaceUnavailable(result.workspace.id)
@@ -1196,9 +1197,12 @@ extension SessionStore {
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
             return nil
         }
-        return workspaceSessionFirstPageCompletionByKey[
+        guard let completion = workspaceSessionFirstPageCompletionByKey[
             workspaceSessionFirstPageKey(for: workspace)
-        ]?.consistency
+        ], completion.isPresentationWindowComplete else {
+            return nil
+        }
+        return completion.consistency
     }
 
     func needsAuthoritativeWorkspaceSessionFirstPage(projectID: String) -> Bool {
@@ -1207,21 +1211,69 @@ extension SessionStore {
 
     func recordWorkspaceSessionFirstPageCompletion(
         workspace: AgentWorkspace,
+        page: SessionsPage,
         consistency: SessionListConsistency
     ) {
         guard isCurrentWorkspaceIdentity(workspace) else { return }
         let hostScope = appStore.activeHostScope
         let key = workspaceSessionFirstPageKey(for: workspace, hostScope: hostScope)
-        if workspaceSessionFirstPageCompletionByKey[key]?.consistency == .authoritative,
+        if let existingCompletion = workspaceSessionFirstPageCompletionByKey[key],
+           existingCompletion.consistency == .authoritative,
            consistency == .fastIndexed {
+            invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
+                workspace: workspace
+            )
             return
         }
-        // 旧 generation 的结论永远不能再次命中；在写入新结论时顺手裁掉，避免长时间切换主机后增长。
-        workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+        let presentationWindowComplete = isWorkspaceSessionPresentationWindowComplete(
+            workspace: workspace,
+            page: page,
+            limit: Self.initialSessionPageLimit
+        )
+        let existingCompletion = workspaceSessionFirstPageCompletionByKey[key]
+        let completion: WorkspaceSessionFirstPageCompletion
+        if let existingCompletion,
+           existingCompletion.consistency == consistency,
+           existingCompletion.isPresentationWindowComplete == presentationWindowComplete {
+            // completedAt 表示首次进入当前语义状态的时刻；相同结果不重写时间戳，
+            // 也避免 @Published 在重复轮询时制造无意义的整页刷新。
+            completion = existingCompletion
+        } else {
+            completion = WorkspaceSessionFirstPageCompletion(
+                consistency: consistency,
+                isPresentationWindowComplete: presentationWindowComplete,
+                completedAt: sessionListNow()
+            )
+        }
+        // 旧 generation 的结论永远不能再次命中；一次性构造并比较新字典，避免 filter 和
+        // 下标写入分别发布，且相同 completion 不应触发 WorkspaceRoot 的观察更新。
+        var nextCompletions = workspaceSessionFirstPageCompletionByKey.filter {
             $0.key.hostScope == hostScope
         }
+        nextCompletions[key] = completion
+        if nextCompletions != workspaceSessionFirstPageCompletionByKey {
+            workspaceSessionFirstPageCompletionByKey = nextCompletions
+        }
+    }
+
+    /// 弱一致性数据可以补认 child ownership，使已经完成的 20 条权威根会话窗口重新欠填。
+    /// 只有仍有安全 continuation 时才失效；真正耗尽的短列表已经是完整展示结果，不应循环重拉。
+    func invalidateAuthoritativeWorkspaceSessionPresentationCompletionIfNeeded(
+        workspace: AgentWorkspace
+    ) {
+        guard isCurrentWorkspaceIdentity(workspace) else { return }
+        let key = workspaceSessionFirstPageKey(for: workspace)
+        guard let existingCompletion = workspaceSessionFirstPageCompletionByKey[key],
+              existingCompletion.consistency == .authoritative,
+              existingCompletion.isPresentationWindowComplete,
+              sessionHasMoreByProjectID[workspace.id] == true,
+              sessions(forProjectID: workspace.id).count < Self.initialSessionPageLimit
+        else {
+            return
+        }
         workspaceSessionFirstPageCompletionByKey[key] = WorkspaceSessionFirstPageCompletion(
-            consistency: consistency,
+            consistency: .authoritative,
+            isPresentationWindowComplete: false,
             completedAt: sessionListNow()
         )
     }
@@ -1253,6 +1305,22 @@ extension SessionStore {
         updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
     }
 
+    func isWorkspaceSessionPresentationWindowComplete(
+        workspace: AgentWorkspace,
+        page: SessionsPage,
+        limit: Int
+    ) -> Bool {
+        guard page.hasMore else { return true }
+        var listableIDs = Set<SessionID>()
+        for rawSession in page.sessions {
+            let session = sessionPreparedForStorage(self.session(rawSession, in: workspace))
+            if isListableSession(session) {
+                listableIDs.insert(session.id)
+            }
+        }
+        return listableIDs.count >= max(1, limit)
+    }
+
     func applyWorkspaceSessionFirstPage(
         workspace: AgentWorkspace,
         page: SessionsPage,
@@ -1261,13 +1329,25 @@ extension SessionStore {
     ) {
         guard isCurrentWorkspaceIdentity(workspace) else { return }
         let pageSessions = sessions(page.sessions, in: workspace)
+        let presentationWindowComplete = isWorkspaceSessionPresentationWindowComplete(
+            workspace: workspace,
+            page: page,
+            limit: Self.initialSessionPageLimit
+        )
         if shouldProtectAuthoritativeWorkspaceSessionFirstPage(
             workspace: workspace,
             incomingConsistency: consistency
         ) {
-            // authoritative 一旦完成，后续 State DB 稀疏页只允许补充缺失 ID；
-            // 同 ID 的 title/status 等字段必须保留精确结果，不能被迟到的弱页覆盖。
-            mergeSessionPageAddingMissingOnly(pageSessions)
+            // authoritative 一旦完成，后续 State DB 稀疏页只能补新 ID 和单调线程身份；
+            // 同 ID 的 title/status 等普通字段不能被迟到弱页覆盖。
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                pageSessions,
+                workspace: workspace
+            )
+        } else if !presentationWindowComplete {
+            // 展示窗口欠填时保留旧可见行，只补充已扫描 canonical 数据；新 cursor 仍可继续推进。
+            // fast waiter 可能共享到这张 authoritative 部分页，也必须沿用 merge-only，不能再次删旧根会话。
+            mergeSessionPage(pageSessions)
         } else {
             replaceSessionsIfChanged(
                 with: pageSessionsPreservingLoadedWindow(
@@ -1285,6 +1365,7 @@ extension SessionStore {
         )
         recordWorkspaceSessionFirstPageCompletion(
             workspace: workspace,
+            page: page,
             consistency: consistency
         )
         clearWorkspaceUnavailable(workspace.id)
@@ -1416,11 +1497,15 @@ extension SessionStore {
         let client = try fixedClient ?? clientFactory()
         let requestID = UUID()
         let task = Task {
-            try await client.sessionsPage(
+            try await sessionListPageFillingPresentationWindow(
+                client: client,
                 workspace: workspace,
                 cursor: nil,
                 limit: limit,
-                consistency: consistency
+                consistency: consistency,
+                source: source,
+                expectedHostScope: hostScope,
+                fillsPresentationWindow: consistency == .authoritative
             )
         }
         sessionListFirstPageInFlightByKey[key] = SessionListFirstPageInFlight(
@@ -1434,7 +1519,17 @@ extension SessionStore {
                   !Task.isCancelled else {
                 throw CancellationError()
             }
-            sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(page: page, loadedAt: sessionListNow())
+            if consistency != .authoritative
+                || isWorkspaceSessionPresentationWindowComplete(
+                    workspace: workspace,
+                    page: page,
+                    limit: limit
+                ) {
+                sessionListFirstPageCacheByKey[key] = SessionListFirstPageCacheEntry(
+                    page: page,
+                    loadedAt: sessionListNow()
+                )
+            }
             clearSessionListCooldown(for: workspace)
             SessionListDiagnostics.completed(
                 source: source,
@@ -1451,6 +1546,124 @@ extension SessionStore {
             }
             throw error
         }
+    }
+
+    /// transport 的 limit 约束 raw rows；子 Agent 过滤和双 Runtime 短页都可能让展示层不足一页。
+    /// 精确首屏与“显示更多”必须沿 opaque cursor 补齐顶层会话，child 仍随 raw rows 进入 canonical Store。
+    func sessionListPageFillingPresentationWindow(
+        client: any SessionStoreAPIClient,
+        workspace: AgentWorkspace,
+        cursor initialCursor: String?,
+        limit: Int,
+        consistency: SessionListConsistency,
+        source: SessionListRequestSource,
+        expectedHostScope: HostScope,
+        excludingListableSessionIDs: Set<SessionID> = [],
+        fillsPresentationWindow: Bool = true,
+        isRequestCurrent: (() -> Bool)? = nil
+    ) async throws -> SessionsPage {
+        let targetCount = max(1, limit)
+        var requestedCursor = initialCursor
+        var seenCursors = Set<String>()
+        if let initialCursor {
+            seenCursors.insert(initialCursor)
+        }
+        var collectedIndexBySessionID: [SessionID: Int] = [:]
+        var listableSessionIDs = Set<SessionID>()
+        var collectedSessions: [AgentSession] = []
+        var pagesScanned = 0
+        var lastPage = SessionsPage(sessions: [])
+
+        while true {
+            try Task.checkCancellation()
+            guard isCurrentWorkspaceIdentity(workspace, hostScope: expectedHostScope) else {
+                throw CancellationError()
+            }
+            guard isRequestCurrent?() != false else {
+                throw CancellationError()
+            }
+
+            // 不退化成 limit=1：child 密集时逐条 RPC 会放大远程链路延迟；小批量最多只让最终窗口轻微超出目标。
+            let remainingCount = max(
+                min(targetCount, Self.minimumSessionPresentationFillPageLimit),
+                targetCount - listableSessionIDs.count
+            )
+            let page = try await client.sessionsPage(
+                workspace: workspace,
+                cursor: requestedCursor,
+                limit: remainingCount,
+                consistency: consistency
+            )
+            try Task.checkCancellation()
+            guard isCurrentWorkspaceIdentity(workspace, hostScope: expectedHostScope),
+                  isRequestCurrent?() != false else {
+                throw CancellationError()
+            }
+            pagesScanned += 1
+            lastPage = page
+
+            for rawSession in page.sessions {
+                // 稀疏列表可能暂时丢 parent/source；先恢复 Store 已知的 sticky ownership，
+                // 否则 child 会被误计成 root 并让 authoritative completion 提前成立。
+                let session = sessionPreparedForStorage(self.session(rawSession, in: workspace))
+                if let index = collectedIndexBySessionID[session.id] {
+                    // later-wins 更新普通字段，但 child ownership 必须跨页单调保留。
+                    let merged = sessionPreservingSubagentOwnership(
+                        session,
+                        withKnown: collectedSessions[index]
+                    )
+                    collectedSessions[index] = merged
+                    if isListableSession(merged),
+                       !excludingListableSessionIDs.contains(merged.id) {
+                        listableSessionIDs.insert(merged.id)
+                    } else {
+                        listableSessionIDs.remove(merged.id)
+                    }
+                    continue
+                }
+                collectedIndexBySessionID[session.id] = collectedSessions.count
+                collectedSessions.append(session)
+                if isListableSession(session),
+                   !excludingListableSessionIDs.contains(session.id) {
+                    listableSessionIDs.insert(session.id)
+                }
+            }
+
+            guard !page.hasMore || page.nextCursor != nil else {
+                // has_more 没有 opaque continuation 无法安全推进，不能伪装成 exhausted。
+                throw AgentAPIError.invalidResponse
+            }
+            guard fillsPresentationWindow,
+                  listableSessionIDs.count < targetCount,
+                  page.hasMore,
+                  let nextCursor = page.nextCursor
+            else {
+                break
+            }
+            // cursor 不前进时不能把 transport 完成误记成 presentation 完成，也不能形成请求风暴。
+            guard nextCursor != requestedCursor,
+                  seenCursors.insert(nextCursor).inserted
+            else {
+                throw AgentAPIError.invalidResponse
+            }
+            guard pagesScanned < Self.maximumSessionPresentationFillPageCount else { break }
+            requestedCursor = nextCursor
+        }
+
+        let hasMore = lastPage.hasMore && lastPage.nextCursor != nil
+        SessionListDiagnostics.presentationWindowCompleted(
+            source: source,
+            consistency: consistency,
+            rawCount: collectedSessions.count,
+            listableCount: listableSessionIDs.count,
+            pagesScanned: pagesScanned,
+            hasMore: hasMore
+        )
+        return SessionsPage(
+            sessions: collectedSessions,
+            nextCursor: hasMore ? lastPage.nextCursor : nil,
+            hasMore: hasMore
+        )
     }
 
     /// owner 与 waiter 都只能退休自己观察到的那一代请求，避免旧 continuation 删除同 key 的新 in-flight。
@@ -1906,11 +2119,26 @@ extension SessionStore {
         sessions = next
     }
 
-    /// 弱一致性结果迟到时只补充权威页尚未见过的会话，绝不回退同 ID 的精确字段。
-    func mergeSessionPageAddingMissingOnly(_ pageSessions: [AgentSession]) {
-        guard !pageSessions.isEmpty else { return }
-        let missingSessions = pageSessions.filter { sessionIndexByID[$0.id] == nil }
-        mergeSessionPage(missingSessions)
+    /// fastIndexed 可能晚于 authoritative 返回，或在翻页边界重复同一 ID。
+    /// 已有权威行保留普通字段，只单调吸收线程身份；新 ID 仍按正常路径完整加入。
+    func mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+        _ pageSessions: [AgentSession],
+        workspace: AgentWorkspace
+    ) {
+        guard shouldProtectAuthoritativeWorkspaceSessionFirstPage(
+            workspace: workspace,
+            incomingConsistency: .fastIndexed
+        ) else {
+            mergeSessionPage(pageSessions)
+            return
+        }
+        let qualitySafeSessions = pageSessions.map { incoming in
+            guard let existing = sessionsByID[incoming.id] else {
+                return incoming
+            }
+            return sessionPreservingSubagentOwnership(existing, withKnown: incoming)
+        }
+        mergeSessionPage(qualitySafeSessions)
     }
 
     func updateSessionPageState(

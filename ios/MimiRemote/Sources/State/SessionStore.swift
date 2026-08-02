@@ -352,7 +352,7 @@ final class SessionStore: ObservableObject {
     var sessionFirstPageWaiterCountByProjectID: [String: Int] = [:]
     var sessionListFirstPageInFlightByKey: [SessionListFirstPageRequestKey: SessionListFirstPageInFlight] = [:]
     var sessionListFirstPageCacheByKey: [SessionListFirstPageRequestKey: SessionListFirstPageCacheEntry] = [:]
-    var workspaceSessionFirstPageCompletionByKey: [WorkspaceSessionFirstPageKey: WorkspaceSessionFirstPageCompletion] = [:]
+    @Published var workspaceSessionFirstPageCompletionByKey: [WorkspaceSessionFirstPageKey: WorkspaceSessionFirstPageCompletion] = [:]
     var sessionListCooldownUntilByBudgetKey: [SessionListBudgetKey: Date] = [:]
     var sessionListReconciliationTasksByProjectID: [String: Task<Void, Never>] = [:]
     var gitRefreshTasksByPath: [String: Task<Void, Never>] = [:]
@@ -412,6 +412,9 @@ final class SessionStore: ObservableObject {
     // 首屏先拿较小窗口，避免为了预览历史会话而卡住整个工作台。
     static let initialSessionPageLimit = 20
     static let expandedSessionPageLimit = 20
+    /// presentation 补页保持顺序且有界：最小批量避免 child 密集时退化成逐条 RPC，页数上限防止异常 cursor 请求风暴。
+    static let minimumSessionPresentationFillPageLimit = 5
+    static let maximumSessionPresentationFillPageCount = 12
     static let missingRunningSessionReadThreshold = 2
     static let maximumUnverifiedRunningSessionMisses = 3
     static let commandActionHistoryLimit = 10

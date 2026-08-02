@@ -55,7 +55,10 @@ extension SessionStore {
                 source: .restore
             )
             guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else { return nil }
-            mergeSessionPage(sessions(page.sessions, in: workspace))
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                sessions(page.sessions, in: workspace),
+                workspace: workspace
+            )
             updateWorkspaceSessionFirstPageState(
                 workspace: workspace,
                 page: page,
@@ -63,6 +66,7 @@ extension SessionStore {
             )
             recordWorkspaceSessionFirstPageCompletion(
                 workspace: workspace,
+                page: page,
                 consistency: .fastIndexed
             )
         } catch {
@@ -518,8 +522,11 @@ extension SessionStore {
             sessionFirstPageWaiterCountByProjectID = sessionFirstPageWaiterCountByProjectID.filter {
                 validProjectIDs.contains($0.key)
             }
-            workspaceSessionFirstPageCompletionByKey = workspaceSessionFirstPageCompletionByKey.filter {
+            let validWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
                 validProjectIDs.contains($0.key.workspaceID)
+            }
+            if validWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+                workspaceSessionFirstPageCompletionByKey = validWorkspaceCompletions
             }
             rebuildProjectSessionListSnapshots()
             let projectID = requestedProjectID.flatMap { id in

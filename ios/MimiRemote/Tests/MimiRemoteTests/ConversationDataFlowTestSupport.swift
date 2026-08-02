@@ -1146,7 +1146,9 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
     var historyCursorPages: [String: HistoryMessagesPage]
     var requestedMessageCursors: [String?] = []
     var requestedSessionCursors: [String?] = []
+    var requestedSessionLimits: [Int?] = []
     var requestedSessionListConsistencies: [SessionListConsistency] = []
+    var onSessionPageRequest: ((String?) -> Void)?
 
     init(
         projects: [AgentProject],
@@ -1177,6 +1179,8 @@ final class MutableSessionPageClient: SessionStoreAPIClient {
 
     func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
         requestedSessionCursors.append(cursor)
+        requestedSessionLimits.append(limit)
+        onSessionPageRequest?(cursor)
         if let cursor, let page = cursorPages[cursor] {
             return page
         }

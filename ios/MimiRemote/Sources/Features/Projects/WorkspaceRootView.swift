@@ -177,6 +177,7 @@ struct WorkspaceCatalogRefreshScope: Equatable {
 struct WorkspaceSessionRefreshScope: Equatable {
     let hostScope: HostScope
     let workspaceID: String?
+    let needsAuthoritativeFirstPage: Bool
 }
 
 /// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
@@ -279,7 +280,10 @@ struct WorkspaceRootView: View {
         )
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
             hostScope: appStore.activeHostScope,
-            workspaceID: selectedWorkspaceID
+            workspaceID: selectedWorkspaceID,
+            needsAuthoritativeFirstPage: selectedWorkspaceID.map {
+                sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: $0)
+            } ?? false
         )
 
         Group {
@@ -318,7 +322,7 @@ struct WorkspaceRootView: View {
         .task(id: sessionRefreshScope) {
             guard let selectedWorkspaceID = sessionRefreshScope.workspaceID else { return }
             // 稀疏缓存继续即时展示；只有 Store 记录了当前 HostScope 的 authoritative 首屏才可跳过请求。
-            guard sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: selectedWorkspaceID) else {
+            guard sessionRefreshScope.needsAuthoritativeFirstPage else {
                 sessionLoadInvocationTokens.begin(for: selectedWorkspaceID)
                 sessionLoadStates[selectedWorkspaceID] = .loaded
                 return
