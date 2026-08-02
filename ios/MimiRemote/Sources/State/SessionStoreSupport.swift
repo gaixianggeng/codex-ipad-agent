@@ -70,6 +70,8 @@ struct SessionListFirstPageRequestKey: Hashable {
     let workspacePath: String
     let limit: Int
     let consistency: SessionListConsistency
+    /// nil 表示真正首屏；非 nil 表示权威展示窗口从已提交边界续跑。
+    let cursor: String?
 }
 
 /// “已经有几条缓存”与“当前主机代次已完成精确首屏”是两个状态。
@@ -83,7 +85,16 @@ struct WorkspaceSessionFirstPageKey: Hashable {
 struct WorkspaceSessionFirstPageCompletion: Equatable {
     let consistency: SessionListConsistency
     let isPresentationWindowComplete: Bool
+    /// 权威展示窗口达到单批预算但仍欠填时，保存下一批唯一允许继续的 opaque cursor。
+    let continuationCursor: String?
+    /// 仅记录当前权威 cursor 链实际扫描过的有序 ID；不能用整个工作区缓存冒充权威种子。
+    let scannedSessionIDs: [SessionID]
     let completedAt: Date
+}
+
+struct SessionListFirstPageResult {
+    let page: SessionsPage
+    let requestedCursor: String?
 }
 
 enum SessionListRequestSource: String {

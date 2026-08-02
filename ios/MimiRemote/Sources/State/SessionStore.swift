@@ -415,6 +415,9 @@ final class SessionStore: ObservableObject {
     /// presentation 补页保持顺序且有界：最小批量避免 child 密集时退化成逐条 RPC，页数上限防止异常 cursor 请求风暴。
     static let minimumSessionPresentationFillPageLimit = 5
     static let maximumSessionPresentationFillPageCount = 12
+    /// 单批达到页数上限时从已提交 cursor 续跑；每 4 批主动让出执行权并短暂退避，避免高密度历史长期独占链路。
+    static let sessionPresentationFillBatchCountPerBurst = 4
+    static let sessionPresentationFillBurstBackoffNanoseconds: UInt64 = 250_000_000
     static let missingRunningSessionReadThreshold = 2
     static let maximumUnverifiedRunningSessionMisses = 3
     static let commandActionHistoryLimit = 10

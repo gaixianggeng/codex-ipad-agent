@@ -776,7 +776,10 @@ struct WorkspaceRootView: View {
         let invocationID = sessionLoadInvocationTokens.begin(for: projectID)
         sessionLoadStates[projectID] = .loading
         do {
-            if onlyIfAuthoritativeFirstPageIsNeeded {
+            if onlyIfAuthoritativeFirstPageIsNeeded
+                || sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) {
+                // 手动刷新若接手到前一轮 partial，也必须沿保存 cursor 完成整条权威窗口；
+                // 已完成窗口仍走下面的普通单次刷新，保留“主动拉最新”的语义。
                 try await sessionStore.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: projectID)
             } else {
                 try await sessionStore.refreshWorkspaceSessions(projectID: projectID)

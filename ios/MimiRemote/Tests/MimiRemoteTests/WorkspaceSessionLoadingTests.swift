@@ -281,6 +281,12 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [cachedRoot.id])
         XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "budget-12")
+        XCTAssertEqual(
+            store.workspaceSessionFirstPageCompletionByKey[
+                store.workspaceSessionFirstPageKey(for: workspace)
+            ]?.continuationCursor,
+            "budget-12"
+        )
         XCTAssertNotNil(store.sessionsByID["budget_child_11"], "已扫描 child 仍须进入 canonical Store")
 
         client.page = SessionsPage(
@@ -316,6 +322,7 @@ extension ConversationDataFlowTests {
         )
         try await store.refreshWorkspaceSessions(projectID: project.id)
 
+        XCTAssertEqual(client.requestedSessionCursors.last, "budget-12", "权威重试必须续跑已保存游标")
         XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "fresh-authoritative-cursor")
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
 
@@ -733,7 +740,11 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessions(forProjectID: project.id).count, SessionStore.initialSessionPageLimit)
         XCTAssertFalse(store.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id))
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
-        XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "late-12")
+        XCTAssertEqual(
+            store.sessionPageCursorByProjectID[project.id],
+            "authoritative-refilled",
+            "权威补齐沿当前 deep chain 续跑时，显示更多 cursor 也应推进到新边界"
+        )
         XCTAssertTrue(store.canLoadMoreSessions(projectID: project.id))
     }
 
@@ -988,7 +999,7 @@ extension ConversationDataFlowTests {
 
         store.forgetWorkspace(project)
         store.mergeSessionLibraryPages(
-            [(workspace: workspace, page: SessionsPage(sessions: [lateSession]))],
+            [(workspace: workspace, page: SessionsPage(sessions: [lateSession]), requestedCursor: nil)],
             generation: store.appStore.connectionGeneration,
             consistency: .authoritative
         )
@@ -1059,7 +1070,8 @@ extension ConversationDataFlowTests {
                     sessions: [staleExisting, supplementalSession],
                     nextCursor: "stale-library-cursor",
                     hasMore: true
-                )
+                ),
+                requestedCursor: nil
             )],
             generation: store.appStore.connectionGeneration,
             consistency: .fastIndexed
@@ -1122,7 +1134,8 @@ extension ConversationDataFlowTests {
                     sessions: [staleExisting, supplementalSession],
                     nextCursor: "partial-stale-library-cursor",
                     hasMore: true
-                )
+                ),
+                requestedCursor: nil
             )],
             generation: store.appStore.connectionGeneration,
             consistency: .fastIndexed
@@ -1187,7 +1200,8 @@ extension ConversationDataFlowTests {
         store.mergeSessionLibraryPages(
             [(
                 workspace: workspace,
-                page: SessionsPage(sessions: [newAuthoritative])
+                page: SessionsPage(sessions: [newAuthoritative]),
+                requestedCursor: nil
             )],
             generation: store.appStore.connectionGeneration,
             consistency: .authoritative
@@ -1500,6 +1514,72 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), completePage.map(\.id))
         XCTAssertEqual(store.sessionPageCursorByProjectID[project.id], "authoritative-older")
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+    }
+
+    func testFastIndexedWaitsForAuthoritativeContinuationThenRequestsOwnNilFirstPage() async throws {
+        let project = makeProject(id: "workspace_authoritative_continuation_then_fast")
+        let completePage = (0..<SessionStore.initialSessionPageLimit).map { index in
+            makeSession(
+                id: "thread_authoritative_continuation_then_fast_\(index)",
+                projectID: project.id,
+                title: "会话 \(index)",
+                status: "history",
+                source: "codex"
+            )
+        }
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: completePage),
+            blockOnCall: 1
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.projects = [project]
+        store.sessions = [completePage[0]]
+        let workspace = try XCTUnwrap(store.ensureWorkspaceForKnownProjectID(project.id))
+        store.recordWorkspaceSessionFirstPageCompletion(
+            workspace: workspace,
+            page: SessionsPage(
+                sessions: [completePage[0]],
+                nextCursor: "authoritative-resume-cursor",
+                hasMore: true
+            ),
+            consistency: .authoritative
+        )
+
+        let authoritative = Task { @MainActor in
+            try await store.refreshWorkspaceSessions(projectID: project.id)
+        }
+        await client.waitForBlockedSessionListRefresh()
+        let fastIndexed = Task { @MainActor in
+            await store.refreshSessions(
+                forProjectID: project.id,
+                showLoading: false,
+                reuseRecent: false,
+                consistency: .fastIndexed,
+                activatesProject: false
+            )
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sessionsPageCallCount, 1, "权威 continuation 未结束前不能并发启动 nil 首屏")
+        XCTAssertEqual(client.requestedSessionCursors, ["authoritative-resume-cursor"])
+
+        client.releaseBlockedSessionListRefresh()
+        try await authoritative.value
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(client.sessionsPageCallCount, 2)
+        XCTAssertEqual(client.requestedSessionCursors, ["authoritative-resume-cursor", nil])
+        client.releaseBlockedSessionListRefresh()
+        await fastIndexed.value
+
+        XCTAssertEqual(client.requestedSessionListConsistencies, [.authoritative, .fastIndexed])
+        XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
+        XCTAssertTrue(store.sessionListFirstPageInFlightByKey.isEmpty)
     }
 
     func testAuthoritativeWaitsForInFlightFastIndexedThenPerformsExactlyOnePreciseRequest() async throws {
@@ -2034,7 +2114,7 @@ private enum FastThenAuthoritativeTestError: Error {
     case timedOut
 }
 
-private func makeSubagentSession(
+func makeSubagentSession(
     id: String,
     projectID: String,
     parentThreadID: String,
