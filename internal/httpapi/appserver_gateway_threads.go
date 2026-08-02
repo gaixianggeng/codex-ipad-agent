@@ -165,6 +165,16 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 					payload = redacted
 				}
+				if !pending.redactOnly &&
+					appServerGatewayHistoryResponseCapBytes > 0 &&
+					len(payload) > appServerGatewayHistoryResponseCapBytes {
+					// 单个 turn 仍可能因命令、MCP 或 diff 输出超过 full cap。
+					// 只在原响应必然被阻断时把这些过程输出改成短预览 + 鉴权引用，
+					// 普通历史继续原样透传，不为小响应增加缓存或协议复杂度。
+					if dehydrated, changed := p.router.dehydrateOversizedHistoryOutputs(payload); changed {
+						payload = dehydrated
+					}
+				}
 			}
 			blocked := !pending.redactOnly && len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
 			p.recordHistoryResponseMetrics(pending.method, len(payload), blocked)

@@ -17273,6 +17273,23 @@
         }
       }
     },
+    "ui.open_full_output" : {
+      "comment" : "Button shown on a dehydrated historical command/tool output. The complete output is fetched only after the user taps it.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open full output"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开完整输出"
+          }
+        }
+      }
+    },
     "ui.open_details" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "extractionState" : "stale",
@@ -27690,6 +27707,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "历史图片缓存已过期，请刷新会话后重试。"
+          }
+        }
+      }
+    },
+    "ui.the_historical_output_cache_has_expired_please_refresh" : {
+      "comment" : "Shown when a short-lived large history output reference has expired on agentd.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The full historical output has expired. Refresh the session and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完整历史输出已过期，请刷新会话后重试。"
           }
         }
       }

@@ -1985,6 +1985,141 @@ func TestAppServerGatewayRedactsInlineHistoryImagesBeforeCap(t *testing.T) {
 	}
 }
 
+func TestAppServerGatewayExternalizesOversizedHistoryOutputsBeforeCap(t *testing.T) {
+	oldCap := appServerGatewayHistoryResponseCapBytes
+	appServerGatewayHistoryResponseCapBytes = 2500
+	t.Cleanup(func() {
+		appServerGatewayHistoryResponseCapBytes = oldCap
+	})
+
+	var projectDir string
+	fullOutput := strings.Repeat("single-turn-output-", 500)
+	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame appServerGatewayFrame
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("fake upstream 收到非法 JSON：%v", err)
+			return
+		}
+		if frame.Method == "thread/list" {
+			respondToThreadListAuthorization(t, conn, payload, projectDir, "thread-output-history")
+			return
+		}
+		if frame.Method != "thread/turns/list" {
+			return
+		}
+		response := fmt.Sprintf(
+			`{"id":%s,"result":{"data":[{"id":"turn-output","items":[{"type":"commandExecution","id":"cmd-output","command":"go test ./...","status":"completed","aggregatedOutput":%q}]}]}}`,
+			string(*frame.ID),
+			fullOutput,
+		)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+			t.Errorf("fake upstream 写单 turn 超大输出失败：%v", err)
+		}
+	})
+	handler, dir := appServerGatewayRouterFixture(t, upstreamURL)
+	projectDir = dir
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGateway(t, server.URL)
+	defer conn.Close()
+	authorizeGatewayThread(t, conn, received, projectDir, "thread-output-history")
+
+	request := []byte(`{"id":735,"method":"thread/turns/list","params":{"threadId":"thread-output-history","limit":1,"itemsView":"full"}}`)
+	if err := conn.WriteMessage(websocket.TextMessage, request); err != nil {
+		t.Fatal(err)
+	}
+	_ = readUpstreamFrame(t, received)
+	raw := readGatewayRaw(t, conn)
+	if bytes.Contains(raw, []byte(`"error"`)) {
+		t.Fatalf("单 turn 过程输出应外置而不是触发 history cap：%s", raw)
+	}
+	if len(raw) >= appServerGatewayHistoryResponseCapBytes {
+		t.Fatalf("外置后的 history response 应低于 cap，got=%d raw=%s", len(raw), raw)
+	}
+	if bytes.Contains(raw, []byte(fullOutput)) {
+		t.Fatalf("完整命令输出不应继续内联到 WebSocket：%s", raw)
+	}
+
+	var frame struct {
+		Result struct {
+			Data []struct {
+				Items []struct {
+					AggregatedOutput         string `json:"aggregatedOutput"`
+					HistoryOutputRef         string `json:"historyOutputRef"`
+					HistoryOutputByteCount   int    `json:"historyOutputByteCount"`
+					HistoryOutputContentType string `json:"historyOutputContentType"`
+					HistoryOutputRedacted    bool   `json:"historyOutputRedacted"`
+				} `json:"items"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("外置后 history response 不是合法 JSON：%v raw=%s", err, raw)
+	}
+	item := frame.Result.Data[0].Items[0]
+	if !strings.HasPrefix(item.HistoryOutputRef, appServerHistoryOutputURLPrefix) || !item.HistoryOutputRedacted {
+		t.Fatalf("超大输出应保留可鉴权按需读取的短引用：%+v", item)
+	}
+	if item.HistoryOutputByteCount != len(fullOutput) || item.HistoryOutputContentType != "text/plain; charset=utf-8" {
+		t.Fatalf("超大输出应保留类型与完整字节数：%+v", item)
+	}
+	if item.AggregatedOutput == "" || len(item.AggregatedOutput) >= len(fullOutput) {
+		t.Fatalf("原字段应保留小预览供旧客户端展示：%+v", item)
+	}
+
+	outputID := strings.TrimPrefix(item.HistoryOutputRef, appServerHistoryOutputURLPrefix)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedRequest(t, http.MethodGet, "/api/app-server/history-output/"+outputID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history output 应可按需鉴权读取，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	decoded, err := base64.StdEncoding.DecodeString(body["content_base64"].(string))
+	if err != nil || string(decoded) != fullOutput {
+		t.Fatalf("history output 按需读取应返回原始完整内容，err=%v", err)
+	}
+}
+
+func TestAppServerHistoryOutputDehydrationCoversToolAndFileChange(t *testing.T) {
+	router := &Router{historyOutput: newAppServerHistoryOutputStore()}
+	largeToolResult := strings.Repeat("tool-result-", 400)
+	largeDiff := strings.Repeat("+changed line\n", 400)
+	payload := []byte(`{"id":1,"result":{"data":[{"items":[` +
+		`{"type":"mcpToolCall","id":"tool-1","server":"linear","tool":"get_issue","result":` + strconv.Quote(largeToolResult) + `},` +
+		`{"type":"fileChange","id":"file-1","changes":[{"path":"Sources/App.swift","kind":"update","diff":` + strconv.Quote(largeDiff) + `}]}` +
+		`] }]}}`)
+
+	rewritten, changed := router.dehydrateOversizedHistoryOutputs(payload)
+	if !changed {
+		t.Fatal("MCP result 与 file diff 应被外置")
+	}
+	if bytes.Contains(rewritten, []byte(largeToolResult)) || bytes.Contains(rewritten, []byte(largeDiff)) {
+		t.Fatalf("工具结果和 diff 的完整内容不应继续内联：%s", rewritten)
+	}
+	var frame struct {
+		Result struct {
+			Data []struct {
+				Items []map[string]any `json:"items"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &frame); err != nil {
+		t.Fatalf("外置后结构应保持合法 JSON：%v", err)
+	}
+	for _, item := range frame.Result.Data[0].Items {
+		ref, _ := item["historyOutputRef"].(string)
+		if !strings.HasPrefix(ref, appServerHistoryOutputURLPrefix) || item["historyOutputRedacted"] != true {
+			t.Fatalf("每个大过程 item 都应有可恢复引用：%+v", item)
+		}
+	}
+	changes := frame.Result.Data[0].Items[1]["changes"].([]any)
+	change := changes[0].(map[string]any)
+	if change["path"] != "Sources/App.swift" || change["kind"] != "update" || change["diff"] != nil {
+		t.Fatalf("fileChange 预览应保留路径/类型并移除大 diff：%+v", change)
+	}
+}
+
 func TestAppServerHistoryImageRedactionRewritesDataURL(t *testing.T) {
 	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
 	imagePayload := base64.StdEncoding.EncodeToString([]byte("image-bytes"))

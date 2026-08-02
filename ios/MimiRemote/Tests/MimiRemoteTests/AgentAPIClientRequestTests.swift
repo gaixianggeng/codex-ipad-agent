@@ -182,6 +182,14 @@ final class AgentAPIClientRequestTests: XCTestCase {
                 _ = try await client.readHistoryMedia(id: "media/one?two")
             },
             .init(
+                "history output",
+                path: "/api/app-server/history-output/output%2Fone%3Ftwo",
+                method: "GET",
+                requiresEncodedPath: true
+            ) { client in
+                _ = try await client.readHistoryOutput(id: "output/one?two")
+            },
+            .init(
                 "command action list",
                 path: "/api/actions/list",
                 method: "POST",

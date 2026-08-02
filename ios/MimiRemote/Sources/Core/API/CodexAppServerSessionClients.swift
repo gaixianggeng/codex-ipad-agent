@@ -72,6 +72,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.readHistoryMedia(id: id)
     }
 
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        try await runtime.readHistoryOutput(id: id)
+    }
+
     func commandActions(path: String) async throws -> [AgentCommandAction] {
         try await runtime.commandActions(path: path)
     }
@@ -476,6 +480,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     func listDirectories(path: String) async throws -> DirectoryListResponse { try await codexClient.listDirectories(path: path) }
     func readFile(path: String) async throws -> FileReadResponse { try await codexClient.readFile(path: path) }
     func readHistoryMedia(id: String) async throws -> FileReadResponse { try await codexClient.readHistoryMedia(id: id) }
+    func readHistoryOutput(id: String) async throws -> FileReadResponse { try await codexClient.readHistoryOutput(id: id) }
     func commandActions(path: String) async throws -> [AgentCommandAction] { try await codexClient.commandActions(path: path) }
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse { try await codexClient.runCommandAction(path: path, id: id, confirmed: confirmed) }
     func gitStatus(path: String) async throws -> GitStatusResponse { try await codexClient.gitStatus(path: path) }

@@ -520,6 +520,11 @@ actor CodexAppServerSessionRuntime {
         try await AgentAPIClient(endpoint: endpoint, token: token).readHistoryMedia(id: id)
     }
 
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        // 命令/MCP/diff 大输出不走 WebSocket 首屏；用户明确打开时再走鉴权 REST。
+        try await AgentAPIClient(endpoint: endpoint, token: token).readHistoryOutput(id: id)
+    }
+
     func commandActions(path: String) async throws -> [AgentCommandAction] {
         // 快捷动作是 agentd 配置的 allowlist 能力，只在控制面列出，不让 app-server 接触命令定义。
         try await AgentAPIClient(endpoint: endpoint, token: token).commandActions(path: path)

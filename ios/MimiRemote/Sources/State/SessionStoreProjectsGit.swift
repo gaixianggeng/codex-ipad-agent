@@ -104,6 +104,36 @@ extension SessionStore {
         return url
     }
 
+    // 超大过程输出只在用户主动打开时下载，并交给 QuickLook 渐进展示；
+    // 不把几 MB 的文本放回 SwiftUI 时间线的 Text 树，避免解析与布局卡顿。
+    func previewHistoryOutput(id: String) async throws -> URL {
+        let lease = try captureProjectsGitHostLease()
+        let profileID = mediaProfileScope
+        let response: FileReadResponse
+        do {
+            response = try await lease.client.readHistoryOutput(id: id)
+            try requireCurrentProjectsGitHost(lease)
+        } catch {
+            try requireCurrentProjectsGitHost(lease)
+            throw error
+        }
+        let url: URL
+        do {
+            url = try await MediaWorker.shared.previewURL(
+                from: MediaPreviewPayload(response: response),
+                profileID: profileID
+            )
+        } catch {
+            try requireCurrentProjectsGitHost(lease)
+            throw error
+        }
+        guard canApplyProjectsGitResult(lease) else {
+            await MediaWorker.shared.discardPreview(at: url)
+            throw CancellationError()
+        }
+        return url
+    }
+
     func refreshSelectedCommandActions() async {
         guard let path = selectedCommandActionPath?.trimmingCharacters(in: .whitespacesAndNewlines),
               !path.isEmpty
