@@ -405,7 +405,7 @@ private struct Windows11Mark: View {
 }
 
 /// 在现有可缩放 Tux 轮廓内叠加经典黑白、橙黄配色。
-/// 所有色块最终再经过轮廓遮罩，缩小到工具栏尺寸时也不会越界或污染状态圆点。
+/// 彩色色块保持在透明负空间内，整体裁到统一视觉盒，避免缩小时污染状态圆点。
 private struct LinuxTuxMark: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -418,7 +418,13 @@ private struct LinuxTuxMark: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.08, green: 0.09, blue: 0.10)
+            // 原 SVG 的眼睛、肚皮和脚掌本身就是透明负空间，不能再把它当最终遮罩。
+            // 先绘制黑色模板，再把经典配色填回这些区域，深色背景下才不会被透穿。
+            Image("LinuxTux")
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .foregroundStyle(Color(red: 0.08, green: 0.09, blue: 0.10))
 
             Ellipse()
                 .fill(Color(red: 0.95, green: 0.95, blue: 0.92))
@@ -437,12 +443,7 @@ private struct LinuxTuxMark: View {
             foot(xOffset: width * 0.20)
         }
         .frame(width: width, height: size)
-        .mask {
-            Image("LinuxTux")
-                .resizable()
-                .renderingMode(.template)
-                .scaledToFit()
-        }
+        .clipped()
         .shadow(color: outline, radius: max(0.45, size / 24))
     }
 
