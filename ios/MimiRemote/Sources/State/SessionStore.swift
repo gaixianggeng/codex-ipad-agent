@@ -48,12 +48,14 @@ final class SessionStore: ObservableObject {
     @Published var sessions: [AgentSession] = [] {
         didSet {
             rebuildSessionIndexes()
+            synchronizeCarStatusSnapshot()
         }
     }
     @Published var externalActivityBySessionID: [SessionID: ExternalSessionActivity] = [:]
     @Published var remoteSessionSearchResults: [AgentSession] = [] {
         didSet {
             rebuildProjectSessionListSnapshots()
+            synchronizeCarStatusSnapshot()
         }
     }
     @Published var sessionSearchNextCursor: String?
@@ -86,8 +88,21 @@ final class SessionStore: ObservableObject {
     @Published var showingAllSessionProjectIDs: Set<String> = []
     @Published var isLoading = false
     @Published var webSocketStatus: WebSocketStatus = .disconnected
-    @Published var connectionTermination: ConnectionTerminationStatus?
-    @Published var networkReachabilityStatus: NetworkReachabilityStatus = .unknown
+    @Published var connectionTermination: ConnectionTerminationStatus? {
+        didSet {
+            guard oldValue != connectionTermination else { return }
+            synchronizeCarStatusSnapshot()
+        }
+    }
+    @Published var networkReachabilityStatus: NetworkReachabilityStatus = .unknown {
+        didSet {
+            guard oldValue != networkReachabilityStatus else { return }
+            synchronizeCarStatusSnapshot()
+        }
+    }
+    /// 最近一次真正收到当前 Host API 成功响应的时间。仅有 iPad 网络路径并不能证明
+    /// 目标 Mac、Tailscale 或 agentd 可达，因此 Widget 的在线判断必须同时依赖这份证据。
+    var carStatusLastSuccessfulHostObservationAt: Date?
     @Published var statusMessage: String?
     @Published var errorMessage: String?
     @Published var isRefreshingSelectedSession = false
@@ -197,6 +212,7 @@ final class SessionStore: ObservableObject {
     let sessionReminderStore: SessionReminderStore
     let sessionReminderScheduler: any SessionReminderScheduling
     let sessionReminderNow: () -> Date
+    let carStatusSnapshotCoordinator: CarStatusSnapshotCoordinator
     let runtimeCompletionNotificationsEnabled: Bool
     let historySavingsNoticeStore: HistorySavingsNoticeStore
     let queuedTurnStore: any QueuedTurnPersisting
@@ -427,6 +443,7 @@ final class SessionStore: ObservableObject {
         sessionHistoryReadStateStore: SessionHistoryReadStateStore? = nil,
         sessionControlStateStore: SessionControlStateStore? = nil,
         sessionReminderStore: SessionReminderStore? = nil,
+        carStatusSnapshotCoordinator: CarStatusSnapshotCoordinator? = nil,
         historySavingsNoticeStore: HistorySavingsNoticeStore? = nil,
         queuedTurnStore: (any QueuedTurnPersisting)? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
@@ -542,6 +559,22 @@ final class SessionStore: ObservableObject {
             self.sessionReminderScheduler = UserNotificationSessionReminderScheduler()
         }
         self.sessionReminderNow = sessionReminderNow
+        if let carStatusSnapshotCoordinator {
+            self.carStatusSnapshotCoordinator = carStatusSnapshotCoordinator
+        } else if clientFactory != nil {
+            let namespace = UUID().uuidString
+            self.carStatusSnapshotCoordinator = CarStatusSnapshotCoordinator(
+                selectionDefaults: UserDefaults(
+                    suiteName: "SessionStore.CarStatus.Selection.\(namespace)"
+                ) ?? .standard,
+                sharedDefaults: UserDefaults(
+                    suiteName: "SessionStore.CarStatus.Shared.\(namespace)"
+                ),
+                reloadTimelines: {}
+            )
+        } else {
+            self.carStatusSnapshotCoordinator = CarStatusSnapshotCoordinator()
+        }
         // 审批和补充信息始终允许提醒；完成/失败属于高频日常事件，首版默认关闭。
         self.runtimeCompletionNotificationsEnabled = runtimeCompletionNotificationsEnabled
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }

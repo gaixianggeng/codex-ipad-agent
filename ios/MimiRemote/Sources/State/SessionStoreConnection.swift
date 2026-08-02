@@ -2234,6 +2234,7 @@ extension SessionStore {
     }
 
     func clearConnectionData() {
+        invalidateCarStatusHostObservation()
         controlledGlobalDiscoveryUnavailable = false
         controlledGlobalSessionIDs = []
         stopRelatedSessionObservation()

@@ -114,6 +114,7 @@ jobs:
     timeout-minutes: 45
     env:
       IOS_BUNDLE_ID: com.gaixianggeng.mimi
+      IOS_WIDGET_BUNDLE_ID: com.gaixianggeng.mimi.carstatuswidget
       DEVELOPMENT_TEAM: 9HZ89R58PZ
       TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
       IOS_TESTFLIGHT_UPLOAD: "1"
@@ -173,6 +174,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           IOS_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
@@ -183,6 +185,7 @@ jobs:
             ASC_ISSUER_ID \
             ASC_PRIVATE_KEY \
             IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 \
+            IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 \
             IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
             IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
             IOS_KEYCHAIN_PASSWORD; do
@@ -200,12 +203,15 @@ jobs:
           certificate="$release_secrets/distribution.p12"
           profile="$release_secrets/app-store.mobileprovision"
           profile_plist="$release_secrets/profile.plist"
+          widget_profile="$release_secrets/widget-app-store.mobileprovision"
+          widget_profile_plist="$release_secrets/widget-profile.plist"
           keychain="$release_secrets/signing.keychain-db"
 
           printf '%s' "$ASC_PRIVATE_KEY" > "$api_key"
           printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
           printf '%s' "$IOS_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
-          chmod 600 "$api_key" "$certificate" "$profile"
+          printf '%s' "$IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$widget_profile"
+          chmod 600 "$api_key" "$certificate" "$profile" "$widget_profile"
 
           security cms -D -i "$profile" > "$profile_plist"
           profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
@@ -213,13 +219,28 @@ jobs:
           profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$profile_plist")"
           profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
           profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$profile_plist")"
+          profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$profile_plist")"
           [[ "$profile_team" == "$DEVELOPMENT_TEAM" ]]
           [[ "$profile_app_id" == "$DEVELOPMENT_TEAM.$IOS_BUNDLE_ID" ]]
+          [[ "$profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]]
           ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$profile_expiration"
+
+          security cms -D -i "$widget_profile" > "$widget_profile_plist"
+          widget_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$widget_profile_plist")"
+          widget_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$widget_profile_plist")"
+          widget_profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$widget_profile_plist")"
+          widget_profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$widget_profile_plist")"
+          widget_profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$widget_profile_plist")"
+          widget_profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$widget_profile_plist")"
+          [[ "$widget_profile_team" == "$DEVELOPMENT_TEAM" ]]
+          [[ "$widget_profile_app_id" == "$DEVELOPMENT_TEAM.$IOS_WIDGET_BUNDLE_ID" ]]
+          [[ "$widget_profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]]
+          ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$widget_profile_expiration"
 
           profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$profiles_dir"
           cp "$profile" "$profiles_dir/$profile_uuid.mobileprovision"
+          cp "$widget_profile" "$profiles_dir/$widget_profile_uuid.mobileprovision"
 
           security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
@@ -256,6 +277,9 @@ jobs:
             echo "IOS_PROVISIONING_PROFILE_SPECIFIER<<__PROFILE__"
             echo "$profile_name"
             echo "__PROFILE__"
+            echo "IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER<<__WIDGET_PROFILE__"
+            echo "$widget_profile_name"
+            echo "__WIDGET_PROFILE__"
             echo "IOS_CODE_SIGN_IDENTITY<<__IDENTITY__"
             echo "$signing_identity"
             echo "__IDENTITY__"

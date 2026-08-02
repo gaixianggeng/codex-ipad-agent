@@ -24,6 +24,15 @@ chmod 600 "$HOME/.config/ios-testflight/mimi/secrets.env"
 ./scripts/install_git_testflight_push.sh
 ```
 
+MIM-78 引入 Widget Extension 后，Apple Developer 还必须先完成：
+
+1. 注册 App Group `group.com.gaixianggeng.mimi`。
+2. 注册 Widget App ID `com.gaixianggeng.mimi.carstatuswidget`，并让主 App 与 Widget App ID 都启用该 App Group。
+3. 重新生成主 App 的 App Store profile，并新建 Widget App Store profile。
+4. 将重新生成的主 App profile ID/name 更新到 `IOS_PROVISIONING_PROFILE_ID`、`IOS_EXPECTED_PROVISIONING_PROFILE_NAME`，并将 Widget profile 的真实 ID/name 写入已注释的 `IOS_WIDGET_PROVISIONING_PROFILE_ID`、`IOS_WIDGET_EXPECTED_PROVISIONING_PROFILE_NAME`；也可在本机 Secrets 中使用对应的 profile path 临时覆盖。
+
+配置未完成时，`git testflight-push --check` 会明确失败；不要用主 App profile 代替 Widget profile。
+
 ## 使用
 
 先做无副作用预检：
