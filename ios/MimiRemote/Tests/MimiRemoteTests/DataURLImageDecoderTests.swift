@@ -7,6 +7,8 @@ final class DataURLImageDecoderTests: XCTestCase {
     override func setUp() {
         super.setUp()
         DataURLImageDecoder.removeAllCachedImagesForTesting()
+        RemoteURLImageLoader.removeAllCachedImagesForTesting()
+        RemoteImageURLProtocol.reset()
     }
 
     func testDataURLImageDecoderDecodesValidImageAndRejectsInvalidPayloads() async throws {
@@ -135,6 +137,40 @@ final class DataURLImageDecoderTests: XCTestCase {
         XCTAssertFalse(first === second)
     }
 
+    func testRemoteImageLoaderDownloadsDownsamplesAndReusesProfileScopedCache() async throws {
+        let data = try makeImageData(size: CGSize(width: 800, height: 400), color: .systemBlue)
+        RemoteImageURLProtocol.responseData = data
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RemoteImageURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let url = try XCTUnwrap(URL(string: "https://example.com/screenshot.png"))
+
+        let firstResult = await RemoteURLImageLoader.image(
+            from: url,
+            cacheKey: "remote-screenshot",
+            profileID: "profile-a",
+            maxPixelSize: 100,
+            session: session
+        )
+        let first = try XCTUnwrap(firstResult)
+        let cached = RemoteURLImageLoader.cachedImage(
+            cacheKey: "remote-screenshot",
+            profileID: "profile-a",
+            maxPixelSize: 100
+        )
+        let otherProfile = RemoteURLImageLoader.cachedImage(
+            cacheKey: "remote-screenshot",
+            profileID: "profile-b",
+            maxPixelSize: 100
+        )
+
+        XCTAssertLessThanOrEqual(max(first.size.width, first.size.height), 100)
+        XCTAssertEqual(first.size.width / first.size.height, 2, accuracy: 0.05)
+        XCTAssertTrue(first === cached)
+        XCTAssertNil(otherProfile)
+        XCTAssertEqual(RemoteImageURLProtocol.requestCount, 1)
+    }
+
     func testMediaWorkerDecodesAndWritesPreviewOffMainActor() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("mimi-media-worker-\(UUID().uuidString)", isDirectory: true)
@@ -209,12 +245,16 @@ final class DataURLImageDecoderTests: XCTestCase {
     }
 
     private func makeDataURL(size: CGSize, color: UIColor) throws -> String {
+        let data = try makeImageData(size: size, color: color)
+        return "data:image/png;base64,\(data.base64EncodedString())"
+    }
+
+    private func makeImageData(size: CGSize, color: UIColor) throws -> Data {
         let image = UIGraphicsImageRenderer(size: size).image { context in
             color.setFill()
             context.fill(CGRect(origin: .zero, size: size))
         }
-        let data = try XCTUnwrap(image.pngData())
-        return "data:image/png;base64,\(data.base64EncodedString())"
+        return try XCTUnwrap(image.pngData())
     }
 
     private func makeImageFile(color: UIColor) throws -> URL {
@@ -243,5 +283,48 @@ final class DataURLImageDecoderTests: XCTestCase {
             }
             return url
         }
+    }
+}
+
+private final class RemoteImageURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    static var responseData = Data()
+    private(set) static var requestCount = 0
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        Self.lock.lock()
+        Self.requestCount += 1
+        let data = Self.responseData
+        Self.lock.unlock()
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "image/png"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    static func reset() {
+        lock.lock()
+        responseData = Data()
+        requestCount = 0
+        lock.unlock()
     }
 }

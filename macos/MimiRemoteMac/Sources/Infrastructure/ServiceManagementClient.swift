@@ -2,6 +2,7 @@ import ServiceManagement
 
 struct ServiceManagementClient {
     var agentStatus: @MainActor () -> ServiceRegistrationState
+    var agentConfigurationError: @MainActor () -> String?
     var isAgentRegistrationCurrent: @MainActor () -> Bool
     var markAgentRegistrationCurrent: @MainActor () -> Void
     var registerAgent: @MainActor () throws -> Void
@@ -19,6 +20,9 @@ extension ServiceManagementClient {
         return ServiceManagementClient(
             agentStatus: {
                 registrationState(for: agentService.status)
+            },
+            agentConfigurationError: {
+                validateAgentConfiguration()
             },
             isAgentRegistrationCurrent: {
                 guard let registrationRevision else { return true }
@@ -67,11 +71,45 @@ extension ServiceManagementClient {
 
     @MainActor
     private static var agentService: SMAppService {
-        SMAppService.agent(plistName: "com.gaixianggeng.mimi.mac.agentd.plist")
+        SMAppService.agent(plistName: agentPlistName)
     }
 
     private static let agentRegistrationRevisionKey =
         "MimiRemoteMac.agentRegistrationRevision"
+
+    private static let agentPlistName = "com.gaixianggeng.mimi.mac.agentd.plist"
+
+    /// `.notFound` 只表示 ServiceManagement 没找到服务记录，不能据此判断安装包漏文件。
+    /// 这里直接核对包内 plist 与 BundleProgram，只有资源真的损坏时才要求重新安装。
+    static func validateAgentConfiguration(
+        bundleURL: URL = Bundle.main.bundleURL,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let plistURL = bundleURL
+            .appending(path: "Contents/Library/LaunchAgents", directoryHint: .isDirectory)
+            .appending(path: agentPlistName, directoryHint: .notDirectory)
+        guard fileManager.fileExists(atPath: plistURL.path) else {
+            return "App 包内缺少 LaunchAgent 配置，请重新安装正式版本。"
+        }
+        guard let data = try? Data(contentsOf: plistURL),
+              let propertyList = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ),
+              let dictionary = propertyList as? [String: Any],
+              let bundleProgram = dictionary["BundleProgram"] as? String,
+              !bundleProgram.isEmpty
+        else {
+            return "App 包内的 LaunchAgent 配置无效，请重新安装正式版本。"
+        }
+
+        let executableURL = bundleURL.appending(path: bundleProgram, directoryHint: .notDirectory)
+        guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+            return "App 包内缺少可执行的 agentd，请重新安装正式版本。"
+        }
+        return nil
+    }
 
     /// SMAppService 不会自动刷新已登记的 LaunchAgent 可执行文件。正式发布的
     /// build number 每次都会递增，因此用 App 版本与构建号识别需要重新注册的升级。

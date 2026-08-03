@@ -605,11 +605,15 @@ final class CodexAppServerProtocolTests: XCTestCase {
 
         XCTAssertEqual(session.projectID, project.id)
         XCTAssertEqual(session.parentThreadID, "parent-thread")
+        XCTAssertEqual(session.isSubagent, true)
+        XCTAssertTrue(session.isSubagentThread)
         XCTAssertEqual(session.appServerSessionID, "session-child")
         XCTAssertEqual(session.agentNickname, "Euler")
         XCTAssertEqual(session.agentRole, "worker")
         XCTAssertEqual(session.canAcceptDirectInput, false)
         XCTAssertFalse(session.allowsDirectInput)
+        XCTAssertEqual(session.context?.parentThreadID, "parent-thread")
+        XCTAssertEqual(session.context?.isSubagent, true)
         XCTAssertEqual(session.context?.subagents.first?.id, "child-thread")
     }
 

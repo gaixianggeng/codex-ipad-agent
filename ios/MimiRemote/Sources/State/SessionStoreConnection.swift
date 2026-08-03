@@ -1435,6 +1435,8 @@ extension SessionStore {
         for oldID in replacements.keys {
             sessionPageRequestTokenByProjectID.removeValue(forKey: oldID)
             sessionPageLoadingTokenByProjectID.removeValue(forKey: oldID)
+            sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: oldID)
+            sessionFirstPageWaiterCountByProjectID.removeValue(forKey: oldID)
             sessionListReconciliationTasksByProjectID.removeValue(forKey: oldID)?.cancel()
         }
         let obsoleteFirstPageRequestKeys = sessionListFirstPageInFlightByKey.keys.filter {
@@ -1446,6 +1448,12 @@ extension SessionStore {
         }
         sessionListFirstPageCacheByKey = sessionListFirstPageCacheByKey.filter {
             replacements[$0.key.workspaceID] == nil
+        }
+        let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
+            replacements[$0.key.workspaceID] == nil
+        }
+        if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+            workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
         }
 
         let workspacesByID = Dictionary(
@@ -1909,6 +1917,14 @@ extension SessionStore {
         sessionProjectsWithAdditionalPages.remove(project.id)
         sessionPageRequestTokenByProjectID.removeValue(forKey: project.id)
         sessionPageLoadingTokenByProjectID.removeValue(forKey: project.id)
+        sessionFirstPageLoadingConsistencyByProjectID.removeValue(forKey: project.id)
+        sessionFirstPageWaiterCountByProjectID.removeValue(forKey: project.id)
+        let retainedWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
+            $0.key.workspaceID != project.id
+        }
+        if retainedWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+            workspaceSessionFirstPageCompletionByKey = retainedWorkspaceCompletions
+        }
         clearSessionReminders(forProjectID: project.id)
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
@@ -2329,9 +2345,14 @@ extension SessionStore {
         sessionProjectsWithAdditionalPages = []
         sessionPageRequestTokenByProjectID = [:]
         sessionPageLoadingTokenByProjectID = [:]
+        sessionFirstPageLoadingConsistencyByProjectID = [:]
+        sessionFirstPageWaiterCountByProjectID = [:]
         sessionListFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         sessionListFirstPageInFlightByKey = [:]
         sessionListFirstPageCacheByKey = [:]
+        if !workspaceSessionFirstPageCompletionByKey.isEmpty {
+            workspaceSessionFirstPageCompletionByKey = [:]
+        }
         sessionListCooldownUntilByBudgetKey = [:]
         lastSessionLibraryIndexRefreshAt = nil
         sessionListReconciliationTasksByProjectID.values.forEach { $0.cancel() }

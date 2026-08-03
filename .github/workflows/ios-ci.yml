@@ -2,6 +2,22 @@ name: iOS CI
 
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        description: "要验证的 immutable commit；为空时使用触发事件 SHA"
+        required: false
+        default: ""
+        type: string
+      publish_internal_testflight:
+        description: "由 Nightly reusable workflow 上传 Internal TestFlight"
+        required: false
+        default: false
+        type: boolean
+      what_to_test:
+        description: "TestFlight What to Test"
+        required: false
+        default: "Nightly Internal TestFlight"
+        type: string
   push:
     branches:
       - main
@@ -28,18 +44,26 @@ on:
       - "docs/terms-of-use.md"
       - "docs/mimi-protocol-contracts.md"
       - ".github/workflows/ios-ci.yml"
+      - ".github/workflows/nightly.yml"
+      - "scripts/check-nightly-release.sh"
+      - "scripts/check-pr-gate.sh"
+      - "scripts/ci-pr-scope.sh"
+      - "docs/nightly-release.md"
+      - "docs/local-testflight.md"
+      - "README.md"
+      - "README.zh-CN.md"
       - ".xcodebuildmcp/config.yaml"
   workflow_dispatch:
     inputs:
       publish_app_store:
-        description: "在稳定 macOS 26 runner 上归档并上传 App Store 构建"
+        description: "在稳定 macOS 26 runner 上归档并上传 Internal TestFlight（不提交 App Store 审核）"
         required: true
         default: false
         type: boolean
       what_to_test:
         description: "TestFlight What to Test"
         required: true
-        default: "App Store 正式审核候选构建：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
+        default: "Internal TestFlight 正式候选：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
         type: string
 
 permissions:
@@ -47,7 +71,9 @@ permissions:
 
 concurrency:
   group: ios-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # TestFlight 上传不能被同一 main 上的新 push 或手工运行中途取消；PR Gate
+  # 自身仍会取消过时的 PR caller，因此这里优先保证签名发布的原子性。
+  cancel-in-progress: false
 
 jobs:
   conversation-regressions:
@@ -57,6 +83,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          clean: true
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -109,7 +139,10 @@ jobs:
         run: bash ./scripts/test-ios-localization-smoke.sh
 
   app-store-release:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
+    needs: conversation-regressions
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
+      inputs.publish_internal_testflight
     runs-on: macos-26
     timeout-minutes: 45
     env:
@@ -117,7 +150,9 @@ jobs:
       IOS_WIDGET_BUNDLE_ID: com.gaixianggeng.mimi.carstatuswidget
       DEVELOPMENT_TEAM: 9HZ89R58PZ
       TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
-      IOS_TESTFLIGHT_UPLOAD: "1"
+      IOS_TESTFLIGHT_UPLOAD: >-
+        ${{ ((github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
+          inputs.publish_internal_testflight) && '1' || '0' }}
       IOS_TESTFLIGHT_VALIDATE: "0"
       IOS_RELEASE_EXPECTED_MACOS_MAJOR: "26"
       IOS_RELEASE_EXPECTED_XCODE_VERSION: "26.6"
@@ -129,8 +164,37 @@ jobs:
       - name: Checkout clean release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           clean: true
+
+      # 所有签名材料都在后续 step 才注入；这里先锁定官方仓库当前 main
+      # 的同一个 immutable commit，手工从其他分支触发会 fail closed。
+      - name: Trust gate before App Store signing
+        shell: bash
+        env:
+          CANDIDATE_SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
+            || { echo "iOS TestFlight 只允许在官方仓库运行。" >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo "iOS TestFlight 只允许从 refs/heads/main 运行。" >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "iOS TestFlight 需要 40 位 immutable event SHA。" >&2; exit 1; }
+          [[ "$CANDIDATE_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "iOS TestFlight source_ref 必须是 40 位 commit SHA。" >&2; exit 1; }
+          head_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          [[ "$head_sha" == "$GITHUB_SHA" &&
+            "$GITHUB_SHA" == "$CANDIDATE_SOURCE_REF" &&
+            "$main_sha" == "$CANDIDATE_SOURCE_REF" ]] \
+            || {
+              echo "iOS TestFlight source 不是当前 origin/main：head=$head_sha event=$GITHUB_SHA source=$CANDIDATE_SOURCE_REF main=$main_sha" >&2
+              exit 1
+            }
 
       - name: Select exact stable Xcode
         shell: bash
@@ -288,3 +352,42 @@ jobs:
       - name: Archive, audit, upload, and distribute build
         shell: bash
         run: bash ./scripts/ios_testflight_ci.sh
+
+      - name: Write Nightly TestFlight evidence
+        if: inputs.publish_internal_testflight
+        shell: bash
+        env:
+          EVIDENCE_SHA: ${{ inputs.source_ref || github.sha }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/mimi-testflight-evidence"
+          mkdir -p "$evidence_dir"
+          EVIDENCE_PATH="$evidence_dir/evidence.json" \
+            ruby -rtime -rjson -e '
+              path = ENV.fetch("EVIDENCE_PATH")
+              payload = {
+                source_sha: ENV.fetch("EVIDENCE_SHA"),
+                run_id: ENV.fetch("GITHUB_RUN_ID"),
+                run_attempt: ENV.fetch("GITHUB_RUN_ATTEMPT", "1"),
+                repository: ENV.fetch("GITHUB_REPOSITORY"),
+                workflow: ENV.fetch("GITHUB_WORKFLOW"),
+                event: ENV.fetch("GITHUB_EVENT_NAME"),
+                uploaded: true,
+                uploaded_at_utc: Time.now.utc.iso8601
+              }
+              File.write(path, JSON.pretty_generate(payload) + "\n")
+            '
+          ruby -rjson -e '
+            value = JSON.parse(File.read(ARGV.fetch(0)))
+            abort "Nightly evidence uploaded 必须为 true" unless value["uploaded"] == true
+            abort "Nightly evidence source_sha 不完整" unless value["source_sha"].match?(/\A[0-9a-f]{40}\z/)
+          ' "$evidence_dir/evidence.json"
+
+      - name: Upload Nightly TestFlight evidence
+        if: inputs.publish_internal_testflight
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-testflight-${{ inputs.source_ref || github.sha }}
+          path: ${{ runner.temp }}/mimi-testflight-evidence/evidence.json
+          if-no-files-found: error
+          retention-days: 30

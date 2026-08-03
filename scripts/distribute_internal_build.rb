@@ -177,7 +177,7 @@ else
 end
 
 group = client.get("/v1/betaGroups/#{group_id}").fetch("data")
-abort_release("目标组不是内部测试组") if group.dig("attributes", "isInternalGroup") == false
+abort_release("目标组不是内部测试组") unless group.dig("attributes", "isInternalGroup") == true
 group_builds = client.get("/v1/betaGroups/#{group_id}/builds", { "limit" => "200" }).fetch("data")
 unless group_builds.any? { |item| item.fetch("id") == build_id }
   client.post("/v1/betaGroups/#{group_id}/relationships/builds", {

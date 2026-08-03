@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHECK_ROOT="${MIMI_NIGHTLY_RELEASE_ROOT:-$ROOT_DIR}"
+
+fail() {
+  echo "Nightly/Release 自检失败：$1" >&2
+  exit 1
+}
+
+run_check() {
+  ruby - "$CHECK_ROOT/.github/workflows/nightly.yml" \
+    "$CHECK_ROOT/.github/workflows/ios-ci.yml" \
+    "$CHECK_ROOT/.github/workflows/release.yml" \
+    "$CHECK_ROOT/scripts/distribute_internal_build.rb" <<'RUBY'
+require "yaml"
+
+def fail_check(message)
+  abort("Nightly/Release 自检失败：#{message}")
+end
+
+def load_yaml(path)
+  YAML.safe_load(File.read(path), aliases: true)
+rescue Psych::SyntaxError => error
+  fail_check("#{path} YAML 无法解析：#{error.message}")
+end
+
+def triggers(workflow, path)
+  value = workflow["on"] || workflow[true]
+  fail_check("#{path} 缺少 on") unless value.is_a?(Hash)
+  value
+end
+
+def steps(job)
+  Array(job.fetch("steps", []))
+end
+
+def step_index(job, name)
+  index = steps(job).index { |step| step["name"] == name }
+  fail_check("#{job.fetch("name", "job")} 缺少 step #{name}") unless index
+  index
+end
+
+def step(job, name)
+  steps(job).fetch(step_index(job, name))
+end
+
+def assert_pinned_actions(path, workflow)
+  workflow.fetch("jobs").each do |job_id, job|
+    candidates = []
+    candidates << job if job["uses"]
+    candidates.concat(steps(job))
+    candidates.each do |candidate|
+      action = candidate["uses"]
+      next if action.nil? || action.start_with?("./")
+      fail_check("#{path} #{job_id} action 未固定完整 commit SHA：#{action}") unless
+        action.match?(/@[0-9a-f]{40}\z/)
+    end
+  end
+end
+
+nightly_path, ios_path, release_path, distributor_path = ARGV
+nightly = load_yaml(nightly_path)
+ios = load_yaml(ios_path)
+release = load_yaml(release_path)
+[nightly, ios, release].zip([nightly_path, ios_path, release_path]).each do |workflow, path|
+  assert_pinned_actions(path, workflow)
+end
+
+nightly_triggers = triggers(nightly, nightly_path)
+fail_check("Nightly 必须有 UTC 18:30 schedule") unless
+  Array(nightly_triggers["schedule"]).any? { |entry| entry["cron"] == "30 18 * * *" }
+dispatch = nightly_triggers["workflow_dispatch"]
+fail_check("Nightly 必须支持 force_publish bool dispatch") unless
+  dispatch.is_a?(Hash) && dispatch.dig("inputs", "force_publish", "type") == "boolean" &&
+  dispatch.dig("inputs", "force_publish", "default") == false
+fail_check("Nightly 权限必须只有 contents:read 和 actions:read") unless
+  nightly["permissions"] == { "contents" => "read", "actions" => "read" }
+concurrency = nightly.fetch("concurrency")
+fail_check("Nightly concurrency group 必须是固定值") unless
+  concurrency["group"].is_a?(String) && !concurrency["group"].include?("${{")
+fail_check("Nightly 必须保留 cancel-in-progress:false") unless concurrency["cancel-in-progress"] == false
+
+nightly_jobs = nightly.fetch("jobs")
+plan = nightly_jobs.fetch("plan")
+publish = nightly_jobs.fetch("publish")
+final = nightly_jobs.fetch("final")
+trust_index = step_index(plan, "Trust gate before deduplication API")
+dedup_index = step_index(plan, "Check previous successful Nightly runs")
+fail_check("Nightly trust gate 必须先于去重 API") unless trust_index < dedup_index
+pretrust = steps(plan).take(trust_index)
+fail_check("Nightly trust gate 前不得读取 Secrets") if pretrust.any? { |item| item.to_s.include?("secrets.") }
+trust_run = steps(plan).fetch(trust_index).fetch("run")
+[
+  'gaixianggeng/codex-ipad-agent', 'refs/heads/main', 'GITHUB_SHA',
+  'git rev-parse HEAD', '+refs/heads/main:refs/remotes/origin/main',
+  'git rev-parse refs/remotes/origin/main', 'head_sha', 'main_sha'
+].each { |needle| fail_check("Nightly trust gate 缺少 #{needle}") unless trust_run.include?(needle) }
+dedup_run = steps(plan).fetch(dedup_index).fetch("run")
+[
+  'actions/workflows/nightly.yml/runs', 'head_sha', 'GITHUB_RUN_ID',
+  'actions/runs/${run_id}/artifacts', 'actions/artifacts/${artifact_id}/zip',
+  'workflow_run', 'EXPECTED_RUN_ID', 'Nightly Internal TestFlight',
+  'should_publish', 'force_publish'
+].each { |needle| fail_check("Nightly 去重逻辑缺少 #{needle}") unless dedup_run.include?(needle) }
+[
+  'artifact["name"] == "nightly-testflight-#{sha}"',
+  'artifact["expired"] == false',
+  'workflow_run["id"].to_s == run_id',
+  'workflow_run["head_sha"] == sha',
+  '[[ "$(unzip -Z1 "$artifact_zip")" == "evidence.json" ]]',
+  'value["source_sha"] == ENV.fetch("SOURCE_SHA")',
+  'value["run_id"].to_s == ENV.fetch("EXPECTED_RUN_ID")',
+  'value["repository"] == ENV.fetch("GITHUB_REPOSITORY")',
+  'value["workflow"] == "Nightly Internal TestFlight"',
+  '%w[schedule workflow_dispatch].include?(value["event"])',
+  'value["uploaded"] == true'
+].each { |needle| fail_check("Nightly evidence 绑定缺少 #{needle}") unless dedup_run.include?(needle) }
+fail_check("Nightly plan 必须输出 source_sha/what_to_test/should_publish") unless
+  %w[source_sha what_to_test should_publish].all? { |key| plan.dig("outputs", key).to_s.include?("steps.plan.outputs") }
+
+fail_check("Nightly publish 必须复用 ios-ci reusable workflow") unless
+  publish["uses"] == "./.github/workflows/ios-ci.yml"
+fail_check("Nightly publish 必须等待 plan 且按 should_publish 条件执行") unless
+  Array(publish["needs"]) == ["plan"] && publish["if"].to_s.include?("needs.plan.outputs.should_publish")
+publish_with = publish.fetch("with")
+fail_check("Nightly publish source_ref 必须来自 plan SHA") unless publish_with["source_ref"].to_s.include?("needs.plan.outputs.source_sha")
+fail_check("Nightly publish 必须显式启用 reusable TestFlight") unless publish_with["publish_internal_testflight"] == true
+fail_check("Nightly publish What to Test 必须来自 plan") unless publish_with["what_to_test"].to_s.include?("needs.plan.outputs.what_to_test")
+fail_check("Nightly publish 必须使用 secrets: inherit") unless publish["secrets"] == "inherit"
+fail_check("Nightly final 必须 always 聚合 plan 和 publish") unless
+  final["if"].to_s.include?("always()") && Array(final["needs"]).sort == %w[plan publish]
+%w[PLAN_RESULT PUBLISH_RESULT SHOULD_PUBLISH].each do |name|
+  fail_check("Nightly final 缺少 #{name} 结果判断") unless final.to_s.include?(name)
+end
+fail_check("Nightly skip 必须按成功结果收敛") unless final.to_s.include?("PUBLISH_RESULT" ) && final.to_s.include?("skipped")
+
+ios_triggers = triggers(ios, ios_path)
+call = ios_triggers.fetch("workflow_call")
+%w[source_ref publish_internal_testflight what_to_test].each do |name|
+  fail_check("ios-ci workflow_call 缺少 #{name}") unless call.dig("inputs", name)
+end
+fail_check("ios-ci source_ref 类型错误") unless call.dig("inputs", "source_ref", "type") == "string"
+fail_check("ios-ci publish_internal_testflight 必须是 bool") unless call.dig("inputs", "publish_internal_testflight", "type") == "boolean"
+fail_check("ios-ci what_to_test 类型错误") unless call.dig("inputs", "what_to_test", "type") == "string"
+ios_jobs = ios.fetch("jobs")
+conversation = ios_jobs.fetch("conversation-regressions")
+checkout = steps(conversation).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
+fail_check("conversation-regressions 必须 checkout immutable source_ref") unless checkout && checkout.dig("with", "ref").to_s.include?("inputs.source_ref")
+app = ios_jobs.fetch("app-store-release")
+fail_check("signed app-store-release 必须等待 conversation-regressions") unless Array(app["needs"]) == ["conversation-regressions"]
+condition = app.fetch("if").to_s
+fail_check("app-store-release 缺少手工 publish_app_store 条件") unless condition.include?("workflow_dispatch") && condition.include?("publish_app_store")
+fail_check("app-store-release 缺少 reusable publish_internal_testflight 条件") unless condition.include?("publish_internal_testflight")
+fail_check("reusable workflow 会继承 caller event，禁止用 workflow_call 判断发布路径") if condition.include?("workflow_call")
+trust = step(app, "Trust gate before App Store signing")
+prepare_index = step_index(app, "Prepare App Store signing")
+fail_check("Prepare signing 前必须有 trust gate") unless step_index(app, "Trust gate before App Store signing") < prepare_index
+fail_check("iOS trust gate 不得读取 Secrets") if trust.to_s.include?("secrets.")
+trust_run = trust.fetch("run")
+[
+  'gaixianggeng/codex-ipad-agent', 'refs/heads/main',
+  'GITHUB_SHA', 'CANDIDATE_SOURCE_REF', '^[0-9a-f]{40}$',
+  'git rev-parse HEAD', '+refs/heads/main:refs/remotes/origin/main',
+  'head_sha', 'main_sha', '"$GITHUB_SHA" == "$CANDIDATE_SOURCE_REF"'
+].each { |needle| fail_check("iOS trust gate 缺少 #{needle}") unless trust_run.include?(needle) }
+upload = app.dig("env", "IOS_TESTFLIGHT_UPLOAD").to_s
+fail_check("iOS upload 必须严格使用 1/0 二选一") unless upload.include?("'1'") && upload.include?("'0'") && app.dig("env", "IOS_TESTFLIGHT_VALIDATE").to_s == "0"
+fail_check("iOS CI 不得取消正在运行的 TestFlight 上传") unless ios.dig("concurrency", "cancel-in-progress") == false
+evidence = step(app, "Write Nightly TestFlight evidence")
+artifact = step(app, "Upload Nightly TestFlight evidence")
+fail_check("Nightly evidence 只能由显式 reusable publish input 生成") unless
+  evidence["if"].to_s.include?("publish_internal_testflight") && !evidence["if"].to_s.include?("event_name")
+fail_check("Nightly evidence JSON 字段不完整") unless %w[source_sha run_id run_attempt repository workflow event uploaded].all? { |key| evidence.to_s.include?(key) }
+fail_check("Nightly evidence artifact 配置错误") unless artifact["uses"].to_s.match?(/@[0-9a-f]{40}\z/) && artifact.dig("with", "name").to_s.include?("nightly-testflight-") && artifact.dig("with", "retention-days") == 30
+
+release_triggers = triggers(release, release_path)
+fail_check("Release 只能由 v* tag push 触发") unless
+  release_triggers.keys == ["push"] && release_triggers.dig("push", "tags") == ["v*"]
+fail_check("release.yml 不得依赖 release-validation/readiness/attestation") if release.to_s.match?(/release-validation|readiness|attestation/i)
+distributor = File.read(distributor_path)
+fail_check("Internal TestFlight 组校验必须 fail-closed") unless distributor.include?('unless group.dig("attributes", "isInternalGroup") == true')
+
+puts "Nightly/Release workflow 自检通过。"
+RUBY
+}
+
+self_test() {
+  local test_root
+  test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-nightly-release-self-test.XXXXXX")"
+  trap 'rm -rf "$test_root"' RETURN
+  mkdir -p "$test_root/.github/workflows" "$test_root/scripts"
+  cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/"
+  cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/"
+  cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/"
+  cp "$ROOT_DIR/scripts/distribute_internal_build.rb" "$test_root/scripts/"
+  MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null
+
+  expect_failure() {
+    if MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null 2>&1; then
+      fail "self-test 变体本应失败但通过。"
+    fi
+  }
+
+  ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("30 18 * * *", "00 00 * * *"); File.write(p, s)' "$test_root/.github/workflows/nightly.yml"
+  expect_failure
+  cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
+  ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("actions: read", "actions: write"); File.write(p, s)' "$test_root/.github/workflows/nightly.yml"
+  expect_failure
+  cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
+  ruby -e 'p = ARGV.fetch(0); s = File.read(p).gsub("refs/heads/main", "refs/heads/release"); File.write(p, s)' "$test_root/.github/workflows/nightly.yml"
+  expect_failure
+  mutate_nightly() {
+    local old_value="$1"
+    local new_value="$2"
+    cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
+    ruby -e '
+      path, old_value, new_value = ARGV
+      source = File.read(path)
+      abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
+      File.write(path, source.sub(old_value, new_value))
+    ' "$test_root/.github/workflows/nightly.yml" "$old_value" "$new_value"
+    expect_failure
+  }
+  mutate_nightly 'artifact["name"] == "nightly-testflight-#{sha}"' 'artifact["name"]'
+  mutate_nightly 'artifact["expired"] == false' 'artifact["expired"] != true'
+  mutate_nightly 'workflow_run["id"].to_s == run_id' 'workflow_run["id"]'
+  mutate_nightly 'workflow_run["head_sha"] == sha' 'workflow_run["head_sha"]'
+  mutate_nightly '[[ "$(unzip -Z1 "$artifact_zip")" == "evidence.json" ]]' 'unzip -Z1 "$artifact_zip" >/dev/null'
+  mutate_nightly 'value["source_sha"] == ENV.fetch("SOURCE_SHA") &&' 'true &&'
+  mutate_nightly 'value["run_id"].to_s == ENV.fetch("EXPECTED_RUN_ID") &&' 'true &&'
+  mutate_nightly 'value["repository"] == ENV.fetch("GITHUB_REPOSITORY") &&' 'true &&'
+  mutate_nightly 'value["workflow"] == "Nightly Internal TestFlight" &&' 'true &&'
+  mutate_nightly '%w[schedule workflow_dispatch].include?(value["event"]) &&' 'true &&'
+  mutate_nightly 'value["uploaded"] == true' 'true'
+
+  cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
+  ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("      inputs.publish_internal_testflight", "      (github.event_name == '\''workflow_call'\'' && inputs.publish_internal_testflight)"); File.write(p, s)' "$test_root/.github/workflows/ios-ci.yml"
+  expect_failure
+  cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/ios-ci.yml"
+  ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("name: Release", "name: release-validation drift"); File.write(p, s)' "$test_root/.github/workflows/release.yml"
+  expect_failure
+  cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
+  ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("name: Release", "name: attestation drift"); File.write(p, s)' "$test_root/.github/workflows/release.yml"
+  expect_failure
+  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、evidence 绑定与 Release validation/attestation 漂移均能失败。"
+}
+
+case "${1:---check}" in
+  --check) run_check ;;
+  --self-test) self_test ;;
+  *) fail "用法：bash ./scripts/check-nightly-release.sh [--check|--self-test]" ;;
+esac
