@@ -7,6 +7,10 @@ struct WorkspaceSessionPresentationKey: Hashable {
 }
 
 enum WorkspaceSessionPresentation {
+    static func hasCompleteFirstPage(consistency: SessionListConsistency?) -> Bool {
+        consistency == .authoritative
+    }
+
     static func visibleSessions(_ sessions: [AgentSession], limit: Int) -> [AgentSession] {
         Array(sessions.prefix(max(1, limit)))
     }

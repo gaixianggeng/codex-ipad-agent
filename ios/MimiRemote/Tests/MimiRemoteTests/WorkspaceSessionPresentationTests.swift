@@ -3,6 +3,12 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testWorkspacePresentationRequiresAuthoritativeConsistencyBeforeRevealingCachedRows() {
+        XCTAssertFalse(WorkspaceSessionPresentation.hasCompleteFirstPage(consistency: nil))
+        XCTAssertFalse(WorkspaceSessionPresentation.hasCompleteFirstPage(consistency: .fastIndexed))
+        XCTAssertTrue(WorkspaceSessionPresentation.hasCompleteFirstPage(consistency: .authoritative))
+    }
+
     func testAuthoritativeFirstPageStartsSmallThenAdaptiveFillShrinksToFloor() async throws {
         // 首包保持小窗口；确认欠填后再按已观察密度估算，并在接近凑满时收敛到最小批量。
         let project = makeProject(id: "workspace_oversample_shrink")

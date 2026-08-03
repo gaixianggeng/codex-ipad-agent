@@ -653,9 +653,11 @@ struct WorkspaceRootView: View {
             ),
             unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
-            // 只要还没凑出一页完整展示窗口（任一致性），切换时就显示稳定的加载态，
-            // 而不是先闪一个欠填的半截列表。小工作区（已取到全部会话）不会误触发骨架屏。
-            hasCompleteFirstPage: sessionStore.workspaceSessionFirstPageConsistency(projectID: project.id) != nil,
+            // fastIndexed 可能是欠填的旧索引；必须等 authoritative 完成后再揭示缓存行，
+            // 避免先闪半截列表再随权威补页逐批增长。
+            hasCompleteFirstPage: WorkspaceSessionPresentation.hasCompleteFirstPage(
+                consistency: sessionStore.workspaceSessionFirstPageConsistency(projectID: project.id)
+            ),
             canLoadMoreSessions: WorkspaceSessionPresentation.canLoadMore(
                 loadedCount: loadedSessions.count,
                 visibleLimit: visibleLimit,
