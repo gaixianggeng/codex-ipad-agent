@@ -265,7 +265,7 @@ agentd stop
 On macOS, `agentd restart` uses one atomic launchd kickstart, so it is safe to trigger from a remote task hosted by the current service. Do not run `brew services restart mimi-remote` directly from such a task.
 From an agent, automation, or retained remote log, use `agentd up --no-pair` / `agentd restart --no-pair` so the output contains no pairing QR code, endpoint, or long-lived access token. `agentd up --no-pair --json` returns only the version, readiness state, and safe warnings rather than the complete setup result. When pairing is needed, have the user run `agentd pair --qr-only` in a local terminal.
 
-For Windows, macOS, and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md).
+For Windows, macOS, and Linux upgrade/recovery steps, see [Install, upgrade, and rollback (Chinese)](docs/install-upgrade-rollback.md). Maintainers can find the daily Internal TestFlight and formal host release flow in [Nightly and release (Chinese)](docs/nightly-release.md).
 
 To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
 
