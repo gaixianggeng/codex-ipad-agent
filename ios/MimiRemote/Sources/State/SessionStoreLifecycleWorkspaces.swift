@@ -489,6 +489,7 @@ extension SessionStore {
 #endif
         isLoading = true
         defer { isLoading = false }
+        let hostScope = appStore.activeHostScope
         let connectionGeneration = appStore.connectionGeneration
         let requestedSelectionLease = currentSelectionLease()
         let requestedProjectID = requestedSelectionLease.projectID
@@ -496,12 +497,16 @@ extension SessionStore {
         var requestToken: Int?
         var requestProjectID: String?
         var activeWorkspace: AgentWorkspace?
+        var didObserveHost = false
+        let hostRequestStartedAt = sessionListNow()
         do {
             let client = try clientFactory()
             let fetchedProjects = try await client.projects()
             guard connectionGeneration == appStore.connectionGeneration else {
                 return
             }
+            didObserveHost = true
+            recordCarStatusHostObservation(at: sessionListNow())
             setProjectsIfChanged(fetchedProjects)
             reloadRecentWorkspaces()
             if let requestedProjectID,
@@ -634,11 +639,25 @@ extension SessionStore {
                 setErrorMessage(nil)
             }
         } catch {
+            guard appStore.activeHostScope == hostScope,
+                  appStore.connectionGeneration == connectionGeneration,
+                  !Task.isCancelled else {
+                // Host 切换后的迟到错误不得终止新连接，也不得污染新 Host 的 Widget 证据。
+                return
+            }
             if let requestProjectID, let requestToken, !isCurrentSessionPageRequest(projectID: requestProjectID, token: requestToken) {
                 return
             }
             if terminateConnectionIfCredentialsInvalid(error) {
                 return
+            }
+            if !didObserveHost {
+                if Self.carStatusHostDidRespond(to: error) {
+                    recordCarStatusHostObservation(at: sessionListNow())
+                } else {
+                    // 当前 Host 连 projects() 都未成功返回，且没有业务响应证明 transport 可达。
+                    invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
+                }
             }
             if let activeWorkspace {
                 // 已经拿到 projects、只是这个工作区的会话加载失败：单独判定该工作区可用性，

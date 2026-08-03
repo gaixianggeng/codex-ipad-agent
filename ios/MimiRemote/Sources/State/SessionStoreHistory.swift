@@ -1064,6 +1064,7 @@ extension SessionStore {
             }
         }
         var requestToken: Int?
+        let hostRequestStartedAt = sessionListNow()
         do {
             requestToken = beginSessionFirstPageRequest(
                 projectID: projectID,
@@ -1084,6 +1085,9 @@ extension SessionStore {
             guard !activatesProject || selectedProjectID == projectID else {
                 return
             }
+            // refreshSessions 是可见页面的周期 Host API；成功即续期在线证据，
+            // 即使会话 payload 未变化，也允许 Widget 在 TTL 中点做有界 heartbeat。
+            recordCarStatusHostObservation(at: sessionListNow())
             // 只替换当前项目的会话，避免一次项目点击误删其他项目已经加载好的列表。
             applyWorkspaceSessionFirstPage(
                 workspace: workspace,
@@ -1102,6 +1106,14 @@ extension SessionStore {
             if let requestToken, !isCurrentSessionPageRequest(projectID: projectID, token: requestToken) {
                 return
             }
+            if !isCancellationError(error) {
+                if Self.carStatusHostDidRespond(to: error) {
+                    recordCarStatusHostObservation(at: sessionListNow())
+                } else {
+                    // 只让当前请求淘汰不晚于自身的旧证据，避免并发迟到失败覆盖新成功。
+                    invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
+                }
+            }
             if reportErrorOnFailure, selectedProjectID == projectID {
                 await handleWorkspaceLoadFailure(
                     workspace: workspace,
@@ -1118,6 +1130,7 @@ extension SessionStore {
         client: (any SessionStoreAPIClient)? = nil,
         hostScope: HostScope? = nil
     ) async -> (workspace: AgentWorkspace, page: SessionsPage?, requestedCursor: String?) {
+        let hostRequestStartedAt = sessionListNow()
         do {
             let result = try await sessionListFirstPage(
                 workspace: workspace,
@@ -1128,8 +1141,16 @@ extension SessionStore {
                 client: client,
                 hostScope: hostScope
             )
+            recordCarStatusHostObservation(at: sessionListNow())
             return (workspace, result.page, result.requestedCursor)
         } catch {
+            if !isCancellationError(error) {
+                if Self.carStatusHostDidRespond(to: error) {
+                    recordCarStatusHostObservation(at: sessionListNow())
+                } else {
+                    invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
+                }
+            }
             // 某个最近工作区失效不能阻断整个会话库；该项目仍可在工作区页单独重试。
             return (workspace, nil, nil)
         }
@@ -1967,17 +1988,29 @@ extension SessionStore {
     }
 
     func pageSessionsPreservingSelection(_ fresh: [AgentSession], projectID: String) -> [AgentSession] {
-        guard let selectedSessionID,
-              let selected = sessionsByID[selectedSessionID],
-              selected.projectID == projectID,
-              !fresh.contains(where: { $0.id == selected.id }),
-              shouldRetainSessionMissingFromFreshPage(selected)
-        else {
-            return fresh
+        var result = fresh
+        var knownIDs = Set(fresh.map(\.id))
+
+        if let selectedSessionID,
+           let selected = sessionsByID[selectedSessionID],
+           selected.projectID == projectID,
+           !knownIDs.contains(selected.id),
+           shouldRetainSessionMissingFromFreshPage(selected) {
+            knownIDs.insert(selected.id)
+            result.append(selected)
         }
-        // 分页首屏只取最近会话；如果用户当前停在更旧的历史，会话行必须保留，
-        // 否则前台刷新会把右侧正在看的上下文从列表索引里踢掉。
-        return fresh + [selected]
+
+        if let carSelection = selectedCarStatusSession,
+           let selected = sessionsByID[carSelection.sessionID],
+           selected.projectID == projectID,
+           !knownIDs.contains(selected.id),
+           shouldRetainSessionMissingFromFreshPage(selected) {
+            result.append(selected)
+        }
+
+        // 分页首屏只取最近会话；用户正在查看或明确设为状态 Widget 的旧会话必须保留，
+        // 否则前台刷新/清空远端搜索会让后续状态同步失去 canonical 数据源。
+        return result
     }
 
     func pageSessionsPreservingLoadedWindow(

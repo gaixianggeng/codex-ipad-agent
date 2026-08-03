@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj"
 SCHEME="MimiRemote"
 IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.gaixianggeng.mimi}"
+IOS_WIDGET_BUNDLE_ID="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswidget}"
 IOS_TESTFLIGHT_UPLOAD="${IOS_TESTFLIGHT_UPLOAD:-1}"
 IOS_TESTFLIGHT_VALIDATE="${IOS_TESTFLIGHT_VALIDATE:-0}"
 TESTFLIGHT_WHATS_NEW="${TESTFLIGHT_WHATS_NEW:-}"
@@ -18,10 +19,10 @@ require_env() {
   [[ -n "${!1:-}" ]] || fail "$1 is required"
 }
 
-for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort; do
+for command in git ruby bash xcodebuild xcrun plutil find file sw_vers awk sort codesign; do
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
-for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER; do
+for key in RUNNER_TEMP DEVELOPMENT_TEAM APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_PATH IOS_SIGNING_KEYCHAIN_PATH IOS_CODE_SIGN_IDENTITY IOS_PROVISIONING_PROFILE_SPECIFIER IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER; do
   require_env "$key"
 done
 case "$IOS_TESTFLIGHT_UPLOAD:$IOS_TESTFLIGHT_VALIDATE" in
@@ -75,7 +76,7 @@ bash "$ROOT_DIR/scripts/check-ios-privacy-manifest.sh"
 settings="$(
   xcodebuild \
     -project "$PROJECT" \
-    -scheme "$SCHEME" \
+    -target MimiRemote \
     -configuration Release \
     -showBuildSettings
 )"
@@ -112,7 +113,10 @@ cat > "$export_options" <<PLIST
   <key>signingStyle</key><string>manual</string>
   <key>teamID</key><string>$DEVELOPMENT_TEAM</string>
   <key>provisioningProfiles</key>
-  <dict><key>$IOS_BUNDLE_ID</key><string>$IOS_PROVISIONING_PROFILE_SPECIFIER</string></dict>
+  <dict>
+    <key>$IOS_BUNDLE_ID</key><string>$IOS_PROVISIONING_PROFILE_SPECIFIER</string>
+    <key>$IOS_WIDGET_BUNDLE_ID</key><string>$IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER</string>
+  </dict>
 </dict>
 </plist>
 PLIST
@@ -125,12 +129,12 @@ xcodebuild archive \
   -destination 'generic/platform=iOS' \
   -archivePath "$archive" \
   DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-  PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
   MARKETING_VERSION="$marketing_version" \
   CURRENT_PROJECT_VERSION="$build_number" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
-  PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
+  IOS_PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_SPECIFIER" \
+  IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER="$IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER" \
   OTHER_CODE_SIGN_FLAGS="--keychain $IOS_SIGNING_KEYCHAIN_PATH" \
   -quiet
 
@@ -140,6 +144,23 @@ archive_info="$archive/Products/Applications/MimiRemote.app/Info.plist"
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$archive_info")" == "$marketing_version" ]] || fail "archive version mismatch"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$archive_info")" == "$build_number" ]] || fail "archive build mismatch"
 [[ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$archive_info")" == "false" ]] || fail "encryption declaration must be false"
+
+widget_path="$archive/Products/Applications/MimiRemote.app/PlugIns/MimiCarStatusWidget.appex"
+widget_info="$widget_path/Info.plist"
+[[ -f "$widget_info" ]] || fail "archive widget Info.plist not found"
+[[ "$(plutil -extract CFBundleIdentifier raw -o - "$widget_info")" == "$IOS_WIDGET_BUNDLE_ID" ]] || fail "archive widget bundle id mismatch"
+[[ "$(plutil -extract CFBundleShortVersionString raw -o - "$widget_info")" == "$marketing_version" ]] || fail "archive widget version mismatch"
+[[ "$(plutil -extract CFBundleVersion raw -o - "$widget_info")" == "$build_number" ]] || fail "archive widget build mismatch"
+
+# 主 App 与 Widget 必须分别由各自 profile 签名，同时共享同一个 App Group。
+# 这里审计最终归档签名，而不是只相信构建参数，防止 extension 被主 App profile 误签。
+for signed_bundle in "$archive/Products/Applications/MimiRemote.app" "$widget_path"; do
+  entitlements_plist="$output/$(basename "$signed_bundle").entitlements.plist"
+  codesign -d --entitlements :- "$signed_bundle" > "$entitlements_plist" 2>/dev/null
+  app_groups="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$entitlements_plist" 2>/dev/null || true)"
+  [[ "$app_groups" == *"group.com.gaixianggeng.mimi"* ]] \
+    || fail "$(basename "$signed_bundle") missing shared App Group entitlement"
+done
 echo "ios-testflight-ci: archive toolchain BuildMachineOSBuild=$(plutil -extract BuildMachineOSBuild raw -o - "$archive_info") DTXcodeBuild=$(plutil -extract DTXcodeBuild raw -o - "$archive_info") DTSDKName=$(plutil -extract DTSDKName raw -o - "$archive_info")"
 
 # 递归检查归档内所有 bundle 和 Mach-O，避免主 App 已切换正式 Xcode，

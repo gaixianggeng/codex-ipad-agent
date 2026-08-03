@@ -34959,6 +34959,146 @@
         }
       }
     },
+    "ui.set_car_status_session" : {
+      "comment" : "Session menu action that chooses the session shown in the read-only status widget across supported system surfaces.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show in Status Widget"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设为状态小组件"
+          }
+        }
+      }
+    },
+    "ui.clear_car_status_session" : {
+      "comment" : "Session menu action that removes the session from the read-only status widget.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove from Status Widget"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消状态小组件"
+          }
+        }
+      }
+    },
+    "widget.car_status.name" : {
+      "comment" : "Display name of the read-only Mimi CarPlay status widget.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mimi Task Status" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Mimi 任务状态" } }
+      }
+    },
+    "widget.car_status.description" : {
+      "comment" : "Description of the read-only Mimi CarPlay status widget.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "View the selected task and its last known status." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "只读查看所选任务及其最后已知状态。" } }
+      }
+    },
+    "widget.car_status.empty_title" : {
+      "comment" : "Widget title shown before a session is selected.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No Task Selected" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无任务状态" } }
+      }
+    },
+    "widget.car_status.empty_detail" : {
+      "comment" : "Widget guidance shown before a session is selected.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose a session in Mimi" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请在 Mimi 中选择会话" } }
+      }
+    },
+    "widget.car_status.awaiting_sync" : {
+      "comment" : "Widget status shown while no shared snapshot is available.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting to Sync" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "等待同步" } }
+      }
+    },
+    "widget.car_status.running" : {
+      "comment" : "Widget status for a running session.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "进行中" } }
+      }
+    },
+    "widget.car_status.needs_attention" : {
+      "comment" : "Widget status for a session waiting for approval or input.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Needs Attention" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要处理" } }
+      }
+    },
+    "widget.car_status.completed" : {
+      "comment" : "Widget status for a completed session.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Completed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已完成" } }
+      }
+    },
+    "widget.car_status.failed" : {
+      "comment" : "Widget status for a failed session.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "失败" } }
+      }
+    },
+    "widget.car_status.offline" : {
+      "comment" : "Widget status when the selected session has no current connection evidence.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Offline" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "离线" } }
+      }
+    },
+    "widget.car_status.stale" : {
+      "comment" : "Widget status when the shared snapshot may no longer be current.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "May Be Outdated" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可能已过期" } }
+      }
+    },
+    "widget.car_status.accessibility_empty" : {
+      "comment" : "VoiceOver summary for an empty CarPlay status widget. One placeholder is the status.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mimi, no task selected, %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Mimi，暂无任务状态，%@" } }
+      }
+    },
+    "widget.car_status.accessibility_value" : {
+      "comment" : "VoiceOver summary for the CarPlay status widget. Placeholders are project, session, and status.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mimi, %@, %@, %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Mimi，%@，%@，%@" } }
+      }
+    },
     "ui.compact_number_ten_thousand_suffix" : {
       "comment" : "Chinese compact-number suffix for ten thousand. Only used by the Simplified Chinese formatter.",
       "extractionState" : "manual",

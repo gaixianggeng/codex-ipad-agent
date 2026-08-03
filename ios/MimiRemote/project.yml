@@ -61,12 +61,19 @@ targets:
     dependencies:
       - package: swift-markdown
         product: Markdown
+      - target: MimiCarStatusWidgetExtension
+        embed: true
+        destinationFilters:
+          - iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi
         PRODUCT_NAME: MimiRemote
         PRODUCT_MODULE_NAME: MimiRemote
         INFOPLIST_FILE: Resources/Info.plist
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Resources/MimiRemote.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Resources/MimiRemote.entitlements
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_PROVISIONING_PROFILE_SPECIFIER)"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         "INFOPLIST_FILE[sdk=macosx*]": Resources/Info-Catalyst.plist
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Resources/MimiRemote-Catalyst.entitlements
@@ -83,6 +90,34 @@ targets:
         # 1.0 已在 App Store Connect 关闭新构建上传，发布 1.1 时同步固定递增构建号。
         CURRENT_PROJECT_VERSION: "100068"
         MARKETING_VERSION: "1.1"
+  MimiCarStatusWidgetExtension:
+    type: app-extension
+    platform: iOS
+    productName: MimiCarStatusWidget
+    sources:
+      - path: WidgetExtension
+        excludes:
+          - "*.entitlements"
+          - Info.plist
+      - path: Sources/Core/CarStatus/CarStatusSnapshot.swift
+        group: Sources/Core/CarStatus
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi.carstatuswidget
+        PRODUCT_NAME: MimiCarStatusWidget
+        INFOPLIST_FILE: WidgetExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: WidgetExtension/MimiCarStatusWidget.entitlements
+        APPLICATION_EXTENSION_API_ONLY: "YES"
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]": "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)"
+        SKIP_INSTALL: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CURRENT_PROJECT_VERSION: "100068"
+        MARKETING_VERSION: "1.1"
+        SWIFT_EMIT_LOC_STRINGS: "NO"
   MimiRemoteTests:
     type: bundle.unit-test
     platform: auto

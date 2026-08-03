@@ -1550,6 +1550,7 @@ extension SessionStore {
         guard !isDebugWorkbenchUISeedActive else { return }
 #endif
         let hostScope = appStore.activeHostScope
+        let generation = appStore.connectionGeneration
         defer {
             if appStore.activeHostScope == hostScope {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
@@ -1565,7 +1566,6 @@ extension SessionStore {
             // 再发一次相同 thread/list 只会重复占用 gateway 预算。
             return !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
         }
-        let generation = appStore.connectionGeneration
         let consistency: SessionListConsistency = authoritative ? .authoritative : .fastIndexed
         guard let client = try? clientFactory() else {
             return
@@ -1581,9 +1581,11 @@ extension SessionStore {
             var reachedTraversalEnd = false
             for pageIndex in 0..<4 {
                 guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
+                let hostRequestStartedAt = sessionListNow()
                 do {
                     let page = try await client.controlledGlobalSessionsPage(cursor: cursor, limit: 50)
                     guard appStore.connectionGeneration == generation else { return }
+                    recordCarStatusHostObservation(at: sessionListNow())
                     let pageSessionIDs = Set(page.sessions.map(\.id))
                     discoveredSessionIDs.formUnion(pageSessionIDs)
                     // 先发布授权 ID 再合并 Session；这样首次发现的外部 Worktree 在同一轮
@@ -1601,8 +1603,21 @@ extension SessionStore {
                     }
                     cursor = nextCursor
                 } catch {
+                    guard appStore.activeHostScope == hostScope,
+                          appStore.connectionGeneration == generation,
+                          !Task.isCancelled else {
+                        // Host 已切换或任务已取消：旧 Host 的迟到错误不得污染新 Host 证据。
+                        return
+                    }
                     if pageIndex == 0, isControlledGlobalDiscoveryUnavailable(error) {
                         controlledGlobalDiscoveryUnavailable = true
+                    }
+                    if !isCancellationError(error) {
+                        if Self.carStatusHostDidRespond(to: error) {
+                            recordCarStatusHostObservation(at: sessionListNow())
+                        } else {
+                            invalidateCarStatusHostObservation(ifNotNewerThan: hostRequestStartedAt)
+                        }
                     }
                     break
                 }
