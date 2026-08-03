@@ -28,6 +28,14 @@
 - 上传版由 `scripts/prepare-ios-store-screenshots.py` 等比缩放并在必要时补边，不裁切宣传文案，也不拉伸 App 界面。
 - Manifest 记录每张上传图的尺寸、文件大小与 SHA-256，供上传前校验。
 
+App Store Connect 提交回执（2026-08-04）：
+
+- App Store Version ID：`4b10ea4d-83bc-4667-aafd-bfc3b4b1baf8`
+- Build：`100074`
+- Review Submission ID：`da4c4a95-447c-4d56-a593-e682a8191c15`
+- 提交后状态：`WAITING_FOR_REVIEW`
+- 发布方式：手动发布；审核通过后不会自动上线。
+
 生成命令：
 
 ```bash

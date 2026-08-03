@@ -13,8 +13,8 @@ KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自�
 - [x] App 名称使用独立品牌：简体中文 `咪咪 Console`，英文 `Mimi Remote`。
 - [x] 副标题不使用 Mac、iPhone、iPad、ChatGPT、OpenAI 或其他第三方产品名。
 - [x] 公开推广文本、描述和关键词不使用 ChatGPT/OpenAI 名称。
-- [ ] 当前开发版本已恢复运行时识别图标；再次提交中国大陆审核前，应根据最新审核反馈决定是否切回中性系统符号并重拍截图。
-- [ ] 当前开发版本同时开放设备端与 Codex 转写；再次提交中国大陆审核前，应根据最新审核反馈决定是否限制为仅设备端，并同步代码、隐私政策、审核备注和截图。
+- [x] 当前 1.1 提交按产品真实界面保留运行时识别名称与图标，并在审核备注中明确其仅用于识别用户选择的兼容主机端 CLI，不代表第三方背书。
+- [x] 当前版本同时开放设备端与 Codex 转写；审核备注与隐私说明按真实数据流描述，不再沿用“仅设备端转写”的旧说明。
 - [x] 已用当前中国大陆提交代码重拍 iPhone、iPad mini 和 13 英寸 iPad 截图；旧截图中的 ChatGPT 图标、`openai` 路径和旧 `agentd` 界面不复用。
 
 以下旧 README 实机图已从仓库删除，不进入中国大陆商店素材：
@@ -30,8 +30,8 @@ KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自�
 - [ ] 技术支持 URL 更新为 `https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md`。
 - [ ] 隐私政策 URL 更新为 `https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/privacy-policy.md`。
 - [ ] 首个中国大陆版本不填写 Marketing URL。
-- [ ] 上传 `artifacts/app-store/china-mainland-screenshots/upload-ready/` 中的 3 张 iPhone 与 3 张 13 英寸 iPad 截图；当前推荐顺序为工作区、会话、会话列表。
-- [ ] 选择包含本次品牌与语音修改的新构建，构建号必须为 `100055` 或更高。
+- [x] 已向 1.1 上传 MIM-80 的中英文 iPhone 与 13 英寸 iPad 截图，每组依次为工作区、会话、会话列表、设置和 Mac 连接，共 20 张。
+- [x] 选择包含当前品牌与语音实现的有效构建，构建号为 `100074`。
 - [ ] 把审核专用 HTTPS Endpoint、Token、有效时间和联系人填入审核信息。
 - [ ] 上传新的 2–3 分钟审核视频，展示手动连接、样例工作区、会话、Diff/确认和隐私入口。
 - [ ] 保持“手动发布”，通过审核后再决定上线时间。
