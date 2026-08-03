@@ -18,10 +18,62 @@ final class HostStore {
     private(set) var isRefreshingStatus = false
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
+    private(set) var claudeConfiguration: ClaudeConfigurationResult?
+    private(set) var isUpdatingClaude = false
+    private(set) var claudeError: String?
     var lastError: String?
 
     var canRestoreHomebrew: Bool {
         owner == .macApp && homebrew.installedAgentBinary() != nil
+    }
+
+    var claudeEnabled: Bool {
+        claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
+    }
+
+    var canChangeClaude: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    var claudeStatusTitle: String {
+        guard owner != .homebrew else { return "等待接管 App 服务" }
+        guard let runtime = claudeRuntime else {
+            return claudeEnabled ? "正在检查" : "已关闭"
+        }
+        switch runtime.state {
+        case .connected: return "已连接"
+        case .available: return "可用"
+        case .signedOut: return "需要登录"
+        case .disabled: return "已关闭"
+        case .unavailable: return "暂不可用"
+        }
+    }
+
+    var claudeStatusDetail: String {
+        if owner == .homebrew {
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Claude 实验通道。"
+        }
+        if let claudeError {
+            return claudeError
+        }
+        if let runtime = claudeRuntime, runtime.enabled {
+            switch runtime.state {
+            case .connected, .available:
+                return "Claude Code 与 resident bridge 已就绪。"
+            case .signedOut:
+                return "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
+            case .unavailable:
+                return "Claude Runtime 暂不可用；请检查登录状态或打开诊断查看详情。"
+            case .disabled:
+                break
+            }
+        }
+        return claudeConfiguration?.message
+            ?? "启动时会检测 Claude Code；可用且已登录时自动启用，检测不到时保持关闭。"
+    }
+
+    private var claudeRuntime: AgentRuntimeStatus? {
+        status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("claude") == .orderedSame }
     }
 
     private let agent: AgentCommandClient
@@ -83,7 +135,8 @@ final class HostStore {
             lifecycle = .migrationRequired
             await refreshHomebrewStatus()
         } else {
-            await startMacAgentIfNeeded()
+            let reloadClaudeConfiguration = await reconcileClaudeConfigurationAtLaunch()
+            await startMacAgentIfNeeded(reloadConfiguration: reloadClaudeConfiguration)
         }
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
@@ -110,6 +163,7 @@ final class HostStore {
             let nextPairing = try await agent.setup(workspaceRoot)
             pairing = nextPairing
             pairingNetwork = nextPairing.network
+            _ = await reconcileClaudeConfigurationAtLaunch()
             await enableLoginLaunchBestEffort()
             owner = .macApp
             try await registerMacAgentAndWaitForReady()
@@ -142,6 +196,7 @@ final class HostStore {
             try await homebrew.stop()
             homebrewLoaded = false
             owner = .macApp
+            _ = await reconcileClaudeConfigurationAtLaunch()
             try await registerMacAgentAndWaitForReady()
         } catch {
             let takeoverError = error
@@ -347,6 +402,47 @@ final class HostStore {
         }
     }
 
+    func setClaudeEnabled(_ enabled: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            claudeError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingClaude = true
+        claudeError = nil
+        defer {
+            isUpdatingClaude = false
+            isBusy = false
+        }
+
+        do {
+            let preference: ClaudeActivationPreference = enabled ? .enabled : .disabled
+            let result = try await agent.configureClaude(preference, nil)
+            claudeConfiguration = result
+            guard !enabled || result.enabled else {
+                claudeError = result.message
+                return
+            }
+            if result.restartRequired {
+                do {
+                    try await reloadMacAgentForConfigurationChange()
+                    try await waitForClaudeRuntime(enabled: result.enabled)
+                } catch {
+                    let updateError = error
+                    let rolledBack = await rollbackClaudeConfiguration(result)
+                    let rollbackDetail = rolledBack
+                        ? "已恢复修改前的 Claude 设置。"
+                        : "自动恢复也失败，请打开诊断后重试。"
+                    claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription) \(rollbackDetail)"
+                }
+            } else {
+                await refreshMacAgentStatus()
+            }
+        } catch {
+            claudeError = error.localizedDescription
+        }
+    }
+
     func restartService() async {
         guard !isBusy, owner == .macApp else { return }
         isBusy = true
@@ -397,11 +493,15 @@ final class HostStore {
         }
     }
 
-    private func startMacAgentIfNeeded() async {
+    private func startMacAgentIfNeeded(reloadConfiguration: Bool = false) async {
         switch services.agentStatus() {
         case .enabled:
             owner = .macApp
             do {
+                if reloadConfiguration {
+                    try await reloadMacAgentForConfigurationChange()
+                    return
+                }
                 if !services.isAgentRegistrationCurrent() {
                     // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
                     // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
@@ -440,6 +540,93 @@ final class HostStore {
         case .notFound:
             owner = .none
             lifecycle = .failed("App 内缺少 LaunchAgent 配置，请重新安装。")
+        }
+    }
+
+    /// 启动检测只在 Mac App owner 上执行；auto 会尊重配置中已经记录的显式开关。
+    private func reconcileClaudeConfigurationAtLaunch() async -> Bool {
+        do {
+            let result = try await agent.configureClaude(.automatic, nil)
+            claudeConfiguration = result
+            claudeError = result.available || result.preference == .disabled
+                ? nil
+                : result.message
+            return result.restartRequired
+        } catch {
+            // Claude 是实验通道；预检失败不能破坏 Codex 主服务启动。
+            claudeError = "Claude 自动检测失败：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func reloadMacAgentForConfigurationChange() async throws {
+        lifecycle = .starting
+        let endpoint: String?
+        if let currentEndpoint = status?.endpoint {
+            endpoint = currentEndpoint
+        } else {
+            endpoint = (try? await agent.status())?.endpoint
+        }
+        switch services.agentStatus() {
+        case .enabled:
+            try await unregisterMacAgentAndWait(endpoint: endpoint)
+        case .notRegistered:
+            break
+        case .requiresApproval:
+            throw ServiceLifecycleError.requiresApproval
+        case .notFound:
+            throw ServiceLifecycleError.agentNotFound
+        }
+        owner = .macApp
+        try await registerMacAgentAndWaitForReady()
+    }
+
+    private func waitForClaudeRuntime(enabled: Bool) async throws {
+        for attempt in 0..<12 {
+            try Task.checkCancellation()
+            if let current = try? await agent.status() {
+                apply(current)
+                if let runtime = current.runtimeStatus?.runtimes.first(where: {
+                    $0.id.caseInsensitiveCompare("claude") == .orderedSame
+                }) {
+                    if !enabled, !runtime.enabled || runtime.state == .disabled {
+                        return
+                    }
+                    if enabled {
+                        switch runtime.state {
+                        case .connected, .available:
+                            return
+                        case .signedOut:
+                            throw ClaudeRuntimeControlError.signedOut
+                        case .unavailable where runtime.reason != "refresh_in_progress":
+                            throw ClaudeRuntimeControlError.unavailable
+                        case .disabled:
+                            throw ClaudeRuntimeControlError.disabled
+                        case .unavailable:
+                            break
+                        }
+                    }
+                }
+            }
+            if attempt < 11 {
+                try await Task.sleep(for: .seconds(1))
+            }
+        }
+        throw ClaudeRuntimeControlError.timedOut(enabled: enabled)
+    }
+
+    private func rollbackClaudeConfiguration(_ changed: ClaudeConfigurationResult) async -> Bool {
+        do {
+            let restored = try await agent.configureClaude(
+                changed.previousPreference,
+                changed.previousEnabled
+            )
+            claudeConfiguration = restored
+            try await reloadMacAgentForConfigurationChange()
+            try await waitForClaudeRuntime(enabled: restored.enabled)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -861,6 +1048,22 @@ final class HostStore {
             status: { status },
             statusAt: { _ in status },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
+            configureClaude: { preference, restoreEnabled in
+                let enabled = restoreEnabled ?? (preference != .disabled)
+                return ClaudeConfigurationResult(
+                    enabled: enabled,
+                    available: enabled,
+                    preference: preference,
+                    previousEnabled: true,
+                    previousPreference: .enabled,
+                    changed: false,
+                    restartRequired: false,
+                    reason: enabled ? "ready" : "disabled_by_user",
+                    message: enabled
+                        ? "已检测到 Claude Code 和兼容的 Claude bridge。"
+                        : "Claude 实验通道已关闭。"
+                )
+            },
             setLANAccess: { enabled in
                 NetworkConfigurationResult(
                     lanEnabled: enabled,
@@ -926,6 +1129,26 @@ private enum ServiceLifecycleError: LocalizedError {
             "请先在系统设置的登录项中允许 Mimi Remote Mac。"
         case .agentNotFound:
             "App 内缺少 LaunchAgent 配置，请重新安装。"
+        }
+    }
+}
+
+private enum ClaudeRuntimeControlError: LocalizedError {
+    case signedOut
+    case unavailable
+    case disabled
+    case timedOut(enabled: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case .signedOut:
+            "Claude Code 尚未登录。"
+        case .unavailable:
+            "Claude Runtime 未能连接。"
+        case .disabled:
+            "服务重载后 Claude 仍处于关闭状态。"
+        case .timedOut(let enabled):
+            enabled ? "等待 Claude Runtime 连接超时。" : "等待 Claude Runtime 停止超时。"
         }
     }
 }

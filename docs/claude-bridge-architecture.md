@@ -1,6 +1,6 @@
 # Claude bridge 架构
 
-更新日期：2026-07-26
+更新日期：2026-08-03
 
 ## 目标
 
@@ -53,7 +53,10 @@ sequenceDiagram
 
 ### 生命周期
 
-- `claude.enabled=false` 是默认状态，配置接口只返回 Codex channel。
+- 新配置以 `claude.enabled=false`、`claude.activation=auto` 开始。Mimi Remote Mac 启动时依次检查随包 bridge 兼容版本、Claude CLI 和 `claude auth status`；全部通过才自动启用，否则保持关闭且不影响 Codex 主通道。
+- `claude.activation` 记录用户意图：`auto` 跟随启动检测，`enabled` / `disabled` 是设置页中的明确选择。明确关闭后不得在后续启动中自动启用；明确开启但前置条件暂时失败时，运行状态仍 fail closed，同时保留偏好，环境恢复后可在下次启动自动恢复。兼容旧配置时，没有 `activation` 的 `enabled=true` 视为用户明确开启。
+- 检测到的 Claude CLI 使用本机绝对路径写入 `claude.env.CLAUDE_BRIDGE_CLAUDE_BIN`，避免 LaunchAgent 的精简 `PATH` 导致运行态找不到 CLI；写入过程保留未知字段与配置文件 `0600` 权限。
+- 开关变化由 Mac App 重新加载其管理的 LaunchAgent，并等待 Claude Runtime 达到目标状态；失败时恢复修改前的 `activation` / `enabled` 并再次加载服务。
 - 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.1`、无标准版本或二进制不存在时 fail closed。
 - bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 优先使用显式配置，否则使用与自身同目录的 `alleycat-claude-bridge`。
 - `agentd` 监督一个 resident bridge，通过 Unix socket 为多次 WebSocket 连接复用同一进程。

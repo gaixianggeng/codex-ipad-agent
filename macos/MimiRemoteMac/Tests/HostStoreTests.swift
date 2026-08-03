@@ -13,6 +13,129 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.owner, .none)
     }
 
+    func testBootstrapAutoEnablesClaudeAndReloadsRunningMacAgent() async {
+        let events = EventRecorder()
+        let registration = LaggingAgentRegistration()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registration.nextStatus() },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") },
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .automatic,
+                    previousEnabled: false,
+                    previousPreference: .automatic,
+                    changed: true,
+                    restartRequired: true
+                )
+            },
+            healthCheck: { _ in false }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "configure-auto", "unregister-mac", "register-mac",
+        ])
+        XCTAssertTrue(store.claudeEnabled)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testDisablingClaudeReloadsServiceAndWaitsForDisabledRuntime() async {
+        let events = EventRecorder()
+        let disabledStatus = Self.statusWithClaude(enabled: false, state: .disabled)
+        let store = makeStore(
+            configExists: true,
+            status: { disabledStatus },
+            registerAgent: { events.append("register-mac") },
+            configureClaude: { preference, restoreEnabled in
+                events.append("configure-\(preference.rawValue)")
+                if preference == .automatic {
+                    return Self.claudeConfiguration(enabled: true, preference: .enabled)
+                }
+                return Self.claudeConfiguration(
+                    enabled: restoreEnabled ?? false,
+                    preference: preference,
+                    previousEnabled: true,
+                    previousPreference: .enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+        await store.bootstrap()
+
+        await store.setClaudeEnabled(false)
+
+        XCTAssertEqual(events.values, [
+            "configure-auto", "register-mac", "configure-disabled", "register-mac",
+        ])
+        XCTAssertFalse(store.claudeEnabled)
+        XCTAssertNil(store.claudeError)
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testClaudeServiceReloadFailureRestoresPreviousConfiguration() async {
+        let events = EventRecorder()
+        let registrations = CallCounter()
+        let enabledStatus = Self.statusWithClaude(enabled: true, state: .connected)
+        let store = makeStore(
+            configExists: true,
+            status: { enabledStatus },
+            registerAgent: {
+                let call = registrations.increment()
+                events.append("register-\(call)")
+                if call == 2 {
+                    throw TestError.expected
+                }
+            },
+            configureClaude: { preference, restoreEnabled in
+                events.append("configure-\(preference.rawValue)-\(restoreEnabled.map(String.init) ?? "normal")")
+                if preference == .automatic {
+                    return Self.claudeConfiguration(enabled: true, preference: .enabled)
+                }
+                if let restoreEnabled {
+                    return Self.claudeConfiguration(
+                        enabled: restoreEnabled,
+                        preference: preference,
+                        previousEnabled: false,
+                        previousPreference: .disabled,
+                        changed: true,
+                        restartRequired: true,
+                        reason: "restored"
+                    )
+                }
+                return Self.claudeConfiguration(
+                    enabled: false,
+                    preference: .disabled,
+                    previousEnabled: true,
+                    previousPreference: .enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+        await store.bootstrap()
+
+        await store.setClaudeEnabled(false)
+
+        XCTAssertEqual(events.values, [
+            "configure-auto-normal",
+            "register-1",
+            "configure-disabled-normal",
+            "register-2",
+            "configure-enabled-true",
+            "register-3",
+        ])
+        XCTAssertTrue(store.claudeEnabled)
+        XCTAssertTrue(store.claudeError?.contains("已恢复修改前") == true)
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
     func testBootstrapDetectsRunningHomebrewServiceWithoutChangingIt() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
 
@@ -449,6 +572,17 @@ final class HostStoreTests: XCTestCase {
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
         homebrewStop: @escaping @Sendable () async throws -> Void = {},
+        configureClaude: @escaping @Sendable (
+            ClaudeActivationPreference,
+            Bool?
+        ) async throws -> ClaudeConfigurationResult = { preference, restoreEnabled in
+            HostStoreTests.claudeConfiguration(
+                enabled: restoreEnabled ?? false,
+                preference: preference,
+                previousEnabled: false,
+                previousPreference: .automatic
+            )
+        },
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
@@ -464,6 +598,7 @@ final class HostStoreTests: XCTestCase {
             status: status,
             statusAt: { _ in readyStatus },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
+            configureClaude: configureClaude,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             version: { readyStatus.version }
@@ -527,6 +662,64 @@ final class HostStoreTests: XCTestCase {
             pairExpires: nil
         )
     }()
+
+    private nonisolated static func statusWithClaude(
+        enabled: Bool,
+        state: AgentRuntimeConnectionState
+    ) -> AgentStatus {
+        AgentStatus(
+            processOK: readyStatus.processOK,
+            serviceOK: readyStatus.serviceOK,
+            processError: readyStatus.processError,
+            serviceError: readyStatus.serviceError,
+            version: readyStatus.version,
+            endpoint: readyStatus.endpoint,
+            configPath: readyStatus.configPath,
+            projects: readyStatus.projects,
+            doctorOK: readyStatus.doctorOK,
+            doctor: readyStatus.doctor,
+            pairExpires: nil,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2026-08-03T03:00:00Z",
+                runtimes: [
+                    AgentRuntimeStatus(
+                        id: "claude",
+                        title: "Claude",
+                        enabled: enabled,
+                        state: state,
+                        authMode: enabled ? "oauth" : nil,
+                        planType: enabled ? "pro" : nil,
+                        reason: enabled ? nil : "disabled",
+                        rateLimits: nil
+                    ),
+                ]
+            )
+        )
+    }
+
+    private nonisolated static func claudeConfiguration(
+        enabled: Bool,
+        preference: ClaudeActivationPreference,
+        previousEnabled: Bool = false,
+        previousPreference: ClaudeActivationPreference = .automatic,
+        changed: Bool = false,
+        restartRequired: Bool = false,
+        reason: String? = nil
+    ) -> ClaudeConfigurationResult {
+        ClaudeConfigurationResult(
+            enabled: enabled,
+            available: enabled,
+            preference: preference,
+            previousEnabled: previousEnabled,
+            previousPreference: previousPreference,
+            changed: changed,
+            restartRequired: restartRequired,
+            reason: reason ?? (enabled ? "ready" : "disabled_by_user"),
+            message: enabled
+                ? "已检测到 Claude Code 和兼容的 Claude bridge。"
+                : "Claude 实验通道已关闭。"
+        )
+    }
 }
 
 @MainActor
@@ -560,5 +753,17 @@ private final class EventRecorder: @unchecked Sendable {
         lock.lock()
         storage.append(value)
         lock.unlock()
+    }
+}
+
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
     }
 }
