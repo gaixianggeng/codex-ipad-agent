@@ -44,13 +44,6 @@ trap 'rm -rf "$build_dir"' EXIT
 architectures=($ARCHS)
 outputs=()
 agent_version="${MARKETING_VERSION:-devel}"
-build_commit="${MIMI_BUILD_COMMIT:-}"
-if [[ -z "$build_commit" ]]; then
-  build_commit="$(git -C "$project_root" rev-parse --verify HEAD 2>/dev/null || true)"
-fi
-if [[ ! "$build_commit" =~ ^[0-9a-f]{40}$ ]]; then
-  build_commit="unknown"
-fi
 if [[ -n "${CURRENT_PROJECT_VERSION:-}" && "$agent_version" != "devel" ]]; then
   # 同一个 marketing version 会有多个本地/发布构建；把 App build 写进 agentd，
   # 才能识别更新 App 后 launchd 仍驻留旧二进制的情况。
@@ -70,7 +63,7 @@ for architecture in "${architectures[@]}"; do
     cd "$project_root"
     CGO_ENABLED=0 GOOS=darwin GOARCH="$go_arch" GOTOOLCHAIN=local \
       "$go_binary" build -trimpath \
-      -ldflags "-s -w -X main.version=${agent_version} -X main.buildCommit=${build_commit}" \
+      -ldflags "-s -w -X main.version=${agent_version}" \
       -o "$output" ./cmd/agentd
   )
   outputs+=("$output")

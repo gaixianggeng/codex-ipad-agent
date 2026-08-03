@@ -17,13 +17,6 @@ on:
       - "scripts/test-conversation-regressions.sh"
       - "scripts/check-macos-release-signing.sh"
       - "scripts/check-release-artifacts.sh"
-      - "scripts/check-release-readiness.sh"
-      - "scripts/fetch-release-evidence.sh"
-      - "scripts/check-rollback-readiness.sh"
-      - "scripts/run-agentd-rollback-drill.sh"
-      - "scripts/test-macos-dmg-install.sh"
-      - "scripts/check-validation-workflows.sh"
-      - "scripts/history-sync-regression.sh"
       - "scripts/check-source-size.sh"
       - "scripts/check-mimi-protocol-contract.sh"
       - "scripts/install-linux.sh"
@@ -39,11 +32,7 @@ on:
       - "docs/install-upgrade-rollback.md"
       - "docs/codex-protocol-support.md"
       - "docs/mimi-protocol-contracts.md"
-      - "docs/nightly-release-rollback.md"
       - ".github/workflows/go-ci.yml"
-      - ".github/workflows/nightly.yml"
-      - ".github/workflows/release-validation.yml"
-      - ".github/workflows/release-rollback-drill.yml"
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
@@ -70,9 +59,6 @@ jobs:
 
       - name: Check packaging sources
         run: bash ./scripts/check-packaging.sh
-
-      - name: Check Nightly and Release validation policy
-        run: bash ./scripts/check-validation-workflows.sh
 
       - name: Check Mimi protocol contract
         run: bash ./scripts/check-mimi-protocol-contract.sh

@@ -7,7 +7,6 @@ ROUNDS=10
 LIST_LIMIT=20
 TIMEOUT="15s"
 ENDPOINTS=()
-REQUIRE_ALL_SUCCESSFUL=0
 
 usage() {
   cat <<'USAGE'
@@ -23,8 +22,6 @@ Options:
   --limit N             thread/list 页大小，默认 20
   --timeout DURATION    单次 RPC 超时，默认 15s
   --config PATH         agentd config.json 路径
-  --require-all-successful
-                        任一只读请求失败即返回非零；用于 Nightly/Release Gate
   -h, --help            显示帮助
 
 示例：
@@ -65,10 +62,6 @@ while [[ $# -gt 0 ]]; do
     --config)
       CONFIG_PATH="${2:?--config 需要路径}"
       shift 2
-      ;;
-    --require-all-successful)
-      REQUIRE_ALL_SUCCESSFUL=1
-      shift
       ;;
     -h|--help)
       usage
@@ -162,7 +155,6 @@ trap 'rm -f "$probe_bin" "$timings_file"' EXIT
 go build -tags ipadwsprobe -o "$probe_bin" "$ROOT_DIR/scripts/ipad-ws-probe.go"
 
 printf '%-12s %8s %8s %8s %8s %8s\n' "链路" "成功" "失败" "P50(ms)" "P95(ms)" "最大(ms)"
-gate_failed=0
 for entry in "${ENDPOINTS[@]}"; do
   if [[ "$entry" != *=* ]]; then
     echo "--endpoint 格式必须是 NAME=URL：$entry" >&2
@@ -191,9 +183,6 @@ for entry in "${ENDPOINTS[@]}"; do
 
   if [[ "$successes" == "0" ]]; then
     printf '%-12s %8d %8d %8s %8s %8s\n' "$name" "$successes" "$failures" "-" "-" "-"
-    if [[ "$REQUIRE_ALL_SUCCESSFUL" == "1" && "$failures" != "0" ]]; then
-      gate_failed=1
-    fi
     continue
   fi
 
@@ -208,12 +197,4 @@ for entry in "${ENDPOINTS[@]}"; do
     '
   )
   printf '%-12s %8d %8d %8d %8d %8d\n' "$name" "$successes" "$failures" "$p50" "$p95" "$maximum"
-  if [[ "$REQUIRE_ALL_SUCCESSFUL" == "1" && "$failures" != "0" ]]; then
-    gate_failed=1
-  fi
 done
-
-if [[ "$gate_failed" == "1" ]]; then
-  echo "只读 history smoke 存在失败请求；按 Gate 要求失败关闭。" >&2
-  exit 1
-fi

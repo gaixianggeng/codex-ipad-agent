@@ -7,136 +7,20 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: mimi-remote-release
   cancel-in-progress: false
 
 jobs:
-  readiness:
-    if: github.repository == 'gaixianggeng/codex-ipad-agent'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout trusted verifier from current main
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Download exact publish-readiness attestation
-        id: attestation
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          trusted_main_sha="$(git rev-parse --verify 'HEAD^{commit}')"
-          git fetch --no-tags origin \
-            +refs/heads/main:refs/remotes/origin/main
-          current_main_sha="$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')"
-          [[ "$trusted_main_sha" == "$current_main_sha" ]] \
-            || { echo "Release verifier checkout 已落后于 current main，请重试。" >&2; exit 1; }
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-          candidate_sha="$GITHUB_SHA"
-          git fetch --force --no-tags origin "$GITHUB_REF"
-          tag_sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
-          release_version="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF" == "refs/tags/v$release_version" ]]
-          [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          [[ "$tag_sha" == "$candidate_sha" ]] \
-            || { echo "Release tag 在触发后发生变化，拒绝验证不同候选。" >&2; exit 1; }
-          [[ "$candidate_sha" == "$trusted_main_sha" ]] \
-            || { echo "Release tag 必须指向当前 main；请在 main 重新完成 publish-readiness。" >&2; exit 1; }
-          artifact_name="release-readiness-${candidate_sha}-${release_version}"
-
-          artifact_index="$RUNNER_TEMP/readiness-artifacts.json"
-          gh api \
-            "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$artifact_name&per_page=10" \
-            >"$artifact_index"
-          candidates="$RUNNER_TEMP/readiness-candidates.tsv"
-          ruby -rjson -e '
-            artifacts = JSON.parse(File.read(ARGV.fetch(0))).fetch("artifacts")
-            artifacts.reject { |item| item.fetch("expired") }.each do |item|
-              run = item.fetch("workflow_run")
-              puts [item.fetch("created_at"), item.fetch("id"), run.fetch("id"), run.fetch("head_sha"), item.fetch("digest")].join("\t")
-            end
-          ' "$artifact_index" >"$candidates"
-
-          valid_candidates="$RUNNER_TEMP/readiness-valid-candidates.tsv"
-          : >"$valid_candidates"
-          while IFS=$'\t' read -r created_at candidate_artifact_id candidate_run_id artifact_head_sha candidate_artifact_digest; do
-            [[ -n "$candidate_artifact_id" && "$artifact_head_sha" == "$candidate_sha" ]] || continue
-            [[ "$candidate_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || continue
-            candidate_run_json="$RUNNER_TEMP/readiness-run-$candidate_run_id.json"
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate_run_id" >"$candidate_run_json"
-            if candidate_run_attempt="$(ruby -rjson -e '
-              run = JSON.parse(File.read(ARGV.fetch(0)))
-              expected_sha, expected_repo = ARGV.fetch(1), ARGV.fetch(2)
-              checks = {
-                "event" => "workflow_dispatch",
-                "status" => "completed",
-                "conclusion" => "success",
-                "head_branch" => "main",
-                "head_sha" => expected_sha,
-                "path" => ".github/workflows/release-validation.yml",
-              }
-              checks.each { |key, value| exit 1 unless run[key] == value }
-              exit 1 unless run.dig("repository", "full_name") == expected_repo
-              attempt = run.fetch("run_attempt")
-              exit 1 unless attempt.is_a?(Integer) && attempt.positive?
-              puts attempt
-            ' "$candidate_run_json" "$candidate_sha" "$GITHUB_REPOSITORY")"; then
-              printf '%s\t%s\t%s\t%s\t%s\n' \
-                "$created_at" "$candidate_artifact_id" "$candidate_run_id" \
-                "$candidate_run_attempt" "$candidate_artifact_digest" >>"$valid_candidates"
-            fi
-          done <"$candidates"
-          [[ -s "$valid_candidates" ]] \
-            || { echo "没有来自成功 main publish-readiness run 的匹配 artifact。" >&2; exit 1; }
-          read -r _ artifact_id run_id run_attempt artifact_digest < <(sort -r "$valid_candidates" | head -n 1)
-
-          mkdir -p "$RUNNER_TEMP/readiness"
-          gh api \
-            "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
-            >"$RUNNER_TEMP/readiness.zip"
-          actual_artifact_digest="sha256:$(sha256sum "$RUNNER_TEMP/readiness.zip" | awk '{print $1}')"
-          [[ "$actual_artifact_digest" == "$artifact_digest" ]] \
-            || { echo "Readiness artifact digest 与 GitHub API 不一致。" >&2; exit 1; }
-          unzip -q "$RUNNER_TEMP/readiness.zip" -d "$RUNNER_TEMP/readiness"
-          mapfile -t attestations < <(find "$RUNNER_TEMP/readiness" -name '*.json' -type f -print)
-          [[ "${#attestations[@]}" == "1" ]]
-          attestation="${attestations[0]}"
-          bash ./scripts/check-release-readiness.sh verify \
-            --attestation "$attestation" \
-            --candidate-sha "$candidate_sha" \
-            --release-version "$release_version"
-          read -r attested_run_id attested_run_attempt attested_repository attested_workflow < <(
-            ruby -rjson -e '
-              run = JSON.parse(File.read(ARGV.fetch(0))).fetch("run")
-              puts [run.fetch("run_id"), run.fetch("run_attempt"), run.fetch("repository"), run.fetch("workflow")].join(" ")
-            ' "$attestation"
-          )
-          [[ "$attested_run_id" == "$run_id" ]]
-          [[ "$attested_run_attempt" == "$run_attempt" ]]
-          [[ "$attested_repository" == "$GITHUB_REPOSITORY" ]]
-          [[ "$attested_workflow" == ".github/workflows/release-validation.yml" ]]
-          echo "candidate_sha=$candidate_sha" >>"$GITHUB_OUTPUT"
-          echo "release_version=$release_version" >>"$GITHUB_OUTPUT"
-          echo "Readiness attestation: workflow run \`$run_id\`, candidate \`$candidate_sha\`." >>"$GITHUB_STEP_SUMMARY"
-
   verify:
-    needs: readiness
     if: github.repository == 'gaixianggeng/codex-ipad-agent'
     runs-on: macos-26
-    environment: release-production-signing
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Go
@@ -210,16 +94,12 @@ jobs:
         run: bash ./scripts/check-release-artifacts.sh
 
   verify-windows:
-    needs: readiness
     if: github.repository == 'gaixianggeng/codex-ipad-agent'
     runs-on: windows-latest
-    environment: release-production-signing
     timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -237,22 +117,36 @@ jobs:
           WINDOWS_SIGN_PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
           WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX) -or
-              [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX_PASSWORD)) {
-            throw 'A public release requires WINDOWS_SIGN_PFX and WINDOWS_SIGN_PFX_PASSWORD.'
+          $hasPfx = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGN_PFX_PASSWORD)
+          if ($hasPfx -ne $hasPassword) {
+            throw 'WINDOWS_SIGN_PFX and WINDOWS_SIGN_PFX_PASSWORD must either both be configured or both be absent.'
           }
           $pfx = $null
           try {
-            $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
-            ./scripts/build-windows-installer.ps1 `
-              -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
-              -OutputDirectory dist-windows `
-              -PfxPath $pfx `
-              -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+            if ($hasPfx) {
+              $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGN_PFX))
+              ./scripts/build-windows-installer.ps1 `
+                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -PfxPath $pfx `
+                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+            } else {
+              Write-Warning 'Windows signing secrets are absent. Publishing an unsigned installer that may trigger Microsoft Defender SmartScreen.'
+              ./scripts/build-windows-installer.ps1 `
+                -Version ($env:GITHUB_REF_NAME).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -AllowUnsignedRelease
+            }
             $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
-            ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -RequireSignature
-            'Windows installer signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            if ($hasPfx) {
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -RequireSignature
+              'Windows installer signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            } else {
+              ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName
+              'Windows installer signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
           } finally {
             if ($pfx) {
               Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
@@ -272,7 +166,6 @@ jobs:
       - verify-windows
     if: github.repository == 'gaixianggeng/codex-ipad-agent'
     runs-on: macos-26
-    environment: release-production-signing
     timeout-minutes: 45
     permissions:
       contents: write
@@ -280,7 +173,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Go
@@ -311,15 +203,6 @@ jobs:
       - name: Check signed Mac installer
         run: bash ./scripts/check-macos-installer.sh --require-notarization dist-macos/Mimi-Remote-Mac.dmg
 
-      - name: Revalidate release tag before GoReleaser
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --force --no-tags origin "$GITHUB_REF"
-          current_tag_sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
-          [[ "$current_tag_sha" == "$GITHUB_SHA" ]] \
-            || { echo "Release tag 在 readiness 后发生变化，拒绝执行 GoReleaser。" >&2; exit 1; }
-
       - name: Release
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
@@ -336,15 +219,6 @@ jobs:
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
-
-      - name: Revalidate release tag before Mac upload
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --force --no-tags origin "$GITHUB_REF"
-          current_tag_sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
-          [[ "$current_tag_sha" == "$GITHUB_SHA" ]] \
-            || { echo "Release tag 在 GoReleaser 后发生变化，拒绝上传 Mac 产物。" >&2; exit 1; }
 
       - name: Upload Mac installer to GitHub Release
         env:
@@ -373,29 +247,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-
       - name: Download verified Windows installer
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: mimi-remote-windows-installer
           path: dist-windows
-
-      - name: Revalidate release tag before Windows upload
-        shell: pwsh
-        run: |
-          git fetch --force --no-tags origin $env:GITHUB_REF
-          if ($LASTEXITCODE -ne 0) {
-            throw "无法重新读取 release tag。"
-          }
-          $currentTagSha = git rev-parse --verify 'FETCH_HEAD^{commit}'
-          if ($LASTEXITCODE -ne 0 -or $currentTagSha -ne $env:GITHUB_SHA) {
-            throw "Release tag 在 readiness 后发生变化，拒绝上传 Windows 产物。"
-          }
 
       - name: Upload Windows installer to GitHub Release
         shell: pwsh

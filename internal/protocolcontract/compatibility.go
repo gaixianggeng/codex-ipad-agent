@@ -10,7 +10,6 @@ import (
 type VersionResponse struct {
 	Name                          string             `json:"name"`
 	Version                       string             `json:"version"`
-	BuildCommit                   string             `json:"build_commit,omitempty"`
 	InstallationID                string             `json:"installation_id"`
 	Platform                      string             `json:"platform"`
 	ProtocolRevision              int                `json:"protocol_revision"`

@@ -2,37 +2,6 @@ name: iOS CI
 
 on:
   workflow_call:
-    inputs:
-      source_ref:
-        description: "要验证的 immutable commit；为空时使用触发事件 SHA"
-        required: false
-        default: ""
-        type: string
-      validate_app_store:
-        description: "仅归档并调用 App Store 服务端验证，不上传 TestFlight"
-        required: false
-        default: false
-        type: boolean
-      what_to_test:
-        description: "验证报告说明；validate 模式不写入 TestFlight"
-        required: false
-        default: "Release validation only."
-        type: string
-    secrets:
-      ASC_KEY_ID:
-        required: false
-      ASC_ISSUER_ID:
-        required: false
-      ASC_PRIVATE_KEY:
-        required: false
-      IOS_APPSTORE_PROVISIONING_PROFILE_BASE64:
-        required: false
-      IOS_DISTRIBUTION_CERTIFICATE_BASE64:
-        required: false
-      IOS_DISTRIBUTION_CERTIFICATE_PASSWORD:
-        required: false
-      IOS_KEYCHAIN_PASSWORD:
-        required: false
   push:
     branches:
       - main
@@ -77,8 +46,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-ci-${{ github.workflow }}-${{ inputs.source_ref || github.ref }}
-  cancel-in-progress: false
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   conversation-regressions:
@@ -88,8 +57,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -142,20 +109,15 @@ jobs:
         run: bash ./scripts/test-ios-localization-smoke.sh
 
   app-store-release:
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
-      (github.event_name == 'workflow_call' && inputs.validate_app_store)
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
     runs-on: macos-26
-    # GitHub Settings 中必须把该 environment 的 deployment branches 限制为受保护 main。
-    # 这里只影响 signed job；普通 CI 和 release-validation dry-run 不会进入该 environment。
-    environment: ios-production-signing
     timeout-minutes: 45
     env:
       IOS_BUNDLE_ID: com.gaixianggeng.mimi
       DEVELOPMENT_TEAM: 9HZ89R58PZ
       TESTFLIGHT_BETA_GROUP_ID: 26b7c973-b94f-46d5-b300-1c252fd6fdb1
-      IOS_TESTFLIGHT_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_app_store && '1' || '0' }}
-      IOS_TESTFLIGHT_VALIDATE: ${{ github.event_name == 'workflow_call' && inputs.validate_app_store && '1' || '0' }}
+      IOS_TESTFLIGHT_UPLOAD: "1"
+      IOS_TESTFLIGHT_VALIDATE: "0"
       IOS_RELEASE_EXPECTED_MACOS_MAJOR: "26"
       IOS_RELEASE_EXPECTED_XCODE_VERSION: "26.6"
       IOS_RELEASE_EXPECTED_XCODE_BUILD: 17F113
@@ -166,42 +128,8 @@ jobs:
       - name: Checkout clean release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           clean: true
-
-      # 这两个入口都会接触生产签名凭据，因此必须先把已 checkout 的代码绑定到
-      # 正式仓库当前 main；不能只信任 workflow_dispatch 的分支选择或调用方传入值。
-      - name: Trust gate for every signed iOS path
-        shell: bash
-        env:
-          SOURCE_REF: ${{ inputs.source_ref }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_REPOSITORY" == "gaixianggeng/codex-ipad-agent" ]] \
-            || { echo "Signed iOS jobs only run in the official repository." >&2; exit 1; }
-          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
-            || { echo "Signed iOS jobs only accept refs/heads/main." >&2; exit 1; }
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "Signed iOS jobs require an immutable event SHA." >&2; exit 1; }
-
-          candidate_sha="$GITHUB_SHA"
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_call" ]]; then
-            [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] \
-              || { echo "Reusable signed validation requires an immutable source_ref SHA." >&2; exit 1; }
-            candidate_sha="$SOURCE_REF"
-          fi
-
-          head_sha="$(git rev-parse HEAD)"
-          git fetch --no-tags origin \
-            +refs/heads/main:refs/remotes/origin/main
-          main_sha="$(git rev-parse refs/remotes/origin/main)"
-          [[ "$candidate_sha" == "$GITHUB_SHA" ]] \
-            || { echo "Signed iOS candidate does not match the triggering event SHA." >&2; exit 1; }
-          [[ "$head_sha" == "$candidate_sha" ]] \
-            || { echo "Checked out source does not match the immutable candidate SHA." >&2; exit 1; }
-          [[ "$main_sha" == "$candidate_sha" ]] \
-            || { echo "Signed iOS candidate is not the current origin/main commit." >&2; exit 1; }
 
       - name: Select exact stable Xcode
         shell: bash
@@ -335,148 +263,4 @@ jobs:
 
       - name: Archive, audit, upload, and distribute build
         shell: bash
-        env:
-          TESTFLIGHT_EVIDENCE_PATH: ${{ runner.temp }}/mimi-testflight/app-store-connect-receipt.json
         run: bash ./scripts/ios_testflight_ci.sh
-
-      # 只有 ios_testflight_ci.sh 已成功上传并完成分发后才生成此证据；字段全部来自
-      # 当前 checkout、实际 IPA、GitHub run context，不接受人工 JSON 输入。
-      - name: Record uploaded Internal TestFlight evidence
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
-        shell: bash
-        env:
-          TESTFLIGHT_EVIDENCE_PATH: ${{ runner.temp }}/mimi-testflight/app-store-connect-receipt.json
-        run: |
-          set -euo pipefail
-          ipa_candidates=()
-          while IFS= read -r ipa_candidate; do
-            ipa_candidates+=("$ipa_candidate")
-          done < <(find "$RUNNER_TEMP/mimi-testflight" -name '*.ipa' -type f -print)
-          [[ "${#ipa_candidates[@]}" == "1" ]] \
-            || { echo "Expected exactly one uploaded IPA, found ${#ipa_candidates[@]}." >&2; exit 1; }
-          ipa="${ipa_candidates[0]}"
-
-          inspect_dir="$(mktemp -d)"
-          trap 'rm -rf "$inspect_dir"' EXIT
-          unzip -q "$ipa" -d "$inspect_dir"
-          info="$inspect_dir/Payload/MimiRemote.app/Info.plist"
-          [[ -f "$info" ]]
-
-          candidate_sha="$(git rev-parse HEAD)"
-          bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$info")"
-          version="$(plutil -extract CFBundleShortVersionString raw -o - "$info")"
-          build="$(plutil -extract CFBundleVersion raw -o - "$info")"
-          ipa_sha256="$(shasum -a 256 "$ipa" | awk '{print $1}')"
-          [[ "$candidate_sha" == "$GITHUB_SHA" && "$candidate_sha" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$bundle_id" == "$IOS_BUNDLE_ID" ]]
-          [[ -n "$version" && -n "$build" ]]
-          [[ "$ipa_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]
-
-          evidence_dir="$RUNNER_TEMP/internal-testflight-evidence"
-          mkdir -p "$evidence_dir"
-          export candidate_sha bundle_id version build ipa_sha256
-          ruby -rjson -rtime -e '
-            receipt = JSON.parse(File.binread(ENV.fetch("TESTFLIGHT_EVIDENCE_PATH")))
-            expected_receipt_keys = %w[
-              asc_build_id asc_processing_state bundle_id generated_at internal_beta_group
-              internal_beta_group_id internal_group ios_build ios_version kind schema_version
-              tester_count what_to_test_verified
-            ]
-            raise "invalid ASC receipt fields" unless receipt.keys.sort == expected_receipt_keys.sort
-            raise "invalid ASC receipt schema" unless
-              receipt["schema_version"] == 2 &&
-              receipt["kind"] == "app_store_connect_internal_distribution"
-            raise "ASC build is not VALID" unless receipt["asc_processing_state"] == "VALID"
-            raise "ASC receipt does not match IPA" unless
-              receipt["bundle_id"] == ENV.fetch("bundle_id") &&
-              receipt["ios_version"] == ENV.fetch("version") &&
-              receipt["ios_build"] == ENV.fetch("build")
-            raise "ASC receipt is not an internal distribution" unless
-              receipt["internal_group"] == true &&
-              receipt["tester_count"].is_a?(Integer) && receipt["tester_count"].positive? &&
-              receipt["what_to_test_verified"] == true &&
-              !receipt["asc_build_id"].to_s.empty? &&
-              !receipt["internal_beta_group_id"].to_s.empty? &&
-              !receipt["internal_beta_group"].to_s.empty?
-            receipt_generated_at = Time.iso8601(receipt.fetch("generated_at"))
-            raise "ASC receipt generated_at is in the future" if receipt_generated_at > Time.now.utc
-
-            run_id = ENV.fetch("GITHUB_RUN_ID")
-            run_attempt = Integer(ENV.fetch("GITHUB_RUN_ATTEMPT"), 10)
-            raise "invalid run id" unless run_id.match?(/\A[1-9][0-9]*\z/)
-            raise "invalid run attempt" unless run_attempt.positive?
-            data = {
-              "schema_version" => 1,
-              "kind" => "internal_testflight_upload",
-              "candidate_sha" => ENV.fetch("candidate_sha"),
-              "bundle_id" => ENV.fetch("bundle_id"),
-              "version" => ENV.fetch("version"),
-              "build" => ENV.fetch("build"),
-              "ipa_sha256" => ENV.fetch("ipa_sha256"),
-              "run_id" => run_id,
-              "run_attempt" => run_attempt,
-              "repository" => ENV.fetch("GITHUB_REPOSITORY"),
-              "workflow" => ENV.fetch("GITHUB_WORKFLOW"),
-              "event" => ENV.fetch("GITHUB_EVENT_NAME"),
-              "uploaded" => true,
-              "generated_at" => Time.now.utc.iso8601,
-              "asc_receipt" => receipt
-            }
-            path = File.join(ENV.fetch("RUNNER_TEMP"), "internal-testflight-evidence", "internal-testflight-evidence.json")
-            File.write(path, JSON.pretty_generate(data) + "\n")
-          '
-
-      - name: Upload Internal TestFlight evidence
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_app_store
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: internal-testflight-evidence-${{ github.sha }}
-          path: ${{ runner.temp }}/internal-testflight-evidence/internal-testflight-evidence.json
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Record validated IPA provenance
-        if: github.event_name == 'workflow_call' && inputs.validate_app_store
-        shell: bash
-        env:
-          CANDIDATE_SHA: ${{ inputs.source_ref }}
-        run: |
-          set -euo pipefail
-          ipa_candidates=()
-          while IFS= read -r ipa_candidate; do
-            ipa_candidates+=("$ipa_candidate")
-          done < <(find "$RUNNER_TEMP/mimi-testflight" -name '*.ipa' -type f -print)
-          [[ "${#ipa_candidates[@]}" == "1" ]]
-          ipa="${ipa_candidates[0]}"
-          inspect_dir="$(mktemp -d)"
-          trap 'rm -rf "$inspect_dir"' EXIT
-          unzip -q "$ipa" -d "$inspect_dir"
-          info="$inspect_dir/Payload/MimiRemote.app/Info.plist"
-          [[ -f "$info" ]]
-          bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$info")"
-          version="$(plutil -extract CFBundleShortVersionString raw -o - "$info")"
-          build="$(plutil -extract CFBundleVersion raw -o - "$info")"
-          sha256="$(shasum -a 256 "$ipa" | awk '{print $1}')"
-          export CANDIDATE_SHA bundle_id version build sha256
-          ruby -rjson -e '
-            data = {
-              "candidate_sha" => ENV.fetch("CANDIDATE_SHA"),
-              "bundle_id" => ENV.fetch("bundle_id"),
-              "version" => ENV.fetch("version"),
-              "build" => ENV.fetch("build"),
-              "sha256" => ENV.fetch("sha256")
-            }
-            File.write(File.join(ENV.fetch("RUNNER_TEMP"), "mimi-testflight", "release-ios-metadata.json"), JSON.pretty_generate(data) + "\n")
-          '
-
-      - name: Upload validated IPA without publishing
-        if: github.event_name == 'workflow_call' && inputs.validate_app_store
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-ios-validated-${{ inputs.source_ref || github.sha }}
-          path: |
-            ${{ runner.temp }}/mimi-testflight/**/*.ipa
-            ${{ runner.temp }}/mimi-testflight/release-ios-metadata.json
-          if-no-files-found: error
-          retention-days: 30

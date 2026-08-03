@@ -209,7 +209,7 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 3. **安装 iOS App：**加入 [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6)；开发者也可以按 [iOS 构建说明](ios/MimiRemote/README.md)从源码运行。
 4. **扫码配对：**打开宿主的配对入口（或运行 `agentd pair --qr-only`），在 Mimi Remote 中扫描短期二维码。
 
-推荐使用平台正式安装包：Windows 使用 Authenticode 签名的一键 EXE 安装器，macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。正式发布缺少任一平台签名凭据时会失败关闭，不生成 unsigned Release。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
+推荐使用平台正式安装包：Windows 使用一键 EXE 安装器（有证书时使用 Authenticode 签名；无证书时明确标记为 `unsigned-release`），macOS 使用 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。两者都内置 Go 后端和兼容 Claude bridge；Homebrew 保留给 macOS 命令行、服务器、自动化和故障恢复。
 
 ### Windows 安装
 
@@ -221,7 +221,7 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 (Get-AuthenticodeSignature $setup).Status
 ```
 
-先检查 `.metadata.json` 的 `signing`：正式 Release 必须为 `authenticode-pfx`，PowerShell 的签名状态必须为 `Valid`，并且 SHA-256 与同 Release 的 sidecar 完全一致。`unsigned-release` 只用于本地/Nightly snapshot，不得作为正式下载。安装器按当前用户安装，已经内置 `agentd.exe`、`alleycat-claude-bridge.exe` 与原生 `mimi-remote-tray.exe`，不要求 Go 或 Rust；它会注册 limited 权限的登录任务、启动服务、等待真实就绪并启动通知区域托盘。托盘可查看 Endpoint 与 Codex/Claude 状态，并提供启动、停止、重启、配对、Doctor 和日志入口。配置与 Token 位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`，覆盖升级或普通卸载不会删除它们。
+先检查 `.metadata.json` 的 `signing`：`authenticode-pfx` 必须对应 `Valid`；`unsigned-release` 应对应 `NotSigned`，其 EXE 文件名包含 `-unsigned`，并可能触发 Microsoft Defender SmartScreen。未签名版本只应从本仓库正式 Release 下载，并在 SHA-256 与同 Release 的 sidecar 完全一致后运行。安装器按当前用户安装，已经内置 `agentd.exe`、`alleycat-claude-bridge.exe` 与原生 `mimi-remote-tray.exe`，不要求 Go 或 Rust；它会注册 limited 权限的登录任务、启动服务、等待真实就绪并启动通知区域托盘。托盘可查看 Endpoint 与 Codex/Claude 状态，并提供启动、停止、重启、配对、Doctor 和日志入口。配置与 Token 位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`，覆盖升级或普通卸载不会删除它们。
 
 局域网访问默认关闭；没有 Tailscale 且没有明确勾选 LAN 时，新安装只监听 loopback。勾选后，安装器先要求默认 Windows 网络配置文件为“专用网络”，清理 Windows 弹窗可能为 `agentd.exe` 自动创建的额外入站规则，再创建唯一的 Private profile、LocalSubnet 受限规则，最后扩大到 LAN 监听。运行时会拒绝 Public/Any 或其它非托管入站 Allow 规则。Public 网络不会触发放宽防火墙边界；只应把可信的 Wi-Fi 或以太网改为“专用网络”。配对地址优先使用系统默认路由对应的物理网卡，并排除 Hyper-V、WSL、容器和仅 VPN 可见的虚拟网卡。也可以使用以下命令：
 
@@ -305,7 +305,7 @@ Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd
 
 ## Claude Code 实验通道
 
-Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Windows 安装器和 Mac DMG 都已经内置兼容 bridge，并分别保留 Authenticode 与 Developer ID 代码身份；unsigned Windows 包只属于本地/Nightly snapshot。不要为这些安装方式重复执行 `cargo install`。
+Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Windows 安装器和 Mac DMG 都已经内置兼容 bridge；Windows `authenticode-pfx` 安装包与 Mac DMG 保留平台代码身份，`unsigned-release` Windows 包则没有。不要为这些安装方式重复执行 `cargo install`。
 
 只有 Homebrew、Linux 或独立开发环境需要从源码安装外置 bridge：
 
@@ -479,7 +479,6 @@ bridges/claude/          Rust Claude Code 协议 bridge
 - [Tailscale 与 Peer Relay 运维](docs/tailscale-peer-relay-ops.md)
 - [Codex 协议支持边界](docs/codex-protocol-support.md)
 - [Capability 声明与本地降级](docs/capability-rollout.md)
-- [Nightly、Release validation 与回滚检查](docs/nightly-release-rollback.md)
 - [Claude bridge 架构](docs/claude-bridge-architecture.md)
 - [与 Litter 的能力对照](docs/litter-comparison.md)
 - [隐私政策](docs/privacy-policy.md)

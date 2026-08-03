@@ -17,20 +17,12 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $OutputDirectory = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $root 'dist-windows' }
 $Version = $Version.TrimStart('v')
-$BuildCommit = $env:MIMI_BUILD_COMMIT
-if ([string]::IsNullOrWhiteSpace($BuildCommit)) {
-    $BuildCommit = (& git -C $root rev-parse --verify HEAD 2>$null).Trim()
-}
-if ($BuildCommit -notmatch '^[0-9a-f]{40}$') { $BuildCommit = 'unknown' }
 # 无证书发布必须显式传入开关，避免凭据遗漏时静默降级为未签名安装包。
 if ($Snapshot -and $PfxPath) { throw '-Snapshot and -PfxPath cannot be used together.' }
 if ($Snapshot -and $AllowUnsignedRelease) { throw '-Snapshot and -AllowUnsignedRelease cannot be used together.' }
 if ($PfxPath -and $AllowUnsignedRelease) { throw '-PfxPath and -AllowUnsignedRelease cannot be used together.' }
 if (-not $Snapshot -and -not $PfxPath -and -not $AllowUnsignedRelease) {
     throw 'Release builds require -PfxPath or the explicit -AllowUnsignedRelease switch.'
-}
-if (-not $Snapshot -and $BuildCommit -eq 'unknown') {
-    throw 'Release builds require an immutable 40-hex MIMI_BUILD_COMMIT or Git HEAD.'
 }
 if ($BridgeBinary -and -not $Snapshot) { throw '-BridgeBinary is accepted only for local snapshot builds; release builds must compile the bridge from source.' }
 if ($BridgeBinary) { $BridgeBinary = (Resolve-Path -LiteralPath $BridgeBinary).Path }
@@ -74,7 +66,7 @@ Push-Location $root
 try {
     Copy-Item -LiteralPath $iconSource -Destination (Join-Path $stage 'mimi-remote.ico')
     $env:CGO_ENABLED = '0'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
-    & go build -trimpath -ldflags "-s -w -X main.version=$Version -X main.buildCommit=$BuildCommit" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
+    & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
     if ($LASTEXITCODE -ne 0) { throw 'go build failed.' }
     & go build -trimpath -ldflags "-s -w -H=windowsgui" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
     if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed.' }

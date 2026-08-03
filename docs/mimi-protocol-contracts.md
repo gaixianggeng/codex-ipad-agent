@@ -80,12 +80,6 @@ bash ./scripts/test-conversation-regressions.sh
 
 `contracts/mimi-protocol/**`、生成器、契约脚本或本文档变化时，MIM-27 的路径分类会同时要求 Go 与 iOS job；最终 `PR Gate` 只有在两端和契约检查都成功时才通过。
 
-`/api/version.build_commit` 是可选的纯加法构建身份字段：正式/Nightly agentd 由编译期
-ldflags 注入完整 40 位 Git SHA，Release Runtime smoke 必须精确匹配 candidate；本地源码
-构建允许返回 `unknown`，但不能作为发布证据。该字段不来自运行时配置，也不参与客户端
-协议兼容判断。Release rollback checker 还会在 candidate 的干净 `git archive` 中实际执行
-`scripts/check-mimi-protocol-contract.sh`，避免用当前工作树脚本解释历史 commit。
-
 ### 字段演进规则
 
 - 优先新增可选字段；旧客户端缺失时必须有安全默认值。
@@ -100,4 +94,4 @@ ldflags 注入完整 40 位 Git SHA，Release Runtime smoke 必须精确匹配 c
 - 当前采用单仓库 manifest、生成器和 golden fixtures，适合小团队且无需 Schema Registry。若 API 数量继续增长，再评估从 OpenAPI / JSON Schema 生成更多模型；当前不提前引入。
 - revision 1 客户端没有 header，只能按已记录的上一版窗口识别。未来提高最低客户端修订前，必须先确认活跃旧版本已经完成迁移。
 - 纯加法兼容依赖 capability 和安全默认值。新增能力时仍需补两端 fixture、服务端依赖检查、端点拒绝、当前 Host 隔离与实际功能测试；本机制继续复用 MIM-29 的用户链路回归。
-- 快速契约检查进入 PR Gate；Nightly/Release 只复用同一真实入口做组合验证，不再复制一套语义实现。更重的长期组合测试仍由真实故障数据驱动。
+- 这套检查进入快速 PR Gate，不扩展 Nightly 或 Release 编排；更重的长期组合测试留给后续真实故障数据驱动。

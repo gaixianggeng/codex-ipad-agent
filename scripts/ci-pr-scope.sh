@@ -109,7 +109,7 @@ else
 
     # CI 编排或分类规则本身变化时执行全部语言门禁，避免分类器修改静默缩小覆盖面。
     case "$changed_path" in
-      .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh|scripts/check-validation-workflows.sh|scripts/check-release-readiness.sh|scripts/fetch-release-evidence.sh|scripts/check-rollback-readiness.sh|scripts/run-agentd-rollback-drill.sh|scripts/test-macos-dmg-install.sh)
+      .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh)
         go_scope=true
         ios_scope=true
         rust_scope=true
@@ -121,10 +121,10 @@ else
       *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|macos/MimiRemoteMac/*|macos/MimiRemoteMac/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*)
         go_scope=true
         ;;
-      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/check-validation-workflows.sh|scripts/check-rollback-readiness.sh|scripts/history-sync-regression.sh|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux.sh|scripts/test-install-linux.sh|scripts/package-skill.sh|scripts/export-public-backend.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
+      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux.sh|scripts/test-install-linux.sh|scripts/package-skill.sh|scripts/export-public-backend.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
         go_scope=true
         ;;
-      README.md|docs/install-upgrade-rollback.md|docs/codex-protocol-support.md|docs/mimi-protocol-contracts.md|docs/nightly-release-rollback.md|docs/p0-p1-roadmap.md)
+      README.md|docs/install-upgrade-rollback.md|docs/codex-protocol-support.md|docs/mimi-protocol-contracts.md|docs/p0-p1-roadmap.md)
         go_scope=true
         ;;
     esac

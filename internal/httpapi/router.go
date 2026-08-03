@@ -36,7 +36,6 @@ type Router struct {
 	doctor         *doctor.Checker
 	auth           auth.Authenticator
 	version        string
-	buildCommit    string
 	installationID string
 	upgrader       websocket.Upgrader
 	monitor        *relayMonitor
@@ -105,9 +104,6 @@ type Router struct {
 // 空 GatewayTurnClaimStorePath 保持纯内存行为，供普通测试和嵌入式调用使用。
 type RouterOptions struct {
 	GatewayTurnClaimStorePath string
-	// BuildCommit 由编译期 ldflags 注入，只用于证明正在运行的二进制身份。
-	// 它不能从运行时配置或请求参数读取，避免受控 smoke 自报候选 SHA。
-	BuildCommit string
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
@@ -175,8 +171,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		auth: auth.NewWithOptions(cfg.Auth.Token, cfg.DevInsecure, auth.Options{
 			AllowQueryToken: cfg.Auth.AllowQueryToken,
 		}),
-		version:     version,
-		buildCommit: strings.TrimSpace(options.BuildCommit),
+		version: version,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: sameOriginOrNoOrigin,
 		},
@@ -415,16 +410,14 @@ func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
 	if r.tailscaleHostLookup != nil {
 		host = r.tailscaleHostLookup(req.Context())
 	}
-	response := protocolcontract.CurrentVersionResponseWithTailscale(
+	writeJSON(w, http.StatusOK, protocolcontract.CurrentVersionResponseWithTailscale(
 		r.version,
 		r.installationID,
 		host.DNSName,
 		host.DeviceName,
 		r.capabilities.enabledNames(),
 		r.capabilities.statuses(),
-	)
-	response.BuildCommit = r.buildCommit
-	writeJSON(w, http.StatusOK, response)
+	))
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {

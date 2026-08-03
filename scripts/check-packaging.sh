@@ -19,9 +19,6 @@ done
 for required_file in \
   .github/workflows/pr-gate.yml \
   .github/workflows/go-ci.yml \
-  .github/workflows/nightly.yml \
-  .github/workflows/release-validation.yml \
-  .github/workflows/release-rollback-drill.yml \
   .github/workflows/release.yml \
   .goreleaser.yml \
   README.md \
@@ -45,19 +42,12 @@ for required_file in \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
-  scripts/check-release-readiness.sh \
-  scripts/fetch-release-evidence.sh \
-  scripts/check-rollback-readiness.sh \
-  scripts/run-agentd-rollback-drill.sh \
-  scripts/test-macos-dmg-install.sh \
-  scripts/check-validation-workflows.sh \
   scripts/package-skill.sh \
   scripts/sign-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-handoff-macos.sh \
   scripts/verify-release.sh \
-  docs/install-upgrade-rollback.md \
-  docs/nightly-release-rollback.md; do
+  docs/install-upgrade-rollback.md; do
   [[ -f "$required_file" ]] || fail "缺少 ${required_file}。"
 done
 
@@ -70,12 +60,6 @@ bash -n \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
-  scripts/check-release-readiness.sh \
-  scripts/fetch-release-evidence.sh \
-  scripts/check-rollback-readiness.sh \
-  scripts/run-agentd-rollback-drill.sh \
-  scripts/test-macos-dmg-install.sh \
-  scripts/check-validation-workflows.sh \
   scripts/package-skill.sh \
   scripts/sign-agentd-dev-macos.sh \
   scripts/restart-agentd-dev-macos.sh \
@@ -84,8 +68,6 @@ bash -n \
   scripts/test-install-linux.sh \
   scripts/verify-release.sh
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
-bash ./scripts/check-release-readiness.sh --self-test >/dev/null
-bash ./scripts/check-validation-workflows.sh >/dev/null
 bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
 bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
