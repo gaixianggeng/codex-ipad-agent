@@ -759,6 +759,31 @@ struct ConversationTimelineView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: layout.emptyStateMaxWidth)
             }
+
+            if let directoryPath = emptyStateDirectoryPath {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .foregroundStyle(tokens.primaryAction)
+
+                    Text(directoryPath)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(workbenchSecondaryText)
+                        .lineLimit(1)
+                        // 中间截断同时保留根路径和末级目录名，长路径也不会撑破空状态卡。
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(tokens.border.opacity(0.45), lineWidth: 1)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(L10n.format("ui.directory_value", directoryPath))
+            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 26)
@@ -770,6 +795,20 @@ struct ConversationTimelineView: View {
         }
         .shadow(color: Color.black.opacity(tokens.resolvedScheme == .light ? 0.045 : 0.16), radius: 12, y: 5)
         .frame(maxWidth: .infinity)
+    }
+
+    private var emptyStateDirectoryPath: String? {
+        let candidates = [
+            displayedSessionID.flatMap { sessionStore.sessionsByID[$0]?.dir },
+            sessionStore.selectedProject?.path
+        ]
+        for candidate in candidates {
+            let path = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !path.isEmpty {
+                return path
+            }
+        }
+        return nil
     }
 
     @ViewBuilder

@@ -141,6 +141,38 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 1024, height: 768)
     }
 
+    private func makeEmptyConversation(
+        workspacePath: String,
+        colorScheme: ColorScheme,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        let project = AgentProject(
+            id: "snapshot-empty-workspace",
+            name: URL(fileURLWithPath: workspacePath).lastPathComponent,
+            path: workspacePath
+        )
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        sessionStore.projects = [project]
+        sessionStore.sidebarProjects = [project]
+        sessionStore.selectedProjectID = project.id
+
+        return ConversationView()
+            .environmentObject(sessionStore)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, colorScheme)
+            .environment(\.horizontalSizeClass, width < 560 ? .compact : .regular)
+            .frame(width: width, height: height)
+    }
+
     private func makeRichMarkdownConversation() -> some View {
         let sessionID = "snapshot_markdown_session"
         let appStore = makeSnapshotAppStore()
@@ -822,6 +854,38 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 1024, height: 768)
                 )
             )
+        )
+    }
+
+    func testEmptyConversationShowsCurrentDirectoryAcrossAppearances() {
+        assertSnapshot(
+            of: makeEmptyConversation(
+                workspacePath: "/Users/demo/Projects/Clients/2026/Mimi Remote/codex-ipad-agent",
+                colorScheme: .light,
+                width: 390,
+                height: 700
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 390, height: 700),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-long-path-light"
+        )
+
+        assertSnapshot(
+            of: makeEmptyConversation(
+                workspacePath: "/Users/demo/code/codex-ipad-agent",
+                colorScheme: .dark,
+                width: 1024,
+                height: 768
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 1024, height: 768),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-dark"
         )
     }
 
