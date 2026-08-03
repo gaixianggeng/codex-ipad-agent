@@ -356,6 +356,7 @@ struct ConversationImagePreview: View {
     var showsCaption = true
     var fillsAvailableWidth = false
     var contentAlignment: Alignment = .leading
+    var contentSizedMaxWidth: CGFloat?
 
     init(
         source: ConversationImageSource,
@@ -365,7 +366,8 @@ struct ConversationImagePreview: View {
         maxHeight: CGFloat = 280,
         showsCaption: Bool = true,
         fillsAvailableWidth: Bool = false,
-        contentAlignment: Alignment = .leading
+        contentAlignment: Alignment = .leading,
+        contentSizedMaxWidth: CGFloat? = nil
     ) {
         self.source = source
         self.title = title
@@ -375,6 +377,7 @@ struct ConversationImagePreview: View {
         self.showsCaption = showsCaption
         self.fillsAvailableWidth = fillsAvailableWidth
         self.contentAlignment = contentAlignment
+        self.contentSizedMaxWidth = contentSizedMaxWidth
     }
 
     var body: some View {
@@ -393,7 +396,8 @@ struct ConversationImagePreview: View {
             maxHeight: maxHeight,
             showsCaption: showsCaption,
             fillsAvailableWidth: fillsAvailableWidth,
-            contentAlignment: contentAlignment
+            contentAlignment: contentAlignment,
+            contentSizedMaxWidth: contentSizedMaxWidth
         )
         // Profile 改变时重建媒体叶子状态，旧 Mac 的 UIImage/QuickLook URL 不会闪现在新 Mac。
         .id(identity)
@@ -418,6 +422,7 @@ private struct ConversationImagePreviewContent: View {
     var showsCaption = true
     var fillsAvailableWidth = false
     var contentAlignment: Alignment = .leading
+    var contentSizedMaxWidth: CGFloat?
 
     init(
         profileID: String,
@@ -428,7 +433,8 @@ private struct ConversationImagePreviewContent: View {
         maxHeight: CGFloat = 280,
         showsCaption: Bool = true,
         fillsAvailableWidth: Bool = false,
-        contentAlignment: Alignment = .leading
+        contentAlignment: Alignment = .leading,
+        contentSizedMaxWidth: CGFloat? = nil
     ) {
         self.profileID = profileID
         self.source = source
@@ -439,6 +445,7 @@ private struct ConversationImagePreviewContent: View {
         self.showsCaption = showsCaption
         self.fillsAvailableWidth = fillsAvailableWidth
         self.contentAlignment = contentAlignment
+        self.contentSizedMaxWidth = contentSizedMaxWidth
         _embeddedImage = State(
             initialValue: DataURLImageDecoder.cachedImage(
                 cacheKey: source.id,
@@ -475,7 +482,7 @@ private struct ConversationImagePreviewContent: View {
         switch source {
         case .dataURL:
             if let image = embeddedImage {
-                imageView(Image(uiImage: image))
+                imageView(Image(uiImage: image), sourceSize: image.size)
             } else if isLoadingLocalImage {
                 loadingPlaceholder
             } else {
@@ -561,7 +568,7 @@ private struct ConversationImagePreviewContent: View {
                 Button {
                     quickLookURL = localFileURL
                 } label: {
-                    imageView(Image(uiImage: localImage))
+                    imageView(Image(uiImage: localImage), sourceSize: localImage.size)
                 }
                 .buttonStyle(.plain)
                 .disabled(localFileURL == nil)
@@ -580,7 +587,7 @@ private struct ConversationImagePreviewContent: View {
                 Button {
                     quickLookURL = localFileURL
                 } label: {
-                    imageView(Image(uiImage: localImage))
+                    imageView(Image(uiImage: localImage), sourceSize: localImage.size)
                 }
                 .buttonStyle(.plain)
                 .disabled(localFileURL == nil)
@@ -601,17 +608,8 @@ private struct ConversationImagePreviewContent: View {
         }
     }
 
-    private func imageView(_ image: Image) -> some View {
-        image
-            .resizable()
-            .scaledToFit()
-            // 普通 Markdown 图片保持自然宽度；用户多图消息使用统一的中性画布，
-            // 避免不同宽高比让紫色消息底色露出一大块不对称空白。
-            .frame(
-                maxWidth: fillsAvailableWidth ? .infinity : nil,
-                maxHeight: maxHeight,
-                alignment: fillsAvailableWidth ? .center : contentAlignment
-            )
+    private func imageView(_ image: Image, sourceSize: CGSize? = nil) -> some View {
+        renderedImage(image, sourceSize: sourceSize)
             // 单图与多图统一成中性媒体卡：4pt 内边距把图像从描边内缩，
             // 白底截图不再顶死边框，圆角也能稳稳咬住内容，避免“图与框对不齐”。
             .padding(4)
@@ -625,6 +623,50 @@ private struct ConversationImagePreviewContent: View {
                     .strokeBorder(style.dividerColor, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func renderedImage(_ image: Image, sourceSize: CGSize?) -> some View {
+        if let fittedSize = contentSizedImageSize(for: sourceSize) {
+            // 单图必须先得到明确的渲染尺寸，再添加背景和描边。只用 scaledToFit 会让
+            // Image 的像素缩小、布局视图却继续占满父容器，最终留下整行灰色空白。
+            image
+                .resizable()
+                .scaledToFit()
+                .frame(width: fittedSize.width, height: fittedSize.height)
+        } else {
+            image
+                .resizable()
+                .scaledToFit()
+                // 普通 Markdown 图片保持原有布局；用户多图消息继续使用统一宽度画布。
+                .frame(
+                    maxWidth: fillsAvailableWidth ? .infinity : nil,
+                    maxHeight: maxHeight,
+                    alignment: fillsAvailableWidth ? .center : contentAlignment
+                )
+        }
+    }
+
+    private func contentSizedImageSize(for sourceSize: CGSize?) -> CGSize? {
+        guard let contentSizedMaxWidth,
+              let sourceSize,
+              sourceSize.width > 0,
+              sourceSize.height > 0
+        else {
+            return nil
+        }
+
+        // 8pt 是媒体卡左右各 4pt 的内边距；小图不放大，避免低清附件被无意义拉伸。
+        let maximumImageWidth = max(1, contentSizedMaxWidth - 8)
+        let scale = min(
+            1,
+            maximumImageWidth / sourceSize.width,
+            maxHeight / sourceSize.height
+        )
+        return CGSize(
+            width: sourceSize.width * scale,
+            height: sourceSize.height * scale
+        )
     }
 
     private var loadingPlaceholder: some View {
