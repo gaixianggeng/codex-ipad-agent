@@ -187,3 +187,131 @@ enum DataURLImageDecoder {
         return "\(identity.profileID.utf8.count):\(identity.profileID):\(kind):\(cacheKey):\(maxPixelSize)" as NSString
     }
 }
+
+/// HTTP(S) 对话图片加载器。先下载受控大小的数据，再通过 ImageIO 下采样成列表预览图，
+/// 从而既能拿到真实宽高用于内容尺寸布局，也不会把超大原图直接解码进会话列表。
+enum RemoteURLImageLoader {
+    private static let maximumDownloadBytes = 32 * 1_024 * 1_024
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 48 * 1_024 * 1_024
+        cache.countLimit = 32
+        return cache
+    }()
+
+    static func image(
+        from url: URL,
+        cacheKey: String,
+        profileID: String = "legacy",
+        maxPixelSize: Int,
+        session: URLSession = .shared
+    ) async -> UIImage? {
+        guard !Task.isCancelled else {
+            return nil
+        }
+        let boundedPixelSize = max(1, maxPixelSize)
+        let resolvedCacheKey = Self.resolvedCacheKey(
+            profileID: profileID,
+            cacheKey: cacheKey,
+            maxPixelSize: boundedPixelSize
+        )
+        if let cached = cache.object(forKey: resolvedCacheKey) {
+            return cached
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            request.cachePolicy = .useProtocolCachePolicy
+            let (data, response) = try await session.data(for: request)
+            guard !Task.isCancelled,
+                  let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  data.count <= maximumDownloadBytes
+            else {
+                return nil
+            }
+
+            let decodeTask = Task<UIImage?, Never>.detached(priority: .userInitiated) {
+                guard !Task.isCancelled,
+                      let source = CGImageSourceCreateWithData(data as CFData, nil)
+                else {
+                    return nil
+                }
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: boundedPixelSize,
+                    kCGImageSourceShouldCacheImmediately: true,
+                ]
+                guard !Task.isCancelled,
+                      let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+                else {
+                    return nil
+                }
+                let image = UIImage(cgImage: cgImage)
+                cache.setObject(
+                    image,
+                    forKey: resolvedCacheKey,
+                    cost: cgImage.bytesPerRow * cgImage.height
+                )
+                return image
+            }
+            return await withTaskCancellationHandler {
+                await decodeTask.value
+            } onCancel: {
+                decodeTask.cancel()
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    static func cachedImage(
+        cacheKey: String,
+        profileID: String = "legacy",
+        maxPixelSize: Int
+    ) -> UIImage? {
+        cache.object(
+            forKey: Self.resolvedCacheKey(
+                profileID: profileID,
+                cacheKey: cacheKey,
+                maxPixelSize: max(1, maxPixelSize)
+            )
+        )
+    }
+
+#if DEBUG
+    static func storeImageForTesting(
+        _ image: UIImage,
+        cacheKey: String,
+        profileID: String = "legacy",
+        maxPixelSize: Int
+    ) {
+        let pixelWidth = Int(image.size.width * image.scale)
+        let pixelHeight = Int(image.size.height * image.scale)
+        cache.setObject(
+            image,
+            forKey: Self.resolvedCacheKey(
+                profileID: profileID,
+                cacheKey: cacheKey,
+                maxPixelSize: max(1, maxPixelSize)
+            ),
+            cost: pixelWidth * pixelHeight * 4
+        )
+    }
+
+    static func removeAllCachedImagesForTesting() {
+        cache.removeAllObjects()
+    }
+#endif
+
+    private static func resolvedCacheKey(
+        profileID: String,
+        cacheKey: String,
+        maxPixelSize: Int
+    ) -> NSString {
+        let identity = MediaRequestIdentity(profileID: profileID, resourceID: cacheKey)
+        return "\(identity.profileID.utf8.count):\(identity.profileID):remote:\(cacheKey):\(maxPixelSize)" as NSString
+    }
+}

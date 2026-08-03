@@ -404,20 +404,32 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     private func makeSingleImageMessage(
         containerWidth: CGFloat,
         imageSize: CGSize,
-        accent: UIColor
+        accent: UIColor,
+        usesRemoteURL: Bool = false
     ) async -> some View {
         let appStore = makeSnapshotAppStore()
         let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
-        let imageURL = snapshotImageDataURL(size: imageSize, accent: accent)
+        let imageURL = usesRemoteURL
+            ? "https://example.com/snapshot-\(Int(imageSize.width))x\(Int(imageSize.height)).png"
+            : snapshotImageDataURL(size: imageSize, accent: accent)
         let imageSource = ConversationImageSource.markdown(imageURL)
-        // 生产视图会异步解码图片；快照预热同一缓存，确保只比较完成态布局。
-        _ = await DataURLImageDecoder.image(
-            from: imageURL,
-            cacheKey: imageSource.id,
-            profileID: appStore.notificationRoutingProfileID,
-            maxPixelSize: 1_600
-        )
+        // 生产视图会异步解码图片；快照预热对应来源的缓存，确保只比较完成态布局。
+        if usesRemoteURL {
+            RemoteURLImageLoader.storeImageForTesting(
+                snapshotImage(size: imageSize, accent: accent),
+                cacheKey: imageSource.id,
+                profileID: appStore.notificationRoutingProfileID,
+                maxPixelSize: 1_600
+            )
+        } else {
+            _ = await DataURLImageDecoder.image(
+                from: imageURL,
+                cacheKey: imageSource.id,
+                profileID: appStore.notificationRoutingProfileID,
+                maxPixelSize: 1_600
+            )
+        }
 
         let sessionStore = SessionStore(
             appStore: appStore,
@@ -883,6 +895,22 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 traits: UITraitCollection(displayScale: 2)
             ),
             named: "ipad-narrow-landscape"
+        )
+
+        let remoteView = await makeSingleImageMessage(
+            containerWidth: 390,
+            imageSize: CGSize(width: 240, height: 360),
+            accent: .systemTeal,
+            usesRemoteURL: true
+        )
+        assertSnapshot(
+            of: remoteView,
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 390, height: 390),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-390-remote-url"
         )
     }
 
@@ -1656,8 +1684,12 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     }
 
     private func snapshotImageDataURL(size: CGSize, accent: UIColor) -> String {
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { context in
+        let data = snapshotImage(size: size, accent: accent).pngData() ?? Data()
+        return "data:image/png;base64,\(data.base64EncodedString())"
+    }
+
+    private func snapshotImage(size: CGSize, accent: UIColor) -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { context in
             UIColor.systemBackground.setFill()
             context.fill(CGRect(origin: .zero, size: size))
             accent.withAlphaComponent(0.16).setFill()
@@ -1666,8 +1698,6 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             context.cgContext.setLineWidth(6)
             context.cgContext.stroke(CGRect(x: 24, y: 24, width: size.width - 48, height: size.height - 48))
         }
-        let data = image.pngData() ?? Data()
-        return "data:image/png;base64,\(data.base64EncodedString())"
     }
 
     /// 快照不能读取模拟器里真实配对过的 Mac；隔离偏好与 Keychain 后，composer 的默认状态才可复现。

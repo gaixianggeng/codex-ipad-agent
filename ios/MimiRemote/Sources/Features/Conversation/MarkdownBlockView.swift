@@ -446,13 +446,24 @@ private struct ConversationImagePreviewContent: View {
         self.fillsAvailableWidth = fillsAvailableWidth
         self.contentAlignment = contentAlignment
         self.contentSizedMaxWidth = contentSizedMaxWidth
-        _embeddedImage = State(
-            initialValue: DataURLImageDecoder.cachedImage(
+        let cachedImage: UIImage?
+        switch source {
+        case .dataURL:
+            cachedImage = DataURLImageDecoder.cachedImage(
                 cacheKey: source.id,
                 profileID: profileID,
                 maxPixelSize: 1_600
             )
-        )
+        case .remoteURL:
+            cachedImage = RemoteURLImageLoader.cachedImage(
+                cacheKey: source.id,
+                profileID: profileID,
+                maxPixelSize: 1_600
+            )
+        case .localPath, .historyMedia, .unsupported:
+            cachedImage = nil
+        }
+        _embeddedImage = State(initialValue: cachedImage)
     }
 
     var body: some View {
@@ -489,17 +500,12 @@ private struct ConversationImagePreviewContent: View {
                 fallback(L10n.text("ui.image_data_cannot_be_decoded"), detail: "data:image/...")
             }
         case .remoteURL(let url):
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .empty:
-                    loadingPlaceholder
-                case .success(let image):
-                    imageView(image)
-                case .failure:
-                    fallback(L10n.text("ui.image_loading_failed"), detail: url.absoluteString)
-                @unknown default:
-                    fallback(L10n.text("ui.image_loading_failed"), detail: url.absoluteString)
-                }
+            if let image = embeddedImage {
+                imageView(Image(uiImage: image), sourceSize: image.size)
+            } else if isLoadingLocalImage {
+                loadingPlaceholder
+            } else {
+                fallback(loadError ?? L10n.text("ui.image_loading_failed"), detail: url.absoluteString)
             }
         case .localPath(let path):
             localImageContent(path: path)
@@ -551,12 +557,45 @@ private struct ConversationImagePreviewContent: View {
             if image != nil {
                 HostSwitchSignpost.event("first_media_decoded")
             }
+        case .remoteURL(let url):
+            loadError = nil
+            if let cached = RemoteURLImageLoader.cachedImage(
+                cacheKey: expectedSourceID,
+                profileID: profileID,
+                maxPixelSize: 1_600
+            ) {
+                embeddedImage = cached
+                isLoadingLocalImage = false
+                return
+            }
+            embeddedImage = nil
+            isLoadingLocalImage = true
+            HostSwitchSignpost.event("first_media_request")
+            let image = await RemoteURLImageLoader.image(
+                from: url,
+                cacheKey: expectedSourceID,
+                profileID: profileID,
+                maxPixelSize: 1_600
+            )
+            guard !Task.isCancelled,
+                  source.id == expectedSourceID,
+                  sessionStore.mediaProfileScope == profileID
+            else {
+                return
+            }
+            embeddedImage = image
+            isLoadingLocalImage = false
+            if image != nil {
+                HostSwitchSignpost.event("first_media_decoded")
+            } else {
+                loadError = L10n.text("ui.image_loading_failed")
+            }
         case .historyMedia(let id):
             embeddedImage = nil
             isLoadingLocalImage = false
             // history-media 默认接口返回 1600px 内的派生图；只在图片进入可见区域时加载。
             await loadHistoryMedia(id: id)
-        case .remoteURL, .localPath, .unsupported:
+        case .localPath, .unsupported:
             embeddedImage = nil
             isLoadingLocalImage = false
         }
