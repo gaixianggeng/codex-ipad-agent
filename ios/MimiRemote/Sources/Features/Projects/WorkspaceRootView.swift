@@ -247,6 +247,9 @@ struct WorkspaceRootView: View {
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
     @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
+    /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
+    /// key 带 HostScope 和路径，避免跨 Mac 或目录身份迁移复用旧窗口。
+    @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
 
@@ -638,12 +641,28 @@ struct WorkspaceRootView: View {
 
     private func workspaceDetail(project: AgentProject) -> some View {
         let loadState = sessionLoadState(for: project.id)
+        let presentationKey = workspaceSessionPresentationKey(for: project)
+        let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
+        let loadedSessions = sessionStore.sessions(forProjectID: project.id)
         return WorkspaceDetailView(
-            // 工作区详情承担完整历史浏览，展示所有已加载页；项目侧栏才保留 5 条预览窗口。
-            recentSessions: sessionStore.sessions(forProjectID: project.id),
+            // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
+            // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
+            recentSessions: WorkspaceSessionPresentation.visibleSessions(
+                loadedSessions,
+                limit: visibleLimit
+            ),
             unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
-            canLoadMoreSessions: sessionStore.canLoadMoreSessions(projectID: project.id),
+            // fastIndexed 可能是欠填的旧索引；必须等 authoritative 完成后再揭示缓存行，
+            // 避免先闪半截列表再随权威补页逐批增长。
+            hasCompleteFirstPage: WorkspaceSessionPresentation.hasCompleteFirstPage(
+                consistency: sessionStore.workspaceSessionFirstPageConsistency(projectID: project.id)
+            ),
+            canLoadMoreSessions: WorkspaceSessionPresentation.canLoadMore(
+                loadedCount: loadedSessions.count,
+                visibleLimit: visibleLimit,
+                remoteHasMore: sessionStore.canLoadMoreSessions(projectID: project.id)
+            ),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
             currentDate: currentDate,
             onRefreshSessions: {
@@ -652,7 +671,7 @@ struct WorkspaceRootView: View {
                 }
             },
             onLoadMoreSessions: {
-                await sessionStore.loadMoreSessions(projectID: project.id)
+                await loadMoreWorkspaceSessions(project: project, presentationKey: presentationKey)
             },
             onStartSession: { runtimeChoice in
                 onStartSession(project, runtimeChoice)
@@ -720,7 +739,57 @@ struct WorkspaceRootView: View {
         guard selectedWorkspaceID != project.id else { return }
         sessionLoadStates.removeValue(forKey: project.id)
         sessionLoadInvocationTokens.remove(for: project.id)
+        workspaceSessionVisibleLimitByKey = workspaceSessionVisibleLimitByKey.filter {
+            $0.key.workspaceID != project.id
+        }
         sessionStore.forgetWorkspace(project)
+    }
+
+    private func workspaceSessionPresentationKey(for project: AgentProject) -> WorkspaceSessionPresentationKey {
+        WorkspaceSessionPresentationKey(
+            hostScope: appStore.activeHostScope,
+            workspaceID: project.id,
+            workspacePath: project.path
+        )
+    }
+
+    private func workspaceSessionVisibleLimit(for key: WorkspaceSessionPresentationKey) -> Int {
+        max(
+            SessionStore.initialSessionPageLimit,
+            workspaceSessionVisibleLimitByKey[key] ?? SessionStore.initialSessionPageLimit
+        )
+    }
+
+    private func loadMoreWorkspaceSessions(
+        project: AgentProject,
+        presentationKey: WorkspaceSessionPresentationKey
+    ) async {
+        let currentVisibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
+        let targetVisibleLimit = WorkspaceSessionPresentation.nextVisibleLimit(
+            current: currentVisibleLimit,
+            pageSize: SessionStore.expandedSessionPageLimit
+        )
+        let loadedCount = sessionStore.sessions(forProjectID: project.id).count
+        if WorkspaceSessionPresentation.shouldRequestRemotePage(
+            loadedCount: loadedCount,
+            targetVisibleLimit: targetVisibleLimit,
+            remoteHasMore: sessionStore.canLoadMoreSessions(projectID: project.id)
+        ) {
+            // canonical 缓冲不足以再展示完整一页时才触发网络；否则“显示更多”只展开本地预取结果。
+            await sessionStore.loadMoreSessions(projectID: project.id)
+        }
+
+        guard appStore.activeHostScope == presentationKey.hostScope,
+              let currentProject = sessionStore.sidebarProjects.first(where: { $0.id == project.id }),
+              currentProject.path == presentationKey.workspacePath
+        else {
+            return
+        }
+        workspaceSessionVisibleLimitByKey[presentationKey] = WorkspaceSessionPresentation.committedVisibleLimit(
+            current: currentVisibleLimit,
+            target: targetVisibleLimit,
+            loadedCount: sessionStore.sessions(forProjectID: project.id).count
+        )
     }
 
     private func refreshCatalog(forceGitSummary: Bool = false) async {
@@ -1466,6 +1535,7 @@ private struct WorkspaceDetailView: View {
     let recentSessions: [AgentSession]
     let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
+    let hasCompleteFirstPage: Bool
     let canLoadMoreSessions: Bool
     let claudeChannelAvailable: Bool
     let currentDate: () -> Date
@@ -1605,7 +1675,8 @@ private struct WorkspaceDetailView: View {
                 .accessibilityLabel(sessionLoadState.isLoading ? L10n.text("ui.loading_recent_conversations") : L10n.text("ui.refresh_recent_conversations"))
             }
 
-            if recentSessions.isEmpty, sessionLoadState.isLoading {
+            if sessionLoadState.isLoading, !hasCompleteFirstPage {
+                // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
                 recentSessionPlaceholders(tokens: tokens)
             } else if recentSessions.isEmpty, case .failed(let message) = sessionLoadState {
                 ContentUnavailableView {

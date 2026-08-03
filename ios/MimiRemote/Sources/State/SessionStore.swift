@@ -431,6 +431,12 @@ final class SessionStore: ObservableObject {
     /// presentation 补页保持顺序且有界：最小批量避免 child 密集时退化成逐条 RPC，页数上限防止异常 cursor 请求风暴。
     static let minimumSessionPresentationFillPageLimit = 5
     static let maximumSessionPresentationFillPageCount = 12
+    /// 顶层会话常被 sub-agent child 稀释：首包仍保持 20 条小窗口，确认欠填后才按已观察到的
+    /// root/raw 密度估算补页。3/2 是对密度波动的安全余量，避免估得过紧又多走一次远程 RTT。
+    static let sessionPresentationFillEstimateSafetyNumerator = 3
+    static let sessionPresentationFillEstimateSafetyDenominator = 2
+    /// agentd Gateway 的 thread/list 协议硬上限是 50；客户端必须在发请求前守住同一边界。
+    static let maximumSessionPresentationFillRawPageLimit = 50
     /// 单批达到页数上限时从已提交 cursor 续跑；每 4 批主动让出执行权并短暂退避，避免高密度历史长期独占链路。
     static let sessionPresentationFillBatchCountPerBurst = 4
     static let sessionPresentationFillBurstBackoffNanoseconds: UInt64 = 250_000_000

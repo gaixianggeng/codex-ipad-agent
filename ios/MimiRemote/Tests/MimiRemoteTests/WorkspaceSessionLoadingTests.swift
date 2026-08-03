@@ -169,7 +169,9 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), (0..<20).map { "root_\($0)" })
         XCTAssertTrue(children.allSatisfy { store.sessionsByID[$0.id]?.isSubagentThread == true })
         XCTAssertEqual(client.requestedSessionCursors, [nil, "after-child-dense-page"])
-        XCTAssertEqual(client.requestedSessionLimits, [20, 19])
+        // 首包保持 20；观察到 1/20 的 root 密度后，补页估算会封顶到 Gateway 允许的 50。
+        XCTAssertEqual(client.requestedSessionLimits, [20, 50])
+        XCTAssertTrue(client.requestedSessionLimits.compactMap { $0 }.allSatisfy { $0 <= 50 })
         XCTAssertEqual(client.requestedSessionListConsistencies, [.authoritative, .authoritative])
         XCTAssertEqual(store.workspaceSessionFirstPageConsistency(projectID: project.id), .authoritative)
         XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
@@ -585,7 +587,9 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(olderRoots.allSatisfy { store.sessionsByID[$0.id] != nil })
         XCTAssertTrue(hiddenChildren.allSatisfy { store.sessionsByID[$0.id]?.isSubagentThread == true })
         XCTAssertEqual(client.requestedSessionCursors, [nil, "children-only", "older-roots"])
+        // fastIndexed 不做超采样；即使 load-more 首包全是 child，也始终按剩余展示窗口请求 20。
         XCTAssertEqual(client.requestedSessionLimits, [20, 20, 20])
+        XCTAssertTrue(client.requestedSessionLimits.compactMap { $0 }.allSatisfy { $0 <= 50 })
         XCTAssertFalse(store.canLoadMoreSessions(projectID: project.id))
     }
 
