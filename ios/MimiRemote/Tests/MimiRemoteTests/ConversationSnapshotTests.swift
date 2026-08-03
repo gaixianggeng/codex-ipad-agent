@@ -401,6 +401,67 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             .frame(width: 1024, height: 900)
     }
 
+    private func makeSingleImageMessage(
+        containerWidth: CGFloat,
+        imageSize: CGSize,
+        accent: UIColor
+    ) async -> some View {
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let imageURL = snapshotImageDataURL(size: imageSize, accent: accent)
+        let imageSource = ConversationImageSource.markdown(imageURL)
+        // 生产视图会异步解码图片；快照预热同一缓存，确保只比较完成态布局。
+        _ = await DataURLImageDecoder.image(
+            from: imageURL,
+            cacheKey: imageSource.id,
+            profileID: appStore.notificationRoutingProfileID,
+            maxPixelSize: 1_600
+        )
+
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let message = ConversationMessage(
+            stableID: "snapshot-single-image-\(Int(containerWidth))-\(Int(imageSize.width))x\(Int(imageSize.height))",
+            role: .user,
+            content: "[图片]",
+            createdAt: snapshotMessageDate,
+            sendStatus: .confirmed,
+            turnPayload: CodexAppServerTurnPayload(input: [.image(url: imageURL)])
+        )
+        let horizontalSizeClass: UserInterfaceSizeClass = containerWidth < 560 ? .compact : .regular
+        let layout = ConversationLayout(
+            containerWidth: containerWidth,
+            horizontalSizeClass: horizontalSizeClass
+        )
+
+        return VStack(spacing: 0) {
+            MessageRow(
+                message: message,
+                themeVersion: themeStore.themeVersion,
+                layout: layout,
+                showsActiveDeliveryStatus: false,
+                showsCrossSessionOrigin: false,
+                skills: [],
+                retry: { _ in },
+                stop: {},
+                previewFile: { URL(fileURLWithPath: $0) }
+            )
+            .padding(layout.messageRowInsets)
+
+            Spacer(minLength: 0)
+        }
+        .environmentObject(sessionStore)
+        .environmentObject(conversationStore)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .background(themeStore.tokens(for: .light).background)
+        .frame(width: containerWidth, height: 390)
+    }
+
     private func makeUnavailableUserImageGallery() -> some View {
         let sessionID = "snapshot_unavailable_user_images"
         let appStore = makeSnapshotAppStore()
@@ -784,6 +845,44 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 1024, height: 900)
                 )
             )
+        )
+    }
+
+    func testSingleImageMediaCardAlignmentAcrossLayouts() async {
+        for (name, width) in [
+            ("iphone-390", CGFloat(390)),
+            ("ipad-narrow-700", CGFloat(700)),
+            ("ipad-wide-1024", CGFloat(1024))
+        ] {
+            let view = await makeSingleImageMessage(
+                containerWidth: width,
+                imageSize: CGSize(width: 240, height: 360),
+                accent: .systemOrange
+            )
+            assertSnapshot(
+                of: view,
+                as: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: width, height: 390),
+                    traits: UITraitCollection(displayScale: 2)
+                ),
+                named: name
+            )
+        }
+
+        let landscapeView = await makeSingleImageMessage(
+            containerWidth: 700,
+            imageSize: CGSize(width: 420, height: 210),
+            accent: .systemPurple
+        )
+        assertSnapshot(
+            of: landscapeView,
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 700, height: 390),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-narrow-landscape"
         )
     }
 

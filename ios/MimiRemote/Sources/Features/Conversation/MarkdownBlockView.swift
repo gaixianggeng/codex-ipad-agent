@@ -610,7 +610,7 @@ private struct ConversationImagePreviewContent: View {
             .frame(
                 maxWidth: fillsAvailableWidth ? .infinity : nil,
                 maxHeight: maxHeight,
-                alignment: fillsAvailableWidth ? .center : .leading
+                alignment: fillsAvailableWidth ? .center : contentAlignment
             )
             // 单图与多图统一成中性媒体卡：4pt 内边距把图像从描边内缩，
             // 白底截图不再顶死边框，圆角也能稳稳咬住内容，避免“图与框对不齐”。
