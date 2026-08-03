@@ -1735,15 +1735,18 @@ extension SessionStore {
                 throw CancellationError()
             }
 
-            // 不退化成 limit=1：child 密集时逐条 RPC 会放大远程链路延迟；小批量最多只让最终窗口轻微超出目标。
-            let remainingCount = max(
-                min(targetCount, Self.minimumSessionPresentationFillPageLimit),
-                targetCount - listableSessionIDs.count
+            let remainingListable = max(1, targetCount - listableSessionIDs.count)
+            let rawPageLimit = sessionPresentationFillRawPageLimit(
+                remainingListable: remainingListable,
+                observedRawCount: collectedSessions.count,
+                observedListableCount: listableSessionIDs.count,
+                fillsPresentationWindow: fillsPresentationWindow,
+                allowsAdaptiveOversampling: consistency == .authoritative
             )
             let page = try await client.sessionsPage(
                 workspace: workspace,
                 cursor: requestedCursor,
-                limit: remainingCount,
+                limit: rawPageLimit,
                 consistency: consistency
             )
             try Task.checkCancellation()
@@ -1815,6 +1818,39 @@ extension SessionStore {
             sessions: collectedSessions,
             nextCursor: hasMore ? lastPage.nextCursor : nil,
             hasMore: hasMore
+        )
+    }
+
+    /// 首次网络请求和 fastIndexed 路径保持调用方给定的小页；只有 authoritative 已经观察到
+    /// child 稀释且仍欠填时，才按累计密度估算下一批 raw rows。额外取回的 root 留在 canonical Store
+    /// 作为本地预取缓冲，工作区 View 仍用独立可见窗口原子展示 20 条。
+    func sessionPresentationFillRawPageLimit(
+        remainingListable: Int,
+        observedRawCount: Int,
+        observedListableCount: Int,
+        fillsPresentationWindow: Bool,
+        allowsAdaptiveOversampling: Bool
+    ) -> Int {
+        let remainingListable = max(1, remainingListable)
+        guard fillsPresentationWindow,
+              allowsAdaptiveOversampling,
+              observedRawCount > 0 else {
+            return min(remainingListable, Self.maximumSessionPresentationFillRawPageLimit)
+        }
+
+        // observedListableCount=0 时用 1 作为保守密度分母，结果会自然封顶 50，
+        // 不因 child-only 页除零，也不会把非法的 60 发送给 Gateway。
+        let estimatedRawCount = Int(ceil(
+            Double(remainingListable) * Double(max(1, observedRawCount))
+                / Double(max(1, observedListableCount))
+        ))
+        let estimateWithSafety = Int(ceil(
+            Double(estimatedRawCount) * Double(Self.sessionPresentationFillEstimateSafetyNumerator)
+                / Double(Self.sessionPresentationFillEstimateSafetyDenominator)
+        ))
+        return min(
+            Self.maximumSessionPresentationFillRawPageLimit,
+            max(Self.minimumSessionPresentationFillPageLimit, estimateWithSafety)
         )
     }
 
