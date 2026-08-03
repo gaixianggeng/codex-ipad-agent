@@ -7,6 +7,7 @@ import Foundation
 struct DebugLaunchConfiguration {
     let opensWorkbenchWithoutPairing: Bool
     let seedsWorkbenchUI: Bool
+    let seedsStoreScreenshotUI: Bool
     let seedsQueuedTurnsUI: Bool
     let seedsMCPApprovalUI: Bool
     let seedsHistoryUnreadUI: Bool
@@ -34,6 +35,8 @@ struct DebugLaunchConfiguration {
                 || seedsQueuedTurnsUI
                 || seedsMCPApprovalUI
                 || seedsHistoryUnreadUI,
+            seedsStoreScreenshotUI: arguments.contains("--debug-seed-store-ui")
+                || boolValue(environment["MIMI_DEBUG_SEED_STORE_UI"]),
             seedsQueuedTurnsUI: seedsQueuedTurnsUI,
             seedsMCPApprovalUI: seedsMCPApprovalUI,
             seedsHistoryUnreadUI: seedsHistoryUnreadUI,

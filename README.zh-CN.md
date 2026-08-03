@@ -31,11 +31,11 @@
 </p>
 
 <p align="center">
-  <img src="artifacts/app-screenshots/ipad-pro-devicehub-2026-07-27-workbench.png" alt="Mimi Remote 在实体 iPad Pro 上展示宽屏 Codex 工作台" width="100%" />
+  <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/workspace.png" alt="Mimi Remote 在 iPad 上的工作区" width="100%" />
 </p>
 
 <p align="center">
-  <sub>实体 iPad Pro、当前 Debug 构建、公开演示数据；不是重绘的概念图。</sub>
+  <sub>当前 Mimi Remote iPad 界面，基于实体设备截图与公开演示数据制作。</sub>
 </p>
 
 Mimi Remote 通过 Tailscale 或同一局域网直连用户自己的 Mac。项目不运营中转服务、云账号或会话托管服务，Mac 始终是控制平面；用户主动发送给 Codex、Claude Code、GitHub、语音转写或 MCP 的数据，仍会按对应第三方服务的处理方式与条款处理。
@@ -57,15 +57,15 @@ Mimi Remote 是独立开发的第三方项目，不隶属于 OpenAI、Anthropic 
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/iphone-devicehub-2026-07-27-conversation.png" alt="实体 iPhone 17 Pro 上的 Mimi Remote 会话" width="58%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/iphone/zh-Hans/conversation.png" alt="Mimi Remote 在 iPhone 上的会话" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-mini-devicehub-2026-07-27-queue.png" alt="实体 iPad mini 上的 Mimi Remote 待发送队列" width="72%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/sessions.png" alt="Mimi Remote 在 iPad 上的会话列表" width="72%" />
     </td>
   </tr>
 </table>
 
-三张图来自同一份当前源码，通过 Xcode Device Hub 在实体设备上采集。Debug 专用种子数据只使用 `/Users/demo`、占位凭证和公开演示文案，没有展示个人仓库、访问 Token、Endpoint 或 Tailnet 地址。完整说明见 [截图清单](artifacts/app-screenshots/manifest.md)。
+当前截图集覆盖工作区、会话、会话列表、含 Token 使用量的设置页和 Mac 连接页，提供 iPhone / iPad 与简体中文 / 英文两套版本。素材只使用 `/Users/demo`、占位凭证和公开演示文案，没有展示个人仓库、访问 Token、Endpoint 或 Tailnet 地址。完整说明见 [MIM-80 提交清单](artifacts/app-store/mim-80-submission/1.1/README.md)。
 
 ## 离开工位，不离开任务
 
@@ -96,20 +96,20 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>项目是一级对象</strong><br />
-      <sub>项目状态、快捷启动和最近会话组成一个连续工作区。</sub>
+      <strong>用量状态集中可见</strong><br />
+      <sub>Token 使用量、语言、外观与权限集中在清晰的设置界面中。</sub>
     </td>
     <td width="50%" align="center">
-      <strong>打开设置也不丢上下文</strong><br />
-      <sub>额度、连接、语言、外观和权限叠加在当前工作台上。</sub>
+      <strong>Mac 连接状态明确</strong><br />
+      <sub>开始远程工作前即可确认配对信息与宿主连接状态。</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-workspace.png" alt="iPad Pro 模拟器上的 Mimi Remote 项目工作区" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/settings.png" alt="Mimi Remote 在 iPad 上的设置与 Token 使用量" width="100%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-settings.png" alt="叠加在 iPad 当前工作台上的 Mimi Remote 设置面板" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/zh-Hans/mac-connection.png" alt="Mimi Remote 在 iPad 上的 Mac 连接设置" width="100%" />
     </td>
   </tr>
 </table>
@@ -129,7 +129,7 @@ Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面�
 - **先看状态，再做动作：**连接健康度、Runtime 就绪状态、剩余额度和权限模式会先于可能改变或中断任务的控制项出现。
 - **遵循各平台习惯：**iPhone 是紧凑触屏层级，iPad 是多栏工作台，Mac 是高密度菜单栏工具，而不是把一套布局拉伸到三块屏幕。
 
-两张 iPad 细节图来自当前 Debug 构建和复用的 iPad Pro 模拟器；Mac 图来自同一份源码的 Debug 专用种子界面，并使用公开演示域名 `mimi-demo.local`。采集过程没有重启或替换已安装的 Mac 服务。完整记录见 [截图清单](artifacts/app-screenshots/manifest.md)。
+两张 iPad 细节图来自当前 MIM-80 实体设备截图集；Mac 菜单图来自同一份源码的 Debug 专用种子界面，并使用公开演示域名 `mimi-demo.local`。采集过程没有重启或替换已安装的 Mac 服务。完整记录见 [MIM-80 提交清单](artifacts/app-store/mim-80-submission/1.1/README.md)。
 
 ## 架构
 
