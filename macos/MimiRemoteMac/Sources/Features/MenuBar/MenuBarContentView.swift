@@ -59,7 +59,7 @@ struct MenuBarContentView: View {
 
             if needsPrimaryAction {
                 Button {
-                    presentWindow(.dashboard)
+                    performPrimaryAction()
                 } label: {
                     Label(primaryActionTitle, systemImage: primaryActionSymbol)
                         .fontWeight(.semibold)
@@ -67,6 +67,7 @@ struct MenuBarContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .disabled(store.isBusy)
                 .padding(.top, 10)
             }
 
@@ -154,6 +155,17 @@ struct MenuBarContentView: View {
         Task { await store.refresh() }
     }
 
+    private func performPrimaryAction() {
+        switch store.lifecycle {
+        case .notConfigured, .migrationRequired:
+            presentWindow(.dashboard)
+        case .degraded, .stopped, .failed:
+            Task { await store.repairAndStartService() }
+        case .loading, .starting, .ready:
+            break
+        }
+    }
+
     private func presentWindow(_ window: AppWindow) {
         openWindow(id: window.rawValue)
         activateApplication()
@@ -186,15 +198,38 @@ struct MenuBarContentView: View {
     }
 
     private var needsPrimaryAction: Bool {
-        store.lifecycle == .notConfigured || store.lifecycle == .migrationRequired
+        switch store.lifecycle {
+        case .notConfigured, .migrationRequired, .degraded, .stopped, .failed:
+            true
+        case .loading, .starting, .ready:
+            false
+        }
     }
 
     private var primaryActionTitle: String {
-        store.lifecycle == .notConfigured ? "完成首次设置…" : "迁移到 Mimi Remote Mac…"
+        switch store.lifecycle {
+        case .notConfigured:
+            "完成首次设置…"
+        case .migrationRequired:
+            "迁移到 Mimi Remote Mac…"
+        case .degraded, .stopped, .failed:
+            "修复并启动服务"
+        case .loading, .starting, .ready:
+            ""
+        }
     }
 
     private var primaryActionSymbol: String {
-        store.lifecycle == .notConfigured ? "slider.horizontal.3" : "arrow.triangle.2.circlepath"
+        switch store.lifecycle {
+        case .notConfigured:
+            "slider.horizontal.3"
+        case .migrationRequired:
+            "arrow.triangle.2.circlepath"
+        case .degraded, .stopped, .failed:
+            "wrench.and.screwdriver"
+        case .loading, .starting, .ready:
+            ""
+        }
     }
 }
 

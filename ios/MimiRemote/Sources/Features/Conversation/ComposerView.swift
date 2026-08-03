@@ -21,6 +21,7 @@ struct ComposerView: View {
     @EnvironmentObject var themeStore: ThemeStore
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @State var composerState = ComposerState()
@@ -1658,13 +1659,20 @@ struct ComposerView: View {
             )
             .environmentObject(themeStore)
             .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
-            // Picker 自身按实际模型行数提供 184/236/288pt 的标准内容高度；
-            // iOS 26 的 fitted presentation 直接贴合该高度，Claude 不会再继承
-            // Codex 三行 + 快速按钮的固定空白。
-            .presentationSizing(.fitted)
+            // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
+            // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
+            // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
+            .presentationDetents(modelPickerPresentationDetents)
             .presentationDragIndicator(.visible)
             .presentationBackground(themeStore.tokens(for: colorScheme).surface)
         }
+    }
+
+    var modelPickerPresentationDetents: Set<PresentationDetent> {
+        if dynamicTypeSize.isAccessibilitySize {
+            return [.large]
+        }
+        return [.height(modelReasoningGridLayout.standardContentHeight)]
     }
 
     var effectiveModelID: String? {

@@ -174,6 +174,12 @@ struct WorkspaceCatalogRefreshScope: Equatable {
     let credentialsSuspended: Bool
 }
 
+struct WorkspaceSessionRefreshScope: Equatable {
+    let hostScope: HostScope
+    let workspaceID: String?
+    let needsAuthoritativeFirstPage: Bool
+}
+
 /// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
 struct WorkspaceCatalogLoadCoordinator {
     private(set) var state: WorkspaceCatalogLoadState = .idle
@@ -272,6 +278,13 @@ struct WorkspaceRootView: View {
             hostScope: appStore.activeHostScope,
             credentialsSuspended: appStore.isCredentialMemorySuspended
         )
+        let sessionRefreshScope = WorkspaceSessionRefreshScope(
+            hostScope: appStore.activeHostScope,
+            workspaceID: selectedWorkspaceID,
+            needsAuthoritativeFirstPage: selectedWorkspaceID.map {
+                sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: $0)
+            } ?? false
+        )
 
         Group {
             if embedsNavigationStack {
@@ -306,18 +319,18 @@ struct WorkspaceRootView: View {
             // 决定按钮何时才出现在布局里。
             await sessionStore.refreshAppServerModelOptions()
         }
-        .task(id: selectedWorkspaceID) {
-            guard let selectedWorkspaceID else { return }
-            // 首次进入或切换工作区时，如果本地还没有数据就主动补齐会话首屏。
-            // 已有内容时保留即时展示，用户仍可通过刷新按钮或下拉手动同步。
-            guard sessionStore.sessions(forProjectID: selectedWorkspaceID).isEmpty else {
-                // 缓存命中也是更新后的 View invocation；先让旧 waiter 失去回写资格，
-                // 避免它随后用取消或失败状态盖掉当前已展示的内容。
+        .task(id: sessionRefreshScope) {
+            guard let selectedWorkspaceID = sessionRefreshScope.workspaceID else { return }
+            // 稀疏缓存继续即时展示；只有 Store 记录了当前 HostScope 的 authoritative 首屏才可跳过请求。
+            guard sessionRefreshScope.needsAuthoritativeFirstPage else {
                 sessionLoadInvocationTokens.begin(for: selectedWorkspaceID)
                 sessionLoadStates[selectedWorkspaceID] = .loaded
                 return
             }
-            await refreshWorkspaceSessions(projectID: selectedWorkspaceID)
+            await refreshWorkspaceSessions(
+                projectID: selectedWorkspaceID,
+                onlyIfAuthoritativeFirstPageIsNeeded: true
+            )
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeSelection()
@@ -754,13 +767,23 @@ struct WorkspaceRootView: View {
         await refreshWorkspaceSessions(projectID: projectID)
     }
 
-    private func refreshWorkspaceSessions(projectID: String) async {
+    private func refreshWorkspaceSessions(
+        projectID: String,
+        onlyIfAuthoritativeFirstPageIsNeeded: Bool = false
+    ) async {
         // `.loading` 只是 View 展示状态，不能证明仍有未取消的 waiter。每次调用都重新加入
         // SessionStore 的共享请求，并用 invocation token 阻止旧调用覆盖新状态。
         let invocationID = sessionLoadInvocationTokens.begin(for: projectID)
         sessionLoadStates[projectID] = .loading
         do {
-            try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
+            if onlyIfAuthoritativeFirstPageIsNeeded
+                || sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) {
+                // 手动刷新若接手到前一轮 partial，也必须沿保存 cursor 完成整条权威窗口；
+                // 已完成窗口仍走下面的普通单次刷新，保留“主动拉最新”的语义。
+                try await sessionStore.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: projectID)
+            } else {
+                try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
+            }
             guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
                 return
             }

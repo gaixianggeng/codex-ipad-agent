@@ -103,8 +103,10 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(codexOneRow.efforts.last, .ultra)
         XCTAssertEqual(claudeTwoRows.efforts.last, .max)
 
-        // 112pt 角区刚好容纳“全部模型 / 快速”两个 44pt 高控件，
+        // 112pt 角区刚好容纳“全部模型 / 快速模式图标”两个 44pt 触控区，
         // 同时保证最窄 320pt 容器中的四个推理列仍各有 44pt 宽。
+        XCTAssertEqual(ModelReasoningGridMetrics.fastModeHitTarget, 44)
+        XCTAssertEqual(ModelReasoningGridMetrics.fastModeVisualDiameter, 36)
         let narrowGridWidth = 320
             - ModelReasoningGridMetrics.contentPadding * 2
             - ModelReasoningGridMetrics.modelLabelWidth
@@ -232,6 +234,39 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .padding(32)
         .frame(width: 440, height: 430, alignment: .top)
         .background(themeStore.tokens(for: .light).background)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 440, height: 430))
+        )
+    }
+
+    func testCompactModelGridDarkFastModeOn() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
+        let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = .dark
+
+        let view = ModelReasoningGridPicker(
+            options: CodexAppServerModelOption.builtInFallback,
+            layout: ModelReasoningGridCatalog.layout(
+                runtimeProvider: "codex",
+                options: CodexAppServerModelOption.builtInFallback
+            ),
+            selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
+            selectedModelID: "gpt-5.6-sol",
+            isRefreshing: false,
+            isFastMode: true,
+            onSelectModel: { _, _ in },
+            onSelectDefaultModel: { _, _ in },
+            onFastModeChange: { _ in },
+            onRefresh: {}
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .padding(32)
+        .frame(width: 440, height: 430, alignment: .top)
+        .background(themeStore.tokens(for: .dark).background)
 
         assertSnapshot(
             of: view,

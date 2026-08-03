@@ -90,7 +90,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
     let source: String
     let runtimeProvider: String?
     let resumeID: String?
-    let createdAt: Date?
+    var createdAt: Date?
     var updatedAt: Date?
     var recencyAt: Date?
     var preview: String?
@@ -104,6 +104,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var goal: ThreadGoal?
     var appServerSessionID: String?
     var parentThreadID: String?
+    /// `parentThreadID` 缺失时仍可能是 source-only 子 Agent；nil 表示旧协议未提供身份结论。
+    var isSubagent: Bool?
     var agentNickname: String?
     var agentRole: String?
     var canAcceptDirectInput: Bool?
@@ -134,7 +136,16 @@ struct AgentSession: Identifiable, Codable, Hashable {
     /// 旧 App Server 的普通顶层 thread 没有 capability 字段，继续沿用既有可写行为；
     /// 子会话缺字段则 fail-closed，避免把协议未知误当成可直接输入。
     var allowsDirectInput: Bool {
-        canAcceptDirectInput ?? (parentThreadID == nil)
+        canAcceptDirectInput ?? !isSubagentThread
+    }
+
+    /// 父子关系或明确的 subAgent source 任一成立，都按结构子任务处理。
+    /// `forkedFromId` 不进入模型，普通 fork 因此不会被误判为子 Agent。
+    var isSubagentThread: Bool {
+        parentThreadID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || context?.parentThreadID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || isSubagent == true
+            || context?.isSubagent == true
     }
 
     var displayStatusText: String {
@@ -165,6 +176,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         goal: ThreadGoal? = nil,
         appServerSessionID: String? = nil,
         parentThreadID: String? = nil,
+        isSubagent: Bool? = nil,
         agentNickname: String? = nil,
         agentRole: String? = nil,
         canAcceptDirectInput: Bool? = nil,
@@ -180,7 +192,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         let normalizedRuntimeProvider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.runtimeProvider = normalizedRuntimeProvider?.isEmpty == false ? normalizedRuntimeProvider : nil
         self.resumeID = resumeID
-        self.createdAt = createdAt
+        self.createdAt = createdAt ?? context?.createdAt
         self.updatedAt = updatedAt
         self.recencyAt = recencyAt
         self.preview = preview
@@ -195,7 +207,18 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.pendingUserInput = status == "waiting_for_input" ? pendingUserInput : nil
         self.goal = goal ?? context?.goal
         self.appServerSessionID = appServerSessionID
-        self.parentThreadID = parentThreadID
+        let normalizedParentThreadID = parentThreadID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedContextParentThreadID = context?.parentThreadID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.parentThreadID = normalizedParentThreadID?.isEmpty == false
+            ? normalizedParentThreadID
+            : (normalizedContextParentThreadID?.isEmpty == false ? normalizedContextParentThreadID : nil)
+        if isSubagent == true || context?.isSubagent == true || self.parentThreadID != nil {
+            self.isSubagent = true
+        } else {
+            self.isSubagent = isSubagent ?? context?.isSubagent
+        }
         self.agentNickname = agentNickname
         self.agentRole = agentRole
         self.canAcceptDirectInput = canAcceptDirectInput
@@ -254,6 +277,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case goal
         case appServerSessionID = "app_server_session_id"
         case parentThreadID = "parent_thread_id"
+        case isSubagent = "is_subagent"
         case agentNickname = "agent_nickname"
         case agentRole = "agent_role"
         case canAcceptDirectInput = "can_accept_direct_input"

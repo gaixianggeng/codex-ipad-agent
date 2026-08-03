@@ -777,7 +777,8 @@ private struct WorkspaceIconStyleOptionLabel: View {
                     )
                 )
                 .foregroundStyle(isSelected ? tokens.primaryAction : tokens.primaryText)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                // 完整英文作品名需要两行空间；短标题仍自然保持单行。
+                .lineLimit(2)
                 .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.72)
                 .allowsTightening(true)
                 .multilineTextAlignment(.center)

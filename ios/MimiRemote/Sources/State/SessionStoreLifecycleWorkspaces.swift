@@ -44,15 +44,39 @@ extension SessionStore {
               !snapshot.session.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let workspace = ensureWorkspaceForKnownProjectID(snapshot.session.projectID)
         else { return nil }
+        let hostScope = appStore.activeHostScope
 
         // 先让 runtime 从真实 thread/list 建立 session→provider 路由；旧会话不在首屏时再使用本地轻量快照。
         do {
-            let page = try await sessionListFirstPage(workspace: workspace, limit: Self.initialSessionPageLimit, reuseRecent: true)
-            mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
+            let result = try await sessionListFirstPage(
+                workspace: workspace,
+                limit: Self.initialSessionPageLimit,
+                reuseRecent: true,
+                source: .restore
+            )
+            let page = result.page
+            guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else { return nil }
+            mergeFastIndexedSessionPagePreservingAuthoritativeFields(
+                sessions(page.sessions, in: workspace),
+                workspace: workspace
+            )
+            updateWorkspaceSessionFirstPageState(
+                workspace: workspace,
+                page: page,
+                consistency: .fastIndexed
+            )
+            recordWorkspaceSessionFirstPageCompletion(
+                workspace: workspace,
+                page: page,
+                consistency: .fastIndexed
+            )
         } catch {
             // 恢复快照仍须经过工作区授权校验；单次列表失败不应让用户丢掉上次阅读位置。
         }
+
+        // 失败时允许用本地快照兜底，但前提仍是原 HostScope 和工作区身份有效。
+        // forget / ID 迁移 / 切换 Mac 期间的旧快照不能把已经移除的会话复活。
+        guard isCurrentWorkspaceIdentity(workspace, hostScope: hostScope) else { return nil }
 
         let restored = sessionsByID[snapshot.session.id] ?? session(snapshot.session, in: workspace)
         guard restored.projectID == workspace.id else { return nil }
@@ -493,6 +517,18 @@ extension SessionStore {
             sessionProjectsWithAdditionalPages.formIntersection(validProjectIDs)
             sessionPageRequestTokenByProjectID = sessionPageRequestTokenByProjectID.filter { validProjectIDs.contains($0.key) }
             sessionPageLoadingTokenByProjectID = sessionPageLoadingTokenByProjectID.filter { validProjectIDs.contains($0.key) }
+            sessionFirstPageLoadingConsistencyByProjectID = sessionFirstPageLoadingConsistencyByProjectID.filter {
+                validProjectIDs.contains($0.key)
+            }
+            sessionFirstPageWaiterCountByProjectID = sessionFirstPageWaiterCountByProjectID.filter {
+                validProjectIDs.contains($0.key)
+            }
+            let validWorkspaceCompletions = workspaceSessionFirstPageCompletionByKey.filter {
+                validProjectIDs.contains($0.key.workspaceID)
+            }
+            if validWorkspaceCompletions != workspaceSessionFirstPageCompletionByKey {
+                workspaceSessionFirstPageCompletionByKey = validWorkspaceCompletions
+            }
             rebuildProjectSessionListSnapshots()
             let projectID = requestedProjectID.flatMap { id in
                 sidebarProjectsByID[id] == nil ? nil : id
@@ -531,8 +567,12 @@ extension SessionStore {
             }
 
             requestProjectID = projectID
-            requestToken = beginSessionPageRequest(projectID: projectID)
-            defer { finishSessionPageRequest(projectID: projectID, token: requestToken ?? 0) }
+            let consistency: SessionListConsistency = autoAttach ? .fastIndexed : .authoritative
+            requestToken = beginSessionFirstPageRequest(
+                projectID: projectID,
+                consistency: consistency
+            )
+            defer { finishSessionFirstPageRequest(projectID: projectID, token: requestToken ?? 0) }
             guard let workspace = workspacesByID[projectID] else {
                 if isSelectionLeaseCurrent(foregroundLease) {
                     _ = commitSelection(
@@ -550,22 +590,26 @@ extension SessionStore {
             // refreshAll 也必须进入首屏列表 single-flight。否则它与前台轮询或手动刷新重叠时，
             // 会向 gateway 发出两个相同 thread/list，后发请求被保护策略拒绝为 -32080。
             // reuseRecent=false 只绕过短缓存，不绕过正在执行的共享请求，仍保持全量刷新的语义。
-            let page = try await sessionListFirstPage(
+            let result = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: false,
-                consistency: autoAttach ? .fastIndexed : .authoritative
+                consistency: consistency,
+                source: .bootstrap
             )
+            let page = result.page
             guard connectionGeneration == appStore.connectionGeneration else {
                 return
             }
             guard isCurrentSessionPageRequest(projectID: projectID, token: requestToken ?? 0) else {
                 return
             }
-            let pageSessions = sessions(page.sessions, in: workspace)
-            replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
-            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
-            clearWorkspaceUnavailable(projectID)
+            applyWorkspaceSessionFirstPage(
+                workspace: workspace,
+                page: page,
+                consistency: consistency,
+                requestedCursor: result.requestedCursor
+            )
 
             if isSelectionLeaseCurrent(foregroundLease),
                let selectedSessionID = foregroundLease.sessionID,
@@ -665,6 +709,49 @@ extension SessionStore {
         applyRecentWorkspaceReconciliation(reconciliation)
     }
 
+    /// 只在当前 HostScope 尚未完成精确首屏时触发；多个 View waiter 继续复用 Store 现有 single-flight。
+    func ensureAuthoritativeWorkspaceSessionFirstPage(projectID: String) async throws {
+        guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
+            return
+        }
+
+        var seenContinuationCursors = Set<String>()
+        var completedBatchCount = 0
+        while true {
+            try Task.checkCancellation()
+            guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
+                throw WorkspaceSessionRefreshError.workspaceUnavailable
+            }
+            let startingCursor = authoritativeWorkspaceSessionFirstPageContinuationCursor(
+                workspace: workspace
+            )
+            if let startingCursor,
+               !seenContinuationCursors.insert(startingCursor).inserted {
+                // 跨批 cursor 环同样是不可信响应；不能靠下一轮继续制造请求风暴。
+                throw AgentAPIError.invalidResponse
+            }
+
+            try await refreshWorkspaceSessions(projectID: projectID)
+            guard needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) else {
+                return
+            }
+            guard let nextCursor = authoritativeWorkspaceSessionFirstPageContinuationCursor(
+                workspace: workspace
+            ), nextCursor != startingCursor else {
+                // 请求被更新 token 取代或服务端未推进时，当前 waiter 退出；新的 owner/后续手动刷新接管。
+                throw CancellationError()
+            }
+            completedBatchCount += 1
+            if completedBatchCount.isMultiple(of: Self.sessionPresentationFillBatchCountPerBurst) {
+                // 每个 burst 的 RPC 数仍有硬上界；cursor 链整体按顺序 eventual 完成，
+                // 不把 “>12 页卡住” 推迟成另一个固定页数阈值。
+                await sessionListSleep(Self.sessionPresentationFillBurstBackoffNanoseconds)
+            }
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+    }
+
     /// 刷新工作区页正在浏览的会话，但不改变全局会话选择或 WebSocket。
     /// 工作区页有自己的本地浏览选择，不能复用 selectProject，否则刷新另一个目录会打断当前任务。
     func refreshWorkspaceSessions(projectID: String) async throws {
@@ -682,33 +769,34 @@ extension SessionStore {
             try Task.checkCancellation()
         }
 
-        let requestToken = beginSessionPageRequest(projectID: workspace.id)
-        defer { finishSessionPageRequest(projectID: workspace.id, token: requestToken) }
+        let requestToken = beginSessionFirstPageRequest(
+            projectID: workspace.id,
+            consistency: .authoritative
+        )
+        defer { finishSessionFirstPageRequest(projectID: workspace.id, token: requestToken) }
 
         do {
-            let page = try await sessionListFirstPage(
+            let result = try await sessionListFirstPage(
                 workspace: workspace,
                 limit: Self.initialSessionPageLimit,
                 reuseRecent: false,
                 // 用户明确点刷新时绕过可能滞后的 State DB 索引；后台轮询仍保留快速路径。
-                consistency: .authoritative
+                consistency: .authoritative,
+                source: .workspaceForeground
             )
+            let page = result.page
             guard isCurrentSessionPageRequest(projectID: workspace.id, token: requestToken) else {
                 return
             }
 
-            let pageSessions = sessions(page.sessions, in: workspace)
-            replaceSessionsIfChanged(
+            applyWorkspaceSessionFirstPage(
+                workspace: workspace,
+                page: page,
+                consistency: .authoritative,
+                requestedCursor: result.requestedCursor,
                 // 工作区页下拉刷新首屏时，保留用户已经翻到的旧页，避免列表突然收缩回 20 条。
-                with: pageSessionsPreservingLoadedWindow(
-                    pageSessions,
-                    projectID: workspace.id,
-                    preserveAllLoaded: sessionProjectsWithAdditionalPages.contains(workspace.id)
-                ),
-                projectID: workspace.id
+                preserveAllLoaded: sessionProjectsWithAdditionalPages.contains(workspace.id)
             )
-            updateSessionPageState(projectID: workspace.id, page: page, requestedCursor: nil)
-            clearWorkspaceUnavailable(workspace.id)
         } catch {
             _ = terminateConnectionIfCredentialsInvalid(error)
             throw error

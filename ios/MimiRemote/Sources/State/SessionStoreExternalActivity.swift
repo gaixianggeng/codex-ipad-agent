@@ -382,17 +382,39 @@ extension SessionStore {
             return
         }
         do {
-            let page = try await client.sessionsPage(
+            // 外部活动补拉也必须加入首屏 single-flight；否则它与工作区前台刷新重叠时，
+            // 会并发启动两条 cursor 链并触发 gateway 的并发保护。
+            let result = try await sessionListFirstPage(
                 workspace: workspace,
-                cursor: nil,
                 limit: Self.initialSessionPageLimit,
-                consistency: .authoritative
+                reuseRecent: false,
+                consistency: .authoritative,
+                source: .externalActivity,
+                client: client,
+                hostScope: hostScope
             )
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else {
+            let page = result.page
+            guard appStore.activeHostScope == hostScope,
+                  !Task.isCancelled,
+                  isCurrentWorkspaceIdentity(workspace, hostScope: hostScope),
+                  authoritativeWorkspaceSessionFirstPageContinuationCursor(
+                    workspace: workspace,
+                    hostScope: hostScope
+                  ) == result.requestedCursor else {
                 return
             }
             mergeSessionPage(sessions(page.sessions, in: workspace))
-            updateSessionPageState(projectID: projectID, page: page, requestedCursor: nil)
+            updateWorkspaceSessionFirstPageState(
+                workspace: workspace,
+                page: page,
+                consistency: .authoritative,
+                requestedCursor: result.requestedCursor
+            )
+            recordWorkspaceSessionFirstPageCompletion(
+                workspace: workspace,
+                page: page,
+                consistency: .authoritative
+            )
             clearWorkspaceUnavailable(projectID)
         } catch {
             // 活动 API 已给出可靠运行态；列表补拉失败时保留已有行，下一次轮询继续重试未知线程。

@@ -534,6 +534,7 @@ extension CodexAppServerSessionRuntime {
             ?? rateLimitSummary(fromSnapshot: thread["rate_limit"]?.objectValue)
             ?? cached?.rateLimit
             ?? accountRateLimit
+        let ownership = threadOwnership(from: thread, cached: cached)
         let context = sessionContext(
             from: thread,
             sessionID: id,
@@ -541,7 +542,10 @@ extension CodexAppServerSessionRuntime {
             status: effectiveStatus,
             statusValue: forceRunning ? nil : thread["status"],
             project: project ?? fallbackProject,
-            goal: goal
+            goal: goal,
+            createdAt: ownership.createdAt,
+            parentThreadID: ownership.parentThreadID,
+            isSubagent: ownership.isSubagent
         )
         return AgentSession(
             id: id,
@@ -553,7 +557,7 @@ extension CodexAppServerSessionRuntime {
             source: runtimeProvider,
             runtimeProvider: runtimeProvider,
             resumeID: id,
-            createdAt: date(from: thread["createdAt"]),
+            createdAt: ownership.createdAt,
             updatedAt: date(from: thread["updatedAt"]),
             recencyAt: date(from: thread["recencyAt"]),
             preview: preview,
@@ -564,30 +568,13 @@ extension CodexAppServerSessionRuntime {
             rateLimit: rateLimit,
             goal: goal,
             appServerSessionID: nonEmpty(thread["sessionId"]?.stringValue),
-            parentThreadID: nonEmpty(thread["parentThreadId"]?.stringValue),
+            parentThreadID: ownership.parentThreadID,
+            isSubagent: ownership.isSubagent,
             agentNickname: nonEmpty(thread["agentNickname"]?.stringValue),
             agentRole: nonEmpty(thread["agentRole"]?.stringValue),
             canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
             context: context
         )
-    }
-
-    func gatewayAnnotatedProject(
-        from thread: [String: CodexAppServerJSONValue],
-        projects: [AgentProject]
-    ) -> AgentProject? {
-        guard let annotation = thread["mimiRemote"]?.objectValue,
-              annotation["discovery"]?.stringValue == "global",
-              let projectID = nonEmpty(annotation["projectId"]?.stringValue),
-              let projectPath = nonEmpty(annotation["projectPath"]?.stringValue)
-        else {
-            return nil
-        }
-        // agentd 已做 repo identity 裁剪；iOS 再与当前 config.projects 交叉验证，
-        // 避免陈旧连接或协议混用把会话投影到不存在的项目。
-        return projects.first {
-            $0.id == projectID && $0.path == projectPath
-        }
     }
 
     func sessionContext(
@@ -597,12 +584,18 @@ extension CodexAppServerSessionRuntime {
         status: String,
         statusValue: CodexAppServerJSONValue?,
         project: AgentProject?,
-        goal: ThreadGoal?
+        goal: ThreadGoal?,
+        createdAt: Date?,
+        parentThreadID: String?,
+        isSubagent: Bool?
     ) -> SessionContextSnapshot {
         let threadID = thread["id"]?.stringValue ?? sessionID
         return SessionContextSnapshot(
             sessionID: sessionID,
             threadID: threadID,
+            createdAt: createdAt,
+            parentThreadID: parentThreadID,
+            isSubagent: isSubagent,
             status: contextStatus(from: statusValue, fallbackStatus: status),
             environment: SessionContextEnvironment(
                 id: "local",
@@ -986,10 +979,16 @@ extension CodexAppServerSessionRuntime {
         if let label = sourceLabel(from: thread["source"]) {
             sources.append(SessionContextSource(id: "session_source", kind: "session", label: label, subtitle: L10n.text("ui.original_source")))
         }
-        if let threadSource = nonEmpty(thread["threadSource"]?.stringValue) {
+        if let threadSource = nonEmpty(
+            thread["threadSource"]?.stringValue,
+            thread["thread_source"]?.stringValue
+        ) {
             sources.append(SessionContextSource(id: "thread_source", kind: "thread", label: threadSource, subtitle: L10n.text("ui.thread_source")))
         }
-        if let forkedFrom = nonEmpty(thread["forkedFromId"]?.stringValue) {
+        if let forkedFrom = nonEmpty(
+            thread["forkedFromId"]?.stringValue,
+            thread["forked_from_id"]?.stringValue
+        ) {
             sources.append(SessionContextSource(id: "forked_from", kind: "fork", label: String(forkedFrom.prefix(32)), subtitle: L10n.text("ui.fork_source")))
         }
         if sources.isEmpty, let project {
@@ -1008,8 +1007,13 @@ extension CodexAppServerSessionRuntime {
         if let custom = nonEmpty(object["custom"]?.stringValue) {
             return custom
         }
-        if let subAgent = nonEmpty(object["subAgent"]?.stringValue) {
-            return "subAgent \(subAgent)"
+        if let entry = object.first(where: { $0.key.lowercased() == "subagent" }) {
+            if let subAgent = nonEmpty(entry.value.stringValue) {
+                return "subAgent \(subAgent)"
+            }
+            if entry.value.objectValue != nil || entry.value.boolValue == true {
+                return "subAgent"
+            }
         }
         return nil
     }
@@ -1020,7 +1024,10 @@ extension CodexAppServerSessionRuntime {
     ) -> [SessionContextSubagent] {
         var subagents: [SessionContextSubagent] = []
         var seenThreadIDs = Set<String>()
-        if let parentThreadID = nonEmpty(thread["parentThreadId"]?.stringValue) {
+        if let parentThreadID = nonEmpty(
+            thread["parentThreadId"]?.stringValue,
+            thread["parent_thread_id"]?.stringValue
+        ) {
             if let childThreadID = nonEmpty(thread["id"]?.stringValue) {
                 subagents.append(
                     SessionContextSubagent(

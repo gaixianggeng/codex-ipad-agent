@@ -1,4 +1,5 @@
 import Foundation
+import os
 import UserNotifications
 
 extension SessionStore {
@@ -69,6 +70,86 @@ struct SessionListFirstPageRequestKey: Hashable {
     let workspacePath: String
     let limit: Int
     let consistency: SessionListConsistency
+    /// nil 表示真正首屏；非 nil 表示权威展示窗口从已提交边界续跑。
+    let cursor: String?
+}
+
+/// “已经有几条缓存”与“当前主机代次已完成精确首屏”是两个状态。
+/// key 必须包含完整 HostScope 和 canonical workspace path，避免切换 Mac、重连或目录身份迁移后误复用旧结论。
+struct WorkspaceSessionFirstPageKey: Hashable {
+    let hostScope: HostScope
+    let workspaceID: String
+    let workspacePath: String
+}
+
+struct WorkspaceSessionFirstPageCompletion: Equatable {
+    let consistency: SessionListConsistency
+    let isPresentationWindowComplete: Bool
+    /// 权威展示窗口达到单批预算但仍欠填时，保存下一批唯一允许继续的 opaque cursor。
+    let continuationCursor: String?
+    /// 仅记录当前权威 cursor 链实际扫描过的有序 ID；不能用整个工作区缓存冒充权威种子。
+    let scannedSessionIDs: [SessionID]
+    let completedAt: Date
+}
+
+struct SessionListFirstPageResult {
+    let page: SessionsPage
+    let requestedCursor: String?
+}
+
+enum SessionListRequestSource: String {
+    case bootstrap
+    case libraryIndex
+    case restore
+    case selectedProject
+    case externalActivity
+    case workspaceForeground
+    case workspaceLoadMore
+}
+
+enum SessionListRequestDelivery: String {
+    case cache
+    case largerInFlight
+    case network
+    case sharedInFlight
+    case staleCache
+}
+
+enum SessionListDiagnostics {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.gaixianggeng.mimi",
+        category: "SessionList"
+    )
+
+    static func completed(
+        source: SessionListRequestSource,
+        consistency: SessionListConsistency,
+        delivery: SessionListRequestDelivery,
+        count: Int,
+        duration: TimeInterval
+    ) {
+        let consistencyName = consistency == .authoritative ? "authoritative" : "fastIndexed"
+        let durationMilliseconds = max(0, Int((duration * 1_000).rounded()))
+        // 只记录固定枚举和计数，不写 workspace path、标题或任何用户内容。
+        logger.info(
+            "source=\(source.rawValue, privacy: .public) page=1 consistency=\(consistencyName, privacy: .public) delivery=\(delivery.rawValue, privacy: .public) count=\(count) duration_ms=\(durationMilliseconds)"
+        )
+    }
+
+    static func presentationWindowCompleted(
+        source: SessionListRequestSource,
+        consistency: SessionListConsistency,
+        rawCount: Int,
+        listableCount: Int,
+        pagesScanned: Int,
+        hasMore: Bool
+    ) {
+        let consistencyName = consistency == .authoritative ? "authoritative" : "fastIndexed"
+        // 这里只记录分页形态，不记录 workspace、标题、session ID 或任何用户内容。
+        logger.info(
+            "source=\(source.rawValue, privacy: .public) presentation_fill consistency=\(consistencyName, privacy: .public) raw_count=\(rawCount) listable_count=\(listableCount) pages_scanned=\(pagesScanned) has_more=\(hasMore)"
+        )
+    }
 }
 
 struct SessionListBudgetKey: Hashable {
@@ -78,6 +159,7 @@ struct SessionListBudgetKey: Hashable {
 }
 
 struct SessionListFirstPageInFlight {
+    let id: UUID
     let task: Task<SessionsPage, Error>
 }
 
@@ -1533,13 +1615,48 @@ extension SessionStore {
     }
 
     func sessionPreparedForStorage(_ incoming: AgentSession) -> AgentSession {
+        let ownershipPreserved = sessionPreservingSubagentOwnership(incoming)
         let preserved = sessionPreservingLocalCompletedGoal(
-            sessionPreservingLocalCompletedStatus(sessionPreservingActiveApproval(incoming))
+            sessionPreservingLocalCompletedStatus(sessionPreservingActiveApproval(ownershipPreserved))
         )
         let previewProjected = sessionApplyingListProjection(preserved)
         let monotonicRecency = sessionPreservingRecencyFloor(previewProjected)
         let recentProjected = sessionApplyingRecentActivityProjection(monotonicRecency)
         return sessionApplyingExternalActivity(recentProjected)
+    }
+
+    /// 子 Agent ownership 和创建时间属于线程身份，而非一次列表响应的瞬时字段。
+    /// REST / DataFlow 的稀疏同 ID 更新也必须单调保留，避免刷新后 child 被重新平铺为 root，
+    /// 或历史过滤因为 createdAt 丢失而放回父会话前缀。
+    func sessionPreservingSubagentOwnership(_ incoming: AgentSession) -> AgentSession {
+        guard let existing = sessionsByID[incoming.id] else {
+            return incoming
+        }
+        return sessionPreservingSubagentOwnership(incoming, withKnown: existing)
+    }
+
+    /// 同一 cursor 链也可能重复同一 ID，且后一页才携带完整 parent/source。
+    /// 分页结果尚未进入 Store 时，用当前链已知行执行同样的单调 ownership 合并。
+    func sessionPreservingSubagentOwnership(
+        _ incoming: AgentSession,
+        withKnown existing: AgentSession
+    ) -> AgentSession {
+        var result = incoming
+        result.createdAt = result.createdAt ?? existing.createdAt ?? existing.context?.createdAt
+
+        let incomingParent = result.parentThreadID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if incomingParent?.isEmpty != false {
+            let existingParent = existing.parentThreadID?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            result.parentThreadID = existingParent?.isEmpty == false
+                ? existingParent
+                : existing.context?.parentThreadID
+        }
+        if existing.isSubagentThread || result.isSubagentThread {
+            result.isSubagent = true
+        }
+        return result
     }
 
     func sessionApplyingExternalActivity(_ incoming: AgentSession) -> AgentSession {
