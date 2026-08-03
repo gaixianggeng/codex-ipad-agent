@@ -475,6 +475,7 @@ bridges/claude/          Rust Claude Code 协议 bridge
 
 - [项目现状与关键决策](docs/project-status.md)
 - [P0 / P1 发布清单](docs/p0-p1-roadmap.md)
+- [Nightly 与正式发布](docs/nightly-release.md)
 - [安装、升级与回滚](docs/install-upgrade-rollback.md)
 - [Tailscale 与 Peer Relay 运维](docs/tailscale-peer-relay-ops.md)
 - [Codex 协议支持边界](docs/codex-protocol-support.md)

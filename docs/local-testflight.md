@@ -2,9 +2,9 @@
 
 ## 目标
 
-iOS 内测不再依赖 GitHub Actions。`git testflight-push` 会先推送 `main`、核对远端 SHA，再从该 commit 创建干净 worktree，在本机完成 build number 预检、签名 Archive、上传和 `咪咪 Internal` 分发。
+iOS 的日常 Nightly 由 GitHub Actions 每天从最新 `main` 上传 Internal TestFlight；本页的 `git testflight-push` 保留为维护者的本地、手工和恢复入口。它会先推送 `main`、核对远端 SHA，再从该 commit 创建干净 worktree，在本机完成 build number 预检、签名 Archive、上传和 `咪咪 Internal` 分发。
 
-公开二进制、Go/iOS CI 和协议检查仍保留原 GitHub workflows；这里只替换 Mimi TestFlight。
+正式 iOS 候选仍通过 iOS CI 手工 dispatch；Mac、agentd 和 Windows 正式版本仍由维护者推送 `v*` tag。Nightly 不执行 App Store 审核或公开上架。公开二进制、Go/iOS CI 和协议检查继续由 GitHub workflows 负责。
 
 ## 配置
 
