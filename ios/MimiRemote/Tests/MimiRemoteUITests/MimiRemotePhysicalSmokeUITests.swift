@@ -491,10 +491,21 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let model = app.descendant(identifier: "composer.model")
         XCTAssertTrue(model.waitForExistence(timeout: 10), "Composer 应展示模型入口")
         model.tap()
+        let modelPicker = app.descendant(identifier: "composer.modelPicker")
         XCTAssertTrue(
-            app.descendant(identifier: "composer.modelPicker").waitForExistence(timeout: 8),
+            modelPicker.waitForExistence(timeout: 8),
             "模型选择浮层应能正常构建，不能触发 compact toolbar 栈溢出"
         )
+        assertCompactModelPickerFitsWindow(modelPicker)
+        dismissPresentedMenuOrPopover()
+
+        rotate(to: .landscapeLeft)
+        let landscapeModel = app.descendant(identifier: "composer.model")
+        XCTAssertTrue(landscapeModel.waitForExistence(timeout: 10), "横屏后 Composer 应保留模型入口")
+        landscapeModel.tap()
+        let landscapePicker = app.descendant(identifier: "composer.modelPicker")
+        XCTAssertTrue(landscapePicker.waitForExistence(timeout: 8), "横屏模型选择浮层应能正常构建")
+        assertCompactModelPickerFitsWindow(landscapePicker)
         dismissPresentedMenuOrPopover()
         XCTAssertEqual(app.state, .runningForeground, "完成紧凑工具栏操作后 App 应保持前台运行")
     }
@@ -972,6 +983,28 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         // 真机读取的是系统最终命中矩形，可同时覆盖 SwiftUI 内容形状和平台适配结果。
         XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name)宽度应至少为 44pt", file: file, line: line)
         XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name)高度应至少为 44pt", file: file, line: line)
+    }
+
+    private func assertCompactModelPickerFitsWindow(
+        _ modelPicker: XCUIElement,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let windowFrame = app.windows.firstMatch.frame
+        guard min(windowFrame.width, windowFrame.height) < 600 else {
+            return
+        }
+        // 标准字号的 Picker 为 132/184/236pt；辅助功能字号会随 large detent
+        // 增长并在内部滚动。系统没有把 adapted sheet 暴露为 XCUIElement，
+        // 因此用 Picker 到窗口底部的剩余区域守住“不超过一行空白”的用户结果。
+        let maximumUnusedHeight: CGFloat = 52
+        XCTAssertLessThanOrEqual(
+            windowFrame.maxY - modelPicker.frame.maxY,
+            maximumUnusedHeight,
+            "模型 Sheet 应贴合内容，不能在网格上下保留大面积空白",
+            file: file,
+            line: line
+        )
     }
 
     private func assertPopover(
