@@ -22,6 +22,7 @@
 </p>
 
 <p align="center">
+  <a href="https://testflight.apple.com/join/jhGPbSk6"><img src="https://img.shields.io/badge/TestFlight-Join%20Beta-0D96F6?logo=apple&amp;logoColor=white" alt="Join the Mimi Remote beta on TestFlight" /></a>
   <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple" alt="iOS and iPadOS 26 or later" /></a>
   <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="Native SwiftUI app" /></a>
   <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI status" /></a>
