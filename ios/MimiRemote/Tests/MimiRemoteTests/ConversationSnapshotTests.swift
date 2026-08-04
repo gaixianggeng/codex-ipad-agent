@@ -1173,6 +1173,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testComposerSurfaceIPadMiniIncreasedContrast() async {
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 744,
+            height: 1133,
+            usesCompactIPadDefault: true
+        )
+
+        assertSnapshot(
+            of: view,
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 1133),
+                    traits: UITraitCollection(accessibilityContrast: .high)
+                )
+            )
+        )
+    }
+
     func testComposerStatusTrayIPadMiniLandscapeDetailWidth() async {
         // 横屏回归：1133pt 整窗减去约 300pt 侧栏后，detail 列约 832pt。
         // Composer 按内容测量宽度必须用标准指标（快捷行、按钮文字标签都在），

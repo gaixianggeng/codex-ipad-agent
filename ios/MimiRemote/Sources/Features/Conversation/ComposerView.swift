@@ -20,6 +20,7 @@ struct ComposerView: View {
     @EnvironmentObject var sessionStore: SessionStore
     @EnvironmentObject var themeStore: ThemeStore
     @Environment(\.colorScheme) var colorScheme
+    @Environment(\.colorSchemeContrast) var colorSchemeContrast
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -986,14 +987,25 @@ struct ComposerView: View {
         shape: RoundedRectangle,
         tokens: ThemeTokens
     ) -> some View {
-        if reduceTransparency {
+        if colorScheme == .light {
+            // 浅色输入面复用现有语义白色：像 Linear 一样让主工作表面保持清晰，
+            // 再用很轻的边缘与环境阴影表达层级，避免继续叠出第三种近似灰白色。
+            shape
+                .fill(tokens.inputBackground)
+                .shadow(
+                    color: Color.black.opacity(colorSchemeContrast == .increased ? 0.07 : 0.035),
+                    radius: colorSchemeContrast == .increased ? 4 : 7,
+                    y: 2
+                )
+        } else if reduceTransparency {
             shape.fill(tokens.elevatedSurface)
         } else {
-            // 输入区是底部唯一的功能材质层；主题色只轻覆一层，避免再形成白色卡片叠卡片。
+            // 深色输入区继续作为底部唯一的功能材质层；这次只收敛已确认有问题的浅色层级，
+            // 避免连带改变已完成运行态验收的深色 Composer。
             shape
                 .fill(.thinMaterial)
                 .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
+                    shape.fill(tokens.elevatedSurface.opacity(0.46))
                 }
         }
     }
@@ -1127,15 +1139,19 @@ struct ComposerView: View {
         if voiceInput.isRecording {
             // 录音时只给输入框一圈很淡的主题色描边作为氛围提示，真正“正在录音”的强调交给
             // 上方那条带波形的胶囊；不再让整个输入框被强描边抢走注意力。
-            return tokens.voiceRecording.opacity(0.4)
+            return tokens.voiceRecording.opacity(colorSchemeContrast == .increased ? 0.78 : 0.4)
         }
         if voiceInput.isPreparing || isVoicePressActive {
-            return tokens.accent.opacity(0.55)
+            return tokens.accent.opacity(colorSchemeContrast == .increased ? 0.9 : 0.55)
         }
         if isVoiceTranscribing {
-            return tokens.accent.opacity(0.5)
+            return tokens.accent.opacity(colorSchemeContrast == .increased ? 0.82 : 0.5)
         }
-        return tokens.border.opacity(0.58)
+        if colorSchemeContrast == .increased {
+            // 增强对比度时使用明确实线边界；默认外观仍保持“结构可感知、不过度描边”。
+            return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
+        }
+        return tokens.border.opacity(colorScheme == .light ? 0.92 : 0.58)
     }
 
     var composerPlaceholderText: String {
@@ -1159,7 +1175,13 @@ struct ComposerView: View {
         if voiceInput.isPreparing || isVoicePressActive {
             return 1.5
         }
-        return voiceInput.isRecording ? 1.25 : 0.75
+        if voiceInput.isRecording {
+            return 1.25
+        }
+        if colorSchemeContrast == .increased {
+            return 1.25
+        }
+        return colorScheme == .light ? 1 : 0.75
     }
 
     @ViewBuilder
