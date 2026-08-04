@@ -1639,6 +1639,7 @@ extension SessionStore {
             try await sessionListPageFillingPresentationWindow(
                 client: client,
                 workspace: workspace,
+                runtimeProvider: "codex",
                 cursor: requestedCursor,
                 limit: limit,
                 consistency: consistency,
@@ -1689,11 +1690,12 @@ extension SessionStore {
         }
     }
 
-    /// transport 的 limit 约束 raw rows；子 Agent 过滤和双 Runtime 短页都可能让展示层不足一页。
+    /// transport 的 limit 约束 raw rows；子 Agent 过滤仍可能让展示层不足一页。
     /// 精确首屏与“显示更多”必须沿 opaque cursor 补齐顶层会话，child 仍随 raw rows 进入 canonical Store。
     func sessionListPageFillingPresentationWindow(
         client: any SessionStoreAPIClient,
         workspace: AgentWorkspace,
+        runtimeProvider: String,
         cursor initialCursor: String?,
         limit: Int,
         consistency: SessionListConsistency,
@@ -1745,6 +1747,7 @@ extension SessionStore {
             )
             let page = try await client.sessionsPage(
                 workspace: workspace,
+                runtimeProvider: runtimeProvider,
                 cursor: requestedCursor,
                 limit: rawPageLimit,
                 consistency: consistency

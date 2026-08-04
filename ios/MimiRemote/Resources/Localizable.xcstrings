@@ -21989,6 +21989,23 @@
         }
       }
     },
+    "ui.runtime_claude_short" : {
+      "comment" : "Short Claude brand label used in compact runtime selectors.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude"
+          }
+        }
+      }
+    },
     "ui.runtime_default" : {
       "comment" : "Brand name shown on sessions created with the Codex runtime.",
       "localizations" : {
@@ -22019,6 +22036,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Claude Code"
+          }
+        }
+      }
+    },
+    "ui.runtime_unavailable_hint" : {
+      "comment" : "Accessibility hint for an unavailable runtime filter.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This runtime is not available on the current host."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前主机尚未启用此运行时。"
           }
         }
       }
@@ -24431,6 +24465,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "收起显示"
+          }
+        }
+      }
+    },
+    "ui.show_runtime_sessions_hint" : {
+      "comment" : "Accessibility hint for choosing a runtime-specific session list.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shows recent sessions from this runtime."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示此运行时的最近会话。"
           }
         }
       }

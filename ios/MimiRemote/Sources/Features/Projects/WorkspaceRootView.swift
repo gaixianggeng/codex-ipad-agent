@@ -66,12 +66,21 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var runtimeProvider: String? {
+    var runtimeProvider: String {
         switch self {
         case .codex:
-            return nil
+            return "codex"
         case .claude:
             return "claude"
+        }
+    }
+
+    var listTitle: String {
+        switch self {
+        case .codex:
+            return L10n.text("ui.runtime_default")
+        case .claude:
+            return L10n.text("ui.runtime_claude_short")
         }
     }
 
@@ -128,21 +137,21 @@ enum WorkspaceSessionAgeBoundary {
 
 /// View 层只记录“哪次调用仍有资格回写”，真实请求复用继续由 SessionStore single-flight 决定。
 struct WorkspaceSessionLoadInvocationTokens {
-    private var latestByProjectID: [String: UUID] = [:]
+    private var latestByKey: [WorkspaceSessionPresentationKey: UUID] = [:]
 
     @discardableResult
-    mutating func begin(for projectID: String) -> UUID {
+    mutating func begin(for key: WorkspaceSessionPresentationKey) -> UUID {
         let invocationID = UUID()
-        latestByProjectID[projectID] = invocationID
+        latestByKey[key] = invocationID
         return invocationID
     }
 
-    func isCurrent(_ invocationID: UUID, for projectID: String) -> Bool {
-        latestByProjectID[projectID] == invocationID
+    func isCurrent(_ invocationID: UUID, for key: WorkspaceSessionPresentationKey) -> Bool {
+        latestByKey[key] == invocationID
     }
 
-    mutating func remove(for projectID: String) {
-        latestByProjectID.removeValue(forKey: projectID)
+    mutating func remove(where shouldRemove: (WorkspaceSessionPresentationKey) -> Bool) {
+        latestByKey = latestByKey.filter { !shouldRemove($0.key) }
     }
 }
 
@@ -175,9 +184,8 @@ struct WorkspaceCatalogRefreshScope: Equatable {
 }
 
 struct WorkspaceSessionRefreshScope: Equatable {
-    let hostScope: HostScope
-    let workspaceID: String?
-    let needsAuthoritativeFirstPage: Bool
+    let presentationKey: WorkspaceSessionPresentationKey?
+    let needsInitialLoad: Bool
 }
 
 /// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
@@ -244,11 +252,13 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
+    @State private var selectedSessionRuntime: WorkspaceSessionRuntimeChoice = .codex
     @State private var catalogLoad = WorkspaceCatalogLoadCoordinator()
-    @State private var sessionLoadStates: [String: WorkspaceSessionLoadState] = [:]
+    @State private var runtimeSessionPagesByKey: [WorkspaceSessionPresentationKey: WorkspaceRuntimeSessionPageState] = [:]
+    @State private var sessionLoadStates: [WorkspaceSessionPresentationKey: WorkspaceSessionLoadState] = [:]
     @State private var sessionLoadInvocationTokens = WorkspaceSessionLoadInvocationTokens()
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
-    /// key 带 HostScope 和路径，避免跨 Mac 或目录身份迁移复用旧窗口。
+    /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
     @State private var isPresentingOpenWorkspace = false
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
@@ -281,11 +291,11 @@ struct WorkspaceRootView: View {
             hostScope: appStore.activeHostScope,
             credentialsSuspended: appStore.isCredentialMemorySuspended
         )
+        let selectedSessionPresentationKey = selectedProject.map(workspaceSessionPresentationKey(for:))
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
-            hostScope: appStore.activeHostScope,
-            workspaceID: selectedWorkspaceID,
-            needsAuthoritativeFirstPage: selectedWorkspaceID.map {
-                sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: $0)
+            presentationKey: selectedSessionPresentationKey,
+            needsInitialLoad: selectedSessionPresentationKey.map {
+                runtimeSessionPagesByKey[$0]?.hasLoadedFirstPage != true
             } ?? false
         )
 
@@ -323,20 +333,21 @@ struct WorkspaceRootView: View {
             await sessionStore.refreshAppServerModelOptions()
         }
         .task(id: sessionRefreshScope) {
-            guard let selectedWorkspaceID = sessionRefreshScope.workspaceID else { return }
-            // 稀疏缓存继续即时展示；只有 Store 记录了当前 HostScope 的 authoritative 首屏才可跳过请求。
-            guard sessionRefreshScope.needsAuthoritativeFirstPage else {
-                sessionLoadInvocationTokens.begin(for: selectedWorkspaceID)
-                sessionLoadStates[selectedWorkspaceID] = .loaded
-                return
-            }
-            await refreshWorkspaceSessions(
-                projectID: selectedWorkspaceID,
-                onlyIfAuthoritativeFirstPageIsNeeded: true
-            )
+            guard sessionRefreshScope.needsInitialLoad,
+                  let presentationKey = sessionRefreshScope.presentationKey,
+                  let project = sessionStore.sidebarProjects.first(where: {
+                      $0.id == presentationKey.workspaceID && $0.path == presentationKey.workspacePath
+                  })
+            else { return }
+            await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
         }
         .onChange(of: sessionStore.sidebarProjects.map(\.id)) { _, _ in
             synchronizeSelection()
+        }
+        .onChange(of: sessionStore.hasClaudeRuntimeChannel) { _, isAvailable in
+            if !isAvailable, selectedSessionRuntime == .claude {
+                selectedSessionRuntime = .codex
+            }
         }
         .sheet(isPresented: $isPresentingOpenWorkspace) {
             OpenWorkspaceSheet { workspaceID in
@@ -640,10 +651,18 @@ struct WorkspaceRootView: View {
     }
 
     private func workspaceDetail(project: AgentProject) -> some View {
-        let loadState = sessionLoadState(for: project.id)
         let presentationKey = workspaceSessionPresentationKey(for: project)
+        let cachedPageState = runtimeSessionPagesByKey[presentationKey]
+        // Store 已有首屏时先按当前 Runtime 投影，避免进入工作区或切换筛选后先退回骨架屏；
+        // authoritative 请求仍会在后台刷新，并在返回后接管独立 cursor 与 hasMore。
+        let storedRuntimeSessions = sessionStore.sessions(forProjectID: project.id).filter { session in
+            sessionStore.isListableSession(session)
+                && CodexAppServerSessionRuntime.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+                    == presentationKey.runtimeProvider
+        }
+        let loadedSessions = cachedPageState?.sessions ?? storedRuntimeSessions
+        let loadState = sessionLoadState(for: presentationKey)
         let visibleLimit = workspaceSessionVisibleLimit(for: presentationKey)
-        let loadedSessions = sessionStore.sessions(forProjectID: project.id)
         return WorkspaceDetailView(
             // Store 保留全部已取回 root 作为预取缓冲；工作区详情按 20 条窗口逐步展开，
             // 不能让一次超采样把首屏从 20 条直接放大到 50 条。
@@ -653,21 +672,18 @@ struct WorkspaceRootView: View {
             ),
             unreadHistorySessionIDs: sessionStore.unreadHistorySessionIDs,
             sessionLoadState: loadState,
-            // fastIndexed 可能是欠填的旧索引；必须等 authoritative 完成后再揭示缓存行，
-            // 避免先闪半截列表再随权威补页逐批增长。
-            hasCompleteFirstPage: WorkspaceSessionPresentation.hasCompleteFirstPage(
-                consistency: sessionStore.workspaceSessionFirstPageConsistency(projectID: project.id)
-            ),
+            hasInitialSessionContent: cachedPageState?.hasLoadedFirstPage == true || !storedRuntimeSessions.isEmpty,
             canLoadMoreSessions: WorkspaceSessionPresentation.canLoadMore(
                 loadedCount: loadedSessions.count,
                 visibleLimit: visibleLimit,
-                remoteHasMore: sessionStore.canLoadMoreSessions(projectID: project.id)
+                remoteHasMore: cachedPageState?.hasMore == true
             ),
+            selectedRuntime: $selectedSessionRuntime,
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
             currentDate: currentDate,
             onRefreshSessions: {
                 Task {
-                    await refreshWorkspaceSessions(projectID: project.id)
+                    await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
                 }
             },
             onLoadMoreSessions: {
@@ -737,8 +753,9 @@ struct WorkspaceRootView: View {
 
     private func removeWorkspace(_ project: AgentProject) {
         guard selectedWorkspaceID != project.id else { return }
-        sessionLoadStates.removeValue(forKey: project.id)
-        sessionLoadInvocationTokens.remove(for: project.id)
+        runtimeSessionPagesByKey = runtimeSessionPagesByKey.filter { $0.key.workspaceID != project.id }
+        sessionLoadStates = sessionLoadStates.filter { $0.key.workspaceID != project.id }
+        sessionLoadInvocationTokens.remove { $0.workspaceID == project.id }
         workspaceSessionVisibleLimitByKey = workspaceSessionVisibleLimitByKey.filter {
             $0.key.workspaceID != project.id
         }
@@ -749,7 +766,8 @@ struct WorkspaceRootView: View {
         WorkspaceSessionPresentationKey(
             hostScope: appStore.activeHostScope,
             workspaceID: project.id,
-            workspacePath: project.path
+            workspacePath: project.path,
+            runtimeProvider: selectedSessionRuntime.runtimeProvider
         )
     }
 
@@ -769,14 +787,28 @@ struct WorkspaceRootView: View {
             current: currentVisibleLimit,
             pageSize: SessionStore.expandedSessionPageLimit
         )
-        let loadedCount = sessionStore.sessions(forProjectID: project.id).count
+        var pageState = runtimeSessionPagesByKey[presentationKey] ?? WorkspaceRuntimeSessionPageState()
+        let loadedCount = pageState.sessions.count
         if WorkspaceSessionPresentation.shouldRequestRemotePage(
             loadedCount: loadedCount,
             targetVisibleLimit: targetVisibleLimit,
-            remoteHasMore: sessionStore.canLoadMoreSessions(projectID: project.id)
+            remoteHasMore: pageState.hasMore
         ) {
-            // canonical 缓冲不足以再展示完整一页时才触发网络；否则“显示更多”只展开本地预取结果。
-            await sessionStore.loadMoreSessions(projectID: project.id)
+            do {
+                let page = try await sessionStore.workspaceRuntimeSessionsPage(
+                    projectID: project.id,
+                    runtimeProvider: presentationKey.runtimeProvider,
+                    cursor: pageState.nextCursor,
+                    limit: SessionStore.expandedSessionPageLimit,
+                    excludingListableSessionIDs: Set(pageState.sessions.map(\.id))
+                )
+                pageState.append(page)
+                runtimeSessionPagesByKey[presentationKey] = pageState
+                sessionLoadStates[presentationKey] = .loaded
+            } catch {
+                guard !isCancellationError(error) else { return }
+                sessionLoadStates[presentationKey] = .failed(error.localizedDescription)
+            }
         }
 
         guard appStore.activeHostScope == presentationKey.hostScope,
@@ -788,7 +820,7 @@ struct WorkspaceRootView: View {
         workspaceSessionVisibleLimitByKey[presentationKey] = WorkspaceSessionPresentation.committedVisibleLimit(
             current: currentVisibleLimit,
             target: targetVisibleLimit,
-            loadedCount: sessionStore.sessions(forProjectID: project.id).count
+            loadedCount: runtimeSessionPagesByKey[presentationKey]?.sessions.count ?? pageState.sessions.count
         )
     }
 
@@ -829,57 +861,64 @@ struct WorkspaceRootView: View {
         await refreshCatalog(forceGitSummary: true)
         guard !Task.isCancelled,
               selectedWorkspaceID == projectID,
-              sessionStore.sidebarProjects.contains(where: { $0.id == projectID })
+              let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
         else {
             return
         }
-        await refreshWorkspaceSessions(projectID: projectID)
+        let presentationKey = workspaceSessionPresentationKey(for: project)
+        await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
     }
 
     private func refreshWorkspaceSessions(
-        projectID: String,
-        onlyIfAuthoritativeFirstPageIsNeeded: Bool = false
+        project: AgentProject,
+        presentationKey: WorkspaceSessionPresentationKey
     ) async {
-        // `.loading` 只是 View 展示状态，不能证明仍有未取消的 waiter。每次调用都重新加入
-        // SessionStore 的共享请求，并用 invocation token 阻止旧调用覆盖新状态。
-        let invocationID = sessionLoadInvocationTokens.begin(for: projectID)
-        sessionLoadStates[projectID] = .loading
+        // 每个 Runtime 独立占有提交 token；切换筛选不会让旧请求覆盖当前 Runtime 的缓存。
+        let invocationID = sessionLoadInvocationTokens.begin(for: presentationKey)
+        sessionLoadStates[presentationKey] = .loading
         do {
-            if onlyIfAuthoritativeFirstPageIsNeeded
-                || sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: projectID) {
-                // 手动刷新若接手到前一轮 partial，也必须沿保存 cursor 完成整条权威窗口；
-                // 已完成窗口仍走下面的普通单次刷新，保留“主动拉最新”的语义。
-                try await sessionStore.ensureAuthoritativeWorkspaceSessionFirstPage(projectID: projectID)
-            } else {
-                try await sessionStore.refreshWorkspaceSessions(projectID: projectID)
-            }
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+            let page = try await sessionStore.workspaceRuntimeSessionsPage(
+                projectID: project.id,
+                runtimeProvider: presentationKey.runtimeProvider,
+                cursor: nil,
+                limit: SessionStore.initialSessionPageLimit
+            )
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return
             }
-            guard !Task.isCancelled else {
-                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+            guard !Task.isCancelled,
+                  appStore.activeHostScope == presentationKey.hostScope,
+                  sessionStore.sidebarProjects.contains(where: {
+                      $0.id == project.id && $0.path == presentationKey.workspacePath
+                  })
+            else {
+                sessionLoadStates[presentationKey] = fallbackSessionLoadState(for: presentationKey)
                 return
             }
-            sessionLoadStates[projectID] = .loaded
+            var nextState = WorkspaceRuntimeSessionPageState()
+            nextState.replace(with: page)
+            runtimeSessionPagesByKey[presentationKey] = nextState
+            workspaceSessionVisibleLimitByKey[presentationKey] = SessionStore.initialSessionPageLimit
+            sessionLoadStates[presentationKey] = .loaded
         } catch {
-            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: projectID) else {
+            guard sessionLoadInvocationTokens.isCurrent(invocationID, for: presentationKey) else {
                 return
             }
             switch workspaceSessionLoadFailureDisposition(error) {
             case .cancelled:
-                sessionLoadStates[projectID] = fallbackSessionLoadState(for: projectID)
+                sessionLoadStates[presentationKey] = fallbackSessionLoadState(for: presentationKey)
             case .failed(let message):
-                sessionLoadStates[projectID] = .failed(message)
+                sessionLoadStates[presentationKey] = .failed(message)
             }
         }
     }
 
-    private func sessionLoadState(for projectID: String) -> WorkspaceSessionLoadState {
-        sessionLoadStates[projectID] ?? fallbackSessionLoadState(for: projectID)
+    private func sessionLoadState(for key: WorkspaceSessionPresentationKey) -> WorkspaceSessionLoadState {
+        sessionLoadStates[key] ?? fallbackSessionLoadState(for: key)
     }
 
-    private func fallbackSessionLoadState(for projectID: String) -> WorkspaceSessionLoadState {
-        sessionStore.sessions(forProjectID: projectID).isEmpty ? .idle : .loaded
+    private func fallbackSessionLoadState(for key: WorkspaceSessionPresentationKey) -> WorkspaceSessionLoadState {
+        runtimeSessionPagesByKey[key]?.hasLoadedFirstPage == true ? .loaded : .idle
     }
 
 }
@@ -1522,6 +1561,75 @@ private struct WorkspaceEmojiPicker: View {
     }
 }
 
+private struct WorkspaceRuntimePicker: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    @Binding var selection: WorkspaceSessionRuntimeChoice
+    let claudeChannelAvailable: Bool
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 0) {
+            ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
+                let isSelected = selection == choice
+                let isAvailable = choice != .claude || claudeChannelAvailable
+
+                Button {
+                    guard isAvailable else { return }
+                    selection = choice
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(choice.brandAssetName)
+                            .resizable()
+                            .renderingMode(.original)
+                            .scaledToFit()
+                            .frame(width: 17, height: 17)
+                            .accessibilityHidden(true)
+
+                        Text(choice.listTitle)
+                            .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(isSelected ? tokens.primaryAction : tokens.secondaryText)
+                    .padding(.horizontal, 12)
+                    .frame(minWidth: 44, minHeight: 36)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(tokens.surface)
+                                .shadow(color: Color.black.opacity(0.08), radius: 2, y: 1)
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!isAvailable)
+                .opacity(isAvailable ? 1 : 0.42)
+                .accessibilityLabel(choice.listTitle)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityHint(
+                    isAvailable
+                        ? L10n.text("ui.show_runtime_sessions_hint")
+                        : L10n.text("ui.runtime_unavailable_hint")
+                )
+            }
+        }
+        .padding(4)
+        .frame(minHeight: 44)
+        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.text("ui.runtime_provider"))
+        .accessibilityIdentifier("workspace.sessions.runtimePicker")
+    }
+}
+
 private struct WorkspaceDetailView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -1535,8 +1643,9 @@ private struct WorkspaceDetailView: View {
     let recentSessions: [AgentSession]
     let unreadHistorySessionIDs: Set<SessionID>
     let sessionLoadState: WorkspaceSessionLoadState
-    let hasCompleteFirstPage: Bool
+    let hasInitialSessionContent: Bool
     let canLoadMoreSessions: Bool
+    @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
     let claudeChannelAvailable: Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
@@ -1649,33 +1758,9 @@ private struct WorkspaceDetailView: View {
 
     private func recentSessionsSection(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(L10n.text("ui.recent_conversations"))
-                    .font(themeStore.uiFont(.headline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Spacer()
-                Button(action: onRefreshSessions) {
-                    HStack(spacing: 5) {
-                        if sessionLoadState.isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        Text(sessionLoadState.isLoading ? L10n.text("ui.loading") : L10n.text("ui.refresh"))
-                    }
-                    .font(themeStore.uiFont(size: compactActionFontSize, weight: .medium))
-                    .foregroundStyle(tokens.secondaryText)
-                    // 手动刷新与“显示更多”同属会话列表操作；即使 caption 很短，也保留 44pt 触控区。
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(sessionLoadState.isLoading)
-                .accessibilityLabel(sessionLoadState.isLoading ? L10n.text("ui.loading_recent_conversations") : L10n.text("ui.refresh_recent_conversations"))
-            }
+            recentSessionsHeader(tokens: tokens)
 
-            if sessionLoadState.isLoading, !hasCompleteFirstPage {
+            if sessionLoadState.isLoading, !hasInitialSessionContent {
                 // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
                 recentSessionPlaceholders(tokens: tokens)
             } else if recentSessions.isEmpty, case .failed(let message) = sessionLoadState {
@@ -1760,6 +1845,32 @@ private struct WorkspaceDetailView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(tokens.border.opacity(0.72), lineWidth: 1)
                 }
+            }
+        }
+    }
+
+    private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
+        let title = Text(L10n.text("ui.recent_conversations"))
+            .font(themeStore.uiFont(.headline, weight: .semibold))
+            .foregroundStyle(tokens.primaryText)
+
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                title
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 12)
+                WorkspaceRuntimePicker(
+                    selection: $selectedRuntime,
+                    claudeChannelAvailable: claudeChannelAvailable
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                title
+                WorkspaceRuntimePicker(
+                    selection: $selectedRuntime,
+                    claudeChannelAvailable: claudeChannelAvailable
+                )
             }
         }
     }
