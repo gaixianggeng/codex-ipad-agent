@@ -1173,6 +1173,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testComposerSurfaceIPadMiniIncreasedContrast() async {
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 744,
+            height: 1133,
+            usesCompactIPadDefault: true
+        )
+
+        assertSnapshot(
+            of: view,
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 1133),
+                    traits: UITraitCollection(accessibilityContrast: .high)
+                )
+            )
+        )
+    }
+
     func testComposerStatusTrayIPadMiniLandscapeDetailWidth() async {
         // 横屏回归：1133pt 整窗减去约 300pt 侧栏后，detail 列约 832pt。
         // Composer 按内容测量宽度必须用标准指标（快捷行、按钮文字标签都在），
@@ -1243,6 +1263,55 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                     layout: .fixed(width: 320, height: 700)
                 )
             )
+        )
+    }
+
+    func testComposerStatusTrayCollapsedBlockedObserveDark() {
+        let themeStore = makeThemeStore()
+        let goal = ThreadGoal(
+            threadID: "thread-collapsed-blocked",
+            objective: "等待用户补充权限后继续执行。",
+            status: .blocked,
+            tokenBudget: 2_000_000,
+            tokensUsed: 640_000,
+            timeUsedSeconds: 820,
+            createdAt: snapshotMessageDate,
+            updatedAt: snapshotMessageDate
+        )
+        let tray = ComposerStatusTray(
+            sessionControlNotice: "当前由 Mac 端控制，仅观察。",
+            quotaNotice: nil,
+            usage: nil,
+            goal: goal,
+            isGoalExpanded: false,
+            isGoalUpdating: false,
+            // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
+            goalErrorMessage: "缺少所需权限，等待用户处理后重试。",
+            isRefreshDisabled: false,
+            allowsTakeOver: true,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+
+        let view = VStack {
+            Spacer()
+            tray
+                .padding(16)
+        }
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .background(themeStore.tokens(for: .dark).background)
+        .frame(width: 390, height: 110)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 110))
         )
     }
 
@@ -1323,6 +1392,20 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
         XCTAssertEqual(collapsed.borderOpacity, 0.58)
         XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
+    }
+
+    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .light,
+                reduceTransparency: false
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.05)
+        }
     }
 
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
@@ -1627,6 +1710,89 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
         .background(themeStore.tokens(for: .light).background)
+        .frame(width: 460, height: 190)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
+        )
+    }
+
+    func testSessionMetadataPrefersWorkingDirectoryOverProjectName() {
+        let project = AgentProject(
+            id: "shared-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/worktrees/codex-ipad-agent/mim-96"
+        )
+        let session = makeSnapshotSession(
+            id: "worktree-session",
+            project: project,
+            title: "验证 worktree 目录",
+            status: "history",
+            preview: ""
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.metadataDirectoryText(for: session),
+            "/Users/me/worktrees/codex-ipad-agent/mim-96"
+        )
+    }
+
+    func testSessionRuntimeMetadataInDarkConversationList() {
+        let project = AgentProject(
+            id: "runtime-dark",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let themeStore = makeThemeStore()
+        let codex = makeSnapshotSession(
+            id: "runtime-dark-codex",
+            project: project,
+            title: "Review MIM-96 会话列表细节",
+            status: "completed",
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "codex/mim-96-refine-session-ui")
+            )
+        )
+        let claude = makeSnapshotSession(
+            id: "runtime-dark-claude",
+            project: project,
+            title: "检查深色模式下的目录对齐",
+            status: "history",
+            preview: "Claude Code 会话",
+            runtimeProvider: "claude"
+        )
+
+        let view = VStack(spacing: 8) {
+            SessionIndexRow(
+                session: codex,
+                foregroundActivity: nil,
+                isSelected: true,
+                isPinned: true,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                isExternalReadOnly: false,
+                isUnread: true,
+                style: .library
+            )
+            SessionIndexRow(
+                session: claude,
+                foregroundActivity: nil,
+                isSelected: false,
+                isPinned: false,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                isExternalReadOnly: false,
+                style: .library
+            )
+        }
+        .padding(16)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .background(themeStore.tokens(for: .dark).background)
         .frame(width: 460, height: 190)
 
         assertSnapshot(

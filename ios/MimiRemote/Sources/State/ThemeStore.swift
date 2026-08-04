@@ -245,6 +245,7 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
+            // 与浅色侧栏复用同一清晰白色，避免页面同时出现侧栏白、额度暖白和阴影过渡白。
             return .white
         case .dark:
             return Color(red: 0.137, green: 0.129, blue: 0.141)
@@ -303,6 +304,44 @@ extension ThemeTokens {
             return Color(red: 0.949, green: 0.933, blue: 0.945)
         case .dark:
             return Color(red: 0.169, green: 0.145, blue: 0.165)
+        }
+    }
+
+    /// 会话侧滑动作使用独立语义色，而不是在视图里硬编码系统橙/蓝。
+    /// 这些颜色都以白色图标和文案为前景，并分别为浅色、深色外观校准对比度。
+    var sessionPinActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 74.0 / 255.0, green: 20.0 / 255.0, blue: 74.0 / 255.0)
+        case .dark:
+            return Color(red: 112.0 / 255.0, green: 61.0 / 255.0, blue: 116.0 / 255.0)
+        }
+    }
+
+    var sessionUnpinActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 91.0 / 255.0, green: 84.0 / 255.0, blue: 95.0 / 255.0)
+        case .dark:
+            return Color(red: 67.0 / 255.0, green: 61.0 / 255.0, blue: 70.0 / 255.0)
+        }
+    }
+
+    var sessionMarkUnreadActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 32.0 / 255.0, green: 95.0 / 255.0, blue: 169.0 / 255.0)
+        case .dark:
+            return Color(red: 36.0 / 255.0, green: 84.0 / 255.0, blue: 139.0 / 255.0)
+        }
+    }
+
+    var sessionMarkReadActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 40.0 / 255.0, green: 108.0 / 255.0, blue: 76.0 / 255.0)
+        case .dark:
+            return Color(red: 35.0 / 255.0, green: 89.0 / 255.0, blue: 63.0 / 255.0)
         }
     }
 

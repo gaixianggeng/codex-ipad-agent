@@ -42,7 +42,7 @@ private struct SessionRowActionController {
     }
 
     var pinSystemImage: String {
-        isPinned ? "pin.slash" : "pin"
+        isPinned ? "pin.slash.fill" : "pin.fill"
     }
 
     var readTitle: String {
@@ -50,7 +50,7 @@ private struct SessionRowActionController {
     }
 
     var readSystemImage: String {
-        isUnread ? "envelope.open" : "envelope.badge"
+        isUnread ? "envelope.open.fill" : "envelope.badge.fill"
     }
 
     var archiveTitle: String {
@@ -324,7 +324,9 @@ private struct SessionActionsContextMenuModifier: ViewModifier {
 
 private struct SessionRowSwipeActionsModifier: ViewModifier {
     @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
 
     let session: AgentSession
 
@@ -332,6 +334,7 @@ private struct SessionRowSwipeActionsModifier: ViewModifier {
     func body(content: Content) -> some View {
         if horizontalSizeClass == .compact {
             let actions = SessionRowActionController(sessionStore: sessionStore, session: session)
+            let tokens = themeStore.tokens(for: colorScheme)
 
             content
                 // LTR 下从左向右滑动揭示 leading；显式禁止 full swipe，避免误提交状态。
@@ -341,7 +344,7 @@ private struct SessionRowSwipeActionsModifier: ViewModifier {
                     } label: {
                         Label(actions.pinTitle, systemImage: actions.pinSystemImage)
                     }
-                    .tint(actions.isPinned ? Color.gray : Color.orange)
+                    .tint(actions.isPinned ? tokens.sessionUnpinActionTint : tokens.sessionPinActionTint)
                     .disabled(!actions.canChangePinState)
 
                     if actions.canChangeReadState {
@@ -350,7 +353,11 @@ private struct SessionRowSwipeActionsModifier: ViewModifier {
                         } label: {
                             Label(actions.readTitle, systemImage: actions.readSystemImage)
                         }
-                        .tint(Color.blue)
+                        .tint(
+                            actions.isUnread
+                                ? tokens.sessionMarkReadActionTint
+                                : tokens.sessionMarkUnreadActionTint
+                        )
                     }
                 }
                 // LTR 下从右向左滑动揭示 trailing；永久删除、停止和取消不进入滑动入口。

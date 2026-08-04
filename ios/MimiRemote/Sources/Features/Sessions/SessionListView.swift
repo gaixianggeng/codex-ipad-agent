@@ -861,11 +861,21 @@ struct SessionIndexRow: View {
     var searchSnippet: String? = nil
     var showsNeutralHistoryStatus = false
 
+    static func metadataDirectoryText(for session: AgentSession) -> String {
+        // 同一项目可能同时存在多个 worktree；优先展示真实工作目录，
+        // 只有旧数据缺少 dir 时才回退项目名，避免列表行失去区分度。
+        session.dir.isEmpty ? session.project : session.dir
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         VStack(alignment: .leading, spacing: style == .sidebar ? 3 : 7) {
             HStack(alignment: .center, spacing: 7) {
+                if isPinned {
+                    SessionPinnedBadge(compact: style == .sidebar)
+                }
+
                 Text(session.title)
                     .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(tokens.primaryText)
@@ -879,53 +889,19 @@ struct SessionIndexRow: View {
 
                 Spacer(minLength: 8)
 
-                if style == .library {
-                    Text(timestampText)
-                        .font(themeStore.uiFont(.caption))
+                // 稳定但低频的状态移到标题行；第二行只承担运行时身份和工作目录。
+                if isArchived {
+                    Image(systemName: "archivebox.fill")
                         .foregroundStyle(tokens.tertiaryText)
-                        .fixedSize()
+                        .accessibilityLabel(L10n.text("ui.archived"))
                 }
-            }
-
-            HStack(spacing: 6) {
-                if isPinned {
-                    SessionPinnedBadge(compact: style == .sidebar)
-                }
-                if isArchived { Image(systemName: "archivebox.fill") }
-                if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
-
-                SessionRuntimeIcon(
-                    session: session,
-                    size: style == .sidebar ? 8 : 10,
-                    isActive: session.isRunning
-                )
-
-                if isExternalReadOnly {
-                    Text(L10n.text("ui.mac_observe_only"))
-                        .font(themeStore.uiFont(size: style == .sidebar ? 9 : 11, weight: .semibold))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: true, vertical: false)
+                if reminder != nil {
+                    Image(systemName: "bell.fill")
+                        .foregroundStyle(tokens.warning)
+                        .accessibilityLabel(L10n.text("ui.reminder"))
                 }
 
-                if let branch = session.gitBranchName {
-                    HStack(spacing: 3) {
-                        // Git 是会话元数据而非身份标识，使用中性色避免和 AI 品牌图标竞争。
-                        SessionBranchIcon(size: style == .sidebar ? 8 : 10)
-                            .foregroundStyle(tokens.tertiaryText)
-                            .accessibilityHidden(true)
-
-                        Text(branch)
-                            .foregroundStyle(tokens.tertiaryText)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .frame(maxWidth: style == .sidebar ? 100 : 150, alignment: .leading)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
-                }
-
-                // “历史”已经由列表分区表达；只有实时、异常或其他有区分度的状态才进入行内。
-                ZStack(alignment: .leading) {
+                ZStack(alignment: .trailing) {
                     if shouldShowStatusLabel {
                         statusLabel(tokens: tokens)
                             .id(status)
@@ -937,28 +913,41 @@ struct SessionIndexRow: View {
                     value: status
                 )
 
-                if isObserving {
+                if isObserving || isExternalReadOnly {
                     Image(systemName: "eye")
                         .foregroundStyle(tokens.tertiaryText)
                         .accessibilityLabel(L10n.text("ui.just_observe"))
                 }
 
-                Spacer(minLength: style == .sidebar ? 4 : 10)
-
-                // 项目归属固定在尾部，长分支只压缩自身，不再带着项目名左右漂移。
-                HStack(spacing: style == .sidebar ? 4 : 6) {
-                    Text(session.project.isEmpty ? session.dir : session.project)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .multilineTextAlignment(.trailing)
-                        .frame(maxWidth: style == .sidebar ? 88 : 160, alignment: .trailing)
-
-                    if style == .sidebar {
-                        Text("·")
-                        Text(timestampText)
-                    }
+                if !timestampText.isEmpty {
+                    Text(timestampText)
+                        .font(themeStore.uiFont(size: style == .sidebar ? 10 : 12, weight: .regular))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .fixedSize()
                 }
-                .layoutPriority(1)
+            }
+
+            HStack(spacing: 6) {
+                SessionRuntimeIcon(
+                    session: session,
+                    size: style == .sidebar ? 8 : 10,
+                    isActive: session.isRunning
+                )
+
+                // 高频列表只展示“运行时 + 工作目录”。Git 分支仍保留在 Inspector，
+                // 但不再与目录争夺这一行的左右两端，扫读时只需沿一个 leading edge。
+                Text(Self.metadataDirectoryText(for: session))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(
+                        L10n.format(
+                            "ui.directory_value",
+                            Self.metadataDirectoryText(for: session)
+                        )
+                    )
+                    .layoutPriority(1)
             }
             .font(themeStore.uiFont(size: style == .sidebar ? 10 : 12, weight: .regular))
             .foregroundStyle(tokens.tertiaryText)
