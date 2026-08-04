@@ -245,7 +245,8 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            return .white
+            // 暖白而非纯白：比暖底更亮以撑起层级，同时压低蓝通道，避免白卡在暖底上翘出冷色。
+            return Color(red: 1.0, green: 0.996, blue: 0.984)
         case .dark:
             return Color(red: 0.137, green: 0.129, blue: 0.141)
         }

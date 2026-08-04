@@ -988,15 +988,19 @@ struct ComposerView: View {
         tokens: ThemeTokens
     ) -> some View {
         if colorScheme == .light {
-            // 浅色输入面复用现有语义白色：像 Linear 一样让主工作表面保持清晰，
-            // 再用很轻的边缘与环境阴影表达层级，避免继续叠出第三种近似灰白色。
-            shape
-                .fill(tokens.inputBackground)
-                .shadow(
-                    color: Color.black.opacity(colorSchemeContrast == .increased ? 0.07 : 0.035),
-                    radius: colorSchemeContrast == .increased ? 4 : 7,
-                    y: 2
-                )
+            if colorSchemeContrast == .increased {
+                // 增强对比度靠实线边界定义卡片，阴影保持克制，避免和描边叠成脏边。
+                shape
+                    .fill(tokens.inputBackground)
+                    .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
+            } else {
+                // 像 Linear 一样用分层柔和阴影把输入卡“浮”在暖底之上：近距接触阴影收住
+                // 边缘、远距环境阴影给出升起感，卡片改由阴影而非硬描边定义。
+                shape
+                    .fill(tokens.inputBackground)
+                    .shadow(color: Color.black.opacity(0.05), radius: 3, y: 1)
+                    .shadow(color: Color.black.opacity(0.08), radius: 20, y: 10)
+            }
         } else if reduceTransparency {
             shape.fill(tokens.elevatedSurface)
         } else {
@@ -1151,7 +1155,8 @@ struct ComposerView: View {
             // 增强对比度时使用明确实线边界；默认外观仍保持“结构可感知、不过度描边”。
             return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
         }
-        return tokens.border.opacity(colorScheme == .light ? 0.92 : 0.58)
+        // 浅色卡片已由分层阴影定义边界，硬描边降到近透明，只留一丝顶边收口；深色仍靠描边。
+        return tokens.border.opacity(colorScheme == .light ? 0.35 : 0.58)
     }
 
     var composerPlaceholderText: String {
