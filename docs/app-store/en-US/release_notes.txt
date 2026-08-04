@@ -3,4 +3,4 @@
 - Refined iPhone and iPad workbench navigation.
 - Added direct access to Privacy Policy, Terms of Use, and Support.
 - Added a choice between live on-device and host-mediated Codex voice transcription.
-- Replaced third-party brand artwork with neutral runtime symbols.
+- Refreshed the iPhone and iPad interfaces and clarified compatible runtime choices.

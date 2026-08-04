@@ -29,11 +29,11 @@
 </p>
 
 <p align="center">
-  <img src="artifacts/app-screenshots/ipad-pro-devicehub-2026-07-27-workbench.png" alt="Mimi Remote showing a wide Codex workbench on a real iPad Pro" width="100%" />
+  <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/workspace.png" alt="Mimi Remote workspace on iPad" width="100%" />
 </p>
 
 <p align="center">
-  <sub>A real iPad Pro, a real Debug build, and public demo data — no mockup UI.</sub>
+  <sub>Current Mimi Remote UI on iPad, prepared from physical-device captures with public demo data.</sub>
 </p>
 
 Mimi Remote connects directly to your Mac through Tailscale or the same local network. The project does not operate a relay, account system, or hosted session service. Your Mac remains the control plane; data you intentionally send to Codex, Claude Code, GitHub, voice transcription, or MCP is still handled by those services under their own terms.
@@ -55,15 +55,15 @@ Mimi Remote is an independent third-party project. It is not affiliated with, en
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/iphone-devicehub-2026-07-27-conversation.png" alt="Mimi Remote conversation on a real iPhone 17 Pro" width="58%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/iphone/en-US/conversation.png" alt="Mimi Remote conversation on iPhone" width="58%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-mini-devicehub-2026-07-27-queue.png" alt="Mimi Remote queued follow-ups on a real iPad mini" width="72%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/sessions.png" alt="Mimi Remote session list on iPad" width="72%" />
     </td>
   </tr>
 </table>
 
-All three images were captured from the same source tree on physical devices through Xcode Device Hub. The Debug-only seed uses `/Users/demo`, placeholder credentials, and public demo copy; no personal repository, access token, endpoint, or Tailnet address is shown. See the [screenshot manifest](artifacts/app-screenshots/manifest.md).
+The current screenshot set covers workspace, conversation, session list, settings with token usage, and Mac connection in English and Simplified Chinese on iPhone and iPad. It uses `/Users/demo`, placeholder credentials, and public demo copy; no personal repository, access token, endpoint, or Tailnet address is shown. See the [MIM-80 submission manifest](artifacts/app-store/mim-80-submission/1.1/README.md).
 
 ## Leave the desk, not the flow
 
@@ -92,20 +92,20 @@ Mimi Remote keeps the same project and session model across devices, but each su
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>Projects are first-class</strong><br />
-      <sub>Project state, quick starts, and recent conversations share one continuous workspace.</sub>
+      <strong>Usage stays visible</strong><br />
+      <sub>Token usage, language, appearance, and permissions stay in one focused settings surface.</sub>
     </td>
     <td width="50%" align="center">
-      <strong>Settings keep your place</strong><br />
-      <sub>Quota, connectivity, language, appearance, and permissions open over the current context.</sub>
+      <strong>Mac connection is explicit</strong><br />
+      <sub>Pairing status and host connectivity are visible before you start remote work.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-workspace.png" alt="Mimi Remote project workspace on an iPad Pro simulator" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/settings.png" alt="Mimi Remote settings and token usage on iPad" width="100%" />
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-settings.png" alt="Mimi Remote settings sheet over the current iPad workbench" width="100%" />
+      <img src="artifacts/app-store/mim-80-submission/1.1/source/ipad/en-US/mac-connection.png" alt="Mimi Remote Mac connection settings on iPad" width="100%" />
     </td>
   </tr>
 </table>
@@ -125,7 +125,7 @@ The hierarchy is intentional:
 - **Show state before action:** connection health, runtime readiness, remaining quota, and permission mode are visible before controls that can change or interrupt work.
 - **Use each platform natively:** compact touch hierarchy on iPhone, multi-column workbench on iPad, and a dense menu bar utility on Mac — not one layout stretched across three screens.
 
-The two iPad detail images were captured from the current Debug build on a reused iPad Pro simulator. The Mac image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname. The installed Mac service was not restarted or replaced. See the [screenshot manifest](artifacts/app-screenshots/manifest.md).
+The two iPad detail images come from the current MIM-80 physical-device screenshot set. The Mac menu image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname. The installed Mac service was not restarted or replaced. See the [MIM-80 submission manifest](artifacts/app-store/mim-80-submission/1.1/README.md).
 
 ## Architecture
 

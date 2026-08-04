@@ -1218,10 +1218,22 @@ struct UnifiedWorkbenchShell: View {
 #if DEBUG
         guard !didApplyDebugLaunchRoute else { return }
         let arguments = ProcessInfo.processInfo.arguments
-        guard arguments.contains("--debug-open-workspaces") else { return }
-        didApplyDebugLaunchRoute = true
-        // 真机视觉验证可直接抵达目标页；仅 Debug 生效，不改变正常或 Release 启动路径。
-        open(.workspaces, layout: layout)
+        // App Store 截图需要在 Simulator 与真机上得到完全相同的页面状态。
+        // 这些入口只存在于 Debug 构建，不改变正常启动、恢复或 Release 路由。
+        if arguments.contains("--debug-open-conversation") {
+            didApplyDebugLaunchRoute = true
+            open(.session("debug-session-layout"), source: .sessions, layout: layout)
+        } else if arguments.contains("--debug-open-sessions") {
+            didApplyDebugLaunchRoute = true
+            open(.sessions, layout: layout)
+        } else if arguments.contains("--debug-open-workspaces") {
+            didApplyDebugLaunchRoute = true
+            open(.workspaces, layout: layout)
+        } else if arguments.contains("--debug-open-settings")
+            || arguments.contains("--debug-open-mac-connection") {
+            didApplyDebugLaunchRoute = true
+            presentSheet(.settings)
+        }
 #endif
     }
 

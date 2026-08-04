@@ -115,6 +115,8 @@ struct SettingsView: View {
     @AppStorage(ComposerPermissionMode.defaultStorageKey) private var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
     @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
+    @State private var didApplyDebugLaunchRoute = false
+    @State private var debugShowsConnectionManagement = false
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -155,6 +157,7 @@ struct SettingsView: View {
                 try appStore.renameConnectionProfile(id: route.profileID, displayName: displayName)
             }
         }
+        .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 
     @ViewBuilder
@@ -174,6 +177,12 @@ struct SettingsView: View {
         }
         .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : L10n.text("ui.me"))
         .navigationBarTitleDisplayMode(initialNavigationTitleDisplayMode)
+        .navigationDestination(isPresented: $debugShowsConnectionManagement) {
+            ConnectionManagementView(
+                qrScannerPresentation: qrScannerPresentation,
+                onRequestProfileRename: { profileRenamePresentation.present($0) }
+            )
+        }
         .toolbar {
             if !isInitialSetup && showsDoneButton {
                 ToolbarItem(placement: .confirmationAction) {
@@ -194,6 +203,19 @@ struct SettingsView: View {
     private var initialNavigationTitleDisplayMode: NavigationBarItem.TitleDisplayMode {
         // iPhone 的一级“我的”保留系统大标题；iPad detail 使用紧凑标题，避免与居中内容断裂。
         horizontalSizeClass == .compact ? .large : .inline
+    }
+
+    private func applyDebugLaunchRouteIfNeeded() {
+#if DEBUG
+        guard !didApplyDebugLaunchRoute else { return }
+        didApplyDebugLaunchRoute = true
+
+        // App Store 截图需要直接到达 Mac 连接页，避免依赖屏幕尺寸与滚动位置做自动点击。
+        // 仅 Debug 构建读取该参数，Release 与普通设置导航保持不变。
+        if ProcessInfo.processInfo.arguments.contains("--debug-open-mac-connection") {
+            debugShowsConnectionManagement = true
+        }
+#endif
     }
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {
