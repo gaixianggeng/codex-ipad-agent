@@ -861,6 +861,12 @@ struct SessionIndexRow: View {
     var searchSnippet: String? = nil
     var showsNeutralHistoryStatus = false
 
+    static func metadataDirectoryText(for session: AgentSession) -> String {
+        // 同一项目可能同时存在多个 worktree；优先展示真实工作目录，
+        // 只有旧数据缺少 dir 时才回退项目名，避免列表行失去区分度。
+        session.dir.isEmpty ? session.project : session.dir
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
@@ -930,7 +936,7 @@ struct SessionIndexRow: View {
 
                 // 高频列表只展示“运行时 + 工作目录”。Git 分支仍保留在 Inspector，
                 // 但不再与目录争夺这一行的左右两端，扫读时只需沿一个 leading edge。
-                Text(session.project.isEmpty ? session.dir : session.project)
+                Text(Self.metadataDirectoryText(for: session))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .multilineTextAlignment(.leading)
@@ -938,7 +944,7 @@ struct SessionIndexRow: View {
                     .accessibilityLabel(
                         L10n.format(
                             "ui.directory_value",
-                            session.dir.isEmpty ? session.project : session.dir
+                            Self.metadataDirectoryText(for: session)
                         )
                     )
                     .layoutPriority(1)

@@ -1718,6 +1718,26 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testSessionMetadataPrefersWorkingDirectoryOverProjectName() {
+        let project = AgentProject(
+            id: "shared-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/worktrees/codex-ipad-agent/mim-96"
+        )
+        let session = makeSnapshotSession(
+            id: "worktree-session",
+            project: project,
+            title: "验证 worktree 目录",
+            status: "history",
+            preview: ""
+        )
+
+        XCTAssertEqual(
+            SessionIndexRow.metadataDirectoryText(for: session),
+            "/Users/me/worktrees/codex-ipad-agent/mim-96"
+        )
+    }
+
     func testSessionRuntimeMetadataInDarkConversationList() {
         let project = AgentProject(
             id: "runtime-dark",
