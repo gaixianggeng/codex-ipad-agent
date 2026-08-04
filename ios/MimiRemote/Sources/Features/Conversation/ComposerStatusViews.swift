@@ -316,7 +316,7 @@ struct ComposerStatusTray: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let surfaceStyle = surfaceStyle(tokens: tokens)
-        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: isGoalExpanded ? 20 : 16, style: .continuous)
 
         VStack(alignment: .leading, spacing: isGoalExpanded ? 8 : 0) {
             // 展开态把状态内容和收起按钮放到同一行，避免先出现一整行空白按钮区。
@@ -326,7 +326,9 @@ struct ComposerStatusTray: View {
                 collapsedHeader(tokens: tokens)
             }
 
-            if let trimmedGoalError {
+            // 收起态只表达“发生了什么”；详细错误随展开内容渐进披露，避免状态条
+            // 因两行错误信息重新长成一张常驻卡片。
+            if isGoalExpanded, let trimmedGoalError {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle")
                     Text(trimmedGoalError)
@@ -336,7 +338,7 @@ struct ComposerStatusTray: View {
                 .foregroundStyle(tokens.warning)
             }
         }
-        .padding(isGoalExpanded ? 10 : 8)
+        .padding(isGoalExpanded ? 10 : 0)
         // 状态栏和输入卡共用同一条 composer 轨道；展开后也不要另设宽度上限，
         // 否则 iPad 宽屏下会出现上窄下宽、左右边界不一致的视觉断层。
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -352,7 +354,7 @@ struct ComposerStatusTray: View {
     private func collapsedHeader(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 10) {
                     if sessionControlNotice != nil {
                         collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
                     }
@@ -365,18 +367,19 @@ struct ComposerStatusTray: View {
                         collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
                     }
                 }
-                .padding(.vertical, 1)
             }
             .layoutPriority(1)
 
-            iconButton(
-                title: isGoalExpanded ? L10n.text("ui.collapse_state") : L10n.text("ui.expanded_state"),
-                systemImage: isGoalExpanded ? "chevron.up" : "chevron.down",
+            collapsedDisclosureButton(
+                title: L10n.text("ui.expanded_state"),
+                systemImage: "chevron.down",
                 tint: tokens.secondaryText,
-                isDisabled: false,
                 action: onToggleGoalExpanded
             )
         }
+        .padding(.leading, 10)
+        .padding(.trailing, 2)
+        .frame(minHeight: 44)
     }
 
     @ViewBuilder
@@ -424,25 +427,38 @@ struct ComposerStatusTray: View {
     }
 
     private func collapsedChip(title: String, systemImage: String, tint: Color, tokens: ThemeTokens) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 16, weight: .semibold))
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
                 .foregroundStyle(tint)
             Text(title)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(1)
         }
-        .frame(height: 44)
-        .padding(.horizontal, 12)
-        .modifier(
-            ComposerFlatControlSurface(
-                tokens: tokens,
-                cornerRadius: 12,
-                isEmphasized: false
-            )
-        )
+        .frame(height: 28)
+        .padding(.horizontal, 2)
         .accessibilityElement(children: .combine)
+    }
+
+    /// 收起态只保留一个 44pt 命中区，视觉上不再叠一层独立方形按钮。
+    /// 这样状态 rail 保持紧凑，同时仍满足触控和 VoiceOver 的可达性。
+    private func collapsedDisclosureButton(
+        title: String,
+        systemImage: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(themeStore.uiFont(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .help(title)
+        .accessibilityLabel(title)
     }
 
     private func adaptiveStatusModules(tokens: ThemeTokens) -> some View {

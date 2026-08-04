@@ -783,13 +783,17 @@ struct ComposerView: View {
                     Task { await sessionStore.clearSelectedThreadGoal() }
                 },
                 onToggleGoalExpanded: {
-                    withAnimation(.easeInOut(duration: 0.16)) {
+                    withAnimation(composerMotionAnimation) {
                         isGoalStatusExpanded.toggle()
                     }
                 }
             )
             .environmentObject(themeStore)
-            .transition(.move(edge: .top).combined(with: .opacity))
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .move(edge: .top).combined(with: .opacity)
+            )
         }
     }
 

@@ -1246,6 +1246,55 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
+    func testComposerStatusTrayCollapsedBlockedObserveDark() {
+        let themeStore = makeThemeStore()
+        let goal = ThreadGoal(
+            threadID: "thread-collapsed-blocked",
+            objective: "等待用户补充权限后继续执行。",
+            status: .blocked,
+            tokenBudget: 2_000_000,
+            tokensUsed: 640_000,
+            timeUsedSeconds: 820,
+            createdAt: snapshotMessageDate,
+            updatedAt: snapshotMessageDate
+        )
+        let tray = ComposerStatusTray(
+            sessionControlNotice: "当前由 Mac 端控制，仅观察。",
+            quotaNotice: nil,
+            usage: nil,
+            goal: goal,
+            isGoalExpanded: false,
+            isGoalUpdating: false,
+            // 收起态只展示状态摘要，错误细节必须留到展开后再显示。
+            goalErrorMessage: "缺少所需权限，等待用户处理后重试。",
+            isRefreshDisabled: false,
+            allowsTakeOver: true,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+
+        let view = VStack {
+            Spacer()
+            tray
+                .padding(16)
+        }
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .background(themeStore.tokens(for: .dark).background)
+        .frame(width: 390, height: 110)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 110))
+        )
+    }
+
     func testComposerStatusTrayExpandedCrowdedState() async {
         let view = await makeComposerStatusTrayCrowdedView(width: 420, height: 768, goalExpanded: true)
 
@@ -1627,6 +1676,69 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
         .background(themeStore.tokens(for: .light).background)
+        .frame(width: 460, height: 190)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
+        )
+    }
+
+    func testSessionRuntimeMetadataInDarkConversationList() {
+        let project = AgentProject(
+            id: "runtime-dark",
+            name: "codex-ipad-agent",
+            path: "/Users/me/code/codex-ipad-agent"
+        )
+        let themeStore = makeThemeStore()
+        let codex = makeSnapshotSession(
+            id: "runtime-dark-codex",
+            project: project,
+            title: "Review MIM-96 会话列表细节",
+            status: "completed",
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "codex/mim-96-refine-session-ui")
+            )
+        )
+        let claude = makeSnapshotSession(
+            id: "runtime-dark-claude",
+            project: project,
+            title: "检查深色模式下的目录对齐",
+            status: "history",
+            preview: "Claude Code 会话",
+            runtimeProvider: "claude"
+        )
+
+        let view = VStack(spacing: 8) {
+            SessionIndexRow(
+                session: codex,
+                foregroundActivity: nil,
+                isSelected: true,
+                isPinned: true,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                isExternalReadOnly: false,
+                isUnread: true,
+                style: .library
+            )
+            SessionIndexRow(
+                session: claude,
+                foregroundActivity: nil,
+                isSelected: false,
+                isPinned: false,
+                isArchived: false,
+                reminder: nil,
+                isObserving: false,
+                isExternalReadOnly: false,
+                style: .library
+            )
+        }
+        .padding(16)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .background(themeStore.tokens(for: .dark).background)
         .frame(width: 460, height: 190)
 
         assertSnapshot(

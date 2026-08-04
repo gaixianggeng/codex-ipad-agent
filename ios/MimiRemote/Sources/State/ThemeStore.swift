@@ -306,6 +306,44 @@ extension ThemeTokens {
         }
     }
 
+    /// 会话侧滑动作使用独立语义色，而不是在视图里硬编码系统橙/蓝。
+    /// 这些颜色都以白色图标和文案为前景，并分别为浅色、深色外观校准对比度。
+    var sessionPinActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 74.0 / 255.0, green: 20.0 / 255.0, blue: 74.0 / 255.0)
+        case .dark:
+            return Color(red: 112.0 / 255.0, green: 61.0 / 255.0, blue: 116.0 / 255.0)
+        }
+    }
+
+    var sessionUnpinActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 91.0 / 255.0, green: 84.0 / 255.0, blue: 95.0 / 255.0)
+        case .dark:
+            return Color(red: 67.0 / 255.0, green: 61.0 / 255.0, blue: 70.0 / 255.0)
+        }
+    }
+
+    var sessionMarkUnreadActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 32.0 / 255.0, green: 95.0 / 255.0, blue: 169.0 / 255.0)
+        case .dark:
+            return Color(red: 36.0 / 255.0, green: 84.0 / 255.0, blue: 139.0 / 255.0)
+        }
+    }
+
+    var sessionMarkReadActionTint: Color {
+        switch resolvedScheme {
+        case .light:
+            return Color(red: 40.0 / 255.0, green: 108.0 / 255.0, blue: 76.0 / 255.0)
+        case .dark:
+            return Color(red: 35.0 / 255.0, green: 89.0 / 255.0, blue: 63.0 / 255.0)
+        }
+    }
+
     /// 会话库与工作区里的大块内容容器复用输入面板的暖石墨层级。
     /// 最外层仍保持暖黑，既拉开层次，也避免把所有通用 surface 一起提亮。
     var contentPanelBackground: Color {
