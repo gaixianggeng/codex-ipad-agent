@@ -6297,6 +6297,220 @@
         }
       }
     },
+    "ui.connection_attempt_succeeded" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接"
+          }
+        }
+      }
+    },
+    "ui.connection_attempt_value" : {
+      "comment" : "Connection route attempt number, for example Attempt 1.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attempt %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %@ 次尝试"
+          }
+        }
+      }
+    },
+    "ui.connection_automatically_used_saved_address" : {
+      "comment" : "Quiet success note shown after a preferred route failed and a saved fallback connected.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A saved address was used automatically."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已自动改用保存的地址。"
+          }
+        }
+      }
+    },
+    "ui.connection_conditional_tailscale_guidance" : {
+      "comment" : "Conditional guidance for an unreachable non-LAN-only route. Never claims Tailscale is disabled.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This computer cannot be reached right now. Confirm that Mimi Remote is running on it. If you connect through Tailscale, open Tailscale on both devices and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行；如果你通过 Tailscale 连接，请在两台设备上打开 Tailscale 后重试。"
+          }
+        }
+      }
+    },
+    "ui.connection_failure_credentials" : {
+      "comment" : "Diagnostic classification for a credential rejection.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Access code rejected" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "访问码被拒绝" } }
+      }
+    },
+    "ui.connection_failure_dns" : {
+      "comment" : "Diagnostic classification for a DNS resolution failure.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Name could not be resolved" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "名称解析失败" } }
+      }
+    },
+    "ui.connection_failure_identity_mismatch" : {
+      "comment" : "Diagnostic classification for an installation identity mismatch.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Computer identity did not match" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "电脑身份不符" } }
+      }
+    },
+    "ui.connection_failure_identity_required" : {
+      "comment" : "Diagnostic classification when the server does not provide an installation identity.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Computer identity unavailable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "电脑身份不可用" } }
+      }
+    },
+    "ui.connection_failure_other" : {
+      "comment" : "Diagnostic classification for an uncategorized failure.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connection failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "连接失败" } }
+      }
+    },
+    "ui.connection_failure_protocol" : {
+      "comment" : "Diagnostic classification for a protocol or server response failure.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Service response failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务响应失败" } }
+      }
+    },
+    "ui.connection_failure_unreachable" : {
+      "comment" : "Diagnostic classification for timeout or unreachable network facts.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Address unreachable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "地址不可达" } }
+      }
+    },
+    "ui.connection_identity_mismatch_guidance" : {
+      "comment" : "Safety guidance after all candidates fail installation identity validation.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To protect saved data, Mimi did not connect to a computer with a different identity. Confirm that this is the original computer, or scan its QR code again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为保护已保存的数据，Mimi 没有连接到身份不符的电脑。请确认这是原来的电脑，或重新扫描它的二维码。"
+          }
+        }
+      }
+    },
+    "ui.connection_local_network_guidance" : {
+      "comment" : "Guidance for a LAN-only profile that is currently unreachable.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This computer cannot be reached right now. Confirm that Mimi Remote is running and that both devices are on the same mutually reachable network."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行，且两台设备位于可互相访问的同一网络。"
+          }
+        }
+      }
+    },
+    "ui.connection_profile_automatic_address" : {
+      "comment" : "Non-technical route summary shown under a saved computer.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Automatically uses the saved address" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动使用保存的地址" } }
+      }
+    },
+    "ui.connection_profile_automatic_networks" : {
+      "comment" : "Non-technical route summary for a profile with automatic preferred and fallback candidates.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Automatically chooses an available connection" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动选择可用连接" } }
+      }
+    },
+    "ui.connection_profile_reachable_network" : {
+      "comment" : "Non-technical route summary for a LAN-only profile.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Available on the same mutually reachable network" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可在互相访问的同一网络连接" } }
+      }
+    },
+    "ui.connection_profile_secure_address" : {
+      "comment" : "Non-technical route summary for an HTTPS profile.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Uses a secure network address" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用安全网络地址连接" } }
+      }
+    },
+    "ui.connection_profile_this_computer" : {
+      "comment" : "Non-technical route summary for a loopback profile.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Direct connection to this computer" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "直接连接这台电脑" } }
+      }
+    },
+    "ui.connection_route_local_network" : {
+      "comment" : "Diagnostic route label for a private LAN address.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local network" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "局域网地址" } }
+      }
+    },
+    "ui.connection_route_saved_address" : {
+      "comment" : "Diagnostic route label for an uncategorized saved address.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved address" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存的地址" } }
+      }
+    },
+    "ui.connection_route_tailscale_address" : {
+      "comment" : "Diagnostic route label for a Tailscale IP address.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tailscale address" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Tailscale 地址" } }
+      }
+    },
+    "ui.connection_route_this_computer" : {
+      "comment" : "Diagnostic route label for loopback.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This computer" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这台电脑" } }
+      }
+    },
     "ui.connection_address" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -27339,13 +27553,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The current device cannot find this computer. Confirm that Mimi Remote is running on it and that this device is connected to Tailscale."
+            "value" : "The current device cannot find this computer. Confirm that Mimi Remote is running and that the current network can reach it. If you use Tailscale, open it on both devices and try again."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前设备暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行，并且当前设备已连接 Tailscale。"
+            "value" : "当前设备暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行，且当前网络可以访问它；如果你通过 Tailscale 连接，请在两台设备上打开 Tailscale 后重试。"
           }
         }
       }

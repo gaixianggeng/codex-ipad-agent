@@ -271,6 +271,79 @@ struct ConnectionProfile: Codable, Identifiable, Equatable {
     }
 }
 
+/// 普通连接界面使用的展示策略。Profile 中的 endpoint 仍用于路由和诊断，
+/// 这里仅返回设备名或可理解的连接范围，避免把 URL / IP 重新暴露给普通用户。
+enum ConnectionOverviewPresentation {
+    static func summary(isConfigured: Bool, profile: ConnectionProfile?) -> String {
+        guard isConfigured else {
+            return L10n.text("ui.mac_connection_not_configured_yet")
+        }
+        guard let profile else {
+            return L10n.text("ui.connection_profile_automatic_address")
+        }
+        return profileTitle(for: profile)
+    }
+
+    static func profileTitle(for profile: ConnectionProfile) -> String {
+        if let displayName = humanReadableDisplayName(for: profile) {
+            return displayName
+        }
+        return routeDetail(for: profile)
+    }
+
+    static func routeDetail(for profile: ConnectionProfile) -> String {
+        if profile.tailscaleDNSName != nil ||
+            ConnectionProfile.isTailscaleIPEndpoint(profile.endpoint) {
+            return L10n.text("ui.connection_profile_automatic_networks")
+        }
+        switch ConnectionRouteKind.classify(endpoint: profile.endpoint) {
+        case .loopback:
+            return L10n.text("ui.connection_profile_this_computer")
+        case .localNetwork:
+            return L10n.text("ui.connection_profile_reachable_network")
+        case .secureRemote:
+            return L10n.text("ui.connection_profile_secure_address")
+        case .tailscaleMagicDNS, .tailscaleIP:
+            return L10n.text("ui.connection_profile_automatic_networks")
+        case .other:
+            return L10n.text("ui.connection_profile_automatic_address")
+        }
+    }
+
+    private static func humanReadableDisplayName(for profile: ConnectionProfile) -> String? {
+        let value = profile.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let lowercased = value.lowercased()
+        let routeHosts = profile.connectionCandidates.compactMap {
+            URLComponents(string: $0)?.host?.lowercased()
+        }
+        guard !value.contains("://"),
+              !value.contains(":"),
+              !(value.contains(".") && !value.contains(" ")),
+              !routeHosts.contains(lowercased) else {
+            return nil
+        }
+        return value
+    }
+}
+
+/// 设置列表的普通展示模型。所有可见与 VoiceOver 文案都从同一个安全标题派生，
+/// 避免旧 Profile 把 IP 型 displayName 从辅助标签重新暴露出来。
+struct ConnectionProfileRowPresentation: Equatable {
+    let title: String
+    let routeDetail: String
+    let copyAccessibilityLabel: String
+    let manageAccessibilityLabel: String
+
+    init(profile: ConnectionProfile) {
+        let title = ConnectionOverviewPresentation.profileTitle(for: profile)
+        self.title = title
+        routeDetail = ConnectionOverviewPresentation.routeDetail(for: profile)
+        copyAccessibilityLabel = L10n.format("ui.copy_connection_info_for_value", title)
+        manageAccessibilityLabel = L10n.format("ui.manage_value", title)
+    }
+}
+
 struct ConnectionProfileSettingsItem: Identifiable, Equatable {
     let profile: ConnectionProfile
     let isCurrent: Bool
@@ -360,14 +433,14 @@ struct ConnectionCredentialRemovalConfirmation: Identifiable, Equatable {
     static func forgettingCurrent(_ profile: ConnectionProfile?) -> Self {
         Self(
             target: .current(profileID: profile?.id),
-            displayName: profile?.displayName
+            displayName: profile.map(ConnectionOverviewPresentation.profileTitle(for:))
         )
     }
 
     static func deletingSavedProfile(_ profile: ConnectionProfile) -> Self {
         Self(
             target: .savedProfile(profileID: profile.id),
-            displayName: profile.displayName
+            displayName: ConnectionOverviewPresentation.profileTitle(for: profile)
         )
     }
 
@@ -475,6 +548,9 @@ struct PreparedConnectionSettings: Equatable {
     let hostPlatform: HostPlatform
     let hostContext: PreparedHostContext?
     let capabilityNegotiation: HostCapabilityNegotiation
+    /// 候选路由只在提交成功后发布；prepare 成功本身不等同于设置已保存。
+    let connectionAttemptGeneration: UInt64?
+    let connectionAttempts: [ConnectionRouteAttempt]
 
     init(
         endpoint: String,
@@ -487,7 +563,9 @@ struct PreparedConnectionSettings: Equatable {
         tailscaleDeviceName: String? = nil,
         hostPlatform: HostPlatform = .unknown,
         hostContext: PreparedHostContext? = nil,
-        capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated
+        capabilityNegotiation: HostCapabilityNegotiation = .notNegotiated,
+        connectionAttemptGeneration: UInt64? = nil,
+        connectionAttempts: [ConnectionRouteAttempt] = []
     ) {
         self.endpoint = endpoint
         self.activeEndpoint = activeEndpoint ?? endpoint
@@ -507,6 +585,29 @@ struct PreparedConnectionSettings: Equatable {
         self.hostPlatform = hostPlatform
         self.hostContext = hostContext
         self.capabilityNegotiation = capabilityNegotiation
+        self.connectionAttemptGeneration = connectionAttemptGeneration
+        self.connectionAttempts = connectionAttempts
+    }
+
+    func recordingConnectionAttempt(
+        generation: UInt64,
+        attempts: [ConnectionRouteAttempt]
+    ) -> PreparedConnectionSettings {
+        PreparedConnectionSettings(
+            endpoint: endpoint,
+            activeEndpoint: activeEndpoint,
+            token: token,
+            profileTarget: profileTarget,
+            validatedAt: validatedAt,
+            installationID: installationID,
+            tailscaleDNSName: tailscaleDNSName,
+            tailscaleDeviceName: tailscaleDeviceName,
+            hostPlatform: hostPlatform,
+            hostContext: hostContext,
+            capabilityNegotiation: capabilityNegotiation,
+            connectionAttemptGeneration: generation,
+            connectionAttempts: attempts
+        )
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -520,6 +621,8 @@ struct PreparedConnectionSettings: Equatable {
             lhs.tailscaleDeviceName == rhs.tailscaleDeviceName &&
             lhs.hostPlatform == rhs.hostPlatform &&
             lhs.hostContext === rhs.hostContext &&
-            lhs.capabilityNegotiation == rhs.capabilityNegotiation
+            lhs.capabilityNegotiation == rhs.capabilityNegotiation &&
+            lhs.connectionAttemptGeneration == rhs.connectionAttemptGeneration &&
+            lhs.connectionAttempts == rhs.connectionAttempts
     }
 }
