@@ -15,6 +15,70 @@ struct DebugLaunchConfiguration {
     let endpoint: String?
     let token: String?
 
+    /// App Store 截图只使用公开的演示档案，并且只写入 AppStore 本次进程的内存态。
+    /// 这样真实 Mac 名称、MagicDNS、IP 和访问码不会进入截图或持久化存储。
+    func applyStoreScreenshotFixture(
+        profiles: inout [ConnectionProfile],
+        activeProfileID: inout String?,
+        endpoint: inout String,
+        token: inout String
+    ) {
+        guard seedsStoreScreenshotUI else { return }
+        let primaryProfile = ConnectionProfile(
+            id: "debug-store-primary",
+            displayName: "Demo Mac Studio",
+            endpoint: "http://100.64.0.10:8787",
+            tailscaleDNSName: "demo-studio.example.ts.net",
+            tailscaleDeviceName: "demo-studio",
+            isDisplayNameCustomized: true,
+            lastSuccessfulAt: Date(),
+            installationID: "debug-store-primary-installation",
+            hostPlatform: .apple
+        )
+        let secondaryProfile = ConnectionProfile(
+            id: "debug-store-secondary",
+            displayName: "Travel MacBook",
+            endpoint: "http://100.64.0.11:8787",
+            tailscaleDNSName: "travel-mac.example.ts.net",
+            tailscaleDeviceName: "travel-mac",
+            isDisplayNameCustomized: true,
+            lastSuccessfulAt: Date().addingTimeInterval(-86_400),
+            installationID: "debug-store-secondary-installation",
+            hostPlatform: .apple
+        )
+        profiles = [primaryProfile, secondaryProfile]
+        activeProfileID = primaryProfile.id
+        endpoint = primaryProfile.endpoint
+        token = "debug-store-placeholder-token"
+    }
+
+    /// 截图模式下的连接检查始终发布稳定成功态，禁止把演示地址发到真实网络。
+    @discardableResult
+    func applyStoreScreenshotConnectionState(
+        status: inout ConnectionStatus,
+        lastError: inout String?
+    ) -> Bool {
+        guard seedsStoreScreenshotUI else { return false }
+        status = .connected("Demo Mac Studio")
+        lastError = nil
+        return true
+    }
+
+    /// 截图模式回到前台时恢复占位凭据，并复用稳定的离线连接状态。
+    @discardableResult
+    func restoreStoreScreenshotCredentials(
+        token: inout String,
+        isCredentialMemorySuspended: inout Bool,
+        connectionStatus: inout ConnectionStatus,
+        lastError: inout String?
+    ) -> Bool {
+        guard seedsStoreScreenshotUI else { return false }
+        token = "debug-store-placeholder-token"
+        isCredentialMemorySuspended = false
+        _ = applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError)
+        return true
+    }
+
     static func current(processInfo: ProcessInfo = .processInfo) -> DebugLaunchConfiguration {
         let arguments = processInfo.arguments
         let environment = processInfo.environment

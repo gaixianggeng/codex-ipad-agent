@@ -183,36 +183,7 @@ final class AppStore: ObservableObject {
             initialEndpoint = previewProfile.endpoint
             initialToken = ""
         }
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            // App Store 截图只能使用公开示例，不能把真机上的 Mac 名称、MagicDNS、IP
-            // 或访问码带入图片；仅覆盖本次 Debug 进程内存态，不写 UserDefaults/Keychain。
-            let primaryProfile = ConnectionProfile(
-                id: "debug-store-primary",
-                displayName: "Demo Mac Studio",
-                endpoint: "http://100.64.0.10:8787",
-                tailscaleDNSName: "demo-studio.example.ts.net",
-                tailscaleDeviceName: "demo-studio",
-                isDisplayNameCustomized: true,
-                lastSuccessfulAt: Date(),
-                installationID: "debug-store-primary-installation",
-                hostPlatform: .apple
-            )
-            let secondaryProfile = ConnectionProfile(
-                id: "debug-store-secondary",
-                displayName: "Travel MacBook",
-                endpoint: "http://100.64.0.11:8787",
-                tailscaleDNSName: "travel-mac.example.ts.net",
-                tailscaleDeviceName: "travel-mac",
-                isDisplayNameCustomized: true,
-                lastSuccessfulAt: Date().addingTimeInterval(-86_400),
-                installationID: "debug-store-secondary-installation",
-                hostPlatform: .apple
-            )
-            initialProfiles = [primaryProfile, secondaryProfile]
-            initialActiveProfileID = primaryProfile.id
-            initialEndpoint = primaryProfile.endpoint
-            initialToken = "debug-store-placeholder-token"
-        }
+        debugLaunchConfiguration.applyStoreScreenshotFixture(profiles: &initialProfiles, activeProfileID: &initialActiveProfileID, endpoint: &initialEndpoint, token: &initialToken)
 #endif
         initialEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
         self.endpoint = initialEndpoint
@@ -234,9 +205,7 @@ final class AppStore: ObservableObject {
         )
 #if DEBUG
         debugWorkbenchBypassEnabled = debugLaunchConfiguration.opensWorkbenchWithoutPairing
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            connectionStatus = .connected("Demo Mac Studio")
-        }
+        _ = debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError)
 #endif
         // 当前客户端只保留一个 Tailscale 地址；网络直连、Peer Relay 与 DERP 切换统一交给 Tailscale。
         // 启动即清理旧公网备用地址，避免升级后继续保留已下线入口或敏感公网配置。
@@ -377,9 +346,7 @@ final class AppStore: ObservableObject {
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {
 #if DEBUG
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            return
-        }
+        guard !debugLaunchConfiguration.seedsStoreScreenshotUI else { return }
 #endif
         if activeConnectionProfileID == ephemeralLocalProfileID {
             // 开发包没有可恢复的 Keychain 项；后台保留本进程短期凭据，
@@ -405,13 +372,7 @@ final class AppStore: ObservableObject {
     /// 使用空凭据触发一次无意义的 401 或创建半初始化 Runtime。
     func restoreCredentialsForForeground() async throws {
 #if DEBUG
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            token = "debug-store-placeholder-token"
-            isCredentialMemorySuspended = false
-            connectionStatus = .connected("Demo Mac Studio")
-            lastError = nil
-            return
-        }
+        if debugLaunchConfiguration.restoreStoreScreenshotCredentials(token: &token, isCredentialMemorySuspended: &isCredentialMemorySuspended, connectionStatus: &connectionStatus, lastError: &lastError) { return }
 #endif
         let lifecycleGeneration = credentialLifecycleGeneration
         let suspensionTask = credentialSuspensionTask
@@ -1190,12 +1151,7 @@ final class AppStore: ObservableObject {
 
     func testConnection(endpoint: String, token: String) async {
 #if DEBUG
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            // 截图示例使用不可路由的演示地址；保持稳定成功态，不发起真实网络请求。
-            connectionStatus = .connected("Demo Mac Studio")
-            lastError = nil
-            return
-        }
+        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return }
 #endif
         do {
             _ = try await validateConnection(endpoint: endpoint, token: token)
@@ -1212,11 +1168,7 @@ final class AppStore: ObservableObject {
     @discardableResult
     func testConnectionOnFirstSettingsAppearanceIfNeeded() async -> Bool {
 #if DEBUG
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            connectionStatus = .connected("Demo Mac Studio")
-            lastError = nil
-            return false
-        }
+        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return false }
 #endif
         guard case .pending = automaticSettingsConnectionTestState else {
             return false
@@ -1260,11 +1212,7 @@ final class AppStore: ObservableObject {
     @discardableResult
     func preflightConnection(force: Bool = false) async -> Bool {
 #if DEBUG
-        if debugLaunchConfiguration.seedsStoreScreenshotUI {
-            connectionStatus = .connected("Demo Mac Studio")
-            lastError = nil
-            return true
-        }
+        if debugLaunchConfiguration.applyStoreScreenshotConnectionState(status: &connectionStatus, lastError: &lastError) { return true }
 #endif
         let localAvailable = await detectLocalAgent(force: force)
         if !force, case .connected = connectionStatus {
