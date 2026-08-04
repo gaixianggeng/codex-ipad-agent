@@ -9,7 +9,8 @@ enum AppDestination: Hashable {
 }
 
 /// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
-/// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
+/// 紧凑导航先同步提交控件直接绑定的视觉状态，再按控件合并外部副作用；这样既不让
+/// Tab/返回手势落后一帧，也能继续丢弃恢复、网络选择等已经过期的写入。
 @MainActor
 final class WorkbenchNavigationBindingScheduler {
     enum Lane: Hashable {
@@ -34,6 +35,21 @@ final class WorkbenchNavigationBindingScheduler {
             self.revisions[lane] = nil
             action()
         }
+    }
+
+    /// Binding setter 里的视觉状态属于系统当前交互事务，必须立即提交；只有可能发布到
+    /// 其他 Store/Binding 的副作用才延后。返回值把本次视觉快照带到延后阶段做过期检查。
+    @discardableResult
+    func commit<Value>(
+        on lane: Lane,
+        visualUpdate: () -> Value,
+        deferredSideEffect: @escaping @MainActor (Value) -> Void
+    ) -> Value {
+        let value = visualUpdate()
+        schedule(on: lane) {
+            deferredSideEffect(value)
+        }
+        return value
     }
 }
 
@@ -75,6 +91,11 @@ enum WorkbenchNavigationEvent: Equatable {
     case compactPathChanged(tab: CompactWorkbenchTab, path: [AppDestination])
     case compactTabChanged(CompactWorkbenchTab)
     case sessionSelectionFinished(SessionID)
+}
+
+private struct WorkbenchNavigationCommit {
+    let state: WorkbenchNavigationState
+    let effect: WorkbenchNavigationEffect?
 }
 
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
@@ -1156,11 +1177,11 @@ struct UnifiedWorkbenchShell: View {
                 let lane: WorkbenchNavigationBindingScheduler.Lane = tab == .workspaces
                     ? .compactWorkspacesPath
                     : .compactSessionsPath
-                navigationBindingScheduler.schedule(on: lane) {
-                    // 只接收基于当前 path 的最新写入，防止启动恢复后的旧 [] 覆盖详情页。
-                    guard compactPath(for: tab) == expectedPath else { return }
-                    applyNavigation(.compactPathChanged(tab: tab, path: path), layout: layout)
-                }
+                applyInteractiveNavigation(
+                    .compactPathChanged(tab: tab, path: path),
+                    lane: lane,
+                    layout: layout
+                )
             }
         )
     }
@@ -1171,10 +1192,11 @@ struct UnifiedWorkbenchShell: View {
             set: { tab in
                 let expectedTab = navigationState.compactSelectedTab
                 guard tab != expectedTab else { return }
-                navigationBindingScheduler.schedule(on: .compactTab) {
-                    guard navigationState.compactSelectedTab == expectedTab else { return }
-                    applyNavigation(.compactTabChanged(tab), layout: layout)
-                }
+                applyInteractiveNavigation(
+                    .compactTabChanged(tab),
+                    lane: .compactTab,
+                    layout: layout
+                )
             }
         )
     }
@@ -1361,22 +1383,67 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         preferredSession: AgentSession? = nil
     ) {
+        let commit = makeNavigationCommit(event, layout: layout)
+        commitVisualNavigation(commit)
+        commitNavigationSideEffects(
+            commit,
+            layout: layout,
+            preferredSession: preferredSession
+        )
+    }
+
+    /// TabView / NavigationStack 的 selection/path 必须在 Binding setter 所在事务内更新，
+    /// 否则系统高亮或返回手势会先走一帧，内容下一轮才跳到目标页。外部副作用继续延后，
+    /// 并以完整导航快照校验，避免快速连点或恢复事件执行已经过期的网络操作。
+    private func applyInteractiveNavigation(
+        _ event: WorkbenchNavigationEvent,
+        lane: WorkbenchNavigationBindingScheduler.Lane,
+        layout: WorkbenchLayout
+    ) {
+        navigationBindingScheduler.commit(
+            on: lane,
+            visualUpdate: {
+                let commit = makeNavigationCommit(event, layout: layout)
+                commitVisualNavigation(commit)
+                return commit
+            },
+            deferredSideEffect: { commit in
+                guard navigationState == commit.state else { return }
+                commitNavigationSideEffects(commit, layout: layout)
+            }
+        )
+    }
+
+    private func makeNavigationCommit(
+        _ event: WorkbenchNavigationEvent,
+        layout: WorkbenchLayout
+    ) -> WorkbenchNavigationCommit {
         var nextState = navigationState
         let effect = nextState.reduce(
             event,
             usesCompactNavigation: layout.usesCompactNavigation,
             selectedSessionID: sessionStore.selectedSessionID
         )
+        return WorkbenchNavigationCommit(state: nextState, effect: effect)
+    }
 
+    private func commitVisualNavigation(_ commit: WorkbenchNavigationCommit) {
         // 一个事件只提交一个本地导航状态，避免 NavigationStack 在同一帧接收多次 path 写入。
-        if nextState != navigationState {
-            navigationState = nextState
+        if commit.state != navigationState {
+            navigationState = commit.state
         }
-        if restorationRoute != nextState.route {
-            restorationRoute = nextState.route
+    }
+
+    private func commitNavigationSideEffects(
+        _ commit: WorkbenchNavigationCommit,
+        layout: WorkbenchLayout,
+        preferredSession: AgentSession? = nil
+    ) {
+        if restorationRoute != commit.state.route {
+            restorationRoute = commit.state.route
         }
 
-        switch effect {
+        switch commit.effect {
         case .returnToSessionList:
             sessionStore.returnToSessionList()
         case .selectSession(let sessionID):

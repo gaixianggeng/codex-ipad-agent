@@ -2244,28 +2244,66 @@ extension ConversationDataFlowTests {
         )
     }
 
-    func testWorkbenchNavigationBindingSchedulerDefersAndCoalescesEachControl() async {
+    func testWorkbenchNavigationBindingSchedulerCommitsVisualStateBeforeCoalescedSideEffects() async {
         let scheduler = WorkbenchNavigationBindingScheduler()
-        let completed = expectation(description: "两个独立控件的最新导航写入已提交")
+        let completed = expectation(description: "两个独立控件的最新副作用已提交")
         completed.expectedFulfillmentCount = 2
         var operations: [String] = []
+        var selectedTab = "会话"
 
-        scheduler.schedule(on: .compactTab) {
-            operations.append("过期 Tab")
-            completed.fulfill()
-        }
-        scheduler.schedule(on: .compactTab) {
-            operations.append("最新 Tab")
-            completed.fulfill()
-        }
-        scheduler.schedule(on: .compactSessionsPath) {
-            operations.append("会话 Path")
-            completed.fulfill()
-        }
+        scheduler.commit(
+            on: .compactTab,
+            visualUpdate: {
+                selectedTab = "工作区"
+                operations.append("视觉：工作区")
+                return "过期 Tab 副作用"
+            },
+            deferredSideEffect: { operation in
+                operations.append(operation)
+                completed.fulfill()
+            }
+        )
+        scheduler.commit(
+            on: .compactTab,
+            visualUpdate: {
+                selectedTab = "我的"
+                operations.append("视觉：我的")
+                return "最新 Tab 副作用"
+            },
+            deferredSideEffect: { operation in
+                operations.append(operation)
+                completed.fulfill()
+            }
+        )
+        scheduler.commit(
+            on: .compactSessionsPath,
+            visualUpdate: {
+                operations.append("视觉：会话 Path")
+                return "会话 Path 副作用"
+            },
+            deferredSideEffect: { operation in
+                operations.append(operation)
+                completed.fulfill()
+            }
+        )
 
-        XCTAssertTrue(operations.isEmpty, "Binding setter 当下不能同步发布 SwiftUI 导航状态")
+        XCTAssertEqual(selectedTab, "我的")
+        XCTAssertEqual(
+            operations,
+            ["视觉：工作区", "视觉：我的", "视觉：会话 Path"],
+            "Binding setter 必须在当前交互事务内提交视觉状态"
+        )
         await fulfillment(of: [completed], timeout: 1)
-        XCTAssertEqual(operations, ["最新 Tab", "会话 Path"])
+        XCTAssertEqual(
+            operations,
+            [
+                "视觉：工作区",
+                "视觉：我的",
+                "视觉：会话 Path",
+                "最新 Tab 副作用",
+                "会话 Path 副作用",
+            ]
+        )
     }
 
     func testWorkbenchVisibleSessionExcludesMeTabAndRootPages() {
