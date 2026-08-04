@@ -25,6 +25,7 @@ use alleycat_codex_proto::{
 use crate::index::ClaudeSessionRef;
 use crate::pool::ClaudePool;
 use crate::pool::claude_protocol::{McpServerInit, RateLimitInfo, SystemInit};
+use crate::translate::items::normalize_dynamic_tool_call_output;
 
 /// Compat re-export so the daemon's
 /// `Arc<dyn alleycat_claude_bridge::state::ThreadIndexHandle>` keeps spelling
@@ -528,14 +529,22 @@ impl ConnectionState {
                 }
                 if live.status == TurnStatus::Completed
                     && persisted_has_successful_output(&persisted_turn.items)
-                    && !persisted_has_successful_output(&live.items)
-                    && persisted_turn.items != live.items
                 {
-                    // 只修补“live 只有用户输入、JSONL 已有完整输出”的明确缺口。
-                    // 两边都已有输出时，items 数量相等/更多并不能证明 persisted 是
-                    // superset；整体替换会把刚收到的 live 内容回滚成较旧快照。
-                    live.items = persisted_turn.items;
-                    report.repaired_turns += 1;
+                    let repaired = if !persisted_has_successful_output(&live.items)
+                        && persisted_turn.items != live.items
+                    {
+                        // live 只有用户输入时，JSONL 的完整成功结果可以整体接管。
+                        live.items = persisted_turn.items;
+                        true
+                    } else {
+                        // live 已有部分输出时不能按数量或临时 item id 判断 superset。
+                        // 只在可见内容构成严格顺序前缀时追加权威尾部：既补齐断流
+                        // 后缺失的最终回复，也不会用较旧 JSONL 回滚更新的 live 内容。
+                        append_strict_persisted_output_tail(&mut live.items, &persisted_turn.items)
+                    };
+                    if repaired {
+                        report.repaired_turns += 1;
+                    }
                 } else if live.status != TurnStatus::Completed {
                     report.protected_turns += 1;
                 }
@@ -714,6 +723,315 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_completed_tail_repairs_partially_observed_live_output_without_duplicates() {
+        let state = test_state().await;
+        state.record_turn_started("thread", "live-partial".into(), 1);
+        state.record_item(
+            "thread",
+            "live-partial",
+            user("live-user", "检查历史一致性"),
+        );
+        state.record_item(
+            "thread",
+            "live-partial",
+            ThreadItem::AgentMessage {
+                id: "live-progress".into(),
+                text: "先读取状态".into(),
+                phase: None,
+                memory_citation: None,
+            },
+        );
+        state.record_item(
+            "thread",
+            "live-partial",
+            ThreadItem::CommandExecution {
+                id: "live-command".into(),
+                command: "git status".into(),
+                cwd: "/tmp".into(),
+                process_id: None,
+                source: Default::default(),
+                status: alleycat_codex_proto::CommandExecutionStatus::Completed,
+                command_actions: Vec::new(),
+                aggregated_output: Some("工作区干净".into()),
+                exit_code: Some(0),
+                duration_ms: Some(10),
+            },
+        );
+        state.record_turn_completed("thread", "live-partial", 2, TurnStatus::Completed, None);
+
+        // 跨设备冷读时，live cache 可能已有部分成功输出，而 JSONL 才包含完整尾部；
+        // 对账必须补齐权威历史，不能因为 live 已有成功 item 就跳过这次修复。
+        let persisted = Turn {
+            id: "disk-turn".into(),
+            items: vec![
+                user("disk-user", "检查历史一致性"),
+                ThreadItem::AgentMessage {
+                    id: "disk-progress".into(),
+                    text: "先读取状态".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+                ThreadItem::CommandExecution {
+                    id: "disk-command".into(),
+                    command: "git status".into(),
+                    cwd: "/tmp".into(),
+                    process_id: None,
+                    source: Default::default(),
+                    status: alleycat_codex_proto::CommandExecutionStatus::Completed,
+                    command_actions: Vec::new(),
+                    aggregated_output: Some("工作区干净".into()),
+                    exit_code: Some(0),
+                    duration_ms: Some(10),
+                },
+                ThreadItem::AgentMessage {
+                    id: "disk-final".into(),
+                    text: "最终完整回复".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            ],
+            items_view: alleycat_codex_proto::default_items_view(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(1_000),
+            completed_at: Some(2_000),
+            duration_ms: Some(1_000),
+        };
+
+        let report = state.reconcile_thread_log("thread", vec![persisted]);
+        let turns = state.thread_log("thread");
+        assert_eq!(turns.len(), 1, "同一 user anchor 不应产生重复 turn");
+        let items = &turns[0].items;
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::UserMessage { content, .. } if content.iter().any(|input| matches!(input, UserInput::Text { text, .. } if text == "检查历史一致性"))))
+                .count(),
+            1,
+            "同一 user anchor 只能保留一份"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text == "先读取状态"))
+                .count(),
+            1,
+            "已有 live assistant 输出只能保留一份"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::CommandExecution { command, .. } if command == "git status"))
+                .count(),
+            1,
+            "已有 live command execution 只能保留一份"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text == "最终完整回复"))
+                .count(),
+            1,
+            "persisted 最终 assistant 尾部必须补齐"
+        );
+        assert_eq!(report.seeded_turns, 0, "匹配到的 turn 不应重复 seed");
+    }
+
+    #[tokio::test]
+    async fn persisted_completed_tail_includes_missing_file_change_before_final_message() {
+        let state = test_state().await;
+        record_completed_live_turn(
+            &state,
+            "thread",
+            "live-partial",
+            Some("修改配置"),
+            "先检查配置",
+            1,
+            2,
+        );
+
+        let persisted = Turn {
+            id: "disk-turn".into(),
+            items: vec![
+                user("disk-user", "修改配置"),
+                ThreadItem::AgentMessage {
+                    id: "disk-progress".into(),
+                    text: "先检查配置".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+                ThreadItem::FileChange {
+                    id: "disk-file-change".into(),
+                    changes: vec![alleycat_codex_proto::FileUpdateChange {
+                        path: "/tmp/config.json".into(),
+                        kind: alleycat_codex_proto::PatchChangeKind::Update { move_path: None },
+                        diff: "-old\n+new".into(),
+                    }],
+                    status: alleycat_codex_proto::PatchApplyStatus::Completed,
+                },
+                ThreadItem::AgentMessage {
+                    id: "disk-final".into(),
+                    text: "配置已更新".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            ],
+            items_view: alleycat_codex_proto::default_items_view(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(1_000),
+            completed_at: Some(2_000),
+            duration_ms: Some(1_000),
+        };
+
+        let report = state.reconcile_thread_log("thread", vec![persisted]);
+        assert_eq!(report.repaired_turns, 1);
+        let items = &state.thread_log("thread")[0].items;
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::FileChange { .. }))
+                .count(),
+            1,
+            "缺失的文件修改必须随 persisted 尾部一起补齐"
+        );
+        assert!(items.iter().any(
+            |item| matches!(item, ThreadItem::AgentMessage { text, .. } if text == "配置已更新")
+        ));
+    }
+
+    #[test]
+    fn output_signatures_ignore_known_live_disk_representation_differences() {
+        let dynamic_live = ThreadItem::DynamicToolCall {
+            id: "live-dynamic".into(),
+            namespace: Some("claude".into()),
+            tool: "CustomTool".into(),
+            arguments: serde_json::json!({"path": "/tmp/a"}),
+            status: alleycat_codex_proto::DynamicToolCallStatus::Completed,
+            content_items: Some(vec![serde_json::json!({
+                "type": "text",
+                "text": "done"
+            })]),
+            success: Some(true),
+            duration_ms: Some(12),
+        };
+        let dynamic_disk = ThreadItem::DynamicToolCall {
+            id: "disk-dynamic".into(),
+            namespace: Some("claude".into()),
+            tool: "CustomTool".into(),
+            arguments: serde_json::json!({"path": "/tmp/a"}),
+            status: alleycat_codex_proto::DynamicToolCallStatus::Completed,
+            content_items: Some(vec![serde_json::json!({
+                "type": "inputText",
+                "text": "done"
+            })]),
+            success: Some(true),
+            duration_ms: None,
+        };
+        assert_eq!(
+            turn_output_signature(&dynamic_live),
+            turn_output_signature(&dynamic_disk),
+            "dynamic tool result 的 live/disk 包装差异不应破坏同一调用的前缀匹配"
+        );
+        let mut dynamic_diverged = dynamic_disk.clone();
+        if let ThreadItem::DynamicToolCall { content_items, .. } = &mut dynamic_diverged {
+            *content_items = Some(vec![serde_json::json!({
+                "type": "inputText",
+                "text": "different result"
+            })]);
+        }
+        assert_ne!(
+            turn_output_signature(&dynamic_live),
+            turn_output_signature(&dynamic_diverged),
+            "相同参数但真实结果不同的 dynamic call 必须阻止旧尾部拼接"
+        );
+
+        let mcp_live = ThreadItem::McpToolCall {
+            id: "live-mcp".into(),
+            server: "server".into(),
+            tool: "lookup".into(),
+            status: alleycat_codex_proto::McpToolCallStatus::Completed,
+            arguments: serde_json::json!({"query": "MIM-47"}),
+            mcp_app_resource_uri: None,
+            result: Some(Box::new(alleycat_codex_proto::McpToolCallResult {
+                content: vec![serde_json::json!({"type": "text", "text": "new result"})],
+                structured_content: None,
+                is_error: None,
+                meta: None,
+            })),
+            error: None,
+            duration_ms: Some(20),
+        };
+        let mut mcp_disk = mcp_live.clone();
+        if let ThreadItem::McpToolCall {
+            id, duration_ms, ..
+        } = &mut mcp_disk
+        {
+            *id = "disk-mcp".into();
+            *duration_ms = None;
+        }
+        assert_eq!(
+            turn_output_signature(&mcp_live),
+            turn_output_signature(&mcp_disk),
+            "MCP 的临时 id 和耗时差异不应破坏前缀匹配"
+        );
+        if let ThreadItem::McpToolCall { result, .. } = &mut mcp_disk {
+            result.as_mut().unwrap().content =
+                vec![serde_json::json!({"type": "text", "text": "old result"})];
+        }
+        assert_ne!(
+            turn_output_signature(&mcp_live),
+            turn_output_signature(&mcp_disk),
+            "相同参数但真实结果不同的 MCP call 必须阻止旧尾部拼接"
+        );
+
+        let receiver_id = "subagent-toolu_1".to_string();
+        let mut live_states = std::collections::HashMap::new();
+        live_states.insert(
+            receiver_id.clone(),
+            alleycat_codex_proto::CollabAgentState {
+                status: alleycat_codex_proto::CollabAgentStatus::Completed,
+                message: Some("researcher".into()),
+            },
+        );
+        let collab_live = ThreadItem::CollabAgentToolCall {
+            id: "toolu_1".into(),
+            tool: alleycat_codex_proto::CollabAgentTool::SpawnAgent,
+            status: alleycat_codex_proto::CollabAgentToolCallStatus::Completed,
+            sender_thread_id: "real-thread-id".into(),
+            receiver_thread_ids: vec![receiver_id.clone()],
+            prompt: Some("检查实现".into()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: live_states,
+        };
+        let mut disk_states = std::collections::HashMap::new();
+        disk_states.insert(
+            receiver_id.clone(),
+            alleycat_codex_proto::CollabAgentState {
+                status: alleycat_codex_proto::CollabAgentStatus::Completed,
+                message: Some("researcher".into()),
+            },
+        );
+        let collab_disk = ThreadItem::CollabAgentToolCall {
+            id: "toolu_1".into(),
+            tool: alleycat_codex_proto::CollabAgentTool::SpawnAgent,
+            status: alleycat_codex_proto::CollabAgentToolCallStatus::Completed,
+            sender_thread_id: String::new(),
+            receiver_thread_ids: vec![receiver_id],
+            prompt: Some("检查实现".into()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: disk_states,
+        };
+        assert_eq!(
+            turn_output_signature(&collab_live),
+            turn_output_signature(&collab_disk),
+            "disk 缺失 sender thread 不应让同一 subagent 调用被判成内容分叉"
+        );
+    }
+
+    #[tokio::test]
     async fn persisted_success_does_not_overwrite_active_or_failed_terminal() {
         for status in [TurnStatus::InProgress, TurnStatus::Failed] {
             let state = test_state().await;
@@ -788,7 +1106,7 @@ mod tests {
         };
 
         let report = state.reconcile_thread_log("thread", vec![persisted]);
-        assert_eq!(report.repaired_turns, 0);
+        assert_eq!(report.repaired_turns, 1);
         let turns = state.thread_log("thread");
         assert_eq!(turns.len(), 1, "同一自主 turn 不应 seed 后再 append");
         assert_eq!(turns[0].id, "live-autonomous");
@@ -796,10 +1114,61 @@ mod tests {
             .items
             .iter()
             .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains("五分钟到了"))));
-        assert!(!turns[0]
+        assert!(turns[0]
             .items
             .iter()
             .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains("14:06:06"))));
+    }
+
+    #[tokio::test]
+    async fn persisted_tail_does_not_overwrite_diverged_completed_live_output() {
+        let state = test_state().await;
+        record_completed_live_turn(
+            &state,
+            "thread",
+            "live-turn",
+            Some("检查状态"),
+            "live 中更新的结果",
+            1,
+            2,
+        );
+
+        let persisted = Turn {
+            id: "disk-turn".into(),
+            items: vec![
+                user("disk-user", "检查状态"),
+                ThreadItem::AgentMessage {
+                    id: "disk-old".into(),
+                    text: "JSONL 中较旧的结果".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+                ThreadItem::AgentMessage {
+                    id: "disk-tail".into(),
+                    text: "不能盲目追加的尾部".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            ],
+            items_view: alleycat_codex_proto::default_items_view(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(1_000),
+            completed_at: Some(2_000),
+            duration_ms: Some(1_000),
+        };
+
+        let report = state.reconcile_thread_log("thread", vec![persisted]);
+        assert_eq!(report.repaired_turns, 0);
+        let turns = state.thread_log("thread");
+        assert!(turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text == "live 中更新的结果")));
+        assert!(!turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text == "不能盲目追加的尾部")));
     }
 
     #[tokio::test]
@@ -1027,23 +1396,156 @@ fn completed_turn_windows_overlap(persisted: &Turn, live: &RecordedTurn) -> bool
 }
 
 fn turn_visible_signatures(items: &[ThreadItem]) -> Vec<String> {
-    items
+    items.iter().filter_map(turn_visible_signature).collect()
+}
+
+fn turn_visible_signature(item: &ThreadItem) -> Option<String> {
+    match item {
+        ThreadItem::AgentMessage { text, .. } => Some(format!("agent:{text}")),
+        ThreadItem::Plan { text, .. } => Some(format!("plan:{text}")),
+        ThreadItem::Reasoning {
+            summary, content, ..
+        } => Some(format!("reasoning:{summary:?}:{content:?}")),
+        ThreadItem::CommandExecution {
+            command,
+            aggregated_output,
+            ..
+        } => Some(format!("command:{command}:{aggregated_output:?}")),
+        ThreadItem::HookPrompt { fragments, .. } => Some(format!("hook:{fragments:?}")),
+        _ => None,
+    }
+}
+
+/// 历史尾部对账需要覆盖全部用户可见输出，而不仅是用于 autonomous turn
+/// 粗匹配的文本类指纹。签名排除实时/JSONL 之间不稳定的 item id 和耗时字段，
+/// 但保留工具输入、结果与状态；内容分叉时宁可不修，也不盲目拼接旧快照。
+fn turn_output_signature(item: &ThreadItem) -> Option<String> {
+    if let Some(signature) = turn_visible_signature(item) {
+        return Some(signature);
+    }
+    match item {
+        ThreadItem::FileChange {
+            changes, status, ..
+        } => Some(format!("fileChange:{status:?}:{changes:?}")),
+        ThreadItem::McpToolCall {
+            server,
+            tool,
+            status,
+            arguments,
+            result,
+            error,
+            ..
+        } => {
+            let result = result
+                .as_ref()
+                .map(|result| (&result.content, &result.structured_content, result.is_error));
+            let error = error
+                .as_ref()
+                .map(|error| (&error.message, error.code, &error.data));
+            Some(format!(
+                "mcp:{server}:{tool}:{status:?}:{arguments}:{result:?}:{error:?}"
+            ))
+        }
+        ThreadItem::DynamicToolCall {
+            namespace,
+            tool,
+            arguments,
+            status,
+            content_items,
+            success,
+            ..
+        } => {
+            let normalized_content = content_items
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(normalize_dynamic_tool_call_output)
+                .collect::<Vec<_>>();
+            Some(format!(
+                "dynamic:{namespace:?}:{tool}:{arguments}:{status:?}:{success:?}:{normalized_content:?}"
+            ))
+        }
+        ThreadItem::CollabAgentToolCall {
+            tool,
+            status,
+            receiver_thread_ids,
+            prompt,
+            model,
+            reasoning_effort,
+            agents_states,
+            ..
+        } => {
+            let mut messages = agents_states
+                .values()
+                .filter_map(|state| state.message.as_deref())
+                .collect::<Vec<_>>();
+            messages.sort_unstable();
+            Some(format!(
+                "collab:{tool:?}:{status:?}:{receiver_thread_ids:?}:{prompt:?}:{model:?}:{reasoning_effort:?}:{messages:?}"
+            ))
+        }
+        ThreadItem::WebSearch { query, action, .. } => {
+            Some(format!("webSearch:{query}:{action:?}"))
+        }
+        ThreadItem::ImageView { path, .. } => Some(format!("imageView:{path}")),
+        ThreadItem::ImageGeneration {
+            status,
+            revised_prompt,
+            result,
+            saved_path,
+            ..
+        } => Some(format!(
+            "imageGeneration:{status}:{revised_prompt:?}:{result}:{saved_path:?}"
+        )),
+        ThreadItem::EnteredReviewMode { review, .. } => Some(format!("enteredReview:{review}")),
+        ThreadItem::ExitedReviewMode { review, .. } => Some(format!("exitedReview:{review}")),
+        ThreadItem::ContextCompaction { .. } => Some("contextCompaction".into()),
+        ThreadItem::UserMessage { .. }
+        | ThreadItem::HookPrompt { .. }
+        | ThreadItem::AgentMessage { .. }
+        | ThreadItem::Plan { .. }
+        | ThreadItem::Reasoning { .. }
+        | ThreadItem::CommandExecution { .. } => None,
+    }
+}
+
+/// 当 live 已观测到的全部可见输出是 persisted 的严格顺序前缀时，补入 JSONL
+/// 中尚未到达实时事件流的尾部。这里故意使用不含临时 id 的内容签名；Claude 的
+/// 实时 AgentMessage id 是 bridge 生成的 UUID，而 JSONL 使用 message id 派生值。
+fn append_strict_persisted_output_tail(
+    live_items: &mut Vec<ThreadItem>,
+    persisted_items: &[ThreadItem],
+) -> bool {
+    let live_visible = live_items
         .iter()
-        .filter_map(|item| match item {
-            ThreadItem::AgentMessage { text, .. } => Some(format!("agent:{text}")),
-            ThreadItem::Plan { text, .. } => Some(format!("plan:{text}")),
-            ThreadItem::Reasoning {
-                summary, content, ..
-            } => Some(format!("reasoning:{summary:?}:{content:?}")),
-            ThreadItem::CommandExecution {
-                command,
-                aggregated_output,
-                ..
-            } => Some(format!("command:{command}:{aggregated_output:?}")),
-            ThreadItem::HookPrompt { fragments, .. } => Some(format!("hook:{fragments:?}")),
-            _ => None,
-        })
-        .collect()
+        .filter_map(turn_output_signature)
+        .collect::<Vec<_>>();
+    let persisted_visible = persisted_items
+        .iter()
+        .filter_map(turn_output_signature)
+        .collect::<Vec<_>>();
+    if live_visible.is_empty()
+        || live_visible.len() >= persisted_visible.len()
+        || !persisted_visible.starts_with(&live_visible)
+    {
+        return false;
+    }
+
+    let first_missing_visible = live_visible.len();
+    let mut visible_index = 0;
+    let Some(first_missing_item) = persisted_items.iter().position(|item| {
+        if turn_output_signature(item).is_none() {
+            return false;
+        }
+        let is_first_missing = visible_index == first_missing_visible;
+        visible_index += 1;
+        is_first_missing
+    }) else {
+        return false;
+    };
+
+    live_items.extend_from_slice(&persisted_items[first_missing_item..]);
+    true
 }
 
 fn persisted_has_successful_output(items: &[ThreadItem]) -> bool {
