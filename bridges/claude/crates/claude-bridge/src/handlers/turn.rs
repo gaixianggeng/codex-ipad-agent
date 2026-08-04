@@ -143,6 +143,7 @@ struct EventDriverRegistration {
 
 enum EventDriverCommand {
     BeginTurn {
+        state: Arc<ConnectionState>,
         turn_id: String,
         started_at: i64,
         turn_guard: TurnGuard,
@@ -323,7 +324,9 @@ pub async fn handle_turn_start(
 
     let started_at = now_unix_secs();
     let turn_guard = state.session().begin_turn();
-    if let Err(error) = begin_driver_turn(&driver, &turn_id, started_at, turn_guard).await {
+    if let Err(error) =
+        begin_driver_turn(&driver, Arc::clone(state), &turn_id, started_at, turn_guard).await
+    {
         return match error {
             BeginDriverTurnError::AlreadyActive(active_turn_id) => {
                 // 竞态中的失败属于现有轮次，不能把进程池错误标成 idle。
@@ -817,6 +820,7 @@ fn ensure_event_driver(
 
 async fn begin_driver_turn(
     driver: &mpsc::UnboundedSender<EventDriverCommand>,
+    state: Arc<ConnectionState>,
     turn_id: &str,
     started_at: i64,
     turn_guard: TurnGuard,
@@ -824,6 +828,7 @@ async fn begin_driver_turn(
     let (ready_tx, ready_rx) = oneshot::channel();
     driver
         .send(EventDriverCommand::BeginTurn {
+            state,
             turn_id: turn_id.to_string(),
             started_at,
             turn_guard,
@@ -859,6 +864,7 @@ async fn run_event_driver(mut args: EventDriverArgs) {
             command = args.commands_rx.recv() => {
                 match command {
                     Some(EventDriverCommand::BeginTurn {
+                        state,
                         turn_id,
                         started_at,
                         turn_guard,
@@ -870,6 +876,10 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                             )));
                             continue;
                         }
+                        // driver 跨页面和连接常驻，但每个被接受的 turn 必须归属
+                        // 发起它的 ConnectionState。只在确认当前空闲后 rebind，
+                        // 避免被 AlreadyActive 拒绝的请求偷走正在运行 turn 的事件。
+                        args.state = state;
                         // 当前 turn 的 guard 已覆盖 session；后台等待 guard 暂时
                         // 释放，结束时如果仍有 cron/wakeup 会重新建立。
                         background.session_guard.take();
@@ -1317,7 +1327,10 @@ fn state_should_emit(state: &Arc<ConnectionState>, notif: &p::ServerNotification
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use serde_json::json;
 
     async fn dummy_state() -> Arc<ConnectionState> {
         let dir = tempfile::tempdir().unwrap();
@@ -1333,6 +1346,111 @@ mod tests {
             Default::default(),
         );
         state
+    }
+
+    async fn paired_states() -> (
+        Arc<ConnectionState>,
+        tokio::sync::mpsc::UnboundedReceiver<alleycat_bridge_core::session::Sequenced>,
+        Arc<ConnectionState>,
+        tokio::sync::mpsc::UnboundedReceiver<alleycat_bridge_core::session::Sequenced>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let index = alleycat_bridge_core::ThreadIndex::<crate::index::ClaudeSessionRef>::open_at(
+            dir.path().join("t.json"),
+        )
+        .await
+        .unwrap();
+        std::mem::forget(dir);
+
+        let pool = Arc::new(crate::pool::ClaudePool::new("/dev/null"));
+        let (first, first_rx) =
+            ConnectionState::for_test(Arc::clone(&pool), index.clone(), Default::default());
+        let (second, second_rx) = ConnectionState::for_test(pool, index, Default::default());
+        (first, first_rx, second, second_rx)
+    }
+
+    fn emit_successful_text_turn(
+        events: &broadcast::Sender<ClaudeEvent>,
+        text: &str,
+        event_id: &str,
+    ) {
+        let outbound = |value| serde_json::from_value(value).expect("valid claude event");
+        for payload in [
+            outbound(json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""}
+                },
+                "session_id": "test-session",
+                "uuid": format!("{event_id}-start")
+            })),
+            outbound(json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text}
+                },
+                "session_id": "test-session",
+                "uuid": format!("{event_id}-delta")
+            })),
+            outbound(json!({
+                "type": "stream_event",
+                "event": {"type": "content_block_stop", "index": 0},
+                "session_id": "test-session",
+                "uuid": format!("{event_id}-stop")
+            })),
+            outbound(json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "result": text,
+                "session_id": "test-session",
+                "uuid": format!("{event_id}-result"),
+                "permission_denials": []
+            })),
+        ] {
+            events
+                .send(ClaudeEvent::new(payload))
+                .expect("event driver subscribed");
+        }
+    }
+
+    async fn wait_for_completed_turn(state: &ConnectionState, thread_id: &str, turn_id: &str) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state
+                    .thread_log(thread_id)
+                    .iter()
+                    .any(|turn| turn.id == turn_id && turn.status == p::TurnStatus::Completed)
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("turn should complete");
+    }
+
+    fn drain_turn_methods(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<alleycat_bridge_core::session::Sequenced>,
+        turn_id: &str,
+    ) -> Vec<String> {
+        let mut methods = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if frame.payload.to_string().contains(turn_id)
+                && let Some(method) = frame
+                    .payload
+                    .get("method")
+                    .and_then(serde_json::Value::as_str)
+            {
+                methods.push(method.to_string());
+            }
+        }
+        methods
     }
 
     #[tokio::test]
@@ -1538,6 +1656,89 @@ mod tests {
         assert_eq!(active.turn_id, "tu1");
         clear_active_turn(&thread_id);
         assert!(active_turn(&thread_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn reused_event_driver_rebinds_each_turn_to_its_connection_state() {
+        let thread_id = format!("test-{}", Uuid::now_v7());
+        let (first, mut first_rx, second, mut second_rx) = paired_states().await;
+        let (writer_tx, _writer_rx) = mpsc::unbounded_channel();
+        let (events_tx, _events_rx) = broadcast::channel(16);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx.clone(),
+            PathBuf::from("/tmp"),
+        ));
+
+        let first_driver = ensure_event_driver(&first, &thread_id, &handle);
+        begin_driver_turn(
+            &first_driver,
+            Arc::clone(&first),
+            "turn-first",
+            1,
+            first.session().begin_turn(),
+        )
+        .await
+        .expect("first turn accepted");
+        first.record_turn_started(&thread_id, "turn-first".into(), 1);
+        emit_successful_text_turn(&events_tx, "first reply", "first");
+        wait_for_completed_turn(&first, &thread_id, "turn-first").await;
+
+        assert!(second.thread_log(&thread_id).is_empty());
+        assert!(
+            drain_turn_methods(&mut first_rx, "turn-first")
+                .iter()
+                .any(|method| method == "turn/completed")
+        );
+        assert!(drain_turn_methods(&mut second_rx, "turn-first").is_empty());
+
+        // 第二个页面复用同一个进程和 driver；事件、live cache 和完成通知都应
+        // 跟随新 turn 的 ConnectionState，不能继续写回首次建 driver 的连接。
+        let second_driver = ensure_event_driver(&second, &thread_id, &handle);
+        begin_driver_turn(
+            &second_driver,
+            Arc::clone(&second),
+            "turn-second",
+            2,
+            second.session().begin_turn(),
+        )
+        .await
+        .expect("second turn accepted");
+        second.record_turn_started(&thread_id, "turn-second".into(), 2);
+        emit_successful_text_turn(&events_tx, "second reply", "second");
+        wait_for_completed_turn(&second, &thread_id, "turn-second").await;
+
+        assert!(
+            first
+                .thread_log(&thread_id)
+                .iter()
+                .all(|turn| turn.id != "turn-second")
+        );
+        let second_turn = second
+            .thread_log(&thread_id)
+            .into_iter()
+            .find(|turn| turn.id == "turn-second")
+            .expect("second state owns second turn");
+        assert!(second_turn.items.iter().any(|item| {
+            matches!(item, p::ThreadItem::AgentMessage { text, .. } if text == "second reply")
+        }));
+        assert!(drain_turn_methods(&mut first_rx, "turn-second").is_empty());
+        let second_methods = drain_turn_methods(&mut second_rx, "turn-second");
+        assert!(
+            second_methods
+                .iter()
+                .any(|method| method == "item/completed")
+        );
+        assert!(
+            second_methods
+                .iter()
+                .any(|method| method == "turn/completed")
+        );
+
+        drop(first_driver);
+        drop(second_driver);
+        drop(handle);
+        drop(events_tx);
     }
 
     #[test]

@@ -328,7 +328,7 @@ fn user_message_to_item(content: &Value, ts: i64, turn_index: usize) -> ThreadIt
 /// arbitrary structured payloads all need to land as one of those two
 /// shapes — otherwise litter's typed deserializer rejects the whole
 /// `thread/resume` response.
-fn normalize_dynamic_tool_call_output(value: &Value) -> Vec<Value> {
+pub(crate) fn normalize_dynamic_tool_call_output(value: &Value) -> Vec<Value> {
     match value {
         Value::String(s) => vec![serde_json::json!({"type": "inputText", "text": s})],
         Value::Array(arr) => arr
