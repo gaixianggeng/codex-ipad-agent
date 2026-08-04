@@ -1394,6 +1394,20 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
     }
 
+    func testGoalTrayLightSurfaceUsesOpaqueSharedComposerColor() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .light,
+                reduceTransparency: false
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.05)
+        }
+    }
+
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
         for isExpanded in [false, true] {
             let style = ComposerStatusTraySurfaceStyle.resolve(

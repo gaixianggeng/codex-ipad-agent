@@ -994,12 +994,12 @@ struct ComposerView: View {
                     .fill(tokens.inputBackground)
                     .shadow(color: Color.black.opacity(0.07), radius: 4, y: 2)
             } else {
-                // 像 Linear 一样用分层柔和阴影把输入卡“浮”在暖底之上：近距接触阴影收住
-                // 边缘、远距环境阴影给出升起感，卡片改由阴影而非硬描边定义。
+                // 输入卡和侧栏共用清晰白色；短接触阴影收住边缘，轻环境阴影只表达少量浮起。
+                // 半径与偏移刻意收紧，避免 r20 / y10 在暖底上形成第三圈模糊白色。
                 shape
                     .fill(tokens.inputBackground)
-                    .shadow(color: Color.black.opacity(0.05), radius: 3, y: 1)
-                    .shadow(color: Color.black.opacity(0.08), radius: 20, y: 10)
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+                    .shadow(color: Color.black.opacity(0.035), radius: 8, y: 3)
             }
         } else if reduceTransparency {
             shape.fill(tokens.elevatedSurface)
@@ -1155,8 +1155,8 @@ struct ComposerView: View {
             // 增强对比度时使用明确实线边界；默认外观仍保持“结构可感知、不过度描边”。
             return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
         }
-        // 浅色卡片已由分层阴影定义边界，硬描边降到近透明，只留一丝顶边收口；深色仍靠描边。
-        return tokens.border.opacity(colorScheme == .light ? 0.35 : 0.58)
+        // 浅色使用中性黑低透明描边，既得到清晰轮廓，也不会把暖灰边缘误读成第三种表面色。
+        return colorScheme == .light ? Color.black.opacity(0.06) : tokens.border.opacity(0.58)
     }
 
     var composerPlaceholderText: String {
