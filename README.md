@@ -25,7 +25,7 @@
 </p>
 
 <p align="center">
-  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-black?logo=apple" alt="iOS and iPadOS 26 or later" /></a>
+  <a href="ios/MimiRemote/README.md"><img src="https://img.shields.io/badge/iOS%20%2F%20iPadOS-18%2B-black?logo=apple" alt="iOS and iPadOS 18 or later" /></a>
   <a href="ios/MimiRemote"><img src="https://img.shields.io/badge/SwiftUI-native-F05138?logo=swift&amp;logoColor=white" alt="Native SwiftUI app" /></a>
   <a href="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml"><img src="https://github.com/gaixianggeng/codex-ipad-agent/actions/workflows/go-ci.yml/badge.svg" alt="Go CI status" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3%20%2B%20Store%20Exception-blue.svg" alt="GPLv3 with store distribution exception" /></a>
@@ -186,7 +186,7 @@ This shape keeps deployment small and auditable, but the tradeoff is explicit: t
 
 Check these before you install:
 
-- **Required:** an iPhone or iPad running iOS/iPadOS 26 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth).
+- **Required:** an iPhone or iPad running iOS/iPadOS 18 or later, a supported computer that can keep the host service running, and Codex CLI installed and ready on that host. Complete the runtime's own authentication on the host; Mimi Remote connects only to the `agentd` gateway and does not receive or manage runtime credentials or billing. See the [official Codex authentication guide](https://learn.chatgpt.com/docs/auth). iOS 26+ keeps the full Liquid Glass and on-device Apple Speech experience; iOS 18–25 uses simpler system materials and Codex voice transcription.
 - **Network:** devices on the same trusted LAN can connect directly; Tailscale is not required. Across networks, use the same Tailnet or a secure HTTPS endpoint you administer. Never expose `agentd`'s plain HTTP endpoint directly to the public Internet.
 - **Optional runtime:** Claude Code is experimental, disabled by default, and cannot replace Codex. If you enable it, install and authenticate Claude Code separately using an option in the [official Claude Code setup guide](https://docs.anthropic.com/en/docs/claude-code/getting-started); Codex CLI remains required.
 - **iOS installation today:** there is no public App Store package. Install the app through [TestFlight](https://testflight.apple.com/join/jhGPbSk6), or build it from source with a Mac, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; see the [iOS build guide](ios/MimiRemote/README.md).
@@ -280,7 +280,7 @@ Ask `$skill-installer` to install that GitHub path. Each GitHub Release also inc
 
 ### Install the iOS app
 
-Mimi Remote requires iOS/iPadOS 26 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path.
+Mimi Remote requires iOS/iPadOS 18 or later. Join the [Mimi Remote TestFlight](https://testflight.apple.com/join/jhGPbSk6) for the simplest installation path. iOS 26+ gets the full advanced visual and on-device speech experience; earlier supported systems use deliberate fallbacks for unsupported capabilities.
 
 To build the app from source instead, use a Mac with Xcode 26 or later and install XcodeGen before generating the Xcode project:
 

@@ -385,12 +385,13 @@ struct WorkbenchSidebarFooter: View {
         let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
 
         Group {
-            if usesFloatingSurface, !reduceTransparency {
+            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 // 两个按钮由系统统一合成，但间距足够大，不会在静止状态下粘连成一整块玻璃。
                 GlassEffectContainer(spacing: 16) {
                     footerButtonRow
                 }
             } else {
+                // iOS 18–25 直接使用同一行普通按钮，不额外模拟玻璃合成。
                 footerButtonRow
             }
         }
@@ -419,7 +420,7 @@ struct WorkbenchSidebarFooter: View {
     @ViewBuilder
     private var meButton: some View {
         Group {
-            if usesFloatingSurface, !reduceTransparency {
+            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 Button(action: onOpenSettings) {
                     compactMeButtonLabel
                 }
@@ -435,10 +436,16 @@ struct WorkbenchSidebarFooter: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isMeSelected ? tokens.primaryAction : tokens.secondaryText)
-                .background(
-                    isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72),
-                    in: Capsule()
-                )
+                .background {
+                    if usesFloatingSurface, !reduceTransparency {
+                        // 旧系统的浮动侧栏使用普通材质，保留层级但不仿制 Liquid Glass。
+                        Capsule().fill(.regularMaterial)
+                    } else {
+                        Capsule().fill(
+                            isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72)
+                        )
+                    }
+                }
                 .overlay {
                     Capsule()
                         .stroke(tokens.border.opacity(0.6), lineWidth: 1)
@@ -490,7 +497,7 @@ struct WorkbenchSidebarFooter: View {
     @ViewBuilder
     private var newSessionButtonContent: some View {
         Group {
-            if usesFloatingSurface, !reduceTransparency {
+            if #available(iOS 26.0, *), usesFloatingSurface, !reduceTransparency {
                 Button(action: onNewSession) {
                     WorkbenchChromeIcon(systemName: "plus")
                 }
@@ -506,6 +513,7 @@ struct WorkbenchSidebarFooter: View {
                 .tint(tokens.primaryAction)
                 .foregroundStyle(tokens.primaryActionForeground)
             } else {
+                // iOS 18–25 与 Reduce Transparency 共用清晰的实色主操作按钮。
                 Button(action: onNewSession) {
                     WorkbenchChromeIcon(systemName: "plus")
                         .frame(width: 36, height: 36)

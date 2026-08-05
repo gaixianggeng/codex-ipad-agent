@@ -448,8 +448,10 @@ struct SessionListView: View {
                         manageConnections: manageConnections
                     )
                 }
-                // 全局 Mac 入口与列表筛选是不同作用域，固定间隔让系统分别生成圆形材质。
-                ToolbarSpacer(.fixed, placement: .topBarLeading)
+                // iOS 26+ 用固定间隔拆分玻璃组；旧系统依靠普通工具栏布局即可。
+                if #available(iOS 26.0, *) {
+                    ToolbarSpacer(.fixed, placement: .topBarLeading)
+                }
             }
             if placesFilterInTrailingToolbar {
                 // 真浮层只会改变详情内容的 leading safe area，系统 topBarLeading 仍按整窗放置。
@@ -492,7 +494,7 @@ struct SessionListView: View {
 
     @ToolbarContentBuilder
     private func newSessionToolbarItem(tokens: ThemeTokens) -> some ToolbarContent {
-        if let newSessionPresentationNamespace {
+        if let newSessionPresentationNamespace, #available(iOS 26.0, *) {
             ToolbarItem(placement: .topBarTrailing) {
                 newSessionToolbarButton(
                     tokens: tokens,
@@ -507,6 +509,7 @@ struct SessionListView: View {
                 in: newSessionPresentationNamespace
             )
         } else {
+            // iOS 18–25 保留新建入口，但不注册仅新系统支持的 Toolbar zoom 来源。
             ToolbarItem(placement: .topBarTrailing) {
                 newSessionToolbarButton(
                     tokens: tokens,

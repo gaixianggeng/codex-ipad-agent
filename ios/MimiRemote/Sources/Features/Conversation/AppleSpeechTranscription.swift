@@ -2,7 +2,7 @@ import AVFoundation
 import os
 import Speech
 
-/// SpeechTranscriber 会交替发布可变结果和最终结果；这里只保留一个可变尾段，
+/// 系统转写器会交替发布可变结果和最终结果；这里只保留一个可变尾段，
 /// 最终结果按系统给出的顺序拼接，避免实时刷新时把同一段文字重复插入草稿。
 struct AppleSpeechTranscriptAccumulator: Equatable {
     private(set) var finalizedText = ""
@@ -162,8 +162,9 @@ enum AppleSpeechTranscriptionError: LocalizedError {
     }
 }
 
-/// iOS 26 的 SpeechAnalyzer 只负责分析，实时麦克风采集仍由 App 管理。
+/// iOS 26 的实时分析器只负责分析，实时麦克风采集仍由 App 管理。
 /// 该对象限定在主线程持有生命周期；音频 tap 里只做同步格式转换和 AsyncStream yield。
+@available(iOS 26.0, *)
 @MainActor
 final class AppleSpeechTranscriptionSession {
     private static let logger = Logger(
@@ -554,7 +555,7 @@ final class AppleSpeechTranscriptionSession {
     }
 }
 
-/// Xcode 26 没有 AnalyzerInputConverter，使用 AVAudioConverter 保持 iOS 26 最低版本兼容。
+/// Xcode 26 没有系统音频格式转换器，使用 AVAudioConverter 保持最低版本兼容。
 private final class AppleSpeechAudioBufferConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
