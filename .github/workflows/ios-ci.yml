@@ -36,6 +36,8 @@ on:
       - "scripts/check-ios-network-security.sh"
       - "scripts/check-ios-privacy-manifest.sh"
       - "scripts/check-app-store-metadata.sh"
+      - "scripts/ios_asc_cli.sh"
+      - "scripts/test-ios-asc-cli.sh"
       - "scripts/check-source-size.sh"
       - "scripts/check-mimi-protocol-contract.sh"
       - "docs/app-store/**"
@@ -50,6 +52,8 @@ on:
       - "scripts/ci-pr-scope.sh"
       - "docs/nightly-release.md"
       - "docs/local-testflight.md"
+      - "config/release/ios-asc-cli.env"
+      - "config/release/ios-testflight.local.env"
       - "README.md"
       - "README.zh-CN.md"
       - ".xcodebuildmcp/config.yaml"
@@ -123,6 +127,9 @@ jobs:
       - name: Check App Store metadata
         run: bash ./scripts/check-app-store-metadata.sh
 
+      - name: Check pinned asc CLI integration
+        run: bash ./scripts/test-ios-asc-cli.sh
+
       - name: Check source size
         run: bash ./scripts/check-source-size.sh
 
@@ -159,6 +166,8 @@ jobs:
       IOS_RELEASE_EXPECTED_XCODE_BUILD: 17F113
       IOS_RELEASE_EXPECTED_SDK_VERSION: "26.5"
       IOS_RELEASE_EXPECTED_SDK_BUILD: 23F81a
+      # 第一阶段只记录差异；Ruby 预检仍是实际构建号的唯一来源。
+      IOS_ASC_BUILD_NUMBER_MODE: shadow
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
     steps:
       - name: Checkout clean release source
@@ -230,6 +239,16 @@ jobs:
           [[ "$(xcodebuild -version)" == $'Xcode 26.6\nBuild version 17F113' ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == "26.5" ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-build-version)" == "23F81a" ]]
+
+      - name: Prepare pinned asc CLI shadow tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          asc_bin="$RUNNER_TEMP/mimi-release-tools/asc"
+          echo "ASC_CLI_BIN=$asc_bin" >> "$GITHUB_ENV"
+          if ! bash ./scripts/ios_asc_cli.sh install --destination "$asc_bin"; then
+            echo "::warning::固定版本 asc 安装或校验失败；本次发布保留 Ruby 预检并记录 shadow error。"
+          fi
 
       - name: Prepare App Store signing
         shell: bash

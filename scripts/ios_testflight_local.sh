@@ -207,6 +207,14 @@ for command in git security ruby plutil xcodebuild xcrun codesign tee caffeinate
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
 
+asc_build_number_mode="${IOS_ASC_BUILD_NUMBER_MODE:-off}"
+case "$asc_build_number_mode" in
+  off|shadow|enforce) ;;
+  *)
+    fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce"
+    ;;
+esac
+
 required_branch="${IOS_RELEASE_REQUIRED_BRANCH:-}"
 if [[ -n "$required_branch" ]]; then
   branch_ref="refs/heads/$required_branch"
@@ -228,11 +236,6 @@ if [[ -z "${TESTFLIGHT_WHATS_NEW:-}" ]]; then
   TESTFLIGHT_WHATS_NEW="本地校验：$(git -C "$REPO_ROOT" log -1 --format=%s "$release_commit")"
 fi
 export TESTFLIGHT_WHATS_NEW
-
-if [[ "$LOCAL_RELEASE_MODE" == "check" ]]; then
-  echo "ios-testflight-local check ok: project=$IOS_RELEASE_PROJECT_ID commit=$release_commit"
-  exit 0
-fi
 
 temp_base="${TMPDIR:-/tmp}"
 temp_base="${temp_base%/}"
@@ -333,6 +336,26 @@ git -C "$REPO_ROOT" worktree add --detach --quiet "$source_dir" "$release_commit
 worktree_added=1
 entrypoint="$source_dir/$IOS_RELEASE_ENTRYPOINT"
 [[ -f "$entrypoint" ]] || fail "release entrypoint not found in ref: $IOS_RELEASE_ENTRYPOINT"
+
+# 必须从 release commit 的隔离 worktree 执行，避免 --ref 与当前 checkout
+# 不一致时误用当前分支或未提交改动中的 asc 版本与校验和。
+case "$asc_build_number_mode" in
+  off) ;;
+  shadow|enforce)
+    if asc_check="$(bash "$source_dir/scripts/ios_asc_cli.sh" check)"; then
+      printf '%s\n' "$asc_check"
+    elif [[ "$asc_build_number_mode" == "enforce" ]]; then
+      fail "pinned asc CLI check failed"
+    else
+      echo "ios-testflight-local: warning: pinned asc CLI check failed; shadow comparison will be skipped if unavailable" >&2
+    fi
+    ;;
+esac
+
+if [[ "$LOCAL_RELEASE_MODE" == "check" ]]; then
+  echo "ios-testflight-local check ok: project=$IOS_RELEASE_PROJECT_ID commit=$release_commit"
+  exit 0
+fi
 
 if [[ -n "${IOS_PROVISIONING_PROFILE_PATH:-}" ]]; then
   [[ -f "$IOS_PROVISIONING_PROFILE_PATH" ]] || fail "provisioning profile not found: $IOS_PROVISIONING_PROFILE_PATH"
