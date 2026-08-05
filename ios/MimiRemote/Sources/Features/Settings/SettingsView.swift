@@ -74,26 +74,6 @@ private extension View {
         )
     }
 
-    func settingsInlinePickerStyle() -> some View {
-        modifier(SettingsInlinePickerStyleModifier())
-    }
-}
-
-private struct SettingsInlinePickerStyleModifier: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    func body(content: Content) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        content
-            .pickerStyle(.menu)
-            // Picker 的选中值属于说明层级：与 NavigationLink 的右侧值使用同一
-            // subheadline 和 secondaryText，不能跟随页面强调色抢过左侧标题。
-            .font(themeStore.uiFont(.subheadline))
-            .foregroundStyle(tokens.secondaryText)
-            .tint(tokens.secondaryText)
-    }
 }
 
 struct SettingsView: View {
@@ -274,48 +254,32 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.appearance")
 
-                Picker(selection: appLanguageSelection) {
-                    ForEach(AppLanguage.allCases) { language in
-                        Text(language.displayName)
-                            .tag(language)
-                    }
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.language"),
-                        systemImage: "globe"
-                    )
-                }
-                .settingsInlinePickerStyle()
+                SettingsChoiceRow(
+                    title: L10n.text("ui.language"),
+                    systemImage: "globe",
+                    options: AppLanguage.allCases,
+                    selection: appLanguageSelection
+                )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.language")
 
-                Picker(selection: voiceInputProviderSelection) {
-                    ForEach(VoiceInputProvider.allCases) { provider in
-                        Text(provider.title)
-                            .tag(provider)
-                    }
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.voice_input"),
-                        systemImage: "waveform"
-                    )
-                }
-                .settingsInlinePickerStyle()
+                SettingsChoiceRow(
+                    title: L10n.text("ui.voice_input"),
+                    systemImage: "waveform",
+                    options: VoiceInputProvider.allCases,
+                    selection: voiceInputProviderSelection
+                )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.voiceInput")
 
-                Picker(selection: defaultPermissionModeSelection) {
-                    ForEach(ComposerPermissionMode.allCases) { mode in
-                        Text(mode.title)
-                            .tag(mode)
-                    }
-                } label: {
-                    SettingsValueLabel(
-                        title: L10n.text("ui.default_permissions"),
-                        systemImage: "lock.shield"
-                    )
-                }
-                .settingsInlinePickerStyle()
+                // 四个模式各自有 detail，而且是安全相关的选择：值得整页逐条读完再选。
+                SettingsChoiceRow(
+                    title: L10n.text("ui.default_permissions"),
+                    systemImage: "lock.shield",
+                    options: ComposerPermissionMode.allCases,
+                    selection: defaultPermissionModeSelection,
+                    presentation: .page
+                )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
@@ -537,7 +501,9 @@ private struct SettingsStatusSummaryLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.accent)
+                // 图标是标识不是状态。整列图标都染强调色时颜色不承载任何信息，
+                // 只会把注意力从真正需要注意的地方（下面那个状态点）拉走。
+                .foregroundStyle(tokens.secondaryText)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot
@@ -585,7 +551,7 @@ private struct SettingsStatusSummaryLabel: View {
     }
 }
 
-private struct SettingsValueLabel: View {
+struct SettingsValueLabel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
@@ -603,7 +569,7 @@ private struct SettingsValueLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.accent)
+                .foregroundStyle(tokens.secondaryText)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot
