@@ -1987,6 +1987,47 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(WorkspaceStripLayout.minimumContentWidth(viewportWidth: 40), 0)
     }
 
+    func testCenteredNameWindowAllocatesAroundSelection() {
+        let ids = ["a", "b", "c", "d", "e"]
+
+        // 名额以选中项为中心，而不是从最左边开始。
+        XCTAssertEqual(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 3, aroundIndex: 2),
+            ["b", "c", "d"]
+        )
+
+        // 选中项贴着左端时，名额全部溢向右侧，不能少发。
+        XCTAssertEqual(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 3, aroundIndex: 0),
+            ["a", "b", "c"]
+        )
+
+        // 贴着右端同理。
+        XCTAssertEqual(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 3, aroundIndex: 4),
+            ["c", "d", "e"]
+        )
+
+        // 名额不小于总数时全部展开；为 0 时只剩选中项自己（由调用方兜底）。
+        XCTAssertEqual(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 99, aroundIndex: 1),
+            Set(ids)
+        )
+        XCTAssertTrue(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 0, aroundIndex: 1).isEmpty
+        )
+
+        // 越界或缺失的选中下标不能崩，退化成从头分配。
+        XCTAssertEqual(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 2, aroundIndex: nil),
+            ["a", "b"]
+        )
+        XCTAssertEqual(
+            WorkspaceStripLayout.centeredNameWindow(projectIDs: ids, limit: 2, aroundIndex: 99),
+            ["d", "e"]
+        )
+    }
+
     func testStartNewSessionWithClaudeRuntimeCarriesRuntimeProviderInCreatePayload() async throws {
         let project = makeProject(id: "proj_claude_entry")
         let created = makeSession(id: "claude_created", projectID: project.id, title: "Claude 会话", status: "closed", source: "claude")

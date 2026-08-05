@@ -304,7 +304,11 @@ struct UnifiedWorkbenchShell: View {
                                     openConnectionSettings(layout: layout)
                                 }
                             )
+                            .workbenchChromeCircle(tokens: tokens)
                         }
+                        // 设备切换与右侧目录按钮、下方项目胶囊共用同一块自绘磨砂；
+                        // 不摘掉系统玻璃底板会叠成两层背景。
+                        .sharedBackgroundVisibility(.hidden)
                     }
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
