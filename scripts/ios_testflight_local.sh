@@ -207,6 +207,23 @@ for command in git security ruby plutil xcodebuild xcrun codesign tee caffeinate
   command -v "$command" >/dev/null 2>&1 || fail "missing command: $command"
 done
 
+asc_build_number_mode="${IOS_ASC_BUILD_NUMBER_MODE:-off}"
+case "$asc_build_number_mode" in
+  off) ;;
+  shadow|enforce)
+    if asc_check="$(bash "$SCRIPT_DIR/ios_asc_cli.sh" check)"; then
+      printf '%s\n' "$asc_check"
+    elif [[ "$asc_build_number_mode" == "enforce" ]]; then
+      fail "pinned asc CLI check failed"
+    else
+      echo "ios-testflight-local: warning: pinned asc CLI check failed; shadow comparison will be skipped if unavailable" >&2
+    fi
+    ;;
+  *)
+    fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce"
+    ;;
+esac
+
 required_branch="${IOS_RELEASE_REQUIRED_BRANCH:-}"
 if [[ -n "$required_branch" ]]; then
   branch_ref="refs/heads/$required_branch"
