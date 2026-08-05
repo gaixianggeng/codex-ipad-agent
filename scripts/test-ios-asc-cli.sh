@@ -189,4 +189,16 @@ abort("before-upload shadow ordering is wrong") unless archive < second_shadow &
 abort("asc unexpectedly assigns real build_number") if source.match?(/build_number=.*ASC_CLI_/)
 RUBY
 
+# 本地 --ref 发布必须从目标提交的隔离 worktree 校验 asc pin，不能读取当前
+# checkout 的脚本或未提交配置。
+ruby - "$ROOT_DIR/scripts/ios_testflight_local.sh" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.read(path)
+worktree = source.index('git -C "$REPO_ROOT" worktree add --detach --quiet "$source_dir" "$release_commit"') or abort("missing release worktree")
+asc_check = source.index('bash "$source_dir/scripts/ios_asc_cli.sh" check') or abort("asc check does not use release worktree")
+check_exit = source.index('if [[ "$LOCAL_RELEASE_MODE" == "check" ]]', asc_check) or abort("check mode exits before release asc validation")
+abort("release asc validation ordering is wrong") unless worktree < asc_check && asc_check < check_exit
+abort("local asc check still uses current checkout") if source.include?('bash "$SCRIPT_DIR/ios_asc_cli.sh" check')
+RUBY
+
 echo "ios-asc-cli tests passed"
