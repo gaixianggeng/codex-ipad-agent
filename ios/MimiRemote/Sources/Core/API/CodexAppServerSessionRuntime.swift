@@ -144,7 +144,7 @@ actor CodexAppServerSessionRuntime {
     var rateLimitRefreshTask: Task<RateLimitSummary?, Never>?
     var lastRateLimitRefreshAt: Date?
     var accountTokenUsage: AccountTokenUsageSnapshot?
-    var accountTokenUsageRefreshTask: Task<AccountTokenUsageSnapshot?, Never>?
+    var accountTokenUsageRefreshTask: Task<AccountTokenUsageFetch, Never>?
     // 正在 startTurn 中的 thread：turn/start 请求挂起期间，actor 会重入处理 server-request，
     // 此时本地还没记上 activeTurnID、状态也可能仍是空闲。这一窗口内到达的审批一定属于刚发起的
     // 新 turn，不能被 isStaleReplayedApproval 误判成过期重放。

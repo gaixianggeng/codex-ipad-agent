@@ -428,7 +428,7 @@ extension CodexAppServerSessionRuntime {
         _ = await refreshRateLimitIfAvailable()
     }
 
-    func refreshAccountTokenUsage() async -> AccountTokenUsageSnapshot? {
+    func refreshAccountTokenUsage() async -> AccountTokenUsageFetch {
         if let accountTokenUsageRefreshTask {
             return await accountTokenUsageRefreshTask.value
         }
@@ -437,18 +437,18 @@ extension CodexAppServerSessionRuntime {
             await performAccountTokenUsageRefresh()
         }
         accountTokenUsageRefreshTask = task
-        let snapshot = await task.value
+        let fetch = await task.value
         accountTokenUsageRefreshTask = nil
-        return snapshot
+        return fetch
     }
 
-    func performAccountTokenUsageRefresh() async -> AccountTokenUsageSnapshot? {
+    func performAccountTokenUsageRefresh() async -> AccountTokenUsageFetch {
         // 账号活动是 Codex/ChatGPT 专属能力；Claude bridge 没有同构数据，必须 fail closed。
         guard runtimeProvider == "codex",
               let config = try? await ensureConfig(),
               config.policy.allowedMethods.contains("account/usage/read")
         else {
-            return accountTokenUsage
+            return .unsupported
         }
 
         do {
@@ -457,13 +457,14 @@ extension CodexAppServerSessionRuntime {
                 timeout: min(requestTimeout, 10)
             )
             guard let snapshot = accountTokenUsageSnapshot(fromPayload: result) else {
-                return accountTokenUsage
+                return .failed
             }
             accountTokenUsage = snapshot
-            return snapshot
+            return .snapshot(snapshot)
         } catch {
-            // “我的”页的统计是展示增强，失败时保留最近一次内存快照，不影响会话链路。
-            return accountTokenUsage
+            // “我的”页的统计是展示增强，失败不影响会话链路。但失败必须如实上报：
+            // 要不要退回上一次的快照是展示层的决定，在这里兜底会把错误洗成成功。
+            return .failed
         }
     }
 

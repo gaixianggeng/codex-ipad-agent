@@ -241,13 +241,15 @@ struct SettingsView: View {
                     claudeDisplay: claudeUsage,
                     includesClaude: sessionStore.hasClaudeRuntimeChannel,
                     snapshot: sessionStore.accountTokenUsage,
-                    isRefreshing: sessionStore.isRefreshingAccountTokenUsage
+                    activity: sessionStore.accountTokenActivity,
+                    // 刷新按钮代表整卡刷新，配额或活动任一在飞都转；
+                    // 活动面板的状态只看 activity 自己，不受配额刷新影响。
+                    isRefreshing: sessionStore.isRefreshingAccountTokenActivity
                         || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
                         || (
                             sessionStore.hasClaudeRuntimeChannel
                                 && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
                         ),
-                    isUnavailable: sessionStore.isAccountTokenUsageUnavailable,
                     onRefresh: refreshAccountUsage
                 )
                 .listRowInsets(EdgeInsets())
@@ -1156,8 +1158,8 @@ private struct AccountTokenUsageCard: View {
     let claudeDisplay: CodexUsageWindowsDisplay
     let includesClaude: Bool
     let snapshot: AccountTokenUsageSnapshot?
+    let activity: AccountTokenActivityState
     let isRefreshing: Bool
-    let isUnavailable: Bool
     let onRefresh: () async -> Void
 
     var body: some View {
@@ -1329,20 +1331,33 @@ private struct AccountTokenUsageCard: View {
                 }
             }
 
-            if let buckets = snapshot?.dailyUsageBuckets {
-                TokenActivityDotGrid(buckets: buckets)
+            if let buckets = activity.displayBuckets, !buckets.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    TokenActivityDotGrid(buckets: buckets)
+
+                    if activity.isShowingStaleData {
+                        // 网格画的是上一次成功的数据。不标注就等于把过期数据当成当前值。
+                        Text(L10n.text("ui.token_activity_stale"))
+                            .font(themeStore.uiFont(.caption2))
+                            .foregroundStyle(tokens.warning)
+                            .accessibilityIdentifier("settings.tokenActivity.stale")
+                    }
+                }
             } else {
                 HStack(spacing: 10) {
-                    if isRefreshing {
+                    if case .loading = activity {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Image(systemName: "chart.dots.scatter")
-                            .foregroundStyle(tokens.tertiaryText)
+                        Image(systemName: activityPlaceholderSymbol)
+                            .foregroundStyle(
+                                isActivityFailure ? tokens.warning : tokens.tertiaryText
+                            )
                     }
-                    Text(activityUnavailableText)
+                    Text(activityPlaceholderText)
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, minHeight: 74, alignment: .center)
                 .accessibilityIdentifier("settings.tokenActivity.unavailable")
@@ -1357,26 +1372,47 @@ private struct AccountTokenUsageCard: View {
             .foregroundStyle(tokens.primaryText)
     }
 
+    /// 累计值未知时整行不出现。渲染成 `累计 Token · —` 会被读成“累计是 0”。
+    @ViewBuilder
     private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
-        Text(
-            L10n.format(
-                "ui.lifetime_token_value",
-                TokenCountFormatter.string(snapshot?.summary.lifetimeTokens)
+        if let lifetimeTokens = snapshot?.summary.lifetimeTokens {
+            Text(
+                L10n.format(
+                    "ui.lifetime_token_value",
+                    TokenCountFormatter.string(lifetimeTokens)
+                )
             )
-        )
-        .font(themeStore.uiFont(.caption))
-        .foregroundStyle(tokens.secondaryText)
-        .fixedSize(horizontal: false, vertical: true)
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
-    private var activityUnavailableText: String {
-        if isRefreshing {
+    private var isActivityFailure: Bool {
+        if case .failed = activity { return true }
+        return false
+    }
+
+    private var activityPlaceholderSymbol: String {
+        isActivityFailure ? "exclamationmark.triangle" : "chart.dots.scatter"
+    }
+
+    private var activityPlaceholderText: String {
+        switch activity {
+        case .idle:
+            return L10n.text("ui.token_activity_waiting")
+        case .loading:
             return L10n.text("ui.loading_token_activity")
-        }
-        if isUnavailable {
+        case .empty:
+            return L10n.text("ui.token_activity_empty")
+        case .unsupported:
             return L10n.text("ui.token_activity_unavailable")
+        case .failed:
+            return L10n.text("ui.token_activity_failed")
+        case .loaded:
+            // 有数据时走点格图分支；空数组由 .empty 表达，不会落到这里。
+            return L10n.text("ui.token_activity_empty")
         }
-        return L10n.text("ui.token_activity_waiting")
     }
 
     /// 产品只需要 Codex 的长窗口，以及 Claude 的长、短两个窗口。

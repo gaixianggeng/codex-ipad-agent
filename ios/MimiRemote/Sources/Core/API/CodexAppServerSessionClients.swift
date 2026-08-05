@@ -177,7 +177,7 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         await runtime.refreshRateLimit()
     }
 
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         await runtime.refreshAccountTokenUsage()
     }
 
@@ -524,7 +524,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         await bundle.runtime(for: runtimeProvider).refreshRateLimit()
     }
 
-    func refreshAccountTokenUsage() async throws -> AccountTokenUsageSnapshot? {
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
         // Token 活动来自 ChatGPT 账号，只允许走 Codex channel。
         await bundle.codex.refreshAccountTokenUsage()
     }
