@@ -35006,7 +35006,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "刷新失败，以下是上次加载的结果"
+            "value" : "刷新失败，显示的是上次加载的结果"
           }
         }
       }

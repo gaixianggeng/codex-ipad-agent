@@ -27,6 +27,9 @@ enum TokenActivityGridMetrics {
     static let spacing: CGFloat = 3
     static let maximumCellSize: CGFloat = 7
     static let minimumCellSize: CGFloat = 4
+    /// 月份标签带 + 七行点格的总高度。加载中、暂无数据和失败态的占位必须用同一个值，
+    /// 否则状态切换时整张卡片会跳。
+    static let totalHeight: CGFloat = 86
 
     /// 点格保持可读尺寸，把可用宽度换成最近周数；窄屏减少历史范围而不是横向滚动。
     static func weekCount(
@@ -261,7 +264,7 @@ struct TokenActivityDotGrid: View {
             }
             .frame(width: contentWidth, height: gridHeight + 19, alignment: .topLeading)
         }
-        .frame(height: 86)
+        .frame(height: TokenActivityGridMetrics.totalHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L10n.text("ui.token_activity"))
         .accessibilityValue(

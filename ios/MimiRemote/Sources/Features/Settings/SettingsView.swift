@@ -1149,7 +1149,8 @@ private struct ConnectionSpeedMetricRow: View {
     }
 }
 
-private struct AccountTokenUsageCard: View {
+/// 视觉基线按状态逐个录制，因此对测试可见；页面之外没有其他调用方。
+struct AccountTokenUsageCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
@@ -1170,7 +1171,7 @@ private struct AccountTokenUsageCard: View {
                 wideLayout(tokens: tokens)
                     .frame(minWidth: 620)
             }
-            phoneSideBySideLayout(tokens: tokens)
+            stackedLayout(tokens: tokens)
         }
         .padding(18)
         .frame(maxWidth: .infinity)
@@ -1193,11 +1194,13 @@ private struct AccountTokenUsageCard: View {
 
     private func wideLayout(tokens: ThemeTokens) -> some View {
         HStack(alignment: .top, spacing: 20) {
-            quotaPanel(tokens: tokens, usesVerticalContent: false)
-                .frame(width: 236)
+            quotaPanel(tokens: tokens)
+                .frame(width: 252)
 
             Divider()
                 .overlay(tokens.border.opacity(0.72))
+                // 分隔线跟着较高的一侧拉长时，尾段会悬在另一侧内容之外。
+                .frame(maxHeight: 132)
 
             activityPanel(tokens: tokens)
                 .frame(maxWidth: .infinity)
@@ -1205,33 +1208,29 @@ private struct AccountTokenUsageCard: View {
         .frame(minHeight: 156)
     }
 
-    private func phoneSideBySideLayout(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            quotaPanel(tokens: tokens, usesVerticalContent: true)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-
-            Divider()
-                .overlay(tokens.border.opacity(0.72))
-
+    /// 窄屏不再左右各占一半。点格图本来就是横向的，宽度给足才成立；
+    /// 配额那半也终于放得下环形图和完整图例，不用再挤成两列。
+    private func stackedLayout(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            quotaPanel(tokens: tokens)
             activityPanel(tokens: tokens)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    private func quotaPanel(tokens: ThemeTokens, usesVerticalContent: Bool) -> some View {
+    private func quotaPanel(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.text("ui.current_remaining"))
                 .font(themeStore.uiFont(.subheadline, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
 
-            if usesVerticalContent || dynamicTypeSize.isAccessibilitySize {
+            if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 14) {
-                    usageRings(diameter: compactRingDiameter)
+                    usageRings(tokens: tokens, diameter: 92)
                     usageLegend(tokens: tokens)
                 }
             } else {
                 HStack(alignment: .center, spacing: 16) {
-                    usageRings(diameter: 92)
+                    usageRings(tokens: tokens, diameter: 100)
                     usageLegend(tokens: tokens)
                 }
             }
@@ -1239,19 +1238,66 @@ private struct AccountTokenUsageCard: View {
         .accessibilityIdentifier("settings.tokenUsage.quota")
     }
 
-    private var compactRingDiameter: CGFloat {
-        dynamicTypeSize.isAccessibilitySize ? 92 : 84
+    private func usageRings(tokens: ThemeTokens, diameter: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            ZStack {
+                CombinedUsageRingsGraphic(
+                    items: usageItems,
+                    expectedRingCount: 3,
+                    diameter: diameter,
+                    lineWidth: Self.ringLineWidth,
+                    ringSpacing: Self.ringSpacing
+                )
+
+                // 三个百分比平权并列时，用户看不出哪个窗口先耗尽。环心只放最紧张的那个，
+                // 明细仍由右侧图例给出。无障碍字号下环心装不下，改由图例独自承担。
+                //
+                // 环心不再重复写出窗口名：最短的那条弧本身就指明了是哪个窗口，
+                // 再写一遍 provider · window 会让同一条信息在卡片上出现第三次。
+                // 数字用正文色而不是该窗口的 tint——tint 是为环形轨道挑的，
+                // 放到浅色底上做文字达不到需要的对比度。
+                if !dynamicTypeSize.isAccessibilitySize, let tightestItem {
+                    Text(tightestItem.window.remainingPercentText ?? "—")
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(width: Self.ringInnerHoleDiameter(for: diameter))
+                }
+            }
+            .frame(width: diameter, height: diameter)
+        }
+        // 环形和环心数字是同一条信息，拆成两个元素读会让 VoiceOver 念出无意义的裸数字。
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.text("ui.current_remaining"))
+        .accessibilityValue(ringsAccessibilityValue)
     }
 
-    private func usageRings(diameter: CGFloat) -> some View {
-        CombinedUsageRingsGraphic(
-            items: usageItems,
-            expectedRingCount: 3,
-            diameter: diameter,
-            lineWidth: 6
-        )
-        .frame(width: diameter, height: diameter)
-        .accessibilityLabel(L10n.text("ui.current_remaining"))
+    private static let ringLineWidth: CGFloat = 6
+    private static let ringSpacing: CGFloat = 8
+
+    /// 三环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
+    private static func ringInnerHoleDiameter(for diameter: CGFloat) -> CGFloat {
+        let step = (ringLineWidth + ringSpacing) * 2
+        return max(diameter - step * 2 - ringLineWidth, 24)
+    }
+
+    /// 剩余比例最低的窗口，也就是最先耗尽的那个。没有可用进度时不猜。
+    private var tightestItem: CombinedUsageItem? {
+        usageItems
+            .filter { $0.window.remainingProgress != nil }
+            .min { ($0.window.remainingProgress ?? 1) < ($1.window.remainingProgress ?? 1) }
+    }
+
+    private var ringsAccessibilityValue: String {
+        let items = usageItems
+        guard !items.isEmpty else {
+            return L10n.text("ui.token_activity_waiting")
+        }
+        return items
+            .map { "\($0.providerName) \($0.window.label) \($0.window.remainingPercentText ?? "—")" }
+            .joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -1331,39 +1377,84 @@ private struct AccountTokenUsageCard: View {
                 }
             }
 
-            if let buckets = activity.displayBuckets, !buckets.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    TokenActivityDotGrid(buckets: buckets)
-
-                    if activity.isShowingStaleData {
-                        // 网格画的是上一次成功的数据。不标注就等于把过期数据当成当前值。
-                        Text(L10n.text("ui.token_activity_stale"))
-                            .font(themeStore.uiFont(.caption2))
-                            .foregroundStyle(tokens.warning)
-                            .accessibilityIdentifier("settings.tokenActivity.stale")
-                    }
-                }
-            } else {
-                HStack(spacing: 10) {
-                    if case .loading = activity {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: activityPlaceholderSymbol)
-                            .foregroundStyle(
-                                isActivityFailure ? tokens.warning : tokens.tertiaryText
-                            )
-                    }
-                    Text(activityPlaceholderText)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, minHeight: 74, alignment: .center)
-                .accessibilityIdentifier("settings.tokenActivity.unavailable")
-            }
+            activityContent(tokens: tokens)
         }
         .accessibilityIdentifier("settings.tokenUsage.activity")
+    }
+
+    @ViewBuilder
+    private func activityContent(tokens: ThemeTokens) -> some View {
+        switch activity {
+        case .loaded(let buckets, _):
+            TokenActivityDotGrid(buckets: buckets)
+
+        case .empty:
+            // 画成一整片未活动的格子，比一句话更能说明“接口是通的，只是还没有记录”。
+            activityGrid(
+                buckets: [],
+                caption: L10n.text("ui.token_activity_empty"),
+                captionTint: tokens.secondaryText,
+                captionIdentifier: "settings.tokenActivity.empty"
+            )
+
+        case .failed(let previous):
+            if let previous, !previous.buckets.isEmpty {
+                activityGrid(
+                    buckets: previous.buckets,
+                    // 网格画的是上一次成功的数据。不标注就等于把过期数据当成当前值。
+                    caption: L10n.text("ui.token_activity_stale"),
+                    captionTint: tokens.warning,
+                    captionIdentifier: "settings.tokenActivity.stale"
+                )
+            } else {
+                activityPlaceholder(tokens: tokens)
+            }
+
+        case .idle, .loading, .unsupported:
+            activityPlaceholder(tokens: tokens)
+        }
+    }
+
+    private func activityGrid(
+        buckets: [AccountTokenUsageDailyBucket],
+        caption: String,
+        captionTint: Color,
+        captionIdentifier: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TokenActivityDotGrid(buckets: buckets)
+
+            Text(caption)
+                .font(themeStore.uiFont(.caption2))
+                .foregroundStyle(captionTint)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(captionIdentifier)
+        }
+    }
+
+    /// 占位高度和真实点格图一致，状态之间切换时卡片不跳。
+    private func activityPlaceholder(tokens: ThemeTokens) -> some View {
+        HStack(spacing: 10) {
+            if case .loading = activity {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: activityPlaceholderSymbol)
+                    .foregroundStyle(
+                        isActivityFailure ? tokens.warning : tokens.tertiaryText
+                    )
+            }
+            Text(activityPlaceholderText)
+                .font(themeStore.uiFont(.caption))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: TokenActivityGridMetrics.totalHeight,
+            alignment: .center
+        )
+        .accessibilityIdentifier("settings.tokenActivity.unavailable")
     }
 
     private func activityTitle(tokens: ThemeTokens) -> some View {
@@ -1399,19 +1490,15 @@ private struct AccountTokenUsageCard: View {
 
     private var activityPlaceholderText: String {
         switch activity {
-        case .idle:
-            return L10n.text("ui.token_activity_waiting")
         case .loading:
             return L10n.text("ui.loading_token_activity")
-        case .empty:
-            return L10n.text("ui.token_activity_empty")
         case .unsupported:
             return L10n.text("ui.token_activity_unavailable")
         case .failed:
             return L10n.text("ui.token_activity_failed")
-        case .loaded:
-            // 有数据时走点格图分支；空数组由 .empty 表达，不会落到这里。
-            return L10n.text("ui.token_activity_empty")
+        case .idle, .empty, .loaded:
+            // empty 与 loaded 都走点格图分支，不会落到占位。
+            return L10n.text("ui.token_activity_waiting")
         }
     }
 
