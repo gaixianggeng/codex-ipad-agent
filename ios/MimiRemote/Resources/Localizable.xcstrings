@@ -13675,13 +13675,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Auto-approve low-risk actions. You will still be asked about higher-risk actions."
+            "value" : "You will still be asked about higher-risk actions."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动批准低风险操作；高风险操作仍会请求你的确认。"
+            "value" : "高风险操作仍会请求你的确认"
           }
         }
       }

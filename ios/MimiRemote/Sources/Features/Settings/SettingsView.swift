@@ -236,8 +236,26 @@ struct SettingsView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .accessibilityIdentifier("settings.tokenUsage")
-            } header: {
-                Text(L10n.text("ui.token_usage"))
+
+                NavigationLink {
+                    ConnectionManagementView(
+                        qrScannerPresentation: qrScannerPresentation,
+                        onRequestProfileRename: { profileRenamePresentation.present($0) }
+                    )
+                } label: {
+                    SettingsConnectionCard(
+                        deviceName: currentMacDisplayName,
+                        status: compactConnectionStatusText,
+                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
+                        statusTint: connectionStatusTone(tokens: tokens),
+                        warningText: connectionWarningText
+                    )
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("settings.connectionManagement")
             }
 
             Section {
@@ -283,26 +301,10 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.defaultPermissions")
             } header: {
-                Text(L10n.text("ui.my_preferences"))
+                sectionHeader(L10n.text("ui.my_preferences"), tokens: tokens)
             }
 
             Section {
-                NavigationLink {
-                    ConnectionManagementView(
-                        qrScannerPresentation: qrScannerPresentation,
-                        onRequestProfileRename: { profileRenamePresentation.present($0) }
-                    )
-                } label: {
-                    SettingsMacDevicesSummaryLabel(
-                        currentDevice: currentMacDisplayName,
-                        status: compactConnectionStatusText,
-                        savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
-                        statusTint: connectionStatusTone(tokens: tokens)
-                    )
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.connectionManagement")
-
                 NavigationLink {
                     DiagnosticsAndSupportSettingsView(
                         showsHistoryDiagnostics: developerModeEnabled
@@ -340,14 +342,12 @@ struct SettingsView: View {
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.aboutLegal")
             } header: {
-                Text(L10n.text("ui.more"))
-            } footer: {
-                if let connectionWarningText {
-                    Text(connectionWarningText)
-                }
+                sectionHeader(L10n.text("ui.more"), tokens: tokens)
             }
         }
+        // 分组之间靠留白划分，行本身不再套在圆角白卡里。
         .listSectionSpacing(SettingsLayoutMetrics.sectionSpacing)
+        .listRowBackground(Color.clear)
         .themedSettingsForm(tokens: tokens)
         .task(id: appStore.activeHostScope) {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
@@ -382,6 +382,14 @@ struct SettingsView: View {
             // 不要求重新扫码，也不在已有首屏数据的正常连接上额外刷新。
             _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
         }
+    }
+
+    /// 系统默认会把分组标题转成全大写并用最小字号，和页面其余部分不是一套排版。
+    private func sectionHeader(_ title: String, tokens: ThemeTokens) -> some View {
+        Text(title)
+            .font(themeStore.uiFont(.footnote, weight: .medium))
+            .foregroundStyle(tokens.secondaryText)
+            .textCase(nil)
     }
 
     private func refreshAccountUsage() async {
@@ -456,98 +464,6 @@ struct SettingsView: View {
             get: { ComposerPermissionMode.stored(defaultPermissionModeID) },
             set: { defaultPermissionModeID = $0.rawValue }
         )
-    }
-}
-
-private struct SettingsMacDevicesSummaryLabel: View {
-    let currentDevice: String
-    let status: String
-    let savedDeviceCount: Int
-    let statusTint: Color
-
-    var body: some View {
-        SettingsStatusSummaryLabel(
-            title: L10n.text("ui.mac_devices"),
-            detail: "\(currentDevice) · \(status) · \(savedCount)",
-            systemImage: "desktopcomputer",
-            statusDotTint: statusTint,
-            symbolPointSize: 17
-        )
-    }
-
-    private var savedCount: String {
-        L10n.plural("ui.saved_macs_count", count: savedDeviceCount)
-    }
-}
-
-/// 状态模块的两个入口共享同一套双行结构，避免设备行、测速行因内容不同
-/// 产生不一致的高度、图标大小和基线。
-private struct SettingsStatusSummaryLabel: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let title: String
-    let detail: String
-    let systemImage: String
-    var detailTint: Color? = nil
-    var statusDotTint: Color? = nil
-    var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: symbolPointSize, weight: .regular))
-                .symbolRenderingMode(.hierarchical)
-                // 图标是标识不是状态。整列图标都染强调色时颜色不承载任何信息，
-                // 只会把注意力从真正需要注意的地方（下面那个状态点）拉走。
-                .foregroundStyle(tokens.secondaryText)
-                .frame(
-                    width: SettingsLayoutMetrics.iconSlot,
-                    height: SettingsLayoutMetrics.iconSlot
-                )
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(themeStore.uiFont(.body))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-
-                HStack(spacing: 5) {
-                    if let statusDotTint {
-                        Circle()
-                            .fill(statusDotTint)
-                            .frame(width: 6, height: 6)
-                            .accessibilityHidden(true)
-                    }
-
-                    Text(detail)
-                        .font(themeStore.uiFont(.footnote))
-                        .monospacedDigit()
-                        .foregroundStyle(detailTint ?? tokens.secondaryText)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .minimumScaleFactor(0.82)
-                        .truncationMode(.tail)
-                }
-            }
-        }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: rowHeight,
-            maxHeight: rowHeight,
-            alignment: .leading
-        )
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-    }
-
-    private var rowHeight: CGFloat {
-        dynamicTypeSize.isAccessibilitySize
-            ? SettingsLayoutMetrics.accessibilityRowHeight
-            : SettingsLayoutMetrics.standardRowHeight
     }
 }
 
@@ -1519,6 +1435,100 @@ private struct AccountUsageRefreshButton: View {
                 : L10n.format("ui.refresh_value_usage", "Token")
         )
         .accessibilityIdentifier("settings.tokenUsage.refresh")
+    }
+}
+
+/// Mac 连接是全局、持续、且会失败的状态，过去却被当成普通设置项埋在
+/// 「更多」组里，断线提示还挂在整组的 footer——显示在「关于与法律」下面，
+/// 离设备行隔了三行，等于用户最需要看到它的时候最看不到。
+/// 这里把它提到首屏与 Token 卡片同级：正常时安静，异常时卡片自己变警示态。
+struct SettingsConnectionCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let deviceName: String
+    let status: String
+    let savedDeviceCount: Int
+    let statusTint: Color
+    let warningText: String?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let hasWarning = warningText != nil
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 20, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(hasWarning ? tokens.warning : tokens.secondaryText)
+                    .frame(width: SettingsLayoutMetrics.iconSlot)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(deviceName)
+                        .font(themeStore.uiFont(.body))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(statusTint)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+
+                        Text(detailText)
+                            .font(themeStore.uiFont(.footnote))
+                            .foregroundStyle(tokens.secondaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                            .minimumScaleFactor(0.82)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+
+            // 断线提示回到它描述的那张卡片里，不再是三行之外的分组 footer。
+            if let warningText {
+                Text(warningText)
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings.connection.warning")
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            tokens.surface,
+            in: RoundedRectangle(
+                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: SettingsLayoutMetrics.statusModuleCornerRadius,
+                style: .continuous
+            )
+            .stroke(
+                hasWarning ? tokens.warning.opacity(0.55) : tokens.border.opacity(0.48),
+                lineWidth: hasWarning ? 1 : 0.5
+            )
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detailText: String {
+        let saved = L10n.plural("ui.saved_macs_count", count: savedDeviceCount)
+        return "\(status) · \(saved)"
     }
 }
 
