@@ -541,23 +541,37 @@ func transportErrorResponse(_ transport: FakeCodexAppServerTransport, id: CodexA
     transport.enqueue(#"{"id":\#(encodedID),"error":{"code":\#(code),"message":\#(encodedMessage)}}"#)
 }
 
-func historyPolicyError(reason: String, retryAfterMs: Int? = nil) -> Error {
+func historyPolicyError(
+    reason: String,
+    retryAfterMs: Int? = nil,
+    responseBytes: Int? = nil,
+    maxResponseBytes: Int? = nil,
+    method: String = "thread/turns/list",
+    itemsView: String? = nil
+) -> Error {
+    let resolvedItemsView = itemsView ?? (reason == "history_response_too_large" ? "full" : "summary")
     var data: [String: CodexAppServerJSONValue] = [
         "reason": .string(reason),
-        "method": .string("thread/turns/list"),
+        "method": .string(method),
         "threadId": .string("codex_history_policy_test"),
-        "itemsView": .string(reason == "history_response_too_large" ? "full" : "summary")
+        "itemsView": .string(resolvedItemsView)
     ]
     if let retryAfterMs {
         data["retryAfterMs"] = .int(Int64(retryAfterMs))
         data["retryAfterSeconds"] = .int(Int64(max(1, (retryAfterMs + 999) / 1_000)))
     }
+    if let responseBytes {
+        data["responseBytes"] = .int(Int64(responseBytes))
+    }
+    if let maxResponseBytes {
+        data["maxResponseBytes"] = .int(Int64(maxResponseBytes))
+    }
     let message: String
     switch reason {
     case "history_response_too_large":
-        message = "thread/turns/list history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取"
+        message = "\(method) history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取"
     default:
-        message = "thread/turns/list 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView"
+        message = "\(method) 同一 thread/method 正在临时限流，请稍后重试或降低 limit/itemsView"
     }
     return CodexAppServerConnectionError.appServer(CodexAppServerError(
         code: -32080,

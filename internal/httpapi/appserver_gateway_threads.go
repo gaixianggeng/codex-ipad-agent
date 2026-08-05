@@ -165,12 +165,25 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 					payload = redacted
 				}
+				if !pending.redactOnly &&
+					appServerGatewayHistoryResponseCapBytes > 0 &&
+					len(payload) > appServerGatewayHistoryResponseCapBytes {
+					// 单个 turn 仍可能因命令、MCP 或 diff 输出超过 full cap。
+					// 只在原响应必然被阻断时把这些过程输出改成短预览 + 鉴权引用，
+					// 普通历史继续原样透传，不为小响应增加缓存或协议复杂度。
+					if dehydrated, changed := p.router.dehydrateOversizedHistoryOutputs(payload); changed {
+						payload = dehydrated
+					}
+				}
 			}
 			blocked := !pending.redactOnly && len(frame.Error) == 0 && len(frame.Result) > 0 && appServerGatewayHistoryResponseCapBytes > 0 && len(payload) > appServerGatewayHistoryResponseCapBytes
 			p.recordHistoryResponseMetrics(pending.method, len(payload), blocked)
 			if !pending.redactOnly {
-				p.recordHistoryResponseBudget(pending, len(payload))
 				if blocked {
+					// 被 cap 阻断的响应从未写回 iPad，不能计入保护下行链路的历史预算：
+					// 否则这次未转发的大 full（如 9.78MB）会打满全局/本 key 响应预算，
+					// 让紧随其后的小 summary 回退被 history_budget_limited 饿死，也会挡住
+					// 后续 full 自适应缩页重试。这里只保留诊断指标，不消耗下载预算。
 					p.forgetPending(frame.ID)
 					return payload, false, &appServerGatewayPolicyError{
 						id:      frame.ID,
@@ -187,6 +200,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 						historyResponseBlocked: true,
 					}
 				}
+				p.recordHistoryResponseBudget(pending, len(payload))
 			}
 		}
 	}

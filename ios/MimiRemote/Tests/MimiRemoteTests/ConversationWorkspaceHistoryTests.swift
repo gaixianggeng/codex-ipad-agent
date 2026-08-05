@@ -3685,6 +3685,208 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.deferredFullHistorySessionIDs.isEmpty)
     }
 
+    func testHistoryOversizePolicyFailureExposesStructuredMagnitude() {
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: [])) }
+        )
+
+        let failure = store.historyPolicyFailure(from: historyPolicyError(
+            reason: "history_response_too_large",
+            responseBytes: 9_786_022,
+            maxResponseBytes: 5_242_880
+        ))
+        XCTAssertEqual(failure?.reason, "history_response_too_large")
+        XCTAssertEqual(failure?.method, "thread/turns/list")
+        XCTAssertEqual(failure?.responseBytes, 9_786_022)
+        XCTAssertEqual(failure?.maxResponseBytes, 5_242_880)
+        XCTAssertEqual(failure?.itemsView, "full")
+
+        // 纯函数字节量级：二进制步进、locale 无关，回归可稳定断言。
+        XCTAssertEqual(SessionStore.historyByteDescription(9_786_022), "9.3 MB")
+        XCTAssertEqual(SessionStore.historyByteDescription(5_242_880), "5.0 MB")
+        XCTAssertEqual(SessionStore.historyByteDescription(15_037), "15 KB")
+
+        let sessionID = "codex_history_policy_test"
+        // 非运行会话：使用“切换缩略历史”文案，并带上真实量级参数。
+        XCTAssertEqual(
+            store.fullHistoryOversizeNotice(failure!, sessionID: sessionID),
+            L10n.format("ui.full_history_exceeds_limit_value", "9.3 MB", "5.0 MB")
+        )
+
+        // 运行中会话（已登记 deferred）：改用“任务完成后恢复”文案，量级不变。
+        store.deferredFullHistorySessionIDs.insert(sessionID)
+        XCTAssertEqual(
+            store.fullHistoryOversizeNotice(failure!, sessionID: sessionID),
+            L10n.format("ui.full_history_exceeds_limit_running_value", "9.3 MB", "5.0 MB")
+        )
+    }
+
+    func testHistoryOversizeNoticeFallsBackWhenMagnitudeMissing() {
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { OrderedHistoryPageClient(projects: [], page: SessionsPage(sessions: [])) }
+        )
+        // 旧 agentd 未带 responseBytes/maxResponseBytes 时回退到既有泛化文案，不崩溃、不显示裸键。
+        let failure = store.historyPolicyFailure(from: historyPolicyError(reason: "history_response_too_large"))
+        XCTAssertNil(failure?.responseBytes)
+        XCTAssertNil(failure?.maxResponseBytes)
+        XCTAssertEqual(
+            store.fullHistoryOversizeNotice(failure!, sessionID: "codex_history_policy_test"),
+            L10n.text("ui.the_full_history_content_is_large_and_the")
+        )
+    }
+
+    func testFullHistoryOversizeLaddersDownToSmallerFullPage() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_ladder_full", projectID: project.id, title: "大历史逐级缩页", status: "history", source: "codex", resumeID: "large")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+        XCTAssertEqual(client.requestedMessageLimits, [20])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full])
+
+        // 首屏 9.78MB 超过 5MB，且 gateway 给出真实量级 → 逐级缩页到更小 full 页（10→5），
+        // 而不是直接降级缩略；提示仍是“加载完整历史”。
+        client.failHistoryRequest(at: 0, with: historyPolicyError(
+            reason: "history_response_too_large",
+            responseBytes: 9_786_022,
+            maxResponseBytes: 5_242_880
+        ))
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(client.requestedMessageLimits, [20, 5])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingFull)
+
+        // 5 turn 页仍超限 → 继续缩到 2 turn，不重复相同参数。
+        client.failHistoryRequest(at: 1, with: historyPolicyError(
+            reason: "history_response_too_large",
+            responseBytes: 6_000_000,
+            maxResponseBytes: 5_242_880
+        ))
+        await client.waitForHistoryRequestCount(3)
+        XCTAssertEqual(client.requestedMessageLimits, [20, 5, 2])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full, .full])
+
+        // 2 turn 页成功：呈现真实完整历史，不回退缩略、不进入 deferred。
+        client.resolveHistoryRequest(
+            at: 2,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:ladder", role: "assistant", content: "完整历史(小页)", createdAt: Date(timeIntervalSince1970: 30))
+                ],
+                loadMode: .full
+            )
+        )
+        await selectTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["完整历史(小页)"])
+        XCTAssertTrue(store.deferredFullHistorySessionIDs.isEmpty)
+    }
+
+    func testFullHistoryOversizeExhaustsLadderThenLoadsSummary() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_ladder_exhaust", projectID: project.id, title: "单 turn 超大耗尽缩页", status: "history", source: "codex", resumeID: "large")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        // 每一级 full 都超限（单 turn 就超过 cap）：ladder 走完 10→5→2→1 后才回退缩略，
+        // 不重复相同 turn 页参数。
+        let oversize = { historyPolicyError(reason: "history_response_too_large", responseBytes: 9_000_000, maxResponseBytes: 5_242_880) }
+        client.failHistoryRequest(at: 0, with: oversize())
+        await client.waitForHistoryRequestCount(2)
+        client.failHistoryRequest(at: 1, with: oversize())
+        await client.waitForHistoryRequestCount(3)
+        client.failHistoryRequest(at: 2, with: oversize())
+        await client.waitForHistoryRequestCount(4)
+        XCTAssertEqual(client.requestedMessageLimits, [20, 5, 2, 1])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full, .full, .full])
+
+        // 1 turn 仍超限 → 耗尽 ladder，回退缩略历史。
+        client.failHistoryRequest(at: 3, with: oversize())
+        await client.waitForHistoryRequestCount(5)
+        XCTAssertEqual(client.requestedMessageLimits, [20, 5, 2, 1, 60])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .full, .full, .full, .economy])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .loadingSummary)
+
+        client.resolveHistoryRequest(
+            at: 4,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(id: "rollout:ladder-summary", role: "assistant", content: "缩略历史", createdAt: Date(timeIntervalSince1970: 40))
+                ],
+                loadMode: .economy,
+                notice: "当前显示缩略历史。"
+            )
+        )
+        await selectTask.value
+
+        XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["缩略历史"])
+        XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryLoaded)
+    }
+
+    func testFullThreadReadOversizeSkipsAdaptiveLadder() async {
+        let project = makeProject(id: "proj_1")
+        let history = makeSession(id: "codex_full_read_oversize", projectID: project.id, title: "老版全量读取超限", status: "history", source: "codex", resumeID: "large")
+        let client = OrderedHistoryPageClient(projects: [project], page: SessionsPage(sessions: [history]))
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        let selectTask = Task { await store.selectSession(history) }
+        await client.waitForHistoryRequestCount(1)
+
+        // 老 agentd 不支持 thread/turns/list 时会退回 thread/read；该路径的 limit
+        // 只用于本地切片，不能触发 10→5→2→1 的重复线上全量读取。
+        client.failHistoryRequest(at: 0, with: historyPolicyError(
+            reason: "history_response_too_large",
+            responseBytes: 9_786_022,
+            maxResponseBytes: 5_242_880,
+            method: "thread/read",
+            itemsView: "fullRead"
+        ))
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(client.requestedMessageLimits, [20, 60])
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(
+                messages: [],
+                loadMode: .economy,
+                notice: "当前显示缩略历史。"
+            )
+        )
+        await selectTask.value
+    }
+
     func testRunningFullHistoryResponseTooLargeReloadsFullAfterTurnCompletes() async {
         let project = makeProject(id: "proj_1")
         let running = makeSession(

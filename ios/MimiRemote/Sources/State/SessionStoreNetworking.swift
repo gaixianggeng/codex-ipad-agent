@@ -116,6 +116,7 @@ protocol SessionStoreAPIClient {
     func listDirectories(path: String) async throws -> DirectoryListResponse
     func readFile(path: String) async throws -> FileReadResponse
     func readHistoryMedia(id: String) async throws -> FileReadResponse
+    func readHistoryOutput(id: String) async throws -> FileReadResponse
     func commandActions(path: String) async throws -> [AgentCommandAction]
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse
     func gitStatus(path: String) async throws -> GitStatusResponse
@@ -303,6 +304,11 @@ extension SessionStoreAPIClient {
 
     func readHistoryMedia(id: String) async throws -> FileReadResponse {
         // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/app-server/history-media/{id}。
+        throw AgentAPIError.invalidResponse
+    }
+
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        // 超大历史过程输出只能通过 agentd 鉴权控制面按需读取。
         throw AgentAPIError.invalidResponse
     }
 

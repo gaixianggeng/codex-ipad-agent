@@ -195,8 +195,32 @@ struct HistoryFirstPageFetchFailure: LocalizedError {
 
 struct HistoryPolicyFailure: Equatable {
     let reason: String?
+    let method: String?
     let retryAfterNanoseconds: UInt64?
     let retryAfterSeconds: Int?
+    /// gateway 阻断的完整响应体量与 cap（history_response_too_large 时非空），
+    /// 用于向用户展示“完整历史约 9.3 MB，超过 5.0 MB 上限”这类结构化量级。
+    let responseBytes: Int?
+    let maxResponseBytes: Int?
+    let itemsView: String?
+
+    init(
+        reason: String?,
+        method: String? = nil,
+        retryAfterNanoseconds: UInt64?,
+        retryAfterSeconds: Int?,
+        responseBytes: Int? = nil,
+        maxResponseBytes: Int? = nil,
+        itemsView: String? = nil
+    ) {
+        self.reason = reason
+        self.method = method
+        self.retryAfterNanoseconds = retryAfterNanoseconds
+        self.retryAfterSeconds = retryAfterSeconds
+        self.responseBytes = responseBytes
+        self.maxResponseBytes = maxResponseBytes
+        self.itemsView = itemsView
+    }
 }
 
 struct SessionListPolicyFailure: Equatable {
@@ -245,6 +269,9 @@ struct HistoryLoadJob {
     /// 非 nil 表示此 job 属于一次明确的前台/网络恢复代次。
     let recoveryGeneration: UInt64?
     let allowPolicyRetry: Bool
+    /// full 自适应缩页时本次尝试使用的 turn 页大小；nil 表示默认首屏（等价 ladder 顶端）。
+    /// 供 history_response_too_large 回退时决定下一级更小的 full 页。
+    let fullTurnPageLimit: Int?
     let task: Task<HistoryFirstPageResult, Error>
     var requiresForegroundReporting: Bool
     var foregroundSuccessStatusMessage: String?

@@ -40,6 +40,10 @@ type appServerHistoryMediaStore struct {
 	idByHash       map[[32]byte]string
 	totalBytes     int64
 	accessSequence uint64
+	ttl            time.Duration
+	maxEntries     int
+	maxBytes       int64
+	maxItemBytes   int64
 }
 
 type appServerHistoryMediaEntry struct {
@@ -59,14 +63,27 @@ type appServerHistoryMediaVariant struct {
 }
 
 func newAppServerHistoryMediaStore() *appServerHistoryMediaStore {
+	return newAppServerHistoryBlobStore(
+		appServerHistoryMediaTTL,
+		appServerHistoryMediaMaxEntries,
+		appServerHistoryMediaMaxBytes,
+		appServerHistoryMediaMaxItemBytes,
+	)
+}
+
+func newAppServerHistoryBlobStore(ttl time.Duration, maxEntries int, maxBytes int64, maxItemBytes int64) *appServerHistoryMediaStore {
 	return &appServerHistoryMediaStore{
-		entries:  map[string]appServerHistoryMediaEntry{},
-		idByHash: map[[32]byte]string{},
+		entries:      map[string]appServerHistoryMediaEntry{},
+		idByHash:     map[[32]byte]string{},
+		ttl:          ttl,
+		maxEntries:   maxEntries,
+		maxBytes:     maxBytes,
+		maxItemBytes: maxItemBytes,
 	}
 }
 
 func (s *appServerHistoryMediaStore) put(contentType string, data []byte) (string, bool) {
-	if s == nil || len(data) == 0 || int64(len(data)) > appServerHistoryMediaMaxItemBytes {
+	if s == nil || len(data) == 0 || (s.maxItemBytes > 0 && int64(len(data)) > s.maxItemBytes) {
 		return "", false
 	}
 	now := time.Now()
@@ -198,11 +215,11 @@ func (s *appServerHistoryMediaStore) totalBytesForTest() int64 {
 }
 
 func (s *appServerHistoryMediaStore) pruneLocked(now time.Time) {
-	if appServerHistoryMediaTTL <= 0 {
+	if s.ttl <= 0 {
 		return
 	}
 	for id, entry := range s.entries {
-		if now.Sub(entry.createdAt) > appServerHistoryMediaTTL {
+		if now.Sub(entry.createdAt) > s.ttl {
 			s.deleteEntryLocked(id, entry)
 		}
 	}
@@ -212,8 +229,8 @@ func (s *appServerHistoryMediaStore) pruneLocked(now time.Time) {
 }
 
 func (s *appServerHistoryMediaStore) enforceLimitsLocked(now time.Time) {
-	for (appServerHistoryMediaMaxEntries > 0 && len(s.entries) > appServerHistoryMediaMaxEntries) ||
-		(appServerHistoryMediaMaxBytes > 0 && s.totalBytes > appServerHistoryMediaMaxBytes) {
+	for (s.maxEntries > 0 && len(s.entries) > s.maxEntries) ||
+		(s.maxBytes > 0 && s.totalBytes > s.maxBytes) {
 		oldestID := ""
 		var oldestOrder uint64
 		for id, entry := range s.entries {

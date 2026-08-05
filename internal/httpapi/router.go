@@ -40,6 +40,7 @@ type Router struct {
 	upgrader       websocket.Upgrader
 	monitor        *relayMonitor
 	historyMedia   *appServerHistoryMediaStore
+	historyOutput  *appServerHistoryMediaStore
 	fileUploads    *fileUploadStore
 	capabilities   capabilityRegistry
 	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
@@ -177,6 +178,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 		},
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
+		historyOutput:               newAppServerHistoryOutputStore(),
 		fileUploads:                 fileUploads,
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		externalActivity:            externalActivity,
@@ -246,6 +248,7 @@ func NewRouterWithRuntimeInstallationIDAndOptions(
 	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/external-activity", authed(http.HandlerFunc(r.externalActivityHandler)))
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
+	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
 	mux.Handle("/api/app-server/ws", authed(http.HandlerFunc(r.appServerGatewayWS)))
 	return logging(limitAPIRequestBodies(mux), r.monitor), r
 }

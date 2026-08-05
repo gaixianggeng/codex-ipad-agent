@@ -1934,6 +1934,40 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testPreviewHistoryOutputWritesDecodedPayloadToTemporaryFileOnDemand() async throws {
+        let outputID = "output-123"
+        let payload = Data("full command output\nline 2".utf8)
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            historyOutputResults: [
+                outputID: .success(FileReadResponse(
+                    path: "agentd-history-output://\(outputID)",
+                    name: "history-output.txt",
+                    contentType: "text/plain; charset=utf-8",
+                    size: Int64(payload.count),
+                    contentBase64: payload.base64EncodedString()
+                ))
+            ]
+        )
+        let appStore = AppStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        let url = try await store.previewHistoryOutput(id: outputID)
+
+        XCTAssertEqual(client.requestedHistoryOutputIDs, [outputID])
+        XCTAssertEqual(client.requestedHistoryMediaIDs, [])
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+        XCTAssertTrue(url.lastPathComponent.hasSuffix("-history-output.txt"))
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testWorkspaceLoadFailureMarksUnavailableWhenResolveRejects() async {
         // 避免 macOS 将 /tmp 规范化为 /private/tmp，夹具应验证业务状态而非本机路径别名。
         let rootProject = AgentProject(

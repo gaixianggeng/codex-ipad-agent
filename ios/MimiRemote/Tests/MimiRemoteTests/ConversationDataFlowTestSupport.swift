@@ -445,6 +445,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let directoryListResults: [String: Result<DirectoryListResponse, Error>]
     let fileReadResults: [String: Result<FileReadResponse, Error>]
     let historyMediaResults: [String: Result<FileReadResponse, Error>]
+    let historyOutputResults: [String: Result<FileReadResponse, Error>]
     let commandActionResults: [String: Result<[AgentCommandAction], Error>]
     let commandActionRunResults: [String: Result<CommandActionRunResponse, Error>]
     let gitStatusResults: [String: Result<GitStatusResponse, Error>]
@@ -496,6 +497,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var requestedDirectoryPaths: [String] = []
     var requestedFileReadPaths: [String] = []
     var requestedHistoryMediaIDs: [String] = []
+    var requestedHistoryOutputIDs: [String] = []
     var requestedCommandActionPaths: [String] = []
     var requestedCommandActionRuns: [RequestedCommandActionRun] = []
     var requestedGitStatusPaths: [String] = []
@@ -556,6 +558,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         directoryListResults: [String: Result<DirectoryListResponse, Error>] = [:],
         fileReadResults: [String: Result<FileReadResponse, Error>] = [:],
         historyMediaResults: [String: Result<FileReadResponse, Error>] = [:],
+        historyOutputResults: [String: Result<FileReadResponse, Error>] = [:],
         commandActionResults: [String: Result<[AgentCommandAction], Error>] = [:],
         commandActionRunResults: [String: Result<CommandActionRunResponse, Error>] = [:],
         gitStatusResults: [String: Result<GitStatusResponse, Error>] = [:],
@@ -612,6 +615,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.directoryListResults = directoryListResults
         self.fileReadResults = fileReadResults
         self.historyMediaResults = historyMediaResults
+        self.historyOutputResults = historyOutputResults
         self.commandActionResults = commandActionResults
         self.commandActionRunResults = commandActionRunResults
         self.gitStatusResults = gitStatusResults
@@ -815,6 +819,18 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func readHistoryMedia(id: String) async throws -> FileReadResponse {
         requestedHistoryMediaIDs.append(id)
         switch historyMediaResults[id] {
+        case .success(let response):
+            return response
+        case .failure(let error):
+            throw error
+        case .none:
+            throw MockError.unimplemented
+        }
+    }
+
+    func readHistoryOutput(id: String) async throws -> FileReadResponse {
+        requestedHistoryOutputIDs.append(id)
+        switch historyOutputResults[id] {
         case .success(let response):
             return response
         case .failure(let error):
