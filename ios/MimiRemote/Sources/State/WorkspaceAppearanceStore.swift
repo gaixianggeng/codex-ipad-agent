@@ -393,10 +393,20 @@ final class WorkspaceAppearanceStore: ObservableObject {
     private typealias Storage = ProfileScopedStorage<WorkspaceAppearancePreferences>
     private typealias LegacyStorage = ProfileScopedStorage<[String: String]>
 
+    private struct CharacterAssignmentScope: Hashable {
+        let profileID: String
+        let styleID: String
+    }
+
     @Published private var storage: Storage
 
     private let defaults: UserDefaults
     private let key: String
+    // 自动头像不能只依赖“这一次传进来的项目集合”：项目目录异步补齐时，
+    // 碰撞避让会让已经显示的角色突然换人。缓存采用增量分配，单项 fallback
+    // 与工作区批量展示共享同一结果，同时继续在角色池足够时避免重复。
+    private var automaticCharacterIDsByScope: [CharacterAssignmentScope: [String: String]] = [:]
+    private var automaticEmojiByProfile: [String: [String: String]] = [:]
 
     init(
         defaults: UserDefaults = .standard,
@@ -517,19 +527,18 @@ final class WorkspaceAppearanceStore: ObservableObject {
         guard let fallback = pool.first else {
             return Self.builtInCharacters[0]
         }
-        let characterID = customCharacterID(
+        return characterAssignments(
             style: style,
             profileID: profileID,
-            projectID: projectID
-        ) ?? defaultCharacterID(style: style, profileID: profileID, projectID: projectID)
-        // 默认 ID 必定来自当前风格；仍保留兜底，避免以后调整资源清单造成空图。
-        return Self.character(id: characterID, style: style) ?? fallback
+            projectIDs: [projectID]
+        )[projectID] ?? fallback
     }
 
-    /// 为同一 Profile 下当前可见的整组项目统一分配角色。
+    /// 为同一 Profile 下的项目增量分配角色。
     ///
-    /// 单独对哈希取模无法避免碰撞；这里先保留用户手动选择，再从每个项目的稳定哈希起点
-    /// 向后寻找空位。角色数足够时自动头像不会重复，项目超过角色池容量后才允许复用。
+    /// 单独对哈希取模无法避免碰撞；这里先保留用户手动选择和已经展示过的自动结果，
+    /// 新项目再从稳定哈希起点向后寻找空位。这样目录异步扩张不会洗牌，角色数足够时
+    /// 仍不会重复，项目超过角色池容量后才允许复用。
     func characterAssignments(
         profileID: String,
         projectIDs: [String]
@@ -552,9 +561,18 @@ final class WorkspaceAppearanceStore: ObservableObject {
             return [:]
         }
 
+        let scope = CharacterAssignmentScope(
+            profileID: assignmentProfileKey(profileID),
+            styleID: style.rawValue
+        )
+        let validCharacterIDs = Set(pool.map(\.id))
+        var cachedCharacterIDs = (automaticCharacterIDsByScope[scope] ?? [:])
+            .filter { validCharacterIDs.contains($0.value) }
         var assignments: [String: WorkspaceCharacterIcon] = [:]
         var usedCharacterIDs = Set<String>()
 
+        // 显式选择优先。若它占用了旧自动缓存的角色，后者在下次展示时
+        // 重新寻找空位；只有用户主动改头像时才允许发生这种可解释的变化。
         for projectID in uniqueProjectIDs {
             guard let customID = customCharacterID(
                 style: style,
@@ -569,7 +587,20 @@ final class WorkspaceAppearanceStore: ObservableObject {
             usedCharacterIDs.insert(character.id)
         }
 
+        let customProjectIDs = Set(assignments.keys)
+        cachedCharacterIDs = cachedCharacterIDs.filter { projectID, characterID in
+            !customProjectIDs.contains(projectID)
+                && !usedCharacterIDs.contains(characterID)
+        }
+        usedCharacterIDs.formUnion(cachedCharacterIDs.values)
+
         for projectID in uniqueProjectIDs where assignments[projectID] == nil {
+            if let cachedID = cachedCharacterIDs[projectID],
+               let cachedCharacter = Self.character(id: cachedID, style: style) {
+                assignments[projectID] = cachedCharacter
+                continue
+            }
+
             let startIndex = defaultCharacterIndex(
                 style: style,
                 profileID: profileID,
@@ -582,9 +613,11 @@ final class WorkspaceAppearanceStore: ObservableObject {
 
             let character = availableCharacter ?? pool[startIndex]
             assignments[projectID] = character
+            cachedCharacterIDs[projectID] = character.id
             usedCharacterIDs.insert(character.id)
         }
 
+        automaticCharacterIDsByScope[scope] = cachedCharacterIDs
         return assignments
     }
 
@@ -680,12 +713,20 @@ final class WorkspaceAppearanceStore: ObservableObject {
                     choices.isEmpty ? nil : choices
             }
         }
+        let scope = CharacterAssignmentScope(profileID: profileKey, styleID: style.rawValue)
+        var cachedCharacterIDs = automaticCharacterIDsByScope[scope] ?? [:]
+        cachedCharacterIDs.removeValue(forKey: projectID)
+        if let characterID {
+            // 用户选择优先于自动占位；只释放发生冲突的项目，避免其它头像一起洗牌。
+            cachedCharacterIDs = cachedCharacterIDs.filter { $0.value != characterID }
+        }
+        automaticCharacterIDsByScope[scope] = cachedCharacterIDs
         save(preferences, profileKey: profileKey)
     }
 
     func emoji(profileID: String, projectID: String) -> String {
-        customEmoji(profileID: profileID, projectID: projectID)
-            ?? defaultEmoji(profileID: profileID, projectID: projectID)
+        emojiAssignments(profileID: profileID, projectIDs: [projectID])[projectID]
+            ?? Self.builtInEmoji[0]
     }
 
     func emojiAssignments(profileID: String, projectIDs: [String]) -> [String: String] {
@@ -694,6 +735,10 @@ final class WorkspaceAppearanceStore: ObservableObject {
             return [:]
         }
 
+        let profileKey = assignmentProfileKey(profileID)
+        let validEmoji = Set(Self.builtInEmoji)
+        var cachedEmoji = (automaticEmojiByProfile[profileKey] ?? [:])
+            .filter { validEmoji.contains($0.value) }
         var assignments: [String: String] = [:]
         var usedEmoji = Set<String>()
 
@@ -707,7 +752,18 @@ final class WorkspaceAppearanceStore: ObservableObject {
             usedEmoji.insert(custom)
         }
 
+        let customProjectIDs = Set(assignments.keys)
+        cachedEmoji = cachedEmoji.filter { projectID, emoji in
+            !customProjectIDs.contains(projectID) && !usedEmoji.contains(emoji)
+        }
+        usedEmoji.formUnion(cachedEmoji.values)
+
         for projectID in uniqueProjectIDs where assignments[projectID] == nil {
+            if let cached = cachedEmoji[projectID] {
+                assignments[projectID] = cached
+                continue
+            }
+
             let startIndex = defaultEmojiIndex(profileID: profileID, projectID: projectID)
             let availableEmoji = (0..<Self.builtInEmoji.count)
                 .lazy
@@ -715,9 +771,11 @@ final class WorkspaceAppearanceStore: ObservableObject {
                 .first { !usedEmoji.contains($0) }
             let emoji = availableEmoji ?? Self.builtInEmoji[startIndex]
             assignments[projectID] = emoji
+            cachedEmoji[projectID] = emoji
             usedEmoji.insert(emoji)
         }
 
+        automaticEmojiByProfile[profileKey] = cachedEmoji
         return assignments
     }
 
@@ -743,22 +801,46 @@ final class WorkspaceAppearanceStore: ObservableObject {
         } else {
             preferences.emojiByProject.removeValue(forKey: projectID)
         }
+        var cachedEmoji = automaticEmojiByProfile[profileKey] ?? [:]
+        cachedEmoji.removeValue(forKey: projectID)
+        if let emoji = preferences.emojiByProject[projectID] {
+            cachedEmoji = cachedEmoji.filter { $0.value != emoji }
+        }
+        automaticEmojiByProfile[profileKey] = cachedEmoji
         save(preferences, profileKey: profileKey)
     }
 
     /// 同一路径的旧 workspace ID 被稳定 ID 替代时迁移本机自定义头像。
     ///
     /// 新 ID 上已经存在的明确选择优先；否则复制旧 ID 的选择，随后删除旧键。
-    /// 自动分配值不落盘，无需迁移，后续会直接按稳定 ID 重新计算。
+    /// 自动分配值不落盘，但进程内缓存需要跟随稳定 ID，避免同一路径换 ID 时闪变。
     func migrateProjectIdentity(
         profileID: String,
         from oldProjectID: String,
         to newProjectID: String
     ) {
         guard oldProjectID != newProjectID,
-              let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID),
-              var preferences = storage.byProfileID[profileKey]
+              let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID)
         else {
+            return
+        }
+
+        for scope in Array(automaticCharacterIDsByScope.keys) where scope.profileID == profileKey {
+            var assignments = automaticCharacterIDsByScope[scope] ?? [:]
+            if assignments[newProjectID] == nil {
+                assignments[newProjectID] = assignments[oldProjectID]
+            }
+            assignments.removeValue(forKey: oldProjectID)
+            automaticCharacterIDsByScope[scope] = assignments
+        }
+        var emojiAssignments = automaticEmojiByProfile[profileKey] ?? [:]
+        if emojiAssignments[newProjectID] == nil {
+            emojiAssignments[newProjectID] = emojiAssignments[oldProjectID]
+        }
+        emojiAssignments.removeValue(forKey: oldProjectID)
+        automaticEmojiByProfile[profileKey] = emojiAssignments
+
+        guard var preferences = storage.byProfileID[profileKey] else {
             return
         }
 
@@ -786,11 +868,16 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     func remove(profileID: String) {
-        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID),
-              storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
             return
         }
-        persist()
+        automaticCharacterIDsByScope = automaticCharacterIDsByScope.filter {
+            $0.key.profileID != profileKey
+        }
+        automaticEmojiByProfile.removeValue(forKey: profileKey)
+        if storage.byProfileID.removeValue(forKey: profileKey) != nil {
+            persist()
+        }
     }
 
     static func characters(for style: WorkspaceIconStyle) -> [WorkspaceCharacterIcon] {
@@ -856,8 +943,12 @@ final class WorkspaceAppearanceStore: ObservableObject {
     }
 
     private func stableIdentity(profileID: String, projectID: String) -> String {
-        let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
+        let profileKey = assignmentProfileKey(profileID)
         return "\(profileKey)\n\(projectID)"
+    }
+
+    private func assignmentProfileKey(_ profileID: String) -> String {
+        ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
     }
 
     private func save(_ preferences: WorkspaceAppearancePreferences, profileKey: String) {

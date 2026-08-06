@@ -287,6 +287,26 @@ enum SessionListPresentation {
         )
     }
 
+    /// 多项目侧栏只给每个项目的第一条可见会话一个身份锚点。
+    ///
+    /// 必须跨 section 去重：点击“刚完成”会立即把会话迁入“最近”，如果每个
+    /// section 独立判断首行，同一项目就会在点击前后反复出现或消失头像。
+    static func sidebarProjectAnchorSessionIDs(
+        in sections: [SessionSidebarSection]
+    ) -> Set<SessionID> {
+        let visibleSessions = stableUniqueSessions(sections.flatMap(\.sessions))
+        guard Set(visibleSessions.map(\.projectID)).count > 1 else {
+            return []
+        }
+
+        var seenProjectIDs: Set<String> = []
+        return Set(
+            visibleSessions.compactMap { session in
+                seenProjectIDs.insert(session.projectID).inserted ? session.id : nil
+            }
+        )
+    }
+
     private static func stripLeadingMarkdown(from line: String) -> String {
         var result = line
 

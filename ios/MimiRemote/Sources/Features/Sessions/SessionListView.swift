@@ -1154,7 +1154,7 @@ struct SessionIndexRow: View {
             }
 
             HStack(spacing: 6) {
-                projectMetadataIcon(tokens: tokens)
+                compactProjectAnchor(tokens: tokens)
                 directoryText(tokens: tokens)
                 Spacer(minLength: 8)
                 timestamp(tokens: tokens)
@@ -1192,7 +1192,6 @@ struct SessionIndexRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 10) {
-                    projectMetadataIcon(tokens: tokens)
                     Text(session.project)
                         .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
                         .foregroundStyle(tokens.tertiaryText)
@@ -1285,25 +1284,18 @@ struct SessionIndexRow: View {
     }
 
     @ViewBuilder
-    private func projectMetadataIcon(tokens: ThemeTokens) -> some View {
-        let iconSize: CGFloat = density == .table ? 14 : 12
-
-        if density == .table, reservesProjectAnchor, showsProjectAnchor {
-            // 项目段首已经有 30pt 锚点；这里保留对齐槽位但不重复同一张图标。
-            Color.clear
-                .frame(width: iconSize, height: iconSize)
-        } else if let projectIcon {
+    private func compactProjectAnchor(tokens: ThemeTokens) -> some View {
+        if showsProjectAnchor, let projectIcon {
             WorkspaceProjectIconTile(
                 content: projectIcon,
-                size: iconSize,
+                size: 12,
                 tokens: tokens
             )
         } else {
-            SessionRuntimeIcon(
-                session: session,
-                size: density.runtimeIconSize,
-                isActive: session.isRunning
-            )
+            // 紧凑布局没有 30pt 项目列；仅段首展示一次缩小锚点，后续行保留
+            // 同宽空槽以维持目录文本对齐，不再把同一个项目图标逐行重复。
+            Color.clear
+                .frame(width: 12, height: 12)
         }
     }
 

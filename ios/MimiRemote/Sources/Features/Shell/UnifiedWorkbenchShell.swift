@@ -95,8 +95,11 @@ struct SessionSidebarMonitorRow: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         HStack(spacing: 6) {
-            stateMarker(tokens: tokens)
-                .frame(width: 12, height: 12)
+            if kind == .needYou || kind == .running {
+                // 等待与运行是需要立即扫到的进行态，继续占据 leading 状态槽。
+                stateMarker(tokens: tokens)
+                    .frame(width: 12, height: 12)
+            }
 
             if let projectIcon {
                 WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
@@ -111,6 +114,13 @@ struct SessionSidebarMonitorRow: View {
 
             Spacer(minLength: 4)
             detail(tokens: tokens)
+
+            if kind == .justCompleted {
+                // 完成未读属于“待查看结果”，跟随相对时间放在整行 trailing，
+                // 不再与需要处理 / 正在运行的 leading 状态混在一起。
+                SessionUnreadIndicator()
+                    .frame(width: 12, height: 12)
+            }
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
@@ -147,21 +157,13 @@ struct SessionSidebarMonitorRow: View {
                 }
                 .accessibilityLabel(L10n.text("ui.needs_you"))
         case .running:
-            Circle()
-                .trim(from: 0.12, to: 0.88)
-                .stroke(
-                    tokens.primaryAction,
-                    style: StrokeStyle(lineWidth: 1.6, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .padding(1)
+            // 运行态直接使用系统不定进度菊花：由系统负责持续动画、Reduce Motion
+            // 与前后台恢复，避免自绘缺口圆环停留在静态帧。
+            ProgressView()
+                .controlSize(.mini)
+                .tint(tokens.primaryAction)
                 .accessibilityLabel(L10n.text("ui.in_progress"))
-        case .justCompleted:
-            Circle()
-                .fill(tokens.primaryAction)
-                .frame(width: 7, height: 7)
-                .accessibilityLabel(L10n.text("ui.just_completed"))
-        case .pinned, .recent:
+        case .justCompleted, .pinned, .recent:
             Color.clear
                 .accessibilityHidden(true)
         }
@@ -885,7 +887,12 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarList(tokens: ThemeTokens, layout: WorkbenchLayout) -> some View {
-        List(selection: selectionBinding(layout: layout)) {
+        let sections = sidebarMonitorSections
+        let projectAnchorSessionIDs = SessionListPresentation.sidebarProjectAnchorSessionIDs(
+            in: sections
+        )
+
+        return List(selection: selectionBinding(layout: layout)) {
             Section {
                 sidebarDestinationRow(
                     destination: .sessions,
@@ -903,17 +910,13 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
 
-            ForEach(sidebarMonitorSections) { section in
+            ForEach(sections) { section in
                 Section {
-                    ForEach(Array(section.sessions.enumerated()), id: \.element.id) { index, session in
-                        let previousProjectID = index > section.sessions.startIndex
-                            ? section.sessions[index - 1].projectID
-                            : nil
+                    ForEach(section.sessions) { session in
                         sidebarSessionLink(
                             session,
                             kind: section.kind,
-                            showsProjectAnchor: sidebarUsesProjectAnchors
-                                && previousProjectID != session.projectID,
+                            showsProjectAnchor: projectAnchorSessionIDs.contains(session.id),
                             layout: layout
                         )
                     }
@@ -1063,10 +1066,6 @@ struct UnifiedWorkbenchShell: View {
             pinnedIDs: sessionStore.pinnedSessionIDs,
             unreadIDs: sessionStore.unreadHistorySessionIDs
         )
-    }
-
-    private var sidebarUsesProjectAnchors: Bool {
-        Set(sidebarMonitorSections.flatMap(\.sessions).map(\.projectID)).count > 1
     }
 
     private var sidebarProjectIcons: [String: WorkspaceProjectIconContent] {
@@ -1237,8 +1236,8 @@ struct UnifiedWorkbenchShell: View {
                 open(.workspaces, layout: layout)
             },
             manageConnections: manageConnections,
-            prefersTableDensity: layout.usesFloatingSidebarSurface,
-            hidesNavigationTitle: layout.usesFloatingSidebarSurface,
+            prefersTableDensity: layout.prefersSessionTableDensity,
+            hidesNavigationTitle: layout.prefersSessionTableDensity,
             bottomContentMargin: layout.usesCompactNavigation ? 84 : 16,
             newSessionPresentationNamespace: presentationNamespace
         )

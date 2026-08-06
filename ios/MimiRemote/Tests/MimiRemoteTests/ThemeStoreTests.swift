@@ -505,6 +505,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+        XCTAssertFalse(layout.prefersSessionTableDensity)
         XCTAssertLessThanOrEqual(layout.titleMaxWidth, 230)
         XCTAssertGreaterThanOrEqual(layout.titleMaxWidth, 160)
     }
@@ -524,6 +525,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertFalse(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
     }
 
     func testWorkbenchLayoutUsesSheetNavigationOnMediumIPadWidth() {
@@ -538,6 +540,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(layout.usesAttachedInspector)
         XCTAssertTrue(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
     }
 
     func testWorkbenchLayoutKeepsSplitNavigationOnWidePadWidth() {
@@ -555,6 +558,7 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertTrue(layout.usesAttachedInspector)
         XCTAssertFalse(layout.usesSheetInspectorNavigation)
         XCTAssertTrue(layout.usesFloatingSidebarSurface)
+        XCTAssertTrue(layout.prefersSessionTableDensity)
         XCTAssertEqual(layout.projectColumn.ideal, 330)
         XCTAssertEqual(layout.titleMaxWidth, 340)
     }
@@ -579,6 +583,25 @@ final class ResponsiveLayoutTests: XCTestCase {
         XCTAssertFalse(narrowPad.usesFloatingSidebarSurface)
         XCTAssertTrue(widePad.usesFloatingSidebarSurface)
         XCTAssertFalse(widePhone.usesFloatingSidebarSurface)
+        XCTAssertTrue(narrowPad.prefersSessionTableDensity)
+        XCTAssertTrue(widePad.prefersSessionTableDensity)
+        XCTAssertFalse(widePhone.prefersSessionTableDensity)
+    }
+
+    func testSessionTableDensityUsesCompactFallbackOnlyForNarrowIPadWindows() {
+        let narrowPad = WorkbenchLayout(
+            containerWidth: 699,
+            horizontalSizeClass: .compact,
+            isPad: true
+        )
+        let portraitPad = WorkbenchLayout(
+            containerWidth: 744,
+            horizontalSizeClass: .regular,
+            isPad: true
+        )
+
+        XCTAssertFalse(narrowPad.prefersSessionTableDensity)
+        XCTAssertTrue(portraitPad.prefersSessionTableDensity)
     }
 
     func testConversationLayoutFitsPhonePortraitWidth() {

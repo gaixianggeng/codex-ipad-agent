@@ -209,6 +209,67 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections[0].overflowCount, 0)
     }
 
+    func testSidebarProjectAnchorsAppearOnceAcrossSectionsAndInterleavedRows() {
+        let sections = [
+            SessionSidebarSection(
+                kind: .needYou,
+                sessions: [makeSession(id: "a-need", projectID: "project-a")]
+            ),
+            SessionSidebarSection(
+                kind: .running,
+                sessions: [
+                    makeSession(id: "b-running", projectID: "project-b"),
+                    makeSession(id: "a-running", projectID: "project-a"),
+                ]
+            ),
+            SessionSidebarSection(
+                kind: .recent,
+                sessions: [
+                    makeSession(id: "a-recent", projectID: "project-a"),
+                    makeSession(id: "b-recent", projectID: "project-b"),
+                ]
+            ),
+        ]
+
+        XCTAssertEqual(
+            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: sections),
+            Set(["a-need", "b-running"])
+        )
+    }
+
+    func testSidebarProjectAnchorFollowsSameSessionWhenUnreadMovesToRecent() {
+        let completed = makeSession(id: "a-completed", projectID: "project-a")
+        let olderSameProject = makeSession(id: "a-older", projectID: "project-a")
+        let otherProject = makeSession(id: "b-recent", projectID: "project-b")
+        let orderedSessions = [completed, olderSameProject, otherProject]
+
+        let beforeOpening = SessionListPresentation.sidebarSections(
+            orderedSessions,
+            unreadIDs: [completed.id]
+        )
+        let afterOpening = SessionListPresentation.sidebarSections(orderedSessions)
+
+        XCTAssertEqual(
+            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: beforeOpening),
+            Set([completed.id, otherProject.id])
+        )
+        XCTAssertEqual(
+            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: afterOpening),
+            Set([completed.id, otherProject.id])
+        )
+    }
+
+    func testSingleProjectSidebarDoesNotAddRedundantProjectAnchor() {
+        let sections = SessionListPresentation.sidebarSections([
+            makeSession(id: "first", projectID: "project-a"),
+            makeSession(id: "second", projectID: "project-a"),
+        ])
+
+        XCTAssertTrue(
+            SessionListPresentation.sidebarProjectAnchorSessionIDs(in: sections).isEmpty
+        )
+    }
+
     func testDirectoryTailPrefersDirFallsBackToProjectAndHandlesTrailingSlashes() {
         XCTAssertEqual(
             SessionListPresentation.directoryTail(
@@ -259,6 +320,7 @@ final class SessionListPresentationTests: XCTestCase {
 
     private func makeSession(
         id: SessionID,
+        projectID: String = "project-id",
         project: String = "Project",
         dir: String = "/tmp/project",
         title: String? = nil,
@@ -272,7 +334,7 @@ final class SessionListPresentationTests: XCTestCase {
     ) -> AgentSession {
         AgentSession(
             id: id,
-            projectID: "project-id",
+            projectID: projectID,
             project: project,
             dir: dir,
             title: title ?? id,

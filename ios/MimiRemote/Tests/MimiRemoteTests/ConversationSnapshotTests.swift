@@ -1808,14 +1808,16 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             height: CGFloat,
             colorScheme: ColorScheme,
             prefersTable: Bool,
+            hidesNavigationTitle: Bool,
+            bottomContentMargin: CGFloat,
             dynamicTypeSize: DynamicTypeSize,
             increasedContrast: Bool
         )] = [
-            ("iphone-390-light", 390, 844, .light, false, .large, false),
-            ("ipad-mini-744-light", 744, 980, .light, false, .large, false),
-            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, .large, true),
-            ("split-375-light", 375, 812, .light, false, .large, false),
-            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, .accessibility3, false),
+            ("iphone-390-light", 390, 844, .light, false, false, 84, .large, false),
+            ("ipad-mini-744-light", 744, 980, .light, true, true, 84, .large, false),
+            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, true, 16, .large, true),
+            ("split-375-light", 375, 812, .light, false, false, 84, .large, false),
+            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, true, 16, .accessibility3, false),
         ]
 
         for scenario in scenarios {
@@ -1824,6 +1826,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 height: scenario.height,
                 colorScheme: scenario.colorScheme,
                 prefersTable: scenario.prefersTable,
+                hidesNavigationTitle: scenario.hidesNavigationTitle,
+                bottomContentMargin: scenario.bottomContentMargin,
                 dynamicTypeSize: scenario.dynamicTypeSize
             )
 
@@ -2029,6 +2033,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         height: CGFloat,
         colorScheme: ColorScheme,
         prefersTable: Bool,
+        hidesNavigationTitle: Bool,
+        bottomContentMargin: CGFloat,
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
         let appStore = makeSnapshotAppStore()
@@ -2180,8 +2186,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             SessionListView(
                 manageConnections: {},
                 prefersTableDensity: prefersTable,
-                hidesNavigationTitle: prefersTable,
-                bottomContentMargin: prefersTable ? 16 : 84
+                hidesNavigationTitle: hidesNavigationTitle,
+                bottomContentMargin: bottomContentMargin
             )
         }
         .environmentObject(appStore)
