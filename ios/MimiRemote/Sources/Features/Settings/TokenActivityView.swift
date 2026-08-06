@@ -229,12 +229,17 @@ struct TokenActivityDotGrid: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     let buckets: [AccountTokenUsageDailyBucket]
+    /// 点格图必须使用这次结果对应的服务端快照时间，否则跨天后同一份快照会漂移。
+    let endingAt: Date
     /// 宽屏左右分栏时右侧要和左侧配额面板等高，格子随之放大。
     var height: CGFloat = TokenActivityGridMetrics.totalHeight
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let activeDayCount = TokenActivityCalendar.weeks(buckets: buckets)
+        let activeDayCount = TokenActivityCalendar.weeks(
+            buckets: buckets,
+            endingAt: endingAt
+        )
             .flatMap(\.days)
             .filter { !$0.isFuture && $0.tokens > 0 }
             .count
@@ -247,6 +252,7 @@ struct TokenActivityDotGrid: View {
             )
             let weeks = TokenActivityCalendar.weeks(
                 buckets: buckets,
+                endingAt: endingAt,
                 weekCount: weekCount
             )
             let monthLabels = TokenActivityCalendar.monthLabels(for: weeks)

@@ -1401,37 +1401,73 @@ struct AccountTokenUsageCard: View {
     }
 
     private func activityPanel(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            activityContent(tokens: tokens, gridHeight: gridHeight)
+        VStack(alignment: .leading, spacing: 6) {
+            // 主内容和占位文案都在同一个高度预算里测量；这样状态切换不会因某条
+            // 本地化文案换行而改变卡片高度，同时不以固定高度裁掉 Dynamic Type 文本。
+            activityBody(tokens: tokens, gridHeight: gridHeight)
+            activityCaptionArea(tokens: tokens)
         }
         .accessibilityIdentifier("settings.tokenUsage.activity")
+    }
+
+    private func activityBody(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            activityContent(tokens: tokens, gridHeight: gridHeight)
+
+            // 占位态的最长本地化文案决定最小高度。隐藏测量视图仍参与布局，
+            // 但完全从 VoiceOver 树移除；网格态也预留同样的空间，状态切换不会跳。
+            ZStack {
+                ForEach(
+                    Array(activityPlaceholderCandidates.enumerated()),
+                    id: \.offset
+                ) { candidate in
+                    HStack(spacing: 10) {
+                        Color.clear
+                            .frame(width: 18, height: 18)
+
+                        Text(candidate.element)
+                            .font(themeStore.uiFont(.caption))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .hidden()
+                    .accessibilityHidden(true)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: gridHeight,
+            alignment: .topLeading
+        )
     }
 
     @ViewBuilder
     private func activityContent(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
         switch activity {
-        case .loaded(let buckets, _):
-            TokenActivityDotGrid(buckets: buckets, height: gridHeight)
+        case .loaded(let buckets, let asOf):
+            activityGrid(
+                buckets: buckets,
+                endingAt: asOf,
+                gridHeight: gridHeight
+            )
 
-        case .empty:
+        case .empty(let asOf):
             // 画成一整片未活动的格子，比一句话更能说明“接口是通的，只是还没有记录”。
             activityGrid(
                 buckets: [],
-                gridHeight: gridHeight,
-                caption: L10n.text("ui.token_activity_empty"),
-                captionTint: tokens.secondaryText,
-                captionIdentifier: "settings.tokenActivity.empty"
+                endingAt: asOf,
+                gridHeight: gridHeight
             )
 
         case .failed(let previous):
             if let previous, !previous.buckets.isEmpty {
                 activityGrid(
                     buckets: previous.buckets,
-                    gridHeight: gridHeight,
-                    // 网格画的是上一次成功的数据。不标注就等于把过期数据当成当前值。
-                    caption: L10n.text("ui.token_activity_stale"),
-                    captionTint: tokens.warning,
-                    captionIdentifier: "settings.tokenActivity.stale"
+                    endingAt: previous.asOf,
+                    gridHeight: gridHeight
                 )
             } else {
                 activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
@@ -1444,20 +1480,100 @@ struct AccountTokenUsageCard: View {
 
     private func activityGrid(
         buckets: [AccountTokenUsageDailyBucket],
-        gridHeight: CGFloat,
-        caption: String,
-        captionTint: Color,
-        captionIdentifier: String
+        endingAt: Date,
+        gridHeight: CGFloat
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TokenActivityDotGrid(buckets: buckets, height: gridHeight)
+        TokenActivityDotGrid(
+            buckets: buckets,
+            endingAt: endingAt,
+            height: gridHeight
+        )
+    }
 
-            Text(caption)
-                .font(themeStore.uiFont(.caption2))
-                .foregroundStyle(captionTint)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier(captionIdentifier)
+    private func activityCaptionArea(tokens: ThemeTokens) -> some View {
+        let caption = activityCaptionText
+
+        return ZStack(alignment: .topLeading) {
+            // 用真实 caption 字体测量全部候选本地化文案，取其中自然换行后的最大高度。
+            // 不能用固定像素高度，否则放大文字或切换语言后会裁切。
+            ForEach(
+                Array(activityCaptionCandidates.enumerated()),
+                id: \.offset
+            ) { candidate in
+                Text(candidate.element)
+                    .font(themeStore.uiFont(.caption2))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+
+            if let caption {
+                Text(caption)
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(activityCaptionTint(tokens: tokens))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(activityCaptionIdentifier)
+            } else {
+                // loaded/loading/unsupported/failed(nil) 没有 caption，但必须保留相同布局空间；
+                // 透明占位不能进入 VoiceOver，否则会多出一个空的可访问元素。
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .accessibilityHidden(true)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHidden(caption == nil)
+    }
+
+    private var activityCaptionText: String? {
+        switch activity {
+        case .empty:
+            return L10n.text("ui.token_activity_empty")
+        case .failed(let previous):
+            return previous?.buckets.isEmpty == false
+                ? L10n.text("ui.token_activity_stale")
+                : nil
+        case .idle, .loading, .loaded, .unsupported:
+            return nil
+        }
+    }
+
+    private func activityCaptionTint(tokens: ThemeTokens) -> Color {
+        if case .failed(let previous) = activity,
+           previous?.buckets.isEmpty == false
+        {
+            return tokens.warning
+        }
+        return tokens.secondaryText
+    }
+
+    private var activityCaptionIdentifier: String {
+        switch activity {
+        case .empty:
+            return "settings.tokenActivity.empty"
+        case .failed:
+            return "settings.tokenActivity.stale"
+        case .idle, .loading, .loaded, .unsupported:
+            return "settings.tokenActivity.caption"
+        }
+    }
+
+    private var activityCaptionCandidates: [String] {
+        [
+            L10n.text("ui.token_activity_empty"),
+            L10n.text("ui.token_activity_stale")
+        ]
+    }
+
+    private var activityPlaceholderCandidates: [String] {
+        [
+            L10n.text("ui.loading_token_activity"),
+            L10n.text("ui.token_activity_unavailable"),
+            L10n.text("ui.token_activity_failed"),
+            L10n.text("ui.token_activity_waiting")
+        ]
     }
 
     /// 占位高度和真实点格图一致，状态之间切换时卡片不跳。

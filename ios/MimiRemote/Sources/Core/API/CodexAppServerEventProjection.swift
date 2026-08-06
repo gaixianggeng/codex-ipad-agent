@@ -444,10 +444,18 @@ extension CodexAppServerSessionRuntime {
 
     func performAccountTokenUsageRefresh() async -> AccountTokenUsageFetch {
         // 账号活动是 Codex/ChatGPT 专属能力；Claude bridge 没有同构数据，必须 fail closed。
-        guard runtimeProvider == "codex",
-              let config = try? await ensureConfig(),
-              config.policy.allowedMethods.contains("account/usage/read")
-        else {
+        guard runtimeProvider == "codex" else {
+            return .unsupported
+        }
+
+        let config: CodexAppServerConfigResponse
+        do {
+            config = try await ensureConfig()
+        } catch {
+            // 配置读取失败代表本次请求状态未知，不能与服务端明确不支持该方法混为一谈。
+            return .failed
+        }
+        guard config.policy.allowedMethods.contains("account/usage/read") else {
             return .unsupported
         }
 
