@@ -367,6 +367,9 @@ struct UnifiedWorkbenchShell: View {
         let keepsClosedEdgeInteractive = didRestoreFloatingSidebarVisibility
             ? floatingSidebarPresentation.keepsClosedEdgeInteractive
             : !storedFloatingSidebarVisible
+        let reservesWorkspaceBackButton = navigationState.showsWorkspaceBackButton(
+            usesCompactNavigation: layout.usesCompactNavigation
+        )
 
         return FloatingSidebarAnimatedScene(sidebarWidth: sidebarWidth) {
             // detail 与 sidebar 从同一个 animatableData 排版，避免目标状态与屏幕位置分裂。
@@ -414,7 +417,14 @@ struct UnifiedWorkbenchShell: View {
                     toggleFloatingSidebarVisibility()
                 }
                 .padding(.leading, WorkbenchSidebarSurfaceMetrics.outerInset)
-                .padding(.top, 6)
+                // 工作区会话详情已有 leading 返回按钮；侧栏关闭时把恢复入口放到导航栏下方。
+                // 只横向移动仍会落在 NavigationBar 的命中表面内，视觉分开但按钮不可点击。
+                .padding(
+                    .top,
+                    6 + (reservesWorkspaceBackButton
+                        ? WorkbenchChromeIconMetrics.minimumHitTarget + 12
+                        : 0)
+                )
                 .accessibilitySortPriority(10)
             }
         }
@@ -1007,6 +1017,24 @@ struct UnifiedWorkbenchShell: View {
         .navigationTitle(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if navigationState.showsWorkspaceBackButton(
+                usesCompactNavigation: layout.usesCompactNavigation
+            ) {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        open(.workspaces, layout: layout)
+                    } label: {
+                        Label(L10n.text("ui.workspace"), systemImage: "chevron.backward")
+                    }
+                    // 宽屏需要显式动作，紧凑布局由外层 NavigationStack 提供系统返回。
+                    // 保留原生 toolbar 样式，同时显式扩展交互形状，避免只按图标可见区域命中。
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.interaction, Rectangle())
+                    .accessibilityLabel(L10n.text("ui.workspace"))
+                    .accessibilityHint(L10n.text("ui.return_to_previous_level"))
+                    .accessibilityIdentifier("sessionDetail.workspaceBack")
+                }
+            }
             ToolbarItem(placement: .principal) {
                 // 会话详情优先展示当前任务；Mac 切换保留在上一级主界面，避免全局信息挤占标题。
                 Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))

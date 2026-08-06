@@ -742,6 +742,64 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         complete?.tap()
     }
 
+    func testWideIPadWorkspaceSessionDetailShowsWorkspaceBackButton() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "工作区宽屏返回按钮只在 iPad regular width 下验收。"
+        )
+        try relaunchDirectlyIntoWorkspaces()
+        rotate(to: .landscapeLeft)
+
+        let workspaceBrowser = app.descendant(identifier: "workspace.browser")
+        XCTAssertTrue(workspaceBrowser.waitForExistence(timeout: 10), "工作区内容应保持可访问")
+
+        let session = app.descendant(identifier: "workspace.session.debug-session-layout")
+        XCTAssertTrue(scrollUntilHittable(session), "工作区应提供可点击的 Debug 会话入口")
+        session.tap()
+
+        let workspaceBack = app.descendant(identifier: "sessionDetail.workspaceBack")
+        XCTAssertTrue(
+            workspaceBack.waitForExistence(timeout: 12),
+            "宽屏从工作区进入会话详情后应展示显式返回按钮"
+        )
+        XCTAssertTrue(workspaceBack.isHittable, "工作区返回按钮应可直接点击")
+        // 系统 toolbar 对 XCUI 暴露的是控件可见区域，不包含 SwiftUI 扩展后的 interaction shape；
+        // 这里用真实点击与返回结果验证命中行为，避免把 36pt 的可见 frame 误判为点击热区。
+
+        let showSidebar = app.descendant(identifier: "sidebar.show")
+        if !showSidebar.waitForExistence(timeout: 2) {
+            guard let collapseSidebar = firstExistingButton(
+                labels: ["收起会话列表", "Collapse conversation list"],
+                timeout: 5
+            ) else {
+                XCTFail("会话详情应能收起浮动侧栏以验证两个 leading 控件")
+                return
+            }
+            collapseSidebar.tap()
+            XCTAssertTrue(showSidebar.waitForExistence(timeout: 8), "收起侧栏后应展示恢复入口")
+        }
+        assertMinimumTouchTarget(showSidebar, named: "侧栏恢复入口")
+        XCTAssertGreaterThanOrEqual(
+            showSidebar.frame.minY,
+            workspaceBack.frame.maxY + 8,
+            "侧栏恢复入口不能覆盖工作区返回按钮"
+        )
+
+        workspaceBack.tap()
+        XCTAssertTrue(
+            workspaceBrowser.waitForExistence(timeout: 12),
+            "点击返回后应回到工作区浏览器"
+        )
+        XCTAssertTrue(
+            workspaceBack.waitForNonExistence(timeout: 8),
+            "回到工作区后不应残留会话详情返回按钮"
+        )
+        if showSidebar.exists {
+            // 恢复共享的 SceneStorage 状态，避免影响后续 UI 用例。
+            showSidebar.tap()
+        }
+    }
+
     func testWorkspaceRemoveDirectoryConfirmationAnchorsToCardAcrossIPadLayouts() throws {
         try XCTSkipUnless(
             UIDevice.current.userInterfaceIdiom == .pad,
