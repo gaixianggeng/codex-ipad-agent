@@ -1692,7 +1692,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 reminder: nil,
                 isObserving: false,
                 isExternalReadOnly: false,
-                style: .library
+                density: .compact
             )
             SessionIndexRow(
                 session: claude,
@@ -1703,7 +1703,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 reminder: nil,
                 isObserving: false,
                 isExternalReadOnly: false,
-                style: .library
+                density: .compact
             )
         }
         .padding(16)
@@ -1775,7 +1775,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 isObserving: false,
                 isExternalReadOnly: false,
                 isUnread: true,
-                style: .library
+                density: .compact
             )
             SessionIndexRow(
                 session: claude,
@@ -1786,7 +1786,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 reminder: nil,
                 isObserving: false,
                 isExternalReadOnly: false,
-                style: .library
+                density: .compact
             )
         }
         .padding(16)
@@ -1799,6 +1799,49 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 460, height: 190))
         )
+    }
+
+    func testSessionLibraryDensityAndAccessibilityLayouts() {
+        let scenarios: [(
+            name: String,
+            width: CGFloat,
+            height: CGFloat,
+            colorScheme: ColorScheme,
+            prefersTable: Bool,
+            dynamicTypeSize: DynamicTypeSize,
+            increasedContrast: Bool
+        )] = [
+            ("iphone-390-light", 390, 844, .light, false, .large, false),
+            ("ipad-mini-744-light", 744, 980, .light, false, .large, false),
+            ("ipad-pro-1366-dark-contrast", 1_366, 900, .dark, true, .large, true),
+            ("split-375-light", 375, 812, .light, false, .large, false),
+            ("ipad-pro-1366-ax3", 1_366, 900, .light, true, .accessibility3, false),
+        ]
+
+        for scenario in scenarios {
+            let view = makeSessionLibrarySnapshot(
+                width: scenario.width,
+                height: scenario.height,
+                colorScheme: scenario.colorScheme,
+                prefersTable: scenario.prefersTable,
+                dynamicTypeSize: scenario.dynamicTypeSize
+            )
+
+            assertSnapshot(
+                of: view,
+                as: .wait(
+                    for: 0.3,
+                    on: .image(
+                        precision: 0.98,
+                        layout: .fixed(width: scenario.width, height: scenario.height),
+                        traits: UITraitCollection(
+                            accessibilityContrast: scenario.increasedContrast ? .high : .normal
+                        )
+                    )
+                ),
+                named: scenario.name
+            )
+        }
     }
 
     func testUnifiedWorkbenchSidebarNavigationChrome() {
@@ -1913,6 +1956,120 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         return ThemeStore(defaults: defaults)
     }
 
+    /// 用真实 SessionListView 锁住日期分区容器、三档密度、compact chrome 和辅助功能回退。
+    private func makeSessionLibrarySnapshot(
+        width: CGFloat,
+        height: CGFloat,
+        colorScheme: ColorScheme,
+        prefersTable: Bool,
+        dynamicTypeSize: DynamicTypeSize
+    ) -> some View {
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
+        let themeStore = makeThemeStore()
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let project = AgentProject(
+            id: "session-list-project",
+            name: "codex-ipad-agent",
+            path: "/Users/me/worktrees/codex-ipad-agent/mim-104"
+        )
+        let secondProject = AgentProject(
+            id: "session-list-second-project",
+            name: "poster-studio",
+            path: "/Users/me/code/xhs-poster-studio"
+        )
+
+        func localDate(dayOffset: Int, hour: Int, minute: Int) -> Date {
+            let day = calendar.date(byAdding: .day, value: dayOffset, to: today) ?? today
+            return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+        }
+
+        let active = makeSnapshotSession(
+            id: "session-list-active",
+            project: project,
+            title: "正在整理 **MIM-104** 会话列表",
+            status: SessionStatus.running.rawValue,
+            preview: "",
+            activeTurnID: "turn-active",
+            recencyAt: localDate(dayOffset: 0, hour: 10, minute: 18)
+        )
+        let pinned = makeSnapshotSession(
+            id: "session-list-pinned",
+            project: secondProject,
+            title: "固定在顶部的发布检查",
+            status: SessionStatus.history.rawValue,
+            preview: "",
+            runtimeProvider: "claude"
+        )
+        let todaySession = makeSnapshotSession(
+            id: "session-list-today",
+            project: project,
+            title: "## 宽屏列对齐\n并压平标题换行",
+            status: SessionStatus.history.rawValue,
+            preview: "",
+            recencyAt: localDate(dayOffset: 0, hour: 9, minute: 5)
+        )
+        let yesterdaySession = makeSnapshotSession(
+            id: "session-list-yesterday",
+            project: secondProject,
+            title: "检查 compact 顶栏与底部安全区",
+            status: SessionStatus.failed.rawValue,
+            preview: "",
+            runtimeProvider: "claude",
+            recencyAt: localDate(dayOffset: -1, hour: 18, minute: 25)
+        )
+        let secondTodaySession = makeSnapshotSession(
+            id: "session-list-today-second",
+            project: secondProject,
+            title: "同一日期容器内使用发丝线分隔",
+            status: SessionStatus.history.rawValue,
+            preview: "",
+            runtimeProvider: "claude",
+            recencyAt: localDate(dayOffset: 0, hour: 8, minute: 20)
+        )
+        let earlierSession = makeSnapshotSession(
+            id: "session-list-earlier",
+            project: project,
+            title: "保留 Inspector 中的完整路径",
+            status: SessionStatus.history.rawValue,
+            preview: ""
+        )
+
+        sessionStore.projects = [project, secondProject]
+        sessionStore.sidebarProjects = [project, secondProject]
+        sessionStore.sessions = [
+            active,
+            pinned,
+            todaySession,
+            secondTodaySession,
+            yesterdaySession,
+            earlierSession,
+        ]
+        sessionStore.pinnedSessionIDs = [pinned.id]
+        sessionStore.selectedSessionID = todaySession.id
+
+        return NavigationStack {
+            SessionListView(
+                manageConnections: {},
+                prefersTableDensity: prefersTable,
+                hidesNavigationTitle: prefersTable,
+                bottomContentMargin: prefersTable ? 16 : 84
+            )
+        }
+        .environmentObject(appStore)
+        .environmentObject(sessionStore)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, colorScheme)
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .frame(width: width, height: height)
+    }
+
     private func snapshotImageDataURL(size: CGSize, accent: UIColor) -> String {
         let data = snapshotImage(size: size, accent: accent).pngData() ?? Data()
         return "data:image/png;base64,\(data.base64EncodedString())"
@@ -1967,7 +2124,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         pendingApproval: ApprovalSummary? = nil,
         goal: ThreadGoal? = nil,
         runtimeProvider: String? = nil,
-        context: SessionContextSnapshot? = nil
+        context: SessionContextSnapshot? = nil,
+        createdAt: Date? = nil,
+        updatedAt: Date? = nil,
+        recencyAt: Date? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -1979,8 +2139,9 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             source: "codex",
             runtimeProvider: runtimeProvider,
             resumeID: "thread-\(id)",
-            createdAt: nil,
-            updatedAt: nil,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            recencyAt: recencyAt,
             preview: preview,
             activeTurnID: activeTurnID,
             lastSeq: 42,

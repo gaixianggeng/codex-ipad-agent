@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 会话行的快捷动作统一从这里读取当前状态并提交，避免菜单、滑动和 VoiceOver
 /// 分别维护 toggle 逻辑，尤其防止异步归档因重复 Task 回到旧状态。
@@ -136,8 +137,20 @@ struct SessionActionMenuContent: View {
     var body: some View {
         let actions = SessionRowActionController(sessionStore: sessionStore, session: session)
         let reminder = sessionStore.sessionReminder(for: session.id)
+        let fullDirectoryPath = session.dir.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Group {
+            if !fullDirectoryPath.isEmpty {
+                Button {
+                    UIPasteboard.general.string = fullDirectoryPath
+                } label: {
+                    Label(fullDirectoryPath, systemImage: "folder")
+                }
+                .accessibilityLabel("\(fullDirectoryPath) · \(L10n.text("ui.copy"))")
+
+                Divider()
+            }
+
             if sessionStore.isSessionObserving(session),
                !sessionStore.isExternalReadOnlySession(session) {
                 Button {

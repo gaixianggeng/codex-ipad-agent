@@ -89,6 +89,7 @@ struct UnifiedWorkbenchShell: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Namespace private var presentationNamespace
 
     @Binding var showingInspector: Bool
@@ -319,6 +320,14 @@ struct UnifiedWorkbenchShell: View {
             }
             .tag(CompactWorkbenchTab.me)
         }
+        // 原生 Tab 保留系统交互，但用更厚的材质遮住其后的列表文字；关闭透明度时退成等尺寸实色。
+        .toolbarBackground(
+            reduceTransparency
+                ? AnyShapeStyle(tokens.elevatedSurface)
+                : AnyShapeStyle(.ultraThickMaterial),
+            for: .tabBar
+        )
+        .toolbarBackground(.visible, for: .tabBar)
         .themedWorkbenchNavigationChrome(
             tokens: tokens,
             colorScheme: themeStore.resolvedColorScheme(for: colorScheme)
@@ -737,14 +746,9 @@ struct UnifiedWorkbenchShell: View {
                 }
             }
 
-            Section(sessionStore.activeSessions.isEmpty ? L10n.text("ui.recently") : L10n.text("ui.recent_history")) {
-                if sessionStore.recentHistorySessions.isEmpty {
-                    Text(sessionStore.activeSessions.isEmpty ? L10n.text("ui.no_recent_conversations_yet") : L10n.text("ui.no_history_sessions_yet"))
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.tertiaryText)
-                        .listRowBackground(Color.clear)
-                } else {
-                    ForEach(sessionStore.recentHistorySessions) { session in
+            if !sidebarPinnedSessions.isEmpty {
+                Section(L10n.text("ui.pinned")) {
+                    ForEach(sidebarPinnedSessions) { session in
                         sidebarSessionLink(session, layout: layout)
                     }
                 }
@@ -842,8 +846,15 @@ struct UnifiedWorkbenchShell: View {
             isObserving: sessionStore.isSessionObserving(session),
             isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
             isUnread: sessionStore.isHistorySessionUnread(session),
-            style: .sidebar
+            density: .rail
         )
+    }
+
+    /// 浮动侧栏只保留需要用户回来的对象；进行中的置顶会话已在上一组展示，避免重复。
+    private var sidebarPinnedSessions: [AgentSession] {
+        sessionStore.sessionLibrarySessions.filter { session in
+            sessionStore.isSessionPinned(session.id) && !session.isRunning && !session.isLocalDraft
+        }
     }
 
     private func sidebarFooter(
@@ -976,7 +987,9 @@ struct UnifiedWorkbenchShell: View {
                 open(.workspaces, layout: layout)
             },
             manageConnections: manageConnections,
-            placesFilterInTrailingToolbar: layout.usesFloatingSidebarSurface,
+            prefersTableDensity: layout.usesFloatingSidebarSurface,
+            hidesNavigationTitle: layout.usesFloatingSidebarSurface,
+            bottomContentMargin: layout.usesCompactNavigation ? 84 : 16,
             newSessionPresentationNamespace: presentationNamespace
         )
     }
