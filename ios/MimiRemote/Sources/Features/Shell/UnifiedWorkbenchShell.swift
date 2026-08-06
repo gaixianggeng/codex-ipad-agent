@@ -88,7 +88,7 @@ struct SessionSidebarMonitorRow: View {
     let kind: SessionSidebarSectionKind
     let isSelected: Bool
     let isRecentlyCompleted: Bool
-    let projectEmoji: String?
+    let projectIcon: WorkspaceProjectIconContent?
     let runtimeActivitySnapshot: RuntimeActivitySnapshot?
 
     var body: some View {
@@ -98,16 +98,8 @@ struct SessionSidebarMonitorRow: View {
             stateMarker(tokens: tokens)
                 .frame(width: 12, height: 12)
 
-            if let projectEmoji {
-                Text(projectEmoji)
-                    .font(.system(size: 10))
-                    .frame(width: 18, height: 18)
-                    .background(tokens.elevatedSurface.opacity(0.82), in: WorkspaceIconMeeGoShape())
-                    .overlay {
-                        WorkspaceIconMeeGoShape()
-                            .stroke(tokens.border.opacity(0.52), lineWidth: 0.5)
-                    }
-                    .accessibilityHidden(true)
+            if let projectIcon {
+                WorkspaceProjectIconTile(content: projectIcon, size: 18, tokens: tokens)
             }
 
             Text(SessionListPresentation.titleDisplayText(for: session))
@@ -871,7 +863,15 @@ struct UnifiedWorkbenchShell: View {
         WorkbenchSidebarContentLayout(
             usesFloatingSurface: layout.usesFloatingSidebarSurface
         ) {
-            sidebarList(tokens: tokens, layout: layout)
+            if layout.usesFloatingSidebarSurface {
+                // 浮动侧栏已经有 12pt 外围安全间距；移除 SidebarListStyle 额外添加的
+                // scroll content leading margin，让导航、分组头和监视行整列一起左移。
+                sidebarList(tokens: tokens, layout: layout)
+                    .contentMargins(.leading, 0, for: .scrollContent)
+            } else {
+                // 覆盖式 / 系统侧栏继续使用平台默认边距，避免贴到设备安全区。
+                sidebarList(tokens: tokens, layout: layout)
+            }
         } footer: {
             sidebarFooter(
                 tokens: tokens,
@@ -1043,11 +1043,12 @@ struct UnifiedWorkbenchShell: View {
             kind: kind,
             isSelected: navigationState.selection == .session(session.id),
             isRecentlyCompleted: sidebarHighlightCoordinator.highlightedSessionID == session.id,
-            projectEmoji: showsProjectAnchor
-                ? workspaceAppearanceStore.emoji(
-                    profileID: appStore.activeHostScope.profileID,
-                    projectID: session.projectID
-                )
+            projectIcon: showsProjectAnchor
+                ? sidebarProjectIcons[session.projectID]
+                    ?? workspaceAppearanceStore.projectIconContent(
+                        profileID: appStore.activeHostScope.profileID,
+                        projectID: session.projectID
+                    )
                 : nil,
             runtimeActivitySnapshot: sessionStore.runtimeActivitySnapshot(for: session.id)
         )
@@ -1066,6 +1067,13 @@ struct UnifiedWorkbenchShell: View {
 
     private var sidebarUsesProjectAnchors: Bool {
         Set(sidebarMonitorSections.flatMap(\.sessions).map(\.projectID)).count > 1
+    }
+
+    private var sidebarProjectIcons: [String: WorkspaceProjectIconContent] {
+        workspaceAppearanceStore.projectIconContents(
+            profileID: appStore.activeHostScope.profileID,
+            projectIDs: sessionStore.sidebarProjects.map(\.id)
+        )
     }
 
     private var sidebarLifecycleObservations: [SessionLifecycleObservation] {

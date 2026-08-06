@@ -143,6 +143,13 @@ struct WorkspaceCharacterIcon: Identifiable, Equatable, Sendable {
     }
 }
 
+/// 工作区、会话列表和侧栏共享同一份项目图标内容，避免同一个项目在不同页面
+/// 分别落成角色图、Emoji 或运行时品牌图标，造成身份识别不一致。
+enum WorkspaceProjectIconContent: Equatable, Sendable {
+    case character(WorkspaceCharacterIcon)
+    case emoji(String)
+}
+
 private struct WorkspaceAppearancePreferences: Codable {
     var style: WorkspaceIconStyle?
     var characterIDsByProject: [String: String] = [:]
@@ -446,6 +453,40 @@ final class WorkspaceAppearanceStore: ObservableObject {
 
     func style(profileID: String) -> WorkspaceIconStyle {
         preferences(profileID: profileID)?.style ?? .journey
+    }
+
+    func projectIconContent(profileID: String, projectID: String) -> WorkspaceProjectIconContent {
+        let iconStyle = style(profileID: profileID)
+        if iconStyle.usesCharacters {
+            return .character(
+                character(
+                    style: iconStyle,
+                    profileID: profileID,
+                    projectID: projectID
+                )
+            )
+        }
+        return .emoji(emoji(profileID: profileID, projectID: projectID))
+    }
+
+    /// 与工作区胶囊相同，整组分配后再取单个项目，确保自动头像在发生哈希碰撞时
+    /// 仍与工作区页显示一致，而不是只在当前会话列表里重新计算。
+    func projectIconContents(
+        profileID: String,
+        projectIDs: [String]
+    ) -> [String: WorkspaceProjectIconContent] {
+        let iconStyle = style(profileID: profileID)
+        if iconStyle.usesCharacters {
+            return characterAssignments(
+                style: iconStyle,
+                profileID: profileID,
+                projectIDs: projectIDs
+            ).mapValues { .character($0) }
+        }
+        return emojiAssignments(
+            profileID: profileID,
+            projectIDs: projectIDs
+        ).mapValues { .emoji($0) }
     }
 
     func setStyle(_ style: WorkspaceIconStyle, profileID: String) {

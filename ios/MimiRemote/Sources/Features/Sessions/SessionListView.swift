@@ -834,11 +834,22 @@ struct SessionListView: View {
         isActiveSection: Bool,
         tokens: ThemeTokens
     ) -> some View {
+        let profileID = appStore.activeHostScope.profileID
+        let projectIcons = workspaceAppearanceStore.projectIconContents(
+            profileID: profileID,
+            projectIDs: sessionStore.sidebarProjects.map(\.id)
+        )
+
         ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
             let previousProjectID = index > sessions.startIndex
                 ? sessions[index - 1].projectID
                 : nil
             let startsProjectRun = previousProjectID != session.projectID
+            let projectIcon = projectIcons[session.projectID]
+                ?? workspaceAppearanceStore.projectIconContent(
+                    profileID: profileID,
+                    projectID: session.projectID
+                )
 
             Button {
                 keyboardSelectionID = nil
@@ -856,12 +867,8 @@ struct SessionListView: View {
                     isUnread: sessionStore.isHistorySessionUnread(session),
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    projectAnchorEmoji: startsProjectRun
-                        ? workspaceAppearanceStore.emoji(
-                            profileID: appStore.activeHostScope.profileID,
-                            projectID: session.projectID
-                        )
-                        : nil,
+                    projectIcon: projectIcon,
+                    showsProjectAnchor: startsProjectRun,
                     reservesProjectAnchor: rowDensity == .table,
                     drawsDivider: index != sessions.index(before: sessions.endIndex),
                     // 滚动冻结期间已结束的会话仍留在“进行中”原位，必须显式展示最新终态。
@@ -1080,7 +1087,8 @@ struct SessionIndexRow: View {
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
-    var projectAnchorEmoji: String? = nil
+    var projectIcon: WorkspaceProjectIconContent? = nil
+    var showsProjectAnchor = false
     var reservesProjectAnchor = false
     var drawsDivider = false
     var drawsSelectionBackground = true
@@ -1140,10 +1148,13 @@ struct SessionIndexRow: View {
                 Spacer(minLength: 8)
                 stableStateIcons(tokens: tokens)
                 animatedStatusLabel(tokens: tokens)
+                if isUnread {
+                    SessionUnreadIndicator()
+                }
             }
 
             HStack(spacing: 6) {
-                runtimeIcon
+                projectMetadataIcon(tokens: tokens)
                 directoryText(tokens: tokens)
                 Spacer(minLength: 8)
                 timestamp(tokens: tokens)
@@ -1181,7 +1192,7 @@ struct SessionIndexRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 10) {
-                    runtimeIcon
+                    projectMetadataIcon(tokens: tokens)
                     Text(session.project)
                         .font(themeStore.uiFont(size: density.metadataFontSize, weight: .medium))
                         .foregroundStyle(tokens.tertiaryText)
@@ -1191,6 +1202,9 @@ struct SessionIndexRow: View {
                     Spacer(minLength: 8)
                     animatedStatusLabel(tokens: tokens)
                     timestamp(tokens: tokens)
+                    if isUnread {
+                        SessionUnreadIndicator()
+                    }
                 }
             }
         }
@@ -1198,28 +1212,8 @@ struct SessionIndexRow: View {
 
     @ViewBuilder
     private func projectAnchor(tokens: ThemeTokens) -> some View {
-        if let projectAnchorEmoji {
-            let palette: [Color] = [
-                Color(red: 0.91, green: 0.63, blue: 0.48),
-                Color(red: 0.47, green: 0.67, blue: 0.78),
-                Color(red: 0.76, green: 0.64, blue: 0.42),
-                Color(red: 0.88, green: 0.72, blue: 0.34),
-                Color(red: 0.64, green: 0.70, blue: 0.48),
-                Color(red: 0.72, green: 0.53, blue: 0.72),
-            ]
-            let tint = palette[
-                WorkspaceAppearanceStore.tintIndex(for: projectAnchorEmoji, count: palette.count)
-            ]
-
-            Text(projectAnchorEmoji)
-                .font(.system(size: 17))
-                .frame(width: 30, height: 30)
-                .background(tint.opacity(colorScheme == .dark ? 0.30 : 0.18), in: WorkspaceIconMeeGoShape())
-                .overlay {
-                    WorkspaceIconMeeGoShape()
-                        .stroke(tokens.border.opacity(colorScheme == .dark ? 0.72 : 0.42), lineWidth: 0.75)
-                }
-                .accessibilityHidden(true)
+        if showsProjectAnchor, let projectIcon {
+            WorkspaceProjectIconTile(content: projectIcon, size: 30, tokens: tokens)
         } else {
             Color.clear
         }
@@ -1266,10 +1260,6 @@ struct SessionIndexRow: View {
             .lineLimit(1)
             .truncationMode(.tail)
             .layoutPriority(1)
-
-        if isUnread {
-            SessionUnreadIndicator()
-        }
     }
 
     @ViewBuilder
@@ -1294,12 +1284,27 @@ struct SessionIndexRow: View {
         }
     }
 
-    private var runtimeIcon: some View {
-        SessionRuntimeIcon(
-            session: session,
-            size: density.runtimeIconSize,
-            isActive: session.isRunning
-        )
+    @ViewBuilder
+    private func projectMetadataIcon(tokens: ThemeTokens) -> some View {
+        let iconSize: CGFloat = density == .table ? 14 : 12
+
+        if density == .table, reservesProjectAnchor, showsProjectAnchor {
+            // 项目段首已经有 30pt 锚点；这里保留对齐槽位但不重复同一张图标。
+            Color.clear
+                .frame(width: iconSize, height: iconSize)
+        } else if let projectIcon {
+            WorkspaceProjectIconTile(
+                content: projectIcon,
+                size: iconSize,
+                tokens: tokens
+            )
+        } else {
+            SessionRuntimeIcon(
+                session: session,
+                size: density.runtimeIconSize,
+                isActive: session.isRunning
+            )
+        }
     }
 
     private func directoryText(tokens: ThemeTokens) -> some View {

@@ -1902,7 +1902,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .needYou,
                         isSelected: false,
                         isRecentlyCompleted: false,
-                        projectEmoji: "🐱",
+                        projectIcon: .emoji("🐱"),
                         runtimeActivitySnapshot: nil
                     )
                     .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -1915,7 +1915,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .running,
                         isSelected: true,
                         isRecentlyCompleted: false,
-                        projectEmoji: nil,
+                        projectIcon: nil,
                         runtimeActivitySnapshot: RuntimeActivitySnapshot(
                             turnStartedAt: Date().addingTimeInterval(-12 * 60),
                             lastActivityAt: Date()
@@ -1931,7 +1931,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         kind: .justCompleted,
                         isSelected: false,
                         isRecentlyCompleted: true,
-                        projectEmoji: nil,
+                        projectIcon: nil,
                         runtimeActivitySnapshot: nil
                     )
                     .listRowInsets(.init(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -1940,6 +1940,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            .contentMargins(.leading, 0, for: .scrollContent)
             .environment(\.defaultMinListRowHeight, 34)
             .frame(maxHeight: .infinity)
 
@@ -2069,6 +2070,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             "🎨",
             profileID: appStore.activeHostScope.profileID,
             projectID: secondProject.id
+        )
+        workspaceAppearanceStore.setStyle(
+            .emoji,
+            profileID: appStore.activeHostScope.profileID
         )
 
         let active = makeSnapshotSession(
