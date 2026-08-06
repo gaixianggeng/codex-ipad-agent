@@ -75,7 +75,7 @@
    - 增加稳定 Mac 安装包地址：
 
      ```text
-     https://github.com/gaixianggeng/codex-ipad-agent/releases/latest/download/Mimi-Remote-Mac.dmg
+     https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg
      ```
 
    - 分享固定的 `latest` 地址，避免 App 内写死发布版本。

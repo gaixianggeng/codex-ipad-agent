@@ -95,6 +95,8 @@ if [[ "$failures" -ne 0 ]]; then
   exit 1
 fi
 
+# 品牌身份门禁独立扫描仓库地址、商店名称和 AppExternalLinks；它不回调本安全门禁，避免递归。
+bash ./scripts/check-brand-identity.sh
 bash ./scripts/check-third-party-notices.sh
 bash ./scripts/check-pr-gate.sh
 

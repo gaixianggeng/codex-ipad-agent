@@ -71,12 +71,12 @@ changelog:
       - "^docs:"
       - "^test:"
 
-# 显式固定完整源码与 Release 仓库，避免维护者尚未更新本地 Git remote 时，
-# snapshot Formula 仍生成历史发布镜像的下载地址。
+# 显式固定完整源码与 Release 仓库；历史后端快照导出链路已退役，
+# snapshot Formula 不再生成指向第二仓库的下载地址。
 release:
   github:
     owner: gaixianggeng
-    name: codex-ipad-agent
+    name: mimi-remote
   # GitHub Release 已创建但 tap 推送失败时，允许同一 tag 的 workflow 重跑。
   # keep-existing 保留既有发布说明，只替换由该 tag 重新构建的同名附件。
   mode: keep-existing
@@ -93,7 +93,7 @@ brews:
         url: git@github.com:gaixianggeng/homebrew-tap.git
         private_key: "{{ .Env.TAP_DEPLOY_KEY }}"
     directory: Formula
-    homepage: https://github.com/gaixianggeng/codex-ipad-agent
+    homepage: https://github.com/gaixianggeng/mimi-remote
     description: iPad companion agent for user-owned Mac developer environments
     install: |
       bin.install "agentd"

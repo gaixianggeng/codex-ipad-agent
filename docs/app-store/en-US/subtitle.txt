@@ -1,1 +1,1 @@
-Self-hosted developer console
+Remote coding workspace

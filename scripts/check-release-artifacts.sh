@@ -70,12 +70,8 @@ if [[ ! -f "$formula" ]] || ! grep -Fq 'service do' "$formula" || ! grep -Fq 'ag
   echo "发布产物门禁失败：Homebrew Formula 缺失或没有 agentd serve 服务定义。" >&2
   exit 1
 fi
-if grep -Fq 'github.com/gaixianggeng/mimi-remote/releases/' "$formula"; then
-  echo "发布产物门禁失败：Homebrew Formula 仍引用历史发布镜像 mimi-remote。" >&2
-  exit 1
-fi
-if ! grep -Fqx '  homepage "https://github.com/gaixianggeng/codex-ipad-agent"' "$formula"; then
-  echo "发布产物门禁失败：Homebrew Formula homepage 不是公开目标仓库。" >&2
+if ! grep -Fqx '  homepage "https://github.com/gaixianggeng/mimi-remote"' "$formula"; then
+  echo "发布产物门禁失败：Homebrew Formula homepage 不是 Mimi Remote 官方仓库。" >&2
   exit 1
 fi
 if command -v ruby >/dev/null 2>&1 && ! ruby -c "$formula" >/dev/null; then
@@ -180,8 +176,8 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
       exit
     }
   ' "$formula")"
-  if [[ "$formula_url" != https://github.com/gaixianggeng/codex-ipad-agent/releases/download/*/"$archive_name" ]]; then
-    echo "发布产物门禁失败：$archive_name 的 Formula 下载地址未指向 gaixianggeng/codex-ipad-agent。" >&2
+  if [[ "$formula_url" != https://github.com/gaixianggeng/mimi-remote/releases/download/*/"$archive_name" ]]; then
+    echo "发布产物门禁失败：$archive_name 的 Formula 下载地址未指向 gaixianggeng/mimi-remote。" >&2
     exit 1
   fi
   formula_sha256="$(awk -v archive_name="$archive_name" '
