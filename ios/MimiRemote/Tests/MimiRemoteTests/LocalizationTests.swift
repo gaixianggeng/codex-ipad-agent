@@ -304,6 +304,39 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
     }
 
+    func testVoiceInputProviderAvailabilityFiltersAppleOnUnsupportedSystems() {
+        XCTAssertEqual(
+            VoiceInputProvider.availableProviders(supportsAppleSpeech: false),
+            [.codex]
+        )
+        XCTAssertEqual(
+            VoiceInputProvider.availableProviders(supportsAppleSpeech: true),
+            [.codex, .apple]
+        )
+    }
+
+    func testSavedAppleVoiceProviderFallsBackWithoutOverwritingStoredValue() {
+        let suiteName = "VoiceInputProviderCompatibilityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(VoiceInputProvider.apple.rawValue, forKey: VoiceInputProvider.storageKey)
+
+        XCTAssertEqual(
+            VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: false),
+            .codex
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: VoiceInputProvider.storageKey),
+            VoiceInputProvider.apple.rawValue,
+            "旧系统回退时不应清除升级后可恢复的历史偏好"
+        )
+        XCTAssertEqual(
+            VoiceInputProvider.stored(in: defaults, supportsAppleSpeech: true),
+            .apple
+        )
+    }
+
     func testVoiceInputProvidersExposeDistinctNativeSystemIcons() {
         XCTAssertEqual(VoiceInputProvider.codex.icon, .system("waveform"))
         XCTAssertEqual(VoiceInputProvider.apple.icon, .system("siri"))

@@ -658,11 +658,18 @@ struct WorkbenchSidebarContainer<
             content
                 .background(tokens.sidebarBackground.ignoresSafeArea())
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        toolbarHeader
+                    if #available(iOS 26.0, *) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            toolbarHeader
+                        }
+                        // 品牌标题不是独立按钮；隐藏 iPadOS 26 自动添加的共享玻璃底板。
+                        .sharedBackgroundVisibility(.hidden)
+                    } else {
+                        // iOS 18–25 没有系统共享玻璃底板，保留普通 ToolbarItem 即可。
+                        ToolbarItem(placement: .topBarLeading) {
+                            toolbarHeader
+                        }
                     }
-                    // 品牌标题不是独立按钮；隐藏 iPadOS 26 自动添加的共享玻璃底板。
-                    .sharedBackgroundVisibility(.hidden)
                 }
         }
     }
@@ -734,20 +741,27 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
 
     @ViewBuilder
     var body: some View {
-        if reduceTransparency {
-            button
-                .buttonStyle(.plain)
-                .background(tokens.elevatedSurface, in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(tokens.border, lineWidth: 1)
-                }
-        } else {
+        if #available(iOS 26.0, *), !reduceTransparency {
             button
                 .buttonStyle(.plain)
                 // 把原生交互玻璃直接作用在确定的 44pt 标签上，避免系统 ButtonStyle
                 // 根据紧凑图标再次缩小或放大圆面；按压和指针反馈仍由 Liquid Glass 提供。
                 .glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            button
+                .buttonStyle(.plain)
+                .background {
+                    if reduceTransparency {
+                        Circle().fill(tokens.elevatedSurface)
+                    } else {
+                        // iOS 18–25 使用稳定的系统材质，不模拟 Liquid Glass 的折射与高光。
+                        Circle().fill(.regularMaterial)
+                    }
+                }
+                .overlay {
+                    Circle()
+                        .stroke(tokens.border, lineWidth: 1)
+                }
         }
     }
 
@@ -763,6 +777,19 @@ private struct WorkbenchFloatingSidebarToggleButton: View {
         .foregroundStyle(tokens.primaryText)
         // 与触控、指针和 VoiceOver 共用同一个 action，不新增第二套 visibility 状态。
         .keyboardShortcut("s", modifiers: [.control, .command])
+    }
+}
+
+extension View {
+    /// 主操作在 iOS 26+ 使用原生突出玻璃；旧系统回退到系统强调按钮，
+    /// 只降低材质表现，不改变按钮的 action、禁用态、键盘快捷键或无障碍语义。
+    @ViewBuilder
+    func workbenchProminentActionStyle() -> some View {
+        if #available(iOS 26.0, *) {
+            buttonStyle(.glassProminent)
+        } else {
+            buttonStyle(.borderedProminent)
+        }
     }
 }
 

@@ -318,7 +318,7 @@ struct SettingsView: View {
                 SettingsChoiceRow(
                     title: L10n.text("ui.voice_input"),
                     systemImage: "waveform",
-                    options: VoiceInputProvider.allCases,
+                    options: VoiceInputProvider.availableProviders(),
                     selection: voiceInputProviderSelection
                 )
                 .settingsStandardListRow()
@@ -504,7 +504,9 @@ struct SettingsView: View {
 
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
-            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
+            get: {
+                VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
+            },
             set: { voiceInputProviderRawValue = $0.rawValue }
         )
     }

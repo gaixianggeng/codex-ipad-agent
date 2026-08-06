@@ -578,7 +578,9 @@ final class VoiceInputController: NSObject, ObservableObject {
     private var pressStartedAt: Date?
     private var recordingStartedAt: Date?
     private var activeProvider: VoiceInputProvider?
-    private var appleSession: AppleSpeechTranscriptionSession?
+    // Swift 不允许 stored property 自身标记 availability；用不透明引用保存会话，
+    // 只在 iOS 26+ 方法内部还原成 AppleSpeechTranscriptionSession。
+    private var appleSession: AnyObject?
     private var appleLifecycleTask: Task<Void, Never>?
     private var appleFinishHandler: (() -> Void)?
     private let audioSessionCoordinator: VoiceAudioSessionCoordinator
@@ -662,6 +664,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
     }
 
+    @available(iOS 26.0, *)
     func startAppleTranscription(
         locale: Locale,
         onTranscript: @escaping @MainActor (String) -> Void,
@@ -761,7 +764,12 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     func stop() {
         if activeProvider == .apple {
-            finishAppleTranscription()
+            if #available(iOS 26.0, *) {
+                finishAppleTranscription()
+            } else {
+                // Apple 提供方不会在旧系统被选中；此分支只保护历史状态，直接收尾而不触碰 Speech API。
+                completeUnavailableAppleInteraction(notifyFinish: true)
+            }
             return
         }
         let shouldFinishImmediately = !isRecording && recorder == nil
@@ -775,7 +783,11 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     func cancel() {
         if activeProvider == .apple {
-            cancelAppleTranscription(notifyFinish: false)
+            if #available(iOS 26.0, *) {
+                cancelAppleTranscription(notifyFinish: false)
+            } else {
+                completeUnavailableAppleInteraction(notifyFinish: false)
+            }
             return
         }
         let fileURL = recordingURL
@@ -787,9 +799,10 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
     }
 
+    @available(iOS 26.0, *)
     private func finishAppleTranscription() {
         guard activeProvider == .apple else { return }
-        guard let session = appleSession else {
+        guard let session = appleSession as? AppleSpeechTranscriptionSession else {
             completeAppleInteraction(notifyFinish: true)
             return
         }
@@ -811,8 +824,9 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
     }
 
+    @available(iOS 26.0, *)
     private func cancelAppleTranscription(notifyFinish: Bool) {
-        let session = appleSession
+        let session = appleSession as? AppleSpeechTranscriptionSession
         let lifecycleTask = appleLifecycleTask
         lifecycleTask?.cancel()
         let previousCleanup = audioSessionCleanupTask
@@ -826,10 +840,26 @@ final class VoiceInputController: NSObject, ObservableObject {
         completeAppleInteraction(notifyFinish: notifyFinish)
     }
 
+    @available(iOS 26.0, *)
     private func completeAppleInteraction(notifyFinish: Bool) {
         let handler = appleFinishHandler
         appleFinishHandler = nil
         appleSession = nil
+        appleLifecycleTask = nil
+        activeProvider = nil
+        startRequestID = nil
+        isPreparing = false
+        isRecording = false
+        levelMeter.reset()
+        if notifyFinish {
+            handler?()
+        }
+    }
+
+    private func completeUnavailableAppleInteraction(notifyFinish: Bool) {
+        let handler = appleFinishHandler
+        appleFinishHandler = nil
+        appleLifecycleTask?.cancel()
         appleLifecycleTask = nil
         activeProvider = nil
         startRequestID = nil
