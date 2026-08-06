@@ -25,6 +25,11 @@ final class ConversationStore: ObservableObject {
 #if DEBUG
     private(set) var historyMergeInvocationCountForTesting = 0
     private(set) var retainedByteFullRecalculationCountForTesting = 0
+    /// 测试用：是否还有未落地的流式 delta 合并缓冲（跨所有 Profile）。
+    /// 定向测试靠它等待 80ms flush 真正执行，而不是用固定 sleep 猜定时器落地顺序。
+    var hasPendingAssistantDeltasForTesting: Bool {
+        !pendingAssistantDeltasBySessionID.isEmpty
+    }
 #endif
 
     private let assistantDeltaFlushDelay: UInt64 = 80_000_000
