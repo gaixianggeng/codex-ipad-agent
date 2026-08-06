@@ -165,7 +165,7 @@ func TestAppServerConfigMarksClaudeChannelUnavailableWhenBridgeMissing(t *testin
 }
 
 func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
-	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.1.9")
+	bridgePath := writeTestBridgeWithVersion(t, "alleycat-claude-bridge 0.2.6")
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
 	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
@@ -177,10 +177,10 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	claude := body["channels"].([]any)[1].(map[string]any)
 	bridge := claude["bridge"].(map[string]any)
 	capabilities := claude["capabilities"].(map[string]any)
-	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.1.9" {
+	if claude["gateway_available"] != false || bridge["status"] != "unsupported_version" || bridge["version"] != "0.2.6" {
 		t.Fatalf("旧 Claude bridge 必须 fail closed：%v", claude)
 	}
-	if bridge["minimum_version"] != "0.2.1" || !strings.Contains(bridge["fix"].(string), "cargo install") {
+	if bridge["minimum_version"] != "0.2.7" || !strings.Contains(bridge["fix"].(string), "cargo install") {
 		t.Fatalf("旧 bridge 应返回最低版本和可执行修复提示：%v", bridge)
 	}
 	if capabilities["rate_limits"] != false {
@@ -199,8 +199,8 @@ func TestAppServerConfigRejectsOldClaudeBridgeVersion(t *testing.T) {
 	defer conn.Close()
 	raw := readGatewayRaw(t, conn)
 	if !bytes.Contains(raw, []byte(`"code":"CLAUDE_BRIDGE_VERSION_UNSUPPORTED"`)) ||
-		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.1.9"`)) ||
-		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.1"`)) ||
+		!bytes.Contains(raw, []byte(`"bridgeVersion":"0.2.6"`)) ||
+		!bytes.Contains(raw, []byte(`"minimumVersion":"0.2.7"`)) ||
 		!bytes.Contains(raw, []byte(`"fix":"cargo install`)) {
 		t.Fatalf("旧 bridge WS 错误应包含结构化版本诊断：%s", raw)
 	}
@@ -210,7 +210,7 @@ func TestClaudeBridgeProbeRejectsMissingStandardVersion(t *testing.T) {
 	bridgePath := writeTestBridgeWithVersion(t, "")
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
 	probe := router.refreshClaudeBridgeProbe(true)
-	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.1") {
+	if probe.Healthy || probe.Status != "missing_version" || !strings.Contains(probe.Error, "需要 >= 0.2.7") {
 		t.Fatalf("无标准 --version 的 bridge 必须 fail closed：%+v", probe)
 	}
 }
@@ -1599,19 +1599,39 @@ func TestGatewayThreadListAllowsStateDBFastPathWithinLimit(t *testing.T) {
 		"sortDirection":  "desc",
 		"sourceKinds":    []any{"cli", "vscode", "appServer", "subAgent"},
 		"useStateDbOnly": true,
+		"refreshHistory": false,
 		"unsafe":         "drop-me",
 	}
 	if err := validateGatewayThreadListParams(params); err != nil {
 		t.Fatalf("thread/list 合法快速路径参数不应被拒绝：%v", err)
 	}
 
-	sanitized := sanitizedGatewayThreadListParams(params)
+	sanitized := sanitizedGatewayThreadListParams("codex", params)
 	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "sortKey", "sortDirection", "sourceKinds", "useStateDbOnly")
 	if sanitized["useStateDbOnly"] != true {
 		t.Fatalf("thread/list 应保留 useStateDbOnly：%v", sanitized)
 	}
 	if sanitized["sortKey"] != "recency_at" {
 		t.Fatalf("thread/list 应保留 recency_at：%v", sanitized)
+	}
+}
+
+func TestGatewayThreadListAllowsExplicitHistoryRefreshOnFirstPage(t *testing.T) {
+	params := map[string]any{
+		"cwd":            "/tmp/project",
+		"limit":          json.Number("20"),
+		"useStateDbOnly": false,
+		"refreshHistory": true,
+		"unsafe":         "drop-me",
+	}
+	if err := validateGatewayThreadListParams(params); err != nil {
+		t.Fatalf("thread/list 合法显式历史刷新不应被拒绝：%v", err)
+	}
+
+	sanitized := sanitizedGatewayThreadListParams("claude", params)
+	assertGatewayParamsOnly(t, sanitized, "cwd", "limit", "useStateDbOnly", "refreshHistory")
+	if sanitized["refreshHistory"] != true {
+		t.Fatalf("thread/list 应保留 refreshHistory：%v", sanitized)
 	}
 }
 
@@ -1631,6 +1651,15 @@ func TestGatewayThreadListFingerprintIncludesSortKey(t *testing.T) {
 	if gatewayHistoryRequestFingerprint("codex", updated) == gatewayHistoryRequestFingerprint("codex", recency) {
 		t.Fatal("不同 sortKey 的 thread/list 不能共享并发请求指纹")
 	}
+	refresh, ok := gatewayHistoryRequestFromParams("thread/list", map[string]any{
+		"cwd": "/tmp/project", "limit": json.Number("20"), "sortKey": "updated_at", "refreshHistory": true,
+	})
+	if !ok {
+		t.Fatal("显式刷新的 thread/list 应进入历史请求指纹")
+	}
+	if gatewayHistoryRequestFingerprint("claude", updated) == gatewayHistoryRequestFingerprint("claude", refresh) {
+		t.Fatal("普通列表与显式历史刷新不能共享并发请求指纹")
+	}
 }
 
 func TestGatewayThreadListRejectsUnsafeFastPathParams(t *testing.T) {
@@ -1641,6 +1670,9 @@ func TestGatewayThreadListRejectsUnsafeFastPathParams(t *testing.T) {
 	}{
 		{name: "limit over hard max", params: map[string]any{"limit": json.Number("51")}, want: "不能超过 50"},
 		{name: "state db flag must be bool", params: map[string]any{"useStateDbOnly": "true"}, want: "必须是布尔值"},
+		{name: "refresh flag must be bool", params: map[string]any{"refreshHistory": "true"}, want: "必须是布尔值"},
+		{name: "refresh only on first page", params: map[string]any{"refreshHistory": true, "cursor": "next"}, want: "只允许用于首屏"},
+		{name: "refresh rejects state db fast path", params: map[string]any{"refreshHistory": true, "useStateDbOnly": true}, want: "不能与 useStateDbOnly=true"},
 		{name: "source kinds must be array", params: map[string]any{"sourceKinds": "subAgent"}, want: "必须是字符串数组"},
 		{name: "source kinds reject internal source", params: map[string]any{"sourceKinds": []any{"exec"}}, want: "sourceKinds 不支持"},
 	}

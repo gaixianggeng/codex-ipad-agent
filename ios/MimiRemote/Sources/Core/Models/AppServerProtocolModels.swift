@@ -387,7 +387,8 @@ struct CodexAppServerRequestBuilder {
         limit: Int? = 20,
         cursor: String? = nil,
         useStateDBOnly: Bool = true,
-        sortKey: String = "recency_at"
+        sortKey: String = "recency_at",
+        refreshHistory: Bool = false
     ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         return CodexAppServerRequestSpec(method: "thread/list", params: CodexAppServerJSONValue.objectValue([
@@ -398,7 +399,9 @@ struct CodexAppServerRequestBuilder {
             "sortKey": .string(sortKey),
             "sortDirection": .string("desc"),
             "archived": .bool(false),
-            "useStateDbOnly": .bool(useStateDBOnly)
+            "useStateDbOnly": .bool(useStateDBOnly),
+            // 只有 Claude 权威首屏才显式请求历史目录重扫；默认省略以兼容旧 runtime。
+            "refreshHistory": refreshHistory ? .bool(true) : nil
         ]))
     }
 

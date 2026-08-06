@@ -13,6 +13,7 @@ pub mod claude_session_scan;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -27,6 +28,11 @@ pub use alleycat_bridge_core::{
 use alleycat_codex_proto::{SessionSource, Thread, ThreadSourceKind, ThreadStatus};
 
 use crate::translate::items::is_internal_local_command_text;
+
+/// 同一 bridge 进程内两次显式历史扫描的最小间隔。
+///
+/// 扫描只由 `refreshHistory` 首屏请求触发；冷却窗口继续保护用户快速重复点击和多连接竞态。
+pub const DEFAULT_HISTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Bridge CLI version string baked into `Thread.cli_version`.
 pub const CLI_VERSION: &str = concat!("alleycat-claude-bridge/", env!("CARGO_PKG_VERSION"));
@@ -131,6 +137,61 @@ impl ClaudeHydrator {
 impl Default for ClaudeHydrator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryRefreshResult {
+    Refreshed { inserted: usize },
+    RateLimited,
+}
+
+/// 运行期显式历史扫描器。
+///
+/// `gate` 在扫描期间保持锁定，既让多个连接共享同一冷却窗口，也避免同时遍历
+/// `~/.claude/projects`。这里只把新 session ID 写入索引，不覆盖已有名称、归档等用户状态。
+pub struct ClaudeHistoryRefresher {
+    index: Arc<CoreThreadIndex<ClaudeSessionRef>>,
+    hydrator: ClaudeHydrator,
+    min_interval: Duration,
+    gate: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl ClaudeHistoryRefresher {
+    pub fn new(index: Arc<CoreThreadIndex<ClaudeSessionRef>>, hydrator: ClaudeHydrator) -> Self {
+        Self::with_interval(index, hydrator, DEFAULT_HISTORY_REFRESH_INTERVAL)
+    }
+
+    pub fn with_interval(
+        index: Arc<CoreThreadIndex<ClaudeSessionRef>>,
+        hydrator: ClaudeHydrator,
+        min_interval: Duration,
+    ) -> Self {
+        Self {
+            index,
+            hydrator,
+            min_interval,
+            gate: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    pub async fn refresh_if_due(&self) -> Result<HistoryRefreshResult> {
+        let mut last_finished_at = self.gate.lock().await;
+        let now = tokio::time::Instant::now();
+        if last_finished_at.is_some_and(|last| now.duration_since(last) < self.min_interval) {
+            return Ok(HistoryRefreshResult::RateLimited);
+        }
+
+        let refresh_result = async {
+            let scanned = self.hydrator.scan().await?;
+            self.index.hydrate_entries(scanned).await
+        }
+        .await;
+        // 成功和失败都从整轮扫描与落盘结束时进入冷却，避免慢磁盘
+        // 缩短实际冷却窗口，也避免坏目录被快速重复扫描。
+        *last_finished_at = Some(tokio::time::Instant::now());
+        let inserted = refresh_result?;
+        Ok(HistoryRefreshResult::Refreshed { inserted })
     }
 }
 

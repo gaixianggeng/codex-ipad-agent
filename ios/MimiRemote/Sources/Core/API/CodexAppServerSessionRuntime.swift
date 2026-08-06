@@ -1271,7 +1271,12 @@ actor CodexAppServerSessionRuntime {
                     limit: limit,
                     cursor: cursor,
                     useStateDBOnly: canUseIndexedList,
-                    sortKey: sortKey
+                    sortKey: sortKey,
+                    refreshHistory: Self.shouldRefreshHistory(
+                        runtimeProvider: runtimeProvider,
+                        consistency: consistency,
+                        cursor: cursor
+                    )
                 ),
                 timeout: longRunningRequestTimeout
             )
@@ -1337,6 +1342,18 @@ actor CodexAppServerSessionRuntime {
             timeout: longRunningRequestTimeout
         )
         return threadListPage(from: result, projects: projects, fallbackProject: fallbackProject)
+    }
+
+    /// Claude 的目录扫描只能由用户主动发起的权威首屏触发；其余请求保持索引/分页语义，
+    /// 避免翻页或兼容性回退把全量 JSONL 扫描变成无界后台工作。
+    static func shouldRefreshHistory(
+        runtimeProvider: String,
+        consistency: SessionListConsistency,
+        cursor: String?
+    ) -> Bool {
+        normalizedRuntimeProvider(runtimeProvider) == "claude"
+            && consistency == .authoritative
+            && cursor == nil
     }
 
     func indexedThreadListNeedsRepair(_ page: SessionsPage, cwd: String) -> Bool {

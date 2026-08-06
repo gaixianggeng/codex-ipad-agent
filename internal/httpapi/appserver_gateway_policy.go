@@ -374,7 +374,7 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 	case "plugin/installed":
 		sanitized = sanitizedGatewayPluginInstalledParams(validated.cwd)
 	case "thread/list":
-		sanitized = sanitizedGatewayThreadListParams(params)
+		sanitized = sanitizedGatewayThreadListParams(runtimeID, params)
 	case "thread/search":
 		sanitized = sanitizedGatewayThreadSearchParams(params)
 	case "thread/read":
@@ -544,8 +544,12 @@ func sanitizedGatewayThreadTurnsListParams(params map[string]any) map[string]any
 	return safe
 }
 
-func sanitizedGatewayThreadListParams(params map[string]any) map[string]any {
-	return copyGatewayParams(params, "cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly")
+func sanitizedGatewayThreadListParams(runtimeID string, params map[string]any) map[string]any {
+	keys := []string{"cwd", "limit", "cursor", "sortKey", "sortDirection", "sourceKinds", "archived", "useStateDbOnly"}
+	if normalizeAppServerRuntimeID(runtimeID) == "claude" {
+		keys = append(keys, "refreshHistory")
+	}
+	return copyGatewayParams(params, keys...)
 }
 
 func sanitizedGatewayThreadSearchParams(params map[string]any) map[string]any {
@@ -738,6 +742,23 @@ func validateGatewayThreadListParams(params map[string]any) error {
 	if value, ok := params["useStateDbOnly"]; ok && value != nil {
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("thread/list.useStateDbOnly 必须是布尔值")
+		}
+	}
+	refreshHistory := false
+	if value, ok := params["refreshHistory"]; ok && value != nil {
+		var valid bool
+		refreshHistory, valid = value.(bool)
+		if !valid {
+			return fmt.Errorf("thread/list.refreshHistory 必须是布尔值")
+		}
+	}
+	if refreshHistory {
+		// 运行期扫描只能绑定首屏显式刷新；cursor 分页和 State DB 快速路径继续保持纯索引读取。
+		if cursor, ok := params["cursor"]; ok && cursor != nil {
+			return fmt.Errorf("thread/list.refreshHistory 只允许用于首屏")
+		}
+		if useStateDBOnly, ok := params["useStateDbOnly"].(bool); ok && useStateDBOnly {
+			return fmt.Errorf("thread/list.refreshHistory 不能与 useStateDbOnly=true 同时使用")
 		}
 	}
 	return nil

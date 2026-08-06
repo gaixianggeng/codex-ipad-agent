@@ -18,7 +18,10 @@ use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::handlers;
-use crate::index::{ClaudeHydrator, open_index_and_hydrate};
+use crate::index::{
+    ClaudeHistoryRefresher, ClaudeHydrator, DEFAULT_HISTORY_REFRESH_INTERVAL,
+    open_index_and_hydrate,
+};
 use crate::pool::{ClaudePool, PoolPolicy};
 use crate::state::{ConnectionState, ThreadDefaults};
 
@@ -37,6 +40,7 @@ fn default_codex_home() -> PathBuf {
 pub struct ClaudeBridge {
     pool: Arc<ClaudePool>,
     thread_index: ThreadIndexHandle,
+    history_refresher: Option<Arc<ClaudeHistoryRefresher>>,
     codex_home: PathBuf,
     /// Held so embedders (Litter) can swap launchers; the pool already has its
     /// own `Arc<dyn ProcessLauncher>` clone for spawning agent processes.
@@ -92,13 +96,14 @@ impl ClaudeBridge {
             state.rebind_session(Arc::clone(session));
             return state;
         }
-        let state = Arc::new(ConnectionState::with_launcher(
+        let state = Arc::new(ConnectionState::with_launcher_and_history_refresher(
             Arc::clone(ctx.session()),
             Arc::clone(&self.pool),
             Arc::clone(&self.thread_index),
             ThreadDefaults::default(),
             Some(Arc::clone(&self.launcher)),
             self.trust_persisted_cwd,
+            self.history_refresher.as_ref().map(Arc::clone),
         ));
         // Insert; concurrent calls may race — entry/or_insert resolves the
         // race deterministically.
@@ -128,6 +133,7 @@ impl ClaudeBridge {
         Self {
             pool,
             thread_index,
+            history_refresher: None,
             codex_home,
             launcher,
             per_conn,
@@ -148,6 +154,7 @@ pub struct ClaudeBridgeBuilder {
     /// Override for the claude `projects/` directory (test hook). `None`
     /// uses [`crate::index::claude_projects_dir`].
     projects_dir_override: Option<PathBuf>,
+    history_refresh_interval: Duration,
 }
 
 impl Default for ClaudeBridgeBuilder {
@@ -161,6 +168,7 @@ impl Default for ClaudeBridgeBuilder {
             bypass_permissions: PoolPolicy::default().bypass_permissions,
             trust_persisted_cwd: false,
             projects_dir_override: None,
+            history_refresh_interval: DEFAULT_HISTORY_REFRESH_INTERVAL,
         }
     }
 }
@@ -203,6 +211,12 @@ impl ClaudeBridgeBuilder {
 
     pub fn projects_dir_override(mut self, dir: PathBuf) -> Self {
         self.projects_dir_override = Some(dir);
+        self
+    }
+
+    /// 调整显式历史扫描冷却窗口。生产使用默认值，测试可用更长窗口验证限频。
+    pub fn history_refresh_interval(mut self, interval: Duration) -> Self {
+        self.history_refresh_interval = interval;
         self
     }
 
@@ -264,11 +278,17 @@ impl ClaudeBridgeBuilder {
             None => ClaudeHydrator::new(),
         };
         let index = open_index_and_hydrate(codex_home.join("threads.json"), &hydrator).await?;
+        let history_refresher = Arc::new(ClaudeHistoryRefresher::with_interval(
+            Arc::clone(&index),
+            hydrator,
+            self.history_refresh_interval,
+        ));
         let thread_index: ThreadIndexHandle = index;
 
         Ok(Arc::new(ClaudeBridge {
             pool,
             thread_index,
+            history_refresher: Some(history_refresher),
             codex_home,
             launcher,
             per_conn: DashMap::new(),

@@ -54,7 +54,7 @@ sequenceDiagram
 ### 生命周期
 
 - `claude.enabled=false` 是默认状态，配置接口只返回 Codex channel。
-- 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.1`、无标准版本或二进制不存在时 fail closed。
+- 启用后，`agentd` 用 `--version` 探测 bridge；低于 `0.2.7`、无标准版本或二进制不存在时 fail closed。`0.2.7` 是首个支持运行期 `thread/list.refreshHistory` 的版本，旧版会静默忽略该字段，不能继续当作兼容实现。
 - bridge 与 iOS / Go 代码同仓维护，并随 Mac App 一起构建、签名和安装；`agentd` 优先使用显式配置，否则使用与自身同目录的 `alleycat-claude-bridge`。
 - `agentd` 监督一个 resident bridge，通过 Unix socket 为多次 WebSocket 连接复用同一进程。
 - iOS 每个 runtime 使用稳定 session key；重新连接携带最后处理的 sequence cursor。bridge session 保存有界 replay ring 和未完成的反向请求。
