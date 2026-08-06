@@ -221,10 +221,14 @@ extension ThemeTokens {
         }
     }
 
-    /// iPad 宽屏侧栏与工作区普通卡片复用同一内容表面，只保留“背景 + 内容”两层颜色。
-    /// 大表面不再引入第三种灰白色；毛玻璃继续留给按钮和输入区等局部功能浮层。
+    /// 侧栏是结构分区，不是内容卡片。深色下若比工作区底色亮一整级，
+    /// 整屏就会出现两块明显不同的深色，是“看着乱”的最大来源；
+    /// 这里只比背景高一点点，层级交给留白、字重和分组间距表达。
     var sidebarSurfaceBackground: Color {
-        contentPanelBackground
+        guard preset == .codex, resolvedScheme == .dark else {
+            return contentPanelBackground
+        }
+        return Color(red: 0.098, green: 0.092, blue: 0.098)
     }
 
     var sidebarHoverFill: Color {

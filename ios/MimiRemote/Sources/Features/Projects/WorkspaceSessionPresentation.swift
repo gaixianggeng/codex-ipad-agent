@@ -57,6 +57,13 @@ struct WorkspaceRuntimeSessionPageState: Equatable {
 }
 
 enum WorkspaceSessionPresentation {
+    static func needsFirstPagePrefetch(
+        cachedPageState: WorkspaceRuntimeSessionPageState?
+    ) -> Bool {
+        // 调用方先用完整 presentation key 取页；nil 代表这个 Runtime 从未完成首屏。
+        cachedPageState?.hasLoadedFirstPage != true
+    }
+
     static func visibleSessions(_ sessions: [AgentSession], limit: Int) -> [AgentSession] {
         Array(sessions.prefix(max(1, limit)))
     }
