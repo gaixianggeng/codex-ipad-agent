@@ -96,7 +96,7 @@ struct SettingsView: View {
     @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
     @State private var profileRenamePresentation = ConnectionProfileRenamePresentationState()
     @State private var didApplyDebugLaunchRoute = false
-    @State private var debugShowsConnectionManagement = false
+    @State private var showsConnectionManagement = false
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -155,9 +155,11 @@ struct SettingsView: View {
                     .background(tokens.background.ignoresSafeArea())
             }
         }
-        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : L10n.text("ui.me"))
-        .navigationBarTitleDisplayMode(initialNavigationTitleDisplayMode)
-        .navigationDestination(isPresented: $debugShowsConnectionManagement) {
+        // 首配流程需要标题说明「要做什么」；进到「我的」之后，Tab 标签已经写着「我的」，
+        // 顶部再来一个同名大标题只是白占一屏高度。
+        .navigationTitle(isInitialSetup ? L10n.text("ui.connect_your_mac") : "")
+        .navigationBarTitleDisplayMode(isInitialSetup ? initialNavigationTitleDisplayMode : .inline)
+        .navigationDestination(isPresented: $showsConnectionManagement) {
             ConnectionManagementView(
                 qrScannerPresentation: qrScannerPresentation,
                 onRequestProfileRename: { profileRenamePresentation.present($0) }
@@ -193,7 +195,7 @@ struct SettingsView: View {
         // App Store 截图需要直接到达 Mac 连接页，避免依赖屏幕尺寸与滚动位置做自动点击。
         // 仅 Debug 构建读取该参数，Release 与普通设置导航保持不变。
         if ProcessInfo.processInfo.arguments.contains("--debug-open-mac-connection") {
-            debugShowsConnectionManagement = true
+            showsConnectionManagement = true
         }
 #endif
     }
@@ -236,12 +238,40 @@ struct SettingsView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .accessibilityIdentifier("settings.tokenUsage")
+            } header: {
+                // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
+                // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
+                // 累计值和刷新按钮挂在这一行，卡片里就不必再留一层标题。
+                HStack(alignment: .center, spacing: 8) {
+                    sectionHeader(L10n.text("ui.token_usage"), tokens: tokens)
 
-                NavigationLink {
-                    ConnectionManagementView(
-                        qrScannerPresentation: qrScannerPresentation,
-                        onRequestProfileRename: { profileRenamePresentation.present($0) }
+                    // 宽屏把累计值推到最右、和刷新按钮成组；窄屏这样会在标题和累计值之间
+                    // 撑出一大片空，所以让它紧跟标题，Spacer 留到刷新按钮之前。
+                    if horizontalSizeClass == .compact {
+                        lifetimeTokenLabel(tokens: tokens)
+                        Spacer(minLength: 8)
+                    } else {
+                        Spacer(minLength: 8)
+                        lifetimeTokenLabel(tokens: tokens)
+                    }
+
+                    AccountUsageRefreshButton(
+                        isRefreshing: sessionStore.isRefreshingAccountTokenActivity
+                            || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+                            || (
+                                sessionStore.hasClaudeRuntimeChannel
+                                    && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
+                            ),
+                        onRefresh: refreshAccountUsage
                     )
+                }
+            }
+
+            // Mac 连接紧随额度：断线时这张卡会自己变警示态，排在第二屏位置仍然一眼可见，
+            // 不必为此把最常看的额度挤下去。
+            Section {
+                Button {
+                    showsConnectionManagement = true
                 } label: {
                     SettingsConnectionCard(
                         deviceName: currentMacDisplayName,
@@ -251,11 +281,15 @@ struct SettingsView: View {
                         warningText: connectionWarningText
                     )
                 }
+                // 用 Button 而不是 NavigationLink：卡片自己画了箭头，
+                // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
                 .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 0, trailing: 0))
+                .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .accessibilityIdentifier("settings.connectionManagement")
+            } header: {
+                sectionHeader(L10n.text("ui.mac_devices"), tokens: tokens)
             }
 
             Section {
@@ -381,6 +415,22 @@ struct SettingsView: View {
             // 45 秒首配超时后凭据已经安全落盘；用户打开设置即用健康连接做一次短恢复，
             // 不要求重新扫码，也不在已有首屏数据的正常连接上额外刷新。
             _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
+        }
+    }
+
+    /// 累计值未知时整行不出现。渲染成 `累计 Token · —` 会被读成「累计是 0」。
+    @ViewBuilder
+    private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
+        if let lifetimeTokens = sessionStore.accountTokenUsage?.summary.lifetimeTokens {
+            Text(
+                L10n.format(
+                    "ui.lifetime_token_value",
+                    TokenCountFormatter.string(lifetimeTokens)
+                )
+            )
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
+            .lineLimit(1)
         }
     }
 
@@ -1035,6 +1085,8 @@ private struct ConnectionSpeedMetricRow: View {
 struct AccountTokenUsageCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var themeStore: ThemeStore
 
     let codexDisplay: CodexUsageWindowsDisplay
@@ -1049,13 +1101,15 @@ struct AccountTokenUsageCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         ViewThatFits(in: .horizontal) {
-            if !dynamicTypeSize.isAccessibilitySize {
+            // 只有一个窗口时配额那栏只是一条进度条，撑不起 252pt 的左栏、下方会空出一片；
+            // 这种情况无论屏幕多宽都用上下排。
+            if !dynamicTypeSize.isAccessibilitySize, singleUsageItem == nil {
                 wideLayout(tokens: tokens)
                     .frame(minWidth: 620)
             }
             stackedLayout(tokens: tokens)
         }
-        .padding(18)
+        .padding(16)
         .frame(maxWidth: .infinity)
         .background(
             tokens.surface,
@@ -1076,7 +1130,7 @@ struct AccountTokenUsageCard: View {
 
     private func wideLayout(tokens: ThemeTokens) -> some View {
         HStack(alignment: .top, spacing: 20) {
-            quotaPanel(tokens: tokens)
+            quotaPanel(tokens: tokens, ringDiameter: 100)
                 .frame(width: 252)
 
             Divider()
@@ -1084,7 +1138,8 @@ struct AccountTokenUsageCard: View {
                 // 分隔线跟着较高的一侧拉长时，尾段会悬在另一侧内容之外。
                 .frame(maxHeight: 132)
 
-            activityPanel(tokens: tokens)
+            // 右侧格子按左栏高度放大，不再固定 86pt 而在下方空出一块。
+            activityPanel(tokens: tokens, gridHeight: 132)
                 .frame(maxWidth: .infinity)
         }
         .frame(minHeight: 156)
@@ -1093,31 +1148,45 @@ struct AccountTokenUsageCard: View {
     /// 窄屏不再左右各占一半。点格图本来就是横向的，宽度给足才成立；
     /// 配额那半也终于放得下环形图和完整图例，不用再挤成两列。
     private func stackedLayout(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            quotaPanel(tokens: tokens)
-            activityPanel(tokens: tokens)
+        VStack(alignment: .leading, spacing: 16) {
+            quotaPanel(tokens: tokens, ringDiameter: 84)
+            // 上下排在 iPad 上也会用到（单窗口时强制走这条），宽屏要给点格图更大的高度，
+            // 否则一条进度条上面很轻、下面 86pt 的网格撑不住整张卡。
+            activityPanel(
+                tokens: tokens,
+                gridHeight: horizontalSizeClass == .compact
+                    ? TokenActivityGridMetrics.totalHeight
+                    : 150
+            )
         }
     }
 
-    private func quotaPanel(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.text("ui.current_remaining"))
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
-
-            if dynamicTypeSize.isAccessibilitySize {
+    /// 卡片内不再有「当前剩余」「Token 活动」两个小标题：外层分组已经叫「Token 使用量」，
+    /// 中间那层是重复的层级；而且一边带 44pt 刷新按钮、一边只有文字，两行基线永远对不齐。
+    /// 图形本身自解释，文字标签改由 accessibilityLabel 承担。
+    private func quotaPanel(tokens: ThemeTokens, ringDiameter: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let onlyItem = singleUsageItem {
+                singleWindowBar(item: onlyItem, tokens: tokens)
+            } else if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 14) {
                     usageRings(tokens: tokens, diameter: 92)
                     usageLegend(tokens: tokens)
                 }
             } else {
                 HStack(alignment: .center, spacing: 16) {
-                    usageRings(tokens: tokens, diameter: 100)
+                    usageRings(tokens: tokens, diameter: ringDiameter)
                     usageLegend(tokens: tokens)
                 }
             }
         }
         .accessibilityIdentifier("settings.tokenUsage.quota")
+    }
+
+    /// 只接了一个 runtime（例如没有 Claude 通道）时，三环退化成一条进度条。
+    private var singleUsageItem: CombinedUsageItem? {
+        let items = usageItems
+        return items.count == 1 ? items[0] : nil
     }
 
     private func usageRings(tokens: ThemeTokens, diameter: CGFloat) -> some View {
@@ -1140,11 +1209,11 @@ struct AccountTokenUsageCard: View {
                 // 放到浅色底上做文字达不到需要的对比度。
                 if !dynamicTypeSize.isAccessibilitySize, let tightestItem {
                     Text(tightestItem.window.remainingPercentText ?? "—")
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .font(themeStore.uiFont(.footnote, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(0.6)
                         .frame(width: Self.ringInnerHoleDiameter(for: diameter))
                 }
             }
@@ -1157,7 +1226,8 @@ struct AccountTokenUsageCard: View {
     }
 
     private static let ringLineWidth: CGFloat = 6
-    private static let ringSpacing: CGFloat = 8
+    // 环间距直接决定环心可用宽度：8pt 时 84 直径只剩 22pt，放不下「17%」会被截成「1...」。
+    private static let ringSpacing: CGFloat = 6
 
     /// 三环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
     private static func ringInnerHoleDiameter(for diameter: CGFloat) -> CGFloat {
@@ -1197,83 +1267,157 @@ struct AccountTokenUsageCard: View {
             .foregroundStyle(tokens.secondaryText)
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            VStack(alignment: .leading, spacing: 7) {
-                ForEach(items) { item in
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(item.tint)
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-
-                        Text("\(item.providerName) · \(item.window.label)")
-                            .font(themeStore.uiFont(.caption, weight: .medium))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Spacer(minLength: 4)
-
-                        Text(item.window.remainingPercentText ?? "—")
-                            .font(themeStore.uiFont(.caption, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(
-                                item.window.remainingProgress == nil
-                                    ? tokens.secondaryText
-                                    : item.tint
-                            )
-                    }
-                    .accessibilityElement(children: .combine)
+            // 一行还是两行必须整组一起决定。让每项各自 ViewThatFits 会出现
+            // 「第一项一行、第二项两行、第三项又一行」的锯齿，看着就是乱换行。
+            ViewThatFits(in: .horizontal) {
+                if !dynamicTypeSize.isAccessibilitySize {
+                    legendStack(items: items, tokens: tokens, usesSingleLine: true)
                 }
+                legendStack(items: items, tokens: tokens, usesSingleLine: false)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func activityPanel(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    activityTitle(tokens: tokens)
+    private func legendStack(
+        items: [CombinedUsageItem],
+        tokens: ThemeTokens,
+        usesSingleLine: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: usesSingleLine ? 7 : 10) {
+            ForEach(items) { item in
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(item.tint)
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
 
-                    Spacer(minLength: 4)
-
-                    lifetimeTokenLabel(tokens: tokens)
-                        .fixedSize(horizontal: true, vertical: false)
-
-                    AccountUsageRefreshButton(
-                        isRefreshing: isRefreshing,
-                        onRefresh: onRefresh
+                    legendItemContent(
+                        item: item,
+                        tokens: tokens,
+                        usesSingleLine: usesSingleLine
                     )
                 }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        activityTitle(tokens: tokens)
-                        Spacer(minLength: 4)
-                        AccountUsageRefreshButton(
-                            isRefreshing: isRefreshing,
-                            onRefresh: onRefresh
-                        )
-                    }
-                    lifetimeTokenLabel(tokens: tokens)
+    /// 窄列(iPhone 环形右侧只有约 240pt)放不下三段，就把重置时间落到第二行；
+    /// iPad 的图例列宽得多，一行就能同时给出窗口、重置时间和剩余比例。
+    /// 固定成两行会让 iPad 显得拥挤，固定成一行则会在 iPhone 上被压扁。
+    @ViewBuilder
+    private func legendItemContent(
+        item: CombinedUsageItem,
+        tokens: ThemeTokens,
+        usesSingleLine: Bool
+    ) -> some View {
+        let name = Text("\(item.providerName) · \(item.window.label)")
+            .font(themeStore.uiFont(.caption, weight: .medium))
+            .foregroundStyle(tokens.primaryText)
+
+        // 只有「还剩多少」而没有「什么时候回血」，用户没法判断要不要现在省着用。
+        let reset = Text(item.window.resetText)
+            .font(themeStore.uiFont(.caption2))
+            .foregroundStyle(tokens.tertiaryText)
+
+        let percent = Text(item.window.remainingPercentText ?? "—")
+            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .monospacedDigit()
+            .foregroundStyle(
+                item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+            )
+
+        if usesSingleLine {
+            HStack(spacing: 8) {
+                name.lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                reset.lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                percent
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    name
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    percent
                 }
+                reset.lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+    }
+
+    /// 只有一个窗口时三环里两条是空轨道，大半个圆是无意义的留白。
+    /// 单窗口改用一条占满宽度的进度条，同样的信息密度换来更少的空白。
+    private func singleWindowBar(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // 窗口、重置时间和剩余比例挤在一行，配额区就只占两行；
+            // 原先标题、进度条、重置各占一行，把整张卡压得头重脚轻。
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(item.providerName) · \(item.window.label)")
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Text(item.window.resetText)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(item.window.remainingPercentText ?? "—")
+                    // 单窗口时这是卡片里唯一的数字，但不该大到压过下方点格图。
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tokens.primaryText)
             }
 
-            activityContent(tokens: tokens)
+            GeometryReader { proxy in
+                let progress = item.window.remainingProgress ?? 0
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(tokens.tertiaryText.opacity(0.18))
+
+                    Capsule()
+                        // 单窗口没有三环的颜色编码要对应，用主题强调色和下方点格图保持一套配色；
+                        // item.tint 那套青/粉/紫只在多环并列、需要靠颜色区分窗口时才有意义。
+                        .fill(tokens.accent)
+                        .frame(width: max(proxy.size.width * progress, progress > 0 ? 6 : 0))
+                        .animation(
+                            reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
+                            value: progress
+                        )
+                }
+            }
+            .frame(height: 6)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.text("ui.current_remaining"))
+        .accessibilityValue(ringsAccessibilityValue)
+    }
+
+    private func activityPanel(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            activityContent(tokens: tokens, gridHeight: gridHeight)
         }
         .accessibilityIdentifier("settings.tokenUsage.activity")
     }
 
     @ViewBuilder
-    private func activityContent(tokens: ThemeTokens) -> some View {
+    private func activityContent(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
         switch activity {
         case .loaded(let buckets, _):
-            TokenActivityDotGrid(buckets: buckets)
+            TokenActivityDotGrid(buckets: buckets, height: gridHeight)
 
         case .empty:
             // 画成一整片未活动的格子，比一句话更能说明“接口是通的，只是还没有记录”。
             activityGrid(
                 buckets: [],
+                gridHeight: gridHeight,
                 caption: L10n.text("ui.token_activity_empty"),
                 captionTint: tokens.secondaryText,
                 captionIdentifier: "settings.tokenActivity.empty"
@@ -1283,28 +1427,30 @@ struct AccountTokenUsageCard: View {
             if let previous, !previous.buckets.isEmpty {
                 activityGrid(
                     buckets: previous.buckets,
+                    gridHeight: gridHeight,
                     // 网格画的是上一次成功的数据。不标注就等于把过期数据当成当前值。
                     caption: L10n.text("ui.token_activity_stale"),
                     captionTint: tokens.warning,
                     captionIdentifier: "settings.tokenActivity.stale"
                 )
             } else {
-                activityPlaceholder(tokens: tokens)
+                activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
             }
 
         case .idle, .loading, .unsupported:
-            activityPlaceholder(tokens: tokens)
+            activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
         }
     }
 
     private func activityGrid(
         buckets: [AccountTokenUsageDailyBucket],
+        gridHeight: CGFloat,
         caption: String,
         captionTint: Color,
         captionIdentifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            TokenActivityDotGrid(buckets: buckets)
+            TokenActivityDotGrid(buckets: buckets, height: gridHeight)
 
             Text(caption)
                 .font(themeStore.uiFont(.caption2))
@@ -1315,7 +1461,7 @@ struct AccountTokenUsageCard: View {
     }
 
     /// 占位高度和真实点格图一致，状态之间切换时卡片不跳。
-    private func activityPlaceholder(tokens: ThemeTokens) -> some View {
+    private func activityPlaceholder(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
         HStack(spacing: 10) {
             if case .loading = activity {
                 ProgressView()
@@ -1333,32 +1479,10 @@ struct AccountTokenUsageCard: View {
         }
         .frame(
             maxWidth: .infinity,
-            minHeight: TokenActivityGridMetrics.totalHeight,
+            minHeight: gridHeight,
             alignment: .center
         )
         .accessibilityIdentifier("settings.tokenActivity.unavailable")
-    }
-
-    private func activityTitle(tokens: ThemeTokens) -> some View {
-        Text(L10n.text("ui.token_activity"))
-            .font(themeStore.uiFont(.subheadline, weight: .semibold))
-            .foregroundStyle(tokens.primaryText)
-    }
-
-    /// 累计值未知时整行不出现。渲染成 `累计 Token · —` 会被读成“累计是 0”。
-    @ViewBuilder
-    private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
-        if let lifetimeTokens = snapshot?.summary.lifetimeTokens {
-            Text(
-                L10n.format(
-                    "ui.lifetime_token_value",
-                    TokenCountFormatter.string(lifetimeTokens)
-                )
-            )
-            .font(themeStore.uiFont(.caption))
-            .foregroundStyle(tokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-        }
     }
 
     private var isActivityFailure: Bool {

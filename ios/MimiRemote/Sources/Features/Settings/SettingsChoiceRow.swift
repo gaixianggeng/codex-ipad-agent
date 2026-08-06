@@ -36,6 +36,11 @@ extension ComposerPermissionMode: SettingsChoiceOption {
     var choiceSystemImage: String? { systemImage }
 }
 
+enum SettingsChoiceMetrics {
+    /// 胶囊的内边距。选项行要按它回退缩进，才能让选项文字和标题、说明左对齐。
+    static let capsuleHorizontalPadding: CGFloat = 12
+}
+
 /// 呈现方式按内容形态选，而不是按平台写死尺寸。
 enum SettingsChoicePresentation {
     /// 选项少且短，不需要逐条对照说明：胶囊就地切换，零弹层。
@@ -77,43 +82,63 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
     }
 
     private func inlineRow(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
-                    .symbolRenderingMode(.hierarchical)
-                    // 图标统一降到次要色，颜色只留给状态。四个偏好图标全用强调色时，
-                    // 颜色没有承载任何信息，只是噪音。
-                    .foregroundStyle(tokens.secondaryText)
-                    .frame(
-                        width: SettingsLayoutMetrics.iconSlot,
-                        height: SettingsLayoutMetrics.iconSlot
-                    )
-                    .accessibilityHidden(true)
-
-                Text(title)
-                    .font(themeStore.uiFont(.body))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-
-                Spacer(minLength: 8)
+        // 行数由可用宽度决定，不写死。语言这种短选项在多数宽度下一行就放得下；
+        // 语音输入带说明，通常需要第二行给胶囊。
+        ViewThatFits(in: .horizontal) {
+            if !dynamicTypeSize.isAccessibilitySize {
+                HStack(alignment: .center, spacing: 12) {
+                    titleCluster(tokens: tokens)
+                    Spacer(minLength: 12)
+                    optionCapsules(tokens: tokens)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
 
-            // 当前选项的说明。菜单形态下这段文案是拿不出来的。
-            if let subtitle = selection.choiceSubtitle {
-                Text(subtitle)
-                    .font(themeStore.uiFont(.caption))
-                    .foregroundStyle(tokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, optionInset)
-            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 12) {
+                    titleCluster(tokens: tokens)
+                    Spacer(minLength: 8)
+                }
 
-            optionCapsules(tokens: tokens)
-                .padding(.leading, optionInset)
+                // 胶囊自带内边距，直接按 optionInset 缩进会让选项文字比标题右移同样的量。
+                // 这里回退相同距离，让「文字对文字」对齐。
+                optionCapsules(tokens: tokens)
+                    .padding(.leading, optionInset - SettingsChoiceMetrics.capsuleHorizontalPadding)
+            }
         }
         .padding(.vertical, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
+    }
+
+    /// 图标、标题和当前项说明是同一簇信息。说明放标题右边而不是另起一行，
+    /// 省下的那一行让整块从三行降到两行。
+    private func titleCluster(tokens: ThemeTokens) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                // 图标统一降到次要色，颜色只留给状态。四个偏好图标全用强调色时，
+                // 颜色没有承载任何信息，只是噪音。
+                .foregroundStyle(tokens.secondaryText)
+                .frame(width: SettingsLayoutMetrics.iconSlot, alignment: .leading)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 }
+                .accessibilityHidden(true)
+
+            Text(title)
+                .font(themeStore.uiFont(.body))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            if let subtitle = selection.choiceSubtitle {
+                Text(subtitle)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
+                    .minimumScaleFactor(0.85)
+            }
+        }
     }
 
     private var optionInset: CGFloat {
@@ -155,7 +180,7 @@ struct SettingsChoiceRow<Option: SettingsChoiceOption>: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
                 .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, SettingsChoiceMetrics.capsuleHorizontalPadding)
                 .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
                 .frame(height: 32)
                 // 未选中不画容器，和工作区页的筛选器保持同一套写法。

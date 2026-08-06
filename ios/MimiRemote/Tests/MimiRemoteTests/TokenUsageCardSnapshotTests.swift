@@ -36,6 +36,28 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
         )
     }
 
+    /// 只接入 Codex 时配额退化成进度条。这是一条独立分支，窄宽都要守住。
+    func testSingleWindowUsesProgressBarOnCompactWidth() {
+        assertCard(
+            named: "single-window-compact",
+            activity: .loaded(buckets: Self.sampleBuckets, asOf: Self.referenceDate),
+            snapshot: Self.sampleSnapshot,
+            includesClaude: false,
+            width: compactCardWidth
+        )
+    }
+
+    /// 宽屏下单窗口必须仍然上下排：一条进度条撑不起左右分栏的左栏。
+    func testSingleWindowStaysStackedOnRegularWidth() {
+        assertCard(
+            named: "single-window-regular",
+            activity: .loaded(buckets: Self.sampleBuckets, asOf: Self.referenceDate),
+            snapshot: Self.sampleSnapshot,
+            includesClaude: false,
+            width: regularCardWidth
+        )
+    }
+
     func testLoadingActivityKeepsCardHeight() {
         assertCard(
             named: "loading-compact",
@@ -105,6 +127,7 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
         activity: AccountTokenActivityState,
         snapshot: AccountTokenUsageSnapshot?,
         isRefreshing: Bool = false,
+        includesClaude: Bool = true,
         width: CGFloat,
         colorScheme: ColorScheme = .light,
         file: StaticString = #file,
@@ -118,7 +141,7 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
         let view = AccountTokenUsageCard(
             codexDisplay: Self.codexDisplay,
             claudeDisplay: Self.claudeDisplay,
-            includesClaude: true,
+            includesClaude: includesClaude,
             snapshot: snapshot,
             activity: activity,
             isRefreshing: isRefreshing,
@@ -219,7 +242,8 @@ final class TokenUsageCardSnapshotTests: XCTestCase {
             usedPercentText: "\(Int((progress * 100).rounded()))%",
             progress: progress,
             resetDate: nil,
-            resetText: "",
+            // 重置时间会和窗口名同排一行；留空的话这条布局就没有基线守着。
+            resetText: "8/12 18:12 重置",
             isNearLimit: progress >= CodexUsageWindowDisplay.nearLimitThreshold,
             isExhausted: false,
             providerName: providerName
