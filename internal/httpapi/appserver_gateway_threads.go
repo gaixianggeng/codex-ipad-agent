@@ -160,6 +160,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if gatewayFrameIsResponse(&frame) {
+		p.rememberAccountTokenUsageResponse(&frame, time.Now())
 		if pending, ok := p.consumePendingHistoryRequest(frame.ID); ok {
 			if len(frame.Error) == 0 && len(frame.Result) > 0 {
 				if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {

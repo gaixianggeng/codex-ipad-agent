@@ -69,7 +69,10 @@ func (p *appServerGatewayPolicy) validateClientFrame(messageType int, payload []
 		p.forgetPending(frame.ID)
 		return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 	}
-	if frame.ID != nil && normalizeAppServerRuntimeID(p.runtimeID) == "claude" && method == "model/list" {
+	runtimeID := normalizeAppServerRuntimeID(p.runtimeID)
+	tracksClientResponse := (runtimeID == "claude" && method == "model/list") ||
+		(runtimeID == "codex" && method == "account/usage/read")
+	if frame.ID != nil && tracksClientResponse {
 		if err := p.rememberPendingClientRequest(frame.ID, method); err != nil {
 			return nil, &appServerGatewayPolicyError{id: frame.ID, message: err.Error()}
 		}
