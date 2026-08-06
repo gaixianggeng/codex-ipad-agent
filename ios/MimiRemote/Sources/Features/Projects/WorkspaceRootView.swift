@@ -256,6 +256,7 @@ struct WorkspaceRootView: View {
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
+    let manageConnections: (() -> Void)?
     let embedsNavigationStack: Bool
     private let currentDate: () -> Date
 
@@ -276,6 +277,7 @@ struct WorkspaceRootView: View {
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
+        manageConnections: (() -> Void)? = nil,
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
@@ -283,6 +285,7 @@ struct WorkspaceRootView: View {
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
+        self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
         self.currentDate = currentDate
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
@@ -355,13 +358,17 @@ struct WorkspaceRootView: View {
             // 当前页优先：等它自己的 task 先占住 single-flight，再补相邻页。
             for project in neighborWorkspaceProjects {
                 guard !Task.isCancelled else { return }
-                // 已有权威首屏的工作区不再重复请求；预取只负责补齐从没拉过的相邻页。
-                guard sessionStore.needsAuthoritativeWorkspaceSessionFirstPage(projectID: project.id) else {
+                let presentationKey = workspaceSessionPresentationKey(for: project)
+                // 全局工作区可能已由会话库加载，但当前 Runtime 仍没有独立首屏；
+                // 预取必须按 Host、路径和 Runtime 的完整 key 判断，不能复用全局完成状态。
+                guard WorkspaceSessionPresentation.needsFirstPagePrefetch(
+                    cachedPageState: runtimeSessionPagesByKey[presentationKey]
+                ) else {
                     continue
                 }
                 await refreshWorkspaceSessions(
                     project: project,
-                    presentationKey: workspaceSessionPresentationKey(for: project)
+                    presentationKey: presentationKey
                 )
             }
         }
@@ -565,6 +572,16 @@ struct WorkspaceRootView: View {
 
     private func workspaceStrip(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
+            if let manageConnections {
+                // 紧凑布局不能把 Host 切换器留在随后会被隐藏的系统导航栏里；
+                // 固定在自绘控件带首端，既保留连接管理入口，也不重新占用一整条顶栏。
+                HostSwitcherMenu(
+                    presentation: .toolbar,
+                    manageConnections: manageConnections
+                )
+                .workbenchChromeCircle(tokens: tokens)
+            }
+
             ScrollViewReader { proxy in
                 // 收缩成头像是一种压缩手法：只有横向真的放不下时才该发生，
                 // 而且必须渐进——只有“全展开”和“只展开选中项”两档时，

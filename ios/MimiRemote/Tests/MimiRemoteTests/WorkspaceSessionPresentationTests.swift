@@ -3,6 +3,23 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testWorkspaceNeighborPrefetchWaitsForEachRuntimeSpecificFirstPage() {
+        XCTAssertTrue(
+            WorkspaceSessionPresentation.needsFirstPagePrefetch(cachedPageState: nil),
+            "当前 Runtime 没有页状态时必须预取，不能被工作区全局加载状态跳过"
+        )
+
+        var loadedPage = WorkspaceRuntimeSessionPageState()
+        loadedPage.replace(
+            with: SessionsPage(sessions: [], nextCursor: nil, hasMore: false),
+            canonicalSessionIDsBeforeLoad: []
+        )
+        XCTAssertFalse(
+            WorkspaceSessionPresentation.needsFirstPagePrefetch(cachedPageState: loadedPage),
+            "同一个 Runtime 已完成首屏后不应重复预取"
+        )
+    }
+
     func testAuthoritativeFirstPageStartsSmallThenAdaptiveFillShrinksToFloor() async throws {
         // 首包保持小窗口；确认欠填后再按已观察密度估算，并在接近凑满时收敛到最小批量。
         let project = makeProject(id: "workspace_oversample_shrink")
