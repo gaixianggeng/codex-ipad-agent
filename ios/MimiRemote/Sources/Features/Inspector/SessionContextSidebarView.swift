@@ -23,12 +23,21 @@ extension EnvironmentValues {
 struct ClaudeSessionRecoveryCommand {
     /// POSIX shell 的单引号包裹能阻止 cwd 或 Session ID 被解释为命令；内部单引号
     /// 必须拆成 `'\''`，即结束引用、插入字面单引号、再开始引用。
-    static func shellQuote(_ value: String) -> String {
+    static func posixShellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
-    static func make(sessionID: String, cwd: String) -> String {
-        "cd \(shellQuote(cwd)) && claude --resume \(shellQuote(sessionID))"
+    /// PowerShell 单引号字符串使用两个连续单引号表达字面单引号；同时避免使用
+    /// Windows PowerShell 5.1 不支持的 `&&`。
+    static func powerShellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+    }
+
+    static func make(sessionID: String, cwd: String, hostPlatform: HostPlatform = .unknown) -> String {
+        if hostPlatform == .windows {
+            return "Set-Location -LiteralPath \(powerShellQuote(cwd)) -ErrorAction Stop; claude --resume \(powerShellQuote(sessionID))"
+        }
+        return "cd \(posixShellQuote(cwd)) && claude --resume \(posixShellQuote(sessionID))"
     }
 }
 
@@ -298,7 +307,11 @@ struct SessionContextSidebarView: View {
         return (
             sessionID: sessionID,
             cwd: cwd,
-            command: ClaudeSessionRecoveryCommand.make(sessionID: sessionID, cwd: cwd)
+            command: ClaudeSessionRecoveryCommand.make(
+                sessionID: sessionID,
+                cwd: cwd,
+                hostPlatform: sessionStore.appStore.activeConnectionProfile?.hostPlatform ?? .unknown
+            )
         )
     }
 

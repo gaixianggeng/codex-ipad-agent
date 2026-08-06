@@ -122,9 +122,18 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             ClaudeSessionRecoveryCommand.make(
                 sessionID: "session'42",
-                cwd: "/Users/me/it's repo"
+                cwd: "/Users/me/it's repo",
+                hostPlatform: .apple
             ),
             #"cd '/Users/me/it'\''s repo' && claude --resume 'session'\''42'"#
+        )
+        XCTAssertEqual(
+            ClaudeSessionRecoveryCommand.make(
+                sessionID: "session'42",
+                cwd: #"C:\Users\O'Brien Repo"#,
+                hostPlatform: .windows
+            ),
+            #"Set-Location -LiteralPath 'C:\Users\O''Brien Repo' -ErrorAction Stop; claude --resume 'session''42'"#
         )
     }
 
