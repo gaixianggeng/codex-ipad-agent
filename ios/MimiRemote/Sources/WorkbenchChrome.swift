@@ -454,8 +454,11 @@ extension View {
     func themedWorkbenchNavigationChrome(tokens: ThemeTokens, colorScheme: ColorScheme) -> some View {
         // 会话工作台嵌在 NavigationSplitView 里，系统导航栏默认会透出平台背景。
         // 这里统一让导航栏和状态栏区域吃主题色，避免 iPad 横屏顶部出现黑色断层。
+        //
+        // 但底色只在滚动到边缘时才该出现：强制 `.visible` 会钉死一条不透明实色条和一道发丝线，
+        // 同时把顶栏按钮压成贴在实色上的图标。这里改为把主题色交给 scroll edge effect，
+        // 让系统自己决定何时显形。
         toolbarBackground(tokens.background, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(colorScheme, for: .navigationBar)
     }
 }
@@ -559,6 +562,48 @@ struct WorkbenchChromeIcon: View {
                 width: WorkbenchChromeIconMetrics.symbolFrame,
                 height: WorkbenchChromeIconMetrics.symbolFrame
             )
+    }
+}
+
+/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂：只有模糊和一层薄色，没有 Liquid Glass
+/// 的高光边缘与折射。同一套材质覆盖所有 chrome，避免一屏出现两种玻璃浓度。
+/// Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
+struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
+    let shape: ChromeShape
+    let tokens: ThemeTokens
+    var isTinted: Bool = false
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ZStack {
+            if reduceTransparency {
+                shape.fill(tokens.elevatedSurface)
+            } else {
+                shape.fill(.regularMaterial)
+            }
+
+            if isTinted {
+                // 选中态用中性提亮而不是主题紫填充：这一屏已经有 Codex 和 Claude
+                // 两个无法控制的品牌色，再加一块大面积主题色就是三种颜色互相抢。
+                // 选中由亮度 + 字重 + 是否展开名称共同表达，不需要色相参与。
+                shape.fill(tokens.primaryText.opacity(reduceTransparency ? 0.14 : 0.10))
+            }
+        }
+    }
+}
+
+extension View {
+    /// 顶栏图标按钮统一成 44pt 磨砂圆。调用方仍需在 ToolbarItem 上加
+    /// `.sharedBackgroundVisibility(.hidden)`，否则 iPadOS/iOS 26 自动附加的玻璃底板
+    /// 会叠在这层磨砂下面，形成两层背景。
+    func workbenchChromeCircle(tokens: ThemeTokens) -> some View {
+        frame(
+            width: WorkbenchChromeIconMetrics.minimumHitTarget,
+            height: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
+        .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
+        .contentShape(Circle())
     }
 }
 

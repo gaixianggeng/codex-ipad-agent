@@ -670,24 +670,35 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             "MimiRemote 应能直接进入工作区"
         )
 
-        let iconButtons = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+        // 44pt 胶囊放不下卡片时代的三个可见操作；头像不再是独立按钮，
+        // 换图标与 Git、移除目录一起降级到胶囊的长按菜单。
+        let chips = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card."))
         XCTAssertTrue(
-            iconButtons.firstMatch.waitForExistence(timeout: 15),
-            "工作区卡片应展示可更换的《西游记》角色头像"
+            chips.firstMatch.waitForExistence(timeout: 15),
+            "工作区应展示可切换的《西游记》角色胶囊"
         )
-        assertMinimumTouchTarget(iconButtons.firstMatch, named: "工作区角色头像")
+        assertMinimumTouchTarget(chips.firstMatch, named: "工作区项目胶囊")
 
         let workspaceScreenshot = XCTAttachment(screenshot: app.screenshot())
-        workspaceScreenshot.name = "workspace-character-cards"
+        workspaceScreenshot.name = "workspace-character-chips"
         workspaceScreenshot.lifetime = .keepAlways
         add(workspaceScreenshot)
 
-        iconButtons.firstMatch.tap()
+        chips.firstMatch.press(forDuration: 1.0)
+        let iconEntry = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspace.card.icon."))
+            .firstMatch
+        XCTAssertTrue(
+            iconEntry.waitForExistence(timeout: 8),
+            "长按胶囊应提供更换角色入口"
+        )
+        iconEntry.tap()
+
         let picker = app.descendant(identifier: "workspace.characterPicker")
         XCTAssertTrue(
             picker.waitForExistence(timeout: 10),
-            "点击头像后应打开角色选择器"
+            "选择更换角色后应打开角色选择器"
         )
 
         let characterButtons = app.descendants(matching: .any)
@@ -728,17 +739,17 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
 
         let projectID = "debug-sample-app"
-        let cardMenu = app.descendant(identifier: "workspace.card.actions.\(projectID)")
-        XCTAssertTrue(cardMenu.waitForExistence(timeout: 10), "工作区卡片应保留对象级操作菜单")
-        assertMinimumTouchTarget(cardMenu, named: "工作区卡片操作入口")
-        cardMenu.tap()
+        let chip = app.descendant(identifier: "workspace.card.\(projectID)")
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "工作区应保留项目胶囊")
+        assertMinimumTouchTarget(chip, named: "工作区项目胶囊")
+        chip.press(forDuration: 1.0)
 
         let cardGit = firstExistingButton(labels: ["Git 变更", "Git changes"], timeout: 6)
-        XCTAssertNotNil(cardGit, "低频 Git 能力应降级到工作区卡片菜单，而不是被删除")
+        XCTAssertNotNil(cardGit, "低频 Git 能力应降级到项目胶囊的长按菜单，而不是被删除")
         cardGit?.tap()
 
         let complete = firstExistingButton(labels: ["完成", "Done"], timeout: 8)
-        XCTAssertNotNil(complete, "卡片菜单 Git 入口应继续打开绑定当前工作区的 Git 面板")
+        XCTAssertNotNil(complete, "长按菜单的 Git 入口应继续打开绑定当前工作区的 Git 面板")
         complete?.tap()
     }
 
@@ -814,13 +825,13 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         ] {
             rotate(to: orientation)
 
-            let source = app.descendant(identifier: "workspace.card.actions.\(projectID)")
-            XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区卡片操作入口应保持可见")
-            assertMinimumTouchTarget(source, named: "工作区卡片操作入口")
-            source.tap()
+            let source = app.descendant(identifier: "workspace.card.\(projectID)")
+            XCTAssertTrue(source.waitForExistence(timeout: 10), "旋转后工作区项目胶囊应保持可见")
+            assertMinimumTouchTarget(source, named: "工作区项目胶囊")
+            source.press(forDuration: 1.0)
 
             let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
-            XCTAssertTrue(request.waitForExistence(timeout: 6), "卡片菜单应提供移除目录入口")
+            XCTAssertTrue(request.waitForExistence(timeout: 6), "长按菜单应提供移除目录入口")
             request.tap()
 
             let confirmation = app.descendant(identifier: "workspace.remove.confirm.\(projectID)")
@@ -840,8 +851,8 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(source.exists, "取消后工作区仍应保留在列表中")
         }
 
-        let source = app.descendant(identifier: "workspace.card.actions.\(projectID)")
-        source.tap()
+        let source = app.descendant(identifier: "workspace.card.\(projectID)")
+        source.press(forDuration: 1.0)
         let request = app.descendant(identifier: "workspace.remove.request.\(projectID)")
         XCTAssertTrue(request.waitForExistence(timeout: 6))
         request.tap()

@@ -296,16 +296,6 @@ struct UnifiedWorkbenchShell: View {
 
             NavigationStack(path: compactPathBinding(for: .workspaces, layout: layout)) {
                 workspaces(layout: layout)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            HostSwitcherMenu(
-                                presentation: .toolbar,
-                                manageConnections: {
-                                    openConnectionSettings(layout: layout)
-                                }
-                            )
-                        }
-                    }
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
@@ -992,7 +982,16 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func workspaces(layout: WorkbenchLayout) -> some View {
-        WorkspaceRootView(
+        let manageConnections: (() -> Void)?
+        if layout.usesCompactNavigation {
+            manageConnections = {
+                openConnectionSettings(layout: layout)
+            }
+        } else {
+            manageConnections = nil
+        }
+
+        return WorkspaceRootView(
             onStartSession: { project, runtimeChoice in
                 Task {
                     await sessionStore.startNewSession(in: project, runtimeProvider: runtimeChoice.runtimeProvider)
@@ -1002,6 +1001,7 @@ struct UnifiedWorkbenchShell: View {
                 // 选择会话和切换路由由同一个入口发起，避免 selectedSessionID 的回调再次 open。
                 openSession(session, source: .workspaces, layout: layout)
             },
+            manageConnections: manageConnections,
             // 紧凑布局的 destination 必须复用外层绑定 path 的 NavigationStack。
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: layout.usesCompactNavigation
