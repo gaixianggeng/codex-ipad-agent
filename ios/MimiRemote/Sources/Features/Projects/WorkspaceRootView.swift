@@ -1676,18 +1676,18 @@ private struct WorkspaceDetailView<StatusLine: View>: View {
         }
     }
 
-    /// 一行同时承担两件事：左端切运行时，右端用同一个运行时开新会话。
+    /// 一行同时承担两件事：左端用当前运行时开新会话，右端切换运行时。
     /// Codex/Claude 这个维度整屏只出现一次，主操作也不再占用独立的大卡片。
     private func recentSessionsHeader(tokens: ThemeTokens) -> some View {
         HStack(spacing: 12) {
+            newSessionButton(tokens: tokens)
+
+            Spacer(minLength: 8)
+
             WorkspaceRuntimePicker(
                 selection: $selectedRuntime,
                 claudeChannelAvailable: claudeChannelAvailable
             )
-
-            Spacer(minLength: 8)
-
-            newSessionButton(tokens: tokens)
         }
     }
 
