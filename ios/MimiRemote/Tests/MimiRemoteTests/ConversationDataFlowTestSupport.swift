@@ -1733,6 +1733,26 @@ func payloadContainsSkill(_ payload: CodexAppServerTurnPayload?, name expectedNa
     } ?? false
 }
 
+/// 等待流式 delta 的合并缓冲真正 flush 落地。
+///
+/// 不能用固定 sleep 代替：ConversationStore 的 80ms flush 和测试自己的等待是两个
+/// 独立定时器，落地先后没有任何保证。真机满负载跑全量时调度会停顿到秒级，足以让
+/// 测试先醒来读到未 flush 的旧内容（实测正常余量只有约 84ms）。
+@MainActor
+func waitForPendingAssistantDeltaFlush(
+    in store: ConversationStore,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    for _ in 0..<500 {
+        if !store.hasPendingAssistantDeltasForTesting {
+            return
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTFail("流式 delta 合并缓冲未在 5s 内 flush", file: file, line: line)
+}
+
 @MainActor
 func waitForConversationMessages(
     in store: ConversationStore,
