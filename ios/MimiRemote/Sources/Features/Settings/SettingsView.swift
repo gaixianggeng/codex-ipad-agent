@@ -1131,7 +1131,9 @@ struct AccountTokenUsageCard: View {
     }
 
     private func wideLayout(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .top, spacing: 20) {
+        // 156pt 的最小高度会比左右内容多出一段空间；居中分配这段空间，
+        // 避免所有内容贴近卡片上缘、只在底部留下明显空白。
+        HStack(alignment: .center, spacing: 20) {
             quotaPanel(tokens: tokens, ringDiameter: 100)
                 .frame(width: 252)
 
