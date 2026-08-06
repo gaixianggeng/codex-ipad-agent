@@ -52,7 +52,7 @@ extension ConversationDataFlowTests {
             cursorPages: cursorPages
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -147,7 +147,7 @@ extension ConversationDataFlowTests {
         )
         var requestedSleeps: [UInt64] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },

@@ -29,7 +29,7 @@ extension ConversationDataFlowTests {
     }
 
     func testWorkspaceCatalogRefreshScopeTracksCredentialSuspensionWithoutChangingHost() {
-        let hostScope = AppStore().activeHostScope
+        let hostScope = makeIsolatedAppStore().activeHostScope
 
         XCTAssertNotEqual(
             WorkspaceCatalogRefreshScope(hostScope: hostScope, credentialsSuspended: false),
@@ -194,7 +194,7 @@ extension ConversationDataFlowTests {
             workspaceSessions: [project.id: [codexSession, claudeSession]]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -236,7 +236,7 @@ extension ConversationDataFlowTests {
                 page: SessionsPage(sessions: completePage, nextCursor: "older", hasMore: true)
             )
             let store = SessionStore(
-                appStore: AppStore(),
+                appStore: makeIsolatedAppStore(),
                 conversationStore: ConversationStore(),
                 logStore: LogStore(),
                 clientFactory: { client }
@@ -298,7 +298,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -352,7 +352,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["after-sparse-children": SessionsPage(sessions: roots)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -403,7 +403,7 @@ extension ConversationDataFlowTests {
             cursorPages: cursorPages
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -523,7 +523,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -552,7 +552,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: [cachedRoot], nextCursor: nil, hasMore: true)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -605,7 +605,7 @@ extension ConversationDataFlowTests {
             cursorPages: ["external-next": SessionsPage(sessions: olderRoots)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -640,7 +640,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -714,7 +714,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -780,7 +780,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -834,7 +834,7 @@ extension ConversationDataFlowTests {
             cursorPages: cursorPages
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -928,7 +928,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -977,7 +977,7 @@ extension ConversationDataFlowTests {
             ]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1013,7 +1013,7 @@ extension ConversationDataFlowTests {
             page: SessionsPage(sessions: completePage, nextCursor: "authoritative-older", hasMore: true)
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1088,7 +1088,7 @@ extension ConversationDataFlowTests {
         var now = Date(timeIntervalSince1970: 1_780_000_000)
         var requestedSleeps: [UInt64] = []
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client },
@@ -1135,7 +1135,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1192,7 +1192,7 @@ extension ConversationDataFlowTests {
             )
         }
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1256,7 +1256,7 @@ extension ConversationDataFlowTests {
             source: "codex"
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1326,7 +1326,7 @@ extension ConversationDataFlowTests {
             )
         }
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
@@ -1405,7 +1405,7 @@ extension ConversationDataFlowTests {
                 hasMore: true
             )
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1466,7 +1466,7 @@ extension ConversationDataFlowTests {
                 hasMore: true
             )
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1536,7 +1536,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1,
             blockedError: CancellationError()
         )
-        let appStore = AppStore()
+        let appStore = makeIsolatedAppStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1578,7 +1578,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1628,7 +1628,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1678,7 +1678,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1765,7 +1765,7 @@ extension ConversationDataFlowTests {
             authoritativePage: authoritativePage
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1825,7 +1825,7 @@ extension ConversationDataFlowTests {
             authoritativePage: SessionsPage(sessions: [authoritativeSession])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1884,7 +1884,7 @@ extension ConversationDataFlowTests {
             authoritativePage: SessionsPage(sessions: [authoritativeSession])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1940,7 +1940,7 @@ extension ConversationDataFlowTests {
             authoritativePage: SessionsPage(sessions: [])
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -1987,7 +1987,7 @@ extension ConversationDataFlowTests {
             projectsHandler: { await gate.projects() }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2041,7 +2041,7 @@ extension ConversationDataFlowTests {
                 resolveResults: [path: .failure(error)]
             )
             let store = SessionStore(
-                appStore: AppStore(),
+                appStore: makeIsolatedAppStore(),
                 conversationStore: ConversationStore(),
                 logStore: LogStore(),
                 clientFactory: { client }
@@ -2062,7 +2062,7 @@ extension ConversationDataFlowTests {
             resolveResults: [path: .failure(AgentAPIError.server(status: 403, message: "forbidden"))]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2083,7 +2083,7 @@ extension ConversationDataFlowTests {
             resolveResults: [workspace.path: .success(workspace)]
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2105,7 +2105,7 @@ extension ConversationDataFlowTests {
             resolveWorkspaceHandler: { _ in try await gate.resolve() }
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
@@ -2126,7 +2126,7 @@ extension ConversationDataFlowTests {
 
     func testWorkspaceSessionLoadInvocationTokensKeepOnlyLatestABAReturnEligible() {
         var tokens = WorkspaceSessionLoadInvocationTokens()
-        let hostScope = AppStore().activeHostScope
+        let hostScope = makeIsolatedAppStore().activeHostScope
         let keyA = WorkspaceSessionPresentationKey(
             hostScope: hostScope,
             workspaceID: "workspace-a",
@@ -2170,7 +2170,7 @@ extension ConversationDataFlowTests {
             blockOnCall: 1
         )
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: makeIsolatedAppStore(),
             conversationStore: ConversationStore(),
             logStore: LogStore(),
             clientFactory: { client }
