@@ -2,7 +2,7 @@
 
 ## Build from source (English)
 
-Mimi Remote is a native iPhone/iPad client for coding agents running on your own Mac. It requires iOS/iPadOS 26 or later, Xcode 26 or later with the iOS 26 SDK, and XcodeGen; there is no public App Store release. From the repository root, install XcodeGen, then generate and open the project:
+Mimi Remote is a native iPhone/iPad client for coding agents running on your own Mac. It supports iOS/iPadOS 18 or later. Building from source still requires Xcode 26 or later with the iOS 26 SDK plus XcodeGen so the same binary can keep iOS 26+ Liquid Glass and Apple Speech features behind availability checks. There is no public App Store release. From the repository root, install XcodeGen, then generate and open the project:
 
 ```bash
 brew install xcodegen
@@ -43,7 +43,7 @@ Mac agentd control plane / thin gateway
 
 已下线旧链路：`/api/sessions*`、`/api/sessions/{id}/ws`、Web/PWA 和 iOS PTY 文本解析回退都已经删除。后续不要再基于这些入口增加功能。
 
-目标体验按 iOS/iPadOS 26 推进，`project.yml` 的 deployment target 为 iOS 26.0。MVP 不在 iPad 上运行 Codex；Mac Catalyst 只自动检测同机固定 loopback，不扫描局域网或其它 Mac。用户先在 Mac 上执行：
+高级体验继续按 iOS/iPadOS 26+ 推进，但 `project.yml` 的 deployment target 为 iOS 18.0。iOS 18–25 使用普通系统材质，并隐藏或回退无法提供的系统能力；iOS 26+ 保留 Liquid Glass 与 Apple 设备端实时语音。MVP 不在 iPad 上运行 Codex；Mac Catalyst 只自动检测同机固定 loopback，不扫描局域网或其它 Mac。用户先在 Mac 上执行：
 
 ```bash
 codex --version

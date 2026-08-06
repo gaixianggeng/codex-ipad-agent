@@ -81,7 +81,8 @@ concurrency:
 
 jobs:
   conversation-regressions:
-    # MimiRemote 的最低版本是 iOS 26；macos-26 runner 默认提供稳定版 Xcode 26 和 iOS 26 Simulator。
+    # 使用稳定版 Xcode 26 / iOS 26 Simulator 运行回归；工程仍以 iOS 18 为 deployment target，
+    # 因此编译阶段会检查所有 iOS 26+ API 是否具备有效 availability fallback。
     runs-on: macos-26
     timeout-minutes: 35
     steps:
@@ -103,6 +104,31 @@ jobs:
           go version
           xcodebuild -version
           xcrun simctl list devices available
+
+      - name: Verify iOS 18 deployment target
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target_name in \
+            MimiRemote \
+            MimiCarStatusWidgetExtension \
+            MimiRemoteTests \
+            MimiRemoteUITests
+          do
+            deployment_targets="$(
+              xcodebuild \
+                -project ios/MimiRemote/MimiRemote.xcodeproj \
+                -target "$target_name" \
+                -configuration Debug \
+                -showBuildSettings 2>/dev/null \
+                | awk '$1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" { print $3 }' \
+                | sort -u
+            )"
+            if [[ "$deployment_targets" != "18.0" ]]; then
+              echo "$target_name expected iOS deployment target 18.0, got: $deployment_targets" >&2
+              exit 1
+            fi
+          done
 
       - name: Resolve fixed CI simulator
         shell: bash

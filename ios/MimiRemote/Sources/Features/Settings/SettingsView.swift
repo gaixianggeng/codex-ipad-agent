@@ -288,7 +288,7 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.language")
 
                 Picker(selection: voiceInputProviderSelection) {
-                    ForEach(VoiceInputProvider.allCases) { provider in
+                    ForEach(VoiceInputProvider.availableProviders()) { provider in
                         Text(provider.title)
                             .tag(provider)
                     }
@@ -480,7 +480,9 @@ struct SettingsView: View {
 
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
-            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
+            get: {
+                VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
+            },
             set: { voiceInputProviderRawValue = $0.rawValue }
         )
     }

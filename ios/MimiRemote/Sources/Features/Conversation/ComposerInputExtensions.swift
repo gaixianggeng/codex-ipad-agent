@@ -219,7 +219,7 @@ extension ComposerView {
     }
 
     var selectedVoiceInputProvider: VoiceInputProvider {
-        VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex
+        VoiceInputProvider.resolved(rawValue: voiceInputProviderRawValue)
     }
 
     var isPhoneComposer: Bool {
@@ -725,7 +725,7 @@ extension ComposerView {
         composerState.beginVoiceInput()
         let context = VoiceTranscriptionContext(sessionID: sessionStore.selectedSessionID)
         activeVoiceTranscriptionContext = context
-        if selectedVoiceInputProvider == .apple {
+        if selectedVoiceInputProvider == .apple, #available(iOS 26.0, *) {
             voiceInput.startAppleTranscription(
                 locale: .autoupdatingCurrent,
                 onTranscript: { transcript in
@@ -776,7 +776,7 @@ extension ComposerView {
             composerState.endVoiceInput()
             return
         }
-        if selectedVoiceInputProvider == .apple {
+        if selectedVoiceInputProvider == .apple, #available(iOS 26.0, *) {
             // Apple 在录音过程中已持续写入草稿；停止后只等待最后一个稳定结果。
             isVoiceTranscribing = true
         }

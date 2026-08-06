@@ -4,12 +4,13 @@ options:
   # 与当前工程的 Xcode 27 元数据保持一致，避免每次 XcodeGen 把 scheme 降级到旧版本。
   xcodeVersion: "27.0"
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
 settings:
   base:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: 9HZ89R58PZ
-    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    # iOS 18–25 走普通材质与功能降级；iOS 26+ 继续启用 Liquid Glass 和新 Speech API。
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     SDKROOT: auto
 packages:

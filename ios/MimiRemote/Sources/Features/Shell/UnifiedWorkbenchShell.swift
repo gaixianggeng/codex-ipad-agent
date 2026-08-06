@@ -1092,7 +1092,9 @@ struct UnifiedWorkbenchShell: View {
                         }
                         .accessibilityLabel(L10n.text("ui.options"))
                     }
-                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    if #available(iOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    }
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -1105,8 +1107,10 @@ struct UnifiedWorkbenchShell: View {
                         Task { await sessionStore.refreshCurrentContext() }
                     }
                 }
-                // 宽屏保留两个独立动作；手机端已经收进单一更多菜单。
-                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                // iOS 26+ 用固定间隔保持独立玻璃组；旧系统直接沿用普通工具栏间距。
+                if #available(iOS 26.0, *) {
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                }
                 inspectorToolbarItem(layout: layout, tokens: tokens)
             }
         }
@@ -1441,7 +1445,7 @@ struct UnifiedWorkbenchShell: View {
         layout: WorkbenchLayout,
         tokens: ThemeTokens
     ) -> some ToolbarContent {
-        if layout.usesSheetInspectorNavigation {
+        if layout.usesSheetInspectorNavigation, #available(iOS 26.0, *) {
             ToolbarItem(placement: .topBarTrailing) {
                 inspectorToolbarButton(
                     layout: layout,
@@ -1457,6 +1461,7 @@ struct UnifiedWorkbenchShell: View {
                 in: presentationNamespace
             )
         } else {
+            // iOS 18–25 仍可打开 Inspector，只取消依赖新 Toolbar API 的 zoom 来源。
             ToolbarItem(placement: .topBarTrailing) {
                 inspectorToolbarButton(
                     layout: layout,
@@ -1706,7 +1711,7 @@ private struct NewSessionSheet: View {
                             }
                         }
                         .frame(minWidth: 48)
-                        .buttonStyle(.glassProminent)
+                        .workbenchProminentActionStyle()
                         .disabled(isCreating || selectedProject == nil)
                         .tint(tokens.primaryAction)
                         .keyboardShortcut(.defaultAction)
